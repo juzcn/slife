@@ -21,6 +21,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -341,6 +342,66 @@ async def transcribe_audio(path: str, model: str = "") -> str:
     except Exception as e:
         logger.exception("transcribe_audio_failed")
         return _error(e)
+
+
+@mcp.tool(
+    name="__check",
+    description=(
+        "Media (image/video/TTS/ASR) config status as health entries. "
+        "Internal — probed by the harness's system_health, never exposed "
+        "to the LLM."
+    ),
+)
+async def __check() -> str:
+    """Return health-check entries for the media plugin (config status).
+
+    Internal (``__`` prefix): probed by the harness's ``system_health``.
+    The LLM has the ``generate_*`` / ``text_to_speech`` / ``transcribe_audio``
+    tools; this is the technical status surface the harness aggregates.
+    """
+    results: list[dict] = []
+    try:
+        cfg = _ensure_config()
+        if cfg.is_empty():
+            results.append({
+                "component": "media", "level": "ok", "key": "enabled",
+                "value": "not_configured",
+                "hint": ("Media generation not configured. Add a media: "
+                         "section to slife.json5 to enable generate_image / "
+                         "generate_video / text_to_speech / transcribe_audio."),
+            })
+        else:
+            kinds = sorted(cfg.kinds_available())
+            results.append({
+                "component": "media", "level": "ok", "key": "enabled",
+                "value": f"{len(cfg.providers)} provider(s)",
+                "hint": (f"Media configured: {len(cfg.providers)} provider(s), "
+                         f"capabilities {', '.join(kinds) or '(none)'}."),
+            })
+            for pid in sorted(cfg.providers):
+                p = cfg.providers[pid]
+                caps = sorted({m.kind for m in p.models})
+                cap_str = ", ".join(caps) or "(no models)"
+                if p.api_key:
+                    results.append({
+                        "component": "media", "level": "ok", "key": pid,
+                        "value": cap_str,
+                        "hint": f"Provider '{pid}' ({p.api}) configured with api_key.",
+                    })
+                else:
+                    results.append({
+                        "component": "media", "level": "warning", "key": pid,
+                        "value": cap_str,
+                        "hint": f"Provider '{pid}' has no api_key set — generation calls will fail.",
+                    })
+    except Exception as e:
+        logger.warning("media_check_failed err=%s", e)
+        results.append({
+            "component": "media", "level": "warning", "key": "config",
+            "value": "error",
+            "hint": f"Media config status unavailable: {e}",
+        })
+    return json.dumps(results, ensure_ascii=False, indent=2)
 
 
 def main() -> None:

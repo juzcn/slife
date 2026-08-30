@@ -12,5 +12,5 @@ as a public HTTPS URL that multimodal LLM APIs can fetch directly
 choice; the file cabinet (memfiles) never auto-publishes.
 
 LLM-visible tools: ``share_file``.
-Internal tools: ``__tunnel_status``, ``__register_file``.
+Internal tools: ``__check``, ``__register_file``.
 """

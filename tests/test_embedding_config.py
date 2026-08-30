@@ -194,7 +194,7 @@ class TestMakeCheckReport:
         mock_config_file["content"] = "{}"
         report = make_check_report()
         assert report["configured"] is False
-        assert report["backend"] == "api"
+        assert report["provider"] == ""
         assert report["available"] is False
 
     def test_provider_no_base_url(self, mock_config_file):
@@ -220,6 +220,5 @@ class TestMakeCheckReport:
             mock_client._model = "bge-m3"
             report = make_check_report()
             assert report["available"] is True
-            assert report["backend"] == "api"
             assert report["provider"] == "p1"
             assert report["dimension"] == 1024

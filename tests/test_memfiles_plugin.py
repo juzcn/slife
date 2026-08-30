@@ -440,7 +440,6 @@ class TestMemfilesSemanticStatus:
         data = json.loads(out)
         assert data["semantic_ready"] is False
         assert data["state"] == "indexing"
-        assert data["backend"] == "gguf"
         assert data["model"] == "bge-m3"
         assert "pending embedding" in data["hint"]
 
@@ -455,13 +454,13 @@ class TestMemfilesSemanticStatus:
 
 
 class TestCabinetStatus:
-    """__cabinet_status — the internal tool the harness's check_memfiles probes."""
+    """__check — the internal tool the harness's check_memfiles probes."""
 
     @pytest.mark.asyncio
     async def test_store_error_reports_failure(self, tmp_path):
         with patch.object(plugin, "_ensure_store",
                           AsyncMock(side_effect=RuntimeError("boom"))):
-            out = await getattr(plugin, "__cabinet_status")()
+            out = await getattr(plugin, "__check")()
         data = json.loads(out)
         assert data["ok"] is False
         assert data["state"] == "store_error"
@@ -478,7 +477,7 @@ class TestCabinetStatus:
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
              patch.object(plugin, "_store", store), \
              patch.object(plugin, "_manager", manager):
-            out = await getattr(plugin, "__cabinet_status")()
+            out = await getattr(plugin, "__check")()
         data = json.loads(out)
         assert data["ok"] is True
         assert data["connected"] is True
@@ -492,7 +491,7 @@ class TestCabinetStatus:
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
              patch.object(plugin, "_store", store), \
              patch.object(plugin, "_manager", None):
-            out = await getattr(plugin, "__cabinet_status")()
+            out = await getattr(plugin, "__check")()
         data = json.loads(out)
         assert data["ok"] is True
         assert data["state"] == "no_manager"

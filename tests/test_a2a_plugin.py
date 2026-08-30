@@ -281,7 +281,7 @@ class TestHarnessTools:
         """Internal (LLM-invisible) tools carry the ``__`` prefix convention."""
         tools = await plugin.mcp._list_tools()
         names = {t.name for t in tools}
-        for name in ("__a2a_drain_incoming", "__a2a_dispatch_result", "__a2a_status"):
+        for name in ("__a2a_drain_incoming", "__a2a_dispatch_result", "__check"):
             assert name in names, f"{name} missing from plugin tools"
 
     @pytest.mark.asyncio
@@ -376,7 +376,7 @@ class TestEagerConnect:
 
 
 class TestA2aStatusTool:
-    """Tests for the __a2a_status internal tool (health-check probe)."""
+    """Tests for the __check internal tool (health-check probe)."""
 
     _CONFIG = json.dumps({
         "enabled": True, "agent_name": "slife",
@@ -401,7 +401,7 @@ class TestA2aStatusTool:
     @pytest.mark.asyncio
     async def test_disconnected_when_client_none(self):
         """No live client → connected=False, empty peers (broker down at startup)."""
-        out = json.loads(await getattr(plugin, "__a2a_status")())
+        out = json.loads(await getattr(plugin, "__check")())
         assert out["enabled"] is True
         assert out["connected"] is False
         assert out["agent_name"] == ""
@@ -415,7 +415,7 @@ class TestA2aStatusTool:
         client.agent_name = "slife"
         client.status = "idle"
         plugin._client = client
-        out = json.loads(await getattr(plugin, "__a2a_status")())
+        out = json.loads(await getattr(plugin, "__check")())
         assert out["connected"] is True
         assert out["agent_name"] == "slife"
         assert out["status"] == "idle"
@@ -432,7 +432,7 @@ class TestA2aStatusTool:
         plugin._cancellations.append({"type": "cancel", "corr_id": "c2"})
         plugin._task_completions.append({"corr_id": "c3", "result": "ok",
                                          "cancelled": False, "peer": ""})
-        out = json.loads(await getattr(plugin, "__a2a_status")())
+        out = json.loads(await getattr(plugin, "__check")())
         assert out["queued"] == {
             "tasks": 1, "presence": 0,
             "cancellations": 1, "task_completions": 1,
@@ -442,5 +442,5 @@ class TestA2aStatusTool:
     async def test_status_does_not_trigger_connect(self):
         """A status probe must never side-effect a connection."""
         with patch.object(plugin, "_ensure_connected", AsyncMock()) as mock_conn:
-            await getattr(plugin, "__a2a_status")()
+            await getattr(plugin, "__check")()
         mock_conn.assert_not_awaited()

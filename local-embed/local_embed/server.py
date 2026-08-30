@@ -4,7 +4,7 @@ One process, one port, two protocols (the ``sharefile`` precedent):
 
 - **MCP** on ``/mcp`` — the plugin contract.  Like the sharefile plugin,
   this is a *service provider*, not a tool provider: the only MCP tool is
-  the internal ``__embed_status`` (probed by the host's ``check_local_embed``);
+  the internal ``__check`` (probed by the host's ``system_health``);
   the host consumes the service over the OpenAI-compatible HTTP routes,
   never through MCP tools.
 - **OpenAI-compatible HTTP** on the SAME port via ``@mcp.custom_route``:
@@ -77,7 +77,7 @@ mcp, _ = create_plugin_server(
     instructions=(
         "local-embed — local embedding service.  Serves OpenAI-compatible "
         "/v1/embeddings + /v1/models for slife's embeddings config (shared by "
-        "memdb + memfiles).  The only MCP tool is the internal __embed_status, "
+        "memdb + memfiles).  The only MCP tool is the internal __check, "
         "probed by the host's check_local_embed — the host consumes the model "
         "service over HTTP, never through MCP tools."
     ),
@@ -104,12 +104,12 @@ def _model_status(engine: Engine, name: str) -> dict:
     }
 
 
-@mcp.tool(name="__embed_status", description="Embedding service status: active model, model list, dimensions, loaded. Internal — called by the host's check_local_embed.")
-async def __embed_status() -> str:
+@mcp.tool(name="__check", description="Embedding service status as JSON: active model, model list, dimensions, loaded. Internal — probed by the host's system_health.")
+async def __check() -> str:
     """Return the current engine status as a JSON string.
 
     Internal (``__`` prefix): status probing is the harness's job via
-    ``check_local_embed`` — never exposed to the LLM, which has the
+    ``system_health`` — never exposed to the LLM, which has the
     ``embeddings_*`` native tools for config and the health checks for
     status.
     """

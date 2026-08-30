@@ -4,6 +4,7 @@ Mocks adapters / HTTP (no network) and exercises the MCP tool functions
 directly, following the a2a plugin test pattern.
 """
 
+import json
 import json5
 import pytest
 from pathlib import Path
@@ -593,3 +594,51 @@ class TestArtifactSaver:
         p = saver.save_bytes(b"x", "image", "jpg", str(out))
         assert p.parent == out
         assert p.read_bytes() == b"x"
+
+
+class TestCheck:
+    """Tests for the internal __check health tool."""
+
+    _check = staticmethod(lambda: getattr(plugin, "__check")())
+
+    @pytest.mark.asyncio
+    async def test_empty_config_reports_not_configured(self):
+        with patch.object(plugin, "_ensure_config", return_value=MediaConfig()):
+            out = await self._check()
+        data = json.loads(out)
+        assert data[0]["component"] == "media"
+        assert data[0]["level"] == "ok"
+        assert data[0]["value"] == "not_configured"
+
+    @pytest.mark.asyncio
+    async def test_configured_reports_providers_and_kinds(self):
+        cfg = MediaConfig(providers={
+            "p1": ProviderConfig(
+                api="openai-images", base_url="http://x", api_key="k",
+                models=[ModelEntry(model="m1", kind="image")],
+            ),
+        })
+        with patch.object(plugin, "_ensure_config", return_value=cfg):
+            out = await self._check()
+        data = json.loads(out)
+        keys = {e["key"] for e in data}
+        assert "enabled" in keys
+        assert "p1" in keys
+        enabled = next(e for e in data if e["key"] == "enabled")
+        assert enabled["level"] == "ok"
+        assert "image" in enabled["hint"]
+
+    @pytest.mark.asyncio
+    async def test_missing_api_key_is_warning(self):
+        cfg = MediaConfig(providers={
+            "p1": ProviderConfig(
+                api="openai-images", base_url="http://x", api_key="",
+                models=[ModelEntry(model="m1", kind="tts")],
+            ),
+        })
+        with patch.object(plugin, "_ensure_config", return_value=cfg):
+            out = await self._check()
+        data = json.loads(out)
+        p1 = next(e for e in data if e["key"] == "p1")
+        assert p1["level"] == "warning"
+        assert "api_key" in p1["hint"]

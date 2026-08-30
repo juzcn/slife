@@ -662,6 +662,60 @@ async def wechat_check_messages() -> str:
 
 
 @mcp.tool(
+    name="__check",
+    description=(
+        "WeChat login/session status as health entries. Internal — probed "
+        "by the harness's system_health, never exposed to the LLM."
+    ),
+)
+async def __check() -> str:
+    """Return health-check entries for the WeChat plugin (read-only probe).
+
+    Unlike ``wechat_check_status`` — which can trigger a session restore —
+    this probe only reads current state.  Internal: probed by the harness's
+    ``system_health``; never exposed to the LLM.
+    """
+    entries: list[dict] = []
+    saved = load_wechat_config(_agent_name, _work_dir)
+    if _client.is_logged_in:
+        session = _client.get_session_dict()
+        age = time.time() - session.get("saved_at", time.time())
+        remaining = max(0, SESSION_MAX_AGE - age)
+        entries.append({
+            "component": "wechat", "level": "ok", "key": "status",
+            "value": "logged_in",
+            "hint": (f"WeChat logged in. Session age: {age / 3600:.1f}h, "
+                     f"remaining: {remaining / 3600:.1f}h."),
+        })
+    elif saved.get("bot_token"):
+        age = time.time() - saved.get("saved_at", time.time())
+        remaining = max(0, SESSION_MAX_AGE - age)
+        if remaining <= 0:
+            entries.append({
+                "component": "wechat", "level": "warning", "key": "status",
+                "value": "session_expired",
+                "hint": (f"WeChat session expired ({age / 3600:.1f}h old, "
+                         f"max {SESSION_MAX_AGE / 3600:.0f}h). "
+                         "Call wechat_login to re-scan."),
+            })
+        else:
+            entries.append({
+                "component": "wechat", "level": "ok", "key": "status",
+                "value": "not_logged_in",
+                "hint": (f"WeChat not logged in. Saved session "
+                         f"{remaining / 3600:.1f}h left — restores on the "
+                         "next wechat_check_status."),
+            })
+    else:
+        entries.append({
+            "component": "wechat", "level": "warning", "key": "status",
+            "value": "not_logged_in",
+            "hint": "WeChat not logged in. Call wechat_login to scan the QR code.",
+        })
+    return json.dumps(entries, ensure_ascii=False, indent=2)
+
+
+@mcp.tool(
     name="wechat_check_status",
     description=(
         "WeChat connection status: logged in?, session age, time remaining, "

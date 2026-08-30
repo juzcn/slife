@@ -35,7 +35,7 @@ All management lives in the server's tool set:
 | `mcp_set_enabled` | Runtime enable/disable of a server (`mcp_set_enabled(name, enabled)`): enable reconnects + loads tools, disable disconnects + unloads. |
 | `mcp_remove` | Remove a server: stop its process, unregister its tools, persist the removal. |
 | `mcp_list` | List configured servers (transport, command/url, enabled). |
-| `__mcp_connection_status` | Live per-server status: running/stopped, tool counts, errors. |
+| `__check` | Live per-server status: running/stopped, tool counts, errors. |
 | `mcp_list_tools(server)` | List a server's tools — **double read** of the live connection AND the persisted catalog (`mcp-plugin.db`). |
 | `mcp_tool_search(query, mode, limit, server, include_disabled)` | Search the tool catalog — `hybrid` / `fts5` / `grep` (see [Semantic search & automatic degradation](#semantic-search--automatic-degradation)). |
 | `__mcp_get_tool(full_name)` | One tool's live schema + enabled status (consumed by the host's `mcp_tool_load`). |

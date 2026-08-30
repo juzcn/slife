@@ -249,7 +249,7 @@ class TestAgentServiceMCPDiscovery:
         client.is_connected = True
 
         async def fake_call_tool(name, arguments=None):
-            if name == "__mcp_connection_status":
+            if name == "__check":
                 return _json.dumps(status_servers, ensure_ascii=False)
             if name == "mcp_list_tools":
                 return _json.dumps(
@@ -1848,7 +1848,7 @@ class TestSpawnPluginListToolsRetry:
 
 class TestSharefileTunnelWatch:
     """Tests for the harness-owned tunnel readiness watch (main process
-    probes __tunnel_status after the sharefile plugin loads; the plugin
+    probes __check after the sharefile plugin loads; the plugin
     never talks to the TUI)."""
 
     @pytest.mark.asyncio
@@ -1866,7 +1866,7 @@ class TestSharefileTunnelWatch:
         await service._check_sharefile_tunnel(client)
 
         cb.assert_called_once()
-        client.call_tool.assert_called_once_with("__tunnel_status")
+        client.call_tool.assert_called_once_with("__check")
 
     @pytest.mark.asyncio
     async def test_silent_when_active(self, sample_config):

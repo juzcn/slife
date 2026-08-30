@@ -9,7 +9,7 @@ by test_memfiles_plugin.py.
 Mocks the ngrok tunnel (no network) and exercises the MCP tool functions
 directly, following the test_mqtt_plugin.py pattern.  Covers the token
 registry, ``share_file`` (with a mocked tunnel), the internal tools
-(``__tunnel_status`` / ``__register_file``), and the ``GET /share/{file_id}``
+(``__check`` / ``__register_file``), and the ``GET /share/{file_id}``
 HTTP route including the SSRF-adjacent filename encoding (RFC 5987).
 The ngrok tunnel lifecycle itself is covered in test_sharefile_tunnel.py.
 """
@@ -148,7 +148,7 @@ class TestInternalTools:
     @pytest.mark.asyncio
     async def test_tunnel_status_active(self):
         with _active_tunnel():
-            raw = await getattr(plugin, "__tunnel_status")()
+            raw = await getattr(plugin, "__check")()
         data = json.loads(raw)
         assert data["active"] is True
         assert data["state"] == "active"
@@ -157,7 +157,7 @@ class TestInternalTools:
     @pytest.mark.asyncio
     async def test_tunnel_status_failed(self):
         with _offline_tunnel(state="failed"):
-            raw = await getattr(plugin, "__tunnel_status")()
+            raw = await getattr(plugin, "__check")()
         data = json.loads(raw)
         assert data["active"] is False
         assert data["state"] == "failed"
@@ -168,7 +168,7 @@ class TestInternalTools:
         """A start attempt still in flight is reported as 'starting', so the
         harness waits rather than misreading it as tunnel down."""
         with _offline_tunnel(state="starting"):
-            raw = await getattr(plugin, "__tunnel_status")()
+            raw = await getattr(plugin, "__check")()
         data = json.loads(raw)
         assert data["active"] is False
         assert data["state"] == "starting"

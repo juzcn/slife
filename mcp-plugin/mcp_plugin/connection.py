@@ -1131,7 +1131,7 @@ class ConnectionPool:
         command/args or URL, enabled/disabled, and description.
         It deliberately excludes live connection state (connected/disconnected,
         tool counts, errors) — that is reported by :meth:`list_servers` for the
-        ``__mcp_connection_status`` internal tool.  Secret-holding fields (``env``,
+        ``__check`` internal tool.  Secret-holding fields (``env``,
         ``headers``, ``auth``) are omitted so the listing never leaks tokens.
         """
         return [

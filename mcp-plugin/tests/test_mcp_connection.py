@@ -177,7 +177,7 @@ class TestConnectionPoolListConfigured:
         assert s["url"] == ""
         assert s["enabled"] is True
         assert s["description"] == "First"
-        # No live state — those belong to list_servers / __mcp_connection_status
+        # No live state — those belong to list_servers / __check
         assert "status" not in s
         assert "state" not in s
         assert "tool_count" not in s

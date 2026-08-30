@@ -203,7 +203,7 @@ and writes nothing.  Changes apply on the next server start.
 `HF_HUB_OFFLINE=1` by default, so the server **never auto-downloads** a model
 (it's too slow).  Make the model available yourself — see [Model
 weights](#model-weights): `hf download BAAI/bge-m3` for the transformer route
-(into the HF cache), or drop a GGUF at the default `~/.slife/models/…` for the
+(into the HF cache), or drop a GGUF at the default `~/.local-embed/models/…` for the
 GGUF route.  Set `HF_HUB_OFFLINE=0` to allow an on-demand download at first
 use instead.
 
@@ -249,7 +249,7 @@ Other endpoints (OpenAI Models API):
   endpoint); 404 with a standard error envelope when the id is unknown.
 - `GET /health` — `{status, backend, model, dimension, loaded}`.
 - `POST /mcp` — FastMCP streamable-HTTP endpoint (internal tool
-  `__embed_status`, probed by the host's `check_local_embed`).  Like the
+  `__check`, probed by the host's `system_health`).  Like the
   sharefile plugin, local-embed is a *service provider* — the host consumes
   the model over the OpenAI-compatible HTTP routes, never through MCP tools.
 

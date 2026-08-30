@@ -12,7 +12,7 @@ as a public HTTPS URL that multimodal LLM APIs can fetch directly
 choice; the file cabinet (memfiles) never auto-publishes.
 
 LLM-visible tools: ``share_file``.
-Internal tools (``__`` prefix, never LLM-visible): ``__tunnel_status``,
+Internal tools (``__`` prefix, never LLM-visible): ``__check``,
 ``__register_file``.
 
 Usage::
@@ -225,8 +225,8 @@ async def handle_share(request: Request) -> Response:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(name="__tunnel_status", description="File-sharing tunnel status as JSON.")
-async def __tunnel_status() -> str:
+@mcp.tool(name="__check", description="File-sharing tunnel status as JSON. Internal — probed by the harness's system_health.")
+async def __check() -> str:
     """Return ``{active, state, url, hint}`` for the harness health check.
 
     ``state`` distinguishes the harness-relevant cases: ``active`` (a public

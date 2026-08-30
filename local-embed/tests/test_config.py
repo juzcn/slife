@@ -96,13 +96,13 @@ class TestGgufPathExpansion:
             lambda: {
                 "active_model": "bge-m3",
                 "models": {"bge-m3": {"backend": "gguf",
-                                      "gguf_path": "${BGE_M3_GGUF_PATH:-~/.slife/models/bge-m3-q4_k_m.gguf}"}},
+                                      "gguf_path": "${BGE_M3_GGUF_PATH:-~/.local-embed/models/bge-m3-q4_k_m.gguf}"}},
             },
         )
         monkeypatch.delenv("BGE_M3_GGUF_PATH", raising=False)
         out = resolve_engine_settings()
         assert out["specs"][0].gguf_path == \
-            str(Path.home() / ".slife" / "models" / "bge-m3-q4_k_m.gguf")
+            str(Path.home() / ".local-embed" / "models" / "bge-m3-q4_k_m.gguf")
 
     def test_gguf_path_default_expanded(self, monkeypatch):
         monkeypatch.setattr(

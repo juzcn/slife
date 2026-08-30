@@ -28,7 +28,7 @@ LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
 The scheduled-task tools (``scheduled_task_*`` / ``scheduled_run_*``) are native
 in ``slife/tools/schedule.py`` (category "Schedule"); this plugin only exposes
 the ``__scheduled_*`` data layer they call over the memfiles MCP client.
-Internal tools (``__`` prefix, never LLM-visible): ``__cabinet_status``,
+Internal tools (``__`` prefix, never LLM-visible): ``__check``,
 ``__memfiles_reload_semantic``, and the ``__scheduled_*`` registry ops.
 
 Usage::
@@ -119,7 +119,7 @@ mcp, _log_path, logger = create_plugin_server(
         "saved file. To publish a local file as a public HTTPS URL, call the "
         "separate sharefile plugin's share_file explicitly. "
         "The plugin's health is probed by the harness through the internal "
-        "__cabinet_status tool — never called by the LLM directly."
+        "__check tool — never called by the LLM directly."
     ),
     lifespan=_memfiles_lifespan,
 )
@@ -558,7 +558,6 @@ async def memfiles_semantic_status() -> str:
             e = manager.embedder
             if e is not None:
                 # live embedder facts override the config probe
-                report["backend"] = e.backend
                 report["model"] = e._model
                 report["dimension"] = e.dimension
                 report["available"] = e.available
@@ -567,7 +566,7 @@ async def memfiles_semantic_status() -> str:
             state = manager.state
             if state == "ready":
                 report["hint"] = (
-                    f"{report.get('backend', '')} embedding model ready: "
+                    f"Embedding model ready: "
                     f"{report.get('model', '')} (dim={report.get('dimension')})"
                 )
             elif state in ("loading", "indexing"):
@@ -589,14 +588,14 @@ async def memfiles_semantic_status() -> str:
 
 
 @mcp.tool(
-    name="__cabinet_status",
+    name="__check",
     description=(
         "Internal — file-cabinet status as JSON, probed by the harness's "
-        "check_memfiles.  Never exposed to the LLM."
+        "system_health.  Never exposed to the LLM."
     ),
 )
-async def __cabinet_status() -> str:
-    """Return cabinet status for the harness's ``check_memfiles`` health check.
+async def __check() -> str:
+    """Return cabinet status for the harness's ``system_health`` check.
 
     Reports the store/index connection state and the semantic-search gate
     (semantic_ready, state, unembedded).  The harness probes this via the

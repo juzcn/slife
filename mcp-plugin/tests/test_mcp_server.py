@@ -85,7 +85,7 @@ class TestAddServerToolRegistration:
             "mcp_list_tools",
             "mcp_tool_search",
             "__mcp_call_tool",
-            "__mcp_connection_status",
+            "__check",
             "__mcp_get_tool",
         }
 

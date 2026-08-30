@@ -15,8 +15,13 @@ from slife.tools.system import (
     check_local_embed,
     check_mcp,
     check_a2a,
+    check_media,
+    CheckMemdbTool,
+    CheckWechatTool,
+    CheckSharefileTool,
     CheckMemfilesTool,
     CheckLocalEmbedTool,
+    CheckMediaTool,
     _group_by_component,
     _component_status,
     _build_summary,
@@ -244,182 +249,107 @@ class TestBuildSummary:
 
 
 class TestCheckMemdb:
-    """Tests for check_memdb()."""
+    """Tests for check_memdb() — async probe of the memdb plugin's __check."""
 
-    @staticmethod
-    def _db_patch(exists: bool = True, size: int = 1048576) -> object:
-        """Return a get_db_path patch with a mock Path."""
-        mock_path = MagicMock()
-        mock_path.exists.return_value = exists
-        mock_path.stat.return_value.st_size = size
-        mock_path.__str__ = lambda s: "/fake/slife.db"
-        return patch("slife.paths.get_db_path", return_value=mock_path)
+    @pytest.mark.asyncio
+    async def test_client_unavailable(self):
+        entries = await check_memdb()
+        assert entries[0]["component"] == "memdb"
+        assert entries[0]["level"] == "warning"
+        assert entries[0]["value"] == "offline"
+        assert "not connected" in entries[0]["hint"]
 
-    def _find(self, results: list[dict], key: str) -> dict:
-        """Find an entry by key."""
-        for r in results:
-            if r.get("key") == key:
-                return r
-        raise AssertionError(f"key={key!r} not found in {results}")
+    @pytest.mark.asyncio
+    async def test_plugin_passthrough(self):
+        payload = [
+            {"component": "memdb", "level": "ok", "key": "db",
+             "value": "1.0 MB", "hint": "Database ready"},
+            {"component": "memdb", "level": "ok", "key": "embedding",
+             "value": "ready", "hint": "Semantic search ready"},
+        ]
+        client = MagicMock()
+        client.call_tool = AsyncMock(return_value=json.dumps(payload))
+        entries = await check_memdb(client=client)
+        client.call_tool.assert_called_once_with("__check")
+        assert entries == payload
 
-    def test_no_config_returns_warning(self):
-        with self._db_patch(exists=False), \
-             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value=None), \
-             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value={"provider": "", "base_url": "", "api_key": "",
-                                 "model": "", "dim": 0}), \
-             patch("slife.plugins.memdb.embeddings.EmbeddingClient"):
-            result = check_memdb()
-            assert len(result) == 2
-            # db entry
-            assert result[0]["component"] == "memdb"
-            assert result[0]["key"] == "db"
-            assert result[0]["value"] == "not found"
-            # embedding entry
-            assert result[1]["component"] == "memdb"
-            assert result[1]["key"] == "embedding"
-            assert result[1]["value"] == "none"
-
-    def test_api_available(self):
-        mock_client = MagicMock()
-        mock_client.available = True
-        mock_client.dimension = 1536
-        mock_client._model = "text-embedding-3-small"
-        cfg = {"providers": {"p1": {"base_url": "http://x/v1"}}, "active_model": "p1"}
-        ep = {"provider": "p1", "base_url": "http://x/v1", "api_key": "k",
-              "model": "", "dim": 0}
-
-        with self._db_patch(), \
-             patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
-             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value=cfg), \
-             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value=ep):
-            MockClient.from_config.return_value = mock_client
-            result = check_memdb()
-            e = self._find(result, "embedding")
-            assert e["level"] == "ok"
-            assert e["value"] == "api"
-            assert "API embeddings ready" in e["hint"]
-            assert "http://x/v1" in e["hint"]
-
-    def test_api_unavailable(self):
-        mock_client = MagicMock()
-        mock_client.available = False
-        mock_client._model = "text-embedding-3-small"
-        cfg = {"providers": {"p1": {"base_url": "http://x/v1"}}, "active_model": "p1"}
-        ep = {"provider": "p1", "base_url": "http://x/v1", "api_key": "k",
-              "model": "", "dim": 0}
-
-        with self._db_patch(), \
-             patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
-             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value=cfg), \
-             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value=ep):
-            MockClient.from_config.return_value = mock_client
-            result = check_memdb()
-            e = self._find(result, "embedding")
-            assert e["level"] == "warning"
-            assert e["value"] == "api"
-            assert "unavailable" in e["hint"]
-
-    def test_db_exists(self):
-        """When the db file exists, report size and ok."""
-        with self._db_patch(exists=True, size=3145728), \
-             patch("slife.plugins.memdb.embeddings.EmbeddingClient"), \
-             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value=None), \
-             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value={"provider": "", "base_url": "", "api_key": "",
-                                 "model": "", "dim": 0}):
-            result = check_memdb()
-            e = self._find(result, "db")
-            assert e["level"] == "ok"
-            assert "3.0 MB" in e["value"]
+    @pytest.mark.asyncio
+    async def test_plugin_error_reports_warning(self):
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
+        entries = await check_memdb(client=client)
+        assert entries[0]["level"] == "warning"
+        assert "boom" in entries[0]["hint"]
 
 
 # ── check_wechat ──────────────────────────────────────────────
 
 
 class TestCheckWechatStatus:
-    """Tests for check_wechat()."""
+    """Tests for check_wechat() — config enabled gate + async __check probe."""
 
-    def test_config_none_returns_unknown(self):
+    @pytest.mark.asyncio
+    async def test_config_none_returns_unknown(self):
         """When config is None and slife.json5 doesn't exist, returns unknown."""
-        # Config is imported inside check_wechat via:
-        #   from slife.config import Config, parse_cli_agent
         with patch("slife.config.Config") as MockConfig:
             MockConfig.from_json5.side_effect = Exception("no config")
             with patch("pathlib.Path.exists", return_value=False):
-                result = check_wechat(config=None)
+                result = await check_wechat(config=None)
                 assert len(result) == 1
                 assert result[0]["component"] == "wechat"
                 assert result[0]["key"] == "enabled"
                 assert result[0]["value"] == "unknown"
 
-    def test_disabled_in_config(self):
+    @pytest.mark.asyncio
+    async def test_disabled_in_config(self):
         mock_config = MagicMock()
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = False
 
-        result = check_wechat(config=mock_config)
+        result = await check_wechat(config=mock_config)
         assert len(result) == 1
         assert result[0]["value"] == "disabled"
 
-    def test_not_logged_in(self):
+    @pytest.mark.asyncio
+    async def test_enabled_but_client_unavailable(self):
         mock_config = MagicMock()
-        mock_config.agent_name = "testuser"
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
-        # load_wechat_config is imported inside check_wechat via:
-        #   from slife.plugins.wechat.config import load_wechat_config
-        with patch(
-            "slife.plugins.wechat.config.load_wechat_config",
-            return_value={},
-        ):
-            result = check_wechat(config=mock_config)
-            assert len(result) == 1
-            assert result[0]["key"] == "status"
-            assert result[0]["value"] == "not_logged_in"
+        result = await check_wechat(config=mock_config)
+        assert len(result) == 1
+        assert result[0]["component"] == "wechat"
+        assert result[0]["value"] == "offline"
+        assert "not connected" in result[0]["hint"]
 
-    def test_session_expired(self):
-        import time
+    @pytest.mark.asyncio
+    async def test_enabled_probes_plugin(self):
         mock_config = MagicMock()
-        mock_config.agent_name = "testuser"
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
-        # Session saved 24 hours ago — expired
-        old_time = time.time() - (24 * 3600)
-        with patch(
-            "slife.plugins.wechat.config.load_wechat_config",
-            return_value={"bot_token": "tok", "saved_at": old_time},
-        ):
-            result = check_wechat(config=mock_config)
-            assert len(result) == 1
-            assert result[0]["value"] == "session_expired"
+        payload = [{"component": "wechat", "level": "ok", "key": "status",
+                    "value": "logged_in", "hint": "WeChat logged in"}]
+        client = MagicMock()
+        client.call_tool = AsyncMock(return_value=json.dumps(payload))
+        result = await check_wechat(client=client, config=mock_config)
+        client.call_tool.assert_called_once_with("__check")
+        assert result == payload
 
-    def test_logged_in(self):
-        import time
+    @pytest.mark.asyncio
+    async def test_plugin_error_reports_warning(self):
         mock_config = MagicMock()
-        mock_config.agent_name = "testuser"
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
-        # Session saved now — valid
-        now = time.time()
-        with patch(
-            "slife.plugins.wechat.config.load_wechat_config",
-            return_value={"bot_token": "tok", "saved_at": now},
-        ):
-            result = check_wechat(config=mock_config)
-            assert len(result) == 1
-            assert result[0]["value"] == "logged_in"
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
+        result = await check_wechat(client=client, config=mock_config)
+        assert result[0]["level"] == "warning"
+        assert "boom" in result[0]["hint"]
 
-    def test_config_load_exception_falls_back_to_default(self):
+    @pytest.mark.asyncio
+    async def test_config_load_exception_falls_back_to_default(self):
         """When config loading fails, check_wechat falls back
         to trying to load config from disk itself."""
         with patch(
@@ -427,7 +357,7 @@ class TestCheckWechatStatus:
         ) as MockConfig:
             MockConfig.from_json5.side_effect = Exception("parse error")
             with patch("pathlib.Path.exists", return_value=True):
-                result = check_wechat(config=None)
+                result = await check_wechat(config=None)
                 # If loading throws, config stays None, so we get "unknown"
                 assert len(result) == 1
                 assert result[0]["value"] == "unknown"
@@ -466,7 +396,8 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_local_embed", return_value=[]), \
              patch("slife.tools.system.check_sharefile", return_value=[]), \
              patch("slife.tools.system.check_mcp", return_value=[]), \
-             patch("slife.tools.system.check_a2a", return_value=[]):
+             patch("slife.tools.system.check_a2a", return_value=[]), \
+             patch("slife.tools.system.check_media", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert "healthy" in parsed
@@ -487,7 +418,8 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_local_embed", return_value=[]), \
              patch("slife.tools.system.check_sharefile", return_value=[]), \
              patch("slife.tools.system.check_mcp", return_value=[]), \
-             patch("slife.tools.system.check_a2a", return_value=[]):
+             patch("slife.tools.system.check_a2a", return_value=[]), \
+             patch("slife.tools.system.check_media", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert "startup" in parsed["components"]
@@ -506,7 +438,8 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_local_embed", return_value=[]), \
              patch("slife.tools.system.check_sharefile", return_value=[]), \
              patch("slife.tools.system.check_mcp", return_value=[]), \
-             patch("slife.tools.system.check_a2a", return_value=[]):
+             patch("slife.tools.system.check_a2a", return_value=[]), \
+             patch("slife.tools.system.check_media", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert parsed["healthy"] is False
@@ -536,6 +469,8 @@ class TestSystemHealthToolExecute:
             "slife.tools.system.check_mcp", return_value=[],
         ), patch(
             "slife.tools.system.check_a2a", return_value=[],
+        ), patch(
+            "slife.tools.system.check_media", return_value=[],
         ):
             result = await tool.execute()
             parsed = json.loads(result)
@@ -575,6 +510,8 @@ class TestSystemHealthToolExecute:
             "slife.tools.system.check_mcp", return_value=live_entries,
         ), patch(
             "slife.tools.system.check_a2a", return_value=[],
+        ), patch(
+            "slife.tools.system.check_media", return_value=[],
         ):
             result = await tool.execute()
             parsed = json.loads(result)
@@ -653,7 +590,7 @@ class _FakeMcpClient:
         self._payload = payload
 
     async def call_tool(self, name, arguments=None):
-        assert name == "__mcp_connection_status"
+        assert name == "__check"
         return json.dumps(self._payload)
 
 
@@ -719,7 +656,7 @@ class _FakeA2aClient:
         self._payload = payload
 
     async def call_tool(self, name, arguments=None):
-        assert name == "__a2a_status"
+        assert name == "__check"
         return json.dumps(self._payload)
 
 
@@ -799,7 +736,7 @@ class _FakeMemfilesClient:
         self._payload = payload
 
     async def call_tool(self, name, arguments=None):
-        assert name == "__cabinet_status"
+        assert name == "__check"
         return json.dumps(self._payload)
 
 
@@ -934,7 +871,7 @@ class _FakeLocalEmbedClient:
         self._payload = payload
 
     async def call_tool(self, name, arguments=None):
-        assert name == "__embed_status"
+        assert name == "__check"
         return json.dumps(self._payload)
 
 
@@ -1042,3 +979,73 @@ class TestCheckLocalEmbedTool:
         parsed = json.loads(result)
         assert parsed[0]["component"] == "local_embed"
         assert parsed[0]["value"] == "bge-m3"
+
+
+class TestCheckToolsInternal:
+    """Per-plugin check tools are internal — never auto-registered for the LLM.
+
+    The agent only sees the aggregated ``system_health``; the individual
+    ``check_*`` tools exist for the harness (probed by ``system_health``),
+    so every one must carry ``_skip_auto_register`` to stay out of the
+    factory's auto-discovery.
+    """
+
+    _CHECK_TOOL_CLASSES = (
+        CheckMemdbTool,
+        CheckWechatTool,
+        CheckMemfilesTool,
+        CheckLocalEmbedTool,
+        CheckSharefileTool,
+        CheckMediaTool,
+        CheckMcpTool,
+        CheckA2aTool,
+        CheckWatchdogTool,
+    )
+
+    def test_all_check_tools_skip_auto_register(self):
+        for cls in self._CHECK_TOOL_CLASSES:
+            assert cls.__dict__.get("_skip_auto_register") is True, cls.__name__
+
+    def test_system_health_stays_auto_registered(self):
+        assert SystemHealthTool.__dict__.get("_skip_auto_register") is not True
+
+
+class TestCheckMedia:
+    """Tests for check_media() — optional plugin, config gate + __check probe."""
+
+    @pytest.mark.asyncio
+    async def test_not_configured_is_ok(self):
+        with patch(
+            "slife.plugins.media.config.load_media_config",
+            return_value=MagicMock(is_empty=MagicMock(return_value=True)),
+        ):
+            result = await check_media()
+            assert len(result) == 1
+            assert result[0]["component"] == "media"
+            assert result[0]["level"] == "ok"
+            assert result[0]["value"] == "not_configured"
+
+    @pytest.mark.asyncio
+    async def test_configured_but_client_unavailable(self):
+        with patch(
+            "slife.plugins.media.config.load_media_config",
+            return_value=MagicMock(is_empty=MagicMock(return_value=False)),
+        ):
+            result = await check_media()
+            assert result[0]["component"] == "media"
+            assert result[0]["value"] == "offline"
+            assert "not connected" in result[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_configured_probes_plugin(self):
+        with patch(
+            "slife.plugins.media.config.load_media_config",
+            return_value=MagicMock(is_empty=MagicMock(return_value=False)),
+        ):
+            payload = [{"component": "media", "level": "ok", "key": "enabled",
+                        "value": "1 provider(s)", "hint": "Media configured"}]
+            client = MagicMock()
+            client.call_tool = AsyncMock(return_value=json.dumps(payload))
+            result = await check_media(client=client)
+            client.call_tool.assert_called_once_with("__check")
+            assert result == payload

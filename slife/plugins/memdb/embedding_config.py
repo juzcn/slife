@@ -123,7 +123,6 @@ def make_check_report() -> dict:
     if cfg is None:
         return {
             "configured": False,
-            "backend": "api",
             "provider": "",
             "model": "",
             "dimension": 0,
@@ -140,7 +139,6 @@ def make_check_report() -> dict:
     if not ep["base_url"]:
         return {
             "configured": True,
-            "backend": "api",
             "provider": ep["provider"],
             "model": ep["model"],
             "dimension": ep["dim"],
@@ -158,7 +156,6 @@ def make_check_report() -> dict:
 
     result: dict = {
         "configured": True,
-        "backend": "api",
         "provider": ep["provider"],
         "model": ep["model"],
         "dimension": client.dimension if client.available else ep["dim"],

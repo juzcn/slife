@@ -699,7 +699,7 @@ class SlifeApp(App):
         """File-sharing tunnel failed to start — show a warning in chat.
 
         Surfaced by the harness after it probes the sharefile plugin's
-        ``__tunnel_status`` (main-process owned; the plugin never talks to
+        ``__check`` (main-process owned; the plugin never talks to
         the TUI).  ngrok free tier allows one online agent per token, so a
         second slife instance legitimately cannot start a second tunnel.
         """

@@ -147,8 +147,8 @@ HF_ENDPOINT=https://hf-mirror.com hf download BAAI/bge-m3  # mainland-China mirr
 **GGUF route (small offline file, ~100 MB).** Use any quantized BGE-M3 GGUF you trust — these are community conversions with no single authoritative source (prefer a high-fidelity `Q8_0`). Get it from any source (HF single-file pull, browser, `wget`/`curl`), then place it at the default path and switch the active model:
 
 ```bash
-hf download <owner>/<repo> <model>.gguf --local-dir ~/.slife/models   # HF single-file pull
-mv ~/.slife/models/<model>.gguf ~/.slife/models/bge-m3-q4_k_m.gguf     # the expected default path
+hf download <owner>/<repo> <model>.gguf --local-dir ~/.local-embed/models   # HF single-file pull
+mv ~/.local-embed/models/<model>.gguf ~/.local-embed/models/bge-m3-q4_k_m.gguf     # the expected default path
 ```
 
 The GGUF entry is **inert until it is active** — see `active_model` in step 3.
@@ -166,7 +166,7 @@ Everything — host, port, models, active model, backend — lives in **`local_e
   },
   models: {
     "BAAI/bge-m3": { backend: "transformer", model: "BAAI/bge-m3" },
-    "bge-m3": { backend: "gguf", gguf_path: "${BGE_M3_GGUF_PATH:-~/.slife/models/bge-m3-q4_k_m.gguf}" },
+    "bge-m3": { backend: "gguf", gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/bge-m3-q4_k_m.gguf}" },
   },
   port: 17347,
 }
@@ -185,14 +185,14 @@ Changes apply on the next start of the local-embed service (restart slife).
 
 ```bash
 local-embed set BAAI/bge-m3 --HF_HUB_CACHE ~/.cache/huggingface/hub
-local-embed set-gguf bge-m3 --path ~/.slife/models/bge-m3-q4_k_m.gguf
+local-embed set-gguf bge-m3 --path ~/.local-embed/models/bge-m3-q4_k_m.gguf
 ```
 
 ### 4. Make the service ready — verify
 
 Start slife. `local-embed` runs as an external plugin; its MCP handshake completes fast, and the **model load is deferred to post-handshake warm-up** — the first embed loads it (a few seconds for GGUF, up to a minute for the ~2 GB transformer). Verify from inside the chat or over HTTP:
 
-- **In the chat** — ask the agent to run `system_health` (→ `check_local_embed`: online / active model / loaded), `embeddings_probe` (configured vs. live `/v1/models`, active model marked ★), and `memdb_semantic_status` / `memfiles_semantic_status` (report `semantic_ready`).
+- **In the chat** — ask the agent to run `system_health` (reports an `embeddings` component: online / active model / loaded), `embeddings_probe` (configured vs. live `/v1/models`, active model marked ★), and `memdb_semantic_status` / `memfiles_semantic_status` (report `semantic_ready`).
 - **Over HTTP** (the service is standalone at the fixed port):
 
 ```bash
@@ -202,7 +202,7 @@ curl http://127.0.0.1:17347/v1/embeddings -H 'Content-Type: application/json' \
   -d '{"model": "bge-m3", "input": ["hello world"]}'   # returns a real vector
 ```
 
-A healthy state: `/health` → `loaded: true`; `check_local_embed` → `local_embed online: active model … loaded`; `memdb_semantic_status` → `semantic_ready: true`. When the service is unreachable (backend missing, weights missing, still loading), slife **degrades gracefully to keyword search** — `check_local_embed` reports the reason, and once the index is fully built for the current model, hybrid results resume automatically.
+A healthy state: `/health` → `loaded: true`; `system_health` → `embeddings` component online, active model loaded; `memdb_semantic_status` → `semantic_ready: true`. When the service is unreachable (backend missing, weights missing, still loading), slife **degrades gracefully to keyword search** — `system_health` reports the reason, and once the index is fully built for the current model, hybrid results resume automatically.
 
 ### Troubleshooting
 
@@ -211,7 +211,7 @@ A healthy state: `/health` → `loaded: true`; `check_local_embed` → `local_em
 | Log: `backend_unavailable … reason=llama_cpp_not_installed` / `sentence_transformers_not_installed` | Run the step-1 install for your platform — the log prints the exact command. |
 | Transformer route won't load with `HF_HUB_OFFLINE=1` | The repo isn't in the cache — run `hf download BAAI/bge-m3` (or set `HF_HUB_OFFLINE=0` to allow a one-time download). Check `HF_HUB_CACHE` points at the cache that holds it. |
 | GGUF route won't load | File missing at `gguf_path` — check `BGE_M3_GGUF_PATH` / `gguf_path`, and that `active_model` is `"bge-m3"` (the GGUF entry is inert while the transformer is active). |
-| `check_local_embed` reports the active model not loaded yet | Normal during warm-up; the model loads on the first embed. Re-check after a few seconds. |
+| `system_health` shows the embeddings component with the active model not loaded yet | Normal during warm-up; the model loads on the first embed. Re-check after a few seconds. |
 | First embed very slow | A transformer download/warm-up is deferred to the first embed; subsequent calls are fast. |
 
 ## Quick Start
@@ -322,7 +322,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 
 | Category | Tools |
 |----------|-------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
+| System | `system_health` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
@@ -415,7 +415,7 @@ Six built-in plugins as independent child processes, plus the standalone
 
 External MCP servers configured in `mcp-plugin.json5` → `servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled). They are **loaded on demand** by default (discover with `mcp_tool_search`, load with `mcp_tool_load`); set `auto_load: true` on a server to bulk-register its tools on connect.
 
-All plugins — built-in and auto-discovered third-party alike — run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
+All plugins — built-in and auto-discovered third-party alike — run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health — each plugin's internal `__check` tool reports its application-level state and is aggregated into `system_health`; the watchdog is purely process-level.
 
 Readiness follows the MCP standard: a plugin is ready when its `initialize` handshake completes — the server only answers it after its own initialization (FastMCP lifespan) succeeded, during which the plugin establishes its own serving capacity (memdb and memfiles require their store; the other plugins have no local requirement, so serving is readiness). There is no `__ready` probe tool. The lifespan stays **handshake-fast**: heavyweight startup (e.g. the embedding-model load) is deferred until after the first `tools/list` via `warm_after_handshake`, never run inside it. External/subordinate dependencies — external MCP servers, the ngrok tunnel, WeChat login, media providers, the A2A broker, embedding backends — never gate readiness: they are uncontrollable, self-heal at runtime, and are surfaced separately via status tools. Plugins named in `plugins.required` (`memdb`, `memfiles` by default) are core: failing to become ready **aborts startup** with an error instead of limping on. The service opens for user input only once every plugin spawn has converged (ready / skipped / failed — a lifespan that fails its requirement is reported as a failed start and retried by the watchdog), so input can never race ahead of plugin startup.
 

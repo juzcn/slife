@@ -25,7 +25,6 @@ from __future__ import annotations
 import json
 import logging
 import sys
-import time
 from typing import ClassVar
 
 from slife.paths import get_data_dir
@@ -39,78 +38,42 @@ logger = logging.getLogger(__name__)
 # check_memdb
 # ═══════════════════════════════════════════════════════════════════════
 
-def check_memdb() -> list[dict]:
-    """Return MemDB plugin status: database file + embedding backend."""
-    results: list[dict] = []
-    from slife.paths import get_db_path
+async def check_memdb(client=None) -> list[dict]:
+    """Return MemDB plugin status: database file + embedding status.
 
-    # ── Database file ─────────────────────────────────────────────
-    db_path = get_db_path()
-    if db_path.exists():
-        size_mb = db_path.stat().st_size / (1024 * 1024)
-        results.append({
-            "component": "memdb", "level": "ok", "key": "db",
-            "value": f"{size_mb:.1f} MB",
-            "hint": f"Database ready: {db_path}",
-        })
-    else:
-        results.append({
-            "component": "memdb", "level": "warning", "key": "db",
-            "value": "not found",
-            "hint": f"Database file not found at {db_path}. "
-                    "Will be created on first memory write.",
-        })
-
-    # ── Embedding backend ─────────────────────────────────────────
-    from slife.plugins.memdb.embeddings import EmbeddingClient
-    from slife.plugins.memdb.embedding_config import read_embedding_config, get_active_endpoint
-
-    client = EmbeddingClient.from_config(quiet=True)
-    cfg = read_embedding_config()
-    ep = get_active_endpoint()
-
-    if cfg is None:
-        results.append({
-            "component": "memdb", "level": "warning", "key": "embedding",
-            "value": "none",
-            "hint": ("No embeddings configured. Semantic search (hybrid mode) will NOT work. "
-                     "Keyword search (grep/fts5/time) still works normally. "
-                     "Add an OpenAI-compatible endpoint with embeddings_model_set."),
-        })
-        return results
-
-    available = client.available
-    base_url = ep.get("base_url", "")
-    model = ep.get("model", "") or client._model
-
-    if available:
-        results.append({
-            "component": "memdb", "level": "ok", "key": "embedding",
-            "value": "api",
-            "hint": f"API embeddings ready: {base_url} model={model} (dim={client.dimension})",
-        })
-    else:
-        results.append({
-            "component": "memdb", "level": "warning", "key": "embedding",
-            "value": "api",
-            "hint": (f"API embedding unavailable ({base_url}). "
-                     "Check the endpoint is reachable and the openai package is "
-                     "installed. Semantic search (hybrid mode) will NOT work."),
-        })
-    return results
+    The turns DB + semantic-search status live inside the memdb plugin
+    process, so this check asks the plugin's internal ``__check`` tool
+    through its MCP client (from ``ToolContext.memdb_client``).  When the
+    plugin is not connected, a warning is reported.
+    """
+    try:
+        if client is None:
+            return [{"component": "memdb", "level": "warning", "key": "plugin",
+                     "value": "offline",
+                     "hint": "memdb plugin not connected — turns DB unavailable."}]
+        raw = await client.call_tool("__check")
+        return json.loads(raw)
+    except Exception as e:
+        logger.warning("memdb_check_failed err=%s", e)
+        return [{"component": "memdb", "level": "warning", "key": "plugin",
+                 "value": "offline",
+                 "hint": f"memdb status unavailable: {e}"}]
 
 
 class CheckMemdbTool(Tool):
-    """Check MemDB plugin status: database file and embedding backend."""
+    """Check MemDB plugin status: database file and embedding status."""
 
     name = "check_memdb"
     category: ClassVar[str] = "System"
-    description = ("MemDB plugin status: SQLite database size + embedding backend "
-                   "(gguf/transformer/api/none). One subsystem of system_health.")
+    _skip_auto_register: ClassVar[bool] = True
+    description = ("MemDB status: SQLite database size + embedding status. "
+                   "One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
-        return json.dumps(check_memdb(), ensure_ascii=False, indent=2)
+        ctx = getattr(self, "_ctx", None)
+        client = getattr(ctx, "memdb_client", None) if ctx is not None else None
+        return json.dumps(await check_memdb(client=client), ensure_ascii=False, indent=2)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -130,8 +93,14 @@ def _get_wechat_config():
     return None
 
 
-def check_wechat(config=None) -> list[dict]:
-    """Return WeChat plugin status as health-check entries."""
+async def check_wechat(client=None, config=None) -> list[dict]:
+    """Return WeChat plugin status as health-check entries.
+
+    The enabled/disabled flag comes from slife.json5 (read in-process);
+    login/session status is asked of the wechat plugin's internal ``__check``
+    tool through its MCP client (from ``ToolContext.wechat_client``).  When
+    the plugin is not connected, a warning is reported.
+    """
     results: list[dict] = []
 
     if config is None:
@@ -153,39 +122,17 @@ def check_wechat(config=None) -> list[dict]:
         return results
 
     try:
-        from slife.plugins.wechat.config import load_wechat_config
-        from slife.plugins.wechat.client import WechatClawbotClient
-        SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
-    except ImportError:
-        results.append({"component": "wechat", "level": "warning", "key": "status",
-                        "value": "plugin_unavailable",
-                        "hint": "WeChat plugin is enabled but the wechat package is not installed."})
-        return results
-
-    session = load_wechat_config(config.agent_name, get_data_dir())
-
-    if not session.get("bot_token"):
-        results.append({"component": "wechat", "level": "ok", "key": "status",
-                        "value": "not_logged_in",
-                        "hint": "WeChat plugin is enabled but not logged in. "
-                                "Call wechat_login to scan QR code and connect."})
-        return results
-
-    saved_at = session.get("saved_at", 0)
-    age = time.time() - saved_at
-    remaining = max(0, SESSION_MAX_AGE - age)
-
-    if remaining <= 0:
-        results.append({"component": "wechat", "level": "warning", "key": "status",
-                        "value": "session_expired",
-                        "hint": f"WeChat session expired ({age / 3600:.1f}h old, max 23h). "
-                                "Call wechat_login to re-scan QR code."})
-    else:
-        results.append({"component": "wechat", "level": "ok", "key": "status",
-                        "value": "logged_in",
-                        "hint": f"WeChat logged in. Session age: {age / 3600:.1f}h, "
-                                f"remaining: {remaining / 3600:.1f}h."})
-    return results
+        if client is None:
+            return [{"component": "wechat", "level": "warning", "key": "plugin",
+                     "value": "offline",
+                     "hint": "WeChat plugin not connected — login/session status unavailable."}]
+        raw = await client.call_tool("__check")
+        return json.loads(raw)
+    except Exception as e:
+        logger.warning("wechat_check_failed err=%s", e)
+        return [{"component": "wechat", "level": "warning", "key": "plugin",
+                 "value": "unavailable",
+                 "hint": f"WeChat status unavailable: {e}"}]
 
 
 class CheckWechatTool(Tool):
@@ -193,12 +140,15 @@ class CheckWechatTool(Tool):
 
     name = "check_wechat"
     category: ClassVar[str] = "System"
+    _skip_auto_register: ClassVar[bool] = True
     description = ("WeChat plugin status: disabled, not_logged_in, logged_in, or "
                    "session_expired. One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
-        return json.dumps(check_wechat(), ensure_ascii=False, indent=2)
+        ctx = getattr(self, "_ctx", None)
+        client = getattr(ctx, "wechat_client", None) if ctx is not None else None
+        return json.dumps(await check_wechat(client=client), ensure_ascii=False, indent=2)
 
 
 # check_sharefile
@@ -208,7 +158,7 @@ async def check_sharefile(client=None) -> list[dict]:
     """Return file-sharing tunnel status (queried from the sharefile plugin).
 
     The tunnel lives inside the sharefile plugin process, so this check asks
-    the plugin's internal tool ``__tunnel_status`` through its MCP client
+    the plugin's internal tool ``__check`` through its MCP client
     (from ``ToolContext.sharefile_client``).  When the plugin is not
     connected, a warning is reported.
     """
@@ -217,7 +167,7 @@ async def check_sharefile(client=None) -> list[dict]:
             return [{"component": "sharefile", "level": "warning", "key": "tunnel",
                      "value": "plugin_offline",
                      "hint": "sharefile plugin not connected — file sharing unavailable."}]
-        raw = await client.call_tool("__tunnel_status")
+        raw = await client.call_tool("__check")
         data = json.loads(raw)
         if data.get("active"):
             return [{"component": "sharefile", "level": "ok", "key": "tunnel",
@@ -238,6 +188,7 @@ class CheckSharefileTool(Tool):
 
     name = "check_sharefile"
     category: ClassVar[str] = "System"
+    _skip_auto_register: ClassVar[bool] = True
     description = ("File sharing tunnel status (online/offline) for share_file. "
                    "One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
@@ -255,7 +206,7 @@ async def check_memfiles(client=None) -> list[dict]:
     """Return file-cabinet (notes / diary / files) status as health entries.
 
     The cabinet lives inside the memfiles plugin process, so this check asks
-    the plugin's internal tool ``__cabinet_status`` through its MCP client
+    the plugin's internal tool ``__check`` through its MCP client
     (from ``ToolContext.memfiles_client``).  When the plugin is not
     connected, a warning is reported.
     """
@@ -264,7 +215,7 @@ async def check_memfiles(client=None) -> list[dict]:
             return [{"component": "memfiles", "level": "warning", "key": "plugin",
                      "value": "offline",
                      "hint": "memfiles plugin not connected — file cabinet unavailable."}]
-        raw = await client.call_tool("__cabinet_status")
+        raw = await client.call_tool("__check")
         data = json.loads(raw)
         if data.get("ok"):
             if data.get("semantic_ready"):
@@ -291,6 +242,7 @@ class CheckMemfilesTool(Tool):
 
     name = "check_memfiles"
     category: ClassVar[str] = "System"
+    _skip_auto_register: ClassVar[bool] = True
     description = ("File cabinet (memfiles) status: connected, store, semantic index "
                    "(search). One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
@@ -309,7 +261,7 @@ async def check_local_embed(client=None) -> list[dict]:
 
     The service runs in its own plugin process (``local-embed``, an external
     plugin serving OpenAI-compatible ``/v1/embeddings`` + MCP tools), so this
-    check asks its internal ``__embed_status`` tool through its MCP client
+    check asks its internal ``__check`` tool through its MCP client
     (from ``ToolContext.local_embed_client``).  When the plugin is not
     connected, a warning is reported.
     """
@@ -318,7 +270,7 @@ async def check_local_embed(client=None) -> list[dict]:
             return [{"component": "local_embed", "level": "warning", "key": "plugin",
                      "value": "offline",
                      "hint": "local-embed plugin not connected — local embedding unavailable."}]
-        raw = await client.call_tool("__embed_status")
+        raw = await client.call_tool("__check")
         data = json.loads(raw)
         active = data.get("active_model") or "?"
         models = data.get("models") or []
@@ -360,6 +312,7 @@ class CheckLocalEmbedTool(Tool):
 
     name = "check_local_embed"
     category: ClassVar[str] = "System"
+    _skip_auto_register: ClassVar[bool] = True
     description = ("Local embedding service (local-embed) status: online/offline, "
                    "active model, loaded models. One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
@@ -413,6 +366,7 @@ class CheckWatchdogTool(Tool):
 
     name = "check_watchdog"
     category: ClassVar[str] = "System"
+    _skip_auto_register: ClassVar[bool] = True
     description = ("Plugin watchdog status: which plugins are auto-restarted, latest "
                    "restart records. One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
@@ -426,7 +380,7 @@ class CheckWatchdogTool(Tool):
 # ═══════════════════════════════════════════════════════════════════════
 
 def _diagnose_mcp_server(server: dict) -> dict:
-    """Diagnose a single MCP server from raw ``__mcp_connection_status`` data.
+    """Diagnose a single MCP server from raw ``__check`` data.
 
     Pure data transformation — no side effects, no external calls.
     Maps the raw server state to a health-check entry with an
@@ -491,7 +445,7 @@ def _diagnose_mcp_server(server: dict) -> dict:
 async def check_mcp(server: str = "", client=None) -> list[dict]:
     """Check MCP wrapper health + diagnose external MCP server(s).
 
-    Calls the wrapper's harness ``__mcp_connection_status`` for the raw live
+    Calls the wrapper's harness ``__check`` for the raw live
     server state, then applies :func:`_diagnose_mcp_server` to each entry to
     produce health-check records with an appropriate level and remediation hint.
 
@@ -525,7 +479,7 @@ async def check_mcp(server: str = "", client=None) -> list[dict]:
                      "key": "status", "value": "client_unavailable",
                      "hint": "MCP wrapper client not available — slife-mcp may not be running."}]
 
-        raw = await client.call_tool("__mcp_connection_status")
+        raw = await client.call_tool("__check")
         data = json.loads(raw)
 
         if not isinstance(data, list) or len(data) == 0:
@@ -555,6 +509,7 @@ class CheckMcpTool(Tool):
 
     name = "check_mcp"
     category: ClassVar[str] = "System"
+    _skip_auto_register: ClassVar[bool] = True
     description = ("External MCP server status: connected/disconnected/disabled per server, "
                    "with tool counts and error details. Pass 'server' to check a single server; "
                    "omit it to check all. One subsystem of system_health.")
@@ -584,7 +539,7 @@ async def check_a2a(client=None) -> list[dict]:
     """Return A2A mesh status (queried from the a2a plugin).
 
     The A2A mesh transport (MQTT binding) lives inside the a2a plugin
-    process, so this check asks the plugin's internal tool ``__a2a_status``
+    process, so this check asks the plugin's internal tool ``__check``
     through its MCP client (from ``ToolContext.a2a_mcp_client``).  When the
     mesh is unreachable — mosquitto not running (no active MQTT port), or
     the connection dropped — a warning is reported.
@@ -595,7 +550,7 @@ async def check_a2a(client=None) -> list[dict]:
                      "value": "unavailable",
                      "hint": "No active MQTT port — A2A unavailable. Start mosquitto, then restart slife to enable the A2A mesh."}]
 
-        raw = await client.call_tool("__a2a_status")
+        raw = await client.call_tool("__check")
         data = json.loads(raw)
 
         if not data.get("connected"):
@@ -633,6 +588,7 @@ class CheckA2aTool(Tool):
 
     name = "check_a2a"
     category: ClassVar[str] = "System"
+    _skip_auto_register: ClassVar[bool] = True
     description = ("A2A mesh status: connected / unavailable (no active MQTT port), "
                    "agent id, status, online peers. One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
@@ -647,12 +603,66 @@ class CheckA2aTool(Tool):
 # system_health orchestrator
 # ═══════════════════════════════════════════════════════════════════════
 
+# check_media
+# ═══════════════════════════════════════════════════════════════════════
+
+async def check_media(client=None) -> list[dict]:
+    """Return media plugin status: config + generation capabilities.
+
+    Media is optional — when no ``media:`` section is configured the entry
+    is informational (not a warning).  When configured, this check asks the
+    plugin's internal ``__check`` tool through its MCP client (from
+    ``ToolContext.media_client``).
+    """
+    try:
+        from slife.plugins.media.config import load_media_config
+        cfg = load_media_config()
+        if cfg.is_empty():
+            return [{"component": "media", "level": "ok", "key": "enabled",
+                     "value": "not_configured",
+                     "hint": "Media generation not configured (no media: section in slife.json5)."}]
+    except Exception as e:
+        logger.warning("media_check_config_failed err=%s", e)
+        return [{"component": "media", "level": "warning", "key": "config",
+                 "value": "error",
+                 "hint": f"Media config status unavailable: {e}"}]
+    try:
+        if client is None:
+            return [{"component": "media", "level": "warning", "key": "plugin",
+                     "value": "offline",
+                     "hint": "media plugin configured but not connected."}]
+        raw = await client.call_tool("__check")
+        return json.loads(raw)
+    except Exception as e:
+        logger.warning("media_check_failed err=%s", e)
+        return [{"component": "media", "level": "warning", "key": "plugin",
+                 "value": "unavailable",
+                 "hint": f"media status unavailable: {e}"}]
+
+
+class CheckMediaTool(Tool):
+    """Check media plugin status: configured capabilities + api_key."""
+
+    name = "check_media"
+    category: ClassVar[str] = "System"
+    _skip_auto_register: ClassVar[bool] = True
+    description = ("Media (image/video/TTS/ASR) config status: providers, "
+                   "capabilities, api_key. One subsystem of system_health.")
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs) -> str:
+        ctx = getattr(self, "_ctx", None)
+        client = getattr(ctx, "media_client", None) if ctx is not None else None
+        return json.dumps(await check_media(client=client), ensure_ascii=False, indent=2)
+
+
 _CHECK_FUNCTIONS: list[str] = [
     "check_memdb",
     "check_wechat",
     "check_memfiles",
     "check_local_embed",
     "check_sharefile",
+    "check_media",
     "check_mcp",
     "check_a2a",
     "check_watchdog",
@@ -663,10 +673,13 @@ _CHECK_FUNCTIONS: list[str] = [
 #: ``check_local_embed``, ``check_sharefile`` and ``check_a2a`` use their
 #: respective plugin clients.
 _CLIENT_FIELD: dict[str, str] = {
+    "check_memdb": "memdb_client",
+    "check_wechat": "wechat_client",
     "check_mcp": "mcp_client",
     "check_memfiles": "memfiles_client",
     "check_local_embed": "local_embed_client",
     "check_sharefile": "sharefile_client",
+    "check_media": "media_client",
     "check_a2a": "a2a_mcp_client",
 }
 
@@ -789,12 +802,11 @@ class SystemHealthTool(Tool):
 
     name = "system_health"
     category: ClassVar[str] = "System"
-    description = ("Complete health report in one call: runs every check_* tool "
-                   "(check_memdb, check_wechat, check_memfiles, check_local_embed, "
-                   "check_sharefile, check_mcp, check_a2a, check_watchdog) plus "
-                   "startup records, grouped per component with an overall healthy "
-                   "flag and summary. All individual check_* results are already "
-                   "included in this report.")
+    description = ("Complete health report in one call: every subsystem check "
+                   "(memdb, wechat, memfiles, embeddings, sharefile, mcp, a2a, "
+                   "watchdog) plus startup records, grouped per component with an "
+                   "overall healthy flag and summary. One call gives the whole "
+                   "picture — no separate health tools needed.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:

@@ -50,17 +50,25 @@ class ToolContext:
     memfiles_client: object | None = None
     """The memfiles plugin's MCP client — used by ``check_memfiles`` to
     query the cabinet status (store, index, semantic search) via the
-    plugin's internal ``__cabinet_status`` tool."""
+    plugin's internal ``__check`` tool."""
 
     local_embed_client: object | None = None
     """The local-embed plugin's MCP client — used by ``check_local_embed``
     to query the local embedding service (active model, models, loaded)
-    via its internal ``__embed_status`` tool."""
+    via its internal ``__check`` tool."""
 
     memdb_client: object | None = None
     """The memdb plugin's MCP client — used by the ``embeddings_*`` native
     tools to hot-reload the semantic index (``__memory_reload_semantic``)
-    after a config change."""
+    after a config change, and by ``check_memdb`` to probe ``__check``."""
+
+    wechat_client: object | None = None
+    """The wechat plugin's MCP client — used by ``check_wechat`` to query
+    login/session status via the plugin's internal ``__check`` tool."""
+
+    media_client: object | None = None
+    """The media plugin's MCP client — used by ``check_media`` to query
+    generation-capability status via the plugin's internal ``__check`` tool."""
 
     message_history: MessageHistory | None = None
     """The active :class:`MessageHistory` (needed by ``clear_context``,

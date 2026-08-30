@@ -377,19 +377,19 @@
     }
   },
   // First-class embeddings — shared by memdb + memfiles.  Each provider is
-  // an OpenAI-compatible endpoint (base_url + api_key); the local-embed
-  // plugin (or a standalone local-embed server) serves local models here.
+  // an OpenAI-compatible endpoint (base_url + api_key); a local embedding
+  // service serves local models here (offline, no API cost).
   // active_model is "provider/model" (or bare "provider") — configuration-
   // authoritative; the endpoint's /v1/models active flag is only a fallback.
   embeddings: {
     providers: {
-      "local-embed": {
+      local: {
         base_url: "http://127.0.0.1:17347/v1",
         model: "bge-m3",
         api_key: "local"
       }
     },
-    active_model: "local-embed",
+    active_model: "local",
     enabled: true
   }
 }

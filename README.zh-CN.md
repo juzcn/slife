@@ -46,7 +46,7 @@ uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url http
 
 # 模型 — 默认离线（HF_HUB_OFFLINE=1，不自动下载）。先自己下载：
 # `hf download BAAI/bge-m3`（~2 GB 到 HF 缓存，huggingface.co → hf-mirror.com 自动 fallback），
-# 或放一个更轻的 ~100 MB GGUF 到默认路径 ~/.slife/models/bge-m3-q4_k_m.gguf（或设 BGE_M3_GGUF_PATH）。
+# 或放一个更轻的 ~100 MB GGUF 到默认路径 ~/.local-embed/models/bge-m3-q4_k_m.gguf（或设 BGE_M3_GGUF_PATH）。
 # 设 HF_HUB_OFFLINE=0 可在首次使用时按需下载。
 ```
 

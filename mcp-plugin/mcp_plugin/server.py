@@ -482,7 +482,7 @@ async def mcp_remove(name: str) -> str:
     name="mcp_list",
     description=(
         "List configured MCP servers (static config: transport, command/url, "
-        "enabled). For live status use __mcp_connection_status."
+        "enabled). For live status use __check."
     ),
 )
 async def mcp_list() -> str:
@@ -492,13 +492,13 @@ async def mcp_list() -> str:
 
 
 @mcp.tool(
-    name="__mcp_connection_status",
+    name="__check",
     description=(
         "Live connection status of MCP servers: running/stopped, tool counts, "
-        "errors. Internal — consumed by the check_mcp tool."
+        "errors. Internal — probed by the harness's system_health."
     ),
 )
-async def __mcp_connection_status(ctx: Context | None = None) -> str:
+async def __check(ctx: Context | None = None) -> str:
     """Report live connection status of all external MCP servers.
 
     Authoritative for health: ``state=running`` means the server is connected

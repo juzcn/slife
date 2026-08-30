@@ -275,7 +275,7 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
         "properties": {
             "provider": {
                 "type": "string",
-                "description": "Provider ID (e.g. local-embed, openai). Created if new.",
+                "description": "Provider ID (e.g. local, openai). Created if new.",
             },
             "model": {
                 "type": "string",
@@ -364,7 +364,7 @@ class SwitchEmbeddingsTool(_EmbeddingsConfigTool):
     category: ClassVar[str] = "embeddings"
     description: ClassVar[str] = (
         "Switch the active embedding model/endpoint (ref from "
-        "embeddings_model_list, e.g. 'local-embed/bge-m3' or just 'openai' "
+        "embeddings_model_list, e.g. 'local/bge-m3' or just 'openai' "
         "to defer the model to the endpoint). Takes effect immediately — "
         "memdb + memfiles reload their semantic index."
     )

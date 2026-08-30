@@ -413,10 +413,10 @@ async def __a2a_drain_incoming() -> str:
 
 
 @mcp.tool(
-    name="__a2a_status",
-    description="A2A mesh status as JSON. Internal — consumed by the check_a2a health tool.",
+    name="__check",
+    description="A2A mesh status as JSON. Internal — probed by the harness's system_health.",
 )
-async def __a2a_status() -> str:
+async def __check() -> str:
     """Return mesh connection + peer status for the harness health check.
 
     Reads the current client state WITHOUT triggering a connect — a status

@@ -648,7 +648,7 @@ async def turn_summarize(
 @mcp.tool(
     name="memdb_semantic_status",
     description=(
-        "Semantic index status for the Turns DB (memdb): backend, model, "
+        "Semantic index status for the Turns DB (memdb): model, "
         "dimension, available, semantic_ready (the search gate), state, "
         "unembedded, hint. Independent from memfiles_semantic_status — each "
         "plugin reindexes its own DB, so one can be semantically ready while "
@@ -669,7 +669,6 @@ async def memdb_semantic_status() -> str:
             e = manager.embedder
             if e is not None:
                 # live embedder facts override the config probe
-                report["backend"] = e.backend
                 report["model"] = e._model
                 report["dimension"] = e.dimension
                 report["available"] = e.available
@@ -678,7 +677,7 @@ async def memdb_semantic_status() -> str:
             state = manager.state
             if state == "ready":
                 report["hint"] = (
-                    f"{report.get('backend', '')} embedding model ready: "
+                    f"Embedding model ready: "
                     f"{report.get('model', '')} (dim={report.get('dimension')})"
                 )
             elif state in ("loading", "indexing"):
@@ -698,6 +697,89 @@ async def memdb_semantic_status() -> str:
     except Exception as e:
         logger.exception("check_embedding_failed")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__check",
+    description=(
+        "Turns DB + semantic-search status as health entries. Internal — "
+        "probed by the harness's system_health, never exposed to the LLM."
+    ),
+)
+async def __check() -> str:
+    """Return health-check entries for the turns DB + embedding status.
+
+    Internal (``__`` prefix): probed by the harness's ``system_health``.
+    The LLM has ``memdb_semantic_status`` for the semantic index; this is
+    the technical status surface the harness aggregates.
+    """
+    from slife.plugins.memdb.embedding_config import make_check_report
+
+    results: list[dict] = []
+
+    # ── Database file ─────────────────────────────────────────────
+    db_path = _db_path if _db_path is not None else _get_db_path()
+    if db_path.exists():
+        size_mb = db_path.stat().st_size / (1024 * 1024)
+        results.append({
+            "component": "memdb", "level": "ok", "key": "db",
+            "value": f"{size_mb:.1f} MB",
+            "hint": f"Database ready: {db_path}",
+        })
+    else:
+        results.append({
+            "component": "memdb", "level": "warning", "key": "db",
+            "value": "not found",
+            "hint": (f"Database file not found at {db_path}. "
+                     "Will be created on first memory write."),
+        })
+
+    # ── Semantic search ───────────────────────────────────────────
+    try:
+        await _ensure_store()
+        manager = _manager
+        report = make_check_report()
+        if manager is not None:
+            report["semantic_ready"] = manager.semantic_ready
+            report["state"] = manager.state
+            report["reason"] = manager.reason
+            report["unembedded"] = await manager.unembedded()
+            e = manager.embedder
+            if e is not None:
+                # live embedder facts override the config probe
+                report["model"] = e._model
+                report["dimension"] = e.dimension
+                report["available"] = e.available
+                report["loaded"] = e.loaded
+        if report.get("configured") is False or not report.get("available"):
+            results.append({
+                "component": "memdb", "level": "warning", "key": "embedding",
+                "value": "unavailable",
+                "hint": report.get("hint")
+                        or "Semantic search unavailable; keyword search works.",
+            })
+        elif report.get("semantic_ready"):
+            results.append({
+                "component": "memdb", "level": "ok", "key": "embedding",
+                "value": "ready",
+                "hint": (f"Semantic search ready "
+                         f"({report.get('model', '?')}, "
+                         f"dim={report.get('dimension')})."),
+            })
+        else:
+            results.append({
+                "component": "memdb", "level": "warning", "key": "embedding",
+                "value": report.get("state", "building"),
+                "hint": report.get("hint") or "Semantic index building.",
+            })
+    except Exception as e:
+        logger.warning("memdb_check_failed err=%s", e)
+        results.append({
+            "component": "memdb", "level": "warning", "key": "embedding",
+            "value": "unavailable",
+            "hint": f"Semantic status unavailable: {e}",
+        })
+    return json.dumps(results, ensure_ascii=False, indent=2)
 
 
 # ── Entry point ──────────────────────────────────────────────────────

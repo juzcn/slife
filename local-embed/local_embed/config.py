@@ -195,7 +195,7 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
             if not isinstance(m, dict):
                 continue
             # env override may point at the single model keyed by its name
-            # Path().expanduser() resolves a ``~`` default (e.g. ~/.slife/models/…)
+            # Path().expanduser() resolves a ``~`` default (e.g. ~/.local-embed/models/…)
             # and normalises separators on Windows.
             gguf_path = (str(Path(expand_value(m["gguf_path"])).expanduser())
                          if m.get("gguf_path") else None)

@@ -60,10 +60,10 @@ _on_model_switched: list[Callable[[str], None]] = []
 # The sharefile plugin eager-starts its ngrok tunnel on a background task,
 # so the harness's one-time probe must not race a still-running attempt: a
 # failed start retries up to 3× with 2s/4s backoff (~9s before it concludes).
-# The harness probes __tunnel_status until the plugin reports a terminal
+# The harness probes __check until the plugin reports a terminal
 # state, bounded by these constants, and surfaces "tunnel down" only once.
 _TUNNEL_SETTLE_TIMEOUT = 20.0  # seconds — max wait for the eager attempt
-_TUNNEL_PROBE_INTERVAL = 1.0   # seconds — between __tunnel_status probes
+_TUNNEL_PROBE_INTERVAL = 1.0   # seconds — between __check probes
 
 
 # ── Tool result compaction for permanent memory ─────────────────────────
@@ -316,7 +316,7 @@ class AgentService:
         self._on_memory_broken: "Callable[[str], None] | None" = None
         # TUI callback (set by the app) → file-sharing tunnel unavailable.
         # The harness owns the surfacing: the memfiles plugin never talks
-        # to the TUI — the main process probes __tunnel_status after the
+        # to the TUI — the main process probes __check after the
         # plugin is ready and reports a terminal failure here.
         self._on_tunnel_down: "Callable[[str], None] | None" = None
 
@@ -556,7 +556,7 @@ class AgentService:
                 # the main agent's sharefile plugin (no second ngrok tunnel).
                 os.environ["SLIFE_SHAREFILE_PORT"] = str(self._plugins["sharefile"].port)
                 self._start_generic_watchdog(name, module)
-                # Harness-owned tunnel readiness: probe __tunnel_status once
+                # Harness-owned tunnel readiness: probe __check once
                 # the eager ngrok attempt settles, surface "tunnel down" only
                 # on a terminal failure.  The plugin never talks to the TUI.
                 self._watch_sharefile_tunnel()
@@ -574,6 +574,17 @@ class AgentService:
             started = await self._spawn_plugin_generic(name, module)
             if started:
                 self._tool_ctx.local_embed_client = self._plugins["local-embed"].client
+                self._start_generic_watchdog(name, module)
+            return (
+                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
+            )
+
+        # ── Media: optional generation-capability plugin; expose the client
+        # for check_media (config / capability status health probe).
+        if name == "media":
+            started = await self._spawn_plugin_generic(name, module)
+            if started:
+                self._tool_ctx.media_client = self._plugins["media"].client
                 self._start_generic_watchdog(name, module)
             return (
                 PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
@@ -620,6 +631,10 @@ class AgentService:
                 # but the harness's ToolContext still points at the dead client —
                 # re-point it or check_sharefile reports the restarted plugin offline.
                 self._tool_ctx.sharefile_client = self._plugins[name].client
+            if name == "media":
+                # Same re-point for the media plugin — otherwise check_media
+                # reports the restarted plugin offline.
+                self._tool_ctx.media_client = self._plugins[name].client
             if name == "mcp":
                 # The wrapper restarted on a NEW port — subagents that share it
                 # still point at the dead one; tell them to reconnect.  Re-arming
@@ -644,7 +659,7 @@ class AgentService:
         asyncio.create_task(self._check_sharefile_tunnel(client))
 
     async def _check_sharefile_tunnel(self, client) -> None:
-        """Probe ``__tunnel_status`` until the eager attempt concludes, then
+        """Probe ``__check`` until the eager attempt concludes, then
         report once if the tunnel failed.
 
         The plugin eager-starts the tunnel on a background task, so a single
@@ -656,7 +671,7 @@ class AgentService:
         deadline = _time.monotonic() + _TUNNEL_SETTLE_TIMEOUT
         while True:
             try:
-                raw = await client.call_tool("__tunnel_status")
+                raw = await client.call_tool("__check")
                 data = json.loads(raw)
             except Exception as e:
                 logger.warning("tunnel_status_probe_failed err=%s", e)
@@ -1226,6 +1241,7 @@ class AgentService:
             # Auto-restore session at startup (triggers server-side poll loop)
             wechat_client = self._plugins["wechat"].client
             assert wechat_client is not None
+            self._tool_ctx.wechat_client = wechat_client
             try:
                 await wechat_client.call_tool("check_status", {})
                 logger.debug("wechat_auto_restore_triggered")
@@ -1243,6 +1259,7 @@ class AgentService:
                 )
                 wc = self._plugins["wechat"].client
                 if wc is not None:
+                    self._tool_ctx.wechat_client = wc
                     try:
                         await wc.call_tool("check_status", {})
                     except Exception:

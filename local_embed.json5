@@ -14,7 +14,7 @@
   //      At runtime a failed download also auto-falls back to hf-mirror.com
   //      (see local_embed.engine._ensure_hf_model).
   //   2) GGUF (small offline file): drop a quantized BGE-M3 GGUF (~100 MB) at
-  //      ~/.slife/models/bge-m3-q4_k_m.gguf (the default path below), or set
+  //      ~/.local-embed/models/bge-m3-q4_k_m.gguf (the default path below), or set
   //      BGE_M3_GGUF_PATH in the shell / edit gguf_path.
   active_model: "bge-m3",
   env: {
@@ -34,7 +34,7 @@
     // path; override with BGE_M3_GGUF_PATH ("~" is expanded).
     "bge-m3": {
       backend: "gguf",
-      gguf_path: "${BGE_M3_GGUF_PATH:-~/.slife/models/hf_KimChen_bge-m3-q4_k_m.gguf}"
+      gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/hf_KimChen_bge-m3-q4_k_m.gguf}"
     }
   },
   port: 17347  // uncommon fixed port — see local_embed.config.DEFAULT_PORT
