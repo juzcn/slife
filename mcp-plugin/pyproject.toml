@@ -1,6 +1,6 @@
 [project]
 name = "mcp-plugin"
-version = "0.1.1"
+version = "0.1.2"
 description = "Standalone MCP gateway — persistent connections to external MCP servers"
 readme = "README.md"
 license = { text = "MIT" }
