@@ -699,28 +699,28 @@ try {
         }
     }
 
-    # Skills: copy the bundled skills tree into ~/.slife/skills/.  Missing
-    # files are copied silently; an existing file (user may have edited it)
-    # is only replaced after a per-file "yes".
+    # Skills: copy the bundled skills into ~/.slife/skills/.  A skill that
+    # doesn't exist yet is copied as-is; an existing skill of the SAME NAME
+    # (the user may have edited it) is only replaced after a per-skill confirm.
     $skillsSrc = Join-Path $extractedDir.FullName "skills"
     $skillsDst = "$env:USERPROFILE\.slife\skills"
     if (Test-Path $skillsSrc) {
         Write-Step "[4c] Setting up skills (bundled defaults)..."
         New-Item -ItemType Directory -Force $skillsDst | Out-Null
-        Get-ChildItem -Path $skillsSrc -Recurse -File | ForEach-Object {
-            $rel = $_.FullName.Substring($skillsSrc.Length).TrimStart('\')
-            $dst = Join-Path $skillsDst $rel
-            New-Item -ItemType Directory -Force (Split-Path $dst -Parent) | Out-Null
+        Get-ChildItem -Path $skillsSrc -Directory | ForEach-Object {
+            $name = $_.Name
+            $dst = Join-Path $skillsDst $name
             if (Test-Path $dst) {
                 $ans = "n"
-                try { $ans = Read-Host "  Overwrite ~/.slife/skills/$rel with the bundled default? (y/N, default: N)" } catch { $ans = "n" }
+                try { $ans = Read-Host "  Overwrite skill '$skillsDst\$name' with the bundled default? (y/N, default: N)" } catch { $ans = "n" }
                 if ($ans -match '^[yY]') {
-                    Copy-Item $_.FullName $dst -Force
-                    Write-Dim "  overwrote ~/.slife/skills/$rel"
+                    Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue
+                    Copy-Item -Recurse $_.FullName $dst -Force
+                    Write-Dim "  overwrote skill '$skillsDst\$name'"
                 }
             } else {
-                Copy-Item $_.FullName $dst -Force
-                Write-Dim "  seeded ~/.slife/skills/$rel"
+                Copy-Item -Recurse $_.FullName $dst -Force
+                Write-Dim "  seeded skill '$skillsDst\$name'"
             }
         }
     }

@@ -623,41 +623,39 @@ for _name in slife.json5 local_embed.json5 mcp-plugin.json5; do
     fi
 done
 
-# Skills: copy the bundled skills tree into ~/.slife/skills/.  Missing files
-# are copied silently; an existing file (user may have edited it) is only
-# replaced after a per-file "yes".
+# Skills: copy the bundled skills into ~/.slife/skills/.  A skill that
+# doesn't exist yet is copied as-is; an existing skill of the SAME NAME (the
+# user may have edited it) is only replaced after a per-skill confirm.
 SKILLS_SRC="$SEED_DIR/skills"
 SKILLS_DST="$HOME/.slife/skills"
 if [ -d "$SKILLS_SRC" ]; then
     echo -e "${YELLOW}[4c] Setting up skills (bundled defaults)…${NC}"
     mkdir -p "$SKILLS_DST" 2>/dev/null || true
-    # Enumerate every file in the bundled skills tree, then copy each into
-    # place under ~/.slife/skills/, preserving the relative path.
-    while IFS= read -r _rel; do
-        [ -n "$_rel" ] || continue
-        _src="$SKILLS_SRC/$_rel"
-        _dst="$SKILLS_DST/$_rel"
-        mkdir -p "$(dirname "$_dst")" 2>/dev/null || true
-        if [ -e "$_dst" ]; then
+    for _skill in "$SKILLS_SRC"/*/; do
+        [ -d "$_skill" ] || continue
+        _name="$(basename "$_skill")"
+        _dst="$SKILLS_DST/$_name"
+        if [ -d "$_dst" ]; then
             _ask="n"
             if [ -t 0 ]; then
-                read -p "  Overwrite ~/.slife/skills/$_rel with the bundled default? (y/N, default: N): " _ask
+                read -p "  Overwrite skill '$SKILLS_DST/$_name' with the bundled default? (y/N, default: N): " _ask
             fi
             if [ "$_ask" = "y" ] || [ "$_ask" = "Y" ]; then
-                if cp -f "$_src" "$_dst" 2>/dev/null; then
-                    echo -e "  ${GRAY}overwrote ~/.slife/skills/$_rel${NC}"
+                rm -rf "$_dst" 2>/dev/null || true
+                if cp -R "$_skill" "$_dst" 2>/dev/null; then
+                    echo -e "  ${GRAY}overwrote skill '$SKILLS_DST/$_name'${NC}"
                 else
-                    echo -e "  ${RED}⚠ could not write ~/.slife/skills/$_rel${NC}"
+                    echo -e "  ${RED}⚠ could not write skill '$SKILLS_DST/$_name'${NC}"
                 fi
             fi
         else
-            if cp "$_src" "$_dst" 2>/dev/null; then
-                echo -e "  ${GRAY}seeded ~/.slife/skills/$_rel${NC}"
+            if cp -R "$_skill" "$_dst" 2>/dev/null; then
+                echo -e "  ${GRAY}seeded skill '$SKILLS_DST/$_name'${NC}"
             else
-                echo -e "  ${RED}⚠ could not write ~/.slife/skills/$_rel${NC}"
+                echo -e "  ${RED}⚠ could not write skill '$SKILLS_DST/$_name'${NC}"
             fi
         fi
-    done < <(cd "$SKILLS_SRC" && find . -type f | sed 's|^\./||')
+    done
 fi
 
 #
