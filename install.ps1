@@ -688,7 +688,7 @@ try {
         New-Item -ItemType Directory -Force (Split-Path $pair[1] -Parent) | Out-Null
         if (Test-Path $pair[1]) {
             $ans = "n"
-            try { $ans = Read-Host "  Reset $($pair[1]) to the bundled default? (y/N, default: N)" } catch { $ans = "n" }
+            try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Reset $($pair[1]) to the bundled default? (y/N, default: N)" } } catch { $ans = "n" }
             if ($ans -match '^[yY]') {
                 Copy-Item $src $pair[1] -Force
                 Write-Dim "  reset  $($pair[1])"
@@ -707,19 +707,26 @@ try {
     if (Test-Path $skillsSrc) {
         Write-Step "[4c] Setting up skills (bundled defaults)..."
         New-Item -ItemType Directory -Force $skillsDst | Out-Null
-        Get-ChildItem -Path $skillsSrc -Directory | ForEach-Object {
-            $name = $_.Name
+        # Read-Host inside a `Get-ChildItem | ForEach-Object` PIPELINE is
+        # unreliable in Windows PowerShell — an interactive read can block on
+        # the pipeline's console-input handling (the config loop above uses a
+        # plain `foreach` statement and never hangs).  Materialise the list
+        # first, then use a plain `foreach`; skip prompting entirely when
+        # stdin is redirected (fail-open, mirroring install.sh's `[ -t 0 ]`).
+        $skillDirs = @(Get-ChildItem -Path $skillsSrc -Directory)
+        foreach ($skill in $skillDirs) {
+            $name = $skill.Name
             $dst = Join-Path $skillsDst $name
             if (Test-Path $dst) {
                 $ans = "n"
-                try { $ans = Read-Host "  Overwrite skill '$skillsDst\$name' with the bundled default? (y/N, default: N)" } catch { $ans = "n" }
+                try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Overwrite skill '$skillsDst\$name' with the bundled default? (y/N, default: N)" } } catch { $ans = "n" }
                 if ($ans -match '^[yY]') {
                     Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue
-                    Copy-Item -Recurse $_.FullName $dst -Force
+                    Copy-Item -Recurse $skill.FullName $dst -Force
                     Write-Dim "  overwrote skill '$skillsDst\$name'"
                 }
             } else {
-                Copy-Item -Recurse $_.FullName $dst -Force
+                Copy-Item -Recurse $skill.FullName $dst -Force
                 Write-Dim "  seeded skill '$skillsDst\$name'"
             }
         }
