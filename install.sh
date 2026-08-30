@@ -587,7 +587,8 @@ fi
 # slife.json5 / local_embed.json5 / mcp-plugin.json5 come from the downloaded
 # source tree (now git-tracked).  Each module hosts its own config in its own
 # data dir (~/.slife, ~/.local-embed, ~/.mcp-plugin).  Missing ones are copied
-# silently; an existing one is only replaced after a per-file "yes".
+# silently; an existing one is only replaced (after a per-file "yes") when its
+# content differs from the bundled default.
 echo -e "${YELLOW}[4c] Setting up configs (out-of-the-box defaults)…${NC}"
 SEED_DIR="$TMP_DIR/slife-main"
 for _name in slife.json5 local_embed.json5 mcp-plugin.json5; do
@@ -601,6 +602,11 @@ for _name in slife.json5 local_embed.json5 mcp-plugin.json5; do
     esac
     mkdir -p "$(dirname "$_target")" 2>/dev/null || true
     if [ -e "$_target" ]; then
+        # Same content as the bundled default — nothing to do.
+        if cmp -s "$_src" "$_target" 2>/dev/null; then
+            echo -e "  ${GRAY}unchanged  $_target${NC}"
+            continue
+        fi
         # Ask per file — the user may have customized one config but want
         # defaults for another; never force a reset on all of them together.
         _ask="n"
@@ -636,6 +642,11 @@ if [ -d "$SKILLS_SRC" ]; then
         _name="$(basename "$_skill")"
         _dst="$SKILLS_DST/$_name"
         if [ -d "$_dst" ]; then
+            # Same content as the bundled default — nothing to do.
+            if diff -rq "$_skill" "$_dst" >/dev/null 2>&1; then
+                echo -e "  ${GRAY}unchanged  skill '$SKILLS_DST/$_name'${NC}"
+                continue
+            fi
             _ask="n"
             if [ -t 0 ]; then
                 read -p "  Overwrite skill '$SKILLS_DST/$_name' with the bundled default? (y/N, default: N): " _ask

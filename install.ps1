@@ -677,11 +677,32 @@ try {
         }
     }
 
+    # Recursive content comparison.  An overwrite prompt should only appear
+    # when the existing file/skill actually DIFFERS from the bundled default —
+    # identical files are left untouched without asking, so the user's judgment
+    # is reserved for real differences.
+    function Test-SameDir {
+        param([string]$srcDir, [string]$dstDir)
+        if (-not (Test-Path $dstDir)) { return $false }
+        $srcFiles = @(Get-ChildItem $srcDir -Recurse -File -Force)
+        $dstFiles = @(Get-ChildItem $dstDir -Recurse -File -Force)
+        if ($srcFiles.Count -ne $dstFiles.Count) { return $false }
+        $srcRoot = (Resolve-Path $srcDir).Path.TrimEnd('\')
+        foreach ($f in $srcFiles) {
+            $rel = $f.FullName.Substring($srcRoot.Length).TrimStart('\')
+            $other = Join-Path $dstDir $rel
+            if (-not (Test-Path $other)) { return $false }
+            if ((Get-FileHash $f.FullName).Hash -ne (Get-FileHash $other).Hash) { return $false }
+        }
+        return $true
+    }
+
     # 4c. Configs: seed the git-tracked defaults out-of-the-box.  slife.json5 /
     # local_embed.json5 / mcp-plugin.json5 come from the downloaded source tree
     # (now git-tracked), and each module hosts its own config in its own data
     # dir (~/.slife, ~/.local-embed, ~/.mcp-plugin).  Missing ones are copied
-    # silently; an existing one is only replaced after a per-file "yes".
+    # silently; an existing one is only replaced (after a per-file "yes") when
+    # its content differs from the bundled default.
     Write-Step "[4c] Setting up configs (out-of-the-box defaults)..."
     $seedPairs = @(
         @("slife.json5", "$env:USERPROFILE\.slife\slife.json5"),
@@ -693,6 +714,11 @@ try {
         if (-not (Test-Path $src)) { continue }   # older main snapshots may lack the seeds
         New-Item -ItemType Directory -Force (Split-Path $pair[1] -Parent) | Out-Null
         if (Test-Path $pair[1]) {
+            # Same content as the bundled default — nothing to do.
+            if ((Get-FileHash $src).Hash -eq (Get-FileHash $pair[1]).Hash) {
+                Write-Dim "  unchanged  $($pair[1])"
+                continue
+            }
             $ans = "n"
             if ($assumeYes) { $ans = "y" } else { try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Reset $($pair[1]) to the bundled default? (y/N, default: N)" } } catch { $ans = "n" } }
             if ($ans -match '^[yY]') {
@@ -724,6 +750,11 @@ try {
             $name = $skill.Name
             $dst = Join-Path $skillsDst $name
             if (Test-Path $dst) {
+                # Same content as the bundled default — nothing to do.
+                if (Test-SameDir $skill.FullName $dst) {
+                    Write-Dim "  unchanged  skill '$name'"
+                    continue
+                }
                 $ans = "n"
                 if ($assumeYes) { $ans = "y" } else { try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Overwrite skill '$skillsDst\$name' with the bundled default? (y/N, default: N)" } } catch { $ans = "n" } }
                 if ($ans -match '^[yY]') {
