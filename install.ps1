@@ -539,11 +539,32 @@ try {
         }
     }
 
-    # Install.
-    $toolInstallLog = Join-Path $tmpDir "tool-install.log"
+    # Build local wheels for the whole workspace (slife + credstore + cc-switch +
+    # mcp-plugin + local-embed) and install slife from them.
+    #
+    # Why wheels and not `--from $extractedDir`: `uv tool install --from`
+    # materialises the workspace members (mcp-plugin / local-embed / credstore)
+    # as EDITABLE installs pointing at the extracted source dir — which the
+    # installer deletes at the end — so `import mcp_plugin` breaks after a
+    # fresh install.  Local wheels install them as non-editable copies:
+    # self-contained, survives cleanup, still 100 % from source, no PyPI.
+    $toolInstallLog  = Join-Path $tmpDir "tool-install.log"
+    $wheelhouse      = Join-Path $tmpDir "wheelhouse"
+    New-Item -ItemType Directory -Force $wheelhouse | Out-Null
+
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & uv tool install --from $extractedDir.FullName --python 3.13 slife 2>&1 > $toolInstallLog
+    & uv build --all-packages --out-dir $wheelhouse $extractedDir.FullName 2>&1 > $toolInstallLog
+    $buildOk = ($LASTEXITCODE -eq 0)
+    if (-not $buildOk) {
+        Write-Err "Error: failed to build slife from source."
+        Write-Warn "Last lines of build log:"
+        Get-Content $toolInstallLog -Tail 20
+        Write-Warn "Help: $slifeRepo"
+        exit 1
+    }
+
+    & uv tool install --python 3.13 --find-links $wheelhouse slife 2>&1 > $toolInstallLog
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
@@ -675,6 +696,32 @@ try {
         } else {
             Copy-Item $src $pair[1] -Force
             Write-Dim "  seeded $($pair[1])"
+        }
+    }
+
+    # Skills: copy the bundled skills tree into ~/.slife/skills/.  Missing
+    # files are copied silently; an existing file (user may have edited it)
+    # is only replaced after a per-file "yes".
+    $skillsSrc = Join-Path $extractedDir.FullName "skills"
+    $skillsDst = "$env:USERPROFILE\.slife\skills"
+    if (Test-Path $skillsSrc) {
+        Write-Step "[4c] Setting up skills (bundled defaults)..."
+        New-Item -ItemType Directory -Force $skillsDst | Out-Null
+        Get-ChildItem -Path $skillsSrc -Recurse -File | ForEach-Object {
+            $rel = $_.FullName.Substring($skillsSrc.Length).TrimStart('\')
+            $dst = Join-Path $skillsDst $rel
+            New-Item -ItemType Directory -Force (Split-Path $dst -Parent) | Out-Null
+            if (Test-Path $dst) {
+                $ans = "n"
+                try { $ans = Read-Host "  Overwrite ~/.slife/skills/$rel with the bundled default? (y/N, default: N)" } catch { $ans = "n" }
+                if ($ans -match '^[yY]') {
+                    Copy-Item $_.FullName $dst -Force
+                    Write-Dim "  overwrote ~/.slife/skills/$rel"
+                }
+            } else {
+                Copy-Item $_.FullName $dst -Force
+                Write-Dim "  seeded ~/.slife/skills/$rel"
+            }
         }
     }
 

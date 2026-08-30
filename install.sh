@@ -475,8 +475,33 @@ if [ -z "${UV_PYTHON_INSTALL_MIRROR:-}" ] && \
 fi
 
 TOOL_INSTALL_LOG="$TMP_DIR/tool-install.log"
+
+# Build local wheels for the whole workspace (slife + credstore + cc-switch +
+# mcp-plugin + local-embed) and install slife from them.
+#
+# Why wheels and not `--from "$TMP_DIR/slife-main"`: `uv tool install --from`
+# materialises the workspace members (mcp-plugin / local-embed / credstore) as
+# EDITABLE installs pointing at the extracted source dir — which the installer
+# deletes at the end — so `import mcp_plugin` breaks after a fresh install
+# (the members are declared deps; they belong inside slife's venv, as real
+# copies).  Local wheels install them as non-editable copies: self-contained,
+# survives the temp-dir cleanup, still 100 % from source, no PyPI.
+WHEELHOUSE="$TMP_DIR/wheelhouse"
+mkdir -p "$WHEELHOUSE"
 set +eo pipefail
-uv tool install --from "$TMP_DIR/slife-main" --python 3.13 slife > "$TOOL_INSTALL_LOG" 2>&1
+uv build --all-packages --out-dir "$WHEELHOUSE" "$TMP_DIR/slife-main" >> "$TOOL_INSTALL_LOG" 2>&1
+BUILD_EXIT=$?
+set -eo pipefail
+if [ $BUILD_EXIT -ne 0 ]; then
+    echo -e "${RED}Error: failed to build slife from source.${NC}"
+    echo -e "${YELLOW}Last lines of build log:${NC}"
+    tail -n 20 "$TOOL_INSTALL_LOG"
+    echo -e "${YELLOW}Help: $SLIFE_REPO${NC}"
+    exit 1
+fi
+
+set +eo pipefail
+uv tool install --python 3.13 --find-links "$WHEELHOUSE" slife > "$TOOL_INSTALL_LOG" 2>&1
 INSTALL_EXIT=$?
 set -eo pipefail
 if [ $INSTALL_EXIT -ne 0 ]; then
@@ -597,6 +622,43 @@ for _name in slife.json5 local_embed.json5 mcp-plugin.json5; do
         fi
     fi
 done
+
+# Skills: copy the bundled skills tree into ~/.slife/skills/.  Missing files
+# are copied silently; an existing file (user may have edited it) is only
+# replaced after a per-file "yes".
+SKILLS_SRC="$SEED_DIR/skills"
+SKILLS_DST="$HOME/.slife/skills"
+if [ -d "$SKILLS_SRC" ]; then
+    echo -e "${YELLOW}[4c] Setting up skills (bundled defaults)…${NC}"
+    mkdir -p "$SKILLS_DST" 2>/dev/null || true
+    # Enumerate every file in the bundled skills tree, then copy each into
+    # place under ~/.slife/skills/, preserving the relative path.
+    while IFS= read -r _rel; do
+        [ -n "$_rel" ] || continue
+        _src="$SKILLS_SRC/$_rel"
+        _dst="$SKILLS_DST/$_rel"
+        mkdir -p "$(dirname "$_dst")" 2>/dev/null || true
+        if [ -e "$_dst" ]; then
+            _ask="n"
+            if [ -t 0 ]; then
+                read -p "  Overwrite ~/.slife/skills/$_rel with the bundled default? (y/N, default: N): " _ask
+            fi
+            if [ "$_ask" = "y" ] || [ "$_ask" = "Y" ]; then
+                if cp -f "$_src" "$_dst" 2>/dev/null; then
+                    echo -e "  ${GRAY}overwrote ~/.slife/skills/$_rel${NC}"
+                else
+                    echo -e "  ${RED}⚠ could not write ~/.slife/skills/$_rel${NC}"
+                fi
+            fi
+        else
+            if cp "$_src" "$_dst" 2>/dev/null; then
+                echo -e "  ${GRAY}seeded ~/.slife/skills/$_rel${NC}"
+            else
+                echo -e "  ${RED}⚠ could not write ~/.slife/skills/$_rel${NC}"
+            fi
+        fi
+    done < <(cd "$SKILLS_SRC" && find . -type f | sed 's|^\./||')
+fi
 
 #
 # ── Semantic memory search — NOT installed by default ────────────────────
