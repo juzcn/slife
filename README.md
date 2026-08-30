@@ -13,7 +13,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: 52 native tools across 10 categories (including a reserved harness tool, `_sys_note`), six built-in plugin services plus the standalone `mcp-plugin` MCP gateway and the `local-embed` embedding service (both external plugins), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: 65 native tools across 13 categories (including a reserved harness tool, `_sys_note`), six built-in plugin services plus the standalone `mcp-plugin` MCP gateway and the `local-embed` embedding service (both external plugins), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -21,42 +21,27 @@ Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
 ## Install
 
-**Zero prerequisites, fully out-of-the-box.** The install script builds slife **from source — the latest `main`** (no PyPI, always the newest code) with uv, and auto-installs Node.js, bun and Mosquitto when missing (Linux-native versions on WSL — Windows executables cannot receive custom env vars via WSL interop). It then seeds the three **git-tracked configs** into their own per-module folders (`~/.slife/slife.json5`, `~/.local-embed/local_embed.json5`, `~/.mcp-plugin/mcp-plugin.json5`) as out-of-the-box defaults, so a first-time user gets the full tool set — local embeddings, external MCP servers, yt-dlp, browser-harness, the A2A mesh — with nothing to configure by hand. Re-running the installer upgrades slife and **asks per config before overwriting** an existing one. Pass `--core` (or set `SLIFE_CORE=1`) for a light core-only install that skips the optional tools.
+**Zero prerequisites, fully out-of-the-box.** The install script fetches the latest `main`, builds slife **from source** (workspace wheels — no PyPI, always the newest code), and installs it with uv into an isolated tool venv. It auto-installs what's missing — uv, Node.js (`npx`), bun, and Mosquitto — then seeds the three **git-tracked configs** and the bundled **skills** into their per-module folders, and builds the MCP tool catalog, so a first-time user gets the full tool set — local embeddings, external MCP servers, yt-dlp, browser-harness, the A2A mesh — with nothing to configure by hand. On WSL it uses Linux-native runtimes (Windows executables cannot receive custom env vars via WSL interop).
+
+The **semantic embedding backend and model are deliberately not part of the install** — the backend is env-specific (CPU / CUDA / Metal) and the model download is ~2 GB, so it's a user-run step. Follow the **[Semantic Memory Search — Installation Guide](#semantic-memory-search--installation-guide)** below: install one backend, download the model weights, configure `HF_HUB_CACHE` / `BGE_M3_GGUF_PATH`, then verify the service is ready.
 
 ### Environment requirements
 
-The install script uses the **standard installation paths** for each runtime — it does not probe or adapt your system. If your environment doesn't meet a runtime's requirements, the installer reports the incompatibility and points you to the manual route; it never silently installs an old or alternate version.
+The installer is best-effort: it uses standard paths, tries several install routes per runtime, **warns and continues** when one is unavailable (only that runtime's features are affected), and never silently swaps in an old or alternate version. Pass `--core` (or set `SLIFE_CORE=1`) to skip the optional CLI tools for a light core-only install.
 
-| Runtime | Where it installs | Requirement |
+| Runtime | Where / how it's installed | Why it's needed |
 |---|---|---|
-| uv | `~/.local/bin` | any modern Linux/macOS/Windows; Python managed by uv (3.13) |
-| Node.js (LTS v22) | `~/.local/bin` via official tarball | **glibc ≥ 2.28 / libstdc++ ≥ 3.4.29** on Linux. Old distros (e.g. CentOS 7) **cannot run** the official binaries — the installer reports the missing `GLIBC_2.28` / `GLIBCXX_3.4.xx` symbols. |
-| bun | `~/.bun/bin` | modern Linux/macOS/Windows |
-| Mosquitto | via package manager (winget / apt / brew / dnf / pacman) | needed for the A2A MQTT mesh — **auto-installed silently** |
+| uv | official installer → `~/.local/bin`; Python 3.13 managed by uv | builds and runs slife |
+| Node.js (`npx`) | package manager (apt / brew / dnf / pacman / winget) → cluster `module load nodejs` → official LTS tarball → `~/.local` (rootless fallback) | npx-based MCP servers: `file-search`, `serper`, `tavily-mcp`, `github`, `amap-maps`, `filesystem` |
+| bun | `~/.bun/bin` | `nvidia-nim` MCP server |
+| Mosquitto | package manager (winget / apt / brew / dnf / pacman) | A2A MQTT mesh — best-effort auto-install; A2A stays disabled until a broker runs |
+| `unzip` (Linux) | package manager | bun installer dependency |
 
-Installed by default: `yt-dlp`, `browser-harness`, Mosquitto (A2A mesh), and the three configs (`slife.json5`, `local_embed.json5`, `mcp-plugin.json5`) with external MCP servers wired in.
+**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto (always attempted), the three configs (`slife.json5` → `~/.slife/`, `local_embed.json5` → `~/.local-embed/`, `mcp-plugin.json5` → `~/.mcp-plugin/`) seeded from bundled defaults, the bundled skills (`~/.slife/skills/`), and an MCP server catalog built at the end (`mcp-plugin build`).
 
-**Semantic memory search is a user-run setup** (the backend is env-specific — CPU / CUDA / Metal — and the model download is ~2 GB, so it shouldn't block the install). After installing, run in a terminal — one backend, then the model:
+If a runtime can't be installed, the installer **warns and continues** — slife itself still installs; only the features needing that runtime are unavailable. For example, on a Linux box older than **glibc 2.28 / libstdc++ 3.4.29**, the Node rootless tarball fallback won't run (the installer reports the missing `GLIBC_2.28` / `GLIBCXX_3.4.xx` symbols). The supported route is **not** an older Node — it's a Node built for your distro (e.g. `module load nodejs` on HPC clusters, or your distro's package). Install that, then re-run this installer — it detects an existing `npx` and skips its own Node install.
 
-```bash
-# backend — choose ONE
-uv pip install --python "$(uv tool dir)/slife/bin/python" sentence-transformers            # simplest, everywhere
-uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34   # NVIDIA CUDA 12
-uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34    # CPU
-uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal llama-cpp-python==0.3.34 # macOS Metal
-
-# model — offline by default (HF_HUB_OFFLINE=1, no auto-download).  Download
-# it yourself first: `hf download BAAI/bge-m3` (~2 GB into the HF cache,
-# huggingface.co → hf-mirror.com fallback), or drop a small GGUF (~100 MB) at
-# the default ~/.slife/models/bge-m3-q4_k_m.gguf (or set BGE_M3_GGUF_PATH).
-# Set HF_HUB_OFFLINE=0 to allow an on-demand download at first use.
-```
-
-Then restore the MCP server catalog if you edit `mcp-plugin.json5` by hand: `"$(uv tool dir)/slife/bin/mcp-plugin" build`. Every optional step is **fail-open**: an error warns and continues, leaving a working core.
-
-If your Linux is older than glibc 2.28, Node's official tarball won't run. The supported route is **not** an older Node — it's a Node built for your distro (e.g. `module load nodejs` on HPC clusters, or your distro's package). Install that, then re-run this installer — it detects an existing `npx` and skips its own Node install.
-
-When a runtime is unavailable, the installer **warns and continues** — slife itself still installs; only the features needing that runtime are unavailable (e.g. the npx-based MCP servers `file-search`, `serper`, `tavily-mcp`, `github`, `amap-maps`, `filesystem`).
+If you edit `mcp-plugin.json5` by hand, restore the MCP server catalog with `"$(uv tool dir)/slife/bin/mcp-plugin" build` (Windows: `"$(uv tool dir)\slife\Scripts\mcp-plugin.exe" build`). Every optional step is **fail-open**: an error warns and continues, leaving a working core.
 
 ### macOS / Linux / WSL
 
@@ -84,7 +69,11 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 
 ### Update
 
-Re-run the install script — it auto-preserves optional packages (llama-cpp-python, sentence-transformers) by diffing the previous venv and re-adding them. If your configs already exist, it asks once whether to **reset them to the bundled defaults** (default: no, keeping your config). Configs are only seeded when missing.
+Re-run the install script to upgrade slife — it rebuilds from the latest `main` and preserves what you've customized:
+
+- **Optional packages** (e.g. `sentence-transformers`, `llama-cpp-python`) are captured from the previous tool venv and re-added after the fresh install, diffed against the new base so nothing is duplicated.
+- **Configs** that already exist are left untouched; resetting one to the bundled default is **asked per file** (default: no). Missing configs are seeded silently.
+- **Skills** that already exist are left untouched; overwriting one is **asked per skill** (default: no). Missing skills are seeded silently.
 
 ### Uninstall
 
@@ -100,7 +89,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/uninstall.ps1 | iex"
 ```
 
-User data (`~/.slife/`, `~/.credstore/`) is **not removed** — delete manually for a full reset.
+The uninstaller removes the `slife` and `credstore` tool commands (they share one venv) plus their `~/.local/bin` wrappers. User data (`~/.slife/`, `~/.credstore/`) is **not removed** — delete manually for a full reset.
 
 ### Related tools
 
@@ -122,6 +111,110 @@ Installing slife depends on [credstore](credstore/README.md) and
 (macOS / Linux / WSL: `install.sh`, Windows: `install.ps1`) and uninstaller kept
 in their package directories; `mcp-plugin` ships no installer of its own — it is
 installed as a slife dependency or via `uv tool install mcp-plugin` from PyPI.
+
+## Semantic Memory Search — Installation Guide
+
+Semantic (hybrid) memory search — recall by meaning across `memdb` turns and `memfiles` notes — needs **two things** the one-click installer deliberately does not bring: a local embedding **backend** (a Python package, platform-specific) and the **model weights** (downloaded by you — the server never auto-downloads). Keyword search (`grep` / `fts5` / `time`) works without any of this. Setup is a **user-run** step; every piece is fail-open, so a missing backend leaves a working keyword-only core.
+
+**How it fits together.** slife treats every embedding provider as an OpenAI-compatible endpoint (`base_url` + `api_key`). The `local-embed` external plugin — installed with slife, running in the same tool venv — loads **one** local model **once** and serves it at `http://127.0.0.1:17347/v1` (`POST /v1/embeddings`, `GET /v1/models`, `GET /health`). `memdb` and `memfiles` both call that endpoint, so a model is never loaded twice. Which model serves is decided by `local_embed.json5` (`active_model`); slife's `embeddings.active_model` (`"local-embed"` by default) falls back to the endpoint's active model.
+
+### 1. Install the backend dependency
+
+Install the backend **into the slife tool venv** — the same interpreter `local-embed` runs under. Reference the venv by its **root directory**, `"$(uv tool dir)/slife"` — this works on **macOS, Linux and Windows alike** (uv locates the interpreter inside the venv itself, so you never need to know whether it's `bin/` or `Scripts/`):
+
+| Backend | Command |
+|---------|---------|
+| **Transformer** — `sentence-transformers`, simplest, works everywhere | `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
+| **GGUF · NVIDIA CUDA 12** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34` |
+| **GGUF · CPU** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34` |
+| **GGUF · macOS Metal** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal llama-cpp-python==0.3.34` |
+
+- For CUDA, pick the wheel index matching your CUDA version (`cu118` / `cu121` / `cu122` / `cu123` / `cu124` / `cu125` / `cu130` / `cu132`); the CUDA Linux wheels need **glibc ≥ 2.35**.
+- The two backends can coexist — install both in **one** `uv pip install` (e.g. `sentence-transformers` plus the `llama-cpp-python` extra-index row in a single command). Installing twice replaces the first install.
+- If the backend is missing, `local-embed` logs the exact install command for your platform instead of failing silently.
+
+### 2. Download the model weights
+
+Offline by default — `HF_HUB_OFFLINE=1`, **no auto-download**. Make the weights available yourself via one of two routes. The `hf` CLI is not shipped by the backends — install it once: `uv tool install "huggingface-hub[cli]"` (or prefix any `hf` command with `uvx --from huggingface-hub`).
+
+**Transformer route (default config, ~2 GB).** The seeded active model is `BAAI/bge-m3`; download it into the HF cache and no config change is needed:
+
+```bash
+hf download BAAI/bge-m3                                    # → ~/.cache/huggingface/hub
+HF_ENDPOINT=https://hf-mirror.com hf download BAAI/bge-m3  # mainland-China mirror
+```
+
+**GGUF route (small offline file, ~100 MB).** Use any quantized BGE-M3 GGUF you trust — these are community conversions with no single authoritative source (prefer a high-fidelity `Q8_0`). Get it from any source (HF single-file pull, browser, `wget`/`curl`), then place it at the default path and switch the active model:
+
+```bash
+hf download <owner>/<repo> <model>.gguf --local-dir ~/.slife/models   # HF single-file pull
+mv ~/.slife/models/<model>.gguf ~/.slife/models/bge-m3-q4_k_m.gguf     # the expected default path
+```
+
+The GGUF entry is **inert until it is active** — see `active_model` in step 3.
+
+### 3. Configure the HF cache & GGUF path
+
+Everything — host, port, models, active model, backend — lives in **`local_embed.json5`**, seeded by the installer (path resolution: `$LOCAL_EMBED_FILE` > slife project root (dev) > `~/.local-embed/local_embed.json5`). Values support `${VAR}` / `${VAR:-default}` expansion, and **a shell env var wins over the config**. The seeded file already carries portable placeholders — usually you only set env vars or edit two lines:
+
+```json5
+{
+  active_model: "BAAI/bge-m3",                       // "BAAI/bge-m3" (transformer) or "bge-m3" (gguf)
+  env: {
+    HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}",   // where transformer repos resolve
+    HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}",          // 1 = never auto-download; 0 = allow on-demand
+  },
+  models: {
+    "BAAI/bge-m3": { backend: "transformer", model: "BAAI/bge-m3" },
+    "bge-m3": { backend: "gguf", gguf_path: "${BGE_M3_GGUF_PATH:-~/.slife/models/bge-m3-q4_k_m.gguf}" },
+  },
+  port: 17347,
+}
+```
+
+| Setting | Meaning |
+|---------|---------|
+| `env.HF_HUB_CACHE` / `HF_HUB_CACHE` | Where the transformer route resolves HF repo ids. Default `~/.cache/huggingface/hub`. If your model was downloaded into a different cache, point this at it — otherwise the repo is silently re-fetched. |
+| `env.HF_HUB_OFFLINE` / `HF_HUB_OFFLINE` | `"1"` (default) — never auto-download; the model must already be in the cache / on disk. `"0"` — allow an on-demand download at first use (slow; can stall the first embed). |
+| `models."bge-m3".gguf_path` / `BGE_M3_GGUF_PATH` | The `.gguf` file for the GGUF route. `~` is expanded; `BGE_M3_GGUF_PATH` in the shell overrides the config default. |
+| `active_model` | Which entry serves: `"BAAI/bge-m3"` (transformer) or `"bge-m3"` (gguf). |
+
+Changes apply on the next start of the local-embed service (restart slife).
+
+**CLI alternative** — the `local-embed` binary in the tool venv upserts a model config, makes it active, and pins the port (idempotent, leaves other models untouched):
+
+```bash
+"$(uv tool dir)/slife/bin/local-embed" set BAAI/bge-m3 --HF_HUB_CACHE ~/.cache/huggingface/hub
+"$(uv tool dir)/slife/bin/local-embed" set-gguf bge-m3 --path ~/.slife/models/bge-m3-q4_k_m.gguf
+```
+
+(Windows: `"$(uv tool dir)\slife\Scripts\local-embed.exe"`.)
+
+### 4. Make the service ready — verify
+
+Start slife. `local-embed` runs as an external plugin; its MCP handshake completes fast, and the **model load is deferred to post-handshake warm-up** — the first embed loads it (a few seconds for GGUF, up to a minute for the ~2 GB transformer). Verify from inside the chat or over HTTP:
+
+- **In the chat** — ask the agent to run `system_health` (→ `check_local_embed`: online / active model / loaded), `embeddings_probe` (configured vs. live `/v1/models`, active model marked ★), and `memdb_semantic_status` / `memfiles_semantic_status` (report `semantic_ready`).
+- **Over HTTP** (the service is standalone at the fixed port):
+
+```bash
+curl http://127.0.0.1:17347/health            # {status, backend, model, dimension, loaded}
+curl http://127.0.0.1:17347/v1/models         # every configured model + the active flag
+curl http://127.0.0.1:17347/v1/embeddings -H 'Content-Type: application/json' \
+  -d '{"model": "bge-m3", "input": ["hello world"]}'   # returns a real vector
+```
+
+A healthy state: `/health` → `loaded: true`; `check_local_embed` → `local_embed online: active model … loaded`; `memdb_semantic_status` → `semantic_ready: true`. When the service is unreachable (backend missing, weights missing, still loading), slife **degrades gracefully to keyword search** — `check_local_embed` reports the reason, and once the index is fully built for the current model, hybrid results resume automatically.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Log: `backend_unavailable … reason=llama_cpp_not_installed` / `sentence_transformers_not_installed` | Run the step-1 install for your platform — the log prints the exact command. |
+| Transformer route won't load with `HF_HUB_OFFLINE=1` | The repo isn't in the cache — run `hf download BAAI/bge-m3` (or set `HF_HUB_OFFLINE=0` to allow a one-time download). Check `HF_HUB_CACHE` points at the cache that holds it. |
+| GGUF route won't load | File missing at `gguf_path` — check `BGE_M3_GGUF_PATH` / `gguf_path`, and that `active_model` is `"bge-m3"` (the GGUF entry is inert while the transformer is active). |
+| `check_local_embed` reports the active model not loaded yet | Normal during warm-up; the model loads on the first embed. Re-check after a few seconds. |
+| First embed very slow | A transformer download/warm-up is deferred to the first embed; subsequent calls are fast. |
 
 ## Quick Start
 
@@ -361,7 +454,7 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 
 ## Optional Extras
 
-These embedding backends are **not installed by the one-click installer** — they are the optional `semantic memory search` setup (see [Install](#macos--linux--wsl) — pick one backend + the model). The table below is for manual installs (uvx / git checkout) or to re-add a backend:
+These embedding backends are **not installed by the one-click installer** — they are the optional `semantic memory search` setup (see the [Semantic Memory Search — Installation Guide](#semantic-memory-search--installation-guide) — pick one backend + the model). The table below is for manual installs (uvx / git checkout) or to re-add a backend:
 
 | Extra | Enables |
 |-------|---------|
