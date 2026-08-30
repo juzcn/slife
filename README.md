@@ -175,7 +175,7 @@ Everything — host, port, models, active model, backend — lives in **`local_e
 | Setting | Meaning |
 |---------|---------|
 | `env.HF_HUB_CACHE` / `HF_HUB_CACHE` | Where the transformer route resolves HF repo ids. Default `~/.cache/huggingface/hub`. If your model was downloaded into a different cache, point this at it — otherwise the repo is silently re-fetched. |
-| `env.HF_HUB_OFFLINE` / `HF_HUB_OFFLINE` | `"1"` (default) — never auto-download; the model must already be in the cache / on disk. `"0"` — allow an on-demand download at first use (slow; can stall the first embed). |
+| `env.HF_HUB_OFFLINE` / `HF_HUB_OFFLINE` | `"1"` (default) — offline; the model must already be in the cache / on disk. `"0"` — allow the model loader to reach the network (no managed download / mirror fallback). |
 | `models."bge-m3".gguf_path` / `BGE_M3_GGUF_PATH` | The `.gguf` file for the GGUF route. `~` is expanded; `BGE_M3_GGUF_PATH` in the shell overrides the config default. |
 | `active_model` | Which entry serves: `"BAAI/bge-m3"` (transformer) or `"bge-m3"` (gguf). |
 
@@ -209,7 +209,7 @@ A healthy state: `/health` → `loaded: true`; `system_health` → `embeddings` 
 | Symptom | Fix |
 |---------|-----|
 | Log: `backend_unavailable … reason=llama_cpp_not_installed` / `sentence_transformers_not_installed` | Run the step-1 install for your platform — the log prints the exact command. |
-| Transformer route won't load with `HF_HUB_OFFLINE=1` | The repo isn't in the cache — run `hf download BAAI/bge-m3` (or set `HF_HUB_OFFLINE=0` to allow a one-time download). Check `HF_HUB_CACHE` points at the cache that holds it. |
+| Transformer route won't load with `HF_HUB_OFFLINE=1` | The repo isn't in the cache — run `hf download BAAI/bge-m3` and make sure `HF_HUB_CACHE` points at the cache that holds it. |
 | GGUF route won't load | File missing at `gguf_path` — check `BGE_M3_GGUF_PATH` / `gguf_path`, and that `active_model` is `"bge-m3"` (the GGUF entry is inert while the transformer is active). |
 | `system_health` shows the embeddings component with the active model not loaded yet | Normal during warm-up; the model loads on the first embed. Re-check after a few seconds. |
 | First embed very slow | A transformer download/warm-up is deferred to the first embed; subsequent calls are fast. |

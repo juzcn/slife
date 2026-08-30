@@ -6,7 +6,6 @@ load, dim override, thread-serialisation, row alignment, multi-model).
 """
 
 import asyncio
-import os
 
 import pytest
 
@@ -17,69 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from local_embed.engine import (
     Engine,
     ModelSpec,
-    _ensure_hf_model,
     _guess_dim,
     check_backend_runtime,
 )
-
-
-class TestEnsureHfModel:
-    """Model pre-download with automatic hf-mirror.com fallback."""
-
-    def test_primary_success_no_fallback(self, monkeypatch):
-        monkeypatch.delenv("HF_ENDPOINT", raising=False)
-        calls = []
-
-        def fake(repo):
-            calls.append(repo)
-            return "/cache/models--BAAI--bge-m3"
-
-        with patch("huggingface_hub.snapshot_download", side_effect=fake):
-            out = _ensure_hf_model("BAAI/bge-m3")
-        assert out == "/cache/models--BAAI--bge-m3"
-        assert calls == ["BAAI/bge-m3"]
-        assert "HF_ENDPOINT" not in os.environ
-
-    def test_primary_fails_mirror_succeeds(self, monkeypatch):
-        monkeypatch.delenv("HF_ENDPOINT", raising=False)
-        calls = []
-
-        def fake(repo):
-            calls.append(repo)
-            if len(calls) == 1:
-                raise OSError("blocked")
-            return "/cache/mirror/bge-m3"
-
-        with patch("huggingface_hub.snapshot_download", side_effect=fake):
-            out = _ensure_hf_model("BAAI/bge-m3")
-        assert out == "/cache/mirror/bge-m3"
-        assert calls == ["BAAI/bge-m3", "BAAI/bge-m3"]
-        assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
-
-    def test_explicit_endpoint_respected_no_fallback(self, monkeypatch):
-        monkeypatch.setenv("HF_ENDPOINT", "https://internal.example.com")
-        calls = []
-
-        def fake(repo):
-            calls.append(repo)
-            raise OSError("blocked")
-
-        with patch("huggingface_hub.snapshot_download", side_effect=fake):
-            with pytest.raises(OSError):
-                _ensure_hf_model("BAAI/bge-m3")
-        assert calls == ["BAAI/bge-m3"]
-        assert os.environ["HF_ENDPOINT"] == "https://internal.example.com"
-
-    def test_both_fail_raises_runtime_error(self, monkeypatch):
-        monkeypatch.delenv("HF_ENDPOINT", raising=False)
-
-        def fake(repo):
-            raise OSError("blocked")
-
-        with patch("huggingface_hub.snapshot_download", side_effect=fake):
-            with pytest.raises(RuntimeError, match="both failed"):
-                _ensure_hf_model("BAAI/bge-m3")
-        assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
 
 
 # ── _guess_dim ────────────────────────────────────────────────────────────

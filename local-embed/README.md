@@ -200,12 +200,11 @@ and writes nothing.  Changes apply on the next server start.
 
 ### Model download — offline by default
 
-`HF_HUB_OFFLINE=1` by default, so the server **never auto-downloads** a model
+`HF_HUB_OFFLINE=1` by default, so the server **never downloads** a model
 (it's too slow).  Make the model available yourself — see [Model
 weights](#model-weights): `hf download BAAI/bge-m3` for the transformer route
 (into the HF cache), or drop a GGUF at the default `~/.local-embed/models/…` for the
-GGUF route.  Set `HF_HUB_OFFLINE=0` to allow an on-demand download at first
-use instead.
+GGUF route.
 
 ## Use
 

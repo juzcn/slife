@@ -6,13 +6,12 @@
   //
   // The embedding model is REQUIRED for slife's full functionality —
   // semantic / hybrid memory search.  Two routes:
-  //   1) TRANSFORMER (default): the active model "BAAI/bge-m3" (~2 GB)
-  //      downloads on first use into $HF_HUB_CACHE (default
+  //   1) TRANSFORMER: the active model "BAAI/bge-m3" (~2 GB) must be
+  //      pre-downloaded into $HF_HUB_CACHE (default
   //      ~/.cache/huggingface/hub).  Pre-download it with:
-  //        local-embed download BAAI/bge-m3                                # huggingface.co
-  //        HF_ENDPOINT=https://hf-mirror.com local-embed download BAAI/bge-m3  # mirror fallback
-  //      At runtime a failed download also auto-falls back to hf-mirror.com
-  //      (see local_embed.engine._ensure_hf_model).
+  //        hf download BAAI/bge-m3                                # huggingface.co
+  //        HF_ENDPOINT=https://hf-mirror.com hf download BAAI/bge-m3  # mirror fallback
+  //      (No on-demand download — the model must already be in the cache.)
   //   2) GGUF (small offline file): drop a quantized BGE-M3 GGUF (~100 MB) at
   //      ~/.local-embed/models/bge-m3-q4_k_m.gguf (the default path below), or set
   //      BGE_M3_GGUF_PATH in the shell / edit gguf_path.
