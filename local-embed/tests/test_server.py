@@ -5,6 +5,8 @@ FastMCP app is exercised via its ASGI transport (``mcp.http_app``) so we
 test the actual route handlers end-to-end without spawning a server.
 """
 
+import socket
+
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -15,6 +17,7 @@ from starlette.testclient import TestClient
 
 from local_embed.engine import Engine
 from local_embed.server import build_server, mcp
+from local_embed.server_utils import bind_port
 
 
 class _StubEngine(Engine):
@@ -150,3 +153,32 @@ class TestHealth:
             resp = c.get("/health")
             assert resp.status_code == 200
             assert resp.json()["status"] == "degraded"
+
+
+class TestBindPort:
+    """bind_port fails loudly when the fixed port is already served.
+
+    local-embed is the only plugin on a fixed port; a second instance must
+    not shadow the first (its host-side base_url is static), so a live
+    listener on the port is a hard error — no fallback.
+    """
+
+    def test_served_port_raises_no_fallback(self):
+        # Reserve a live listener, then try to bind the same port.
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.listen()
+        try:
+            with pytest.raises(RuntimeError, match="already being served"):
+                bind_port("127.0.0.1", port)
+        finally:
+            s.close()
+
+    def test_free_port_binds(self):
+        sock, _ = bind_port("127.0.0.1", 0)
+        try:
+            assert sock.getsockname()[1] != 0  # really bound to a real port
+        finally:
+            sock.close()

@@ -39,20 +39,54 @@ def bind_free_port(host: str = "127.0.0.1") -> "tuple[socket.socket, int]":
 
 
 def bind_port(host: str, port: int) -> "tuple[socket.socket, int]":
-    """Bind a socket to *host*:*port*; fall back to a free port on failure.
+    """Bind a socket to *host*:*port*; fail when the port is already served.
 
-    Returns ``(socket, actual_port)`` — when the requested port is taken,
-    the OS assigns a free one so the server still starts (the caller
-    reports the actual port via the stdout signal).
+    local-embed is the only plugin that uses a fixed port (every other
+    plugin takes an OS-assigned one), so a port already being served is a
+    hard error — no fallback to a free port.  A second instance would serve
+    nothing (the host's embeddings ``base_url`` is static) while doubling
+    the model in memory; the existing instance keeps serving on the original
+    port.
+
+    On Windows ``SO_REUSEADDR`` lets a raw ``bind`` succeed on a port that
+    is already listened on, so we also probe for a live listener before
+    binding — a conflict fails loudly on every platform.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if port:
+        _ensure_port_free(host, port)
     try:
         sock.bind((host, port))
-    except OSError:
+    except OSError as e:
         sock.close()
-        return bind_free_port(host)
+        raise RuntimeError(
+            f"cannot bind {host}:{port} — already in use by another "
+            "local-embed instance (or service). Stop it, or change the port "
+            "in local_embed.json5, before starting slife; the running "
+            "instance continues to serve embeddings."
+        ) from e
     return sock, port
+
+
+def _ensure_port_free(host: str, port: int) -> None:
+    """Raise if *host*:*port* already accepts connections.
+
+    A successful connect means another local-embed is serving there; binding
+    a second one would shadow it (or split traffic unpredictably on
+    Windows).  ``port=0`` skips the probe — that means "OS-assigned", so
+    there is nothing to collide with.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            raise RuntimeError(
+                f"port {host}:{port} is already being served — another "
+                "local-embed instance is running there. Stop it, or change "
+                "the port in local_embed.json5, before starting slife; the "
+                "running instance continues to serve embeddings."
+            )
+    except OSError:
+        pass  # nothing listening — safe to bind
 
 
 def signal_port(port: int) -> None:

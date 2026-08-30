@@ -355,6 +355,13 @@ def main() -> int:
     ``base_url`` at it), serves MCP + embeddings on it, and blocks until
     shutdown.  The stdout port signal is still emitted for hosts that
     discover the port.
+
+    local-embed is the only plugin that uses a fixed port (every other
+    plugin takes an OS-assigned one), so a port already in use is a hard
+    error — no fallback.  A second instance would serve nothing (the host's
+    embeddings ``base_url`` is static) while doubling the model in memory;
+    the host reports the plugin as not loaded and the existing instance
+    keeps serving embeddings on the original port.
     """
     from local_embed.config import resolve_engine_settings
     from local_embed.server_utils import bind_port, run_plugin_server
@@ -365,9 +372,8 @@ def main() -> int:
     build_server(engine)
 
     # Bind the configured port (default {DEFAULT_PORT} — a STABLE port so a
-    # host can point its OpenAI-compatible client's base_url at it).  Falls
-    # back to a free port when taken; the stdout signal reports the actual
-    # port either way.
+    # host can point its OpenAI-compatible client's base_url at it).  A port
+    # already being served is a hard error (no fallback) — see bind_port.
     sock, port = bind_port(settings["host"], int(settings["port"]))
     logger.info(
         "local_embed_start port=%s active=%s models=%s",
