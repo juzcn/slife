@@ -33,7 +33,7 @@ import logging
 import os
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from typing import Any
 
 from local_embed.threads import run_daemon
@@ -88,11 +88,11 @@ def _guess_max_tokens(model: str) -> int:
 # directly — those module attributes MUST keep existing as plain names so
 # ``patch()`` replaces them.  A test patch (a non-None value) also counts
 # as "resolved" and is never overwritten by a real import.
-_Llama: "Any | None" = None
-_SentenceTransformer: "Any | None" = None
+_Llama: Any | None = None
+_SentenceTransformer: Any | None = None
 
 #: Backend -> (module attribute to fill, lazy import callable).
-_BACKEND_IMPORTS: dict[str, tuple[str, "Any"]] = {}
+_BACKEND_IMPORTS: dict[str, tuple[str, Any]] = {}
 
 
 def _resolve_backend(backend: str) -> None:
@@ -115,7 +115,7 @@ def _resolve_backend(backend: str) -> None:
     try:
         module = importlib.import_module(spec[1])
         globals()[attr_name] = getattr(module, "Llama" if backend == "gguf" else "SentenceTransformer")
-    except Exception:
+    except (ImportError, AttributeError):
         globals()[attr_name] = None  # dependency missing — backend unavailable
 
 
@@ -137,18 +137,11 @@ def _guarded_stdout():
     Wrapping the constructor with this keeps the load working when the
     host has already read the port signal and closed our stdout.
     """
-    try:
-        if sys.stdout is None or sys.stdout.closed:
-            real_stdout = sys.stdout
-            sys.stdout = open(os.devnull, "w", encoding="utf-8")
-            try:
-                yield
-            finally:
-                sys.stdout = real_stdout
-        else:
+    if sys.stdout is None or sys.stdout.closed:
+        with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull):
             yield
-    except Exception:
-        raise
+    else:
+        yield
 
 
 _MIRROR_ENDPOINT = "https://hf-mirror.com"
@@ -225,8 +218,8 @@ class ModelSpec:
     """One configured embedding model — name key + backend/weights."""
 
     __slots__ = (
-        "name", "backend", "model", "gguf_path", "device",
-        "max_tokens", "dim", "dim_known",
+        "backend", "device", "dim", "dim_known", "gguf_path",
+        "max_tokens", "model", "name",
     )
 
     def __init__(
@@ -268,7 +261,7 @@ class Engine:
     def __init__(
         self,
         *,
-        specs: "list[ModelSpec] | None" = None,
+        specs: list[ModelSpec] | None = None,
         active: str | None = None,
         # Single-model convenience (backwards compatible):
         backend: str = "gguf",
@@ -319,7 +312,7 @@ class Engine:
         return self._active
 
     @property
-    def models(self) -> "list[str]":
+    def models(self) -> list[str]:
         return list(self._specs)
 
     def model_spec(self, name: str | None = None) -> ModelSpec:
@@ -394,7 +387,7 @@ class Engine:
                 fut.cancel()
             self._loading.pop(name, None)
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — a failed load must degrade, not crash
             logger.warning("load_failed name=%s backend=%s err=%s", name, spec.backend, e)
             self._failed.add(name)
             self._clients.pop(name, None)
@@ -415,7 +408,7 @@ class Engine:
 
     # ── embedding ────────────────────────────────────────────────────
 
-    async def embed(self, texts: "list[str]", model: str | None = None) -> "list[list[float]]":
+    async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
         """Embed a list of texts with *model* (default active).
 
         Returns one vector per non-empty input; empty/whitespace inputs get
@@ -452,7 +445,7 @@ class Engine:
             vecs = await self._encode_transformer(client, valid)
 
         # Restore row alignment for empty inputs (zero vector).
-        result: "list[list[float]]" = []
+        result: list[list[float]] = []
         it = iter(vecs)
         for t in texts:
             result.append(next(it) if t.strip() else [0.0] * dim)
@@ -473,7 +466,7 @@ class Engine:
         if callable(raw):
             try:
                 raw = raw()
-            except Exception:
+            except Exception:  # noqa: BLE001 — defensive: any probe failure degrades to dim 0
                 raw = 0
         try:
             return int(raw or 0)  # type: ignore[arg-type]
@@ -572,11 +565,11 @@ class Engine:
                 spec.name, spec.model, spec.dim,
             )
 
-    async def _encode_gguf(self, client: Any, texts: "list[str]") -> "list[list[float]]":
+    async def _encode_gguf(self, client: Any, texts: list[str]) -> list[list[float]]:
         """Embed via llama-cpp; runs on a daemon thread, serialised."""
 
-        def _encode() -> "list[list[float]]":
-            out: "list[list[float]]" = []
+        def _encode() -> list[list[float]]:
+            out: list[list[float]] = []
             for text in texts:
                 with self._encode_lock:
                     result = client.create_embedding(text)
@@ -585,7 +578,7 @@ class Engine:
 
         return await run_daemon(_encode, name="gguf-embed")
 
-    async def _encode_transformer(self, client: Any, texts: "list[str]") -> "list[list[float]]":
+    async def _encode_transformer(self, client: Any, texts: list[str]) -> list[list[float]]:
         """Embed via sentence-transformers; daemon thread, serialised."""
 
         def _encode() -> Any:
