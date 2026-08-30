@@ -541,6 +541,10 @@ class EmbeddingClient:
                     client = self._client
             models = await client.models.list()
         except Exception as e:
+            # Endpoint unreachable — treat as unavailable so the semantic
+            # manager degrades (keyword search) instead of running a drainer
+            # that fails on every batch.
+            self._available = False
             logger.warning(
                 "embedding_model_discover_failed base_url=%s err=%s",
                 base_url, e,
@@ -549,6 +553,7 @@ class EmbeddingClient:
 
         entries = [m for m in (models.data or []) if getattr(m, "id", None)]
         if not entries:
+            self._available = False
             return False
 
         configured = getattr(self, "_model", "")
@@ -560,6 +565,18 @@ class EmbeddingClient:
                 None,
             )
             if match is not None:
+                # The configured model is listed — but its backend may be
+                # unavailable (local-embed reports available=false when the
+                # dependency isn't installed).  Surface that so the caller
+                # degrades instead of 503-looping in the drainer.
+                if not getattr(match, "available", True):
+                    self._available = False
+                    logger.warning(
+                        "embedding_model_unavailable model=%s base_url=%s "
+                        "(backend dependency missing — keyword search only)",
+                        configured, base_url,
+                    )
+                    return False
                 new_dim = int(getattr(match, "dimension", 0) or 0)
                 if new_dim:
                     if new_dim != self._dim:
@@ -579,6 +596,14 @@ class EmbeddingClient:
             (m for m in entries if getattr(m, "active", False)),
             entries[0],
         )
+        if not getattr(active, "available", True):
+            self._available = False
+            logger.warning(
+                "embedding_model_unavailable model=%s base_url=%s "
+                "(backend dependency missing — keyword search only)",
+                active.id, base_url,
+            )
+            return False
         new_model = active.id
         new_dim = int(getattr(active, "dimension", 0) or 0)
         if new_model and new_model != self._model:
@@ -613,8 +638,26 @@ class EmbeddingClient:
             # the real dimension before the vec0 table uses it.
             if self._backend == "api":
                 if not await self._discover_model():
+                    # Endpoint unreachable or no usable model — not available.
+                    if not self._available:
+                        logger.warning(
+                            "embedding_api_unavailable base_url=%s "
+                            "(backend not ready — keyword search only)",
+                            getattr(self, "_base_url", ""),
+                        )
+                        return False
                     if not self._dim_known:
                         await self._probe_api_dim()
+                elif not self._available:
+                    # The endpoint lists a model but its backend dependency is
+                    # missing (local-embed reports available=false) — degrade
+                    # instead of running a drainer that 503s on every batch.
+                    logger.warning(
+                        "embedding_backend_unavailable model=%s base_url=%s "
+                        "(dependency missing — keyword search only)",
+                        self._model, getattr(self, "_base_url", ""),
+                    )
+                    return False
             return True
         if self._loading is not None:
             return await self._loading  # share the in-flight load

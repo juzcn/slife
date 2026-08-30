@@ -322,20 +322,32 @@ async def check_local_embed(client=None) -> list[dict]:
         data = json.loads(raw)
         active = data.get("active_model") or "?"
         models = data.get("models") or []
-        active_loaded = next(
-            (m.get("loaded") for m in models if m.get("name") == active),
+        active_entry = next(
+            (m for m in models if m.get("name") == active),
             None,
         )
+        active_loaded = active_entry.get("loaded") if active_entry else None
+        active_available = active_entry.get("available") if active_entry else None
         loaded_count = sum(1 for m in models if m.get("loaded"))
         if active_loaded:
             return [{"component": "local_embed", "level": "ok", "key": "status",
                      "value": active,
                      "hint": f"local-embed online: active model {active} loaded, "
                              f"{loaded_count}/{len(models)} model(s) loaded."}]
+        if active_available is False:
+            # The endpoint is up but the active model's backend is unusable —
+            # dependency not installed (sentence-transformers / llama-cpp-python)
+            # or the model file is missing/broken.  Not a load-block; it will
+            # keep failing.  Semantic search degrades to keyword-only.
+            return [{"component": "local_embed", "level": "warning", "key": "status",
+                     "value": active,
+                     "hint": (f"local-embed online but active model {active} unavailable — "
+                              "embedding backend dependency missing or model file invalid. "
+                              "Semantic search off (keyword search still works).")}]
         return [{"component": "local_embed", "level": "warning", "key": "status",
                  "value": active,
-                 "hint": (f"local-embed online but active model {active} NOT loaded — "
-                          "first embed will block on the model load.")}]
+                 "hint": (f"local-embed online but active model {active} NOT loaded yet — "
+                          "first embed will load it (or it fails then).")}]
     except Exception as e:
         logger.warning("local_embed_check_failed err=%s", e)
         return [{"component": "local_embed", "level": "warning", "key": "status",

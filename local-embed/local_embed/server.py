@@ -211,6 +211,7 @@ def _model_entry(engine: Engine, name: str) -> dict:
         "dimension": spec.dim,
         "dimension_known": spec.dim_known,
         "loaded": engine.is_loaded(name),
+        "available": spec.runtime_available() and name not in engine._failed,
         "max_tokens": spec.max_tokens,
     }
 
