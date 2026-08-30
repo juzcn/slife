@@ -197,17 +197,29 @@ async def _build_cmd() -> int:
         elif await emb.load():
             await store.drop_embeddings()
             model_id = f"api:{emb.model}"
+            embed_failed = False
             while True:
                 docs = await store.get_unembedded_docs(limit=20)
                 if not docs:
                     break
                 for doc in docs:
                     vec = await emb.embed_one(doc["text"])
-                    if vec:
-                        await store.replace_embedding(doc["doc_id"], vec, model_id)
-            await store.set_meta("embedding_model", model_id)
-            semantic = f"{emb.model} (dim={emb.dimension}, {total} embedded)"
-            print(f"[build] embeddings: {semantic}")
+                    if not vec:
+                        # Endpoint died mid-index (e.g. local-embed restarted or
+                        # the model is not ready → 503).  A failed doc stays
+                        # unembedded and get_unembedded_docs would hand it back
+                        # forever — break and degrade instead of looping.
+                        embed_failed = True
+                        break
+                    await store.replace_embedding(doc["doc_id"], vec, model_id)
+                if embed_failed:
+                    break
+            if embed_failed:
+                print("[build] embeddings: failed mid-index — semantic search off (keyword-only)")
+            else:
+                await store.set_meta("embedding_model", model_id)
+                semantic = f"{emb.model} (dim={emb.dimension}, {total} embedded)"
+                print(f"[build] embeddings: {semantic}")
         else:
             print("[build] embeddings: configured but failed to load — semantic search off (keyword-only)")
 
