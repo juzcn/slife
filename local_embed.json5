@@ -19,7 +19,11 @@
   active_model: "BAAI/bge-m3",
   env: {
     HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}",
-    HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
+    // Offline by default — the model is NOT auto-downloaded (too slow).
+    // The transformer route needs the model already in the HF cache; the
+    // GGUF route needs the file at the default path below.  Set
+    // HF_HUB_OFFLINE=0 to allow an on-demand download.
+    HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}"
   },
   models: {
     "BAAI/bge-m3": {

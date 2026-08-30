@@ -44,9 +44,10 @@ uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url http
 uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34    # CPU
 uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal llama-cpp-python==0.3.34 # macOS Metal
 
-# 模型 — huggingface.co 主站，失败自动 fallback 到 hf-mirror.com（国内）
-"$(uv tool dir)/slife/bin/local-embed" download BAAI/bge-m3
-# 或更轻的 ~100 MB GGUF：放进默认路径 ~/.slife/models/bge-m3-q4_k_m.gguf（或设 BGE_M3_GGUF_PATH）
+# 模型 — 默认离线（HF_HUB_OFFLINE=1，不自动下载）。先自己下载：
+# `hf download BAAI/bge-m3`（~2 GB 到 HF 缓存，huggingface.co → hf-mirror.com 自动 fallback），
+# 或放一个更轻的 ~100 MB GGUF 到默认路径 ~/.slife/models/bge-m3-q4_k_m.gguf（或设 BGE_M3_GGUF_PATH）。
+# 设 HF_HUB_OFFLINE=0 可在首次使用时按需下载。
 ```
 
 若手工编辑了 `mcp-plugin.json5`，重建 MCP 服务器目录：`"$(uv tool dir)/slife/bin/mcp-plugin" build`。所有可选步骤都**fail-open**：出错只警告、继续，核心安装始终可用。

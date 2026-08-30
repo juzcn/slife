@@ -45,9 +45,11 @@ uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url http
 uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34    # CPU
 uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal llama-cpp-python==0.3.34 # macOS Metal
 
-# model — huggingface.co, auto-falls back to hf-mirror.com (mainland China)
-"$(uv tool dir)/slife/bin/local-embed" download BAAI/bge-m3
-# or a small GGUF (~100 MB) at the default ~/.slife/models/bge-m3-q4_k_m.gguf (or set BGE_M3_GGUF_PATH)
+# model — offline by default (HF_HUB_OFFLINE=1, no auto-download).  Download
+# it yourself first: `hf download BAAI/bge-m3` (~2 GB into the HF cache,
+# huggingface.co → hf-mirror.com fallback), or drop a small GGUF (~100 MB) at
+# the default ~/.slife/models/bge-m3-q4_k_m.gguf (or set BGE_M3_GGUF_PATH).
+# Set HF_HUB_OFFLINE=0 to allow an on-demand download at first use.
 ```
 
 Then restore the MCP server catalog if you edit `mcp-plugin.json5` by hand: `"$(uv tool dir)/slife/bin/mcp-plugin" build`. Every optional step is **fail-open**: an error warns and continues, leaving a working core.

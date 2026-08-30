@@ -89,48 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gguf_p.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"port the server binds (default {DEFAULT_PORT})")
-
-    dl_p = sub.add_parser(
-        "download",
-        help="pre-download a transformer model (tracked download, mirror fallback)",
-        description=(
-            "Download a transformer model's snapshot so the server can load "
-            "it without a first-use download.  Tries huggingface.co first; on "
-            "failure it automatically falls back to the hf-mirror.com mirror "
-            "(China-friendly, no manual HF_ENDPOINT needed)."
-        ),
-    )
-    dl_p.add_argument(
-        "model",
-        metavar="<model>",
-        help="a configured model name (resolves its repo id) or an HF repo id, e.g. BAAI/bge-m3",
-    )
     return p
-
-
-def run_download(args) -> int:
-    """Pre-download a transformer model — HF main first, mirror fallback.
-
-    Resolves *model* to an HF repo id (a configured model name resolves to
-    its repo id), then runs the engine's download helper, which retries via
-    the hf-mirror.com mirror when huggingface.co is unreachable — see
-    :func:`local_embed.engine._ensure_hf_model`.
-    """
-    from local_embed.config import apply_env, load_config
-    from local_embed.engine import _ensure_hf_model
-
-    apply_env()  # HF_HUB_CACHE / HF_ENDPOINT (expanded) from local_embed.json5 env:
-    repo = args.model
-    entry = (load_config().get("models") or {}).get(repo)
-    if isinstance(entry, dict) and entry.get("model"):
-        repo = entry["model"]
-    try:
-        local = _ensure_hf_model(repo)
-    except Exception as e:
-        print(f"Error: cannot download model '{repo}': {e}", file=sys.stderr)
-        return 2
-    print(f"✓ model ready at: {local}")
-    return 0
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -144,8 +103,6 @@ def main(argv: "list[str] | None" = None) -> int:
         from local_embed.cmd_set import run_set_gguf
 
         return run_set_gguf(args)
-    if args.command == "download":
-        return run_download(args)
 
     setup_logging(getattr(logging, args.log_level.upper(), logging.INFO))
 

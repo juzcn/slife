@@ -198,22 +198,14 @@ local-embed set-gguf bge-m3 --path D:\models\bge-m3\bge-m3-q8_0.gguf [--port 173
 Any error — cache unset, repo not in cache, file missing — exits non-zero
 and writes nothing.  Changes apply on the next server start.
 
-### `local-embed download <model>` — pre-download a transformer model
+### Model download — offline by default
 
-Downloads a transformer model's snapshot so the server loads without a
-first-use download.  `<model>` is a configured model name (resolves its
-repo id) or a bare HF repo id (e.g. `BAAI/bge-m3`).  It tries
-huggingface.co first and **automatically falls back to the hf-mirror.com**
-mirror (mainland China) — no `HF_ENDPOINT` needed:
-
-```bash
-local-embed download BAAI/bge-m3
-HF_ENDPOINT=https://hf-mirror.com  local-embed download BAAI/bge-m3   # explicit mirror
-```
-
-The GGUF route needs no download command: drop a quantized BGE-M3 GGUF at
-the default `~/.slife/models/bge-m3-q4_k_m.gguf` (or set `BGE_M3_GGUF_PATH`)
-and the `bge-m3` model entry picks it up.
+`HF_HUB_OFFLINE=1` by default, so the server **never auto-downloads** a model
+(it's too slow).  Make the model available yourself — see [Model
+weights](#model-weights): `hf download BAAI/bge-m3` for the transformer route
+(into the HF cache), or drop a GGUF at the default `~/.slife/models/…` for the
+GGUF route.  Set `HF_HUB_OFFLINE=0` to allow an on-demand download at first
+use instead.
 
 ## Use
 
