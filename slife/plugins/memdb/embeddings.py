@@ -36,6 +36,13 @@ _KNOWN_MODELS: dict[str, tuple[int, int]] = {
 _DEFAULT_DIM = 1024
 _DEFAULT_MAX_TOKENS = 8192
 
+#: Bound the OpenAI-compatible API calls.  The SDK defaults to a 600s timeout
+#: WITH retries — a blackholed / unreachable endpoint would stall the semantic
+#: warm-up (and the drainer) for ~20 minutes.  A short timeout + no retries
+#: makes an unavailable backend degrade fast (keyword search still works).
+_API_TIMEOUT = 10.0
+_API_MAX_RETRIES = 0
+
 
 def _known_model(model: str) -> tuple[int, int] | None:
     """Best-effort (dimension, max_tokens) for a model family we recognise."""
@@ -523,7 +530,11 @@ class EmbeddingClient:
             if client is None:
                 async with self._client_init_lock:
                     if self._client is None:
-                        kwargs: dict = {"api_key": getattr(self, "_api_key", "")}
+                        kwargs: dict = {
+                            "api_key": getattr(self, "_api_key", ""),
+                            "timeout": _API_TIMEOUT,
+                            "max_retries": _API_MAX_RETRIES,
+                        }
                         if base_url:
                             kwargs["base_url"] = base_url
                         self._client = AsyncOpenAI(**kwargs)
@@ -703,7 +714,11 @@ class EmbeddingClient:
         if self._client is None:
             async with self._client_init_lock:
                 if self._client is None:  # double-checked under the lock
-                    kwargs: dict = {"api_key": self._api_key}
+                    kwargs: dict = {
+                        "api_key": self._api_key,
+                        "timeout": _API_TIMEOUT,
+                        "max_retries": _API_MAX_RETRIES,
+                    }
                     if self._base_url:
                         kwargs["base_url"] = self._base_url
                     self._client = AsyncOpenAI(**kwargs)
