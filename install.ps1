@@ -63,8 +63,8 @@ try {
     Write-Host "npx               : auto-install Node.js if needed (required for MCP servers)"
     Write-Host "bun               : auto-install bun if needed (required for nvidia-nim MCP)"
     Write-Host "Configs           : seeded from bundled defaults (slife / local-embed / mcp-plugin)"
-    Write-Host "Full tool set     : embeddings, yt-dlp, browser-harness, Mosquitto (SLIFE_CORE=1 to skip)"
-    Write-Host "Disk space needed : ~500 MB (embeddings extra: +0.3-2 GB)"
+    Write-Host "Full tool set     : yt-dlp, browser-harness, Mosquitto (SLIFE_CORE=1 to skip)"
+    Write-Host "Disk space needed : ~500 MB (semantic setup adds +0.3-2 GB, user-run)"
     Write-Host ""
 
     # 0. Disk space check

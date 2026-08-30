@@ -27,9 +27,10 @@ set -euo pipefail
 # ``uv tool install`` to install slife in an isolated environment.
 # Python 3.13 is managed automatically by uv.
 #
-# Full tool set is installed by default (local embeddings, yt-dlp,
-# browser-harness).  Pass ``--core`` (or set $SLIFE_CORE=1) for a light
-# core install that skips those optional tools.
+# Lightweight tool set is installed by default (yt-dlp, browser-harness).
+# The heavy semantic packages (sentence-transformers / llama-cpp-python) are
+# NOT — they are a user-run setup printed at the end (step [4d]).
+# Pass ``--core`` (or set $SLIFE_CORE=1) to skip even the lightweight tools.
 
 # --core / $SLIFE_CORE=1 → light install (skip the optional full tool set)
 CORE_MODE=false
@@ -60,8 +61,8 @@ echo "bun               : auto-install bun if needed (required for nvidia-nim MC
 echo "unzip             : auto-install on Linux if missing (bun installer dependency)"
 echo "rootless fallback : official tarballs → ~/.local when no root/package manager"
 echo "Configs           : seeded from bundled defaults (slife / local-embed / mcp-plugin)"
-echo "Full tool set     : embeddings, yt-dlp, browser-harness, Mosquitto (--core to skip)"
-echo "Disk space needed : ~500 MB (embeddings extra: +0.3–2 GB)"
+echo "Full tool set     : yt-dlp, browser-harness, Mosquitto (--core to skip)"
+echo "Disk space needed : ~500 MB (semantic setup adds 0.3–2 GB, user-run)"
 echo ""
 
 # ── Rootless install helpers ────────────────────────────────────
