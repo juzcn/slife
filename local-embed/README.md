@@ -62,6 +62,17 @@ CUDA index.  Note the CUDA Linux wheels need **glibc ≥ 2.35** (built for
 If the `gguf` backend is missing, the server errors at startup with the
 exact command for your platform (the Windows CPU one on Windows).
 
+**Want both backends in one environment?** Install the two extras together
+in a single command — running `uv tool install` twice replaces the first
+environment with the second, so they would not coexist:
+
+```bash
+# both backends, Windows CPU:
+uv tool install 'local-embed[gguf,transformer]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+# both backends, Linux / macOS CPU:
+uv tool install 'local-embed[gguf,transformer]'
+```
+
 Core deps are `fastmcp` + `starlette`; the model backends are optional
 extras.  Installing does **not** fetch a model — get the weights first.
 
