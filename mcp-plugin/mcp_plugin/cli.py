@@ -183,25 +183,33 @@ async def _build_cmd() -> int:
         total = await store.count_tools()
         print(f"[build] catalog: {total} tools from {len(connected)}/{len(all_servers)} servers")
 
-        semantic = "disabled (no embeddings section in mcp-plugin.json5)"
         emb = EmbeddingClient.from_plugin_config()
-        if emb.available:
-            if await emb.load():
-                await store.drop_embeddings()
-                model_id = f"api:{emb.model}"
-                while True:
-                    docs = await store.get_unembedded_docs(limit=20)
-                    if not docs:
-                        break
-                    for doc in docs:
-                        vec = await emb.embed_one(doc["text"])
-                        if vec:
-                            await store.replace_embedding(doc["doc_id"], vec, model_id)
-                await store.set_meta("embedding_model", model_id)
-                semantic = f"{emb.model} (dim={emb.dimension}, {total} embedded)"
-            else:
-                semantic = "configured but failed to load"
-        print(f"[build] embeddings: {semantic}")
+        if not emb.available:
+            print("[build] embeddings: disabled (no embeddings configured) — semantic search off (keyword-only)")
+        elif not await emb.probe_available():
+            # Auto-degrade: the endpoint is configured but unreachable (e.g.
+            # local-embed not running, wrong base_url).  Never block the build
+            # on it — skip embeddings and tell the user, keyword search works.
+            print(
+                "[build] embeddings: auto-degraded — endpoint "
+                f"'{emb.base_url}' not reachable (semantic search off, keyword-only)",
+            )
+        elif await emb.load():
+            await store.drop_embeddings()
+            model_id = f"api:{emb.model}"
+            while True:
+                docs = await store.get_unembedded_docs(limit=20)
+                if not docs:
+                    break
+                for doc in docs:
+                    vec = await emb.embed_one(doc["text"])
+                    if vec:
+                        await store.replace_embedding(doc["doc_id"], vec, model_id)
+            await store.set_meta("embedding_model", model_id)
+            semantic = f"{emb.model} (dim={emb.dimension}, {total} embedded)"
+            print(f"[build] embeddings: {semantic}")
+        else:
+            print("[build] embeddings: configured but failed to load — semantic search off (keyword-only)")
 
         return 0
     finally:

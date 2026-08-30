@@ -154,6 +154,33 @@ def test_available_false_without_base_url():
     assert EmbeddingClient().available is False
 
 
+# ── probe_available (fast auto-degradation probe) ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_probe_available_true_when_endpoint_answers(client):
+    assert await client.probe_available() is True
+
+
+@pytest.mark.asyncio
+async def test_probe_available_false_when_unavailable():
+    c = EmbeddingClient()  # no base_url
+    assert await c.probe_available() is False
+
+
+@pytest.mark.asyncio
+async def test_probe_available_false_when_endpoint_unreachable():
+    # Point at a port nothing listens on — probe must return False quickly
+    # (short timeout, no hang), so build can auto-degrade.
+    c = EmbeddingClient(
+        model="bge-m3", base_url="http://127.0.0.1:1/v1",
+    )
+    try:
+        assert await c.probe_available(timeout=1.0) is False
+    finally:
+        await c.close()
+
+
 def test_resolve_server_config_auto_load():
     cfg = plugin_config.resolve_server_config("svcA", {"command": "npx", "auto_load": True})
     assert cfg.auto_load is True

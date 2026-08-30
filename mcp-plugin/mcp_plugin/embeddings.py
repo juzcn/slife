@@ -151,6 +151,31 @@ class EmbeddingClient:
             await self._client.aclose()
             self._client = None
 
+    async def probe_available(self, timeout: float = 5.0) -> bool:
+        """Cheap availability probe — ``GET {base_url}/models``, short timeout.
+
+        Unlike :meth:`load`, this never runs an embed or waits long: it only
+        checks the endpoint answers at all, so callers (e.g. ``mcp-plugin
+        build``) can auto-degrade fast when embeddings is unconfigured or
+        misconfigured instead of stalling on a dead ``base_url``.
+        """
+        if not self.available:
+            return False
+        try:
+            client = await self._get_client()
+            resp = await asyncio.wait_for(
+                client.get(f"{self._base_url}/models"),
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.warning(
+                "embedding_probe_failed base_url=%s err=%s",
+                self._base_url, e,
+            )
+            return False
+
     async def load(self) -> bool:
         """Pin the model + real dimension from the endpoint. Returns True when ready."""
         if not self.available:
