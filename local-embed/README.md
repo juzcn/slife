@@ -34,11 +34,13 @@ OpenAI-compatible client works.
 
 ## Install
 
-Requires [uv](https://docs.astral.sh/uv) (it manages the Python 3.13+
-runtime).  The `transformer` backend installs the same everywhere:
+Requires [uv](https://docs.astral.sh/uv).  All installs below pin
+**Python 3.13** (`requires-python` is `>=3.13`, but 3.13 is what CI tests,
+and uv would otherwise pick the newest 3.14 it finds).  The `transformer`
+backend installs the same everywhere:
 
 ```bash
-uv tool install 'local-embed[transformer]'   # sentence-transformers
+uv tool install --python 3.13 'local-embed[transformer]'   # sentence-transformers
 ```
 
 `gguf` (llama-cpp-python) is the platform-sensitive one: PyPI ships
@@ -49,10 +51,10 @@ for your platform:
 
 | Platform | Command |
 |---|---|
-| Linux / macOS, CPU | `uv tool install 'local-embed[gguf]'` (PyPI wheel) |
-| **Windows, CPU** | `uv tool install 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu` |
-| macOS arm64 (Metal) | `uv tool install 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal` |
-| CUDA (Linux or Windows) | `uv tool install 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122` — pick `cu118` / `cu121` / `cu122` / `cu123` / `cu124` / `cu125` / `cu130` / `cu132` to match your CUDA version |
+| Linux / macOS, CPU | `uv tool install --python 3.13 'local-embed[gguf]'` (PyPI wheel) |
+| **Windows, CPU** | `uv tool install --python 3.13 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu` |
+| macOS arm64 (Metal) | `uv tool install --python 3.13 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal` |
+| CUDA (Linux or Windows) | `uv tool install --python 3.13 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122` — pick `cu118` / `cu121` / `cu122` / `cu123` / `cu124` / `cu125` / `cu130` / `cu132` to match your CUDA version |
 
 When the index is an *extra*, uv uses its wheel only when PyPI has no
 compatible wheel for the platform (the Windows / Metal cases); on Linux
@@ -68,9 +70,9 @@ environment with the second, so they would not coexist:
 
 ```bash
 # both backends, Windows CPU:
-uv tool install 'local-embed[gguf,transformer]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+uv tool install --python 3.13 'local-embed[gguf,transformer]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 # both backends, Linux / macOS CPU:
-uv tool install 'local-embed[gguf,transformer]'
+uv tool install --python 3.13 'local-embed[gguf,transformer]'
 ```
 
 Core deps are `fastmcp` + `starlette`; the model backends are optional

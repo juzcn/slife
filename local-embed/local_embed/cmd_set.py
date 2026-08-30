@@ -42,16 +42,19 @@ def backend_install_hint(backend: str, platform: "str | None" = None) -> str:
     must be added or uv falls back to a source build (MSVC + CMake).  On
     Linux/macOS the plain PyPI wheel is fine.  (CUDA / Metal need their own
     indexes — see the README install matrix.)
+
+    The command always pins ``--python 3.13``: it is the version CI tests,
+    and without it uv would silently pick the newest Python it finds.
     """
     platform = platform or sys.platform
     if backend == "gguf":
         if platform == "win32":
             return (
-                "uv tool install 'local-embed[gguf]' "
+                "uv tool install --python 3.13 'local-embed[gguf]' "
                 f"--extra-index-url {LLAMA_CPP_INDEXES['cpu']}"
             )
-        return "uv tool install 'local-embed[gguf]'"
-    return f"uv tool install 'local-embed[{backend}]'"
+        return "uv tool install --python 3.13 'local-embed[gguf]'"
+    return f"uv tool install --python 3.13 'local-embed[{backend}]'"
 
 
 def resolve_cache(raw: "str | None", environ: "dict[str, str] | None" = None) -> str:

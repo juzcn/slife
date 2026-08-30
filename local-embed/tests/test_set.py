@@ -111,18 +111,22 @@ def config_path(tmp_path, monkeypatch):
 
 class TestBackendInstallHint:
     def test_gguf_linux_macos_plain(self):
-        assert backend_install_hint("gguf", "linux") == "uv tool install 'local-embed[gguf]'"
-        assert backend_install_hint("gguf", "darwin") == "uv tool install 'local-embed[gguf]'"
+        assert backend_install_hint("gguf", "linux") == (
+            "uv tool install --python 3.13 'local-embed[gguf]'"
+        )
+        assert backend_install_hint("gguf", "darwin") == (
+            "uv tool install --python 3.13 'local-embed[gguf]'"
+        )
 
     def test_gguf_windows_adds_cpu_index(self):
         assert backend_install_hint("gguf", "win32") == (
-            "uv tool install 'local-embed[gguf]' "
+            "uv tool install --python 3.13 'local-embed[gguf]' "
             "--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu"
         )
 
     def test_transformer_plain(self):
         assert backend_install_hint("transformer", "win32") == (
-            "uv tool install 'local-embed[transformer]'"
+            "uv tool install --python 3.13 'local-embed[transformer]'"
         )
 
 
