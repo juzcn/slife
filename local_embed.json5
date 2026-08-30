@@ -34,7 +34,7 @@
     // path; override with BGE_M3_GGUF_PATH ("~" is expanded).
     "bge-m3": {
       backend: "gguf",
-      gguf_path: "C:/Users/juz_c/.slife/models/hf_KimChen_bge-m3-q4_k_m.gguf"
+      gguf_path: "${BGE_M3_GGUF_PATH:-~/.slife/models/hf_KimChen_bge-m3-q4_k_m.gguf}"
     }
   },
   port: 17347  // uncommon fixed port — see local_embed.config.DEFAULT_PORT
