@@ -1,12 +1,84 @@
-# mcp-plugin
+# mcp-plugin — an MCP server in front of external MCP servers
 
-Standalone MCP gateway — persistent connections to external MCP servers, with a
-CLI to configure and maintain them. Ships with [Slife](https://github.com/juzcn/slife)
-as its built-in MCP plugin but has **no dependency on it**. Depends only on
-`fastmcp`, `mcp`, `httpx`, `json5`, and `aiosqlite`; `credstore` is optional
-(secret `${PLACEHOLDER}` resolution + OAuth token storage).
+**mcp-plugin is itself a [Streamable HTTP](https://modelcontextprotocol.io) MCP
+server.**  It connects to *external* MCP servers — stdio, SSE, or Streamable
+HTTP, no SDK required on their side — keeps those connections alive, and
+exposes everything to a host agent as MCP tools on one endpoint.  Every
+feature is an MCP tool: add/configure/remove servers, search and load their
+tools, call them, check connection status.  Any MCP client can drive it.
 
-## Requirements
+Ships with [Slife](https://github.com/juzcn/slife) as its built-in MCP plugin
+but has **no dependency on it**.  Depends only on `fastmcp`, `mcp`, `httpx`,
+`json5`, and `aiosqlite`; `credstore` is optional (for `${PLACEHOLDER}` secret
+resolution and OAuth token storage).
+
+```
+                     external MCP servers (stdio / SSE / streamable http)
+    npx anyapi-mcp-server ────┐
+    @modelcontextprotocol/… ──┤   persistent connections
+    your own server ──────────┤
+                              ▼
+              ┌───────────────────────────────────┐
+  host agent ─┤  mcp-plugin                       │
+  (any MCP    │  Streamable HTTP MCP server       │  connect via
+   client)    │  http://127.0.0.1:<port>/mcp      │  {"port": N}
+  mcp_tool_…  └───────────────────────────────────┘
+```
+
+## Tools
+
+All management lives in the server's tool set:
+
+| Tool | What it does |
+|---|---|
+| `mcp_set` | Add or update an external server connection (upsert). stdio via `command` + `args`, or http via `url`. Persists to `mcp-plugin.json5`. |
+| `mcp_set_enabled` | Runtime enable/disable of a server (`mcp_set_enabled(name, enabled)`): enable reconnects + loads tools, disable disconnects + unloads. |
+| `mcp_remove` | Remove a server: stop its process, unregister its tools, persist the removal. |
+| `mcp_list` | List configured servers (transport, command/url, enabled). |
+| `__mcp_connection_status` | Live per-server status: running/stopped, tool counts, errors. |
+| `mcp_list_tools(server)` | List a server's tools — **double read** of the live connection AND the persisted catalog (`mcp-plugin.db`). |
+| `mcp_tool_search(query, mode, limit, server, include_disabled)` | Search the tool catalog — `hybrid` / `fts5` / `grep` (see [Semantic search & automatic degradation](#semantic-search--automatic-degradation)). |
+| `__mcp_get_tool(full_name)` | One tool's live schema + enabled status (consumed by the host's `mcp_tool_load`). |
+| `__mcp_call_tool(full_name, arguments)` | Call a tool on a connected server (invoked by the host via per-tool proxies). |
+
+The management tools are kept separate from the servers they manage.  Tool
+loading on the host side is **on-demand by default** — see [On-demand vs
+auto-load](#on-demand-vs-auto-load).
+
+## Run
+
+The server supports **two serving modes** — pick by how your client learns the
+URL:
+
+| Mode | Command | Client knows the URL how? |
+|---|---|---|
+| Fixed port (standalone) | `python -m mcp_plugin.server --port 8123` | Statically — `http://127.0.0.1:8123/mcp` |
+| Auto-assigned (default / slife plugin) | `python -m mcp_plugin.server` | From the stdout signal `{"port": N}` |
+
+A client that must point a **static URL** at this server needs the fixed mode
+(the same reason slife's embeddings provider fixes local-embed's `:8000`).  A
+**host that spawns the process and discovers it** — slife, or any supervisor —
+uses auto-assigned: the server binds a free port, then signals `{"port": N}`
+to stdout as a single JSON line once it is ready to serve MCP.
+
+```bash
+python -m mcp_plugin.server --port 8123    # fixed port, standalone
+python -m mcp_plugin.server                 # auto-assigned (+ {"port": N} signal)
+```
+
+Both modes still emit the `{"port": N}` signal (fixed mode reports the same
+port); the server always binds `127.0.0.1`.
+
+As a **slife external plugin** (the usual hosting), slife spawns
+`python -m mcp_plugin.server` itself, reads the port signal, connects on
+behalf of the agent, and exports `MCP_PLUGIN_FILE` so the plugin reads
+`mcp-plugin.json5` from next to `slife.json5`:
+
+```json5
+plugins: { external: [ { name: "mcp-plugin", module: "mcp_plugin.server" } ] }
+```
+
+## Install
 
 Requires **[uv](https://docs.astral.sh/uv)**.  The uv routes below pin
 **Python 3.13** (`requires-python` is `>=3.13`, but 3.13 is what CI tests, and
@@ -23,8 +95,6 @@ secret uses a `${PLACEHOLDER}` that isn't in your shell env, or you use OAuth
 (`auth: {type: "oauth"}`).  Without it, placeholders resolve against the shell
 env only, and OAuth fails with a clear error naming the extra.
 
-## Install
-
 ```bash
 uv tool install --python 3.13 mcp-plugin                      # standalone
 uv tool install --python 3.13 'mcp-plugin[credstore]'         # + credential store (secret placeholders, OAuth)
@@ -36,17 +106,20 @@ uv tool install --python 3.13 git+https://github.com/juzcn/slife.git
 isn't available.  Re-running a `uv tool install` over an **existing** install
 is a no-op unless you pass `--reinstall` — use it to upgrade to a new release.
 
-Verify: `mcp-plugin`
+## Config: `mcp-plugin.json5`
 
-## Config
-
-Server definitions live in `mcp-plugin.json5`, located by precedence:
+The server reads and writes `mcp-plugin.json5`, located by precedence:
 
 1. `MCP_PLUGIN_FILE=<path>` (env var — Slife exports this to the same directory
    as `slife.json5` when it launches the plugin)
 2. `./mcp-plugin.json5` (dev — when the current directory is the Slife source
    root, i.e. its `pyproject.toml` has `project.name == "slife"`)
 3. `~/.mcp-plugin/mcp-plugin.json5` (default, standalone use)
+
+A missing file is treated as **first run** (empty config — the server runs with
+no servers and keyword-only search); it is only created on the first write.
+A file that exists but cannot be parsed raises `ConfigParseError` rather than
+being overwritten.
 
 This is the same resolution credstore uses for its `credentials.crypt`.
 
@@ -105,9 +178,23 @@ in `args` and `url` (e.g. `"--header", "Authorization: Bearer ${GITHUB_TOKEN}"`)
 
 The `command`/`args` pairs above are spawned as subprocesses on this machine,
 so install the runtime each `command` needs (`npx` → Node.js, `bun`/`bunx` →
-Bun, `uvx` → uv); see [Requirements](#requirements).
+Bun, `uvx` → uv); see [Install](#install).
 
-### Semantic search & automatic degradation
+## On-demand vs auto-load
+
+External MCP tools are **on-demand by default**: the host does not bulk-register
+them into the LLM's tool list. The agent discovers them with `mcp_tool_search`,
+loads one into the tool list with `mcp_tool_load`, and releases them at server
+granularity (`mcp_remove` / `mcp_set_enabled(false)`).
+
+Set `auto_load: true` on a server to keep the old behavior — its tools are
+bulk-registered whenever the server connects.
+
+Enable/disable is **always batch at the server level** (`mcp_set_enabled`) —
+there is no per-tool toggle. A disabled server's tools are indexed but marked
+disabled in the catalog, refused at call time, and skipped by `mcp_tool_load`.
+
+## Semantic search & automatic degradation
 
 `mcp_tool_search` defaults to `mode="hybrid"` — it merges semantic hits with
 keyword hits **only when** the `embeddings` section is configured and the
@@ -131,21 +218,7 @@ The result's `mode` field reports what actually ran (`hybrid` / `fts5` /
 degraded.  Enable semantic search by fixing the `embeddings` section and
 running `mcp-plugin build` (there is no MCP tool for it).
 
-### On-demand vs auto-load
-
-External MCP tools are **on-demand by default**: the host does not bulk-register
-them into the LLM's tool list. The agent discovers them with `mcp_tool_search`,
-loads one into the tool list with `mcp_tool_load`, and releases them at server
-granularity (`mcp_remove` / `mcp_set_enabled(false)`).
-
-Set `auto_load: true` on a server to keep the old behavior — its tools are
-bulk-registered whenever the server connects.
-
-Enable/disable is **always batch at the server level** (`mcp_set_enabled`) —
-there is no per-tool toggle. A disabled server's tools are indexed but marked
-disabled in the catalog, refused at call time, and skipped by `mcp_tool_load`.
-
-## Tool catalog (mcp-plugin.db)
+## Tool catalog (`mcp-plugin.db`)
 
 Every connected server's tools are indexed into a SQLite DB (`mcp-plugin.db`,
 next to the config, or `$MCP_PLUGIN_DB`): `full_name` (`{server}__{tool}`),
@@ -153,18 +226,25 @@ next to the config, or `$MCP_PLUGIN_DB`): `full_name` (`{server}__{tool}`),
 across restarts, so `mcp_tool_search` works before any reconnect. Changing
 `enabled` persists too; a disabled tool is refused at call time.
 
+`mcp_list_tools` is a **double read**: the live connected tools AND the
+persisted catalog. When the catalog is unavailable, or its data is out of
+date vs the live tools (single source of truth = live), the response flags it
+and suggests running `mcp-plugin build` offline to rebuild the catalog. While
+a server is disconnected, the persisted catalog (if any) is still returned; a
+failed live read instead returns an error ("MCP unavailable") without touching
+the catalog.  `mcp_tool_load(full_name)` (host side) registers one tool into
+the LLM's tool list and refuses disabled tools.
+
 ## CLI
+
+The CLI is auxiliary — it covers what the MCP tools do not.  Server
+**management** stays in the tools (`mcp_set`, `mcp_remove`, `mcp_set_enabled`).
 
 | Command | Description |
 |---------|-------------|
 | `mcp-plugin` | Overview of configured servers |
-| `mcp-plugin set <server>` | Interactive add/configure a server |
 | `mcp-plugin set-embed --base-url <url> [--model <name>] [--api-key <key>]` | Add/update the embeddings section (semantic search) |
-| `mcp-plugin remove <server>` | Remove a server from config (takes effect at next server start) |
 | `mcp-plugin build` | Rebuild the tool catalog DB + index from live connections |
-
-`set` accepts `--transport stdio|http`, `--command`, `--url`, `--args`,
-`--env` (`KEY=VALUE`), `--enabled/--no-enabled`, and `--auth oauth` prompts.
 
 `set-embed` writes/updates the top-level `embeddings` section: `--base-url` is
 **required** (a placeholder `\${…}` or empty value leaves semantic search
@@ -181,38 +261,3 @@ catalog, rebuilds the FTS index, and (when an `embeddings` section is present)
 re-embeds the whole catalog. Use it after hand-editing `mcp-plugin.json5`,
 after an external MCP server updates its tools, or after switching the
 embeddings model. Unreachable servers are reported, not fatal.
-
-## Plugin contract
-
-An MCP-plugin distribution exposes a module that hosts its own FastMCP server
-(transport: streamable HTTP on an auto-assigned port, port signaled to stdout as
-`{"port": N}`). Slife discovers it via `plugins.external` in `slife.json5` and
-spawns `python -m <module>`. The management tools (`mcp_set`, `mcp_remove`,
-`mcp_set_enabled`, `mcp_list`, `mcp_list_tools`, `mcp_tool_search`,
-`__mcp_call_tool`, `__mcp_connection_status`,
-`__mcp_get_tool`) are kept separate from the servers they manage.
-
-### Tools
-
-- `mcp_tool_search(query, mode="hybrid", limit, server, include_disabled)`
-  — search the catalog. `mode`: `hybrid` (semantic + keyword), `fts5` (BM25),
-  or `grep` (exact substring). Hybrid degrades to `fts5` automatically when
-  semantic search is unavailable — embeddings missing, misconfigured, or still
-  building (see [Semantic search & automatic
-  degradation](#semantic-search--automatic-degradation)). Results carry
-  `full_name`, `server`, `name`, `description`, `enabled`, snippet and a
-  score; `include_disabled=true` (default) surfaces disabled tools too.
-- `mcp_list_tools(server)` — **double read**: the live connected tools AND the
-  persisted catalog (`mcp-plugin.db`). When the catalog is unavailable, or its
-  data is out of date vs the live tools (single source of truth = live), the
-  response flags it and suggests running `mcp-plugin build` offline to rebuild
-  the catalog. While a server is disconnected, the persisted catalog (if any)
-  is still returned; a failed live read instead returns an error ("MCP
-  unavailable") without touching the catalog.
-- `mcp_tool_load(full_name)` (host side) — register one tool into the LLM's
-  tool list. Refuses disabled tools (a tool is disabled iff its server is
-  disabled — enable/disable is server-level only, via `mcp_set_enabled`).
-
-Semantic search is configured **internally** — edit the `embeddings` section
-of `mcp-plugin.json5` and run `mcp-plugin build` to (re)enable indexing; there
-is no MCP tool for it.

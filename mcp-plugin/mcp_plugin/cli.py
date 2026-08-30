@@ -1,12 +1,12 @@
 """mcp-plugin CLI — configure and maintain external MCP servers.
 
-Commands:
+mcp-plugin is a Streamable HTTP MCP server, so server management is done
+through MCP tools (``mcp_set`` / ``mcp_remove`` / …); this CLI covers what
+the tools do not:
   ``mcp-plugin``               overview of configured servers
-  ``mcp-plugin set <s>``       interactively add/configure a server
   ``mcp-plugin set-embed``     configure the embeddings section (semantic
                                search); --base-url required, --model/--api-key
                                optional (omit to keep, "" to clear)
-  ``mcp-plugin remove <s>``    remove a server (takes effect next server start)
   ``mcp-plugin build``         rebuild the tool catalog DB + index from live
                                connections (manual config edits, external MCP
                                updates, embeddings model changes)
@@ -20,34 +20,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import getpass
-import os
 import sys
 
 from mcp_plugin import config as plugin_config
-from mcp_plugin.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
-from mcp_plugin.connection import ServerConfig
-from mcp_plugin.platform import resolve_command
-
-# Snakeable for tests.
-_input_fn = input
-_getpass_fn = getpass.getpass
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mcp-plugin",
-        description="Standalone MCP gateway — manage external MCP servers.",
+        description="Standalone MCP gateway - manage external MCP servers.",
         epilog="Run 'mcp-plugin' with no subcommand to show an overview "
                "of the configured MCP servers (name + description).",
     )
     sub = parser.add_subparsers(dest="command")
-
-    p_set = sub.add_parser("set", help="Interactively add/configure a server.")
-    p_set.add_argument("server", help="Server name.")
-
-    p_remove = sub.add_parser("remove", help="Remove a server from config.")
-    p_remove.add_argument("server", help="Server name.")
 
     p_embed = sub.add_parser(
         "set-embed", help="Configure the embeddings section (semantic search).",
@@ -80,12 +65,8 @@ def main(argv: list[str] | None = None) -> int:
     command = args.command
     if command is None:
         return _overview()
-    if command == "set":
-        return _set_cmd(args.server)
     if command == "set-embed":
         return _set_embed_cmd(args)
-    if command == "remove":
-        return _remove_cmd(args.server)
     if command == "build":
         return asyncio.run(_build_cmd())
     print(f"Unknown command: {command}")
@@ -102,7 +83,9 @@ def _overview() -> int:
     print(f"mcp-plugin config: {path}")
     items = [(n, e) for n, e in servers.items() if isinstance(e, dict)]
     if not items:
-        print("No servers configured. Use 'mcp-plugin set <server>' to add one.")
+        print("No servers configured. Manage them with the mcp_set/mcp_remove "
+              "tools (when hosted), or edit mcp-plugin.json5 and run "
+              "'mcp-plugin build'.")
         return 0
     width = len(str(len(items)))
     for i, (name, entry) in enumerate(items, 1):
@@ -226,83 +209,6 @@ async def _build_cmd() -> int:
         await store.close()
 
 
-# ── single-server check (used by `set`'s "Test connection now?") ────────
-
-
-async def _test_mcp_cmd(server: str) -> int:
-    """Bare-connect to one MCP server (no pool/framework) to confirm it works."""
-    raw = plugin_config.load_config()
-    servers = plugin_config._servers_dict(raw)
-    entry = servers.get(server)
-    if not isinstance(entry, dict):
-        print(f"Server '{server}' is not configured.")
-        return 1
-    cfg = plugin_config.resolve_server_config(server, entry)
-    print(f"[connect] {server} ({cfg.transport}) ...")
-    try:
-        if cfg.transport == "http":
-            tools, info = await _raw_connect_http(cfg)
-        else:
-            tools, info = await _raw_connect_stdio(cfg)
-    except Exception as e:  # noqa: BLE001 - report any bare-connect failure
-        print(f"[FAIL] {server}: {type(e).__name__}: {e}")
-        return 1
-    print(f"[OK] {server}: connected ({info}), {len(tools)} tools")
-    for tool in tools:
-        print(f"  {tool}")
-    return 0
-
-
-async def _raw_connect_stdio(cfg: ServerConfig) -> tuple[list[str], str]:
-    """Spawn *cfg* as a subprocess and bare-connect over stdio (no framework)."""
-    from mcp import ClientSession
-    from mcp.client.stdio import StdioServerParameters, stdio_client
-
-    env = dict(os.environ)
-    if cfg.env:
-        env.update({k: _resolve_secret(v) for k, v in cfg.env.items()})
-    resolved_args = [
-        _resolve_secret(arg) if _is_env_ref(arg) else _resolve_embedded_refs(arg)
-        for arg in cfg.args
-    ]
-    if cfg.os_paths:
-        from mcp_plugin.os_detect import get_os_accessible_paths
-        for p in get_os_accessible_paths():
-            resolved_args += ["--allow-path", p]
-    params = StdioServerParameters(
-        command=resolve_command(cfg.command), args=resolved_args, env=env or None,
-    )
-    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
-        init = await session.initialize()
-        result = await session.list_tools()
-    info = f"{init.serverInfo.name} {init.serverInfo.version}".strip()
-    return [t.name for t in result.tools], info
-
-
-async def _raw_connect_http(cfg: ServerConfig) -> tuple[list[str], str]:
-    """Bare-connect to an HTTP MCP endpoint (no framework)."""
-    import httpx
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamable_http_client
-
-    url = _resolve_embedded_refs(cfg.url)
-    headers = {}
-    if cfg.headers:
-        headers = {k: _resolve_embedded_refs(v) for k, v in cfg.headers.items()}
-    # The SDK does not own a caller-provided http_client, so it is created and
-    # closed here (headers carry e.g. bearer-token auth).
-    async with httpx.AsyncClient(
-        headers=headers,
-        timeout=httpx.Timeout(connect=10.0, read=None, write=None, pool=10.0),
-    ) as http_client, streamable_http_client(
-        url, http_client=http_client,
-    ) as (read, write, _), ClientSession(read, write) as session:
-        init = await session.initialize()
-        result = await session.list_tools()
-    info = f"{init.serverInfo.name} {init.serverInfo.version}".strip()
-    return [t.name for t in result.tools], info
-
-
 # ── set-embed (embeddings section) ──────────────────────────────────────
 
 
@@ -330,79 +236,6 @@ def _set_embed_cmd(args: argparse.Namespace) -> int:
               "(keyword fallback only).")
     print("Changes apply at the next server start, or run 'mcp-plugin build' "
           "to (re)index now.")
-    return 0
-
-
-# ── remove ──────────────────────────────────────────────────────────────
-
-
-def _remove_cmd(server: str) -> int:
-    if plugin_config.remove_server_entry(server):
-        print(f"[OK] Removed server '{server}' "
-              "(takes effect at the next server start).")
-        return 0
-    print(f"Server '{server}' is not configured.")
-    return 1
-
-
-# ── set (interactive) ───────────────────────────────────────────────────
-
-
-def _prompt(label: str, default: str = "") -> str:
-    if default:
-        raw = _input_fn(f"{label} [{default}]: ").strip()
-        return raw or default
-    return _input_fn(f"{label}: ").strip()
-
-
-def _ask_yes_no(label: str, default: str = "no") -> bool:
-    return _prompt(label, default).strip().lower() in ("y", "yes")
-
-
-def _set_cmd(server: str) -> int:
-    print(f"Configuring server '{server}' "
-          f"(config: {plugin_config.current_path()}).")
-    entry: dict = {}
-
-    transport = _prompt("Transport", "stdio")
-    if transport == "http":
-        entry["url"] = _prompt("URL (SSE or /mcp endpoint)")
-    else:
-        entry["command"] = _prompt("Command (e.g. npx)")
-        args_raw = _prompt("Args (space-separated; empty to skip)")
-        if args_raw:
-            entry["args"] = args_raw.split()
-
-    env_raw = _prompt("Env overrides (KEY=VALUE, comma-separated; empty to skip)")
-    if env_raw:
-        entry["env"] = {
-            kv.split("=", 1)[0]: kv.split("=", 1)[1]
-            for kv in env_raw.split(",")
-            if "=" in kv
-        }
-
-    desc = _prompt("Description (empty to skip)")
-    if desc:
-        entry["description"] = desc
-
-    if _ask_yes_no("OAuth 2.0 device flow?"):
-        auth: dict = {
-            "type": "oauth",
-            "device_auth_url": _prompt("Device auth URL"),
-            "token_url": _prompt("Token URL"),
-            "client_id": _prompt("Client ID"),
-        }
-        if _ask_yes_no("Client secret?"):
-            auth["client_secret"] = _getpass_fn("Client secret (hidden): ")
-        scopes = _prompt("Scopes (space-separated; empty to skip)")
-        if scopes:
-            auth["scopes"] = scopes.split()
-        entry["auth"] = auth
-
-    plugin_config.add_server_entry(server, entry)
-    print(f"[OK] Saved server '{server}'.")
-    if _ask_yes_no("Test connection now?"):
-        return asyncio.run(_test_mcp_cmd(server))
     return 0
 
 
