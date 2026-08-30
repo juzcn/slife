@@ -385,6 +385,7 @@
     providers: {
       "local-embed": {
         base_url: "http://127.0.0.1:17347/v1",
+        model: "bge-m3",
         api_key: "local"
       }
     },

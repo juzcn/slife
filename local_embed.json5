@@ -16,7 +16,7 @@
   //   2) GGUF (small offline file): drop a quantized BGE-M3 GGUF (~100 MB) at
   //      ~/.slife/models/bge-m3-q4_k_m.gguf (the default path below), or set
   //      BGE_M3_GGUF_PATH in the shell / edit gguf_path.
-  active_model: "BAAI/bge-m3",
+  active_model: "bge-m3",
   env: {
     HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}",
     // Offline by default — the model is NOT auto-downloaded (too slow).
@@ -34,7 +34,7 @@
     // path; override with BGE_M3_GGUF_PATH ("~" is expanded).
     "bge-m3": {
       backend: "gguf",
-      gguf_path: "${BGE_M3_GGUF_PATH:-~/.slife/models/bge-m3-q4_k_m.gguf}"
+      gguf_path: "C:/Users/juz_c/.slife/models/hf_KimChen_bge-m3-q4_k_m.gguf"
     }
   },
   port: 17347  // uncommon fixed port — see local_embed.config.DEFAULT_PORT
