@@ -725,36 +725,56 @@ async def _run_checks(ctx=None) -> list[dict]:
     return all_entries
 
 
-def _dedupe_mcp_records(startup: list[dict], live: list[dict]) -> list[dict]:
+#: Startup-record components that a live ``check_*`` inside ``system_health``
+#: re-reports, mapped to that live check's component.  A live entry is the
+#: deduplicated, latest-per-key view of the same health store, so the startup
+#: records it covers are dropped when the two are merged.
+_LIVE_REPORTS: dict[str, str] = {
+    "mcp_server": "mcp_servers",  # startup auto-connect record vs check_mcp
+    "watchdog": "watchdog",        # startup watchdog record vs check_watchdog
+}
+
+
+def _dedupe_records(startup: list[dict], live: list[dict]) -> list[dict]:
     """Merge startup records with live check entries without double-reporting.
 
-    ``mcp_server`` is the component used for *static* startup records (recorded
-    by the main process during auto-connect / reconnect); ``mcp_servers`` is
-    the component used by the *live* ``check_mcp`` diagnostics.  ``system_health``
-    merges both, so without dedup a server that recovered after a slow cold
-    start would still be reported as failed by its stale startup record while
-    the live check says it is connected — contradictory health.
+    Some startup records are re-reported by a live ``check_*`` inside
+    ``system_health``: ``mcp_server`` records (recorded by the main process
+    during auto-connect / reconnect) are re-reported by ``check_mcp`` as
+    ``mcp_servers``; ``watchdog`` records are re-reported (deduplicated to
+    one entry per plugin) by ``check_watchdog``.  Merging both without dedup
+    would double-report each plugin — and for watchdogs, surface every
+    historical record instead of the latest — or keep a stale startup warning
+    next to a live "connected" report (contradictory health).
 
-    Rules (keyed by the server name in each entry's ``key``):
-      - an entry is the *live* one iff its component is ``mcp_servers``
-        (regardless of level — a live "disconnected" report is authoritative
-        too, so we never resurrect a stale "connected" startup record);
-      - every startup record whose name is covered by a live entry is dropped;
-      - startup records for servers the live check did not cover (e.g. the
-        wrapper was unreachable, or only a single server was checked) are kept
-        so recovery info is never lost.
+    Rules (keyed by the name in each entry's ``key``):
+      - an entry is the *live* one iff its component is a live component in
+        ``_LIVE_REPORTS`` (regardless of level — a live "disconnected"
+        report is authoritative too, so a stale "connected" startup record
+        is never resurrected);
+      - every startup record whose component maps to a live component and
+        whose name is covered by a live entry is dropped;
+      - startup records not covered by a live entry (e.g. the wrapper was
+        unreachable, or only a single server was checked) are kept so
+        recovery info is never lost.
     """
-    live_names = {
-        e["key"] for e in live
-        if e.get("component") == "mcp_servers" and e.get("key")
-    }
-    kept = [
-        e for e in startup
-        if not (
-            e.get("component") == "mcp_server"
-            and e.get("key") in live_names
-        )
-    ]
+    live_keys: dict[str, set[str]] = {}
+    for e in live:
+        comp = e.get("component")
+        key = e.get("key")
+        if isinstance(comp, str) and comp in _LIVE_REPORTS.values() and isinstance(key, str) and key:
+            live_keys.setdefault(comp, set()).add(key)
+
+    def _reported_live(e: dict) -> bool:
+        """True if startup record *e* is re-reported by a live entry."""
+        comp = e.get("component")
+        key = e.get("key")
+        if not (isinstance(comp, str) and isinstance(key, str)):
+            return False
+        live_comp = _LIVE_REPORTS.get(comp)
+        return live_comp is not None and key in live_keys.get(live_comp, set())
+
+    kept = [e for e in startup if not _reported_live(e)]
     return kept + live
 
 
@@ -812,7 +832,7 @@ class SystemHealthTool(Tool):
     async def execute(self, **kwargs) -> str:
         startup = get_startup_records()
         dynamic = await _run_checks(ctx=getattr(self, "_ctx", None))
-        all_entries = _dedupe_mcp_records(startup, dynamic)
+        all_entries = _dedupe_records(startup, dynamic)
         groups = _group_by_component(all_entries)
 
         components: dict[str, dict] = {}

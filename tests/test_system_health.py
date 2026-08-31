@@ -26,7 +26,7 @@ from slife.tools.system import (
     _component_status,
     _build_summary,
     _overall_healthy,
-    _dedupe_mcp_records,
+    _dedupe_records,
     SystemHealthTool,
     CheckWatchdogTool,
     CheckMcpTool,
@@ -66,7 +66,7 @@ class TestGroupByComponent:
         assert "unknown" in result
 
 
-# ── _dedupe_mcp_records ───────────────────────────────────────────────
+# ── _dedupe_records ───────────────────────────────────────────────────
 
 
 class TestDedupeMcpRecords:
@@ -92,7 +92,7 @@ class TestDedupeMcpRecords:
     def test_live_ok_supersedes_stale_warning(self):
         startup = [self._startup("fs"), self._startup("github")]
         live = [self._live("fs")]
-        merged = _dedupe_mcp_records(startup, live)
+        merged = _dedupe_records(startup, live)
 
         # fs: startup warning dropped, live ok kept.
         assert [e["key"] for e in merged if e["component"] == "mcp_servers"] == ["fs"]
@@ -104,7 +104,7 @@ class TestDedupeMcpRecords:
         """The live report is authoritative in BOTH directions: a server the
         live check says is disconnected must not be masked by a stale
         "connected" startup record."""
-        merged = _dedupe_mcp_records(
+        merged = _dedupe_records(
             [self._startup("fs", level="ok")],
             [self._live("fs", level="warning")],
         )
@@ -116,7 +116,7 @@ class TestDedupeMcpRecords:
         """Component prefixes must not fool the name-based match: a startup
         ``mcp_server`` record for ``fs`` is covered by a live ``mcp_servers``
         record for ``fs``, and vice versa."""
-        merged = _dedupe_mcp_records(
+        merged = _dedupe_records(
             [self._startup("fs")],
             [self._live("fs")],
         )
@@ -124,16 +124,44 @@ class TestDedupeMcpRecords:
 
     def test_keeps_startup_records_with_no_live_counterpart(self):
         startup = [self._startup("only_startup")]
-        merged = _dedupe_mcp_records(startup, [])
+        merged = _dedupe_records(startup, [])
         assert len(merged) == 1
         assert merged[0]["key"] == "only_startup"
 
     def test_no_mutation_of_inputs(self):
         startup = [self._startup("fs")]
         live = [self._live("fs")]
-        _dedupe_mcp_records(startup, live)
+        _dedupe_records(startup, live)
         assert len(startup) == 1
         assert len(live) == 1
+
+
+class TestDedupeWatchdogRecords:
+    """Startup watchdog records are re-reported (deduplicated, latest-per-key)
+    by check_watchdog — merging must not double-report local-embed / mcp."""
+
+    @staticmethod
+    def _entry(name, level="ok"):
+        return {"component": "watchdog", "level": level, "key": name,
+                "value": "running", "hint": "auto-restart active"}
+
+    def test_startup_and_live_do_not_double_report(self):
+        startup = [self._entry("local-embed"), self._entry("mcp")]
+        live = [self._entry("local-embed"), self._entry("mcp")]
+        merged = _dedupe_records(startup, live)
+        watchdog = [e for e in merged if e["component"] == "watchdog"]
+        assert [e["key"] for e in watchdog] == ["local-embed", "mcp"]
+        assert len(watchdog) == 2  # no duplicates
+
+    def test_multiple_startup_records_collapse_to_latest_live(self):
+        """Several historical watchdog records for one plugin collapse to the
+        single (latest) live entry instead of being reported per-record."""
+        startup = [self._entry("mcp", level="ok"), self._entry("mcp", level="warning")]
+        live = [self._entry("mcp", level="warning")]
+        merged = _dedupe_records(startup, live)
+        watchdog = [e for e in merged if e["component"] == "watchdog"]
+        assert [e["key"] for e in watchdog] == ["mcp"]
+        assert len(watchdog) == 1
 
 
 # ── _component_status ─────────────────────────────────────────────────
@@ -520,6 +548,40 @@ class TestSystemHealthToolExecute:
             mcp = parsed["components"].get("mcp_servers", {})
             assert mcp.get("status") == "ok"
             assert "mcp_server" not in parsed["components"]
+
+    @pytest.mark.asyncio
+    async def test_execute_no_duplicate_watchdog_entries(self):
+        """Regression (BUGS.md #6): startup watchdog records are re-reported
+        by check_watchdog — the watchdog group must show each plugin once,
+        not local-embed/mcp duplicated."""
+        tool = SystemHealthTool()
+        startup_entries = [
+            {"component": "watchdog", "level": "ok", "key": "local-embed",
+             "value": "running", "hint": "auto-restart active"},
+            {"component": "watchdog", "level": "ok", "key": "mcp",
+             "value": "running", "hint": "auto-restart active"},
+        ]
+        live_watchdog = [
+            {"component": "watchdog", "level": "ok", "key": "local-embed",
+             "value": "running", "hint": "auto-restart active"},
+            {"component": "watchdog", "level": "ok", "key": "mcp",
+             "value": "running", "hint": "auto-restart active"},
+        ]
+        with patch("slife.tools.system.get_startup_records", return_value=startup_entries), \
+             patch("slife.tools.system.check_memdb", return_value=[]), \
+             patch("slife.tools.system.check_wechat", return_value=[]), \
+             patch("slife.tools.system.check_memfiles", return_value=[]), \
+             patch("slife.tools.system.check_local_embed", return_value=[]), \
+             patch("slife.tools.system.check_sharefile", return_value=[]), \
+             patch("slife.tools.system.check_mcp", return_value=[]), \
+             patch("slife.tools.system.check_a2a", return_value=[]), \
+             patch("slife.tools.system.check_media", return_value=[]), \
+             patch("slife.tools.system.check_watchdog", return_value=live_watchdog):
+            result = await tool.execute()
+        parsed = json.loads(result)
+        wd = parsed["components"]["watchdog"]["entries"]
+        assert [e["key"] for e in wd] == ["local-embed", "mcp"]
+        assert len(wd) == 2  # no duplicates
 
 
 # ── CheckWatchdogTool / CheckMcpTool ───────────────────────────────────
