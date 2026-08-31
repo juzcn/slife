@@ -490,16 +490,16 @@ class TestContextStatusRestart:
     def test_renders_restart_line_when_flagged(self):
         from slife.agent.system_prompt import build_context_status
         result = build_context_status(restarted=True)
-        assert "系统重启" in result
+        assert "System restarted" in result
         # Rendered right after the current-time line, as a bullet.
         lines = result.splitlines()
-        assert lines.index(next(l for l in lines if "系统重启" in l)) == 2
-        assert "   - 系统重启" in result
+        assert lines.index(next(l for l in lines if "System restarted" in l)) == 2
+        assert "   - System restarted" in result
 
     def test_no_restart_line_by_default(self):
         from slife.agent.system_prompt import build_context_status
-        assert "系统重启" not in build_context_status()
-        assert "系统重启" not in build_context_status(restarted=False)
+        assert "System restarted" not in build_context_status()
+        assert "System restarted" not in build_context_status(restarted=False)
 
 
 class TestFormatPresenceLine:

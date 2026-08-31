@@ -2241,7 +2241,7 @@ class AgentService:
             from slife.agent.schedules import _SCHEDULE_WORKERS
             scheduled = agent_name in _SCHEDULE_WORKERS
             if scheduled:
-                content = f"定时任务 {agent_name} 已完成，报告已保存。"
+                content = f"Scheduled task **{agent_name}** completed — report saved."
             else:
                 content = (
                     f"Subagent **{agent_name}** completed async task "

@@ -86,9 +86,9 @@ class TestSysNote:
     async def test_renders_restart_flag(self):
         reg = _registry()
         out = await reg.execute("_sys_note", restarted=True)
-        assert "系统重启" in out
+        assert "System restarted" in out
         out = await reg.execute("_sys_note", restarted=False)
-        assert "系统重启" not in out
+        assert "System restarted" not in out
 
 
 class TestFooterKwargsRestarted:

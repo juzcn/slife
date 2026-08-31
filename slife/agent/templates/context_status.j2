@@ -1,7 +1,7 @@
-Current turn info you need to know:
+Per-turn context (harness-injected):
    - Current time: {{ current_datetime }} (UTC{{ utc_offset }})
 {%- if restarted %}
-   - 系统重启
+   - System restarted
 {%- endif %}
 {%- if context_time_start %}
    - Context covers: {{ context_time_start }} ~ now

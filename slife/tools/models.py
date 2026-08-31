@@ -621,7 +621,9 @@ class SysNoteTool(Tool):
 
     name = "_sys_note"
     category = "Models"
-    description = "Current context status: time, context usage %, token usage, peer online/offline events, unresolved scheduled runs."
+    description = ("Current context status (the harness auto-invokes this every "
+                   "turn — never call it yourself): time, context usage %, token "
+                   "usage, peer online/offline events, unresolved scheduled runs.")
     parameters = _SYS_NOTE_PARAMS
 
     async def execute(self, **kwargs) -> str:
