@@ -1,37 +1,53 @@
-[16:27] slife> 好问题，这个值得认真回答。作为 agent，我每天"看"的就是这份 system prompt + 工具 schema，确实有几个地方让我困惑或觉得可以改。按严重程度排：
+[18:01] slife> 我重新以第一次接触的视角，把系统提示词、工具 schema 和刚拉到的 `list_native_tools` 清单对照实际行为过了一遍，还做了几个实测验证。先说结论：**这轮修复有些到位了，但还有几处真 bug，其中一两处是这轮"修复"反而暴露/引入的。**
 
-## 🔴 能造成实际困扰的
+## ✅ 看起来已修复的部分
 
-**1. `_sys_note` 的指令自相矛盾**
-系统提示明确写着 *"Never call single-underscore tools (`_sys_note`)... treat them as reserved"*，但实际每个 turn 系统提醒都会让我调用它来获取上下文状态。我每次都要纠结：这算不算违反规则？建议：要么把它改成真正 auto-invoked（当前 reminder 说 "call _sys_note" 其实就是让我手动调），要么把"reserved"改成"仅由系统提醒触发时调用"。
+- `list_native_tools` 现在明确给 `_sys_note` 标注了 **"harness, auto-invoked"**，系统提示词里 "Never call… treat them as reserved" 的措辞与之一致了（上一轮我提的矛盾，措辞上对齐了）。
 
-**2. 上下文使用率数字不可信**
-`_sys_note` 报告的 context usage 波动很怪：243 → 21,913 → 44,451 → 243 → 46,324... 我在 turn 4 时被裁剪过吗？没有收到明确的"移除通知"，但数字从 44k 掉到 243 又涨回来。我无法判断**真实的**上下文占用和是否发生了裁剪。改进：`_sys_note` 返回里明确标注 trim 事件和当前加载的 turn 范围（而不是只给 token 数）。
+## 🔴 实测发现的真 Bug
 
-**3. `mcp_tool_load` 必须下一轮才能用**
-返回 "callable from the next turn" —— 意味着 search → load → call 至少要 3 轮往返。如果 load 后能立即同步拿到 schema 并在**同一轮**调用，能省很多延迟和 token。
+**1. `wechat_check_status.last_contact` 字段名不稳定（会踩坑）**
+我实测同一把工具两次返回不同结构：
+- 15:46（重启恢复路径）→ `last_contact.from_user_id`
+- 15:47（正常轮询路径）→ `last_contact.to_user_id`
+- 刚才 17:55 再看 → 又是 `from_user_id`
 
-## 🟡 设计层面可以更好
+但 `wechat_send_message` 的 schema 说 `to_user_id` 取自 `wechat_check_status.last_contact`。**照文档抄会拿到 `from_user_id` 直接传给 `to_user_id`**，消息发不出去且难排查。建议：输出里同时给 `from_user_id` + `to_user_id`，或统一命名。
 
-**4. 三个 meta-参数在 60+ 个工具里重复**
-`_timeout` / `_async` / `_approve` 每个工具 schema 都重复一遍，占了不少 token（我光看 schema 就花掉很多上下文）。可以做成全局约定写一次，工具 schema 只写业务参数。
+**2. `list_native_tools` 里 `turn_token_usage` 的描述被脱敏误伤**
+显示为 `— <MASKED> per turn`。这把工具的名和描述都不是机密，明显是脱敏逻辑把 "Token consumption" 当敏感词吞了。这是纯显示 bug。
 
-**5. `turn_summarize` 的时机很尴尬**
-说明里说 turn 内调用会"applied when it completes"——但我根本不知道 turn 什么时候结束，也无法预知。结果就是所有历史 turn 的 summary/tags 都是空的（你刚才在 turn_search 里看到了）。建议：harness 在 turn 结束后**自动**生成摘要，或者至少让我能对**上一轮**补打。
+**3. `_sys_note` 标了 "auto-invoked"，但实际从不自动注入**
+这轮我在意的是：整个会话里**没有任何一次**上下文状态（restart 标志、context%、schedule_status）是自动出现的——全部是我主动调用 `_sys_note` 才拿到的。也就是说：
+- 文档说"auto-invoked，你别调"；
+- 实际是"你不调就没有"。
 
-**6. 微信消息读取是破坏性的**
-`wechat_check_messages` 说明 "consumed on read"——我读一次消息就没了。如果我在重启边界或误读时调用，消息可能丢失且无法恢复。建议加一个 non-destructive 的 peek 模式。
+两者必居其一：要么让 harness 真的在每轮开头注入状态、并把 `_sys_note` 从我的可调列表里摘掉；要么把描述改成"每轮开始主动调用一次"。现在是互相矛盾的。
 
-**7. memdb / memfiles 的语义索引状态要查两次**
-`memdb_semantic_status` 和 `memfiles_semantic_status` 是两个工具，我每次都要各调一次。既然共享同一 embedding 配置，可以合并成一个返回双状态。
+**4. 命名空间撞车：MCP `github` × REST `github`**
+- REST API 注册表里有一个 `github`（生成 `github__create_issue` 这类工具，系统提示词举的正是这个例子）；
+- MCP 服务器列表里**也有一个 `github`**（anyapi-mcp-server，生成 `github__list_api` / `github__query_api`）。
 
-## 🟢 小改进
+两个都在生产 `github__*` 前缀工具。现在因为 MCP 是按需加载所以还没撞死，但一旦 `mcp_tool_load` 把 MCP github 的 `create_issue` 等同名端点加载进来，会跟 REST 版 `github__create_issue` **硬冲突**。建议给 MCP 那个改名（如 `github-mcp`）。
 
-- **`attach_image` 在 vision disabled 时仍然暴露**——我永远不该调用它（模型收不了图），却还占着工具位。disabled 时应该直接从我的工具列表隐藏。
-- **`turn_search` 的 distance 是原始 L2 距离**（我看到 18~22 的值），没有归一化，我很难判断"多大算相关"。给个 0-1 的分数或阈值提示会清晰很多。
-- **`_timeout` 默认值不透明**——MCP 服务器拉起、媒体生成这类慢操作，schema 没写默认超时是多少，我经常得猜要不要传 `_timeout`。
-- **`wechat_login` 的二维码只有 ASCII**——今天已经实测翻车（终端渲染不可靠）。工具应该直接返回图片路径或二维码内容，让我能生成 PNG 打开。
+**5. 数量对不上：配置说 20 个 MCP，实际列出 19 个**
+`system_health` 报 "20 MCP servers"，但 `mcp_list` 只返回 19 个（serper/fetch/tavily/github/ddg/amap/iflow/file-search/playwright/context7/chrome-devtools/citecheck/pandoc/markitdown/word/excel/pdf/sqlite/registry）。要么少了 1 个没列出来，要么计数 off-by-one。可复现。
+
+**6. `system_health` 的 watchdog 段有重复条目**
+压缩输出里能看到 `local-embed` 和 `mcp` 各出现两次。疑似同一个 key 被重复上报（去重 bug）。这个我没复跑验证（输出太长），建议你那边核对。
+
+**7. 裁剪通知契约没兑现**
+我记录的 context 占用变化：`45,262 → 22,284 → 45,262`（16:36 → 16:56 → 17:16 心跳）。数字从 45k 掉到 22k 再弹回 45k，但**没有任何 `[INFO: N oldest turns have been removed from context]` 通知**。要么这不是裁剪（那 context% 数字就不可信），要么裁剪通知丢了。契约写了的通知应该真的发出来。
+
+## 🟡 上一轮提过、仍未动的（设计层面，非 bug）
+
+- `mcp_tool_load` 还是"下一轮才能用"（search→load→call 三趟往返）
+- `attach_image` 在 vision disabled 时仍然在我工具列表里占位
+- `wechat_check_messages` 仍是破坏性读取（无 peek）
+- `turn_summarize` 仍只能标"当前轮"，而我不知道轮次何时结束 → 摘要永远空
+- memdb/memfiles 两个语义状态工具未合并
 
 ---
 
-最讽刺的是第 1 条：**系统提示让我别调 `_sys_note`，但系统提醒又让我调它**。这是我最想改的。如果你在维护这套 harness，这几条应该是具体的、可落地的反馈。要不要我挑其中一条（比如 `_sys_note` 的语义澄清，或 mcp load 同轮可用）展开讲讲期望的行为？
+**最想让你先处理的**：#1（会直接导致发消息失败）和 #3（prompt 自相矛盾，我每轮都要为"要不要调 _sys_note"做违背文档的决定）。要不要我把 #1 再复现一次抓完整 JSON 给你作证据？
+↑ 169,925 tokens (in: 147,462, out: 22,463)
