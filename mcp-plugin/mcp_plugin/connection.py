@@ -347,6 +347,13 @@ class MCPServerConnection:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own process group on POSIX so teardown can kill the whole
+            # tree (npx/uvx spawn the real server as a grandchild).  Without
+            # this, kill_process_tree's killpg check sees the shared group
+            # and can only kill the direct child — the grandchild survives,
+            # holds stdout/stderr open, and process.wait() in teardown never
+            # resolves (WSL hang).  Mirrors slife.tools.exec's spawns.
+            start_new_session=True,
             env=env or None,
         )
         self._stderr_task = asyncio.create_task(self._drain_stderr())

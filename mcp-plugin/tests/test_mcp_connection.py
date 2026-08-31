@@ -971,6 +971,34 @@ class TestMCPServerConnectionTreeKill:
         mock_term.assert_awaited_once()
         assert conn._process is None
 
+    @pytest.mark.asyncio
+    async def test_connect_stdio_spawns_own_process_group(self):
+        """stdio servers must lead their own process group on POSIX.
+
+        kill_process_tree relies on the child leading its own group to reach
+        the whole npx/uvx tree (killpg).  Without start_new_session=True the
+        child shares the plugin's group, teardown can only kill the direct
+        child, the server grandchild survives holding stdout/stderr open, and
+        process.wait() in teardown never resolves — the WSL build hang.
+        Mirrors slife.tools.exec, which always spawns with it.
+        """
+        cfg = ServerConfig(name="test", command="echo", args=["hi"])
+        conn = MCPServerConnection(cfg)
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 1234
+        mock_proc.stderr = MagicMock()
+        mock_stderr_task = AsyncMock()
+        conn._stderr_task = mock_stderr_task
+
+        with patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc),
+        ) as mock_create:
+            await conn._connect_stdio()
+
+        _, kwargs = mock_create.call_args
+        assert kwargs.get("start_new_session") is True
+
 
 class TestMCPServerConnectionReconnectNotify:
     """on_connected fires on EVERY successful connect (first and reconnects).

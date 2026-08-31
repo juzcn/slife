@@ -132,6 +132,13 @@ async def _build_cmd() -> int:
     #: exits even if something escapes those caps (a synchronously-blocking
     #: spawn, a wedged pipe, an unkillable grandchild).
     _BUILD_DEADLINE = 300.0
+    #: Teardown cap.  ``_BUILD_DEADLINE`` only guards ``_run_build()``; the
+    #: ``finally`` below (pool.shutdown → per-connection cleanups) runs outside
+    #: it and its kills were NOT guaranteed to finish.  On WSL a npx/uvx
+    #: grandchild holding the stdio pipes caused ``process.wait()`` to never
+    #: resolve, hanging the whole command *after* all work was done.  A
+    #: best-effort teardown always exits, so the command never wedges.
+    _TEARDOWN_TIMEOUT = 60.0
 
     raw = plugin_config.load_config()
     servers = plugin_config._servers_dict(raw)
@@ -263,12 +270,16 @@ async def _build_cmd() -> int:
     finally:
         for t in tasks:
             t.cancel()
+        # Bounded teardown — shutting the pool down (killing npx/uvx trees,
+        # closing HTTP sessions) must never hang the command after the work
+        # is done.  On timeout shutdown is cancelled and the server
+        # processes are left to be reaped by the OS.
         try:
-            await pool.shutdown()
+            await asyncio.wait_for(pool.shutdown(), timeout=_TEARDOWN_TIMEOUT)
         except Exception:
             pass
         try:
-            await store.close()
+            await asyncio.wait_for(store.close(), timeout=_TEARDOWN_TIMEOUT)
         except Exception:
             pass
 
