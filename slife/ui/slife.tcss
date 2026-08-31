@@ -58,17 +58,24 @@ ChatView {
     text-style: italic;
 }
 
-/* ── Tool call display ───────────────────────────────────────── */
+/* ── Tool call display ─────────────────────────────────────────
+   Expanded detail is scrollable and uses full width / most of the
+   viewport height — long results (command output, QR login blocks)
+   stay readable in screen, while max-height + the line cap in
+   tool_display bound pathological output. */
 
 .tool-call {
-    margin: 0 1 1 2;
+    margin: 0 1 1 1;
     padding: 0 1;
     border: solid #30363d;
     background: #161b22;
     color: #e6edf3;
+    width: 1fr;
     height: auto;
+    max-height: 60%;
     min-height: 1;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
 /* ── Tool approval prompt (inline, Claude Code style) ─────────── */

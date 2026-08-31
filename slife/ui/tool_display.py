@@ -35,6 +35,15 @@ def _unique_suffix() -> str:
 # ── Tool display helpers ─────────────────────────────────────────────
 
 _PRIMARY_ARG_MAX = 72
+# Line budget for an expanded result body.  The panel is scrollable and
+# capped by max-height (see slife.tcss `.tool-call`), so this is only a
+# content-size guard against pathological tool output (a huge shell dump):
+# beyond it the rest is cut with an explicit note.  Tool output is already
+# bounded upstream by the 20%-of-context rule (~200k tokens worst case,
+# extremely rare), so realistic outputs are never touched; 2000 lines keeps
+# the Content build bounded while comfortably covering even long git diffs.
+# The QR login block (~25 lines) fits trivially inside it.
+_MAX_RESULT_LINES = 2000
 
 
 def _friendly_label(tool_name: str, status: str) -> str:
@@ -262,12 +271,12 @@ class ToolCallWidget(Static):
             else:
                 result_lines = self._result.split("\n")
                 content = content + _mc(f"[bold #8b949e]{t('td_result')}[/bold #8b949e]\n")
-                if len(result_lines) > 20:
-                    result_display = "\n".join(result_lines[:20])
+                if len(result_lines) > _MAX_RESULT_LINES:
+                    result_display = "\n".join(result_lines[:_MAX_RESULT_LINES])
                     content = content + _lit(result_display, style="#c9d1d9")
                     content = content + _mc("\n")
                     content = content + _mc(
-                        f"[#484f58]{t('td_more_lines', n=len(result_lines) - 20)}[/#484f58]"
+                        f"[#484f58]{t('td_more_lines', n=len(result_lines) - _MAX_RESULT_LINES)}[/#484f58]"
                     )
                 else:
                     content = content + _lit(self._result, style="#c9d1d9")

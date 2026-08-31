@@ -263,10 +263,12 @@ class TestToolCallWidget:
         assert "…" in text
 
     def test_detail_block_multiline_result_shows_truncation_hint(self):
-        w = _make_widget(_result="\n".join([f"line {i}" for i in range(30)]))
+        w = _make_widget(_result="\n".join([f"line {i}" for i in range(2500)]))
         content = w._detail_block()
         text = content.plain
         assert "more lines" in text
+        assert "line 0" in text  # head kept
+        assert "line 2499" not in text  # tail cut beyond the cap
 
 
 class TestHelperFunctions:
