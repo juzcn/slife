@@ -397,6 +397,100 @@ class TestMCPClientConnect:
                 assert client.is_connected is True
                 assert mock_transport.call_count == 2
 
+    @pytest.mark.asyncio
+    async def test_connect_retries_sdk_internal_scope_cancel(self):
+        """SDK-internal ``CancelledError("Cancelled via cancel scope ...")``
+        must go through the retry loop, not abort the connect.
+
+        Regression (WSL only): the MCP SDK's ``streamable_http_client`` tears
+        down its own task group — raising ``CancelledError`` at the await
+        point — when a sibling stream (GET/SSE negotiation) dies against a
+        plugin whose uvicorn accept loop has not started yet (the port signal
+        fires inside the plugin's lifespan).  The task's own cancellation
+        counter stays ``0``, so it is not a real external cancel; previously
+        the unconditional ``raise`` skipped the retry loop entirely and the
+        plugin spawn failed in milliseconds.
+        """
+        client = MCPClient()
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+
+        def _make_ctx():
+            mock_read = MagicMock()
+            mock_write = MagicMock()
+            mock_info = MagicMock()
+            mock_ctx = MagicMock()
+            mock_ctx.__aenter__ = AsyncMock(
+                return_value=(mock_read, mock_write, mock_info),
+            )
+            mock_ctx.__aexit__ = AsyncMock(return_value=None)
+            return mock_ctx
+
+        def _make_cancel_ctx():
+            mock_ctx = MagicMock()
+            mock_ctx.__aenter__ = AsyncMock(
+                side_effect=asyncio.CancelledError(
+                    "Cancelled via cancel scope deadbeef",  # noqa: S106
+                ),
+            )
+            mock_ctx.__aexit__ = AsyncMock(return_value=None)
+            return mock_ctx
+
+        with patch("mcp_plugin.client.streamable_http_client") as mock_transport:
+            mock_transport.side_effect = [
+                _make_cancel_ctx(),
+                _make_cancel_ctx(),
+                _make_ctx(),
+            ]
+
+            with patch("mcp_plugin.client.ClientSession") as mock_sc:
+                mock_sc_ctx = MagicMock()
+                mock_sc_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+                mock_sc_ctx.__aexit__ = AsyncMock(return_value=None)
+                mock_sc.return_value = mock_sc_ctx
+
+                with patch("mcp_plugin.client.asyncio.sleep", AsyncMock()):
+                    await client.connect("http://127.0.0.1:1234/mcp")
+
+                # The scoped-cancel attempts were retried, not fatal.
+                assert client.is_connected is True
+                assert mock_transport.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_connect_external_cancel_propagates(self):
+        """A genuine external cancellation (``task.cancel()``) still
+        propagates out of ``connect()`` and is never swallowed into a retry.
+
+        The internal-scope retry (`cancelling() == 0`) must not catch a real
+        controller cancellation — the task's counter is ``>= 1``, so the
+        original ``raise`` path is taken instead.
+        """
+        client = MCPClient()
+        gate = asyncio.Event()
+
+        async def _hang_enter(*_a):
+            await gate.wait()
+
+        hang_ctx = MagicMock()
+        hang_ctx.__aenter__ = _hang_enter
+        hang_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("mcp_plugin.client.streamable_http_client") as mock_transport:
+            mock_transport.return_value = hang_ctx
+
+            task = asyncio.ensure_future(
+                client.connect("http://127.0.0.1:1234/mcp"),
+            )
+            await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert client.is_connected is False
+            # One attempt only — the cancel propagated instead of retrying.
+            assert mock_transport.call_count == 1
+
 
 class TestMCPClientNotificationHandler:
     """MCPClient._handle_server_message dispatches server notifications."""

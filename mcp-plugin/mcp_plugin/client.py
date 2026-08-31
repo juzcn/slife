@@ -83,8 +83,11 @@ _CLEANUP_TIMEOUT = 2.0
 # Retry window: server prints port signal BEFORE uvicorn starts listening
 # (and memfiles' eager ngrok tunnel can delay readiness by another ~2s), so
 # the client may need a few attempts before the socket accepts and responds.
+# WSL's slower plugin lifespans make the window wider still — a plugin whose
+# startup takes ~10s (e.g. mcp auto-connecting a slow catalog) needs the band
+# to outlast it, bounded above by the 30 s spawn guard in the harness.
 _CONNECT_RETRY_DELAY = 0.5
-_CONNECT_RETRY_ATTEMPTS = 6  # covers ~a few seconds of slow-start plugins
+_CONNECT_RETRY_ATTEMPTS = 20  # up to ~10 s of slow-start plugins (WSL)
 
 
 # ── Binary → temp file helper ──────────────────────────────────────
@@ -160,6 +163,23 @@ def _is_retryable_connect_error(exc: BaseException) -> bool:
     return False
 
 
+def _is_external_cancel() -> bool:
+    """True if the current task was cancelled from outside (``task.cancel()``).
+
+    The MCP SDK's ``streamable_http_client`` tears its own anyio task group
+    down — ``CancelledError("Cancelled via cancel scope ...")`` — when a
+    sibling stream fails (e.g. GET/SSE negotiation against a server whose
+    uvicorn accept loop has not started yet).  That cancellation is raised
+    *inside* the connect's own await, so the task's cancellation counter
+    stays ``0``.  A genuine external cancellation (a ``wait_for``/timeout
+    elapsing, or shutdown) strikes the task itself and raises the counter.
+    ``retry-cancel-vs-external`` empirically: SDK-scope cancel → ``0``,
+    ``task.cancel()`` → ``>=1``.
+    """
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
 class MCPClient:
     """MCP client for connecting to Slife plugin servers via Streamable HTTP."""
 
@@ -231,12 +251,26 @@ class MCPClient:
                     )
                     await self._session.initialize()
                 break  # success
-            except asyncio.CancelledError:
-                # Cancellation is a control-flow signal, not a retryable
-                # transport error — clean up and propagate so the caller's
-                # wait_for can actually cancel the connect.
+            except asyncio.CancelledError as exc:
                 await self._cleanup()
-                raise
+                if _is_external_cancel():
+                    # Real controller cancellation (wait_for / shutdown):
+                    # it has already struck this task — propagate, don't
+                    # swallow it into a retry.
+                    raise
+                # No external cancel striking this task → the cancellation
+                # came from the MCP SDK's own task group ("Cancelled via
+                # cancel scope ...") when a sibling stream — the GET/SSE
+                # negotiation — died against a server whose uvicorn accept
+                # loop has not started yet (the port signal fires inside the
+                # plugin's lifespan; uvicorn serves only after it completes).
+                # WSL's slower plugin lifespans hit that window.  It is a
+                # transient transport failure, not a cancellation of the
+                # connect — fall through to the retry path.
+                last_err = exc
+                if attempt < _CONNECT_RETRY_ATTEMPTS - 1:
+                    await asyncio.sleep(_CONNECT_RETRY_DELAY)
+                    continue
             except Exception as e:
                 last_err = e
                 await self._cleanup()
