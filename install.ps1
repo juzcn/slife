@@ -51,6 +51,7 @@ New-Item -ItemType Directory -Force $tmpDir | Out-Null
 # Light install: skip the optional full tool set (embeddings, yt-dlp,
 # browser-harness).  Set $env:SLIFE_CORE=1 (native console: --core).
 $coreMode = ($env:SLIFE_CORE -eq "1") -or ($args -contains "--core")
+$skipMosquitto = ($env:SLIFE_SKIP_MOSQUITTO -eq "1")
 
 # Answer every overwrite prompt with "yes" and never call Read-Host.
 # Use for piped installs (`irm url | iex`) and non-interactive terminals,
@@ -303,6 +304,10 @@ try {
     if ($mosqDir -ne $null) {
         if ($mosqDir -ne "") { $env:PATH = "$mosqDir;$env:PATH" }
         Write-Ok "mosquitto found"
+    } elseif ($coreMode) {
+        Write-Dim "  Core mode — skipping Mosquitto"
+    } elseif ($skipMosquitto) {
+        Write-Dim "  SLIFE_SKIP_MOSQUITTO=1 — skipping Mosquitto"
     } else {
         Write-Dim "  Mosquitto not found — installing automatically (A2A multi-agent mesh)..."
         if (Get-Command winget -ErrorAction SilentlyContinue) {
@@ -605,6 +610,18 @@ try {
             } else {
                 $hasExtras = $true
                 $oldPkgs | Out-File -Encoding utf8 $preservedReqs
+                # llama-cpp-python is env-specific (CPU/CUDA/Metal) and
+                # version-locked in the README (==0.3.34).  The name-only
+                # restore resolves the newest wheel from the abetlen extra
+                # index (e.g. 0.3.35), silently drifting from the lock — pin
+                # the README version explicitly.
+                if ($oldPkgs -contains "llama-cpp-python") {
+                    Write-Warn "  llama-cpp-python: pinning to the README lock ==0.3.34 (name-only restore would pull the newest wheel)"
+                    $pinned = Get-Content $preservedReqs | ForEach-Object {
+                        if ($_ -match '^llama-cpp-python$') { "llama-cpp-python==0.3.34" } else { $_ }
+                    }
+                    $pinned | Set-Content $preservedReqs
+                }
                 Write-Warn "  Re-adding $extraCount extra packages:"
 
                 # Show each package with its version (from the full freeze).
@@ -778,17 +795,41 @@ try {
     Write-Dim "  backend + model yourself — see README.md -> Install -> Semantic memory search."
 
     # 4e. MCP server catalog — build it now so the index is ready.
-    Write-Step "[4e] Building the MCP server catalog (mcp-plugin build)..."
+    # Bounded: a first-run build spawns every configured npx/uvx server (cold
+    # package downloads) and can take minutes — it must never hang the install.
+    # The build carries its own 300s internal deadline; cap at 180s here and
+    # kill the whole tree (mcp-plugin + npx/uvx + node) so a cold network gets
+    # a prompt "deferred" message instead of a long silent stall.
+    Write-Step "[4e] Building the MCP server catalog (mcp-plugin build, max 180s)..."
     $buildLog = Join-Path $tmpDir "mcp-build.log"
+    $buildErr = Join-Path $tmpDir "mcp-build.err.log"
     $mcpPluginBin = Join-Path (uv tool dir) "slife\Scripts\mcp-plugin.exe"
     if (Test-Path $mcpPluginBin) {
         $prevEAP4 = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        & $mcpPluginBin build 2>&1 > $buildLog
-        $buildOk = ($LASTEXITCODE -eq 0)
+        $buildProc = Start-Process -FilePath $mcpPluginBin -ArgumentList "build" `
+            -NoNewWindow -RedirectStandardOutput $buildLog -RedirectStandardError $buildErr -PassThru
+        $buildTimedOut = (-not $buildProc.WaitForExit(180000))
+        if ($buildTimedOut) {
+            # 180s cap — terminate the whole tree so nothing leaks; the catalog
+            # can build on demand later.
+            & taskkill /F /T /PID $buildProc.Id 2>$null | Out-Null
+            if (-not $buildProc.HasExited) { $buildProc.Kill() }
+            $buildProc.WaitForExit()
+            $buildOk = $false
+        } else {
+            $buildOk = ($buildProc.ExitCode -eq 0)
+        }
+        # Merge stderr into the log so the failure tail is informative.
+        if (Test-Path $buildErr) {
+            Get-Content $buildErr -ErrorAction SilentlyContinue | Add-Content $buildLog
+        }
         $ErrorActionPreference = $prevEAP4
         if ($buildOk) {
             Write-Ok "MCP server catalog ready"
+        } elseif ($buildTimedOut) {
+            Write-Warn "  mcp-plugin build exceeded 180s — deferred (non-fatal):"
+            Write-Warn "    run 'mcp-plugin build' later to finish the catalog"
         } else {
             Write-Warn "  mcp-plugin build had issues (non-fatal) — log tail:"
             Get-Content $buildLog -Tail 10 | ForEach-Object { Write-Dim "    $_" }

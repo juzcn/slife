@@ -588,6 +588,16 @@ if [ -s "$PRESERVED_REQS" ]; then
         EXTRA_REQS="${TMPDIR:-/tmp}/slife-extra-requirements.txt"
         uv pip freeze --python "$NEW_PYTHON" 2>/dev/null | sed 's/==.*//' | sort > "$TMP_DIR/new-freeze.txt"
         sort "$PRESERVED_REQS" | comm -23 - "$TMP_DIR/new-freeze.txt" > "$EXTRA_REQS"
+
+        # llama-cpp-python is env-specific (CPU/CUDA/Metal) and version-locked
+        # in the README (==0.3.34).  The name-only restore resolves the newest
+        # wheel from the abetlen extra index (e.g. 0.3.35), silently drifting
+        # from the lock — pin the README version explicitly.
+        if grep -qi '^llama-cpp-python' "$EXTRA_REQS" 2>/dev/null; then
+            echo -e "  ${YELLOW}llama-cpp-python: pinning to the README lock ==0.3.34 (name-only restore would pull the newest wheel)${NC}"
+            sed -i 's/^llama-cpp-python.*/llama-cpp-python==0.3.34/' "$EXTRA_REQS"
+        fi
+
         _extra_count=$(wc -l < "$EXTRA_REQS" 2>/dev/null || echo 0)
 
         if [ "$_extra_count" -eq 0 ]; then
