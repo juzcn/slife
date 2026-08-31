@@ -93,3 +93,32 @@ def merge_hybrid(
         len(keyword_results), len(semantic_results), len(results),
     )
     return results
+
+
+#: Shared 0–1 score guidance appended to hybrid-search hints.  Mirrors the
+#: slife-side contract (slife.plugins.memdb.search) so the normalized score
+#: reads identically on mcp_tool_search / turn_search / cabinet_search.
+SCORE_BAND_HINT = (
+    "similarity is a normalized 0–1 readout (higher = more relevant; "
+    "≈1 identical, ≥0.5 close, 0.1–0.5 weak, <0.1 mostly unrelated) — "
+    "compare within one result set, not across embedding backends"
+)
+
+
+def annotate_scores(results: list[dict]) -> list[dict]:
+    """Add a normalized 0–1 ``similarity`` next to each result's raw
+    ``distance`` (mutates *results* in place, returns it for chaining).
+
+    Tool search computes **cosine** distances (``_cosine_distance``), so
+    the similarity is the true cosine similarity, ``max(0, 1-d)`` — the
+    cosine branch of the slife-side contract.  Keyword-only results
+    (``distance`` None) get no ``similarity`` key.  The mapping is
+    strictly monotonic, so ranking is preserved; it only rescales the
+    raw distance onto a readable 0–1 axis.
+    """
+    for r in results:
+        d = r.get("distance")
+        if d is None:
+            continue
+        r["similarity"] = round(max(0.0, 1.0 - d), 4)
+    return results

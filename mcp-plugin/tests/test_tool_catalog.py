@@ -176,3 +176,21 @@ async def test_get_tool_unknown(srv):
     assert json.loads(raw)["status"] == "error"
     raw = await s.__mcp_get_tool("svcZ__search")  # server not connected
     assert json.loads(raw)["status"] == "error"
+
+
+class TestAnnotateScores:
+    """annotate_scores 0–1 normalizes the semantic distance (the MCP
+    plugin's copy of the slife-side contract: cosine distance → true
+    cosine similarity)."""
+
+    def test_cosine_maps_to_cosine_similarity(self):
+        from mcp_plugin.search import annotate_scores
+        assert annotate_scores([{"distance": 0.0}])[0]["similarity"] == 1.0
+        assert annotate_scores([{"distance": 0.3}])[0]["similarity"] == 0.7
+        # Opposite vectors (cosine distance > 1) clip to 0.
+        assert annotate_scores([{"distance": 1.3}])[0]["similarity"] == 0.0
+
+    def test_keyword_only_results_untouched(self):
+        from mcp_plugin.search import annotate_scores
+        results = annotate_scores([{"full_name": "a", "distance": None}])
+        assert "similarity" not in results[0]

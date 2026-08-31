@@ -5,7 +5,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import pytest
 
-from slife.plugins.memdb.search import merge_hybrid, RRF_K
+from slife.plugins.memdb.search import annotate_scores, merge_hybrid, RRF_K
 
 
 # ── merge_hybrid ─────────────────────────────────────────────────────────────
@@ -121,3 +121,37 @@ class TestMergeHybrid:
         assert r["distance"] == 0.123
         assert r["keyword_rank"] is None
         assert r["snippet"] == ""
+
+
+class TestAnnotateScores:
+    """annotate_scores 0–1 normalizes the semantic distance presented to
+    the LLM — one contract shared with cabinet_search / mcp_tool_search
+    (the MCP plugin mirrors this function)."""
+
+    def test_l2_maps_via_1_over_1_plus_d(self):
+        # Typical vec0 L2 distances (the raw 18–22 range) map to a
+        # low-but-readable score; a near-identical match → ~1.0.
+        assert annotate_scores([{"distance": 0.0}])[0]["similarity"] == 1.0
+        assert annotate_scores([{"distance": 1.0}])[0]["similarity"] == 0.5
+        r = annotate_scores([{"distance": 20.0}])[0]
+        assert r["similarity"] == round(1.0 / 21.0, 4)
+
+    def test_cosine_metric_maps_as_true_cosine_similarity(self):
+        r = annotate_scores([{"distance": 0.2}], metric="cosine")[0]
+        assert r["similarity"] == round(0.8, 4)  # 1 − 0.2
+        # Clipped: cosine distance beyond 1 (opposite directions) → 0.
+        r = annotate_scores([{"distance": 1.5}], metric="cosine")[0]
+        assert r["similarity"] == 0.0
+
+    def test_keyword_only_results_get_no_key(self):
+        results = annotate_scores([{"distance": None}, {"x": 1}])
+        assert all("similarity" not in r for r in results)
+
+    def test_preserves_other_fields_and_order(self):
+        results = [
+            {"id": 1, "distance": 0.5},
+            {"id": 2, "distance": 4.0},
+        ]
+        annotate_scores(results)
+        assert results[0]["id"] == 1
+        assert results[0]["similarity"] > results[1]["similarity"]

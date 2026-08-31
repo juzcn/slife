@@ -23,7 +23,9 @@ from pathlib import Path
 from slife.paths import get_data_dir
 from slife.plugins.memdb.store import SessionStore, _clamp_limit
 from slife.plugins.memdb.embeddings import EmbeddingClient
-from slife.plugins.memdb.search import merge_hybrid
+from slife.plugins.memdb.search import (
+    SCORE_BAND_HINT, annotate_scores, merge_hybrid,
+)
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.server_utils import create_plugin_server, warm_after_handshake
 
@@ -586,10 +588,15 @@ async def turn_search(
         elif not merged:
             hint = "no matching memories found"
 
+        results = merged[:limit]
+        if semantic_available and results:
+            annotate_scores(results)
+            hint = SCORE_BAND_HINT if not hint else f"{hint} · {SCORE_BAND_HINT}"
+
         return json.dumps({
             "mode": "hybrid" if semantic_available else "fts5",
             "query": query,
-            "results": merged[:limit],
+            "results": results,
             "hint": hint,
         }, ensure_ascii=False, indent=2)
     except Exception as e:

@@ -13,6 +13,38 @@ logger = logging.getLogger(__name__)
 # 60 is the standard value from the literature.
 RRF_K = 60
 
+#: Shared 0–1 score guidance, appended to hybrid-search hints.  Same
+#: wording on turn_search / cabinet_search / mcp_tool_search (the MCP
+#: plugin mirrors this contract in its own search.py) so the normalized
+#: score reads identically across every hybrid retrieval path.
+SCORE_BAND_HINT = (
+    "similarity is a normalized 0–1 readout (higher = more relevant; "
+    "≈1 identical, ≥0.5 close, 0.1–0.5 weak, <0.1 mostly unrelated) — "
+    "compare within one result set, not across embedding backends"
+)
+
+
+def annotate_scores(results: list[dict], metric: str = "l2") -> list[dict]:
+    """Add a normalized 0–1 ``similarity`` next to each result's raw
+    ``distance`` (mutates *results* in place, returns it for chaining).
+
+    One contract across all hybrid searches — vec0/L2 distances
+    (turn_search, cabinet_search) map via ``1/(1+d)``; cosine distances
+    (mcp_tool_search) map as the true cosine similarity ``max(0, 1-d)``.
+    Keyword-only results (``distance`` None) get no ``similarity`` key.
+    The mapping is strictly monotonic, so ranking is preserved; it only
+    rescales the raw distance onto a readable 0–1 axis.
+    """
+    for r in results:
+        d = r.get("distance")
+        if d is None:
+            continue
+        if metric == "cosine":
+            r["similarity"] = round(max(0.0, 1.0 - d), 4)
+        else:
+            r["similarity"] = round(1.0 / (1.0 + d), 4)
+    return results
+
 
 def merge_hybrid(
     keyword_results: list[dict],

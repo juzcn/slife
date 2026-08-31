@@ -50,6 +50,7 @@ from urllib.parse import urljoin, urlparse
 
 from slife.paths import get_memfiles_dir
 from slife.plugins.memdb.embeddings import EmbeddingClient
+from slife.plugins.memdb.search import SCORE_BAND_HINT, annotate_scores
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.plugins.memfiles.store import MemfilesStore, _slugify, _unique_path
 from slife.server_utils import (
@@ -523,6 +524,10 @@ async def cabinet_search(
             hint += " — no keyword matches either"
     elif not hits:
         hint = "no matching memories found"
+
+    if semantic_available and hits:
+        annotate_scores(hits)
+        hint = SCORE_BAND_HINT if not hint else f"{hint} · {SCORE_BAND_HINT}"
 
     return json.dumps(
         {

@@ -22,7 +22,7 @@ from fastmcp.server.context import Context
 from mcp_plugin import config as plugin_config
 from mcp_plugin.connection import ConnectionPool, ServerConfig, ServerStatus
 from mcp_plugin.logging import error_json, ok_json
-from mcp_plugin.search import merge_hybrid
+from mcp_plugin.search import SCORE_BAND_HINT, annotate_scores, merge_hybrid
 from mcp_plugin.semantic import SemanticManager
 from mcp_plugin.server_runtime import create_plugin_server
 from mcp_plugin.store import ToolStore
@@ -755,11 +755,15 @@ async def mcp_tool_search(
                     "and run mcp-plugin build."
                 )
     reported_mode = mode if mode == "grep" else ("hybrid" if semantic_available else "fts5")
+    results = results[:limit]
+    if semantic_available and results:
+        annotate_scores(results)
+        hint = SCORE_BAND_HINT if not hint else f"{hint} · {SCORE_BAND_HINT}"
     return ok_json(
         mode=reported_mode,
         semantic_available=semantic_available,
         query=query,
-        results=results[:limit],
+        results=results,
         hint=hint,
     )
 
