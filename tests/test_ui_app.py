@@ -71,9 +71,10 @@ class TestAgentService:
         assert service.context_window == sample_config.active_model.context_window
 
     def test_current_context_tokens_fresh_session(self, sample_config):
-        """No API call yet and no restore → live history estimate."""
+        """No previous round (no API call, no restore) → 0 — never a
+        chars÷3 estimate presented as real usage."""
         service = AgentService(sample_config)
-        assert service.current_context_tokens == service.message_history.count_tokens()
+        assert service.current_context_tokens == 0
 
     def test_current_context_tokens_restore_estimate(self, sample_config):
         """First round after restore → the precomputed estimate (no recompute)."""

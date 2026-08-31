@@ -473,30 +473,34 @@ class AgentLoop:
     # ── Context trimming ────────────────────────────────────────────
 
     def context_tokens_for(self, history: MessageHistory) -> int:
-        """Context tokens the next API call would send.
+        """Context usage reported by ``_sys_note`` and the TUI status bar.
 
+        The **previous turn's** last API call's real ``prompt_tokens`` for
+        this history — ``_sys_note`` is auto-invoked before the current
+        turn's first API call, so the current round's usage is unknowable
+        by construction; the last completed call is the previous round's.
         Single source for ``_sys_note``, the trim decision
         (``_trim_after_save``), and the TUI status bar — one value, no
         recompute.  Resolution order:
 
-        1. After an API call — that history's last call's actual
-           ``prompt_tokens`` (tracked per history, so a heartbeat's
-           small context never pollutes the human history's reading).
-        2. First round after a restore — the restore-time estimate primed
-           on ``_last_usage`` (computed once when the UI rebuilds the
-           session to decide how many turns to restore; we have no real
-           API usage yet).
-        3. Genuinely fresh session — a live :meth:`MessageHistory.count_tokens`
-           estimate.
+        1. This history's last API call's actual ``prompt_tokens`` (tracked
+           per history, so a heartbeat's small context never pollutes the
+           human history's reading).
+        2. After a restore, ``_last_usage`` — primed from the latest
+           restored turn's **persisted** ``prompt_tokens`` (the exact
+           context size at exit), so a restarted slife still reports the
+           previous round's value.
+        3. Neither (genuinely fresh start — no previous round) → ``0``.
+           Never a chars÷3 estimate presented as real usage.
         """
         usage = self._usage_by_history.get(id(history))
         if usage is None:
-            usage = self._last_usage  # restore-time estimate
+            usage = self._last_usage  # restored session: previous round's persisted prompt_tokens
         if usage.prompt_tokens:
             return usage.prompt_tokens
         if usage.total_tokens:
             return usage.total_tokens
-        return history.count_tokens()
+        return 0  # fresh start — no previous round's usage yet
 
     async def _trim_after_save(
         self, history: MessageHistory, handler: object | None = None,
