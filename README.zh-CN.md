@@ -282,7 +282,7 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 
 每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。用户消息会带一条紧凑的 **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** 脚注（turn id 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 turn id 引用（`turn_read` / `turn_summarize`），用户在 TUI 里也能读到同一行。
 
-每轮对话还会保留其**来源渠道（channel）**——`human`、`wechat`、subagent、心跳、A2A peer，或 `system`（Slife 自身）——因此会话恢复时每个气泡都带正确的来源前缀：`You>`、`Wechat>`、`Subagent(<name>)>`、`Heartbeat>`、`A2A(<agent>)`。A2A peer 的 agent 名随轮次一起保存并跨重启保留；`system` 轮次（如定时任务触发）会存储但不显示在聊天里。
+每轮对话还会保留其**来源渠道（channel）**——`human`、`wechat`、subagent、心跳、A2A peer，或 `system`（Slife 自身）——因此会话恢复时每个气泡都带正确的来源前缀：`You>`、`Wechat>`、`Subagent(<name>)>`、`Heartbeat>`、`A2A(<agent>)`。A2A peer 的 agent 名随轮次一起保存并跨重启保留；`system` 轮次（如定时任务触发）会存储但不显示在聊天里。进入的微信消息还会以 **`[WECHAT: {peer_wechat_id: …}]`** 前缀到达模型，标明发送者的微信用户 id —— 也就是 `wechat_send_message` 要用的那个 id。
 
 ### 自主心跳
 

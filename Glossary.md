@@ -301,6 +301,15 @@ search. *See also* File Cabinet; Diary.
 Another agent reachable on the mesh. *See also* A2A mesh; Agent card;
 Presence.
 
+**peer_wechat_id**
+The WeChat user id of the person the agent — as the WeChat bot — is talking
+to. Surfaced to the model in three places: the `[WECHAT: …]` message
+annotation, `wechat_check_status.last_contact.peer_wechat_id`, and the
+`peer_wechat_id` argument of `wechat_send_message`. A single semantic name
+replaces the `from_user_id` / `to_user_id` pairing, which swapped meaning
+between an incoming message and a reply to it. *See also* Channel (Part III);
+Annotation; Marker.
+
 **Platform type**
 The kind of host the agent runs on — a native operating system, a WSL
 environment, or a headless process. *See also* Environment.
@@ -512,7 +521,7 @@ Health check.
 
 ## Appendix A — Annotation Notation
 
-Four annotations may appear inside messages. They are machine-generated
+Five annotations may appear inside messages. They are machine-generated
 metadata, not content:
 
 | Notation | Meaning |
@@ -521,6 +530,7 @@ metadata, not content:
 | `[INFO: N oldest turns have been removed from context]` | The trim note: the `N` oldest complete turns were trimmed from context. |
 | `[Heartbeat]` | The heartbeat marker: a synthetic autonomous trigger. |
 | `[Schedule <name>]` | The schedule marker: the scheduled task `<name>` is due. |
+| `[WECHAT: {peer_wechat_id: …}]` | The wechat marker: a user message that arrived from WeChat; `peer_wechat_id` is the WeChat user the agent is talking to. |
 
 ---
 
@@ -620,8 +630,10 @@ origin, not of its transport, which imposes no constraint upon it. A
 channel is orthogonal to a marker: the channel reports *who* addressed the
 agent, whereas a marker reports information *about* the context. Channel
 identity is persisted with the turn and governs the prefix under which the
-turn is presented in the chat; by default it does not enter the LLM
-context. The recognised channels are the operator at the keyboard
+turn is presented in the chat. It is not a schema construct in the LLM
+context; a WeChat message surfaces its channel to the model through the
+`[WECHAT: {peer_wechat_id: …}]` annotation, which names the WeChat user the
+agent is talking to. The recognised channels are the operator at the keyboard
 (*human*), a peer terminal (*WeChat*), a subagent worker (*subagent*), the
 periodic heartbeat (*heartbeat*), a remote mesh peer (*A2A*), and Slife
 itself (*system*), the last of which is suppressed from the chat view. A

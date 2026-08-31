@@ -531,20 +531,21 @@ async def wechat_login() -> str:
 @mcp.tool(
     name="wechat_send_message",
     description=(
-        "Send a text message to the logged-in WeChat user. to_user_id/context_token "
-        "from wechat_check_status.last_contact (from_user_id and to_user_id are the "
-        "same id — use either); context_token may be empty for the first message."
+        "Send a text message to the WeChat user you are chatting with. "
+        "peer_wechat_id/context_token from wechat_check_status.last_contact; "
+        "context_token may be empty for the first message."
     ),
 )
 async def wechat_send_message(
-    to_user_id: str = "",
+    peer_wechat_id: str = "",
     context_token: str = "",
     text: str = "",
 ) -> str:
-    """Send a text message to the logged-in WeChat user.
+    """Send a text message to the WeChat user you are chatting with.
 
     Args:
-        to_user_id: The recipient's WeChat user id (from wechat_check_status.last_contact — either from_user_id or to_user_id).
+        peer_wechat_id: The WeChat user id you are talking to (from
+            wechat_check_status.last_contact / the [WECHAT: ...] input marker).
         context_token: Conversation token for replying in a thread; may be empty for the first message.
         text: The message body.
     """
@@ -553,24 +554,24 @@ async def wechat_send_message(
     if not _client.is_logged_in:
         return error_json("Not logged in. Call wechat_login first.")
 
-    if not to_user_id.strip() or not text.strip():
-        return error_json("Both to_user_id and text are required and must be non-empty.")
+    if not peer_wechat_id.strip() or not text.strip():
+        return error_json("Both peer_wechat_id and text are required and must be non-empty.")
 
     try:
-        await _client.send_message(to_user_id, context_token or "", text)
+        await _client.send_message(peer_wechat_id, context_token or "", text)
         # Hide typing indicator after reply
         try:
-            await _client.send_typing(to_user_id, context_token or "", status=2)
+            await _client.send_typing(peer_wechat_id, context_token or "", status=2)
         except Exception:
             pass
-        logger.debug("sent to=%s len=%d", to_user_id, len(text))
+        logger.debug("sent to=%s len=%d", peer_wechat_id, len(text))
         return json.dumps({
             "status": "sent",
-            "to_user_id": to_user_id,
+            "peer_wechat_id": peer_wechat_id,
             "text_length": len(text),
         }, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("send_failed to=%s", to_user_id)
+        logger.exception("send_failed to=%s", peer_wechat_id)
         return error_json(str(e))
 
 
@@ -631,18 +632,16 @@ async def __check() -> str:
 def _last_contact_entry(user_id: str, ctx: str | None = "") -> dict | None:
     """Stable ``last_contact`` shape for wechat_check_status.
 
-    Both ``from_user_id`` and ``to_user_id`` carry the same id — the last
-    person to message the bot is exactly who a reply goes back to.  Emitting
-    both keys (instead of the key flipping between the session-restore and
-    live-polling paths) means an LLM that reads either one and passes it as
-    ``wechat_send_message.to_user_id`` works regardless of which path the
-    status came from.
+    ``peer_wechat_id`` is the WeChat user id of the person who last messaged
+    the bot — exactly who a reply goes back to.  One semantic key (not
+    from_user_id/to_user_id flipping between paths) so an LLM can pass it
+    straight to ``wechat_send_message.peer_wechat_id`` regardless of whether
+    the status came from a session restore or live polling.
     """
     if not user_id:
         return None
     return {
-        "from_user_id": user_id,
-        "to_user_id": user_id,
+        "peer_wechat_id": user_id,
         "context_token": ctx,
     }
 
@@ -746,7 +745,7 @@ async def wechat_check_status() -> str:
             f"Logged in — {remaining/3600:.1f}h remaining, "
             f"{len(_pending)} messages queued. "
             f"To send a WeChat message, call wechat_send_message with "
-            f'to_user_id="{last_from_id}" and context_token="{last_ctx or ""}".'
+            f'peer_wechat_id="{last_from_id}" and context_token="{last_ctx or ""}".'
             if remaining > 0 else
             "Session EXPIRED. Call wechat_login to re-scan QR code."
         )

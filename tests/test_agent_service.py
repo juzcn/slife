@@ -1359,7 +1359,7 @@ class TestAgentServiceWeChat:
         mock_inbox.post.assert_called_once()
         msg = mock_inbox.post.call_args[0][0]
         assert msg.source == WECHAT
-        assert msg.content == "你好"
+        assert msg.content == "[WECHAT: {peer_wechat_id: wx_user_123}] 你好"
         assert msg.metadata["channel"] == "wechat"
         assert msg.on_reply is not None
 
@@ -1394,10 +1394,10 @@ class TestAgentServiceWeChat:
 
         await service._wechat_poll_loop(interval=0.001)
 
-        # Only the non-empty message is posted
+        # Only the non-empty message is posted, with the channel marker.
         assert mock_inbox.post.call_count == 1
         msg = mock_inbox.post.call_args[0][0]
-        assert msg.content == "real"
+        assert msg.content == "[WECHAT: {peer_wechat_id: wx_2}] real"
 
     @pytest.mark.asyncio
     async def test_wechat_reply_callback_sends_message(self, sample_config):
@@ -1492,7 +1492,7 @@ class TestAgentServiceWeChat:
         # starts the typing keep-alive. Verify message arrived at inbox instead.
         mock_inbox.post.assert_called_once()
         msg = mock_inbox.post.call_args[0][0]
-        assert msg.content == "hello"
+        assert msg.content == "[WECHAT: {peer_wechat_id: wx_1}] hello"
         assert msg.on_reply is not None
 
     @pytest.mark.asyncio

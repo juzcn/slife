@@ -143,7 +143,7 @@ class TestCheckStatusLastContactShape:
             ws._client = original
         lc = resp["last_contact"]
         assert resp["status"] == "logged_in"
-        assert lc["from_user_id"] == lc["to_user_id"] == "u1"
+        assert lc["peer_wechat_id"] == "u1"
         assert lc["context_token"] == "ctx1"
 
     @pytest.mark.asyncio
@@ -167,5 +167,5 @@ class TestCheckStatusLastContactShape:
             ws._client = original
         assert resp["status"] == "restored"
         lc = resp["last_contact"]
-        assert lc["from_user_id"] == lc["to_user_id"] == "u1"
+        assert lc["peer_wechat_id"] == "u1"
         assert lc["context_token"] == ""
