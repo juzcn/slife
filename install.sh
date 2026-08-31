@@ -755,37 +755,6 @@ echo -e "${GRAY}  Keyword search works now.  For semantic/hybrid search, set up 
 echo -e "${GRAY}  model yourself — see README.md → Install → Semantic memory search.${NC}"
 
 #
-# ── MCP server catalog — build it now so the index is ready ─────────────
-# Bounded: a first-run build spawns every configured npx/uvx server (cold
-# package downloads) and can take minutes — it must never hang the install.
-echo -e "${YELLOW}[4e] Building the MCP server catalog (mcp-plugin build, max 180s)…${NC}"
-MCP_PLUGIN_BIN="$(uv tool dir 2>/dev/null)/slife/bin/mcp-plugin"
-if [ -x "$MCP_PLUGIN_BIN" ]; then
-    set +eo pipefail
-    if command -v timeout &>/dev/null; then
-        # SIGINT (not SIGTERM) so the build's finally block tears the pool
-        # down cleanly (kills spawned npx/uvx); --kill-after bounds a hang
-        # that ignores INT.  180s covers the cold npx/uvx first run.
-        timeout --signal=INT --kill-after=15 180 "$MCP_PLUGIN_BIN" build >> "$TOOL_INSTALL_LOG" 2>&1
-    else
-        "$MCP_PLUGIN_BIN" build >> "$TOOL_INSTALL_LOG" 2>&1
-    fi
-    BUILD_RC=$?
-    set -eo pipefail
-    if [ "$BUILD_RC" -eq 0 ]; then
-        echo -e "${GREEN}  ✓${NC} MCP server catalog ready"
-    elif [ "$BUILD_RC" -eq 124 ] || [ "$BUILD_RC" -eq 130 ]; then
-        echo -e "${YELLOW}  ⚠ mcp-plugin build deferred (timeout/interrupt) — non-fatal;${NC}"
-        echo -e "${YELLOW}    run 'mcp-plugin build' later to finish the catalog${NC}"
-    else
-        echo -e "${YELLOW}  ⚠ mcp-plugin build had issues (non-fatal) — log tail:${NC}"
-        tail -10 "$TOOL_INSTALL_LOG" | while IFS= read -r _l; do echo -e "    ${GRAY}$_l${NC}"; done
-    fi
-else
-    echo -e "${YELLOW}  ⚠ mcp-plugin not found — catalog build skipped${NC}"
-fi
-
-#
 echo -e "${YELLOW}[5/5] Cleaning up previous installation artifacts…${NC}"
 
 # Ensure ~/.local/bin and the slife tool venv bin (mcp-plugin / local-embed)
@@ -851,9 +820,9 @@ if [ "$NEEDS_SHELL_REFRESH" = true ]; then
 fi
 
 echo -e "${CYAN}Get started:${NC}"
-echo "  1. credstore set-password                # encrypted backup (first time)"
-echo "  2. credstore set DEEPSEEK_API_KEY        # your first API key (or the one your active model needs — see ~/.slife/slife.json5)"
-echo "  3. slife                                 # launch the TUI"
+echo "  1. Semantic search (optional) — set up per README → Semantic Memory Search"
+echo "  2. Configure secrets with credstore — credstore set-password, then credstore set <API_KEY> <value>"
+echo "  3. Run mcp-plugin build — build the MCP server catalog (external MCP servers)"
 echo ""
 if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
     if [ "${PRESERVE_OK:-0}" = "1" ]; then
@@ -866,10 +835,10 @@ if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
     fi
 fi
 if [ "$CORE_MODE" = true ]; then
-    echo -e "${CYAN}Core install done${NC} — external MCP servers (catalog built), Mosquitto"
+    echo -e "${CYAN}Core install done${NC} — external MCP servers (catalog via 'mcp-plugin build'), Mosquitto"
     echo "  (yt-dlp / browser-harness skipped — add later: uv tool install --python 3.12 browser-harness)"
 else
-    echo -e "${CYAN}Installed${NC} — slife + credstore, external MCP servers (catalog built), Mosquitto, yt-dlp, browser-harness"
+    echo -e "${CYAN}Installed${NC} — slife + credstore, external MCP servers (catalog via 'mcp-plugin build'), Mosquitto, yt-dlp, browser-harness"
 fi
 echo "  Semantic memory search: not installed by default — see README.md → Install → Semantic memory search"
 echo ""

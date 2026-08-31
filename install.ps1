@@ -796,49 +796,10 @@ try {
     Write-Dim "  Keyword search works now.  For semantic/hybrid search, set up the embedding"
     Write-Dim "  backend + model yourself — see README.md -> Install -> Semantic memory search."
 
-    # 4e. MCP server catalog — build it now so the index is ready.
-    # Bounded: a first-run build spawns every configured npx/uvx server (cold
-    # package downloads) and can take minutes — it must never hang the install.
-    # The build carries its own 300s internal deadline; cap at 180s here and
-    # kill the whole tree (mcp-plugin + npx/uvx + node) so a cold network gets
-    # a prompt "deferred" message instead of a long silent stall.
-    Write-Step "[4e] Building the MCP server catalog (mcp-plugin build, max 180s)..."
-    $buildLog = Join-Path $tmpDir "mcp-build.log"
-    $buildErr = Join-Path $tmpDir "mcp-build.err.log"
-    $mcpPluginBin = Join-Path (uv tool dir) "slife\Scripts\mcp-plugin.exe"
-    if (Test-Path $mcpPluginBin) {
-        $prevEAP4 = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        $buildProc = Start-Process -FilePath $mcpPluginBin -ArgumentList "build" `
-            -NoNewWindow -RedirectStandardOutput $buildLog -RedirectStandardError $buildErr -PassThru
-        $buildTimedOut = (-not $buildProc.WaitForExit(180000))
-        if ($buildTimedOut) {
-            # 180s cap — terminate the whole tree so nothing leaks; the catalog
-            # can build on demand later.
-            & taskkill /F /T /PID $buildProc.Id 2>$null | Out-Null
-            if (-not $buildProc.HasExited) { $buildProc.Kill() }
-            $buildProc.WaitForExit()
-            $buildOk = $false
-        } else {
-            $buildOk = ($buildProc.ExitCode -eq 0)
-        }
-        # Merge stderr into the log so the failure tail is informative.
-        if (Test-Path $buildErr) {
-            Get-Content $buildErr -ErrorAction SilentlyContinue | Add-Content $buildLog
-        }
-        $ErrorActionPreference = $prevEAP4
-        if ($buildOk) {
-            Write-Ok "MCP server catalog ready"
-        } elseif ($buildTimedOut) {
-            Write-Warn "  mcp-plugin build exceeded 180s — deferred (non-fatal):"
-            Write-Warn "    run 'mcp-plugin build' later to finish the catalog"
-        } else {
-            Write-Warn "  mcp-plugin build had issues (non-fatal) — log tail:"
-            Get-Content $buildLog -Tail 10 | ForEach-Object { Write-Dim "    $_" }
-        }
-    } else {
-        Write-Warn "  mcp-plugin not found — catalog build skipped"
-    }
+    # MCP server catalog is built by the USER (post-install) — step [4e] was
+    # removed: a first-run build spawns every configured npx/uvx server and
+    # can take minutes, and the servers need API keys first (credstore).
+    # See "Get started" below: credstore → `mcp-plugin build` → slife.
 
     # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."
@@ -895,15 +856,15 @@ try {
         }
     }
     Write-Host "Get started:" -ForegroundColor Cyan
-    Write-Host "  1. credstore set-password              # encrypted backup (first time)"
-    Write-Host "  2. credstore set DEEPSEEK_API_KEY      # your first API key (or the one your active model needs — see $env:USERPROFILE\.slife\slife.json5)"
-    Write-Host "  3. slife                               # launch the TUI"
+    Write-Host "  1. Semantic search (optional) — set up per README -> Semantic Memory Search"
+    Write-Host "  2. Configure secrets with credstore — credstore set-password, then credstore set <API_KEY> <value>"
+    Write-Host "  3. Run mcp-plugin build — build the MCP server catalog (external MCP servers)"
     Write-Host ""
     if ($coreMode) {
-        Write-Host "Core install done — external MCP servers (catalog built), Mosquitto" -ForegroundColor Cyan
+        Write-Host "Core install done — external MCP servers (catalog via 'mcp-plugin build'), Mosquitto" -ForegroundColor Cyan
         Write-Host "  (yt-dlp / browser-harness skipped — add later: uv tool install --python 3.12 browser-harness)"
     } else {
-        Write-Host "Installed — slife + credstore, external MCP servers (catalog built), Mosquitto, yt-dlp, browser-harness" -ForegroundColor Cyan
+        Write-Host "Installed — slife + credstore, external MCP servers (catalog via 'mcp-plugin build'), Mosquitto, yt-dlp, browser-harness" -ForegroundColor Cyan
     }
     Write-Host "  Semantic memory search: not installed by default — see README.md -> Install -> Semantic memory search"
     Write-Host ""
