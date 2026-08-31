@@ -4,7 +4,7 @@ External MCP tools are on-demand by default (per-server ``auto_load``; see
 ``mcp-plugin``).  This is the single per-tool load entry: it fetches the
 tool's live schema + enabled status from the mcp-plugin wrapper
 (``__mcp_get_tool``) and registers an :class:`~slife.mcp.tool_adapter.MCPProxyTool`,
-so the tool appears in the LLM's tool list next turn.
+so the tool appears in the LLM's tool list on the next LLM call.
 
 There is deliberately NO ``mcp_tool_unload`` — loaded tools are released at
 server granularity (``mcp_remove`` / ``mcp_set_enabled``) or when a tool is
@@ -27,8 +27,8 @@ class McpToolLoadTool(Tool):
     description = (
         "Load an external MCP tool into the LLM's tool list by full_name "
         "'{server}__{tool}' (find it with mcp_tool_search). It becomes callable "
-        "from the next turn. Tools of a disabled server are refused — enable the "
-        "server first with mcp_set_enabled."
+        "on the next LLM call. Tools of a disabled server are refused — enable "
+        "the server first with mcp_set_enabled."
     )
     parameters = {
         "type": "object",
@@ -78,4 +78,4 @@ class McpToolLoadTool(Tool):
         # loading twice is idempotent.
         registry.register(proxy)
         logger.info("mcp_tool_loaded full_name=%s", full_name)
-        return f"[OK] Loaded '{full_name}'. It is callable from the next turn."
+        return f"[OK] Loaded '{full_name}'. It is callable on the next LLM call."

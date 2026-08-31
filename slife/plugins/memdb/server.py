@@ -608,10 +608,9 @@ async def turn_search(
     name="turn_summarize",
     description=(
         "Write a summary (1-2 sentences) and comma-separated tags for a turn, "
-        "making it findable via keyword search. Both optional. "
-        "Omit the turn id to annotate the CURRENT turn (applied when it "
-        "completes; call during the turn). "
-        "Does NOT touch the semantic index."
+        "making it findable via keyword search. Both optional. Works for the "
+        "current turn (omit turn_id) and for any historical turn "
+        "(pass its turn_id). Does NOT touch the semantic index."
     ),
 )
 async def turn_summarize(
@@ -621,8 +620,8 @@ async def turn_summarize(
     """Write a summary and tags for a turn, making it findable by keyword search.
 
     Args:
-        turn_id: The turn id to annotate. Omit to annotate the current
-            (in-flight) turn — applied when it completes and is saved.
+        turn_id: The turn id to annotate (historical turn). Omit to
+            annotate the current turn.
         summary: A 1-2 sentence summary of the turn.
         tags: Comma-separated tags for keyword search.
     """
@@ -636,8 +635,8 @@ async def turn_summarize(
                 "status": "captured",
                 "turn_id": None,
                 "message": (
-                    "annotation captured for the current turn — applied when "
-                    "the turn completes"
+                    "annotation captured for the current turn — written when "
+                    "this turn is saved"
                 ),
             }, ensure_ascii=False, indent=2)
         await store.update_summary(rowid=turn_id, summary=summary, tags=tags)
