@@ -384,11 +384,13 @@ _SECRET_PATTERNS: list[re.Pattern] = [
     # Authorization: Bearer|Basic|Token <credential> (and bare Bearer/Token).
     # The old pattern required the keyword directly before the token, so
     # "Authorization: Basic dXNlcjpwYXNz" and "Authorization: Token …"
-    # slipped through unmasked.  Lower floor (8) is fine here — the header
-    # context is specific enough that false positives are unlikely.
+    # slipped through unmasked.  The value must contain a digit or one of
+    # +/ = . _ - — "Token consumption" (prose, e.g. a tool description) is
+    # not a credential, but "Bearer sk-ant-api03-…" / "Token abc123…" still
+    # are.  Lower floor (8) is fine here — the header context is specific.
     re.compile(
         r"(?:Authorization\s*:\s*)?(?:Basic|Bearer|Token)\s+"
-        r"([A-Za-z0-9+/=._-]{8,})",
+        r"((?=[A-Za-z0-9+/=._-]*[0-9+/=._-])[A-Za-z0-9+/=._-]{8,})",
         re.IGNORECASE,
     ),
     # key=value pairs — whole words (api_key, token, password, …) and

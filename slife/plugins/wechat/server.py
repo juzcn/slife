@@ -533,7 +533,8 @@ async def wechat_login() -> str:
     name="wechat_send_message",
     description=(
         "Send a text message to the logged-in WeChat user. to_user_id/context_token "
-        "from wechat_check_status.last_contact; context_token may be empty for the first message."
+        "from wechat_check_status.last_contact (from_user_id and to_user_id are the "
+        "same id — use either); context_token may be empty for the first message."
     ),
 )
 async def wechat_send_message(
@@ -544,7 +545,7 @@ async def wechat_send_message(
     """Send a text message to the logged-in WeChat user.
 
     Args:
-        to_user_id: The recipient's WeChat user id (from wechat_check_status.last_contact / wechat_check_messages).
+        to_user_id: The recipient's WeChat user id (from wechat_check_status.last_contact — either from_user_id or to_user_id — / wechat_check_messages).
         context_token: Conversation token for replying in a thread; may be empty for the first message.
         text: The message body.
     """
@@ -589,7 +590,7 @@ async def wechat_send_typing(
     """Show or hide the typing indicator.
 
     Args:
-        to_user_id: The recipient's WeChat user id (from wechat_check_status.last_contact / wechat_check_messages).
+        to_user_id: The recipient's WeChat user id (from wechat_check_status.last_contact — either from_user_id or to_user_id — / wechat_check_messages).
         context_token: Conversation token (from the same source as to_user_id).
         status: 1 = show typing, 2 = hide typing.
     """
@@ -715,6 +716,25 @@ async def __check() -> str:
     return json.dumps(entries, ensure_ascii=False, indent=2)
 
 
+def _last_contact_entry(user_id: str, ctx: str | None = "") -> dict | None:
+    """Stable ``last_contact`` shape for wechat_check_status.
+
+    Both ``from_user_id`` and ``to_user_id`` carry the same id — the last
+    person to message the bot is exactly who a reply goes back to.  Emitting
+    both keys (instead of the key flipping between the session-restore and
+    live-polling paths) means an LLM that reads either one and passes it as
+    ``wechat_send_message.to_user_id`` works regardless of which path the
+    status came from.
+    """
+    if not user_id:
+        return None
+    return {
+        "from_user_id": user_id,
+        "to_user_id": user_id,
+        "context_token": ctx,
+    }
+
+
 @mcp.tool(
     name="wechat_check_status",
     description=(
@@ -778,10 +798,7 @@ async def wechat_check_status() -> str:
                         "status": "restored",
                         "remaining_hours": round(remaining / 3600, 1),
                         "polling": _poll_task is not None and not _poll_task.done(),
-                        "last_contact": {
-                            "from_user_id": ilink_uid,
-                            "context_token": "",
-                        } if ilink_uid else None,
+                        "last_contact": _last_contact_entry(ilink_uid, ""),
                         "hint": f"Session restored. {remaining/3600:.1f}h remaining.",
                     }, ensure_ascii=False, indent=2)
             except Exception as e:
@@ -810,10 +827,7 @@ async def wechat_check_status() -> str:
         "queued_messages": len(_pending),
     }
     if last_from_id:
-        resp["last_contact"] = {
-            "to_user_id": last_from_id,
-            "context_token": last_ctx,
-        }
+        resp["last_contact"] = _last_contact_entry(last_from_id, last_ctx)
 
     if last_from_id:
         hint = (

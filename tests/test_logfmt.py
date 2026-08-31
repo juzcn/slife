@@ -499,6 +499,21 @@ class TestSanitizeSecrets:
         )
         assert "sk-ant-api03-abcdefghijklmnopqrstuvwx" not in result
 
+    def test_prose_token_word_not_redacted(self):
+        """Regression (BUGS.md #2): bare 'Token <word>' prose — e.g. a tool
+        description "Token consumption per turn" — must NOT be masked.  Only
+        credential values (containing a digit or +/ = . _ -) are."""
+        desc = "Token consumption per turn. Options: turn_id, since/until."
+        assert sanitize_secrets(desc) == desc
+        assert "<MASKED>" not in sanitize_secrets(desc)
+
+    def test_bare_token_with_credential_value_redacted(self):
+        """Bare 'Token <credential>' still masks when the value is
+        credential-shaped (contains digits)."""
+        result = sanitize_secrets("Token abcdef1234567890abcdef123456")
+        assert "abcdef1234567890abcdef123456" not in result
+        assert "<MASKED>" in result
+
     def test_github_finegrained_pat_redacted(self):
         """Regression: GitHub fine-grained PATs (github_pat_…) used to pass
         the gh[psu]_ pattern."""

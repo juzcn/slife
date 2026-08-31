@@ -7,6 +7,9 @@ empty-text check, so distinct messages get through while true re-deliveries
 are still deduped.
 """
 
+import json
+import time
+
 import pytest; pytestmark = pytest.mark.unit
 
 
@@ -109,3 +112,60 @@ class TestPollLoopDedup:
         ]])
         assert [q["text"] for q in queued] == ["hello", "hello"]
         assert len(ws._seen_keys) == 1  # one distinct key for both
+
+
+class TestCheckStatusLastContactShape:
+    """last_contact must have the same shape — both from_user_id and
+    to_user_id — on the live-polling AND session-restore paths.
+
+    It previously flipped keys between the paths, so an LLM following the
+    schema doc (to_user_id from last_contact) could copy from_user_id into
+    to_user_id and the reply would not send (BUGS.md #1).
+    """
+
+    def setup_method(self):
+        ws._qr_status = ""
+
+    @pytest.mark.asyncio
+    async def test_logged_in_polling_path(self):
+        client = MagicMock()
+        client.is_logged_in = True
+        client.last_contact = {"from_id": "u1", "context_token": "ctx1"}
+        client.get_session_dict.return_value = {"saved_at": time.time()}
+        original = ws._client
+        ws._client = client
+        try:
+            with patch.object(
+                ws, "_poll_task", MagicMock(done=MagicMock(return_value=False))
+            ):
+                resp = json.loads(await ws.wechat_check_status())
+        finally:
+            ws._client = original
+        lc = resp["last_contact"]
+        assert resp["status"] == "logged_in"
+        assert lc["from_user_id"] == lc["to_user_id"] == "u1"
+        assert lc["context_token"] == "ctx1"
+
+    @pytest.mark.asyncio
+    async def test_restore_path(self):
+        client = MagicMock()
+        client.is_logged_in = False
+        client.try_restore_session = AsyncMock(return_value=True)
+        client.validate_session = AsyncMock(return_value=True)
+        client.get_session_dict.return_value = {"saved_at": time.time()}
+        original = ws._client
+        ws._client = client
+        try:
+            with patch.object(ws, "load_wechat_config", return_value={
+                "bot_token": "tok",
+                "ilink_user_id": "u1",
+                "saved_at": time.time(),
+            }):
+                with patch.object(ws, "_start_polling", lambda: None):
+                    resp = json.loads(await ws.wechat_check_status())
+        finally:
+            ws._client = original
+        assert resp["status"] == "restored"
+        lc = resp["last_contact"]
+        assert lc["from_user_id"] == lc["to_user_id"] == "u1"
+        assert lc["context_token"] == ""
