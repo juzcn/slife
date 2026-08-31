@@ -333,8 +333,11 @@ class TestAnthropicBuildKwargs:
         kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
         assert kw["model"] == "claude-sonnet-4-20250514"
         assert kw["max_tokens"] == 8192
-        assert kw["temperature"] == 0.7
-        assert kw["top_p"] == 1.0
+        # Sampling params ride inside extra_body since SDK 1.x dropped the
+        # typed temperature/top_p kwargs (still valid request-body fields).
+        assert kw["extra_body"] == {"temperature": 0.7, "top_p": 1.0}
+        assert "temperature" not in kw
+        assert "top_p" not in kw
         assert "system" not in kw
         assert "tools" not in kw
 
@@ -405,7 +408,9 @@ class TestAnthropicBuildKwargs:
         )
         backend = AnthropicBackend(cfg)
         kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
-        assert "temperature" not in kw
+        # temperature=0 must never reach the body; top_p may still ride along.
+        body = kw.get("extra_body", {})
+        assert "temperature" not in body
 
 
 # ── System cache_control guard ─────────────────────────────────────────

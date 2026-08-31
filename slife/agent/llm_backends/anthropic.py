@@ -209,10 +209,18 @@ class AnthropicBackend:
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = self._oa_tools_to_anthropic(tools)
+        # Sampling params (temperature/top_p/top_k) are no longer typed
+        # kwargs on create/stream since SDK 1.x (the httpx2 release) — they
+        # remain valid request-body fields, sent via extra_body per the
+        # official MIGRATION.md.  extra_body is accepted the same way by
+        # older SDKs, so this path is version-agnostic.
+        body: dict = {}
         if self.model_config.temperature:
-            kwargs["temperature"] = self.model_config.temperature
+            body["temperature"] = self.model_config.temperature
         if self.model_config.top_p:
-            kwargs["top_p"] = self.model_config.top_p
+            body["top_p"] = self.model_config.top_p
+        if body:
+            kwargs["extra_body"] = body
         if self.model_config.thinking_enabled:
             compat = self.model_config.compat or {}
             # Bailian / qwen models with thinkingFormat "openai" always
