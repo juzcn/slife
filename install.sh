@@ -744,11 +744,27 @@ echo -e "${GRAY}  model yourself — see README.md → Install → Semantic memo
 
 #
 # ── MCP server catalog — build it now so the index is ready ─────────────
-echo -e "${YELLOW}[4e] Building the MCP server catalog (mcp-plugin build)…${NC}"
+# Bounded: a first-run build spawns every configured npx/uvx server (cold
+# package downloads) and can take minutes — it must never hang the install.
+echo -e "${YELLOW}[4e] Building the MCP server catalog (mcp-plugin build, max 180s)…${NC}"
 MCP_PLUGIN_BIN="$(uv tool dir 2>/dev/null)/slife/bin/mcp-plugin"
 if [ -x "$MCP_PLUGIN_BIN" ]; then
-    if "$MCP_PLUGIN_BIN" build >> "$TOOL_INSTALL_LOG" 2>&1; then
+    set +eo pipefail
+    if command -v timeout &>/dev/null; then
+        # SIGINT (not SIGTERM) so the build's finally block tears the pool
+        # down cleanly (kills spawned npx/uvx); --kill-after bounds a hang
+        # that ignores INT.  180s covers the cold npx/uvx first run.
+        timeout --signal=INT --kill-after=15 180 "$MCP_PLUGIN_BIN" build >> "$TOOL_INSTALL_LOG" 2>&1
+    else
+        "$MCP_PLUGIN_BIN" build >> "$TOOL_INSTALL_LOG" 2>&1
+    fi
+    BUILD_RC=$?
+    set -eo pipefail
+    if [ "$BUILD_RC" -eq 0 ]; then
         echo -e "${GREEN}  ✓${NC} MCP server catalog ready"
+    elif [ "$BUILD_RC" -eq 124 ] || [ "$BUILD_RC" -eq 130 ]; then
+        echo -e "${YELLOW}  ⚠ mcp-plugin build deferred (timeout/interrupt) — non-fatal;${NC}"
+        echo -e "${YELLOW}    run 'mcp-plugin build' later to finish the catalog${NC}"
     else
         echo -e "${YELLOW}  ⚠ mcp-plugin build had issues (non-fatal) — log tail:${NC}"
         tail -10 "$TOOL_INSTALL_LOG" | while IFS= read -r _l; do echo -e "    ${GRAY}$_l${NC}"; done

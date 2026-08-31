@@ -113,6 +113,10 @@ async def _build_cmd() -> int:
     tools, rebuilds the FTS index, and (when an embeddings endpoint is
     configured) re-embeds the whole catalog.  Unreachable servers are
     reported, not fatal.
+
+    Bounded by an overall wall-clock deadline — the guarantee that ``build``
+    always exits (success, per-server failure, or timeout) and never hangs;
+    rerun it to finish a partially-rebuilt catalog.
     """
     import asyncio
 
@@ -122,6 +126,12 @@ async def _build_cmd() -> int:
 
     #: Per-server connect cap — a hung npx/uvx spawn must not stall the build.
     _CONNECT_TIMEOUT = 60.0
+    #: Overall wall-clock deadline.  Every network path below is already
+    #: time-boxed individually (60s connect, 30s handshake, 5s probe, 60s
+    #: embed), but the hard outer deadline is what guarantees ``build`` ALWAYS
+    #: exits even if something escapes those caps (a synchronously-blocking
+    #: spawn, a wedged pipe, an unkillable grandchild).
+    _BUILD_DEADLINE = 300.0
 
     raw = plugin_config.load_config()
     servers = plugin_config._servers_dict(raw)
@@ -141,7 +151,8 @@ async def _build_cmd() -> int:
     connected: list[str] = []
     failed: list[str] = []
     tasks: "list[asyncio.Task]" = []
-    try:
+
+    async def _run_build() -> int:
         n_disabled = sum(1 for _, _, en in all_servers if not en)
         header = f"[build] connecting to {len(all_servers)} servers"
         if n_disabled:
@@ -162,7 +173,9 @@ async def _build_cmd() -> int:
             return name, None, conn.error or conn.status.value
 
         enabled_by_name = {n: en for n, _, en in all_servers}
-        tasks = [asyncio.create_task(_connect_one(n, e)) for n, e, _ in all_servers]
+        tasks.extend(
+            asyncio.create_task(_connect_one(n, e)) for n, e, _ in all_servers
+        )
         for fut in asyncio.as_completed(tasks):
             name, conn, err = await fut
             if err:
@@ -227,8 +240,20 @@ async def _build_cmd() -> int:
                 print(f"[build] embeddings: {semantic}")
         else:
             print("[build] embeddings: configured but failed to load — semantic search off (keyword-only)")
-
         return 0
+
+    try:
+        # Hard outer deadline — the guarantee that build always exits.  On
+        # timeout wait_for cancels _run_build; the finally below still tears
+        # the pool down (killing spawned npx/uvx trees), then we report.
+        return await asyncio.wait_for(_run_build(), timeout=_BUILD_DEADLINE)
+    except asyncio.TimeoutError:
+        print(
+            f"\n[build] exceeded {_BUILD_DEADLINE:.0f}s deadline — catalog partially "
+            "rebuilt; run `mcp-plugin build` again to finish.",
+            flush=True,
+        )
+        return 124
     except (KeyboardInterrupt, asyncio.CancelledError):
         # Ctrl+C mid-build: cancel the in-flight connect tasks and report a
         # clean interruption instead of a traceback.  The catalog is partially
