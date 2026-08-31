@@ -49,7 +49,7 @@ Homepage = "https://github.com/juzcn/slife"
 Repository = "https://github.com/juzcn/slife"
 
 [project.optional-dependencies]
-gguf = ["llama-cpp-python"]
+gguf = ["llama-cpp-python==0.3.34"]
 transformer = ["sentence-transformers"]
 embeddings = ["slife[gguf,transformer]"]
 

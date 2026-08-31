@@ -450,8 +450,8 @@ class Engine:
                 logger.warning(
                     "backend_unavailable name=%s backend=gguf "
                     "reason=llama_cpp_not_installed "
-                    "hint='uv pip install local-embed[gguf]'",
-                    spec.name,
+                    "hint='uv pip install --python %s llama-cpp-python==0.3.34'",
+                    spec.name, sys.executable,
                 )
                 self._failed.add(spec.name)
                 return
@@ -497,8 +497,8 @@ class Engine:
                 logger.warning(
                     "backend_unavailable name=%s backend=transformer "
                     "reason=sentence_transformers_not_installed "
-                    "hint='uv pip install local-embed[transformer]'",
-                    spec.name,
+                    "hint='uv pip install --python %s sentence-transformers'",
+                    spec.name, sys.executable,
                 )
                 self._failed.add(spec.name)
                 return

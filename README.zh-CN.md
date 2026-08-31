@@ -365,10 +365,11 @@ A2A 唯一已实现的传输 binding 是 MQTT——把 `transport` 设为任何�
 | `local-embed[transformer]` | HuggingFace 变换器嵌入（sentence-transformers，~2 GB） |
 | `slife[gguf]` / `slife[transformer]` / `slife[embeddings]` | 旧版进程内嵌入（默认不再使用） |
 
-**Linux / macOS** — 从源码编译：
+**Linux / macOS** — 从源码编译（附加包统一用 `uv pip install`）：
 
 ```bash
-uv tool install "slife[gguf]" --reinstall
+uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34    # slife[gguf]
+uv pip install --python "$(uv tool dir)/slife" sentence-transformers        # slife[transformer]
 ```
 
 **Windows** — 预编译 wheel（无需 C++ 编译器）；uv 已配置使用 llama-cpp-python 的 CPU wheel 索引。详见[安装文档](https://github.com/juzcn/slife#optional-extras)。

@@ -34,21 +34,14 @@ OpenAI-compatible client works.
 
 ## Install
 
-Requires [uv](https://docs.astral.sh/uv).  All installs below pin
-**Python 3.13** (`requires-python` is `>=3.13`, but 3.13 is what CI tests,
-and uv would otherwise pick the newest 3.14 it finds).  Re-running any of
-them over an **existing** install requires `--reinstall` (`uv tool install`
-is a no-op on an already-installed tool otherwise), e.g. to upgrade to a new
-release or pick up the `json5` dependency fix:
-
-```bash
-uv tool install --python 3.13 --reinstall 'local-embed[gguf,transformer]'
-```
+`local-embed` ships **with slife** and runs in the slife tool venv — the
+model backends are added to *that* venv with `uv pip install` (never `uv
+tool install`, which would rebuild a separate standalone tool).
 
 The `transformer` backend installs the same everywhere:
 
 ```bash
-uv tool install --python 3.13 'local-embed[transformer]'   # sentence-transformers
+uv pip install --python "$(uv tool dir)/slife" sentence-transformers
 ```
 
 `gguf` (llama-cpp-python) is the platform-sensitive one: PyPI ships **only
@@ -60,25 +53,23 @@ upstream prebuilt CPU wheel — the one workaround.  GPU variants pass
 
 | Platform | Command |
 |---|---|
-| Linux / WSL / macOS, CPU | `uv tool install --python 3.13 'local-embed[gguf]'` (compiles from source) |
-| macOS arm64 (Metal) | `CMAKE_ARGS="-DGGML_METAL=on" uv tool install --python 3.13 'local-embed[gguf]'` |
-| NVIDIA CUDA (Linux) | `CMAKE_ARGS="-DGGML_CUDA=on" uv tool install --python 3.13 'local-embed[gguf]'` (needs the CUDA toolkit) |
-| **Windows, CPU** | `uv tool install --python 3.13 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu` (prebuilt wheel — no MSVC by default) |
+| Linux / WSL / macOS, CPU | `uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` (compiles from source) |
+| macOS arm64 (Metal) | `CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
+| NVIDIA CUDA (Linux) | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` (needs the CUDA toolkit) |
+| **Windows, CPU** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34` (prebuilt wheel — no MSVC by default) |
 
 The Windows CPU row is the only workaround — everywhere else uses the
 standard source build from PyPI.  If the `gguf` backend is missing, the
 server errors at startup with the exact command for your platform (the
 Windows CPU one on Windows).
 
-**Want both backends in one environment?** Install the two extras together
-in a single command — running `uv tool install` twice replaces the first
-environment with the second, so they would not coexist:
+**Want both backends?** Install them together in one `uv pip install`:
 
 ```bash
-# both backends, Windows CPU:
-uv tool install --python 3.13 'local-embed[gguf,transformer]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-# both backends, Linux / macOS CPU:
-uv tool install --python 3.13 'local-embed[gguf,transformer]'
+# Linux / macOS CPU:
+uv pip install --python "$(uv tool dir)/slife" sentence-transformers llama-cpp-python==0.3.34
+# Windows CPU (add the upstream wheel index):
+uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu sentence-transformers llama-cpp-python==0.3.34
 ```
 
 Core deps are `fastmcp` + `starlette`; the model backends are optional

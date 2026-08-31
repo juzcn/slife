@@ -36,27 +36,32 @@ LLAMA_CPP_INDEXES = {
 }
 
 
-def backend_install_hint(backend: str, platform: "str | None" = None) -> str:
-    """The install command for a missing backend on ``platform`` (sys.platform).
+def backend_install_hint(
+    backend: str, platform: "str | None" = None, python: "str | None" = None,
+) -> str:
+    """The install command for a missing backend, INTO the venv that runs this.
 
-    ``gguf`` is the special case: llama-cpp-python has no PyPI wheel, so the
-    standard build compiles from source (C compiler + CMake) everywhere
-    except **Windows**, which has no default C toolchain — there the abetlen
-    CPU wheel index is added.  (CUDA / Metal pass ``CMAKE_ARGS`` — see the
+    local-embed normally runs inside the slife tool venv (it is a slife
+    dependency), so the backend must be added to *that* interpreter — ``uv
+    pip install --python <this venv's python>``.  ``uv tool install
+    'local-embed[gguf]'`` would rebuild a separate standalone tool instead of
+    fixing the running venv, so it is never the right hint here.
+
+    ``gguf`` = llama-cpp-python: no PyPI wheel, so the standard build
+    compiles from source (C compiler + CMake) everywhere except **Windows**,
+    which has no default C toolchain — there the abetlen CPU wheel index is
+    added (the one workaround).  (CUDA / Metal pass ``CMAKE_ARGS`` — see the
     README install matrix.)
-
-    The command always pins ``--python 3.13``: it is the version CI tests,
-    and without it uv would silently pick the newest Python it finds.
     """
     platform = platform or sys.platform
-    if backend == "gguf":
-        if platform == "win32":
-            return (
-                "uv tool install --python 3.13 'local-embed[gguf]' "
-                f"--extra-index-url {LLAMA_CPP_INDEXES['cpu']}"
-            )
-        return "uv tool install --python 3.13 'local-embed[gguf]'"
-    return f"uv tool install --python 3.13 'local-embed[{backend}]'"
+    pyp = python or sys.executable
+    package = "llama-cpp-python==0.3.34" if backend == "gguf" else "sentence-transformers"
+    if backend == "gguf" and platform == "win32":
+        return (
+            f"uv pip install --python {pyp} "
+            f"--extra-index-url {LLAMA_CPP_INDEXES['cpu']} {package}"
+        )
+    return f"uv pip install --python {pyp} {package}"
 
 
 def resolve_cache(raw: "str | None", environ: "dict[str, str] | None" = None) -> str:

@@ -120,22 +120,26 @@ def config_path(tmp_path, monkeypatch):
 
 class TestBackendInstallHint:
     def test_gguf_linux_macos_plain(self):
-        assert backend_install_hint("gguf", "linux") == (
-            "uv tool install --python 3.13 'local-embed[gguf]'"
+        # The backend lands in the venv that runs local-embed (uv pip
+        # install --python <this venv>), never a fresh `uv tool install`
+        # (that rebuilds a separate standalone tool).
+        assert backend_install_hint("gguf", "linux", "/venv/python") == (
+            "uv pip install --python /venv/python llama-cpp-python==0.3.34"
         )
-        assert backend_install_hint("gguf", "darwin") == (
-            "uv tool install --python 3.13 'local-embed[gguf]'"
+        assert backend_install_hint("gguf", "darwin", "/venv/python") == (
+            "uv pip install --python /venv/python llama-cpp-python==0.3.34"
         )
 
     def test_gguf_windows_adds_cpu_index(self):
-        assert backend_install_hint("gguf", "win32") == (
-            "uv tool install --python 3.13 'local-embed[gguf]' "
-            "--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu"
+        assert backend_install_hint("gguf", "win32", "/venv/python") == (
+            "uv pip install --python /venv/python "
+            "--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu "
+            "llama-cpp-python==0.3.34"
         )
 
     def test_transformer_plain(self):
-        assert backend_install_hint("transformer", "win32") == (
-            "uv tool install --python 3.13 'local-embed[transformer]'"
+        assert backend_install_hint("transformer", "win32", "/venv/python") == (
+            "uv pip install --python /venv/python sentence-transformers"
         )
 
 

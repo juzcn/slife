@@ -461,10 +461,11 @@ These embedding backends are **not installed by the one-click installer** — th
 | `local-embed[transformer]` | HuggingFace transformer embeddings via sentence-transformers (~2 GB) |
 | `slife[gguf]` / `slife[transformer]` / `slife[embeddings]` | Legacy in-process embeddings (not used by default) |
 
-**Linux / macOS** — builds from source:
+**Linux / macOS** — builds from source (extra packages via `uv pip install`):
 
 ```bash
-uv tool install "slife[gguf]" --reinstall
+uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34    # slife[gguf]
+uv pip install --python "$(uv tool dir)/slife" sentence-transformers        # slife[transformer]
 ```
 
 **Windows** — pre-built wheels (no C++ compiler needed); uv is configured to use the llama-cpp-python CPU wheel index. See [install docs](https://github.com/juzcn/slife#optional-extras) for wheel selection and first-use instructions.
