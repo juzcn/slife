@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mcp_plugin.connection import ServerStatus
+from mcp_plugin.connection import ServerConfig, ServerStatus
 
 
 @pytest.fixture
@@ -43,6 +43,41 @@ def _import_mcp_server():
         return_value=Path("unused.log"),
     ):
         return importlib.import_module("mcp_plugin.server")
+
+
+class TestAutoConnectConfigured:
+    """_auto_connect_configured must register EVERY configured server in the
+    pool — disabled ones registered but NOT connected — so mcp_list matches
+    the config count.  A disabled server must not silently vanish from the
+    listing (BUGS.md #5)."""
+
+    @pytest.mark.asyncio
+    async def test_registers_enabled_and_disabled(self, restore_root_logger):
+        srv = _import_mcp_server()
+        pool = MagicMock()
+        pool.add_server = AsyncMock()
+        fake_config = MagicMock()
+        fake_config.load_config.return_value = {
+            "servers": {
+                "serper": {"command": "echo"},
+                "disabled_svc": {"command": "echo", "enabled": False},
+            },
+        }
+        fake_config.resolve_server_config.side_effect = (
+            lambda name, entry: ServerConfig(
+                name=name, command="echo", enabled=entry.get("enabled", True),
+            )
+        )
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv, "plugin_config", fake_config),
+        ):
+            await srv._auto_connect_configured()
+
+        added = {c[0][0].name: c[0][0] for c in pool.add_server.await_args_list}
+        assert set(added) == {"serper", "disabled_svc"}
+        assert added["serper"].enabled is True
+        assert added["disabled_svc"].enabled is False
 
 
 class TestAddServerToolRegistration:

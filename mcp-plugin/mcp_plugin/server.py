@@ -65,12 +65,16 @@ async def _mcp_lifespan(_app):
 
 
 async def _auto_connect_configured() -> None:
-    """Load mcp-plugin.json5 and connect every enabled server in parallel.
+    """Register every configured server in the pool, connecting enabled ones.
 
     Best-effort and fire-and-forget from the lifespan — a slow server must
     never delay the ready port signal.  Failures are logged per server; the
     agent discovers whichever tools actually connected (via mcp_list_tools
     or the tools/list_changed notifications fired on connect).
+
+    Disabled servers (``enabled: false``) are registered but NOT connected,
+    so ``mcp_list`` (a config view) reports the same set as the config —
+    including the disabled server the user can re-enable.
     """
     try:
         raw = plugin_config.load_config()
@@ -80,11 +84,11 @@ async def _auto_connect_configured() -> None:
     servers = raw.get("servers", {})
     if not isinstance(servers, dict):
         return
-    enabled = [
+    configured = [
         (name, entry) for name, entry in servers.items()
-        if isinstance(entry, dict) and entry.get("enabled") is not False
+        if isinstance(entry, dict)
     ]
-    logger.info("mcp_auto_connect count=%d", len(enabled))
+    logger.info("mcp_configured count=%d", len(configured))
 
     async def _connect_one(name: str, entry: dict) -> None:
         try:
@@ -93,7 +97,7 @@ async def _auto_connect_configured() -> None:
         except Exception as e:
             logger.warning("mcp_auto_connect_failed server=%s err=%s", name, e)
 
-    await asyncio.gather(*(_connect_one(n, e) for n, e in enabled))
+    await asyncio.gather(*(_connect_one(n, e) for n, e in configured))
 
 
 mcp, _log_path, logger = create_plugin_server(
