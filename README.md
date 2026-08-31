@@ -125,12 +125,13 @@ Install the backend **into the slife tool venv** — the same interpreter `local
 | Backend | Command |
 |---------|---------|
 | **Transformer** — `sentence-transformers`, simplest, works everywhere | `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
-| **GGUF · NVIDIA CUDA 12** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34` |
-| **GGUF · CPU** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34` |
-| **GGUF · macOS Metal** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal llama-cpp-python==0.3.34` |
+| **GGUF · CPU (Linux / WSL / macOS)** | `uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
+| **GGUF · NVIDIA CUDA** | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
+| **GGUF · macOS Metal** | `CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
+| **GGUF · Windows CPU** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34` |
 
-- For CUDA, pick the wheel index matching your CUDA version (`cu118` / `cu121` / `cu122` / `cu123` / `cu124` / `cu125` / `cu130` / `cu132`); the CUDA Linux wheels need **glibc ≥ 2.35**.
-- The two backends can coexist — install both in **one** `uv pip install` (e.g. `sentence-transformers` plus the `llama-cpp-python` extra-index row in a single command). Installing twice replaces the first install.
+- llama-cpp-python ships **no PyPI wheel** (only the sdist), so the Linux / WSL / macOS rows **compile from source** — the standard build — and need a **C compiler + CMake ≥ 3.21** (macOS: Xcode CLT clang; Linux: `build-essential` + `cmake`). The GPU rows pass `CMAKE_ARGS` to select the backend. **Windows has no default C toolchain**, so it uses the upstream prebuilt CPU wheel — the one workaround.
+- The two backends can coexist — install both in **one** `uv pip install` (e.g. `sentence-transformers` plus the `llama-cpp-python` CPU row in a single command). Installing twice replaces the first install.
 - If the backend is missing, `local-embed` logs the exact install command for your platform instead of failing silently.
 
 ### 2. Download the model weights

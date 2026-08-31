@@ -40,9 +40,11 @@
 ```bash
 # 后端（选其一）
 uv pip install --python "$(uv tool dir)/slife/bin/python" sentence-transformers            # 最简单，全平台可用
-uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34   # NVIDIA CUDA 12
-uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34    # CPU
-uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal llama-cpp-python==0.3.34 # macOS Metal
+uv pip install --python "$(uv tool dir)/slife/bin/python" llama-cpp-python==0.3.34   # CPU（Linux/WSL/macOS，源码编译，需 C 编译器 + CMake）
+CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$(uv tool dir)/slife/bin/python" llama-cpp-python==0.3.34  # NVIDIA CUDA
+CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python "$(uv tool dir)/slife/bin/python" llama-cpp-python==0.3.34 # macOS Metal
+# Windows 无默认 C 工具链 — 用上游预编译 CPU wheel（唯一 workaround）：
+uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34  # Windows CPU
 
 # 模型 — 默认离线（HF_HUB_OFFLINE=1，不自动下载）。先自己下载：
 # `hf download BAAI/bge-m3`（~2 GB 到 HF 缓存，huggingface.co → hf-mirror.com 自动 fallback），

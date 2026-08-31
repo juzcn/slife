@@ -26,10 +26,11 @@ from local_embed.config import load_config, write_config
 ENV_CACHE_KEY = "HF_HUB_CACHE"
 ENV_OFFLINE_KEY = "HF_HUB_OFFLINE"
 
-# Official prebuilt-wheel indexes for llama-cpp-python (the upstream llama.cpp
-# project).  PyPI carries no Windows wheels for llama-cpp-python, so on
-# Windows a plain install compiles from source (needs MSVC + CMake) — the
-# abetlen indexes are the supported one-click path per backend.
+# llama-cpp-python ships only an sdist on PyPI — the standard install
+# compiles from source (C compiler + CMake).  Windows has no default C
+# toolchain (no MSVC), so it is the one platform that falls back to the
+# upstream prebuilt CPU wheel (abetlen index) — the workaround, not the
+# standard.
 LLAMA_CPP_INDEXES = {
     "cpu": "https://abetlen.github.io/llama-cpp-python/whl/cpu",
 }
@@ -38,11 +39,11 @@ LLAMA_CPP_INDEXES = {
 def backend_install_hint(backend: str, platform: "str | None" = None) -> str:
     """The install command for a missing backend on ``platform`` (sys.platform).
 
-    ``gguf`` is the special case: llama-cpp-python has PyPI wheels on
-    Linux/macOS but **none on Windows**, where the abetlen CPU wheel index
-    must be added or uv falls back to a source build (MSVC + CMake).  On
-    Linux/macOS the plain PyPI wheel is fine.  (CUDA / Metal need their own
-    indexes — see the README install matrix.)
+    ``gguf`` is the special case: llama-cpp-python has no PyPI wheel, so the
+    standard build compiles from source (C compiler + CMake) everywhere
+    except **Windows**, which has no default C toolchain — there the abetlen
+    CPU wheel index is added.  (CUDA / Metal pass ``CMAKE_ARGS`` — see the
+    README install matrix.)
 
     The command always pins ``--python 3.13``: it is the version CI tests,
     and without it uv would silently pick the newest Python it finds.

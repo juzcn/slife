@@ -96,11 +96,6 @@ dev = [
     "pytest-xdist>=3.8.0",
 ]
 
-[tool.uv]
-extra-index-url = [
-    "https://abetlen.github.io/llama-cpp-python/whl/cpu",
-]
-
 [tool.uv.workspace]
 members = ["credstore", "cc-switch", "mcp-plugin", "local-embed"]
 

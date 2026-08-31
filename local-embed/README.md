@@ -42,8 +42,7 @@ is a no-op on an already-installed tool otherwise), e.g. to upgrade to a new
 release or pick up the `json5` dependency fix:
 
 ```bash
-uv tool install --python 3.13 --reinstall 'local-embed[gguf,transformer]' \
-  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+uv tool install --python 3.13 --reinstall 'local-embed[gguf,transformer]'
 ```
 
 The `transformer` backend installs the same everywhere:
@@ -52,26 +51,24 @@ The `transformer` backend installs the same everywhere:
 uv tool install --python 3.13 'local-embed[transformer]'   # sentence-transformers
 ```
 
-`gguf` (llama-cpp-python) is the platform-sensitive one: PyPI ships
-Linux/macOS CPU wheels but **no Windows wheels**, so on Windows a plain
-install silently compiles from source (needs MSVC + CMake).  The upstream
-project's prebuilt-wheel indexes (`https://abetlen.github.io/llama-cpp-python/whl/<cpu|cuXXX|metal>`) are the supported one-click path — pick the row
-for your platform:
+`gguf` (llama-cpp-python) is the platform-sensitive one: PyPI ships **only
+the sdist** (no prebuilt wheels), so on Linux / WSL / macOS a plain install
+**compiles from source** — the standard build (needs a C compiler + CMake
+≥ 3.21).  **Windows has no default C toolchain** (no MSVC), so it uses the
+upstream prebuilt CPU wheel — the one workaround.  GPU variants pass
+`CMAKE_ARGS`:
 
 | Platform | Command |
 |---|---|
-| Linux / macOS, CPU | `uv tool install --python 3.13 'local-embed[gguf]'` (PyPI wheel) |
-| **Windows, CPU** | `uv tool install --python 3.13 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu` |
-| macOS arm64 (Metal) | `uv tool install --python 3.13 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal` |
-| CUDA (Linux or Windows) | `uv tool install --python 3.13 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122` — pick `cu118` / `cu121` / `cu122` / `cu123` / `cu124` / `cu125` / `cu130` / `cu132` to match your CUDA version |
+| Linux / WSL / macOS, CPU | `uv tool install --python 3.13 'local-embed[gguf]'` (compiles from source) |
+| macOS arm64 (Metal) | `CMAKE_ARGS="-DGGML_METAL=on" uv tool install --python 3.13 'local-embed[gguf]'` |
+| NVIDIA CUDA (Linux) | `CMAKE_ARGS="-DGGML_CUDA=on" uv tool install --python 3.13 'local-embed[gguf]'` (needs the CUDA toolkit) |
+| **Windows, CPU** | `uv tool install --python 3.13 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu` (prebuilt wheel — no MSVC by default) |
 
-When the index is an *extra*, uv uses its wheel only when PyPI has no
-compatible wheel for the platform (the Windows / Metal cases); on Linux
-PyPI **does** ship a CPU wheel, so to get the CUDA build you must use the
-CUDA index.  Note the CUDA Linux wheels need **glibc ≥ 2.35** (built for
-`manylinux_2_35`) — on an older distro uv falls back to a source build.
-If the `gguf` backend is missing, the server errors at startup with the
-exact command for your platform (the Windows CPU one on Windows).
+The Windows CPU row is the only workaround — everywhere else uses the
+standard source build from PyPI.  If the `gguf` backend is missing, the
+server errors at startup with the exact command for your platform (the
+Windows CPU one on Windows).
 
 **Want both backends in one environment?** Install the two extras together
 in a single command — running `uv tool install` twice replaces the first

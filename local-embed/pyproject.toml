@@ -24,7 +24,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-gguf = ["llama-cpp-python"]
+gguf = ["llama-cpp-python==0.3.34"]
 transformer = ["sentence-transformers"]
 
 [project.urls]

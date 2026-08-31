@@ -589,12 +589,14 @@ if [ -s "$PRESERVED_REQS" ]; then
         uv pip freeze --python "$NEW_PYTHON" 2>/dev/null | sed 's/==.*//' | sort > "$TMP_DIR/new-freeze.txt"
         sort "$PRESERVED_REQS" | comm -23 - "$TMP_DIR/new-freeze.txt" > "$EXTRA_REQS"
 
-        # llama-cpp-python is env-specific (CPU/CUDA/Metal) and version-locked
-        # in the README (==0.3.34).  The name-only restore resolves the newest
-        # wheel from the abetlen extra index (e.g. 0.3.35), silently drifting
-        # from the lock — pin the README version explicitly.
+        # llama-cpp-python is env-specific and version-locked in the README
+        # (==0.3.34).  The name-only restore resolves the newest version and
+        # silently drifts from the lock — pin the README version.  On
+        # Linux/WSL/macOS it then compiles from the PyPI sdist (the standard
+        # build; needs a C compiler + CMake); Windows uses the upstream
+        # prebuilt wheel instead (no default MSVC).
         if grep -qi '^llama-cpp-python' "$EXTRA_REQS" 2>/dev/null; then
-            echo -e "  ${YELLOW}llama-cpp-python: pinning to the README lock ==0.3.34 (name-only restore would pull the newest wheel)${NC}"
+            echo -e "  ${YELLOW}llama-cpp-python: pinning to the README lock ==0.3.34 (source-compiled from PyPI)${NC}"
             sed -i 's/^llama-cpp-python.*/llama-cpp-python==0.3.34/' "$EXTRA_REQS"
         fi
 

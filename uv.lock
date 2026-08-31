@@ -1343,23 +1343,14 @@ wheels = [
 [[package]]
 name = "llama-cpp-python"
 version = "0.3.34"
-source = { registry = "https://abetlen.github.io/llama-cpp-python/whl/cpu" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "diskcache" },
     { name = "jinja2" },
     { name = "numpy" },
     { name = "typing-extensions" },
 ]
-wheels = [
-    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-linux_riscv64.whl" },
-    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-macosx_11_0_arm64.whl" },
-    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl" },
-    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
-    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-musllinux_1_2_aarch64.whl" },
-    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-musllinux_1_2_x86_64.whl" },
-    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-pyemscripten_2026_0_wasm32.whl" },
-    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-win_amd64.whl" },
-]
+sdist = { url = "https://files.pythonhosted.org/packages/c1/2f/46487e949da42b31847853793ddbfd44c7414e94d4364c9a41f91f30af27/llama_cpp_python-0.3.34.tar.gz", hash = "sha256:d849d286d808284f1d3ec1bd6875572430d29d1f9574a010232caa4e9cef0e35", size = 71617302, upload-time = "2026-07-12T04:33:41.928Z" }
 
 [[package]]
 name = "local-embed"
@@ -1390,7 +1381,7 @@ dev = [
 requires-dist = [
     { name = "fastmcp", specifier = ">=2.0.0" },
     { name = "json5", specifier = ">=0.15.0" },
-    { name = "llama-cpp-python", marker = "extra == 'gguf'" },
+    { name = "llama-cpp-python", marker = "extra == 'gguf'", specifier = "==0.3.34" },
     { name = "sentence-transformers", marker = "extra == 'transformer'" },
     { name = "starlette", specifier = ">=0.37.0" },
 ]
