@@ -31,6 +31,8 @@ set -euo pipefail
 # The heavy semantic packages (sentence-transformers / llama-cpp-python) are
 # NOT — they are a user-run setup printed at the end (step [4d]).
 # Pass ``--core`` (or set $SLIFE_CORE=1) to skip even the lightweight tools.
+# Mosquitto (A2A mesh broker) installs rootless by default; set $SLIFE_SKIP_MOSQUITTO=1
+# to skip it entirely.
 
 # --core / $SLIFE_CORE=1 → light install (skip the optional full tool set)
 CORE_MODE=false
@@ -61,7 +63,7 @@ echo "bun               : auto-install bun if needed (required for nvidia-nim MC
 echo "unzip             : auto-install on Linux if missing (bun installer dependency)"
 echo "rootless fallback : official tarballs → ~/.local when no root/package manager"
 echo "Configs           : seeded from bundled defaults (slife / local-embed / mcp-plugin)"
-echo "Full tool set     : yt-dlp, browser-harness, Mosquitto (--core to skip)"
+echo "Full tool set     : yt-dlp, browser-harness, Mosquitto (rootless — no sudo; --core to skip)"
 echo "Disk space needed : ~500 MB (semantic setup adds 0.3–2 GB, user-run)"
 echo ""
 
@@ -203,6 +205,56 @@ PYEOF
     [ -x "$_exe" ]
 }
 
+# Mosquitto (A2A mesh broker) — rootless install is the DEFAULT.
+# ``apt-get download`` + ``dpkg -x`` fetch and unpack the .deb without root,
+# the same rootless pattern used above for node/bun.  If no rootless route
+# works we WARN and leave the mesh disabled — never auto-sudo, because a
+# piped / non-TTY install would hang on the password prompt.
+_slife_install_mosquitto_rootless() {
+    local _bin="$HOME/.local/bin" _deb_dir="$TMP_DIR/mosquitto-debs"
+    local _pkg _page _url _codename _arch _deb _conf
+    mkdir -p "$_bin" "$_deb_dir" || return 1
+
+    # 1. Get the .deb(s) without root (needs apt package lists).
+    ( cd "$_deb_dir" && timeout 90 apt-get download mosquitto mosquitto-clients ) >/dev/null 2>&1 || true
+
+    # 1b. Lists missing?  Resolve straight from packages.ubuntu.com (no apt state, no root).
+    if ! ls "$_deb_dir"/*.deb >/dev/null 2>&1; then
+        _codename="$(sed -n 's/^VERSION_CODENAME=//p' /etc/os-release 2>/dev/null | head -1)"
+        _arch="$(dpkg --print-architecture 2>/dev/null || true)"
+        if [ -n "$_codename" ] && [ -n "$_arch" ]; then
+            for _pkg in mosquitto mosquitto-clients; do
+                _page="$(curl -fsSL --max-time 20 "https://packages.ubuntu.com/$_codename/$_arch/$_pkg/download" 2>/dev/null || true)"
+                _url="$(printf '%s' "$_page" | grep -oE "https?://[^\"' ]*${_pkg}[^\"' ]*\\.deb" | head -1 || true)"
+                [ -n "$_url" ] && ( cd "$_deb_dir" && curl -fsSL --max-time 60 -o "$_pkg.deb" "$_url" ) >/dev/null 2>&1 || true
+            done
+        fi
+    fi
+    ls "$_deb_dir"/*.deb >/dev/null 2>&1 || return 1
+
+    # 2. Extract into ~/.local (dpkg -x needs no root).
+    for _deb in "$_deb_dir"/*.deb; do
+        dpkg -x "$_deb" "$HOME/.local" 2>/dev/null || return 1
+    done
+
+    # 3. Link binaries onto PATH.
+    ln -sf "$HOME/.local/usr/sbin/mosquitto" "$_bin/mosquitto" 2>/dev/null || true
+    for _c in mosquitto_passwd mosquitto_pub mosquitto_sub; do
+        [ -e "$HOME/.local/usr/bin/$_c" ] && ln -sf "$HOME/.local/usr/bin/$_c" "$_bin/$_c" 2>/dev/null || true
+    done
+    [ -x "$_bin/mosquitto" ] || return 1
+
+    # 4. Seed a minimal local config — the stock one points at /etc and
+    #    /var/lib, which a user prefix doesn't own.  1883 is unprivileged.
+    _conf="$HOME/.local/etc/mosquitto/mosquitto.conf"
+    if mkdir -p "$(dirname "$_conf")" 2>/dev/null; then
+        printf 'listener 1883 127.0.0.1\nallow_anonymous true\npersistence false\n' > "$_conf" 2>/dev/null || true
+    fi
+    echo -e "  ${GRAY}config: $_conf${NC}"
+    echo -e "  ${GRAY}start:  $_bin/mosquitto -c $_conf -d${NC}"
+    return 0
+}
+
 #
 if command -v df &>/dev/null; then
     FREE_KB=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}' || echo "0")
@@ -336,30 +388,42 @@ fi
 
 #
 echo -e "${YELLOW}[optional] Ensuring Mosquitto (MQTT broker for multi-agent mesh)…${NC}"
-if command -v mosquitto &>/dev/null; then
+HAVE_MOSQUITTO=false
+if command -v mosquitto >/dev/null 2>&1 || [ -x "$HOME/.local/bin/mosquitto" ]; then
     echo -e "${GREEN}  ✓${NC} mosquitto found"
-else
-    echo -e "${GRAY}  Mosquitto not found — installing automatically (A2A mesh)…${NC}"
-    if command -v apt-get &>/dev/null; then
-        sudo apt-get install -y mosquitto mosquitto-clients 2>/dev/null || true
-    elif command -v brew &>/dev/null; then
-        brew install mosquitto 2>/dev/null || true
-    elif command -v dnf &>/dev/null; then
-        sudo dnf install -y mosquitto 2>/dev/null || true
-    elif command -v pacman &>/dev/null; then
-        sudo pacman -S --noconfirm mosquitto 2>/dev/null || true
-    fi
-    # Re-check
-    if command -v mosquitto &>/dev/null; then
-        echo -e "${GREEN}  ✓${NC} Mosquitto installed"
-        echo -e "${CYAN}  To start Mosquitto:${NC}"
-        echo "    mosquitto -d"
-        echo -e "${CYAN}  Or as a system service:${NC}"
-        echo "    sudo systemctl enable --now mosquitto   # systemd (Linux)"
-        echo "    brew services start mosquitto           # Homebrew (macOS)"
+    HAVE_MOSQUITTO=true
+elif [ "$CORE_MODE" = true ]; then
+    echo -e "${GRAY}  --core: skipping Mosquitto${NC}"
+    HAVE_MOSQUITTO=true
+elif [ "${SLIFE_SKIP_MOSQUITTO:-0}" = "1" ]; then
+    echo -e "${GRAY}  SLIFE_SKIP_MOSQUITTO=1: skipping Mosquitto${NC}"
+    HAVE_MOSQUITTO=true
+fi
+
+if [ "$HAVE_MOSQUITTO" = false ]; then
+    echo -e "${GRAY}  Mosquitto not found — installing rootless (no sudo)…${NC}"
+    if command -v brew &>/dev/null; then
+        # Homebrew is user-prefix already — no root involved.
+        if brew install mosquitto 2>/dev/null; then
+            echo -e "${GREEN}  ✓${NC} Mosquitto installed (Homebrew)"
+            echo -e "${CYAN}  Start it for the A2A mesh:${NC}"
+            echo "    brew services start mosquitto"
+        else
+            echo -e "${YELLOW}  Mosquitto unavailable — A2A mesh disabled until it runs.${NC}"
+            echo -e "${YELLOW}  Docs: https://mosquitto.org/download/${NC}"
+        fi
+    elif ( set +e; _slife_install_mosquitto_rootless; ); then
+        echo -e "${GREEN}  ✓${NC} Mosquitto installed (rootless → ~/.local)"
+        echo -e "${CYAN}  Start it for the A2A mesh:${NC}"
+        echo "    ~/.local/bin/mosquitto -c ~/.local/etc/mosquitto/mosquitto.conf -d"
     else
         echo -e "${YELLOW}  Mosquitto unavailable — A2A mesh disabled until it runs.${NC}"
-        echo -e "${YELLOW}  Install manually: https://mosquitto.org/download/${NC}"
+        echo -e "${YELLOW}  Install manually (rootless):${NC}"
+        echo '    cd "$(mktemp -d)" && apt-get download mosquitto mosquitto-clients && dpkg -x ./*.deb "$HOME/.local"'
+        echo '    "$HOME/.local/bin/mosquitto" -c "$HOME/.local/etc/mosquitto/mosquitto.conf" -d'
+        echo -e "${YELLOW}  Or with sudo (system service):${NC}"
+        echo "    sudo apt-get install -y mosquitto mosquitto-clients"
+        echo -e "${YELLOW}  Docs: https://mosquitto.org/download/${NC}"
     fi
 fi
 
