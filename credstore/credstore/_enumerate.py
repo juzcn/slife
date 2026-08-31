@@ -145,14 +145,36 @@ def _enumerate_wsl(
         if with_values and b64_blob:
             try:
                 blob = base64.b64decode(b64_blob)
-                value = blob.decode("utf-16-le")
             except Exception:
+                continue
+            value = _decode_blob(blob)
+            if value is None:
                 continue
             entries.append((username, value))
         else:
             entries.append((username, ""))
 
     return entries
+
+
+# ── blob decoding ───────────────────────────────────────────────────
+
+
+def _decode_blob(blob: bytes) -> str | None:
+    """Decode a credential blob: UTF-16 (keyring's write format), then UTF-8.
+
+    Returns None when neither decoding works (the blob is not text) —
+    such an entry is skipped rather than syncing opaque bytes into the
+    backup.  Mirrors ``_enumerate_windows``' decode chain.
+    """
+    try:
+        return blob.decode("utf-16-le")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return blob.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 # ── public API ──────────────────────────────────────────────────────

@@ -78,6 +78,21 @@ class TestEnumerateWsl:
         keys = {k for k, _ in result}
         assert keys == {"DUP", "UNIQ"}
 
+    def test_with_values_utf8_fallback(self, monkeypatch):
+        """UTF-16 decode fails (odd-length bytes) → UTF-8 is attempted.
+
+        Mirrors _enumerate_windows' decode chain.  Keyrings normally write
+        UTF-16; a UTF-8-only blob (e.g. a foreign tool) must not be dropped
+        from reset-backup.
+        """
+        b = base64.b64encode("Hi!".encode("utf-8")).decode("ascii")
+        monkeypatch.setattr(
+            "credstore._enumerate.subprocess.run",
+            _mock_run(f'["KEY|{b}"]'),
+        )
+        result = _enumerate_wsl("credstore", with_values=True)
+        assert result == [("KEY", "Hi!")]
+
     def test_with_values_decode_failure(self, monkeypatch):
         monkeypatch.setattr(
             "credstore._enumerate.subprocess.run",

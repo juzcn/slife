@@ -70,18 +70,39 @@ public class CredManager {
     public static extern void CredFree([In] IntPtr cred);
 
     public static string GetCredential(string target) {
+        string blobB64, user;
+        if (!ReadCredential(target, out blobB64, out user)) {
+            return null;
+        }
+        return blobB64;
+    }
+
+    public static string GetCredentialWithUser(string target) {
+        string blobB64, user;
+        if (!ReadCredential(target, out blobB64, out user)) {
+            return null;
+        }
+        return blobB64 + "|" + user;
+    }
+
+    private static bool ReadCredential(string target, out string blobB64, out string user) {
+        blobB64 = null;
+        user = null;
         IntPtr credPtr;
         if (!CredRead(target, CRED_TYPE_GENERIC, 0, out credPtr)) {
-            return null;
+            return false;
         }
         try {
             CREDENTIAL cred = (CREDENTIAL)Marshal.PtrToStructure(credPtr, typeof(CREDENTIAL));
+            user = cred.UserName;
             if (cred.CredentialBlobSize > 0) {
                 byte[] passwordBytes = new byte[cred.CredentialBlobSize];
                 Marshal.Copy(cred.CredentialBlob, passwordBytes, 0, cred.CredentialBlobSize);
-                return Convert.ToBase64String(passwordBytes);
+                blobB64 = Convert.ToBase64String(passwordBytes);
+            } else {
+                blobB64 = "";
             }
-            return "";
+            return true;
         } finally {
             CredFree(credPtr);
         }
@@ -171,6 +192,44 @@ Write-Output $result
         return None
 
 
+def _get_credential_with_user(target: str) -> tuple[str | None, str]:
+    """Read a credential's blob AND its UserName field from Credential Manager.
+
+    Returns ``(value, username)`` where *value* is the decoded password
+    (``""`` for an empty blob) and *username* is the CREDENTIAL struct's
+    UserName field.  Returns ``(None, "")`` when no credential is stored
+    under *target*.
+
+    The UserName is needed to resolve credentials that were written by the
+    native Windows keyring backend (``WinVaultKeyring``), which stores them
+    under ``TargetName = service`` keyed off ``UserName = <key>`` — the
+    opposite convention from this bridge's ``username@service``.
+    """
+    escaped_target = target.replace("'", "''")
+    script = f'''
+$result = [CredManager]::GetCredentialWithUser('{escaped_target}')
+if ($result -eq $null) {{
+    exit 1
+}}
+Write-Output $result
+'''
+    returncode, stdout, _ = _run_powershell(script)
+
+    if returncode != 0 or not stdout:
+        return (None, "")
+
+    blob_b64, _, username = stdout.partition("|")
+    if blob_b64:
+        try:
+            password_bytes = base64.b64decode(blob_b64)
+            return (password_bytes.decode("utf-16-le"), username)
+        except Exception:
+            logger.debug("Failed to decode credential blob for %s", target)
+            return (None, username)
+    # Empty blob — the entry exists with an empty value.
+    return ("", username)
+
+
 def _set_credential(target: str, username: str, password: str) -> bool:
     """Store a credential into Windows Credential Manager.
 
@@ -241,7 +300,18 @@ class WslBackend(KeyringBackend):
     # ── KeyringBackend interface ──────────────────────────────────
 
     def get_password(self, service: str, username: str) -> Optional[str]:
-        return _get_credential(self._target(service, username))
+        # Primary layout: compound target ``{username}@{service}``.
+        value = _get_credential(self._target(service, username))
+        if value is not None:
+            return value
+        # Foreign layout written by the native Windows keyring backend
+        # (WinVaultKeyring): TargetName = service, the key in the UserName
+        # field.  Only claim it when the stored UserName actually matches,
+        # since every foreign entry shares the same TargetName.
+        stored_value, stored_user = _get_credential_with_user(service)
+        if stored_user == username:
+            return stored_value
+        return None
 
     def set_password(self, service: str, username: str, password: str) -> None:
         target = self._target(service, username)
@@ -252,7 +322,15 @@ class WslBackend(KeyringBackend):
 
     def delete_password(self, service: str, username: str) -> None:
         target = self._target(service, username)
-        if not _delete_credential(target):
-            raise PasswordDeleteError(
-                f"Failed to delete credential for {service}/{username}"
-            )
+        if _delete_credential(target):
+            return
+        # No entry under ``{username}@{service}`` — it may be stored under
+        # the native-Windows layout (TargetName = service, UserName = key).
+        # Only delete the service target when it actually belongs to this
+        # username, so another Windows-written entry is never removed.
+        _, stored_user = _get_credential_with_user(service)
+        if stored_user == username and _delete_credential(service):
+            return
+        raise PasswordDeleteError(
+            f"Failed to delete credential for {service}/{username}"
+        )

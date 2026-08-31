@@ -33,7 +33,7 @@ class TestTtyGuards:
         ["set", "test/key"],
         ["get", "test/key"],
         ["get", "--password", "test/key"],
-        ["delete", "test/key"],
+        ["remove", "test/key"],
         [],
         ["reset-keyring"],
         ["reset-backup"],
@@ -259,14 +259,45 @@ class TestCliGetPassword:
 class TestCliDelete:
     def test_delete_not_found(self, mock_backend, monkeypatch):
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "test-master-pw")
-        assert main(["delete", "nonexistent"]) == 1
+        assert main(["remove", "nonexistent"]) == 1
 
     def test_delete_found(self, mock_backend, in_mem_store, in_mem_cryptfile, monkeypatch):
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "test-master-pw")
         in_mem_store["test/key"] = "secret"
         in_mem_cryptfile["test/key"] = "secret"
-        assert main(["delete", "test/key"]) == 0
+        assert main(["remove", "test/key"]) == 0
         assert "test/key" not in in_mem_store
+
+    def test_delete_warns_when_keyring_survives(self, capsys, mock_backend, in_mem_store, in_mem_cryptfile, monkeypatch):
+        """Only the cryptfile copy was removed — warn that the keyring one remains."""
+        import credstore._store as sm
+        monkeypatch.setattr(sm, "delete_credential", lambda k: False)
+        in_mem_cryptfile["test/key"] = "secret"
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "test-master-pw")
+        assert main(["remove", "test/key"]) == 0
+        out, err = capsys.readouterr()
+        assert "Deleted from encrypted backup" in out
+        assert "remains in the system keyring" in err
+
+    def test_delete_warns_when_cryptfile_survives(self, capsys, mock_backend, in_mem_store, in_mem_cryptfile, monkeypatch):
+        """Only the keyring copy was removed — warn that the backup remains."""
+        import credstore._store as sm
+        monkeypatch.setattr(sm, "delete_credential", lambda k: in_mem_store.pop(k, None) is not None)
+        monkeypatch.setattr("credstore.__main__._delete_from_cryptfile", lambda k: "failed")
+        in_mem_store["test/key"] = "secret"
+        assert main(["remove", "test/key"]) == 0
+        out, err = capsys.readouterr()
+        assert "Deleted from system keyring" in out
+        assert "remains in the encrypted backup" in err
+
+    def test_delete_no_backup_copy_is_plain_success(self, capsys, mock_backend, in_mem_store, in_mem_cryptfile, monkeypatch):
+        """Keyring deleted, no cryptfile copy existed → plain 'Deleted', no warning."""
+        in_mem_store["test/key"] = "secret"
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "test-master-pw")
+        assert main(["remove", "test/key"]) == 0
+        out, err = capsys.readouterr()
+        assert "Deleted: test/key" in out
+        assert "Warning" not in err
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -350,6 +381,27 @@ class TestCliList:
         assert main([]) == 0
         out = capsys.readouterr().out
         assert "reset-keyring" in out
+
+    def test_list_lowercase_key_synced_single_row(self, capsys, mock_backend, in_mem_store, in_mem_cryptfile, monkeypatch):
+        """A lowercase key in both stores shows ONE synced row.
+
+        Cryptfile keys are normalized to UPPER, keyring enumeration keeps
+        raw case — the two must be matched case-insensitively or this key
+        appears twice (once 'keyring only', once 'cryptfile only').
+        """
+        in_mem_store["mcp_oauth_test-server"] = "tok"
+        in_mem_cryptfile["mcp_oauth_test-server"] = "tok"
+        monkeypatch.setattr(
+            "credstore.__main__._enumerate_system_keyring",
+            lambda service, with_values=False: [("mcp_oauth_test-server", "")],
+        )
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
+        assert main([]) == 0
+        out = capsys.readouterr().out
+        assert "1 credential(s)" in out
+        assert "mcp_oauth_test-server" in out
+        assert "MCP_OAUTH_TEST-SERVER" not in out
+        assert "synced" in out
 
 
 # ═══════════════════════════════════════════════════════════════

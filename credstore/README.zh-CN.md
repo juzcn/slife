@@ -38,7 +38,7 @@ credstore set-password    # 创建 ~/.credstore/credentials.crypt
 | `set KEY` | 主密码 + 密钥 | 原子双写：cryptfile → 密钥链。密钥链失败时回滚 |
 | `get KEY` | — | 仅密钥链，脱敏输出（`sk-5f…b722`） |
 | `get KEY -p` | 主密码 | 双查询密钥链 + cryptfile，明文输出。不一致时报错 |
-| `delete KEY` | 主密码 | 从两个存储中删除 |
+| `remove KEY` | 主密码 | 从两个存储中删除 |
 | `copy SOURCE DEST` | 主密码 | 幂等复制（密钥链 + cryptfile）。若目标已注入环境变量则自动重新注入 |
 | *（无命令）* | 主密码¹ | 三重读取：密钥链 + cryptfile + 环境变量。显示每个 key 的同步状态 |
 | `inject KEY… [--shell]` | 主密码¹ | 持久化到系统环境：注册表（Win）或 shell 配置文件（Unix）。读密钥链；cryptfile-only 模式下读加密备份（询问主密码） |
@@ -201,7 +201,7 @@ credstore.get_backend_name()   # → "system keyring + cryptfile (dual-write)"
 
 ### Keyutils 后端
 
-在 Linux（无论桌面还是无头）上，`KeyutilsBackend` 将凭据存储在内核的持久化 keyring（`@p`）中。通过 `ctypes` 直接调用 `add_key` 和 `keyctl` 系统调用——标准库外零 Python 依赖。每个凭据是一个 `"user"` 键，描述为 `"credstore:<service>/<key>"`。若内核 keyring 不可用（例如 HPC 登录节点上 seccomp 屏蔽了 keyctl），credstore 降级为**仅加密文件（cryptfile-only）模式**：`set` 存入 AES 备份并给出提示，`set-password`/`status`/`get -p`/`delete` 照常工作，原因可通过 `credstore status` 查看。完全不支持的平台仍然报错，而不是错误选择后端。
+在 Linux（无论桌面还是无头）上，`KeyutilsBackend` 将凭据存储在内核的持久化 keyring（`@p`）中。通过 `ctypes` 直接调用 `add_key` 和 `keyctl` 系统调用——标准库外零 Python 依赖。每个凭据是一个 `"user"` 键，描述为 `"credstore:<service>/<key>"`。若内核 keyring 不可用（例如 HPC 登录节点上 seccomp 屏蔽了 keyctl），credstore 降级为**仅加密文件（cryptfile-only）模式**：`set` 存入 AES 备份并给出提示，`set-password`/`status`/`get -p`/`remove` 照常工作，原因可通过 `credstore status` 查看。完全不支持的平台仍然报错，而不是错误选择后端。
 
 ### macOS 后端
 

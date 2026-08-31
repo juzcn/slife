@@ -162,6 +162,37 @@ class TestGetCredential:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# _get_credential_with_user
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestGetCredentialWithUser:
+
+    def test_success(self, monkeypatch):
+        monkeypatch.setattr(
+            "credstore._wsl_backend._run_powershell",
+            lambda script: (0, _b64("my-secret") + "|juzcn", ""),
+        )
+        from credstore._wsl_backend import _get_credential_with_user
+        assert _get_credential_with_user("t@svc") == ("my-secret", "juzcn")
+
+    def test_not_found(self, monkeypatch):
+        monkeypatch.setattr(
+            "credstore._wsl_backend._run_powershell",
+            lambda script: (1, "", ""),
+        )
+        from credstore._wsl_backend import _get_credential_with_user
+        assert _get_credential_with_user("t@svc") == (None, "")
+
+    def test_empty_blob_preserves_username(self, monkeypatch):
+        monkeypatch.setattr(
+            "credstore._wsl_backend._run_powershell",
+            lambda script: (0, "|juzcn", ""),
+        )
+        from credstore._wsl_backend import _get_credential_with_user
+        assert _get_credential_with_user("t@svc") == ("", "juzcn")
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # _set_credential / _delete_credential
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -269,6 +300,65 @@ class TestWslBackendOps:
         monkeypatch.setattr(
             "credstore._wsl_backend._run_powershell",
             lambda script: (1, "", "denied"),
+        )
+        from credstore._wsl_backend import WslBackend
+        with pytest.raises(PasswordDeleteError, match="Failed to delete"):
+            WslBackend().delete_password("svc", "usr")
+
+    def test_get_password_foreign_layout(self, monkeypatch):
+        """Entry stored by WinVaultKeyring (TargetName=service) is found.
+
+        The compound target ``usr@svc`` misses; the service-target fallback
+        reads it and matches the stored UserName.
+        """
+        def _run(script):
+            if "GetCredentialWithUser" in script:
+                return (0, _b64("oauthtoken") + "|usr", "")
+            return (1, "", "")
+        monkeypatch.setattr("credstore._wsl_backend._run_powershell", _run)
+        from credstore._wsl_backend import WslBackend
+        assert WslBackend().get_password("svc", "usr") == "oauthtoken"
+
+    def test_get_password_foreign_layout_username_mismatch(self, monkeypatch):
+        """Service-target entry with a different UserName is NOT claimed."""
+        def _run(script):
+            if "GetCredentialWithUser" in script:
+                return (0, _b64("secret") + "|someone-else", "")
+            return (1, "", "")
+        monkeypatch.setattr("credstore._wsl_backend._run_powershell", _run)
+        from credstore._wsl_backend import WslBackend
+        assert WslBackend().get_password("svc", "usr") is None
+
+    def test_delete_password_foreign_layout(self, monkeypatch):
+        """Delete falls back to the service target when the compound misses."""
+        deleted_targets: list[str] = []
+
+        def _del(target):
+            if target == "usr@svc":
+                return False  # compound absent — mimic CredDelete NOT_FOUND
+            deleted_targets.append(target)
+            return True
+
+        monkeypatch.setattr(
+            "credstore._wsl_backend._delete_credential", _del,
+        )
+        monkeypatch.setattr(
+            "credstore._wsl_backend._get_credential_with_user",
+            lambda target: ("", "usr"),
+        )
+        from credstore._wsl_backend import WslBackend
+        WslBackend().delete_password("svc", "usr")
+        assert deleted_targets == ["svc"]
+
+    def test_delete_password_foreign_layout_username_mismatch(self, monkeypatch):
+        """A service-target entry owned by another username is left alone."""
+        from keyring.errors import PasswordDeleteError
+        monkeypatch.setattr(
+            "credstore._wsl_backend._delete_credential", lambda target: False,
+        )
+        monkeypatch.setattr(
+            "credstore._wsl_backend._get_credential_with_user",
+            lambda target: ("", "someone-else"),
         )
         from credstore._wsl_backend import WslBackend
         with pytest.raises(PasswordDeleteError, match="Failed to delete"):

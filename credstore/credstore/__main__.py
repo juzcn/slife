@@ -9,7 +9,7 @@ Commands::
     credstore status              Show backend status
     credstore set <key>           Store a credential (keyring + cryptfile)
     credstore get <key>           Retrieve (keyring; cryptfile fallback on miss)
-    credstore delete <key>        Delete a credential
+    credstore remove <key>        Remove a credential
     credstore (no command)       List credentials (keyring + cryptfile + env)
     credstore reset-keyring       Restore keyring from cryptfile backup
     credstore reset-backup        Sync system keyring → cryptfile backup
@@ -95,7 +95,7 @@ def _build_parser() -> argparse.ArgumentParser:
     get_p.add_argument("--password", "-p", action="store_true",
                        help="Dual-query keyring + cryptfile, output plaintext; fail on mismatch")
 
-    del_p = sub.add_parser("delete", help="Delete a credential")
+    del_p = sub.add_parser("remove", help="Remove a credential")
     del_p.add_argument("key", help="Credential key to delete")
 
     copy_p = sub.add_parser("copy", help="Copy a credential to a new key (keyring + encrypted backup)")
@@ -148,8 +148,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_set(args.key)
         elif args.command == "get":
             return _cmd_get(args.key, password_mode=args.password)
-        elif args.command == "delete":
-            return _cmd_delete(args.key)
+        elif args.command == "remove":
+            return _cmd_remove(args.key)
         elif args.command == "copy":
             return _cmd_copy(args.source, args.dest)
         elif args.command == "reset-keyring":
@@ -565,53 +565,81 @@ def _print_inject_activation(shell: str, key: str) -> None:
 # ── cryptfile helpers (CLI layer — master key is only typed here) ───
 
 
-def _delete_from_cryptfile(key: str) -> bool:
+def _delete_from_cryptfile(key: str) -> str:
     """Remove a single credential from the cryptfile.
 
-    Prompts for the master password.  Returns True if the credential
-    was found and deleted from the cryptfile.
+    Prompts for the master password, then verifies the backup no longer
+    contains *key* — deleting it if present.  Returns ``"removed"`` when a
+    copy was deleted, ``"absent"`` when the backup had no copy (nothing to
+    do), and ``"failed"`` when the master password was wrong, the cryptfile
+    is unavailable, or the terminal is non-interactive.
     """
     cf = backend_mod.get_cryptfile()
     if cf is None:
-        return False
+        return "failed"
 
     if not sys.stdin.isatty():
         print(
             "(non-interactive — cryptfile cleanup skipped,"
-            " re-run 'credstore delete' in a terminal to clean up)",
+            " re-run 'credstore remove' in a terminal to clean up)",
             file=sys.stderr,
         )
-        return False
+        return "failed"
 
     master_pw = masked_input("Master password (to remove from encrypted backup): ")
 
     try:
+        result = "absent"  # nothing found to remove — a no-op, not an error
         with backend_mod.unlocked_cryptfile(master_pw) as cf:
-            cf.delete_password(store_mod.DEFAULT_SERVICE, key)
+            if cf.get_password(store_mod.DEFAULT_SERVICE, key) is not None:
+                cf.delete_password(store_mod.DEFAULT_SERVICE, key)
+                result = "removed"
         del master_pw
-        return True
+        return result
     except ValueError as exc:
         del master_pw
         print(f"Warning: {exc}", file=sys.stderr)
         print("Cryptfile cleanup skipped (incorrect master password).", file=sys.stderr)
-        return False
+        return "failed"
     except Exception:
         del master_pw
-        return False
+        return "failed"
 
 
 @requires_tty
-def _cmd_delete(key: str) -> int:
-    """Delete a credential from system keyring + cryptfile."""
-    deleted_sk = store_mod.delete_credential(key)
-    deleted_cf = _delete_from_cryptfile(key)
+def _cmd_remove(key: str) -> int:
+    """Remove a credential from system keyring + cryptfile.
 
-    if deleted_sk or deleted_cf:
-        print(f"Deleted: {key}")
+    Both removals are best-effort and independent; when only one copy
+    could be removed the remaining copy is reported explicitly so the
+    user is not left believing the credential is fully gone.
+    """
+    deleted_sk = store_mod.delete_credential(key)
+    cf_state = _delete_from_cryptfile(key)  # "removed" | "absent" | "failed"
+
+    if deleted_sk:
+        if cf_state != "failed":
+            print(f"Deleted: {key}")
+        else:
+            print(f"Deleted from system keyring: {key}")
+            print(
+                f"Warning: '{key}' remains in the encrypted backup (missing "
+                "or incorrect master password). Re-run 'credstore remove' in "
+                "a terminal to finish.",
+                file=sys.stderr,
+            )
         return 0
-    else:
-        print(f"Not found: {key}")
-        return 1
+    if cf_state == "removed":
+        print(f"Deleted from encrypted backup: {key}")
+        print(
+            f"Warning: '{key}' remains in the system keyring and could "
+            "not be removed. It will be re-synced back into the backup "
+            "by 'credstore reset-backup'.",
+            file=sys.stderr,
+        )
+        return 0
+    print(f"Not found: {key}")
+    return 1
 
 
 @requires_tty
@@ -767,7 +795,18 @@ def _cmd_list() -> int:
     env_keys: set[str] = {k for k in keyring_keys | cryptfile_keys if os.environ.get(k)}
 
     # ── 4. Merge & display (values retrieved one-at-a-time) ────
-    all_keys = sorted(keyring_keys | cryptfile_keys)
+    # Cross-store matching is case-insensitive: _read_cryptfile_keys()
+    # normalizes cryptfile keys to UPPER (configparser folds option case),
+    # while keyring enumeration returns the raw UserName.  Dedup by
+    # canonical case, preferring the keyring name for display — otherwise
+    # a lowercase key (e.g. mcp_oauth_*) synced into the cryptfile shows
+    # up as two rows, one "keyring only" and one "cryptfile only".
+    by_upper: dict[str, str] = {}
+    for k in keyring_keys:
+        by_upper[k.upper()] = k
+    for k in cryptfile_keys:
+        by_upper.setdefault(k.upper(), k)
+    all_keys = sorted(by_upper.values())
 
     if not all_keys:
         _print_empty_list(keyring_keys, cryptfile_exists, cryptfile_keys)
@@ -879,9 +918,13 @@ def _print_credential_table_safe(
 
     counts = {"synced": 0, "ring_only": 0, "crypt_only": 0, "mismatched": 0, "env_set": 0}
 
+    # Canonical-case matching: cryptfile keys are stored uppercased
+    # (_read_cryptfile_keys), keyring keys keep their raw case.
+    crypt_upper = {k.upper() for k in cryptfile_keys}
+
     for key in all_keys:
         in_ring = key in keyring_keys
-        in_crypt = key in cryptfile_keys
+        in_crypt = key.upper() in crypt_upper
         in_env = key in env_keys
         env_mark = "✔" if in_env else "—"
         if in_env:

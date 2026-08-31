@@ -37,7 +37,7 @@ Path overridable via the `CREDSTORE_FILE` env var.
 | `set KEY` | master + secret | Atomic dual-write: cryptfile → keyring. Rolls back on keyring failure |
 | `get KEY` | — | Keyring only, masked output (`sk-5f…b722`) |
 | `get KEY -p` | master | Dual-query keyring + cryptfile, plaintext. Fails on mismatch |
-| `delete KEY` | master | Remove from both stores |
+| `remove KEY` | master | Remove from both stores |
 | `copy SOURCE DEST` | master | Idempotent copy (keyring + cryptfile). Re-injects dest to env if previously injected |
 | *(no command)* | master¹ | Triple-read: keyring + cryptfile + env. Shows sync status per key |
 | `inject KEY… [--shell]` | master¹ | Persist to system env: registry (Win) or shell profile (Unix). Reads keyring; in cryptfile-only mode reads the backup (prompts master pw) |
@@ -201,7 +201,7 @@ On WSL, no Linux desktop keyring is available. `WslBackend` bridges to Windows C
 
 ### Keyutils Backend
 
-On Linux (desktop and headless alike), `KeyutilsBackend` stores credentials in the Linux kernel's persistent keyring (`@p`). Calls `add_key` and `keyctl` syscalls directly through `ctypes` — zero Python dependencies beyond stdlib. Each credential is a `"user"` key with description `"credstore:<service>/<key>"`. If the kernel keyring is unavailable (e.g. keyctl blocked by seccomp on an HPC login node), credstore degrades to **cryptfile-only** mode: `set` stores in the AES backup with a notice, `set-password`/`status`/`get -p`/`delete` keep working, and the reason is visible in `credstore status`. A fully unsupported platform still raises rather than picking a wrong backend.
+On Linux (desktop and headless alike), `KeyutilsBackend` stores credentials in the Linux kernel's persistent keyring (`@p`). Calls `add_key` and `keyctl` syscalls directly through `ctypes` — zero Python dependencies beyond stdlib. Each credential is a `"user"` key with description `"credstore:<service>/<key>"`. If the kernel keyring is unavailable (e.g. keyctl blocked by seccomp on an HPC login node), credstore degrades to **cryptfile-only** mode: `set` stores in the AES backup with a notice, `set-password`/`status`/`get -p`/`remove` keep working, and the reason is visible in `credstore status`. A fully unsupported platform still raises rather than picking a wrong backend.
 
 ### macOS Backend
 
