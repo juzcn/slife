@@ -201,6 +201,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "… {n} more lines …",
         "zh": "… 还有 {n} 行 …",
     },
+    "td_scroll_more": {
+        "en": "⋯ {n} more lines below — scroll ↑/↓ in the panel",
+        "zh": "⋯ 下方还有 {n} 行 — 面板内上下滚动查看",
+    },
     "td_running": {
         "en": "running",
         "zh": "运行中",

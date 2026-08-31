@@ -76,6 +76,14 @@ ChatView {
     min-height: 1;
     overflow-y: auto;
     overflow-x: hidden;
+    scrollbar-size: 1 2;
+    scrollbar-color: #484f58;
+    scrollbar-color-hover: #6e7681;
+    scrollbar-background: #161b22;
+}
+
+.tool-call > .tool-content {
+    width: 100%;
 }
 
 /* ── Tool approval prompt (inline, Claude Code style) ─────────── */

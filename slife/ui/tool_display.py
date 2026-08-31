@@ -1,7 +1,8 @@
 """Tool call display widget — Claude Code CLI style with human-friendly labels.
 
-Design: single Static widget, no child widgets, no compose/query complexity.
-All rendering is done by building a Content tree and calling self.update().
+Design: a scrollable panel (VerticalScroll) holding one Static child that
+carries the whole Content tree (header line plus, when expanded, args and
+result).  Long results scroll inside the panel instead of being clipped.
 
 Safety: user data (args, results) is placed in Content.from_text(markup=False),
 so special characters like &, [, ] are never interpreted as markup —
@@ -12,6 +13,7 @@ import os
 import subprocess
 import sys
 from textual.content import Content
+from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 from slife.platform import IS_WINDOWS
@@ -95,20 +97,26 @@ _STATUS_DEFAULT = "pending"
 # ── Widget ───────────────────────────────────────────────────────────
 
 
-class ToolCallWidget(Static):
-    """Display a tool call as a single Static widget — no child widgets.
+class ToolCallWidget(VerticalScroll):
+    """Scrollable tool call display: a header row + expandable detail body.
+
+    The widget is a real scroll container (Textual's ``Static`` has a
+    fixed ``virtual_size`` in this version and cannot scroll), so long
+    results — command output, QR login blocks — grow up to
+    ``max-height`` and scroll inside the panel with a visible scrollbar
+    instead of being clipped silently.
 
     Design rationale:
-      - Extends Static directly: self.update() renders everything.
-      - No compose(), no child widgets, no query_one/get_child_by_id.
-      - No on_mount() needed — the widget is self-contained.
-      - Collapsed/expanded rendering is just different Content objects.
+      - One Static child carries the whole Content tree (header line
+        plus, when expanded, args + result) — the single-renderable
+        structure is preserved, only the render target changed.
       - User data goes through _lit() (Content.from_text(markup=False))
         so special characters never cause MarkupError.
 
     Keyboard:
       - Ctrl+Y — copy result (when widget is focused and expanded)
       - Enter / Space — toggle expand/collapse
+      - scroll as usual (wheel / PageUp / PageDown) inside the panel
 
     Claude Code style: amber header line, expandable detail below.
     """
@@ -138,29 +146,58 @@ class ToolCallWidget(Static):
         self._result: str = ""
         self._result_is_error: bool = False
         self._suffix = _unique_suffix()
-        # Pass initial Content to parent so the widget has content
-        # from the moment it's mounted — no self.update() in __init__.
-        super().__init__(self._build_content())
+        # Single renderable child holds every state of the panel.
+        self._content: Static | None = None
+        super().__init__()
         self.add_class("tool-call")
+
+    # ── Composition ────────────────────────────────────────────────
+
+    def compose(self) -> list[Static]:
+        self._content = Static("", classes="tool-content")
+        return [self._content]
+
+    def on_mount(self) -> None:
+        self._refresh()
+        # Re-render once the container is laid out so the "more lines
+        # below" hint reflects the real scroll-overflow state.
+        self.call_after_refresh(self._refresh)
+
+    def _refresh(self) -> None:
+        if self._content is not None:
+            self._content.update(self._build_content())
+
+    def _scroll_more_hint(self) -> Content | None:
+        """A one-line "more lines below" hint when the expanded panel
+        overflows (content clipped by max-height).  ``max_scroll_y`` only
+        exists after layout, so bare/unit-test instances are guarded.
+        """
+        try:
+            n = self.max_scroll_y
+        except Exception:
+            n = 0
+        if n <= 0:
+            return None
+        return _mc(f"[#484f58]{t('td_scroll_more', n=n)}[/#484f58]\n")
 
     # ── Public API ─────────────────────────────────────────────────
 
     def set_running(self) -> None:
         """Indicate the tool is currently executing."""
         self._status = "running"
-        self.update(self._build_content())
+        self._refresh()
 
     def set_complete(self, result: str, is_error: bool = False) -> None:
         """Indicate the tool has completed with a result."""
         self._status = "error" if is_error else "done"
         self._result = result
         self._result_is_error = is_error
-        self.update(self._build_content())
+        self._refresh()
 
     def toggle(self) -> None:
         """Toggle the detail area visibility."""
         self._is_collapsed = not self._is_collapsed
-        self.update(self._build_content())
+        self._refresh()
 
     def on_click(self) -> None:
         """Expand detail on click (never collapse — avoids destroying text selection).
@@ -190,7 +227,14 @@ class ToolCallWidget(Static):
         content = self._header_line()
 
         if not self._is_collapsed:
-            content = content + _mc("\n") + self._detail_block()
+            body = self._detail_block()
+            # Visible scroll affordance at the top of the expanded panel:
+            # a pending scroll-offset means content is clipped below — show
+            # it unconditionally (independent of Textual's scrollbar draw).
+            hint = self._scroll_more_hint()
+            if hint is not None:
+                body = hint + body
+            content = content + _mc("\n") + body
 
         return content
 

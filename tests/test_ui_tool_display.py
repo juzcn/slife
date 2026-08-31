@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 def _make_widget(**kwargs):
     """Create a ToolCallWidget with mocked Textual internals.
 
-    ToolCallWidget extends Static — we patch Static.__init__ to skip
-    Textual's real constructor, then set up test state manually.
+    ToolCallWidget extends VerticalScroll — we build it via __new__ to
+    skip Textual's real constructor, then set up test state manually.
     """
     with patch("slife.ui.tool_display.Static.__init__", return_value=None):
         from slife.ui.tool_display import ToolCallWidget
@@ -28,8 +28,8 @@ def _make_widget(**kwargs):
         w._result = kwargs.get("_result", "")
         w._result_is_error = kwargs.get("_result_is_error", False)
         w._suffix = kwargs.get("_suffix", "42")
-        # Mock update() — the real one needs DOM attachment
-        w.update = MagicMock()
+        # The single renderable child; mocked so _render() needs no DOM.
+        w._content = MagicMock()
         return w
 
 
@@ -50,9 +50,9 @@ class TestToolCallWidget:
         w = _make_widget()
         w.set_running()
         assert w._status == "running"
-        w.update.assert_called_once()
+        w._content.update.assert_called_once()
         # Verify Content was passed to update() — check plain text
-        content = w.update.call_args[0][0]
+        content = w._content.update.call_args[0][0]
         text = content.plain
         assert "Web search" in text
 
@@ -62,14 +62,14 @@ class TestToolCallWidget:
         assert w._status == "done"
         assert w._result == "Search results here"
         assert w._result_is_error is False
-        w.update.assert_called_once()
+        w._content.update.assert_called_once()
 
     def test_set_complete_error(self):
         w = _make_widget()
         w.set_complete("Something failed", is_error=True)
         assert w._status == "error"
         assert w._result_is_error is True
-        w.update.assert_called_once()
+        w._content.update.assert_called_once()
 
     def test_set_complete_stores_full_result(self):
         w = _make_widget()
@@ -107,13 +107,13 @@ class TestToolCallWidget:
         w = _make_widget(_is_collapsed=True)
         w.toggle()
         assert w._is_collapsed is False
-        w.update.assert_called_once()
+        w._content.update.assert_called_once()
 
     def test_toggle_collapse_back(self):
         w = _make_widget(_is_collapsed=False)
         w.toggle()
         assert w._is_collapsed is True
-        w.update.assert_called_once()
+        w._content.update.assert_called_once()
 
     # ── Header line ───────────────────────────────────────────────
 
