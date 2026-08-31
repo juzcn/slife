@@ -1,7 +1,6 @@
 """Function-calling agent loop with real-time streaming and thinking support."""
 
 import asyncio
-import copy
 import itertools
 import json
 import logging
@@ -428,48 +427,6 @@ class AgentLoop:
             )
         return result
 
-    # ── Universal meta-param injection ──────────────────────────────
-
-    @staticmethod
-    def _inject_meta_params(functions: list[dict]) -> list[dict]:
-        """Add ``_timeout``, ``_async`` and ``_approve`` as optional
-        parameters to every function definition.
-
-        These are universal — the model already knows what a timeout, a
-        background task and an approval prompt mean, so their descriptions
-        stay terse (they repeat on every one of the ~280 tool schemas every
-        request, so verbosity here is the single biggest context-tax).
-
-        All are stripped before dispatch.
-        """
-        for func in functions:
-            schema = func.get("function", {}).get("parameters", {})
-            # Deep-copy so the injected params don't mutate the tool's own
-            # shared parameters dict (to_openai_function() returns it by
-            # reference — mutating here would poison every later call).
-            schema = copy.deepcopy(schema)
-            func["function"]["parameters"] = schema
-            props = schema.setdefault("properties", {})
-            if "_timeout" not in props:
-                props["_timeout"] = {
-                    "type": "number",
-                    "description": "Override tool_timeout (seconds) for this call.",
-                }
-            if "async" not in props and "_async" not in props:
-                props["_async"] = {
-                    "type": "boolean",
-                    "description": (
-                        "Run in background; return a task_id. Poll with "
-                        "check_async, cancel with cancel_async."
-                    ),
-                }
-            if "_approve" not in props:
-                props["_approve"] = {
-                    "type": "boolean",
-                    "description": "Show the user an approval dialog for this call.",
-                }
-        return functions
-
     # ── Context trimming ────────────────────────────────────────────
 
     def context_tokens_for(self, history: MessageHistory) -> int:
@@ -803,9 +760,11 @@ class AgentLoop:
                     messages=history.to_openai_messages(
                         thinking_enabled=self.llm_client.model_config.thinking_enabled,
                     ),
-                    tools=self._inject_meta_params(
-                        self.tool_registry.to_openai_functions()
-                    ),
+                    # Schemas carry business params only; the universal
+                    # meta-params (`_timeout`/`_async`/`_approve`) are a
+                    # system-prompt contract (slife.j2), not per-tool schema
+                    # fields — that saves ~3 params × 60 tools per request.
+                    tools=self.tool_registry.to_openai_functions(),
                     cancel_event=self._cancel_event,
                 )
                 if self.stream_timeout is not None:
@@ -988,10 +947,11 @@ class AgentLoop:
 
             # ── Approval gate — pure model judgment ────────────────
             # The LLM decides per-call whether the operation needs user
-            # confirmation by passing `_approve: true` (injected on every
-            # tool schema, like _timeout/_async).  The harness no longer
-            # hardcodes approval on any tool.  Serialised via lock so
-            # concurrent approval dialogs never overlap.
+            # confirmation by passing `_approve: true` — a system-prompt
+            # meta-parameter contract (slife.j2), not a schema field.
+            # The harness no longer hardcodes approval on any tool.
+            # Serialised via lock so concurrent approval dialogs never
+            # overlap.
             if approve_requested:
                 async with _approval_lock:
                     if handler:

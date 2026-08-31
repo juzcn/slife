@@ -304,7 +304,7 @@ All tools are unified under `Tool` and registered in a single `ToolRegistry`; th
 
 ### Timeout Architecture
 
-Single enforcement point at the Agent Loop level. `_inject_meta_params()` adds `_timeout` (number), `_async` (boolean), and `_approve` (boolean) to **every** function definition sent to the LLM:
+Single enforcement point at the Agent Loop level. The three meta-parameters (`_timeout` number, `_async` boolean, `_approve` boolean) are a **system-prompt contract** (slife.j2, "Tool meta-parameters" — declared once, not repeated in every schema): any tool call may carry them, and `_execute_tools` pops them before dispatch. Tool schemas sent to the LLM carry **business parameters only** — re-describing the meta-params on each of the ~60 schemas was the single biggest per-request context-tax.
 
 - Tools **without** a native `timeout` parameter → `asyncio.wait_for(timeout=…)`
 - Tools **with** a native `timeout` (`execute_shell`) → mapped to the native argument, no double-wrap
@@ -313,7 +313,7 @@ The MCP client applies no timeout of its own; enforcement stays in one place.
 
 ### Approval Gate
 
-Approval is **model-driven** (pure model judgment). The loop injects an `_approve` boolean meta-parameter on every tool schema (alongside `_timeout`/`_async`, visible on all three backends). When the LLM sets `_approve: true` on a call, the tool call is only surfaced to the UI once approved — execution pauses and an inline `ApprovalPrompt` row is mounted in the chat stream (Claude Code style, no modal: Y = approve, N / Esc = deny). Prompts serialize behind a lock. A denied call never mounts a `ToolCallWidget`; the prompt row itself carries the rejection state.
+Approval is **model-driven** (pure model judgment). The `_approve` boolean meta-parameter is a system-prompt contract (slife.j2), not an every-schema field. When the LLM sets `_approve: true` on a call, the tool call is only surfaced to the UI once approved — execution pauses and an inline `ApprovalPrompt` row is mounted in the chat stream (Claude Code style, no modal: Y = approve, N / Esc = deny). Prompts serialize behind a lock. A denied call never mounts a `ToolCallWidget`; the prompt row itself carries the rejection state.
 
 There is no hardcoded `requires_approval` flag on any tool or MCP server — the model decides per-call whether to ask the user. Headless (subagent) contexts have no handler and auto-approve.
 
