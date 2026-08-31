@@ -26,9 +26,8 @@ class McpToolLoadTool(Tool):
     category = "mcp"
     description = (
         "Load an external MCP tool into the LLM's tool list by full_name "
-        "'{server}__{tool}' (find it with mcp_tool_search). It becomes callable "
-        "on the next LLM call. Tools of a disabled server are refused — enable "
-        "the server first with mcp_set_enabled."
+        "'{server}__{tool}' (find it with mcp_tool_search). Tools of a disabled "
+        "server are refused — enable the server first with mcp_set_enabled."
     )
     parameters = {
         "type": "object",
@@ -78,4 +77,4 @@ class McpToolLoadTool(Tool):
         # loading twice is idempotent.
         registry.register(proxy)
         logger.info("mcp_tool_loaded full_name=%s", full_name)
-        return f"[OK] Loaded '{full_name}'. It is callable on the next LLM call."
+        return f"[OK] Loaded '{full_name}'."

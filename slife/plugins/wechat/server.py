@@ -3,7 +3,7 @@
 Bidirectional WeChat integration:
   - Auto-restores session from ``wechat_<user>.json5`` on startup.
   - Background poll loop fetches incoming messages continuously.
-  - LLM tools: wechat_login, wechat_send_message, wechat_check_messages, wechat_check_status, wechat_logout.
+  - LLM tools: wechat_login, wechat_send_message, wechat_check_status, wechat_logout.
 
 Usage:
     uv run python -m slife.plugins.wechat.server       # auto-assigned port (Streamable HTTP)
@@ -27,7 +27,7 @@ from slife.plugins.wechat.config import (
     clear_wechat_config,
 )
 from slife.server_utils import create_plugin_server
-from slife.logfmt import ok_json, error_json
+from slife.logfmt import error_json
 
 SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
 
@@ -52,9 +52,8 @@ mcp, _log_path, logger = create_plugin_server(
     "slife-wechat",
     instructions=(
         "slife-wechat — bidirectional WeChat messaging. "
-        "LLM tools: wechat_login (QR scan), wechat_send_message (reply), "
-        "wechat_send_typing (typing indicator), wechat_check_messages "
-        "(incoming), wechat_check_status, wechat_logout."
+        "LLM tools: wechat_login (QR scan), wechat_send_message (proactive "
+        "send), wechat_check_status, wechat_logout."
     ),
     lifespan=_wechat_lifespan,
 )
@@ -545,7 +544,7 @@ async def wechat_send_message(
     """Send a text message to the logged-in WeChat user.
 
     Args:
-        to_user_id: The recipient's WeChat user id (from wechat_check_status.last_contact — either from_user_id or to_user_id — / wechat_check_messages).
+        to_user_id: The recipient's WeChat user id (from wechat_check_status.last_contact — either from_user_id or to_user_id).
         context_token: Conversation token for replying in a thread; may be empty for the first message.
         text: The message body.
     """
@@ -573,93 +572,6 @@ async def wechat_send_message(
     except Exception as e:
         logger.exception("send_failed to=%s", to_user_id)
         return error_json(str(e))
-
-
-@mcp.tool(
-    name="wechat_send_typing",
-    description=(
-        "Show (status=1) or hide (status=2) the typing indicator on the "
-        "WeChat user's phone."
-    ),
-)
-async def wechat_send_typing(
-    to_user_id: str = "",
-    context_token: str = "",
-    status: int = 1,
-) -> str:
-    """Show or hide the typing indicator.
-
-    Args:
-        to_user_id: The recipient's WeChat user id (from wechat_check_status.last_contact — either from_user_id or to_user_id — / wechat_check_messages).
-        context_token: Conversation token (from the same source as to_user_id).
-        status: 1 = show typing, 2 = hide typing.
-    """
-    global _client
-
-    if not _client.is_logged_in:
-        return error_json("Not logged in. Call wechat_login first.")
-
-    if not to_user_id.strip():
-        return error_json("to_user_id is required.")
-
-    try:
-        result = await _client.send_typing(to_user_id, context_token or "", status)
-        if result is None:
-            logger.debug(
-                "send_typing_no_ticket to_user_id=%s context_token=%s",
-                to_user_id, context_token,
-            )
-            return error_json(
-                "Typing indicator not sent — could not obtain typing ticket. "
-                "The getconfig API call may have failed."
-            )
-        return ok_json(
-            status="sent",
-            typing_status=status,
-        )
-    except Exception as e:
-        logger.debug("send_typing_error err=%s", e)
-        return error_json(str(e))
-
-
-@mcp.tool(
-    name="wechat_check_messages",
-    description=(
-        "Check for new incoming WeChat messages (consumed on read). Each has "
-        "to_user_id + context_token for replying with wechat_send_message."
-    ),
-)
-async def wechat_check_messages() -> str:
-    global _pending
-
-    if not _client.is_logged_in:
-        return json.dumps({
-            "messages": [],
-            "status": "not_logged_in",
-            "hint": "Not logged in. Call wechat_login first.",
-        }, ensure_ascii=False, indent=2)
-
-    # Drain pending messages
-    msgs = list(_pending)
-    _pending.clear()
-
-    if not msgs:
-        return json.dumps({
-            "messages": [],
-            "status": "ok",
-            "hint": "No new messages.",
-        }, ensure_ascii=False, indent=2)
-
-    return json.dumps({
-        "messages": msgs,
-        "count": len(msgs),
-        "status": "ok",
-        "hint": (
-            f"{len(msgs)} new message(s). "
-            "Reply using wechat_send_message with the to_user_id and context_token "
-            "from each message above."
-        ),
-    }, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(

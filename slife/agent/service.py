@@ -1243,7 +1243,7 @@ class AgentService:
             assert wechat_client is not None
             self._tool_ctx.wechat_client = wechat_client
             try:
-                await wechat_client.call_tool("check_status", {})
+                await wechat_client.call_tool("wechat_check_status", {})
                 logger.debug("wechat_auto_restore_triggered")
             except Exception:
                 pass
@@ -1261,7 +1261,7 @@ class AgentService:
                 if wc is not None:
                     self._tool_ctx.wechat_client = wc
                     try:
-                        await wc.call_tool("check_status", {})
+                        await wc.call_tool("wechat_check_status", {})
                     except Exception:
                         pass
                 self._plugins["wechat"].poll_task = asyncio.create_task(
