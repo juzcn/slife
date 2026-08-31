@@ -1334,12 +1334,9 @@ class AgentService:
                         except Exception as e:
                             logger.debug("wechat_reply_error err=%s", e)
 
-                    marker = (
-                        f"[WECHAT: {{peer_wechat_id: {from_id}}}] " if from_id else ""
-                    )
                     msg = AgentMessage(
                         source=WECHAT,
-                        content=f"{marker}{text}",
+                        content=f"[WECHAT] {text}",
                         metadata={"channel": "wechat"},
                         on_reply=_reply,
                         channel=Channel.wechat(),

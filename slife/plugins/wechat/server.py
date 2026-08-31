@@ -558,18 +558,17 @@ async def wechat_send_message(
         return error_json("Both peer_wechat_id and text are required and must be non-empty.")
 
     try:
-        await _client.send_message(peer_wechat_id, context_token or "", text)
+        result = await _client.send_message(peer_wechat_id, context_token or "", text)
         # Hide typing indicator after reply
         try:
             await _client.send_typing(peer_wechat_id, context_token or "", status=2)
         except Exception:
             pass
         logger.debug("sent to=%s len=%d", peer_wechat_id, len(text))
-        return json.dumps({
-            "status": "sent",
-            "peer_wechat_id": peer_wechat_id,
-            "text_length": len(text),
-        }, ensure_ascii=False, indent=2)
+        out = {"status": "sent"}
+        if isinstance(result, dict) and result.get("message_id"):
+            out["message_id"] = result["message_id"]
+        return json.dumps(out, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("send_failed to=%s", peer_wechat_id)
         return error_json(str(e))
@@ -649,8 +648,8 @@ def _last_contact_entry(user_id: str, ctx: str | None = "") -> dict | None:
 @mcp.tool(
     name="wechat_check_status",
     description=(
-        "WeChat connection status: logged in?, session age, time remaining, "
-        "polling active, last_contact."
+        "WeChat connection status: logged in?, time remaining, polling "
+        "active, last_contact (peer_wechat_id + context_token)."
     ),
 )
 async def wechat_check_status() -> str:
@@ -664,19 +663,15 @@ async def wechat_check_status() -> str:
         }
         if _qr_status == "waiting":
             qr_info["hint"] = (
-                "QR code is waiting to be scanned. "
-                "Tell the user to open WeChat and scan the QR code. "
-                f"QR link: {_qr_content}"
+                "QR code waiting to be scanned — tell the user to open WeChat "
+                "and scan. " + (f"QR link: {_qr_content}" if _qr_content else "")
             )
         elif _qr_status == "scanned":
             qr_info["hint"] = (
-                "QR code has been scanned! Waiting for the user to "
-                "confirm on their phone. This usually takes a few seconds."
+                "QR code scanned — waiting for confirmation on the phone."
             )
         elif _qr_status == "expired":
-            qr_info["hint"] = (
-                "QR code expired. Call wechat_login again to generate a new one."
-            )
+            qr_info["hint"] = "QR code expired. Call wechat_login again."
         elif _qr_status == "error":
             qr_info["hint"] = f"QR login error: {_qr_error}. Call wechat_login again."
         return json.dumps(qr_info, ensure_ascii=False, indent=2)
@@ -710,7 +705,6 @@ async def wechat_check_status() -> str:
                         "remaining_hours": round(remaining / 3600, 1),
                         "polling": _poll_task is not None and not _poll_task.done(),
                         "last_contact": _last_contact_entry(ilink_uid, ""),
-                        "hint": f"Session restored. {remaining/3600:.1f}h remaining.",
                     }, ensure_ascii=False, indent=2)
             except Exception as e:
                 logger.debug("restore_failed err=%s", e)
@@ -732,36 +726,17 @@ async def wechat_check_status() -> str:
 
     resp = {
         "status": "logged_in",
-        "session_age_hours": round(age / 3600, 1),
         "remaining_hours": round(remaining / 3600, 1),
         "polling": _poll_task is not None and not _poll_task.done(),
-        "queued_messages": len(_pending),
     }
     if last_from_id:
         resp["last_contact"] = _last_contact_entry(last_from_id, last_ctx)
-
-    if last_from_id:
-        hint = (
-            f"Logged in — {remaining/3600:.1f}h remaining, "
-            f"{len(_pending)} messages queued. "
-            f"To send a WeChat message, call wechat_send_message with "
-            f'peer_wechat_id="{last_from_id}" and context_token="{last_ctx or ""}".'
-            if remaining > 0 else
-            "Session EXPIRED. Call wechat_login to re-scan QR code."
-        )
     else:
-        hint = (
-            f"Logged in — {remaining/3600:.1f}h remaining, "
-            f"{len(_pending)} messages queued. "
-            "No contacts yet — ask the WeChat user to send a message first."
-            if remaining > 0 else
-            "Session EXPIRED. Call wechat_login to re-scan QR code."
-        )
+        resp["hint"] = "No contacts yet — ask the WeChat user to send a message first."
+    if remaining <= 0:
+        resp["hint"] = "Session expired — call wechat_login to re-scan the QR code."
 
-    return json.dumps({
-        **resp,
-        "hint": hint,
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(resp, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
