@@ -139,6 +139,12 @@ in `args` and `url` (e.g. `"--header", "Authorization: Bearer ${GITHUB_TOKEN}"`)
   servers: {
     filesystem: {
       enabled: false,                  // optional; absent = enabled
+      healthy: false,                  // optional, boolean; set by
+                                       // 'mcp-plugin build' (its probe verdict
+                                       // of the last run, or default true).
+                                       // false = not loaded at startup until a
+                                       // later build re-probes successfully;
+                                       // mcp_set re-add resets it to true
       command: "npx",
       args: [
         "-y",
@@ -261,3 +267,11 @@ catalog, rebuilds the FTS index, and (when an `embeddings` section is present)
 re-embeds the whole catalog. Use it after hand-editing `mcp-plugin.json5`,
 after an external MCP server updates its tools, or after switching the
 embeddings model. Unreachable servers are reported, not fatal.
+
+Build is also the writer of each server's `healthy` flag (a boolean, default
+`true`). A server that cannot be connected (missing apikey, outdated version,
+or another error) is marked `healthy: false`; the wrapper then registers it but
+skips loading it at startup until a later `mcp-plugin build` re-probes it
+successfully (which writes `healthy: true` again). This is the flow for a
+broken server: fix the cause, re-run `mcp-plugin build`, and the server is
+loaded again.

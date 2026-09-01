@@ -186,3 +186,13 @@ def test_resolve_server_config_auto_load():
     assert cfg.auto_load is True
     cfg2 = plugin_config.resolve_server_config("svcB", {"command": "npx"})
     assert cfg2.auto_load is False
+
+
+def test_resolve_server_config_healthy():
+    # healthy is a build-set probe verdict — default True, parsed from the flag.
+    cfg = plugin_config.resolve_server_config("svcA", {"command": "npx"})
+    assert cfg.healthy is True
+    cfg_bad = plugin_config.resolve_server_config(
+        "svcB", {"command": "npx", "healthy": False},
+    )
+    assert cfg_bad.healthy is False

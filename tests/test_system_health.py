@@ -664,12 +664,13 @@ class TestCheckMcpFunction:
         return _FakeMcpClient(payload)
 
     @staticmethod
-    def _server(name, state="running"):
+    def _server(name, state="running", healthy=True):
         return {
             "name": name,
             "state": state,
             "status": "connected" if state == "running" else "failed",
             "enabled": True,
+            "healthy": healthy,
             "tool_count": 2 if state == "running" else 0,
             "error": "" if state == "running" else "boom",
             "transport": "stdio",
@@ -688,6 +689,19 @@ class TestCheckMcpFunction:
         assert len(entries) == 1
         assert entries[0]["key"] == "github"
         assert entries[0]["level"] == "warning"
+
+    @pytest.mark.asyncio
+    async def test_unhealthy_server_is_flagged(self):
+        """healthy=false (build's probe verdict) surfaces as 'unhealthy' with a
+        remediation hint — distinct from a plain disconnected server."""
+        payload = [self._server("broken", state="stopped", healthy=False)]
+        entries = await check_mcp(client=self._client(payload))
+        entry = entries[0]
+        assert entry["level"] == "warning"
+        assert entry["value"].startswith("unhealthy")
+        assert entry["healthy"] is False
+        assert entry["state"] == "disconnected"
+        assert "mcp-plugin build" in entry["hint"]
 
     @pytest.mark.asyncio
     async def test_server_not_found(self):

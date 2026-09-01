@@ -35,9 +35,13 @@ _HEALTH_PING_TIMEOUT = 5.0         # a ping must answer within this window
 _RECONNECT_BACKOFF_INITIAL = 5.0   # first reconnect retry delay (s)
 _RECONNECT_BACKOFF_MAX = 60.0      # cap on exponential backoff (s)
 _RECONNECT_BACKOFF_MULTIPLIER = 2.0
-# Bound on the connect handshake (initialize) — a server that accepts the
-# transport but never answers initialize must not hang connect() forever.
-_CONNECT_HANDSHAKE_TIMEOUT = 30.0
+# The ONLY timer on connect(): bounds just the transport-establishment phase
+# (spawn + socket/SSE setup) — the one phase the external server can't answer
+# for.  The protocol period (initialize, tools/list, tool calls, SSE endpoint
+# event) deliberately carries no client timer per the timeout design: a slow
+# cold start gets the full budget, and a server that is established but stops
+# answering is the health monitor's concern, not a connect-timeout race.
+_CONNECT_STARTUP_TIMEOUT = 120.0
 
 
 class ServerStatus(Enum):
@@ -56,6 +60,7 @@ class ServerConfig:
     url: str = ""                           # http: MCP endpoint URL
     headers: dict[str, str] | None = None   # http: extra request headers
     enabled: bool = True  # False = don't auto-connect at startup
+    healthy: bool = True  # False = build-set probe failure verdict; never connect
     description: str = ""
     auth: dict | None = None  # OAuth config for device code flow
     source: dict | None = None  # provenance metadata (e.g. {"type": "rest_api"})
@@ -203,22 +208,25 @@ class MCPServerConnection:
             )
 
             try:
-                if transport == "stdio":
-                    await self._connect_stdio()
-                else:
-                    await self._connect_http()
+                # Transport establishment is the one client-owned wait (spawn +
+                # socket/SSE setup — the server can't signal readiness during
+                # it).  asyncio.timeout, not wait_for: on Windows/Proactor a
+                # stuck transport op can defeat wait_for's cancellation and
+                # block past the deadline.  The initialize handshake below is
+                # protocol period — no client timer (timeout design).
+                async with asyncio.timeout(_CONNECT_STARTUP_TIMEOUT):
+                    if transport == "stdio":
+                        await self._connect_stdio()
+                    else:
+                        await self._connect_http()
 
-                # MCP initialize handshake (transport-agnostic).  Bounded so a
-                # server that accepts the transport but never answers
-                # initialize can't hang connect() indefinitely.
-                init_result = await asyncio.wait_for(
-                    self._request("initialize", {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "clientInfo": {"name": "mcp-plugin", "version": "0.1.0"},
-                    }),
-                    timeout=_CONNECT_HANDSHAKE_TIMEOUT,
-                )
+                # MCP initialize handshake (transport-agnostic).  Protocol
+                # period — no client timer; the server's own response governs.
+                init_result = await self._request("initialize", {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "mcp-plugin", "version": "0.1.0"},
+                })
 
                 server_info = init_result.get("serverInfo", {})
                 logger.debug(
@@ -275,6 +283,13 @@ class MCPServerConnection:
                 # Reset to DISCONNECTED so both paths retry.
                 if self._status == ServerStatus.CONNECTING:
                     self._status = ServerStatus.DISCONNECTED
+                # An externally-timed-out connect (mcp-plugin build's per-server
+                # cap, a tool-call wait_for) must not leak its transport: the
+                # spawned npx/uvx process, http client and stderr relay would
+                # otherwise keep running — and cold-starting on a slow machine
+                # — after the caller gave up.  The Exception path already
+                # cleans up; cancellation now does too.
+                await self._cleanup_resources()
                 raise
 
             except Exception as e:
@@ -410,10 +425,11 @@ class MCPServerConnection:
                 self._sse_task = asyncio.create_task(
                     self._read_sse_stream(resp)
                 )
-                # Wait for the endpoint event to discover the POST URL
-                endpoint = await asyncio.wait_for(
-                    self._sse_queue.get(), timeout=5.0,
-                )
+                # Wait for the endpoint event to discover the POST URL.  Protocol period —
+                # no client timer: a dead SSE stream is the server's problem,
+                # and the health monitor treats the connection as unresponsive
+                # and reconnects rather than racing a fixed connect timeout.
+                endpoint = await self._sse_queue.get()
                 if endpoint.get("type") != "endpoint":
                     raise ConnectionError(
                         f"Expected endpoint event, got {endpoint.get('type')}"
@@ -979,7 +995,7 @@ class MCPServerConnection:
                 # interval + backoff, so a down server isn't polled ~30s
                 # later than the documented backoff promises.
                 wait = _HEALTH_CHECK_INTERVAL
-                if not self.config.enabled:
+                if not self.config.enabled or not self.config.healthy:
                     return
                 if self._status == ServerStatus.CONNECTING:
                     pass  # a manual connect is already in progress — wait
@@ -1020,17 +1036,26 @@ class MCPServerConnection:
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         if self._status != ServerStatus.CONNECTED:
             # The health monitor marks a dead/hung server DISCONNECTED.  If
-            # the server is enabled, try a lazy reconnect first — it may have
-            # recovered while the monitor's reconnect backoff was counting
-            # down.
-            if self.config.enabled and self._status == ServerStatus.DISCONNECTED:
+            # the server is enabled AND healthy, try a lazy reconnect first —
+            # it may have recovered while the monitor's reconnect backoff was
+            # counting down.  A healthy=false server is never reconnected: its
+            # load gate is build's probe verdict, not a live reconnect.
+            if (
+                self.config.enabled and self.config.healthy
+                and self._status == ServerStatus.DISCONNECTED
+            ):
                 try:
                     await self.connect()
                 except Exception:
                     pass
             if self._status != ServerStatus.CONNECTED:
+                hint = (
+                    " (healthy=false — flagged by 'mcp-plugin build'; re-run "
+                    "build to re-probe)" if not self.config.healthy else ""
+                )
                 raise ValueError(
-                    f"Server '{self.config.name}' is not connected (status: {self._status.value})"
+                    f"Server '{self.config.name}' is not connected "
+                    f"(status: {self._status.value}){hint}"
                 )
 
         logger.debug("mcp_tool_call server=%s tool=%s", self.config.name, tool_name)
@@ -1105,10 +1130,15 @@ class ConnectionPool:
             await self.remove_server(config.name)
         conn = MCPServerConnection(config=config, on_connected=self._on_connected)
         self._connections[config.name] = conn
-        if config.enabled:
+        if config.enabled and config.healthy:
             await conn.connect()
-        else:
+        elif not config.enabled:
             logger.info("mcp_server_disabled name=%s", config.name)
+        else:
+            # healthy=false is a build-set probe verdict — this server is known
+            # unusable (missing apikey / outdated version/…) and must not be
+            # loaded.  Only 'mcp-plugin build' re-probes and flips the flag.
+            logger.info("mcp_server_unhealthy name=%s healthy=0", config.name)
         return conn
 
     async def remove_server(self, name: str) -> None:
@@ -1149,6 +1179,7 @@ class ConnectionPool:
                 "args": list(conn.config.args),
                 "url": conn.config.url,
                 "enabled": conn.config.enabled,
+                "healthy": conn.config.healthy,
                 "auto_load": conn.config.auto_load,
                 "description": conn.config.description,
             }
@@ -1162,6 +1193,7 @@ class ConnectionPool:
                 "state": "running" if conn.status == ServerStatus.CONNECTED else "stopped",
                 "status": conn.status.value,
                 "enabled": conn.config.enabled,
+                "healthy": conn.config.healthy,
                 "tool_count": conn.tool_count, "error": conn.error,
                 "transport": conn.config.transport,
                 "command": conn.config.command, "args": conn.config.args,

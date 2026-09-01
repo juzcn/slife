@@ -144,6 +144,55 @@ class TestSetServerEnabled:
         assert cfg.set_server_enabled("nope", False) is False
 
 
+class TestSetServerHealthy:
+    """set_server_healthy — the build-owned probe verdict, an explicit bool."""
+
+    def test_unhealthy_writes_healthy_false(self):
+        cfg.add_server_entry("mysrv", {"command": "echo", "args": []})
+        assert cfg.set_server_healthy("mysrv", False) is True
+        srv = _raw_config()["servers"]["mysrv"]
+        assert srv["healthy"] is False
+        assert cfg.servers()["mysrv"]["healthy"] is False
+
+    def test_healthy_true_writes_explicit_true(self):
+        cfg.add_server_entry("mysrv", {"command": "echo", "healthy": False})
+        assert cfg.set_server_healthy("mysrv", True) is True
+        # healthy is an explicit boolean — true is written, not removed.
+        assert _raw_config()["servers"]["mysrv"]["healthy"] is True
+        assert cfg.servers()["mysrv"]["healthy"] is True
+
+    def test_absent_key_gains_the_field_on_first_set(self):
+        cfg.add_server_entry("mysrv", {"command": "echo"})
+        cfg.set_server_healthy("mysrv", True)
+        assert _raw_config()["servers"]["mysrv"]["healthy"] is True
+
+    def test_same_value_is_noop(self):
+        cfg.add_server_entry("mysrv", {"command": "echo", "healthy": False})
+        cfg.set_server_healthy("mysrv", False)
+        before = _raw_config()
+        assert cfg.set_server_healthy("mysrv", False) is True
+        assert _raw_config() == before  # no pointless rewrite
+
+    def test_absent_name_returns_false(self):
+        assert cfg.set_server_healthy("nope", False) is False
+
+
+class TestResolveServerConfigHealthy:
+    """resolve_server_config — healthy defaults to True, parses the flag."""
+
+    def test_absent_healthy_is_true(self):
+        sc = cfg.resolve_server_config("svc", {"command": "npx"})
+        assert sc.healthy is True
+
+    def test_false_healthy_parsed(self):
+        sc = cfg.resolve_server_config("svc", {"command": "npx", "healthy": False})
+        assert sc.healthy is False
+
+    def test_true_healthy_parsed(self):
+        sc = cfg.resolve_server_config("svc", {"command": "npx", "healthy": True})
+        assert sc.healthy is True
+
+
 class TestSetEmbeddings:
     """set_embeddings — top-level embeddings section upsert (merge semantics)."""
 

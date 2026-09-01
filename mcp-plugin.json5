@@ -8,7 +8,8 @@
         "@modelcontextprotocol/server-filesystem",
         "."
       ],
-      description: "Local filesystem operations — read, write, list, and search files within allowed directories."
+      description: "Local filesystem operations — read, write, list, and search files within allowed directories.",
+      healthy: true
     },
     serper: {
       command: "npx",
@@ -19,7 +20,8 @@
       env: {
         SERPER_API_KEY: "${SERPER_API_KEY}"
       },
-      description: "Google web search via Serper — search the web and scrape result pages."
+      description: "Google web search via Serper — search the web and scrape result pages.",
+      healthy: true
     },
     fetch: {
       command: "uvx",
@@ -28,7 +30,8 @@
         "mcp>=1.0,<1.29",
         "mcp-server-fetch"
       ],
-      description: "Fetch and convert web pages to markdown. Pins mcp<1.29 for McpError compatibility."
+      description: "Fetch and convert web pages to markdown. Pins mcp<1.29 for McpError compatibility.",
+      healthy: true
     },
     "tavily-mcp": {
       command: "npx",
@@ -39,7 +42,8 @@
       env: {
         TAVILY_API_KEY: "${TAVILY_API_KEY}"
       },
-      description: "Tavily AI-optimized web search — designed for LLM agents, returns clean structured results."
+      description: "Tavily AI-optimized web search — designed for LLM agents, returns clean structured results.",
+      healthy: true
     },
     github: {
       command: "npx",
@@ -58,7 +62,8 @@
       env: {
         GITHUB_TOKEN: "${GITHUB_TOKEN}"
       },
-      description: "GitHub REST API via anyapi-mcp-server — manage repos, issues, PRs, users, and more."
+      description: "GitHub REST API via anyapi-mcp-server — manage repos, issues, PRs, users, and more.",
+      healthy: true
     },
     "duckduckgo-search": {
       command: "uvx",
@@ -71,7 +76,8 @@
         "--search-backend",
         "auto"
       ],
-      description: "DuckDuckGo search MCP server — web search and content extraction via DuckDuckGo."
+      description: "DuckDuckGo search MCP server — web search and content extraction via DuckDuckGo.",
+      healthy: true
     },
     "amap-maps": {
       command: "npx",
@@ -82,7 +88,8 @@
       description: "高德地图官方 MCP Server，提供地理编码、逆地理编码、IP定位、天气查询、骑行/步行/驾车/公交路径规划、距离测量、关键词/周边/详情POI搜索、专属地图、输入提示、搜索提示、矩形区域交通态势、路径信息、距离测量等多种地图和位置服务。免费，需要申请 Web服务 API Key。",
       env: {
         AMAP_MAPS_API_KEY: "${AMAP_MAPS_API_KEY}"
-      }
+      },
+      healthy: true
     },
     "iflow-mcp": {
       command: "uvx",
@@ -98,7 +105,8 @@
         url: "https://pypi.org/project/iflow-mcp_mcp-claude-code/",
         description: "PyPI package for Claude Code MCP server",
         fetched_at: "2026-07-23T01:42:26.885197+00:00"
-      }
+      },
+      healthy: true
     },
     "file-search": {
       command: "npx",
@@ -112,7 +120,8 @@
         url: "https://github.com/elad12390/file-search-mcp",
         description: "npm package for fast file search in large codebases",
         fetched_at: "2026-07-23T02:12:23.593046+00:00"
-      }
+      },
+      healthy: true
     },
     playwright: {
       command: "npx",
@@ -128,7 +137,8 @@
         version: "latest",
         description: "Official Playwright MCP server from Microsoft",
         fetched_at: "2026-08-02T00:00:00.000000+00:00"
-      }
+      },
+      healthy: true
     },
     context7: {
       command: "npx",
@@ -146,7 +156,8 @@
         version: "latest",
         description: "Context7 MCP server from Upstash",
         fetched_at: "2026-08-01T23:30:38.777971+00:00"
-      }
+      },
+      healthy: true
     },
     "chrome-devtools": {
       command: "npx",
@@ -162,7 +173,8 @@
         version: "latest",
         description: "Chrome DevTools for coding agents - official Google project",
         fetched_at: "2026-08-01T23:41:47.240842+00:00"
-      }
+      },
+      healthy: true
     },
     citecheck: {
       command: "npx",
@@ -177,7 +189,8 @@
         version: "latest",
         description: "MCP server for automatic reference repair in scholarly manuscripts (MIT)",
         fetched_at: "2026-08-01T23:51:06.761712+00:00"
-      }
+      },
+      healthy: true
     },
     "mcp-pandoc": {
       command: "uvx",
@@ -191,7 +204,8 @@
         version: "latest",
         description: "Pandoc document conversion MCP server (official MCP servers project)",
         fetched_at: "2026-08-01T23:52:45.022542+00:00"
-      }
+      },
+      healthy: true
     },
     markitdown: {
       command: "uvx",
@@ -205,7 +219,8 @@
         version: "0.0.1a4",
         description: "Microsoft MarkItDown MCP server for document-to-markdown conversion",
         fetched_at: "2026-08-01T23:56:15.694479+00:00"
-      }
+      },
+      healthy: true
     },
     "office-word-mcp": {
       command: "uvx",
@@ -221,7 +236,8 @@
         version: "latest",
         description: "MCP server for creating/reading/editing Word documents",
         fetched_at: "2026-08-02T00:00:39.614231+00:00"
-      }
+      },
+      healthy: true
     },
     "excel-mcp": {
       command: "npx",
@@ -239,7 +255,8 @@
         version: "latest",
         description: "MCP server for reading/writing MS Excel files",
         fetched_at: "2026-08-02T00:00:58.187765+00:00"
-      }
+      },
+      healthy: true
     },
     "pdf-toolkit": {
       command: "npx",
@@ -254,7 +271,8 @@
         version: "latest",
         description: "Write-capable PDF toolkit MCP server (22 tools)",
         fetched_at: "2026-08-02T00:04:47.866829+00:00"
-      }
+      },
+      healthy: true
     },
     sqlite: {
       command: "uvx",
@@ -270,7 +288,8 @@
         version: "latest",
         description: "Official SQLite MCP reference server",
         fetched_at: "2026-08-02T00:05:14.333705+00:00"
-      }
+      },
+      healthy: true
     }
   },
   embeddings: {

@@ -235,7 +235,12 @@ _RESERVED_SERVER_NAMES = frozenset(
 # ── Config comparison for idempotency ──────────────────────────────
 
 def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
-    """Compare two ServerConfigs for equality (ignoring description/source)."""
+    """Compare two ServerConfigs for equality.
+
+    ``description``/``source``/``healthy`` are deliberately ignored: healthy
+    is build's probe verdict, not part of the connection definition — a flip
+    must not trigger a spurious restart.
+    """
     return (
         a.name == b.name
         and a.command == b.command
@@ -266,6 +271,11 @@ def _persist_entry(
     ``enabled=True`` (the default) leaves the flag untouched — only
     ``mcp_set_enabled`` flips enable/disable; ``enabled=False`` is written
     so the server stays disconnected on the next wrapper start.
+
+    The ``healthy`` verdict is also reset: an idempotent ``mcp_set`` re-add
+    is a fresh attempt, so a stale ``healthy: false`` from an earlier build
+    must not keep the file (and the next startup) skipping a server the
+    caller just re-established.
     """
     entry: dict = {
         "command": command,
@@ -280,6 +290,7 @@ def _persist_entry(
     if not enabled:
         entry["enabled"] = False
     plugin_config.add_server_entry(name, entry)
+    plugin_config.set_server_healthy(name, True)  # no-op when already healthy
 
 
 @mcp.tool(
@@ -287,7 +298,9 @@ def _persist_entry(
     description=(
         "Add or update an external MCP server connection (upsert — add + update "
         "in one call). Provide either stdio (`command` + `args`) or http (`url`). "
-        "Runtime enable/disable is handled by mcp_set_enabled."
+        "Runtime enable/disable is handled by mcp_set_enabled. Re-adding a server "
+        "resets any stale 'healthy' verdict (set by 'mcp-plugin build') — the "
+        "fresh entry is treated as healthy until the next build re-probes it."
     ),
 )
 async def mcp_set(
@@ -416,6 +429,17 @@ async def mcp_set_enabled(name: str, enabled: bool) -> str:
     if existing is None:
         return error_json(
             f"Server '{name}' not found. Use mcp_set to add it first.",
+            server=name,
+        )
+    if enabled and not existing.config.healthy:
+        # Enabling IS loading this server — the healthy=false gate forbids it.
+        # Only 'mcp-plugin build' re-probes and flips the switch.
+        return error_json(
+            f"Server '{name}' is flagged unhealthy (healthy=false) by "
+            f"'mcp-plugin build' — it could not be connected (missing apikey, "
+            f"outdated version, or another error). Fix the cause, then run "
+            f"`mcp-plugin build` to re-probe.",
+            status="unhealthy",
             server=name,
         )
     existing.config.enabled = enabled

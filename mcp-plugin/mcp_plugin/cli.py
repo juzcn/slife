@@ -96,6 +96,8 @@ def _overview() -> int:
         transport = "http" if entry.get("url") else "stdio"
         target = entry.get("url") or entry.get("command") or ""
         flag = "" if entry.get("enabled") is not False else "  (disabled)"
+        if entry.get("healthy") is False:
+            flag += "  (unhealthy — run 'mcp-plugin build' to re-probe)"
         print(f"  {i:>{width}}. {name:<18} {transport:<5} {target}{flag}")
         if entry.get("description"):
             print(f"{' ' * (width + 8)}{entry['description']}")
@@ -114,9 +116,22 @@ async def _build_cmd() -> int:
     configured) re-embeds the whole catalog.  Unreachable servers are
     reported, not fatal.
 
-    Bounded by an overall wall-clock deadline — the guarantee that ``build``
-    always exits (success, per-server failure, or timeout) and never hangs;
-    rerun it to finish a partially-rebuilt catalog.
+    Build is also the writer of each server's ``healthy`` flag (the
+    load-gate the wrapper reads at startup).  ``healthy`` means the entire
+    MCP processing chain ran without error: the server connected, its tool
+    list was listed, and the tool entries were written into the sqlite
+    catalog (the agent uses tools from the catalog via
+    ``mcp_tool_search``/``mcp_tool_load``).  Any failure — a connect error,
+    a catalog write failure — flips ``healthy: false`` until a later build
+    re-probes.
+
+    Per the timeout architecture (timers at the owner, no total, no stacked
+    caps) build deliberately has NO overall wall-clock deadline and NO extra
+    per-server cap: the connection layer carries the single 120s
+    transport-startup timer (``_CONNECT_STARTUP_TIMEOUT``), and everything
+    after the transport is protocol period, governed by the servers' own
+    timeouts.  A slow machine with many servers parallel-probes them all
+    and finishes when the last one resolves.  Ctrl+C still aborts cleanly.
     """
     import asyncio
 
@@ -124,20 +139,17 @@ async def _build_cmd() -> int:
     from mcp_plugin.embeddings import EmbeddingClient
     from mcp_plugin.store import ToolStore
 
-    #: Per-server connect cap — a hung npx/uvx spawn must not stall the build.
-    _CONNECT_TIMEOUT = 60.0
-    #: Overall wall-clock deadline.  Every network path below is already
-    #: time-boxed individually (60s connect, 30s handshake, 5s probe, 60s
-    #: embed), but the hard outer deadline is what guarantees ``build`` ALWAYS
-    #: exits even if something escapes those caps (a synchronously-blocking
-    #: spawn, a wedged pipe, an unkillable grandchild).
-    _BUILD_DEADLINE = 300.0
-    #: Teardown cap.  ``_BUILD_DEADLINE`` only guards ``_run_build()``; the
-    #: ``finally`` below (pool.shutdown → per-connection cleanups) runs outside
-    #: it and its kills were NOT guaranteed to finish.  On WSL a npx/uvx
-    #: grandchild holding the stdio pipes caused ``process.wait()`` to never
-    #: resolve, hanging the whole command *after* all work was done.  A
-    #: best-effort teardown always exits, so the command never wedges.
+    #: Teardown cap.  The ``finally`` below (pool.shutdown → per-connection
+    #: cleanups) runs after the work is done; on WSL a npx/uvx grandchild
+    #: holding the stdio pipes caused ``process.wait()`` to never resolve,
+    #: hanging the whole command *after* all work was done.  A best-effort
+    #: teardown always exits, so the command never wedges at the end.
+    #:
+    #: There is no per-server connect cap here: connect() carries the single
+    #: 120s transport-startup timer (``_CONNECT_STARTUP_TIMEOUT``) and the
+    #: protocol period relies on servers' own timeouts, so a slow cold start
+    #: gets the full budget.  A server that is established but then stalls
+    #: hangs build on that one server — accepted residual, abort with Ctrl+C.
     _TEARDOWN_TIMEOUT = 60.0
 
     raw = plugin_config.load_config()
@@ -153,7 +165,15 @@ async def _build_cmd() -> int:
         return 0
 
     store = ToolStore(plugin_config.db_path())
-    await store.open()
+    try:
+        await store.open()
+    except Exception as e:  # noqa: BLE001 - a closed catalog means build can't write anything
+        print(
+            f"[build] cannot open the tool catalog at "
+            f"{plugin_config.db_path()} — {type(e).__name__}: {e}",
+            flush=True,
+        )
+        return 1
     pool = ConnectionPool()
     connected: list[str] = []
     failed: list[str] = []
@@ -170,9 +190,10 @@ async def _build_cmd() -> int:
             try:
                 cfg = plugin_config.resolve_server_config(name, entry)
                 cfg.enabled = True  # build catalogs disabled servers too (then marks them)
-                conn = await asyncio.wait_for(
-                    pool.add_server(cfg), timeout=_CONNECT_TIMEOUT,
-                )
+                # Build re-probes every server regardless of its last health
+                # verdict — healthy=false is exactly what build must re-check.
+                cfg.healthy = True
+                conn = await pool.add_server(cfg)
             except Exception as e:  # noqa: BLE001 - report any connect failure
                 return name, None, f"{type(e).__name__}: {e}"
             if conn.status == ServerStatus.CONNECTED:
@@ -180,28 +201,75 @@ async def _build_cmd() -> int:
             return name, None, conn.error or conn.status.value
 
         enabled_by_name = {n: en for n, _, en in all_servers}
+        entry_by_name = {n: e for n, e, _ in all_servers}
         tasks.extend(
             asyncio.create_task(_connect_one(n, e)) for n, e, _ in all_servers
         )
         for fut in asyncio.as_completed(tasks):
             name, conn, err = await fut
+            was_healthy = entry_by_name[name].get("healthy", True) is not False
             if err:
                 failed.append(f"{name}: {err}")
+                # healthy means the whole MCP processing ran without error —
+                # any connect failure (transport-startup timeout included)
+                # flips it false until a later build re-probes.
+                plugin_config.set_server_healthy(name, False)
                 print(f"  [--] {name}: {err}", flush=True)
-            else:
-                assert conn is not None  # err is None ⇒ a connected connection
-                result = await store.sync_server(name, conn.list_tools())
-                connected.append(name)
-                if not enabled_by_name[name]:
-                    await store.disable_server_tools(name)
+                if was_healthy:
                     print(
-                        f"  [--] {name} (disabled): {result['upserted']} tools "
-                        "marked disabled",
+                        "       (healthy → false — wrapper will skip loading "
+                        "this server until a later build passes)",
                         flush=True,
                     )
+            else:
+                assert conn is not None  # err is None ⇒ a connected connection
+                # The healthy verdict is whether the tool list reached the
+                # sqlite catalog: a server that connects but whose tool rows
+                # cannot be written is unusable to the agent (the catalogue
+                # feeds mcp_tool_search / mcp_tool_load), so a sync failure is
+                # an unhealthy verdict — not a crash of the build.
+                try:
+                    result = await store.sync_server(name, conn.list_tools())
+                except Exception as e:  # noqa: BLE001 - catalog write failed
+                    failed.append(f"{name}: catalog write failed: {e}")
+                    plugin_config.set_server_healthy(name, False)
+                    print(
+                        f"  [--] {name}: connected, but writing its tools to "
+                        f"the catalog failed: {type(e).__name__}: {e}",
+                        flush=True,
+                    )
+                    print(
+                        "       (healthy → false — the agent can't use tools "
+                        "that aren't in the catalog)",
+                        flush=True,
+                    )
+                    continue
+                connected.append(name)
+                plugin_config.set_server_healthy(name, True)
+                if not enabled_by_name[name]:
+                    try:
+                        await store.disable_server_tools(name)
+                    except Exception as e:  # noqa: BLE001 - disable-mark failed
+                        print(
+                            f"  [--] {name} (disabled): tools synced, but "
+                            f"marking them disabled failed: {e}",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"  [--] {name} (disabled): {result['upserted']} "
+                            "tools marked disabled",
+                            flush=True,
+                        )
                 else:
                     print(
                         f"  [OK] {name}: {result['upserted']} tools", flush=True,
+                    )
+                if not was_healthy:
+                    print(
+                        "       (healthy restored — wrapper will load this "
+                        "server again)",
+                        flush=True,
                     )
 
         await store.rebuild_fts()
@@ -250,23 +318,23 @@ async def _build_cmd() -> int:
         return 0
 
     try:
-        # Hard outer deadline — the guarantee that build always exits.  On
-        # timeout wait_for cancels _run_build; the finally below still tears
-        # the pool down (killing spawned npx/uvx trees), then we report.
-        return await asyncio.wait_for(_run_build(), timeout=_BUILD_DEADLINE)
-    except asyncio.TimeoutError:
-        print(
-            f"\n[build] exceeded {_BUILD_DEADLINE:.0f}s deadline — catalog partially "
-            "rebuilt; run `mcp-plugin build` again to finish.",
-            flush=True,
-        )
-        return 124
+        # No overall deadline, no stacked caps — the connection layer's 120s
+        # transport-startup timer is the only one, so a slow machine simply
+        # takes as long as the probes take.  Ctrl+C interrupts cleanly.  A
+        # server established then stalled hangs build on that one (residual).
+        return await _run_build()
     except (KeyboardInterrupt, asyncio.CancelledError):
         # Ctrl+C mid-build: cancel the in-flight connect tasks and report a
         # clean interruption instead of a traceback.  The catalog is partially
         # rebuilt — rerunning `mcp-plugin build` finishes it.
         print("\n[build] interrupted — run `mcp-plugin build` again to finish.", flush=True)
         return 130
+    except Exception as e:  # noqa: BLE001 - any unexpected failure exits cleanly
+        # A wall of traceback is a "crash" to a user; the per-server path
+        # already catches connect/sync/disable errors, so this is the last
+        # resort — report and let them rerun.
+        print(f"\n[build] failed: {type(e).__name__}: {e}", flush=True)
+        return 1
     finally:
         for t in tasks:
             t.cancel()

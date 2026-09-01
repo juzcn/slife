@@ -79,6 +79,89 @@ class TestAutoConnectConfigured:
         assert added["serper"].enabled is True
         assert added["disabled_svc"].enabled is False
 
+    @pytest.mark.asyncio
+    async def test_registers_unhealthy_server(self, restore_root_logger):
+        """healthy=false servers are still registered (so mcp_list shows them)
+        — the "don't load" gate lives in ConnectionPool.add_server, not here."""
+        srv = _import_mcp_server()
+        pool = MagicMock()
+        pool.add_server = AsyncMock()
+        fake_config = MagicMock()
+        fake_config.load_config.return_value = {
+            "servers": {"sick": {"command": "echo", "healthy": False}},
+        }
+        fake_config.resolve_server_config.side_effect = (
+            lambda name, entry: ServerConfig(
+                name=name, command="echo",
+                enabled=entry.get("enabled", True),
+                healthy=entry.get("healthy", True),
+            )
+        )
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv, "plugin_config", fake_config),
+        ):
+            await srv._auto_connect_configured()
+
+        added = {c[0][0].name: c[0][0] for c in pool.add_server.await_args_list}
+        assert set(added) == {"sick"}
+        assert added["sick"].healthy is False
+
+
+class TestPersistEntryResetsHealthy:
+    """A re-add via mcp_set resets build's healthy verdict to true (fresh
+    attempt — an idempotent mcp_set must not leave a stale healthy:false
+    in the file)."""
+
+    def test_persist_entry_clears_healthy(self, restore_root_logger):
+        srv = _import_mcp_server()
+        fake_cfg = MagicMock()
+        with patch.object(srv, "plugin_config", fake_cfg):
+            srv._persist_entry(
+                "srv", "echo", [], None, "", None, "desc", None, None,
+            )
+        fake_cfg.add_server_entry.assert_called_once()
+        fake_cfg.set_server_healthy.assert_called_once_with("srv", True)
+
+
+class TestMcpSetEnabledHealthyGate:
+    """mcp_set_enabled must not LOAD a server build flagged unhealthy
+    (healthy=false) — enabling is exactly the 'load this server' action the
+    gate forbids.  The fix is a re-probe via 'mcp-plugin build'."""
+
+    @pytest.mark.asyncio
+    async def test_enable_refuses_unhealthy_server(self, restore_root_logger):
+        import json as _json
+
+        srv = _import_mcp_server()
+        conn = MagicMock()
+        conn.config.healthy = False
+        pool = MagicMock()
+        pool.get_server.return_value = conn
+        with patch.object(srv, "_pool", pool):
+            result = await srv.mcp_set_enabled(name="sick", enabled=True)
+        parsed = _json.loads(result)
+        assert parsed["status"] == "unhealthy"
+        assert "mcp-plugin build" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_disable_allowed_on_unhealthy_server(self, restore_root_logger):
+        import json as _json
+
+        srv = _import_mcp_server()
+        conn = MagicMock()
+        conn.config.healthy = False
+        pool = MagicMock()
+        pool.get_server.return_value = conn
+        pool.disconnect_server = AsyncMock()
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv, "_ensure_store", AsyncMock(return_value=None)),
+        ):
+            result = await srv.mcp_set_enabled(name="sick", enabled=False)
+        parsed = _json.loads(result)
+        assert parsed["status"] == "disabled"
+
 
 class TestAddServerToolRegistration:
     """mcp_set must be registered with its real signature."""
