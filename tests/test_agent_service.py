@@ -1638,8 +1638,8 @@ class TestGetRecentTurns:
     ):
         """Turning the context_floor off must not matter: restore reads the
         persisted live-context start, so turns evicted by the internal trim
-        do not come back.  (clear_context is one-shot and in-memory — it
-        does not move the boundary, so its turns do come back on restore.)"""
+        (and by clear_context — a one-shot clear is one big trim) do not
+        come back."""
         from slife.agent.service import AgentService
 
         db = self._make_db(tmp_path, 8, context_start=4)

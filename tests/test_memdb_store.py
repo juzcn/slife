@@ -636,7 +636,6 @@ class TestSessionStoreContextStart:
         await store._conn.execute("CREATE TABLE diary (user_message TEXT)")
 
         assert await store.get_context_start() == 0
-        assert not await store.latest_rowid(), "empty diary → no latest row"
 
         await store._conn.close()
 
@@ -688,9 +687,10 @@ class TestSessionStoreContextStart:
         await store._conn.close()
 
     @pytest.mark.asyncio
-    async def test_advance_clamps_to_latest_when_short(self, tmp_path):
-        """Fewer than count rows remain → clamp to the latest row, never
-        overshoot — a restore can under-restore, never skip forward."""
+    async def test_advance_window_overrun_lands_on_last_row(self, tmp_path):
+        """A count larger than the remaining rows lands on the last existing
+        row — the same rule covers a generous clear_context count (one big
+        trim).  Never overshoots, never moves backward."""
         db_path = tmp_path / "memory.db"
         store = SessionStore(db_path)
         store._conn = await aiosqlite.connect(str(db_path))
@@ -707,7 +707,32 @@ class TestSessionStoreContextStart:
 
         boundary = await store.advance_context_start(50)
 
-        assert boundary == 2, "clamped at the latest row"
+        assert boundary == 2, "the window runs to the last row"
+
+        await store._conn.close()
+
+    @pytest.mark.asyncio
+    async def test_advance_nothing_after_boundary_stays_put(self, tmp_path):
+        """No rows after the current boundary → the boundary does not move
+        (monotone — a clear with nothing in context is a no-op)."""
+        db_path = tmp_path / "memory.db"
+        store = SessionStore(db_path)
+        store._conn = await aiosqlite.connect(str(db_path))
+        store._conn.row_factory = aiosqlite.Row
+        await store._conn.execute(
+            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        await store._conn.execute(
+            "CREATE TABLE diary (user_message TEXT)"
+        )
+        await store._conn.execute(
+            "INSERT INTO diary (user_message) VALUES ('a'),('b')"
+        )
+
+        await store.set_context_start(2)  # everything is already outside
+        boundary = await store.advance_context_start(10)
+
+        assert boundary == 2, "no rows strictly after the boundary → stay put"
 
         await store._conn.close()
 
@@ -988,32 +1013,6 @@ class TestSessionStoreUpdateSummary:
 
         await store.update_summary(rowid=1)
         mock_conn.execute.assert_not_called()
-
-
-class TestSessionStoreLatestRowid:
-    """Tests for latest_rowid (the memory_turn_summarize default)."""
-
-    @pytest.mark.asyncio
-    async def test_returns_newest_rowid(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value=(42,))
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        store._conn = mock_conn
-
-        assert await store.latest_rowid() == 42
-
-    @pytest.mark.asyncio
-    async def test_empty_diary_returns_none(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value=None)
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        store._conn = mock_conn
-
-        assert await store.latest_rowid() is None
 
 
 class TestSessionStoreSearchKeyword:

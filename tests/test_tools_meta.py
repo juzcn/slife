@@ -583,6 +583,60 @@ class TestClearContextTool:
         finally:
             tool._ctx = None
 
+    @pytest.mark.asyncio
+    async def test_advances_persisted_boundary(self):
+        """A one-shot clear is one big trim: advance_context_start is called
+        with the removed count, so the next restore is a fresh start (only
+        turns saved afterwards come back).  The trim hook must be called
+        only when something was actually removed."""
+        from slife.agent.message_history import MessageHistory
+        from slife.tools.context import ToolContext
+        tool = ClearContextTool()
+        conv = MessageHistory(system_prompt="You are helpful.")
+        conv.add_user_message("old question")       # turn 1 (will be cleared)
+        conv.add_assistant_message(content="old answer")
+        conv.add_user_message("current question")    # turn 2 (current, preserved)
+        conv.add_assistant_message(content="current answer")
+
+        advanced = []
+        try:
+            tool._ctx = ToolContext(
+                message_history=conv,
+                advance_context_start=lambda n: advanced.append(n) or True,
+            )
+            result = await tool.execute()
+            assert "Cleared" in result
+            # 2 messages removed (old question + old answer)
+            assert advanced == [2]
+        finally:
+            tool._ctx = None
+
+    @pytest.mark.asyncio
+    async def test_advances_boundary_skipped_when_clean(self):
+        """Already-clean context returns early — no boundary advance, no
+        time reset (mirrors the real loop's no-op guard)."""
+        from slife.agent.message_history import MessageHistory
+        from slife.tools.context import ToolContext
+        tool = ClearContextTool()
+        conv = MessageHistory(system_prompt="You are helpful.")
+        conv.add_user_message("only question")
+        conv.add_assistant_message(content="only answer")
+
+        advanced = []
+        reset_called = []
+        try:
+            tool._ctx = ToolContext(
+                message_history=conv,
+                advance_context_start=lambda n: advanced.append(n) or True,
+                reset_context_time=lambda: reset_called.append(True),
+            )
+            result = await tool.execute()
+            assert "already clean" in result.lower()
+            assert advanced == [], "no advance when nothing was removed"
+            assert reset_called == []
+        finally:
+            tool._ctx = None
+
 
 # ── SetMaxIterationsTool ─────────────────────────────────────────────
 

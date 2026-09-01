@@ -302,8 +302,9 @@ async def _ensure_manager_for_reload() -> SemanticManager:
     description="Advance the persisted live-context start by count rows. Internal — called by the agent loop.",
 )
 async def __memory_context_start_advance(count: int) -> str:
-    """Persist the live-context boundary after the internal trim removed
-    *count* oldest turns.  Restore starts where the boundary points, so
+    """Persist the live-context boundary after a context cut removed
+    *count* turns — the internal trim, or ``clear_context`` (a one-shot
+    clear is one big trim).  Restore starts where the boundary points, so
     startup rebuilds the exit-time context instead of re-slicing 20%."""
     try:
         async with _get_init_lock():

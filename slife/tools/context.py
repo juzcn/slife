@@ -86,9 +86,11 @@ class ToolContext:
     now."""
 
     advance_context_start: Callable[[int], Awaitable[bool]] | None = None
-    """Persist the live-context start boundary after a trim evicted
-    *count* oldest turns, so restart rebuilds the exit-time context.
-    Populated by AgentService; used by ``AgentLoop._trim_after_save``."""
+    """Advance the persisted live-context boundary past *count* rows — the
+    one cut-op behind every context cut: the internal trim
+    (``AgentLoop._trim_after_save``) and ``clear_context`` (one big trim).
+    Populated by AgentService; restart rebuilds the exit-time context from
+    the boundary."""
 
     reset_context_time: Callable[[], None] | None = None
     """Clear the loop's tracked context time range so "Context covers"

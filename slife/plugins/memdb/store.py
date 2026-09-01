@@ -421,7 +421,7 @@ class SessionStore:
     # slice the agent was actually working with (bounded to the window by
     # the internal trim).  ``context_start`` (stored in ``diary_meta``) marks the
     # boundary — every turn with ``rowid <= context_start`` is outside the
-    # live context (trimmed), every newer turn is inside.
+    # live context (trimmed or cleared), every newer turn is inside.
     # Restore reads from the boundary so startup rebuilds the exact
     # exit-time context instead of re-slicing an arbitrary percentage.
     # 0 (the default) means "everything" — the first-ever session.
@@ -460,14 +460,16 @@ class SessionStore:
         """Advance the boundary past *count* diary rows; return new boundary.
 
         Moves the live-context start forward by *count* rows strictly after
-        the current boundary and records the result.  Used by the internal
-        trim (``AgentLoop._trim_after_save``), which removed that many
-        oldest complete turns from the history.
+        the current boundary and records the result.  The same cut-op backs
+        every context cut: the internal trim (``AgentLoop._trim_after_save``)
+        passes the turns it evicted; ``clear_context`` passes a deliberately
+        generous count so the window runs to the end — a one-shot clear is
+        one big trim.
 
-        Clamps when fewer than *count* rows remain (a trim after a rollback
-        can overshoot by dead rows) — the boundary never overshoots the
-        latest row, so restore can only ever under-restore by a bounded,
-        searchable margin.
+        The rule is always the same: the boundary becomes the last row in
+        the *count*-row window, or stays put when no rows remain.  It never
+        moves backward and never overshoots the newest row (a generous count
+        from a clear simply lands on the last row).
         """
         current = await self.get_context_start()
         if count <= 0:
@@ -478,10 +480,10 @@ class SessionStore:
             (current, count),
         )
         rows = [r[0] for r in await cursor.fetchall()]
-        # Exactly `count` rows after the boundary → those are the trimmed
-        # turns, the last one becomes the new (exclusive) boundary.  Fewer
-        # rows remain → clamp to the latest row (see docstring).
-        boundary = rows[-1] if len(rows) == count else (await self.latest_rowid() or 0)
+        # Last row in the *count*-row window is the new (exclusive) boundary;
+        # nothing left after the current boundary → stay put.  No derived
+        # "latest row" snapshot — the window itself is authoritative.
+        boundary = rows[-1] if rows else current
         await self.set_context_start(boundary)
         logger.info(
             "context_start_advanced boundary=%s count=%d rows=%d",
@@ -713,14 +715,6 @@ class SessionStore:
                 params,
             )
             await self._c.commit()
-
-    async def latest_rowid(self) -> int | None:
-        """Rowid of the newest turn, or None if the diary is empty."""
-        cursor = await self._c.execute(
-            "SELECT rowid FROM diary ORDER BY rowid DESC LIMIT 1"
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else None
 
     # ── Search ──────────────────────────────────────────────────────
 

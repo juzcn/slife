@@ -248,11 +248,11 @@ class AgentService:
         # Subagents are workers, never the scheduler — leave it None there.
         if not is_subagent:
             self._tool_ctx.fire_schedule_now = self.fire_schedule_now
-        # Live-context boundary hook — _trim_after_save advances the boundary
-        # so a restart rebuilds the exit-time context.  The bound method
-        # resolves the memdb client at call time (it is not connected
-        # during __init__), so a missing/unready client degrades to
-        # "skip" rather than raising.
+        # Live-context boundary hook — the trim and clear_context (one big
+        # trim) advance the boundary so a restart rebuilds the exit-time
+        # context.  The bound method resolves the memdb client at call time
+        # (it is not connected during __init__), so a missing/unready
+        # client degrades to "skip" rather than raising.
         self._tool_ctx.advance_context_start = self.advance_context_start
         self._tool_ctx.reset_context_time = self.agent_loop.reset_context_time
         self.session_usage = TokenUsage()
@@ -1731,14 +1731,17 @@ class AgentService:
                     pass
 
     async def advance_context_start(self, count: int) -> bool:
-        """Persist the live-context boundary after a trim removed *count*.
+        """Persist the live-context boundary after a cut removed *count*.
 
-        Called by ``AgentLoop._trim_after_save`` right after it evicts the
-        oldest turns, so a restart rebuilds the exit-time context from
-        exactly where the live one stood.  Best-effort — if the memdb
-        channel is unreachable the boundary just stays stale, which makes
-        the next restore a *superset* (old trimmed turns come back
-        searchable in context), never a loss.
+        The one cut-op behind every context cut: called by the internal
+        trim (``AgentLoop._trim_after_save``) after it evicts the oldest
+        turns, and by ``clear_context`` (a one-shot clear is one big trim —
+        a generous count, the advance lands on the last row).  Either way,
+        a restart rebuilds the exit-time context from exactly where the
+        live one stood.  Best-effort — if the memdb channel is unreachable
+        the boundary just stays stale, which makes the next restore a
+        *superset* (old trimmed turns come back searchable in context),
+        never a loss.
         """
         if count <= 0 or not self.memdb_enabled:
             return False

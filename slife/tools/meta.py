@@ -228,10 +228,19 @@ class ClearContextTool(Tool):
         removed = conv.clear_history()
         if removed == 0:
             return "Context is already clean — no old turns to remove."
-        # Clear is a one-shot, in-memory act: nothing persisted is touched,
-        # so a later restore brings the history back as usual (the clear
-        # "resurrects" on a restart — intentional).  Finally restart the
-        # "Context covers" range — otherwise the next _sys_note
+        # A one-shot clear is one big trim: advance the persisted boundary
+        # with the same hook the internal trim uses, so the next restore is
+        # a genuine fresh start (only turns saved afterwards come back).
+        # The count is deliberately generous — the advance lands on the last
+        # row regardless — and best-effort: an unreachable memdb only makes
+        # the next restore a superset, never a loss.
+        advance = getattr(ctx, "advance_context_start", None)
+        if advance is not None:
+            try:
+                await advance(removed)
+            except Exception:
+                logger.exception("context_start_advance_failed_on_clear")
+        # Restart the "Context covers" range — otherwise the next _sys_note
         # would keep reporting the pre-clear start.
         reset_time = getattr(ctx, "reset_context_time", None)
         if reset_time is not None:
