@@ -405,11 +405,12 @@ class Inbox:
 
 
 class MessageHistoryStore:
-    """Manages per-source-agent histories.
+    """Manages the main agent's single shared history.
 
-    The human's history persists across messages (so the operator
-    has a continuous back-and-forth).  Remote agent histories are
-    fresh each time (one-shot task model).
+    The main agent has ONE context: every inbox message, whatever its
+    source, is a user message into that one history.  The source is
+    metadata on the user message (the diary's ``channel`` column and
+    the TUI prefix), never a selector for a different context.
     """
 
     def __init__(self, system_prompt: str):
@@ -458,46 +459,49 @@ class MessageHistoryStore:
         return None
 
     def get_or_create(self, source: AgentName) -> MessageHistory:
-        """Get or create a history for *source*.
+        """Get the main agent's shared history.
 
-        Human (TUI) and WeChat histories are persistent so the
-        operator has a continuous back-and-forth.  Remote agent
-        histories are fresh each message (one-shot).
+        The main agent has ONE context: every message that enters the
+        inbox — from the human TUI, WeChat, a heartbeat/autonomous
+        trigger, a scheduled run, or a subagent completion — is a user
+        message into the same history.  *source* only labels who sent
+        it (the diary's ``channel`` column and the TUI prefix); it never
+        selects a different context.
         """
-        from slife.a2a.identity import HUMAN, WECHAT
-        from slife.subagent.identity import SUBAGENT
+        from slife.a2a.identity import HUMAN
 
-        if source in (HUMAN, WECHAT, SUBAGENT):
-            # Persistent history for human / WeChat / subagent sources.
-            # SUBAGENT shares the HUMAN history so the user sees
-            # subagent results inline — but the diary records channel
-            # as "subagent" for audit/turn_search distinguishability.
-            source_key = HUMAN if source == SUBAGENT else source
-            if source_key not in self._by_source:
-                self._by_source[source_key] = MessageHistory(
-                    system_prompt=self._system_prompt,
-                )
-            return self._by_source[source_key]
-
-        # One-shot history for remote agents
-        return MessageHistory(system_prompt=self._system_prompt)
+        base = self._by_source.get(HUMAN)
+        if base is None:
+            base = MessageHistory(
+                system_prompt=self._system_prompt,
+            )
+            self._by_source[HUMAN] = base
+        return base
 
     def update_system_prompt(self, new_prompt: str) -> None:
-        """Rebuild the system prompt for existing persistent histories and
-        for ones created later.
+        """Rebuild the system prompt of the single shared history.
 
-        Called after a model switch: without it, the persistent WeChat
-        history (and any history created after the switch) keeps
+        Called after a model switch: without it, the main context keeps
         running on the old model's system prompt (stale model name, vision
         flag, context window, A2A config).
         """
-        self._system_prompt = new_prompt
-        for conv in self._by_source.values():
-            if conv.messages and conv.messages[0]["role"] == "system":
-                conv.messages[0]["content"] = new_prompt
+        from slife.a2a.identity import HUMAN
 
-    def clear(self, source: AgentName) -> None:
-        """Clear the message history for *source*."""
-        if source in self._by_source:
-            self._by_source[source].clear()
-            del self._by_source[source]
+        self._system_prompt = new_prompt
+        base = self._by_source.get(HUMAN)
+        if base is not None and base.messages and base.messages[0]["role"] == "system":
+            base.messages[0]["content"] = new_prompt
+
+    def clear(self) -> None:
+        """Clear the main agent's in-memory context — the whole of it.
+
+        The main agent has a single shared history, so there is no
+        per-source clearing.  This empties the in-memory conversation
+        only (persisted turns in memory are untouched) and resets the
+        bound ``self.message_history`` object in place.
+        """
+        from slife.a2a.identity import HUMAN
+
+        base = self._by_source.get(HUMAN)
+        if base is not None:
+            base.clear()

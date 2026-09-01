@@ -281,12 +281,13 @@ class AgentLoop:
         #: injects them into ``_sys_note`` each turn.
         self._schedule_provider = schedule_provider
         self._cancel_event = asyncio.Event()
-        # Last API usage, tracked PER CONVERSATION (keyed by id()).  The
-        # heartbeat / A2A / wechat turns run in their own small histories,
-        # so a global _last_usage would be overwritten by e.g. a heartbeat
-        # (9.6%) and drag the human history's status bar / _sys_note
-        # down to the wrong value.  _last_usage is kept only as the
-        # restore-time estimate slot (primed by restore_session).
+        # Last API usage by history identity.  Every inbox message shares
+        # the main agent's ONE context (human / wechat / heartbeat /
+        # scheduled / subagent all flow into the same history), so this
+        # holds a single live entry — the last completed API call's
+        # usage, read by _sys_note, the TUI status bar, and the turn
+        # save.  _last_usage is kept only as the restore-time estimate
+        # slot (primed by restore_session).
         self._usage_by_history: dict[int, TokenUsage] = {}
         self._last_usage = TokenUsage()
         # Track stable fields — only emit in context footer when they change.
@@ -334,11 +335,15 @@ class AgentLoop:
 
         The next turn re-seeds ``_context_time_start`` from its own start,
         so "Context covers" reflects the fresh context instead of the
-        pre-clear range.
+        pre-clear range.  Also forgets the measured context occupancy —
+        the history was just wiped, so ``_sys_note`` / the status bar must
+        not keep reporting the pre-clear size until the next API call.
         """
         self._context_time_start = ""
         self._context_turn_dates = []
         self._last_context_time_start = ""
+        self._usage_by_history.clear()
+        self._last_usage = TokenUsage()
 
     # ── Tool call helpers ──────────────────────────────────────────
 
@@ -821,9 +826,8 @@ class AgentLoop:
                     raise AgentCancelled()
                 await asyncio.sleep(_LLM_STREAM_RETRY_BASE_DELAY * attempts)
 
-        # Remember last API usage per history — heartbeat/A2A/wechat
-        # turns run in their own histories and must not overwrite the
-        # human history's context measurement.
+        # Remember the last API call's usage on the shared history — every
+        # inbox message runs against the main agent's one context.
         if stream_usage.total_tokens > 0:
             self._usage_by_history[id(history)] = stream_usage
             if len(self._usage_by_history) > _MAX_USAGE_CACHE:

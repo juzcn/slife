@@ -317,25 +317,6 @@ async def __memory_context_start_advance(count: int) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(
-    name="__memory_context_start_latest",
-    description="Move the live-context start to the latest saved turn. Internal — called by the agent loop.",
-)
-async def __memory_context_start_latest() -> str:
-    """Flush the boundary to the latest row — the fresh start after
-    ``clear_context``.  Only turns saved afterwards come back on restore."""
-    try:
-        async with _get_init_lock():
-            store = await _ensure_store_locked()
-            boundary = await store.set_context_start_latest()
-            if _manager is not None:
-                _manager.on_saved()
-        return json.dumps({"context_start": boundary}, ensure_ascii=False)
-    except Exception as e:
-        logger.exception("context_start_latest_failed")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # LLM-visible tools
 # ═══════════════════════════════════════════════════════════════════════

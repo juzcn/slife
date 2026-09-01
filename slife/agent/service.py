@@ -248,13 +248,12 @@ class AgentService:
         # Subagents are workers, never the scheduler — leave it None there.
         if not is_subagent:
             self._tool_ctx.fire_schedule_now = self.fire_schedule_now
-        # Live-context boundary hooks — _trim_after_save advances the
-        # boundary so a restart rebuilds the exit-time context; clear_context
-        # flushes it for a fresh start.  Bound methods resolve the memdb
-        # client at call time (it is not connected during __init__), so a
-        # missing/unready client degrades to "skip" rather than raising.
+        # Live-context boundary hook — _trim_after_save advances the boundary
+        # so a restart rebuilds the exit-time context.  The bound method
+        # resolves the memdb client at call time (it is not connected
+        # during __init__), so a missing/unready client degrades to
+        # "skip" rather than raising.
         self._tool_ctx.advance_context_start = self.advance_context_start
-        self._tool_ctx.set_context_start_latest = self.set_context_start_latest
         self._tool_ctx.reset_context_time = self.agent_loop.reset_context_time
         self.session_usage = TokenUsage()
 
@@ -1316,7 +1315,6 @@ class AgentService:
 
                 for m in msgs:
                     from_id = m.get("to_user_id", "")
-                    ctx_token = m.get("context_token", "")
                     text = m.get("text", "")
 
                     if not text.strip():
@@ -1758,29 +1756,6 @@ class AgentService:
             return True
         except (asyncio.TimeoutError, Exception):
             logger.warning("context_start_advance_skipped count=%d", count)
-            return False
-
-    async def set_context_start_latest(self) -> bool:
-        """Flush the live-context boundary to the latest saved turn.
-
-        Called by ``clear_context`` so the next restore is a genuine fresh
-        start (only turns saved afterwards come back).  Best-effort — a
-        stale boundary only over-restores.
-        """
-        if not self.memdb_enabled:
-            return False
-        plugin = self._plugins.get("memdb")
-        client = getattr(plugin, "client", None) if plugin else None
-        if client is None:
-            return False
-        try:
-            await asyncio.wait_for(
-                client.call_tool("__memory_context_start_latest", {}),
-                timeout=10.0,
-            )
-            return True
-        except (asyncio.TimeoutError, Exception):
-            logger.warning("context_start_latest_skipped")
             return False
 
     def _get_memory_db_path(self) -> Path | None:

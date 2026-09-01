@@ -711,37 +711,7 @@ class TestSessionStoreContextStart:
 
         await store._conn.close()
 
-    @pytest.mark.asyncio
-    async def test_set_context_start_latest_flushes_history(self, tmp_path):
-        """clear_context semantics: move the boundary to the latest row so
-        only turns saved afterwards come back on restore."""
-        db_path = tmp_path / "memory.db"
-        store = SessionStore(db_path)
-        store._conn = await aiosqlite.connect(str(db_path))
-        store._conn.row_factory = aiosqlite.Row
-        await store._conn.execute(
-            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        await _create_diary_table(store._conn)
-        await store._conn.execute(
-            "INSERT INTO diary (user_message, created_at) VALUES "
-            "('a','2026-08-12T00:00:00+08:00'),"
-            "('b','2026-08-12T00:01:00+08:00'),"
-            "('c','2026-08-12T00:02:00+08:00')"
-        )
-
-        assert await store.set_context_start_latest() == 3
-        # a turn saved afterwards (rowid 4) is the only in-context content
-        await store._conn.execute(
-            "INSERT INTO diary (user_message, created_at) "
-            "VALUES ('d', '2026-08-12T00:03:00+08:00')"
-        )
-        await store._conn.commit()
-        turns = await store.get_recent_turns(after_rowid=3)
-        assert [t["rowid"] for t in turns] == [4]  # get_recent_turns is internal (rowid)
-
-        await store._conn.close()
-
+    
 
 class TestSessionStoreHasTurns:
     """Tests for has_turns."""

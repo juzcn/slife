@@ -228,17 +228,10 @@ class ClearContextTool(Tool):
         removed = conv.clear_history()
         if removed == 0:
             return "Context is already clean — no old turns to remove."
-        # Flush the persisted live-context boundary to the latest saved
-        # turn, so the next restore is a genuine fresh start (only turns
-        # saved afterwards come back).  Best-effort: an unreachable memdb
-        # only makes the next restore a superset, never a loss.
-        set_latest = getattr(ctx, "set_context_start_latest", None)
-        if set_latest is not None:
-            try:
-                await set_latest()
-            except Exception:
-                logger.exception("context_start_latest_failed")
-        # Restart the "Context covers" range — otherwise the next _sys_note
+        # Clear is a one-shot, in-memory act: nothing persisted is touched,
+        # so a later restore brings the history back as usual (the clear
+        # "resurrects" on a restart — intentional).  Finally restart the
+        # "Context covers" range — otherwise the next _sys_note
         # would keep reporting the pre-clear start.
         reset_time = getattr(ctx, "reset_context_time", None)
         if reset_time is not None:

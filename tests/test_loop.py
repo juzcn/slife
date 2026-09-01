@@ -651,17 +651,12 @@ class TestAgentLoopRun:
         assert msgs[0]["content"] == "User input here"
 
     @pytest.mark.asyncio
-    async def test_context_tokens_isolated_per_history(
+    async def test_context_tokens_single_shared_context(
         self, sample_model_config, empty_registry, empty_history
     ):
-        """A heartbeat/one-shot history's small usage must NOT overwrite
-        the human history's context reading (status bar / _sys_note).
-
-        Regression: the heartbeat runs in a fresh, small history every
-        beat; a global _last_usage let it drag the human history's
-        context measurement down (9.6% while the real context is 26.5%)."""
-        from slife.agent.message_history import MessageHistory
-
+        """All inbox messages share ONE history — a heartbeat/synthetic
+        turn is just another user message into the same context, and
+        _usage_by_history measures that shared context (the last call)."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
 
@@ -673,19 +668,17 @@ class TestAgentLoopRun:
             await loop.run("hi", empty_history)
         assert loop.context_tokens_for(empty_history) == 10_000
 
-        # A heartbeat-like fresh history runs a much smaller call.
-        heartbeat_conv = MessageHistory(system_prompt="sys")
-
+        # A heartbeat-like turn runs against the SAME history — there is
+        # no separate small context to leak from or into.
         async def mock_heartbeat(messages, tools, **kwargs):
             yield StreamChunk(content=".")
-            yield StreamChunk(usage=TokenUsage(1_000, 2, 1_002))
+            yield StreamChunk(usage=TokenUsage(11_000, 2, 11_002))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_heartbeat):
-            await loop.run("[Heartbeat]", heartbeat_conv)
+            await loop.run("[Heartbeat]", empty_history)
 
-        # The human history's reading is unaffected by the heartbeat.
-        assert loop.context_tokens_for(empty_history) == 10_000
-        assert loop.context_tokens_for(heartbeat_conv) == 1_000
+        # One context → one reading: the shared history's last-call usage.
+        assert loop.context_tokens_for(empty_history) == 11_000
 
     @pytest.mark.asyncio
     async def test_run_with_tool_calls(self, sample_model_config, tool_registry, history):

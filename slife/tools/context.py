@@ -90,11 +90,6 @@ class ToolContext:
     *count* oldest turns, so restart rebuilds the exit-time context.
     Populated by AgentService; used by ``AgentLoop._trim_after_save``."""
 
-    set_context_start_latest: Callable[[], Awaitable[bool]] | None = None
-    """Flush the live-context boundary to the latest saved turn, so the
-    next restore is a fresh start.  Populated by AgentService; used by
-    ``clear_context``."""
-
     reset_context_time: Callable[[], None] | None = None
     """Clear the loop's tracked context time range so "Context covers"
     restarts from the fresh context.  Populated by AgentService; used by

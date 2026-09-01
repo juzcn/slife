@@ -32,11 +32,14 @@ class TestMessageHistoryStore:
         assert msgs[0]["role"] == "system"
         assert msgs[0]["content"] == "You are helpful."
 
-    def test_get_or_create_remote_agent_one_shot(self, store):
+    def test_get_or_create_all_sources_share_one_context(self, store):
         remote = AgentName("agent-7")
-        conv1 = store.get_or_create(remote)
-        conv2 = store.get_or_create(remote)
-        assert conv1 is not conv2  # Fresh history each time
+        conv_remote = store.get_or_create(remote)
+        conv_human = store.get_or_create(HUMAN)
+        # Every inbox message — whatever its source — runs against the
+        # main agent's single shared history.
+        assert conv_remote is conv_human
+        assert store.get_or_create(remote) is conv_remote
 
     def test_get_or_create_remote_has_system_prompt(self, store):
         remote = AgentName("agent-7")
@@ -56,16 +59,17 @@ class TestMessageHistoryStore:
         store.register_handler(AgentName("bot"), None)
         assert store.handler_for(AgentName("bot")) is None
 
-    def test_clear_removes_history(self, store):
+    def test_clear_resets_shared_history_in_place(self, store):
         conv = store.get_or_create(HUMAN)
-        store.clear(HUMAN)
-        # After clear, a new get_or_create should give a fresh history
+        assert conv.messages  # populated with the system prompt
+        store.clear()
         new_conv = store.get_or_create(HUMAN)
-        assert new_conv is not conv
-
-    def test_clear_unknown_agent_noop(self, store):
-        """Clearing an unknown agent should not raise."""
-        store.clear(AgentName("unknown"))  # Should not raise
+        # One history → clearing resets that same object in place (it
+        # stays bound as the main context), not a fresh replacement.
+        assert new_conv is conv
+        # The in-memory conversation is emptied — clear preserves the
+        # system prompt by design.
+        assert [m["role"] for m in new_conv.messages] == ["system"]
 
 
 # ── AgentMessage ────────────────────────────────────────────────────────
@@ -659,11 +663,11 @@ class TestMessageHistoryStoreDefaultHandler:
 class TestMessageHistoryStoreWeChat:
     """Tests for MessageHistoryStore.get_or_create with WeChat source."""
 
-    def test_wechat_history_is_persistent(self):
+    def test_wechat_shares_the_main_context(self):
         store = MessageHistoryStore(system_prompt="test")
-        conv1 = store.get_or_create(WECHAT)
-        conv2 = store.get_or_create(WECHAT)
-        assert conv1 is conv2
+        conv_wechat = store.get_or_create(WECHAT)
+        conv_human = store.get_or_create(HUMAN)
+        assert conv_wechat is conv_human
 
     def test_wechat_history_has_system_prompt(self):
         store = MessageHistoryStore(system_prompt="be helpful")

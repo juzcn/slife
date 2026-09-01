@@ -421,7 +421,7 @@ class SessionStore:
     # slice the agent was actually working with (bounded to the window by
     # the internal trim).  ``context_start`` (stored in ``diary_meta``) marks the
     # boundary — every turn with ``rowid <= context_start`` is outside the
-    # live context (trimmed or cleared), every newer turn is inside.
+    # live context (trimmed), every newer turn is inside.
     # Restore reads from the boundary so startup rebuilds the exact
     # exit-time context instead of re-slicing an arbitrary percentage.
     # 0 (the default) means "everything" — the first-ever session.
@@ -468,9 +468,6 @@ class SessionStore:
         can overshoot by dead rows) — the boundary never overshoots the
         latest row, so restore can only ever under-restore by a bounded,
         searchable margin.
-
-        Callers wanting to flush the whole history (``clear_context``) pass
-        a count large enough to clamp to the latest row.
         """
         current = await self.get_context_start()
         if count <= 0:
@@ -490,15 +487,6 @@ class SessionStore:
             "context_start_advanced boundary=%s count=%d rows=%d",
             boundary, count, len(rows),
         )
-        return boundary
-
-    async def set_context_start_latest(self) -> int:
-        """Move the boundary to the latest row — everything saved is outside
-        the live context.  ``clear_context`` guarantees the next restore is
-        a fresh start (only turns saved afterwards come back)."""
-        boundary = await self.latest_rowid() or 0
-        await self.set_context_start(boundary)
-        logger.info("context_start_latest boundary=%s", boundary)
         return boundary
 
     async def has_turns(self) -> bool:
