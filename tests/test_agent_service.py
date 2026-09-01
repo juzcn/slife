@@ -1361,7 +1361,7 @@ class TestAgentServiceWeChat:
         assert msg.source == WECHAT
         assert msg.content == "[WECHAT] 你好"
         assert msg.metadata["channel"] == "wechat"
-        assert msg.on_reply is not None
+        assert msg.on_reply is None
 
     @pytest.mark.asyncio
     async def test_wechat_poll_skips_empty_text(self, sample_config):
@@ -1400,8 +1400,13 @@ class TestAgentServiceWeChat:
         assert msg.content == "[WECHAT] real"
 
     @pytest.mark.asyncio
-    async def test_wechat_reply_callback_sends_message(self, sample_config):
-        """The on_reply callback delivers the response text via send_message."""
+    async def test_wechat_message_has_no_auto_dispatch(self, sample_config):
+        """WeChat messages carry no on_reply — nothing auto-sends back.
+
+        The model is the only sender: it replies via the LLM-visible
+        wechat_send_message tool.  A harness auto-dispatch would be an
+        invisible side effect the model cannot see or coordinate with.
+        """
         service = AgentService(sample_config)
 
         mock_wc = MagicMock()
@@ -1420,10 +1425,6 @@ class TestAgentServiceWeChat:
                     }]})
                 mock_wc.is_connected = False
                 return _json.dumps({"messages": []})
-            elif tool_name == "send_typing":
-                return "{}"
-            elif tool_name == "send_message":
-                return "{}"
             return "{}"
 
         mock_wc.call_tool = mock_call_tool
@@ -1435,25 +1436,12 @@ class TestAgentServiceWeChat:
 
         await service._wechat_poll_loop(interval=0.001)
 
-        # Extract the reply callback from the posted message
         msg = mock_inbox.post.call_args[0][0]
-        assert msg.on_reply is not None
-
-        # Reset call_tool to track post-poll calls
-        mock_wc.call_tool = AsyncMock(return_value="{}")
-
-        await msg.on_reply("今天北京晴，25°C")
-
-        # Verify wechat_dispatch_reply was called with correct params
-        send_calls = [
-            c for c in mock_wc.call_tool.call_args_list
-            if c[0][0] == "__wechat_dispatch_reply"
-        ]
-        assert len(send_calls) == 1
-        _, send_args = send_calls[0][0]
-        assert send_args["to_user_id"] == "wx_123"
-        assert send_args["context_token"] == "ctx_xyz"
-        assert send_args["text"] == "今天北京晴，25°C"
+        assert msg.source == WECHAT
+        assert msg.content == "[WECHAT] 帮我查一下天气"
+        # No on_reply → the assistant's final text is NOT routed back to
+        # WeChat; the model must send its reply via wechat_send_message.
+        assert msg.on_reply is None
 
     @pytest.mark.asyncio
     async def test_wechat_typing_sent_on_arrival(self, sample_config):
@@ -1493,7 +1481,7 @@ class TestAgentServiceWeChat:
         mock_inbox.post.assert_called_once()
         msg = mock_inbox.post.call_args[0][0]
         assert msg.content == "[WECHAT] hello"
-        assert msg.on_reply is not None
+        assert msg.on_reply is None
 
     @pytest.mark.asyncio
     async def test_wechat_poll_error_handling(self, sample_config):

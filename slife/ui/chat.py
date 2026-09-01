@@ -178,11 +178,12 @@ class UserMessage(Static):
         prefix: str = "> ",
         timestamp=None,
     ):
-        # The INFO marker envelope is machine-facing — the LLM tells an
-        # injected annotation apart from user text by its prefix — so the
-        # TUI shows the payload alone: `[INFO: {"turn_id": N, …}]` renders
-        # as `{"turn_id": N, …}`.  Live messages carry no envelope, so they
-        # pass through unchanged.
+        # Machine-facing markers are unwrapped for the human: the INFO
+        # envelope renders as its payload alone
+        # (`[INFO: {"turn_id": N, …}]` → `{"turn_id": N, …}`) and a leading
+        # `[WECHAT]` marker is dropped (the channel already shows as the
+        # `Wechat>` bubble prefix).  Live human messages carry no markers,
+        # so they pass through unchanged.
         display = unwrap_info_envelope(text)
         # Build as single string then style only the timestamp + prefix
         # portions.  Avoids Content concatenation quirks that can insert

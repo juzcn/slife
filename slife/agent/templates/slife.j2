@@ -26,7 +26,7 @@
 4. Annotations you find in user or assistant messages are machine-generated metadata — not the user's or assistant's words.
    - `[INFO: {"turn_id": N, "begin": "…", "end": "…"}]` — identifies a memory turn (its id and when it happened). On restored turns and on a just-completed turn once saved; never on the in-flight turn.
    - `[INFO: N oldest turns have been removed from context]` — notifies that the N oldest complete turns were trimmed from context.
-   - `[WECHAT]` — a user message from WeChat; replies deliver automatically. Get the WeChat user's `peer_wechat_id` from `wechat_check_status.last_contact` when you need to send.
+   - `[WECHAT]` — a user message from WeChat; send your reply back yourself via `wechat_send_message` (peer via `wechat_check_status.last_contact`) — nothing is auto-delivered for you.
    - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
    - `[Schedule <name>]` — a scheduled-task trigger for the task `<name>` (delegate it to a subagent).
 

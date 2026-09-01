@@ -45,7 +45,10 @@ class TestPollLoopDedup:
     async def _run(self, batches):
         """Drive _poll_loop once per batch, then log out."""
         client = MagicMock()
+        client._base_url = "https://ilinkai.weixin.qq.com"
         client.is_logged_in = True
+        client.auth_failed = False
+        client.last_error = None
         client.last_contact = None
 
         def _poll():
@@ -132,6 +135,8 @@ class TestCheckStatusLastContactShape:
         client.is_logged_in = True
         client.last_contact = {"from_id": "u1", "context_token": "ctx1"}
         client.get_session_dict.return_value = {"saved_at": time.time()}
+        client.auth_failed = False
+        client.last_error = None
         original = ws._client
         ws._client = client
         try:
@@ -147,12 +152,66 @@ class TestCheckStatusLastContactShape:
         assert lc["context_token"] == "ctx1"
 
     @pytest.mark.asyncio
+    async def test_logged_in_but_link_down_reports_degraded(self):
+        """With a live poll loop error, status must say degraded — not a
+        misleading 'logged_in' — so the LLM knows messages are not arriving."""
+        client = MagicMock()
+        client.is_logged_in = True
+        client.last_contact = {"from_id": "u1", "context_token": "ctx1"}
+        client.get_session_dict.return_value = {"saved_at": time.time()}
+        client.auth_failed = False
+        client.last_error = "Cannot connect to host ilinkai.weixin.qq.com:443"
+        original = ws._client
+        ws._client = client
+        try:
+            with patch.object(
+                ws, "_poll_task", MagicMock(done=MagicMock(return_value=False))
+            ):
+                resp = json.loads(await ws.wechat_check_status())
+        finally:
+            ws._client = original
+        assert resp["status"] == "degraded"
+        # the LLM-visible hint carries the reason messages are not arriving
+        assert "Cannot connect" in resp["hint"]
+
+    @pytest.mark.asyncio
+    async def test_restore_rejected_token_reports_not_logged_in(self):
+        """A restore whose token the server rejects must clear the stale
+        session and report not_logged_in — never a phantom logged_in."""
+        client = MagicMock()
+        client.is_logged_in = False
+        client.try_restore_session = AsyncMock(return_value=True)
+        client.validate_session = AsyncMock(return_value=False)
+        client.auth_failed = True
+        client.last_error = "session rejected by server: 3"
+        client.reject_session = MagicMock()
+        client.clear_session_faults = MagicMock()
+        original = ws._client
+        ws._client = client
+        try:
+            with patch.object(ws, "load_wechat_config", return_value={
+                "bot_token": "tok",
+                "ilink_user_id": "u1",
+                "saved_at": time.time(),
+            }), patch.object(ws, "clear_wechat_config", return_value=True):
+                resp = json.loads(await ws.wechat_check_status())
+        finally:
+            ws._client = original
+        assert resp["status"] == "not_logged_in"
+        assert "rejected" in resp["hint"]
+        client.reject_session.assert_called_once()
+        client.clear_session_faults.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_restore_path(self):
         client = MagicMock()
         client.is_logged_in = False
         client.try_restore_session = AsyncMock(return_value=True)
         client.validate_session = AsyncMock(return_value=True)
+        client.clear_session_faults = AsyncMock()
         client.get_session_dict.return_value = {"saved_at": time.time()}
+        client.auth_failed = False
+        client.last_error = None
         original = ws._client
         ws._client = client
         try:
@@ -169,3 +228,27 @@ class TestCheckStatusLastContactShape:
         lc = resp["last_contact"]
         assert lc["peer_wechat_id"] == "u1"
         assert lc["context_token"] == ""
+
+    @pytest.mark.asyncio
+    async def test_restore_network_failure_reports_degraded(self):
+        """A restore blocked by a network error keeps the saved session but
+        reports degraded, so the LLM learns the link is the problem."""
+        client = MagicMock()
+        client.is_logged_in = False
+        client.try_restore_session = AsyncMock(return_value=True)
+        client.validate_session = AsyncMock(return_value=False)
+        client.auth_failed = False
+        client.last_error = "Cannot connect to host ilinkai.weixin.qq.com:443"
+        original = ws._client
+        ws._client = client
+        try:
+            with patch.object(ws, "load_wechat_config", return_value={
+                "bot_token": "tok",
+                "ilink_user_id": "u1",
+                "saved_at": time.time(),
+            }):
+                resp = json.loads(await ws.wechat_check_status())
+        finally:
+            ws._client = original
+        assert resp["status"] == "degraded"
+        assert "unreachable" in resp["hint"]

@@ -50,6 +50,25 @@ def _base_info() -> dict:
     }
 
 
+def _error_envelope(result: dict) -> bool:
+    """True when a getupdates envelope carries an error (no ``msgs``).
+
+    The iLink API signals a rejected/revoked token with a 200 response whose
+    body is ``{"errno": …, "error": …}`` (or ``retcode``) instead of
+    ``{"msgs": …}``.  Treating that as "no messages" is what made the poll
+    loop silently spin while status claimed ``logged_in``.
+    """
+    return bool(result.get("errno") or result.get("error") or result.get("retcode"))
+
+
+def _envelope_error(result: dict) -> str:
+    """Human-readable error from a getupdates error envelope."""
+    err = result.get("error") or result.get("errno") or result.get("retcode")
+    if err:
+        return f"session rejected by server: {err}"
+    return ""
+
+
 # ── Client ────────────────────────────────────────────────────────────────
 
 
@@ -86,6 +105,12 @@ class WechatClawbotClient:
         self.last_contact: dict[str, str | None] = {
             "from_id": None, "context_token": None,
         }
+        # Session health, surfaced to the LLM by wechat_check_status:
+        # ``last_error`` records the most recent poll/validation failure (None
+        # when healthy); ``auth_failed`` flags a token the server rejected
+        # (getupdates error envelope) — the session needs a fresh wechat_login.
+        self.last_error: str | None = None
+        self.auth_failed: bool = False
 
     # ── Login ─────────────────────────────────────────────────────────
 
@@ -270,20 +295,31 @@ class WechatClawbotClient:
         invalidated server-side (re-login elsewhere) passes and then silently
         spins on API errors while status reports ``logged_in``.  A getupdates
         response that is an error envelope (no ``msgs`` plus an error/errno/
-        retcode key) marks the session invalid.
+        retcode key) marks the session invalid (``auth_failed``).
+
+        Returns ``False`` (and records the reason in ``last_error``) for any
+        failure — both a rejected token and a network time-out.  The caller
+        distinguishes them via ``auth_failed``: a rejected token needs a new
+        login, a network error is transient.
         """
         try:
             result = await self._api_post(
                 "ilink/bot/getupdates",
                 {"get_updates_buf": self._get_updates_buf, "base_info": _base_info()},
             )
-            if isinstance(result, dict):
-                if "msgs" in result:
-                    return True
-                if result.get("errno") or result.get("error") or result.get("retcode"):
-                    return False
+            if not isinstance(result, dict):
+                self.last_error = f"unexpected getupdates envelope: {result!r}"
+                return False
+            if "msgs" in result:
+                self.last_error = None
+                return True
+            if _error_envelope(result):
+                self.auth_failed = True
+                self.last_error = _envelope_error(result) or "session rejected"
+                return False
             return True  # ambiguous envelope — don't false-revoke
-        except Exception:
+        except Exception as e:
+            self.last_error = str(e)
             return False
 
     def get_session_dict(self) -> dict:
@@ -301,6 +337,29 @@ class WechatClawbotClient:
         """Whether the client has valid credentials."""
         return bool(self._bot_token)
 
+    def reject_session(self) -> None:
+        """Drop credentials after the stored session failed validation.
+
+        ``try_restore_session`` loads the saved token before validation; when
+        validation rejects it, the token must go so ``is_logged_in`` reads
+        false and status reports ``not_logged_in`` instead of a phantom
+        ``logged_in``.  The config file is not touched here — the caller
+        decides whether to forget the stale session.
+        """
+        self._bot_token = ""
+        self._base_url = BASE_URL
+        self._get_updates_buf = ""
+        self._ilink_user_id = ""
+        self._ilink_bot_id = ""
+        self.last_contact = {"from_id": None, "context_token": None}
+        self.last_error = None
+        self.auth_failed = False
+
+    def clear_session_faults(self) -> None:
+        """Clear reported health flags when the session recovers (login/retry)."""
+        self.last_error = None
+        self.auth_failed = False
+
     # ── Message operations ─────────────────────────────────────────────
 
     async def poll_updates(self) -> list[dict]:
@@ -308,12 +367,28 @@ class WechatClawbotClient:
 
         Each message dict has: ``from_user_id``, ``context_token``,
         ``item_list[0].text_item.text``, ``message_type``.
+
+        A response that is an error envelope (no ``msgs`` plus an
+        error/errno/retcode key) means the token was revoked server-side —
+        the session sets ``auth_failed`` so the poll loop can stop and the
+        status tool can tell the LLM to re-login.
         """
-        result = await self._api_post(
-            "ilink/bot/getupdates",
-            {"get_updates_buf": self._get_updates_buf, "base_info": _base_info()},
-        )
+        try:
+            result = await self._api_post(
+                "ilink/bot/getupdates",
+                {"get_updates_buf": self._get_updates_buf, "base_info": _base_info()},
+            )
+        except Exception as e:
+            self.last_error = str(e)
+            return []
+        if not isinstance(result, dict):
+            return []
         self._get_updates_buf = result.get("get_updates_buf") or self._get_updates_buf
+        if _error_envelope(result):
+            self.auth_failed = True
+            self.last_error = _envelope_error(result) or "session rejected"
+            return []
+        self.last_error = None
         return result.get("msgs") or []
 
     async def send_message(

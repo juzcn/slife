@@ -1292,13 +1292,15 @@ class AgentService:
     async def _wechat_poll_loop(self, interval: float = 5.0) -> None:
         """Poll the wechat plugin for new messages and inject them into the inbox.
 
-        Uses internal tools (wechat_drain_incoming, wechat_dispatch_reply)
-        so all wechat-specific logic — typing indicators, message format —
-        stays inside the plugin process.  The main process only sees generic
-        messages with an on_reply callback.
+        Uses the internal wechat_drain_incoming tool so all wechat-specific
+        logic — typing indicators, message format — stays inside the plugin
+        process.  The main process only sees generic WeChat-channel messages.
+        Replying to the peer is the model's job (wechat_send_message); the
+        harness no longer auto-dispatches the assistant's text back out.
         """
         import json as _json
         from slife.a2a.identity import AgentMessage, Channel, WECHAT
+        from slife.agent.message_history import WECHAT_MARKER
 
         logger.info("wechat_poll_loop_start interval=%.1fs", interval)
 
@@ -1320,25 +1322,10 @@ class AgentService:
                     if not text.strip():
                         continue
 
-                    wc = self._plugins["wechat"].client  # local ref for closure
-
-                    async def _reply(reply_text: str,
-                                     uid=from_id, tok=ctx_token) -> None:
-                        try:
-                            await wc.call_tool("__wechat_dispatch_reply", {
-                                "to_user_id": uid,
-                                "context_token": tok,
-                                "text": reply_text,
-                            })
-                            logger.debug("wechat_out to=%s len=%d", uid, len(reply_text))
-                        except Exception as e:
-                            logger.debug("wechat_reply_error err=%s", e)
-
                     msg = AgentMessage(
                         source=WECHAT,
-                        content=f"[WECHAT] {text}",
+                        content=f"{WECHAT_MARKER}{text}",
                         metadata={"channel": "wechat"},
-                        on_reply=_reply,
                         channel=Channel.wechat(),
                     )
                     await self.inbox.post(msg)

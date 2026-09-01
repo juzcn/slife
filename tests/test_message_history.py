@@ -5,7 +5,35 @@ import pytest; pytestmark = pytest.mark.unit
 
 import pytest
 
-from slife.agent.message_history import MessageHistory
+from slife.agent.message_history import MessageHistory, unwrap_info_envelope
+
+
+# ── Display unwrapping ────────────────────────────────────────────────
+
+
+class TestUnwrapInfoEnvelope:
+    """Tests for unwrap_info_envelope — the TUI display form of markers."""
+
+    def test_no_marker_passes_through(self):
+        assert unwrap_info_envelope("plain text") == "plain text"
+
+    def test_strips_leading_wechat_marker(self):
+        assert unwrap_info_envelope("[WECHAT] 你好") == "你好"
+
+    def test_wechat_literal_in_body_left_alone(self):
+        # Only the injected leading marker is stripped — a literal
+        # "keep looking at [WECHAT]" in the message body is user text.
+        assert unwrap_info_envelope("[WECHAT] keep [WECHAT] in text") == "keep [WECHAT] in text"
+
+    def test_unwraps_trailing_info_envelope(self):
+        assert unwrap_info_envelope(
+            'hello [INFO: {"turn_id": 5}]'
+        ) == 'hello {"turn_id": 5}'
+
+    def test_wechat_marker_then_info_envelope(self):
+        assert unwrap_info_envelope(
+            '[WECHAT] hello [INFO: {"turn_id": 5}]'
+        ) == 'hello {"turn_id": 5}'
 
 
 # ── Construction ─────────────────────────────────────────────────────

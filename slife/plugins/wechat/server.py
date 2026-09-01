@@ -156,7 +156,7 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
 
     backoff = poll_interval
 
-    while _client.is_logged_in:
+    while _client.is_logged_in and not _client.auth_failed:
         try:
             msgs = await _client.poll_updates()
             _flush_logs()  # ensure POST debug lines hit disk
@@ -222,6 +222,9 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
             backoff = poll_interval  # reset on success
         except Exception as e:
             logger.debug("poll_error err=%s", e)
+            # Surface to the LLM: status reports degraded until the link
+            # recovers (a successful poll clears the fault).
+            _client.last_error = str(e)
             backoff = min(backoff * 1.5, 30.0)  # back off on errors
         await asyncio.sleep(backoff)
 
@@ -353,53 +356,6 @@ async def __wechat_drain_incoming() -> str:
     }, ensure_ascii=False)
 
 
-@mcp.tool(
-    name="__wechat_dispatch_reply",
-    description="Send a reply and clean up typing indicator. Internal — called by the agent service.",
-)
-async def __wechat_dispatch_reply(
-    to_user_id: str = "",
-    context_token: str = "",
-    text: str = "",
-) -> str:
-    """Send a reply to a WeChat user and stop the typing indicator.
-
-    Called by the inbox on_reply callback after the agent finishes
-    processing a WeChat message.  Handles the full reply flow:
-    stop typing keep-alive → send message → hide typing indicator.
-    """
-    global _client
-
-    if not _client.is_logged_in:
-        return error_json("Not logged in.")
-
-    if not to_user_id.strip() or not text.strip():
-        return error_json("Both to_user_id and text are required.")
-
-    # Stop the typing keep-alive for this conversation
-    _stop_typing_keepalive(to_user_id)
-
-    # Send the reply
-    try:
-        await _client.send_message(to_user_id, context_token or "", text)
-    except Exception as e:
-        logger.exception("dispatch_reply_send_failed to=%s", to_user_id)
-        return error_json(str(e))
-
-    # Hide typing indicator after reply
-    try:
-        await _client.send_typing(to_user_id, context_token or "", status=2)
-    except Exception:
-        pass
-
-    logger.debug("dispatched_reply to=%s len=%d", to_user_id, len(text))
-    return json.dumps({
-        "status": "sent",
-        "to_user_id": to_user_id,
-        "text_length": len(text),
-    }, ensure_ascii=False, indent=2)
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # QR code login helpers
 # ═══════════════════════════════════════════════════════════════════════════
@@ -440,6 +396,7 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
             session_dict = _client.get_session_dict()
             session_dict["ilink_user_id"] = ilink_user_id
             save_wechat_config(_agent_name, session_dict, _work_dir)
+            _client.clear_session_faults()
             _start_polling()
             _qr_status = "confirmed"
             logger.info("qr_login_confirmed user_id=%s", ilink_user_id)
@@ -492,11 +449,15 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
 async def wechat_login() -> str:
     global _client, _qr_task, _qr_status, _qr_content, _qr_error
 
-    if _client.is_logged_in:
+    if _client.is_logged_in and not _client.auth_failed:
         return json.dumps({
             "status": "already_logged_in",
             "hint": "Already logged in. Call wechat_logout first to switch accounts.",
         }, ensure_ascii=False, indent=2)
+    if _client.auth_failed:
+        # Stale rejected token — drop it so a fresh QR scan can proceed.
+        _client.reject_session()
+        clear_wechat_config(_agent_name, _work_dir)
 
     # Reset QR state
     _qr_status = ""
@@ -557,6 +518,11 @@ async def wechat_send_message(
     if not peer_wechat_id.strip() or not text.strip():
         return error_json("Both peer_wechat_id and text are required and must be non-empty.")
 
+    # Stop the typing keep-alive for this conversation — the reply is going
+    # out now; without this the "正在输入…" indicator would keep refreshing
+    # past the sent message until its keep-alive bound.
+    _stop_typing_keepalive(peer_wechat_id)
+
     try:
         result = await _client.send_message(peer_wechat_id, context_token or "", text)
         # Hide typing indicator after reply
@@ -594,6 +560,23 @@ async def __check() -> str:
         session = _client.get_session_dict()
         age = time.time() - session.get("saved_at", time.time())
         remaining = max(0, SESSION_MAX_AGE - age)
+        if _client.auth_failed:
+            entries.append({
+                "component": "wechat", "level": "error", "key": "status",
+                "value": "session_rejected",
+                "hint": ("WeChat session was rejected by the server — "
+                         "call wechat_login to re-scan. "
+                         f"Last error: {_client.last_error}"),
+            })
+            return json.dumps(entries, ensure_ascii=False, indent=2)
+        if _client.last_error:
+            entries.append({
+                "component": "wechat", "level": "warning", "key": "status",
+                "value": "degraded",
+                "hint": (f"WeChat link is down — messages will not arrive until "
+                         f"it recovers. Last error: {_client.last_error}"),
+            })
+            return json.dumps(entries, ensure_ascii=False, indent=2)
         entries.append({
             "component": "wechat", "level": "ok", "key": "status",
             "value": "logged_in",
@@ -684,11 +667,31 @@ async def wechat_check_status() -> str:
                 # try_restore_session only checks age — confirm the token
                 # actually works before reporting "restored"/logged_in.
                 if restored and not await _client.validate_session():
-                    logger.warning(
-                        "wechat_restore_invalid_token — re-login required",
-                    )
-                    restored = False
+                    if _client.auth_failed:
+                        # Server rejected the token — forget it so the next
+                        # status read is not a phantom "logged_in".
+                        logger.warning(
+                            "wechat_restore_invalid_token — re-login required",
+                        )
+                        _client.reject_session()
+                        clear_wechat_config(_agent_name, _work_dir)
+                        return json.dumps({
+                            "status": "not_logged_in",
+                            "polling": False,
+                            "hint": ("WeChat session was rejected by the server — "
+                                     "call wechat_login to re-scan the QR code."),
+                        }, ensure_ascii=False, indent=2)
+                    # Network/API failure while validating — keep the saved
+                    # session but tell the LLM the link is currently down.
+                    return json.dumps({
+                        "status": "degraded",
+                        "polling": False,
+                        "hint": ("WeChat server unreachable during session check "
+                                 "- retry, or call wechat_login if it persists. "
+                                 f"Last error: {_client.last_error}"),
+                    }, ensure_ascii=False, indent=2)
                 if restored:
+                    _client.clear_session_faults()
                     # Restore last contact so the LLM knows who to message
                     ilink_uid = saved.get("ilink_user_id", "")
                     if ilink_uid:
@@ -723,6 +726,33 @@ async def wechat_check_status() -> str:
     session = _client.get_session_dict()
     age = time.time() - session.get("saved_at", time.time())
     remaining = max(0, SESSION_MAX_AGE - age)
+
+    # Tell the LLM the truth when the link is broken: a revoked token needs
+    # a fresh login, a network failure is transient.  A stale ``logged_in``
+    # made the agent believe messaging worked while the poll loop spun on
+    # connection errors.
+    if _client.auth_failed:
+        _client.reject_session()
+        clear_wechat_config(_agent_name, _work_dir)
+        return json.dumps({
+            "status": "not_logged_in",
+            "polling": False,
+            "hint": ("WeChat session was rejected by the server — "
+                     "call wechat_login to re-scan the QR code. "
+                     f"Last error: {_client.last_error}"),
+        }, ensure_ascii=False, indent=2)
+    if _client.last_error:
+        return json.dumps({
+            "status": "degraded",
+            "remaining_hours": round(remaining / 3600, 1),
+            "polling": _poll_task is not None and not _poll_task.done(),
+            "last_contact": (
+                _last_contact_entry(last_from_id, last_ctx) if last_from_id else None
+            ),
+            "hint": ("WeChat link is down — messages will not arrive until it "
+                     "recovers. "
+                     f"Last error: {_client.last_error}"),
+        }, ensure_ascii=False, indent=2)
 
     resp = {
         "status": "logged_in",

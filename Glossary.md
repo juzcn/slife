@@ -529,7 +529,7 @@ metadata, not content:
 | `[INFO: N oldest turns have been removed from context]` | The trim note: the `N` oldest complete turns were trimmed from context. |
 | `[Heartbeat]` | The heartbeat marker: a synthetic autonomous trigger. |
 | `[Schedule <name>]` | The schedule marker: the scheduled task `<name>` is due. |
-| `[WECHAT]` | The wechat marker: a user message that arrived from WeChat. The peer's `peer_wechat_id` is available via `wechat_check_status.last_contact`. |
+| `[WECHAT]` | The wechat marker: a user message that arrived from WeChat — model-facing; the TUI strips it (the `Wechat>` bubble prefix already shows the channel). The peer's `peer_wechat_id` is available via `wechat_check_status.last_contact`. |
 
 ---
 

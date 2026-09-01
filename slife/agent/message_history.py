@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 #: Envelope of machine-injected annotations (``[INFO: …]``).  Shared by the
 #: restore path, the save path, and the TUI ``UserMessage`` styler.
 INFO_PREFIX = "[INFO: "
+#: Channel marker prepended to an incoming WeChat peer message in the stored
+#: content (the LLM reads it to know the turn arrived over WeChat).  It is a
+#: machine annotation — the TUI already shows the channel as its own
+#: ``Wechat>`` bubble prefix, so ``unwrap_info_envelope`` strips the marker
+#: for display (the model still sees the full content with the marker).
+WECHAT_MARKER = "[WECHAT] "
 #: Runtime-only trim note: ``[INFO: <N> oldest turns have been removed from
 #: context]``.  Appended by the loop after a trim — NEVER persisted: a
 #: restored session is already the trimmed state, so a "past session was
@@ -89,19 +95,26 @@ def _trim_note_in(content: str) -> int | None:
 
 
 def unwrap_info_envelope(text: str) -> str:
-    """Display form of a machine-injected ``[INFO: …]`` annotation.
+    """Display form of a machine-injected marker in message text.
 
-    The envelope is machine-facing — the LLM reads the full marker to tell
-    an injected annotation apart from user text.  For the human the
-    envelope is noise, so the payload alone is shown: the JSON turn
-    footnote renders as ``{"turn_id": N, …}`` and the prose trim note as
-    ``N oldest turns have been removed from context``.
+    The markers are machine-facing — the LLM reads them to tell an injected
+    annotation apart from user text.  For the human they are noise, so the
+    display form drops them:
 
-    Only the *trailing* envelope is unwrapped (``rfind``) — an annotation
-    is always a suffix, and a user message may legitimately contain the
-    literal ``[INFO:`` in prose.  Returns *text* unchanged when no
-    envelope is present.
+    - a trailing ``[INFO: …]`` envelope renders as its payload alone (the
+      JSON turn footnote as ``{"turn_id": N, …}``, the prose trim note as
+      ``N oldest turns have been removed from context``);
+    - a leading ``[WECHAT]`` marker is dropped entirely — the channel is
+      already shown by the ``Wechat>`` bubble prefix.
+
+    Only the *trailing* INFO envelope is unwrapped (``rfind``) — an
+    annotation is always a suffix, and a user message may legitimately
+    contain the literal ``[INFO:`` in prose.  Only a *leading* WECHAT
+    marker (exactly our injected prefix) is stripped.  Returns *text*
+    unchanged when no marker is present.
     """
+    if text.startswith(WECHAT_MARKER):
+        text = text[len(WECHAT_MARKER):]
     start = text.rfind(INFO_PREFIX)
     if start == -1:
         return text
