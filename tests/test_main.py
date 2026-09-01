@@ -3,8 +3,9 @@
 import pytest; pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
+import signal
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 
 class TestMainFunction:
@@ -107,6 +108,46 @@ class TestMainFunction:
 
                 debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
                 assert any("2" in t for t in debug_texts if "tools" in t)
+
+    def test_main_masks_sigint_during_teardown(self, mock_config):
+        """Teardown switches SIGINT to SIG_IGN before any cleanup work.
+
+        A Ctrl+C landing during shutdown leaves a pending KeyboardInterrupt
+        that CPython raises *during finalization* inside a weakref callback
+        (Textual keeps DOMNodes/timers in ``WeakSet``s), printing
+        "Exception ignored in: <function WeakSet._remove> KeyboardInterrupt"
+        to the terminal at exit.  Masking the signal first makes the late
+        interrupt a silent OS-level no-op instead.
+        """
+        with patch("slife.Config.from_json5", return_value=mock_config):
+            with patch("slife.SlifeApp") as mock_app_cls:
+                mock_app_cls.return_value.run = MagicMock()
+
+                with patch("slife.logger"):
+                    with patch("slife.signal.signal") as mock_signal:
+                        from slife import main
+                        main()
+
+                        assert call(signal.SIGINT, signal.SIG_IGN) in (
+                            mock_signal.call_args_list
+                        )
+
+    def test_main_masks_sigint_after_keyboard_interrupt(self, mock_config):
+        """Ctrl+C during startup exits quietly and still masks SIGINT."""
+        with patch("slife.Config.from_json5", return_value=mock_config):
+            with patch("slife.SlifeApp") as mock_app_cls:
+                mock_app_cls.return_value.run = MagicMock(
+                    side_effect=KeyboardInterrupt
+                )
+
+                with patch("slife.logger"):
+                    with patch("slife.signal.signal") as mock_signal:
+                        from slife import main
+                        main()  # must not propagate
+
+                        assert call(signal.SIGINT, signal.SIG_IGN) in (
+                            mock_signal.call_args_list
+                        )
 
 
 class TestMainModule:

@@ -10,6 +10,7 @@ Usage:
 
 import logging
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -154,6 +155,22 @@ def main(config_path: str | None = None):
         # The TUI's own ctrl+c binding handles the normal case via action_quit.
         pass
     finally:
+        # Mask SIGINT FIRST — before any teardown work.  A Ctrl+C that
+        # lands while the app is shutting down (plugin stops, subprocess
+        # kills, interpreter GC of the Textual widget graph) would leave
+        # the SIGINT flag set past main()'s return; the pending
+        # KeyboardInterrupt is then raised by CPython during finalization
+        # inside a weakref callback (Textual keeps DOMNodes and timers in
+        # ``WeakSet``s) and printed as a noisy
+        #   "Exception ignored in: <function WeakSet._remove> KeyboardInterrupt"
+        # just as the shell prompt returns.  With SIGINT ignored the event
+        # is dropped silently.  The in-app ctrl+c binding (action_quit)
+        # already handled the normal exit; this only covers late re-presses.
+        try:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+        except (ValueError, OSError):
+            pass
+
         # Restore console mode on Windows — Textual's driver sets
         # ENABLE_VIRTUAL_TERMINAL_INPUT and clears line-editing flags.
         # If the driver's stop_application_mode() doesn't run (crash,
