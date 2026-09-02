@@ -462,7 +462,9 @@ class Engine:
             Llama = _Llama  # narrow: non-None after the guard above
 
             def _load_gguf():
-                from llama_cpp import llama_supports_gpu_offload
+                # Optional backend — the package is only present when the
+                # gguf extra is installed (same guard as memdb.embeddings).
+                from llama_cpp import llama_supports_gpu_offload  # type: ignore[import-not-found]
 
                 kwargs = dict(
                     model_path=gguf_path,

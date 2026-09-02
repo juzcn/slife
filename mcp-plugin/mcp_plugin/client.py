@@ -14,7 +14,7 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -147,17 +147,17 @@ def _is_retryable_connect_error(exc: BaseException) -> bool:
 
     The MCP SDK surfaces connection failures either directly or wrapped in an
     ``ExceptionGroup``/``BaseExceptionGroup`` during task-group teardown, so we
-    look inside groups.  httpx transport/timeout errors (the SDK's HTTP layer)
-    are retryable too — the plugin may still be starting up after signaling its
-    port.
+    look inside groups.  httpx2 transport/timeout errors (mcp ≥2.0's HTTP
+    layer) are retryable too — the plugin may still be starting up after
+    signaling its port.
     """
     if isinstance(exc, (ConnectionError, OSError, asyncio.TimeoutError)):
         return True
     try:
-        import httpx
+        import httpx2
     except ImportError:
-        httpx = None
-    if httpx is not None and isinstance(exc, httpx.HTTPError):
+        httpx2 = None
+    if httpx2 is not None and isinstance(exc, httpx2.HTTPError):
         return True
     if isinstance(exc, BaseExceptionGroup):
         return any(_is_retryable_connect_error(e) for e in exc.exceptions)
@@ -189,12 +189,12 @@ class MCPClient:
         self._session: ClientSession | None = None
         self._connected: bool = False
         self._exit_stack: AsyncExitStack | None = None
-        self._http_client: httpx.AsyncClient | None = None
+        self._http_client: httpx2.AsyncClient | None = None
         self._tool_timeout = tool_timeout
-        # Extra client identity/context the server should see: carried in the
-        # standard ``initialize`` request's ``clientInfo`` (as ``other``), per
-        # the official MCP spec — e.g. the host's active embedding endpoint
-        # when connecting to the mcp-plugin wrapper.  None ⇒ SDK default.
+        # Extra host params the server should see: carried on the standard
+        # ``initialize`` request in ``capabilities.extensions`` (mcp ≥2.0;
+        # the ``clientInfo.other`` slot was dropped) — e.g. the host's active
+        # embedding endpoint when connecting to the mcp-plugin wrapper.
         self._client_info_extra = client_info_extra
         # Optional async callback(method, params) invoked for server-initiated
         # notifications (e.g. ``notifications/tools/list_changed``).  Must
@@ -241,9 +241,13 @@ class MCPClient:
                         # trust_env=False keeps this client proxy-free; a
                         # provided client is owned by us (the SDK does not
                         # manage its lifecycle), so it is closed in _cleanup.
-                        self._http_client = httpx.AsyncClient(
+                        # mcp ≥2.0's transport is built on `httpx2` and
+                        # types its http_client against it — the older `httpx`
+                        # distribution would only duck-type-fly.  Use httpx2
+                        # so the injected client matches the SDK's contract.
+                        self._http_client = httpx2.AsyncClient(
                             trust_env=False,
-                            timeout=httpx.Timeout(
+                            timeout=httpx2.Timeout(
                                 connect=10.0, read=None, write=None, pool=10.0,
                             ),
                         )
