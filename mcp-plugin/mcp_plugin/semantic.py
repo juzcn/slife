@@ -197,6 +197,12 @@ class SemanticManager:
     def reason(self) -> str:
         return self._reason
 
+    async def unembedded(self) -> int:
+        try:
+            return await self._store.count_unembedded()
+        except Exception:
+            return 0
+
     # ── internal ─────────────────────────────────────────────────────
 
     def _status(self, *, status: str = "ok", message: str = "",

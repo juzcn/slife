@@ -284,6 +284,56 @@ async def _warm_semantic() -> None:
         _manager = None
 
 
+async def _semantic_check_report() -> dict:
+    """Semantic-index status for the harness ``__check`` health probe.
+
+    Config-side facts from the embedding client (the connecting client's
+    endpoint when one was passed, else the plugin's own section) overlaid
+    with live SemanticManager state — the mcp-plugin analogue of
+    ``memdb_semantic_status`` / ``memfiles_semantic_status``.  ``state``
+    ``not_started`` means the post-handshake warm-up has not run (or failed);
+    such a report is still a health signal, distinct from a live "building".
+    Never throws — a bad config must not break ``__check``.
+    """
+    try:
+        from mcp_plugin.embeddings import EmbeddingClient
+        probe = EmbeddingClient.from_plugin_config(override=_client_embeddings)
+        manager = _manager
+        if manager is None:
+            return {
+                "configured": bool(probe.base_url),
+                "base_url": probe.base_url,
+                "model": probe.model,
+                "dimension": probe.dimension,
+                "available": probe.available,
+                "semantic_ready": False,
+                "state": "not_started",
+                "reason": "semantic manager not warmed yet",
+                "unembedded": 0,
+            }
+        e = manager.embedder
+        return {
+            "configured": bool(probe.base_url),
+            "base_url": probe.base_url,
+            "model": e.model if e else probe.model,
+            "dimension": e.dimension if e else probe.dimension,
+            "available": bool(e and e.available),
+            "semantic_ready": manager.semantic_ready,
+            "state": manager.state,
+            "reason": manager.reason or "",
+            "unembedded": await manager.unembedded(),
+        }
+    except Exception as exc:
+        return {
+            "configured": False,
+            "available": False,
+            "semantic_ready": False,
+            "state": "error",
+            "reason": f"semantic status unavailable: {exc}",
+            "unembedded": 0,
+        }
+
+
 async def _on_connected(server_name: str) -> None:
     """Sync a connected server's tools into the catalog, then notify the host."""
     conn = _pool.get_server(server_name)
@@ -588,15 +638,22 @@ async def mcp_list() -> str:
     ),
 )
 async def __check(ctx: Context | None = None) -> str:
-    """Report live connection status of all external MCP servers.
+    """Report live server connection status + semantic-index status.
 
-    Authoritative for health: ``state=running`` means the server is connected
-    and its tools are registered on the agent (the agent re-syncs on reconnect
-    via ``notifications/tools/list_changed``)."""
+    Returns ``{"servers": [...], "semantic": {...}}``.  Authoritative for
+    server health: ``state=running`` means the server is connected and its
+    tools are registered on the agent (the agent re-syncs on reconnect via
+    ``notifications/tools/list_changed``).  ``semantic`` mirrors the
+    memdb/memfiles semantic-status surface so the harness's ``check_mcp`` can
+    report indexing/availability alongside server health."""
     # Remember the caller's session for reconnect notifications.
     _capture_session(ctx)
     servers = _pool.list_servers()
-    return json.dumps(servers, ensure_ascii=False, indent=2)
+    semantic = await _semantic_check_report()
+    return json.dumps(
+        {"servers": servers, "semantic": semantic},
+        ensure_ascii=False, indent=2,
+    )
 
 
 @mcp.tool(

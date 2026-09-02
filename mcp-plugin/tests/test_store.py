@@ -33,6 +33,20 @@ async def test_sync_server_upserts_and_preserves_enabled(store):
 
 
 @pytest.mark.asyncio
+async def test_sync_server_invalidates_stale_embedding(store):
+    # A description edit must drop the tool's old vector so the drainer
+    # re-embeds it — a stale vector would otherwise keep matching the tool's
+    # previous text (count_unembedded only sees rows with no embedding row,
+    # so it would never notice the drift).
+    await store.sync_server("svcA", [_tool("search", "full-text search")])
+    await store.replace_embedding("svcA__search", [0.1, 0.2, 0.3], "api:bge-m3")
+    assert await store.count_unembedded() == 0
+
+    await store.sync_server("svcA", [_tool("search", "semantic vector search")])
+    assert await store.count_unembedded() == 1  # stale vector dropped → re-embed
+
+
+@pytest.mark.asyncio
 async def test_sync_server_deletes_absent_tools(store):
     await store.sync_server("svcA", [_tool("search"), _tool("fetch")])
     await store.sync_server("svcA", [_tool("search")])

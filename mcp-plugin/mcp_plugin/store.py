@@ -295,6 +295,17 @@ class ToolStore:
                 names.append(name)
                 full_name = t.get("full_name") or f"{server}__{name}"
                 desc = t.get("description", "") or ""
+                # Detect a description edit (handled by the ON CONFLICT update
+                # below): without this, a tool whose text changed keeps a
+                # stale vector — the drainer only sees rows with NO embedding
+                # row at all, so a wrong vector survives invisibly.  Drop it
+                # so the caller's on_saved() re-embeds against the new text.
+                prev = await self._c.execute(
+                    "SELECT description FROM tools WHERE full_name = ?",
+                    (full_name,),
+                )
+                prev_row = await prev.fetchone()
+                desc_changed = prev_row is not None and (prev_row[0] or "") != desc
                 cursor = await self._c.execute(
                     """INSERT INTO tools(
                            full_name, server, name, description, enabled,
@@ -311,6 +322,11 @@ class ToolStore:
                     (full_name, server, name, desc, now, now),
                 )
                 upserted += 1
+                if desc_changed:
+                    await self._c.execute(
+                        "DELETE FROM tool_embeddings WHERE full_name = ?",
+                        (full_name,),
+                    )
             # Remove tools this server no longer advertises.
             if names:
                 ph = ",".join("?" * len(names))
