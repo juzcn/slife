@@ -396,7 +396,106 @@ class TestAnthropicBuildKwargs:
         assert kw["thinking"]["budget_tokens"] == 4096  # max_tokens // 2
 
     def test_thinking_disabled(self, anthropic_cfg):
+        """Native Anthropic model with thinking off → no thinking field
+        (Anthropic defaults to off, so omission is fine)."""
         backend = AnthropicBackend(anthropic_cfg)
+        kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
+        assert "thinking" not in kw
+
+    def test_thinking_disabled_deepseek_model_name(self):
+        """DeepSeek served via a gateway (bailian_personal) with reasoning off
+        still sends thinking {'type': 'disabled'} — DeepSeek defaults to
+        reasoning when the field is absent. The model id must match even
+        though provider/host don't contain 'deepseek'."""
+        cfg = ModelConfig(
+            ref="bailian_personal/deepseek-v4-pro-0813",
+            provider="bailian_personal",
+            api_model="deepseek-v4-pro-0813",
+            display_name="DeepSeek V4 Pro 0813",
+            api_key="sk-test",
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+            api="anthropic-messages",
+            max_tokens=32768,
+            context_window=163840,
+            thinking_enabled=False,
+        )
+        backend = AnthropicBackend(cfg)
+        kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
+        assert kw["thinking"] == {"type": "disabled"}
+
+    def test_thinking_disabled_qwen_model_name(self):
+        """Qwen models (bailian_personal, reasoning off) need the explicit
+        disabled too — they reason by default on the gateway as well."""
+        cfg = ModelConfig(
+            ref="bailian_personal/qwen3.7-max",
+            provider="bailian_personal",
+            api_model="qwen3.7-max",
+            display_name="Qwen3.7 Max",
+            api_key="sk-test",
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+            api="anthropic-messages",
+            max_tokens=65536,
+            context_window=1000000,
+            thinking_enabled=False,
+        )
+        backend = AnthropicBackend(cfg)
+        kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
+        assert kw["thinking"] == {"type": "disabled"}
+
+    def test_compat_thinking_disabled_forces_disabled(self):
+        """compat: {thinking: 'disabled'} forces the explicit off even for a
+        native Anthropic model that would otherwise omit the field."""
+        cfg = ModelConfig(
+            ref="anthropic/claude-sonnet",
+            provider="anthropic",
+            api_model="claude-sonnet-4-20250514",
+            display_name="Claude Sonnet 4",
+            api_key="sk-ant-test",
+            api="anthropic-messages",
+            max_tokens=8192,
+            thinking_enabled=True,
+            compat={"thinking": "disabled"},
+        )
+        backend = AnthropicBackend(cfg)
+        kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
+        assert kw["thinking"] == {"type": "disabled"}
+
+    def test_compat_thinking_omit_suppresses_deepseek_disabled(self):
+        """compat 'omit' takes precedence over the DeepSeek auto-disabled —
+        no thinking field at all, for gateways that reject both shapes."""
+        cfg = ModelConfig(
+            ref="bailian_personal/deepseek-v4-flash-0731",
+            provider="bailian_personal",
+            api_model="deepseek-v4-flash-0731",
+            display_name="DeepSeek V4 Flash 0731",
+            api_key="sk-test",
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+            api="anthropic-messages",
+            max_tokens=393216,
+            context_window=1000000,
+            thinking_enabled=False,
+            compat={"thinking": "omit"},
+        )
+        backend = AnthropicBackend(cfg)
+        kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
+        assert "thinking" not in kw
+
+    def test_compat_thinking_omit_skips_enabled_even_when_thinking_on(self):
+        """compat: {thinking: 'omit'} sends NO thinking field even for a
+        thinking-enabled model — mirrors the openai backend escape hatch."""
+        cfg = ModelConfig(
+            ref="bailian_personal/qwen3.8-max",
+            provider="bailian_personal",
+            api_model="qwen3.8-max",
+            display_name="Qwen3.8 Max",
+            api_key="sk-test",
+            api="anthropic-messages",
+            max_tokens=131072,
+            context_window=983616,
+            thinking_enabled=True,
+            compat={"thinking": "omit"},
+        )
+        backend = AnthropicBackend(cfg)
         kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
         assert "thinking" not in kw
 

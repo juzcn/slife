@@ -192,6 +192,27 @@ class AnthropicBackend:
         base = (self.model_config.base_url or "").rstrip("/")
         return "api.anthropic.com" in base
 
+    def _is_reasoning_default(self) -> bool:
+        """Whether the model reasons by default when ``thinking`` is absent.
+
+        DeepSeek/Qwen reasoning models default to thinking ON on their
+        native APIs — and on gateways serving them, such as
+        bailian_personal's Anthropic-compatible endpoint — so an explicit
+        ``{"type": "disabled"}`` must be sent when thinking is off.  Native
+        Anthropic models default to OFF and may simply omit the field.
+
+        The model id is matched in addition to provider/host because
+        gateways serve deepseek/qwen under their own provider and host
+        names (bailian_personal, token-plan.cn-beijing.maas.aliyuncs.com).
+        """
+        p = self.model_config.provider.lower()
+        u = self.model_config.base_url.lower()
+        m = self.model_config.api_model.lower()
+        return (
+            "deepseek" in p or "deepseek" in u
+            or m.startswith("deepseek") or m.startswith("qwen")
+        )
+
     # ── Build kwargs ──────────────────────────────────────────────────
 
     def _build_kwargs(
@@ -221,8 +242,19 @@ class AnthropicBackend:
             body["top_p"] = self.model_config.top_p
         if body:
             kwargs["extra_body"] = body
+        # Per-model compat escape hatch: ``compat.thinking`` explicitly
+        # controls the ``thinking`` parameter, matching the openai
+        # backend.  Values: "enabled" / "disabled" force the exact
+        # shape; "omit" (or anything else) sends no thinking field.
+        compat = self.model_config.compat or {}
+        thinking_override = compat.get("thinking")
+        if thinking_override is not None and thinking_override != "enabled":
+            # "disabled" -> explicit off; "omit"/other -> no thinking field.
+            if thinking_override == "disabled":
+                kwargs["thinking"] = {"type": "disabled"}
+            return kwargs
+
         if self.model_config.thinking_enabled:
-            compat = self.model_config.compat or {}
             # Bailian / qwen models with thinkingFormat "openai" always
             # think — no explicit Anthropic thinking param is needed (and
             # sending one may cause errors).
@@ -231,6 +263,11 @@ class AnthropicBackend:
                     "type": "enabled",
                     "budget_tokens": max(self.model_config.max_tokens // 2, 1024),
                 }
+        elif self._is_reasoning_default():
+            # DeepSeek/Qwen reason by default — an explicit "disabled" is
+            # required when thinking is off.  Native Anthropic models
+            # default to thinking off and simply omit the field.
+            kwargs["thinking"] = {"type": "disabled"}
         return kwargs
 
     # ── Chat ──────────────────────────────────────────────────────────
