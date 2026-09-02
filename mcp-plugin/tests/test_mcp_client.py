@@ -235,10 +235,9 @@ class TestMCPClientConnect:
         with patch("mcp_plugin.client.streamable_http_client") as mock_transport:
             mock_read = MagicMock()
             mock_write = MagicMock()
-            mock_info = MagicMock()
             mock_transport_ctx = MagicMock()
             mock_transport_ctx.__aenter__ = AsyncMock(
-                return_value=(mock_read, mock_write, mock_info),
+                return_value=(mock_read, mock_write),
             )
             mock_transport_ctx.__aexit__ = AsyncMock(return_value=None)
             mock_transport.return_value = mock_transport_ctx
@@ -275,7 +274,7 @@ class TestMCPClientConnect:
         with patch("mcp_plugin.client.streamable_http_client") as mock_transport:
             mock_read, mock_write, mock_info = MagicMock(), MagicMock(), MagicMock()
             mock_ctx = MagicMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write, mock_info))
+            mock_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_ctx.__aexit__ = AsyncMock(return_value=None)
             mock_transport.return_value = mock_ctx
 
@@ -314,10 +313,9 @@ class TestMCPClientConnect:
             def _make_ctx():
                 mock_read = MagicMock()
                 mock_write = MagicMock()
-                mock_info = MagicMock()
                 mock_ctx = MagicMock()
                 mock_ctx.__aenter__ = AsyncMock(
-                    return_value=(mock_read, mock_write, mock_info),
+                    return_value=(mock_read, mock_write),
                 )
                 mock_ctx.__aexit__ = AsyncMock(return_value=None)
                 return mock_ctx
@@ -369,10 +367,9 @@ class TestMCPClientConnect:
         def _make_ctx():
             mock_read = MagicMock()
             mock_write = MagicMock()
-            mock_info = MagicMock()
             mock_ctx = MagicMock()
             mock_ctx.__aenter__ = AsyncMock(
-                return_value=(mock_read, mock_write, mock_info),
+                return_value=(mock_read, mock_write),
             )
             mock_ctx.__aexit__ = AsyncMock(return_value=None)
             return mock_ctx
@@ -419,10 +416,9 @@ class TestMCPClientConnect:
         def _make_ctx():
             mock_read = MagicMock()
             mock_write = MagicMock()
-            mock_info = MagicMock()
             mock_ctx = MagicMock()
             mock_ctx.__aenter__ = AsyncMock(
-                return_value=(mock_read, mock_write, mock_info),
+                return_value=(mock_read, mock_write),
             )
             mock_ctx.__aexit__ = AsyncMock(return_value=None)
             return mock_ctx

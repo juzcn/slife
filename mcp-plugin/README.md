@@ -178,7 +178,8 @@ result's `mode` field reports what actually ran and a `hint` names the reason.
 
 **Embeddings precedence.** As a standard Streamable HTTP MCP server, a
 connecting client can pass its own embedding endpoint through the official
-`initialize` handshake's `clientInfo` — that **wins** when present (Slife sends
+`initialize` handshake (mcp ≥2.0: the `capabilities.extensions` map; earlier:
+`clientInfo.other`) — that **wins** when present (Slife sends
 the agent's active embedding endpoint, so the catalog embeds against the same
 server as Slife's memory plugins).  When the client passes no embedding params,
 the `embeddings` section above is used; with neither, search is keyword-only.

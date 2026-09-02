@@ -18,6 +18,7 @@ import httpx
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.types import Implementation
 
 logger = logging.getLogger(__name__)
 
@@ -246,24 +247,29 @@ class MCPClient:
                                 connect=10.0, read=None, write=None, pool=10.0,
                             ),
                         )
-                    read_stream, write_stream, _ = await self._exit_stack.enter_async_context(
+                    # mcp ≤2.0 yielded ``(read, write, get_session_id)``; mcp
+                    # 2.1 dropped the session-id callback → a 2-tuple.  We
+                    # never consumed it, so unpack the current shape only.
+                    read_stream, write_stream = await self._exit_stack.enter_async_context(
                         streamable_http_client(url, http_client=self._http_client),
                     )
-                    client_info = None
-                    if self._client_info_extra:
-                        # Standard clientInfo (per the official MCP spec) —
-                        # the SDK places it in initialize.params.clientInfo;
-                        # extra keys ride in ``other`` (tolerated by
-                        # implementations).
-                        from mcp.types import Implementation
-                        client_info = Implementation(
-                        name="slife", version="0.1.0",
-                    ).model_copy(update={"other": dict(self._client_info_extra)})
+                    # mcp ≥2.0: host extras ride in the standard
+                    # ``capabilities.extensions`` map (identifier → settings)
+                    # on the initialize request — the old ``clientInfo.other``
+                    # smuggling was dropped from the wire models.  The mcp
+                    # gateway's ``_client_info_extra`` is exactly that shape
+                    # (``{"embeddings": {...}}``), so pass it as session
+                    # extensions; the server's ``_CaptureClientEmbeddings``
+                    # reads it back from init params.
                     self._session = await self._exit_stack.enter_async_context(
                         ClientSession(
                             read_stream, write_stream,
                             message_handler=self._handle_server_message,
-                            client_info=client_info,
+                            client_info=Implementation(name="slife", version="0.1.0"),
+                            extensions=(
+                                dict(self._client_info_extra)
+                                if self._client_info_extra else None
+                            ),
                         ),
                     )
                     await self._session.initialize()
@@ -434,7 +440,11 @@ class MCPClient:
                 f"the MCP server may have a stuck SSE session"
             )
         return [
-            {"name": t.name, "description": t.description or "", "inputSchema": t.inputSchema}
+            # ``input_schema`` is the canonical attr in mcp-types ≥2.0
+            # (``inputSchema`` remains the JSON alias); the proxy contract is
+            # the wire name, so the key keeps the camelCase form.
+            {"name": t.name, "description": t.description or "",
+             "inputSchema": t.input_schema}
             for t in result.tools
         ]
 

@@ -93,14 +93,17 @@ READY_FAILED = "failed"
 
 
 def client_info_extra_for(name: str) -> dict | None:
-    """Initialize-``clientInfo`` extras for a plugin connection.
+    """Initialize host extras passed to a plugin connection.
 
     The mechanism is uniform — every plugin connects as a Streamable MCP
     server through the same path, and host params ride in the standard
-    ``initialize`` ``clientInfo`` (official MCP spec).  The *content* is
-    per-plugin and lives in this one mapping: today only the mcp gateway
-    consumes host params (the active embedding endpoint, so its tool catalog
-    embeds against the agent's endpoint), a future plugin adds its own entry.
+    ``initialize`` request (mcp ≥2.0 carries them in the session's
+    ``capabilities.extensions`` map — identifier → settings — per the
+    official SDK; the old ``clientInfo.other`` smuggling was dropped from
+    the wire models).  The *content* is per-plugin and lives in this one
+    mapping: today only the mcp gateway consumes host params (the active
+    embedding endpoint, so its tool catalog embeds against the agent's
+    endpoint), a future plugin adds its own entry.
     """
     if name == "mcp":
         try:

@@ -330,8 +330,8 @@ class TestMCPListToolsSingleRead:
 
 
 class TestCaptureClientEmbeddings:
-    """The initialize middleware stores clientInfo.other.embeddings (standard
-    handshake params) for the semantic warm-up."""
+    """The initialize middleware stores ``capabilities.extensions["embeddings"]``
+    (mcp ≥2.0 handshake params) for the semantic warm-up."""
 
     def test_captures_embeddings_from_initialize(self, restore_root_logger):
         import asyncio as _asyncio
@@ -348,10 +348,10 @@ class TestCaptureClientEmbeddings:
         req = InitializeRequest(
             params=InitializeRequestParams(
                 protocolVersion="2025-06-18",
-                capabilities=ClientCapabilities(),
-                clientInfo=Implementation(
-                    name="slife", version="0.1.0",
-                ).model_copy(update={"other": {"embeddings": {"base_url": "http://host.example/v1"}}}),
+                capabilities=ClientCapabilities(extensions={
+                    "embeddings": {"base_url": "http://host.example/v1"},
+                }),
+                clientInfo=Implementation(name="slife", version="0.1.0"),
             )
         )
         mw = srv._CaptureClientEmbeddings()

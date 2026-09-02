@@ -244,24 +244,25 @@ def test_from_plugin_config_no_usable_config_disabled(tmp_path):
     assert not c.available
 
 
-def test_implementation_other_roundtrips():
-    """clientInfo extras ride in ``other`` and survive the SDK model round-trip.
+def test_extensions_capability_roundtrips():
+    """Host extras ride in ``capabilities.extensions`` and survive the SDK
+    model round-trip (mcp ≥2.0 — ``clientInfo.other`` was dropped).
 
-    The official MCP spec puts ``clientInfo`` in the initialize ``params``;
-    extra host params are tolerated via ``other`` — this locks the server's
-    ability to read them back.
+    The mcp gateway handshakes its embedding endpoint to the wrapper via the
+    standard ``capabilities.extensions`` map (identifier → settings); this
+    locks the server's ability to read them back from the initialize params.
     """
-    from mcp.types import Implementation
+    from mcp.types import ClientCapabilities
 
-    impl = Implementation(
-        name="slife", version="0.1.0",
-    ).model_copy(update={"other": {"embeddings": {
-        "base_url": "http://host.example/v1", "api_key": "", "model": "",
-    }}})
-    assert impl.other["embeddings"]["base_url"] == "http://host.example/v1"
-    dumped = impl.model_dump(by_alias=True)
-    assert dumped["other"]["embeddings"]["base_url"] == "http://host.example/v1"
-    parsed = Implementation.model_validate(dumped)
-    assert parsed.other["embeddings"]["base_url"] == "http://host.example/v1"
+    caps = ClientCapabilities(extensions={
+        "embeddings": {
+            "base_url": "http://host.example/v1", "api_key": "", "model": "",
+        },
+    })
+    assert caps.extensions["embeddings"]["base_url"] == "http://host.example/v1"
+    dumped = caps.model_dump(by_alias=True)
+    assert dumped["extensions"]["embeddings"]["base_url"] == "http://host.example/v1"
+    parsed = ClientCapabilities.model_validate(dumped)
+    assert parsed.extensions["embeddings"]["base_url"] == "http://host.example/v1"
 
 

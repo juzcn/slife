@@ -104,8 +104,9 @@ async def _auto_connect_configured() -> None:
 
 
 # A connecting client can pass its own embedding endpoint via the standard
-# ``initialize`` request's ``clientInfo`` (official-spec params).  The
-# first handshake that carries ``clientInfo.other.embeddings`` wins; absent
+# ``initialize`` request's ``capabilities.extensions`` (mcp ≥2.0 — the
+# ``clientInfo.other`` smuggling slot was dropped from the wire models).
+# The first handshake that carries ``extensions["embeddings"]`` wins; absent
 # ⇒ the wrapper falls back to its own ``mcp-plugin.json5`` embeddings section.
 _client_embeddings: dict | None = None
 
@@ -114,9 +115,9 @@ class _CaptureClientEmbeddings(Middleware):
     """Store the connecting client's embedding params from ``initialize``.
 
     Runs inside the standard ``initialize`` request pipeline; extracts
-    ``params.clientInfo.other.embeddings`` (base_url/api_key/model) into the
-    module global that ``_warm_semantic`` reads.  A client that sends no
-    embeddings leaves the global None → json5 fallback.
+    ``params.capabilities.extensions["embeddings"]`` (base_url/api_key/model)
+    into the module global that ``_warm_semantic`` reads.  A client that sends
+    no embeddings leaves the global None → json5 fallback.
     """
 
     async def on_initialize(self, context, call_next):
@@ -124,20 +125,19 @@ class _CaptureClientEmbeddings(Middleware):
         try:
             req = getattr(context, "message", None)
             params = getattr(req, "params", None)
-            client_info = getattr(params, "clientInfo", None) if params is not None else None
-            if client_info is not None:
-                other = getattr(client_info, "other", None)
-                emb = (other or {}).get("embeddings")
-                if isinstance(emb, dict):
-                    _client_embeddings = {
-                        k: str(emb[k]) for k in ("base_url", "api_key", "model")
-                        if k in emb
-                    }
-                    logger.info(
-                        "client_embeddings_captured base_url=%s model=%s",
-                        _client_embeddings.get("base_url", ""),
-                        _client_embeddings.get("model", ""),
-                    )
+            capabilities = getattr(params, "capabilities", None) if params is not None else None
+            extensions = getattr(capabilities, "extensions", None) if capabilities is not None else None
+            emb = (extensions or {}).get("embeddings")
+            if isinstance(emb, dict):
+                _client_embeddings = {
+                    k: str(emb[k]) for k in ("base_url", "api_key", "model")
+                    if k in emb
+                }
+                logger.info(
+                    "client_embeddings_captured base_url=%s model=%s",
+                    _client_embeddings.get("base_url", ""),
+                    _client_embeddings.get("model", ""),
+                )
         except Exception:
             logger.debug("client_embeddings_capture_failed", exc_info=True)
         return await call_next(context)
