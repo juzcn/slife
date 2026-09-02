@@ -346,7 +346,7 @@ class Config:
     memory_tool_result_chars: int = 8000
     agent_name: str = "slife"
     tool_timeout: float = 60.0  # seconds, 0 to disable — applies to ALL tools
-    heartbeat_interval: int = 60  # seconds — autonomous idle heartbeat period
+    heartbeat_interval: int = 1800  # seconds — autonomous idle heartbeat period
     memdb_config: MemdbConfig | None = None
     embeddings_config: EmbeddingsConfig | None = None
     wechat_config: WechatConfig | None = None
@@ -433,7 +433,7 @@ class Config:
             env=data.get("env"),
             max_iterations=data.get("max_iterations", 30),
             tool_timeout=data.get("tool_timeout", 60.0),
-            heartbeat_interval=data.get("heartbeat_interval", 60),
+            heartbeat_interval=data.get("heartbeat_interval", 1800),
             context_floor=data.get("context_floor", 0.2),
             context_ceiling=data.get("context_ceiling", 0.8),
             tool_result_ceiling=data.get("tool_result_ceiling", 0.2),
@@ -832,7 +832,7 @@ class Config:
         agent = _parse_section(raw, "agent", dict, {})
         max_iterations = agent.get("max_iterations", 30)
         tool_timeout = agent.get("tool_timeout", 60.0)
-        heartbeat_interval = agent.get("heartbeat_interval", 60)
+        heartbeat_interval = agent.get("heartbeat_interval", 1800)
         context_floor = agent.get("context_floor", 0.2)
         context_ceiling = agent.get("context_ceiling", 0.8)
         tool_result_ceiling = agent.get("tool_result_ceiling", 0.2)

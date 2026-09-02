@@ -75,10 +75,10 @@ class TestBuild:
     def test_heartbeat_interval_rendered_from_config(self, cfg):
         """The Autonomy heartbeat window advertises the configured interval."""
         from slife.agent.system_prompt import build
-        assert "every 60 seconds" in build(cfg)  # default 60s
+        assert "every 1800 seconds" in build(cfg)  # default 1800s
         cfg.heartbeat_interval = 30
         assert "every 30 seconds" in build(cfg)
-        assert "every 60 seconds" not in build(cfg)
+        assert "every 1800 seconds" not in build(cfg)
 
     def test_vision_disabled(self, cfg):
         from slife.agent.system_prompt import build
