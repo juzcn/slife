@@ -96,7 +96,7 @@ All management is **MCP tools** (there is no CLI).
 | `mcp_list` | List configured servers (transport, command/url, enabled). |
 | `mcp_list_tools(server)` | List a connected server's live tools (single read — the catalog is the live pool). |
 | `mcp_tool_search(query, mode, limit, server, include_disabled)` | Search the tool catalog — `hybrid` / `fts5` / `grep`. |
-| `__check` | Live per-server status (internal — probed by `system_health`). |
+| `__check` | Live per-server + semantic raw status (internal — probed by `system_health`). |
 | `__mcp_get_tool(full_name)` | One tool's live schema + enabled status (internal — consumed by `mcp_tool_load`). |
 | `__mcp_call_tool(server, tool_name, arguments)` | Call a tool on a connected server (internal — invoked by per-tool proxies). |
 

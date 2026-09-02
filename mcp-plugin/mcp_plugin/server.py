@@ -289,11 +289,11 @@ async def _semantic_check_report() -> dict:
 
     Config-side facts from the embedding client (the connecting client's
     endpoint when one was passed, else the plugin's own section) overlaid
-    with live SemanticManager state — the mcp-plugin analogue of
-    ``memdb_semantic_status`` / ``memfiles_semantic_status``.  ``state``
-    ``not_started`` means the post-handshake warm-up has not run (or failed);
-    such a report is still a health signal, distinct from a live "building".
-    Never throws — a bad config must not break ``__check``.
+    with live SemanticManager state — the analogue of the memdb/memfiles
+    ``__check`` semantic block.  ``state`` ``not_started`` means the
+    post-handshake warm-up has not run (or failed); such a report is still a
+    health signal, distinct from a live "building".  Never throws — a bad
+    config must not break ``__check``.
     """
     try:
         from mcp_plugin.embeddings import EmbeddingClient

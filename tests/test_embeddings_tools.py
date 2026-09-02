@@ -1,4 +1,4 @@
-"""Tests for embeddings native tools — list / probe / set / switch / remove / enable."""
+"""Tests for embeddings native tools — list / set / switch / remove / enable."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from slife.tools.embeddings import (
-    ListEmbeddingsTool, ProviderProbeTool,
+    ListEmbeddingsTool,
     SetEmbeddingsTool, SwitchEmbeddingsTool, RemoveEmbeddingsTool,
     EnableEmbeddingsTool,
 )
@@ -79,75 +79,6 @@ class TestListEmbeddingsTool:
         tool = ListEmbeddingsTool(config_path=p)
         result = await tool.execute()
         assert "No embeddings" in result
-
-
-# ── ProviderProbeTool ──────────────────────────────────────────────
-
-
-class TestProviderProbeTool:
-    @pytest.mark.asyncio
-    async def test_active_provider_not_found(self, tmp_path):
-        p = _make_path(tmp_path)
-        raw = _read_config(p)
-        raw["embeddings"]["active_model"] = "ghost"
-        _write_config(p, raw)
-        tool = ProviderProbeTool(config_path=p)
-        result = await tool.execute()
-        assert "active provider" in result
-        assert "ghost" in result
-
-    @pytest.mark.asyncio
-    async def test_no_embeddings(self, tmp_path):
-        p = tmp_path / "empty.json5"
-        _write_config(p, {"embeddings": {"providers": {}}})
-        tool = ProviderProbeTool(config_path=p)
-        result = await tool.execute()
-        assert "No embeddings" in result
-
-    @pytest.mark.asyncio
-    async def test_offline_shows_configured_and_unreachable(self, tmp_path):
-        p = _make_path(tmp_path)
-        raw = _read_config(p)
-        raw["embeddings"]["providers"]["local-embed"]["models"] = [
-            {"model": "bge-m3", "dim": 1024},
-        ]
-        _write_config(p, raw)
-        tool = ProviderProbeTool(config_path=p)
-        # Endpoint unreachable — configured models still shown, /models degrades.
-        with patch(
-            "openai.AsyncOpenAI",
-            side_effect=RuntimeError("connect refused"),
-        ):
-            result = await tool.execute()
-        assert "### configured" in result
-        assert "bge-m3" in result
-        assert "### /models" in result
-        assert "unreachable" in result
-
-    @pytest.mark.asyncio
-    async def test_online_shows_configured_and_discovered(self, tmp_path):
-        p = _make_path(tmp_path)
-        raw = _read_config(p)
-        raw["embeddings"]["active_model"] = "local-embed/bge-m3"
-        raw["embeddings"]["providers"]["local-embed"]["models"] = [
-            {"model": "bge-m3", "dim": 1024},
-        ]
-        _write_config(p, raw)
-        tool = ProviderProbeTool(config_path=p)
-        fake_client = MagicMock()
-        fake_client.models.list = AsyncMock(return_value=MagicMock(
-            data=[
-                MagicMock(id="bge-m3", dimension=1024, active=True),
-                MagicMock(id="other", dimension=768, active=False),
-            ]
-        ))
-        with patch("openai.AsyncOpenAI", return_value=fake_client):
-            result = await tool.execute()
-        assert "### configured" in result
-        assert "### /models" in result
-        assert "bge-m3" in result
-        assert "other" in result
-        assert "★" in result   # active ref local-embed/bge-m3 marked in both sections
 
 
 # ── SetEmbeddingsTool ─────────────────────────────────────────────────

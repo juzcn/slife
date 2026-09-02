@@ -23,8 +23,9 @@ memdb's SemanticManager and RRF merge); ``cabinet_read`` re-opens a saved file.
 
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
 ``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``list_files``,
-``cabinet_search``, ``cabinet_read``, ``memfiles_semantic_status``,
-``report_save``, ``report_list``, ``report_read``.
+``cabinet_search``, ``cabinet_read``, ``report_save``, ``report_list``,
+``report_read``. Semantic-index status goes through the plugin's internal
+``__check`` (probed by the harness's ``system_health``), not an LLM tool.
 The scheduled-task tools (``scheduled_task_*`` / ``scheduled_run_*``) are native
 in ``slife/tools/schedule.py`` (category "Schedule"); this plugin only exposes
 the ``__scheduled_*`` data layer they call over the memfiles MCP client.
@@ -546,78 +547,25 @@ async def cabinet_search(
 
 
 @mcp.tool(
-    name="memfiles_semantic_status",
-    description=(
-        "File-cabinet semantic-search status: shared embedding config plus "
-        "the memfiles index's own gate (semantic_ready, state, unembedded). "
-        "Independent from memdb_semantic_status — the two plugins reindex "
-        "their own DBs, so one can be semantically ready while the other is "
-        "still building."
-    ),
-)
-async def memfiles_semantic_status() -> str:
-    from slife.plugins.memdb.embedding_config import make_check_report
-
-    await _ensure_store()
-    manager = _manager
-    try:
-        report = make_check_report()
-        if manager is not None:
-            report["semantic_ready"] = manager.semantic_ready
-            report["state"] = manager.state
-            report["reason"] = manager.reason
-            report["unembedded"] = await manager.unembedded()
-            e = manager.embedder
-            if e is not None:
-                # live embedder facts override the config probe
-                report["model"] = e._model
-                report["dimension"] = e.dimension
-                report["available"] = e.available
-                report["loaded"] = e.loaded
-            # hint by state
-            state = manager.state
-            if state == "ready":
-                report["hint"] = (
-                    f"Embedding model ready: "
-                    f"{report.get('model', '')} (dim={report.get('dimension')})"
-                )
-            elif state in ("loading", "indexing"):
-                report["hint"] = (
-                    f"Memfiles index building — {report.get('unembedded', 0)} "
-                    "notes/diary/files pending embedding. Keyword search remains available."
-                )
-            elif state == "stalled":
-                report["hint"] = report.get("reason", "Memfiles semantic index stalled.")
-            elif state == "disabled" and report.get("configured"):
-                report["hint"] = (
-                    "Memfiles semantic search disabled. Re-enable with "
-                    "embeddings_enable true (shared embedding config)."
-                )
-        return json.dumps(report, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.exception("memfiles_check_embedding_failed")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-@mcp.tool(
     name="__check",
     description=(
-        "Internal — file-cabinet status as JSON, probed by the harness's "
-        "system_health.  Never exposed to the LLM."
+        "Internal — file-cabinet live state as JSON facts, probed by the "
+        "harness's system_health.  Never exposed to the LLM."
     ),
 )
 async def __check() -> str:
-    """Return cabinet status for the harness's ``system_health`` check.
+    """Return raw cabinet facts for the harness's ``system_health`` check.
 
-    Reports the store/index connection state and the semantic-search gate
-    (semantic_ready, state, unembedded).  The harness probes this via the
-    plugin's MCP client; the LLM never sees it (``__`` internal).
+    Live store/index connection state plus the semantic-search gate
+    (semantic_ready, state, unembedded, reason).  Facts only — the harness
+    composes levels/hints.  The harness probes this via the plugin's MCP
+    client; the LLM never sees it (``__`` internal).
     """
     try:
         await _ensure_store()
     except Exception as e:
         return json.dumps(
-            {"ok": False, "state": "store_error", "hint": f"store init failed: {e}"},
+            {"ok": False, "state": "store_error", "reason": f"store init failed: {e}"},
             ensure_ascii=False,
         )
     store = _store
@@ -630,15 +578,6 @@ async def __check() -> str:
         "unembedded": await manager.unembedded() if manager is not None else 0,
         "reason": manager.reason if manager is not None else "",
     }
-    if manager is None:
-        result["hint"] = "Cabinet plugin loaded, but no semantic index manager."
-    elif not manager.semantic_ready:
-        result["hint"] = (
-            f"Cabinet semantic index not ready — {result['unembedded']} "
-            "notes/diary/files pending embedding. Keyword search remains available."
-        )
-    else:
-        result["hint"] = "Cabinet connected; semantic index ready."
     return json.dumps(result, ensure_ascii=False)
 
 

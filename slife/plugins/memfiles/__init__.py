@@ -14,8 +14,7 @@ auto-publish.
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``,
 ``url_save``, ``note_list``, ``diary_list``, ``note_read``, ``diary_read``,
 ``list_files``, ``cabinet_search``, ``cabinet_read``,
-``report_save``, ``report_list``, ``report_read``,
-``memfiles_semantic_status``.
+``report_save``, ``report_list``, ``report_read``.
 ``report_save`` saves a report (notes / diary / reports are the document
 types) — an optional ``name`` binds it to a scheduled task and confirms that
 task's run.  The scheduled-task tools (``scheduled_task_*`` /

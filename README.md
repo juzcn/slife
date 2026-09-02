@@ -193,7 +193,7 @@ local-embed set-gguf bge-m3 --path ~/.local-embed/models/bge-m3-q4_k_m.gguf
 
 Start slife. `local-embed` runs as an external plugin; its MCP handshake completes fast, and the **model load is deferred to post-handshake warm-up** — the first embed loads it (a few seconds for GGUF, up to a minute for the ~2 GB transformer). Verify from inside the chat or over HTTP:
 
-- **In the chat** — ask the agent to run `system_health` (reports an `embeddings` component: online / active model / loaded), `embeddings_probe` (configured vs. live `/v1/models`, active model marked ★), and `memdb_semantic_status` / `memfiles_semantic_status` (report `semantic_ready`).
+- **In the chat** — ask the agent to run `system_health` (the `memdb`/`memfiles` components report the semantic gate: `semantic_ready`, model, pending embeddings).
 - **Over HTTP** (the service is standalone at the fixed port):
 
 ```bash
@@ -203,7 +203,7 @@ curl http://127.0.0.1:17347/v1/embeddings -H 'Content-Type: application/json' \
   -d '{"model": "bge-m3", "input": ["hello world"]}'   # returns a real vector
 ```
 
-A healthy state: `/health` → `loaded: true`; `system_health` → `embeddings` component online, active model loaded; `memdb_semantic_status` → `semantic_ready: true`. When the service is unreachable (backend missing, weights missing, still loading), slife **degrades gracefully to keyword search** — `system_health` reports the reason, and once the index is fully built for the current model, hybrid results resume automatically.
+A healthy state: `/health` → `loaded: true`; `system_health` → `local_embed` component online, active model loaded, and the `memdb`/`memfiles` components show `semantic_ready`. When the service is unreachable (backend missing, weights missing, still loading), slife **degrades gracefully to keyword search** — `system_health` reports the reason, and once the index is fully built for the current model, hybrid results resume automatically.
 
 ### Troubleshooting
 
@@ -334,7 +334,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image` (feed images to a vision model), `_sys_note` (context status, auto-invoked) |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user` |
-| embeddings | `embeddings_probe`, `embeddings_enable`, `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_remove`, `embeddings_model_switch` |
+| embeddings | `embeddings_model_list`, `embeddings_enable`, `embeddings_model_set`, `embeddings_model_remove`, `embeddings_model_switch` |
 | mcp | `mcp_tool_load` |
 
 The A2A mesh tools (`a2a_*`, 8 of them) and all plugin tools are hosted in plugins, not the native tool set — see below.
@@ -348,9 +348,9 @@ Every tool additionally accepts three tool meta-parameters: `_timeout` (per-call
 | Server | LLM-visible tools |
 |--------|-------------------|
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`, `mcp_tool_search` |
-| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage`, `memdb_semantic_status` |
+| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `memfiles_semantic_status` |
+| `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read` |
 | `sharefile` | `share_file` |
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
@@ -372,7 +372,7 @@ Every turn is permanently recorded in SQLite (`~/.slife/<agent>.db`). Hybrid sea
 | `hybrid` | Semantic recall (FTS5 + vector → RRF merge) |
 | `time` | Browse by date |
 
-Embeddings are a **first-class top-level `embeddings` section** in `slife.json5` (shared by `memdb` + `memfiles`), managed by the native tools `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_probe`, and `embeddings_enable` (category `embeddings`). Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); `active_model` (`"provider/model"` or bare `"provider"`) is configuration-authoritative. The **`local-embed` external plugin** (or a standalone local-embed server) serves a local GGUF/transformer model at `http://127.0.0.1:17347/v1`, loaded **once** and shared by `memdb` and `memfiles` — no double load. The actual model is pinned from the endpoint's `GET /v1/models` when the config names no model. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
+Embeddings are a **first-class top-level `embeddings` section** in `slife.json5` (shared by `memdb` + `memfiles`), managed by the native tools `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, and `embeddings_enable` (category `embeddings`); runtime index status is surfaced by `system_health`. Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); `active_model` (`"provider/model"` or bare `"provider"`) is configuration-authoritative. The **`local-embed` external plugin** (or a standalone local-embed server) serves a local GGUF/transformer model at `http://127.0.0.1:17347/v1`, loaded **once** and shared by `memdb` and `memfiles` — no double load. The actual model is pinned from the endpoint's `GET /v1/models` when the config names no model. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
 Each turn records two timestamps — the user's input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers in the chat. User messages carry a compact **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** footnote (the turn id plus when the turn happened) so the LLM can reference turns by id (`turn_read` / `turn_summarize`) — and the human reads the same line in the TUI.
 
@@ -416,7 +416,7 @@ Six built-in plugins as independent child processes, plus the standalone
 
 External MCP servers configured in `mcp-plugin.json5` → `servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled). They are **loaded on demand** by default (discover with `mcp_tool_search`, load with `mcp_tool_load`); set `auto_load: true` on a server to bulk-register its tools on connect.
 
-All plugins — built-in and auto-discovered third-party alike — run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health — each plugin's internal `__check` tool reports its application-level state and is aggregated into `system_health`; the watchdog is purely process-level.
+All plugins — built-in and auto-discovered third-party alike — run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health — `system_health` = the main-process `check_*` functions + each plugin's internal `__check` tool: `__check` reports only the plugin's raw technical state (facts and measurements, like a physical-examination report), and the harness interprets those facts into health levels and remediation; the watchdog is purely process-level.
 
 Readiness follows the MCP standard: a plugin is ready when its `initialize` handshake completes — the server only answers it after its own initialization (FastMCP lifespan) succeeded, during which the plugin establishes its own serving capacity (memdb and memfiles require their store; the other plugins have no local requirement, so serving is readiness). There is no `__ready` probe tool. The lifespan stays **handshake-fast**: heavyweight startup (e.g. the embedding-model load) is deferred until after the first `tools/list` via `warm_after_handshake`, never run inside it. External/subordinate dependencies — external MCP servers, the ngrok tunnel, WeChat login, media providers, the A2A broker, embedding backends — never gate readiness: they are uncontrollable, self-heal at runtime, and are surfaced separately via status tools. Plugins named in `plugins.required` (`memdb`, `memfiles` by default) are core: failing to become ready **aborts startup** with an error instead of limping on. The service opens for user input only once every plugin spawn has converged (ready / skipped / failed — a lifespan that fails its requirement is reported as a failed start and retried by the watchdog), so input can never race ahead of plugin startup.
 

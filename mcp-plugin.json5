@@ -290,6 +290,25 @@
         fetched_at: "2026-08-02T00:05:14.333705+00:00"
       },
       healthy: true
+    },
+    "mcp-registry": {
+      command: "npx",
+      args: [
+        "-y",
+        "anyapi-mcp-server",
+        "--name",
+        "mcp-registry",
+        "--spec",
+        "https://registry.modelcontextprotocol.io/openapi.json",
+        "--base-url",
+        "https://registry.modelcontextprotocol.io"
+      ],
+      description: "A community driven registry service for Model Context Protocol (MCP) servers. Provides APIs to list/search MCP servers, view server details, versions, and server.json metadata.",
+      source: {
+        type: "rest_api",
+        fetched_at: "2026-09-02T08:25:41.033202+00:00"
+      },
+      url: ""
     }
   },
   embeddings: {

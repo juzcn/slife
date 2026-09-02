@@ -61,7 +61,10 @@ class TestNgrokTunnelStatus:
             with pytest.raises(RuntimeError, match="3 attempts"):
                 tunnel.start(9090)
 
-        assert tunnel.status() == {"state": "failed", "url": ""}
+        st = tunnel.status()
+        assert st["state"] == "failed"
+        assert st["url"] == ""
+        assert "persistent error" in st["reason"]
 
     def test_failed_when_token_missing(self):
         """A missing auth token is a terminal failure, not a transient one."""

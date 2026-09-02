@@ -414,45 +414,6 @@ class TestNoteDiaryBrowse:
         )
 
 
-class TestMemfilesSemanticStatus:
-    """memfiles_semantic_status reports the memfiles index's OWN gate —
-    independent from memdb_semantic_status (each plugin reindexes its own DB,
-    so one can be semantically ready while the other is still building)."""
-
-    @pytest.mark.asyncio
-    async def test_reports_memfiles_manager_state(self, tmp_path):
-        store = _fake_store(tmp_path / "files")
-        manager = MagicMock()
-        manager.semantic_ready = False
-        manager.state = "indexing"
-        manager.reason = "hybrid degraded to fts5 — semantic index is building"
-        manager.unembedded = AsyncMock(return_value=5)
-        embedder = MagicMock()
-        embedder.backend = "gguf"
-        embedder._model = "bge-m3"
-        embedder.dimension = 1024
-        embedder.available = True
-        embedder.loaded = True
-        manager.embedder = embedder
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_manager", manager):
-            out = await plugin.memfiles_semantic_status()
-        data = json.loads(out)
-        assert data["semantic_ready"] is False
-        assert data["state"] == "indexing"
-        assert data["model"] == "bge-m3"
-        assert "pending embedding" in data["hint"]
-
-    @pytest.mark.asyncio
-    async def test_without_manager_reports_config_probe(self, tmp_path):
-        store = _fake_store(tmp_path / "files")
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.memfiles_semantic_status()
-        data = json.loads(out)
-        assert "configured" in data
-        assert "hint" in data
-
-
 class TestCabinetStatus:
     """__check — the internal tool the harness's check_memfiles probes."""
 
@@ -464,7 +425,7 @@ class TestCabinetStatus:
         data = json.loads(out)
         assert data["ok"] is False
         assert data["state"] == "store_error"
-        assert "boom" in data["hint"]
+        assert "boom" in data["reason"]
 
     @pytest.mark.asyncio
     async def test_reports_semantic_index_state(self, tmp_path):

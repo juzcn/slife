@@ -161,7 +161,7 @@ class TestInternalTools:
         data = json.loads(raw)
         assert data["active"] is False
         assert data["state"] == "failed"
-        assert "hint" in data
+        assert "reason" in data
 
     @pytest.mark.asyncio
     async def test_tunnel_status_starting(self):

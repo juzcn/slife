@@ -38,13 +38,40 @@ logger = logging.getLogger(__name__)
 # check_memdb
 # ═══════════════════════════════════════════════════════════════════════
 
+def _semantic_index_hint(sem: dict, pending_noun: str = "items") -> str:
+    """Compose a hint for a semantic-index facts block (memdb/memfiles).
+
+    The plugins' ``__check`` reports facts only — this is the harness's
+    interpretation layer.  Splits by the facts available (configured /
+    available / state / reason / unembedded) without assuming remediation
+    text baked into the plugin.
+    """
+    if sem.get("configured") is False:
+        return ("Semantic search unavailable — no embeddings endpoint "
+                "configured. Add one with embeddings_model_set "
+                "(provider + base_url + api_key). Keyword search works.")
+    if sem.get("available") is False:
+        return ("Semantic search unavailable — the active embedding endpoint "
+                "is down or misconfigured. Fix base_url/api_key with "
+                "embeddings_model_set.")
+    if sem.get("reason"):
+        return sem["reason"]
+    if sem.get("state") == "disabled":
+        return ("Semantic search disabled — enable with embeddings_enable "
+                "true, or edit the top-level embeddings section in slife.json5.")
+    state = sem.get("state") or "building"
+    return (f"Semantic index {state} — {sem.get('unembedded', 0)} "
+            f"{pending_noun} pending embedding; keyword search remains available.")
+
+
 async def check_memdb(client=None) -> list[dict]:
     """Return MemDB plugin status: database file + embedding status.
 
-    The turns DB + semantic-search status live inside the memdb plugin
+    The turns DB + semantic-search facts live inside the memdb plugin
     process, so this check asks the plugin's internal ``__check`` tool
-    through its MCP client (from ``ToolContext.memdb_client``).  When the
-    plugin is not connected, a warning is reported.
+    (raw facts) through its MCP client (from ``ToolContext.memdb_client``)
+    and interprets them into health entries.  When the plugin is not
+    connected, a warning is reported.
     """
     try:
         if client is None:
@@ -52,12 +79,53 @@ async def check_memdb(client=None) -> list[dict]:
                      "value": "offline",
                      "hint": "memdb plugin not connected — turns DB unavailable."}]
         raw = await client.call_tool("__check")
-        return json.loads(raw)
+        data = json.loads(raw)
     except Exception as e:
         logger.warning("memdb_check_failed err=%s", e)
         return [{"component": "memdb", "level": "warning", "key": "plugin",
                  "value": "offline",
                  "hint": f"memdb status unavailable: {e}"}]
+
+    entries: list[dict] = []
+
+    # ── Database file ────────────────────────────────────────────
+    db = data.get("db") or {}
+    if db.get("exists"):
+        entries.append({
+            "component": "memdb", "level": "ok", "key": "db",
+            "value": f"{db.get('size_mb', 0):.1f} MB",
+            "hint": f"Database ready: {db.get('path', '?')}",
+        })
+    else:
+        entries.append({
+            "component": "memdb", "level": "warning", "key": "db",
+            "value": "not found",
+            "hint": (f"Database file not found at {db.get('path', '?')}. "
+                     "Will be created on first memory write."),
+        })
+
+    # ── Semantic search ──────────────────────────────────────────
+    sem = data.get("semantic") or {}
+    if sem.get("configured") is False or sem.get("available") is False:
+        entries.append({
+            "component": "memdb", "level": "warning", "key": "embedding",
+            "value": "unavailable",
+            "hint": _semantic_index_hint(sem, pending_noun="turns"),
+        })
+    elif sem.get("semantic_ready"):
+        entries.append({
+            "component": "memdb", "level": "ok", "key": "embedding",
+            "value": "ready",
+            "hint": (f"Semantic search ready "
+                     f"({sem.get('model', '?')}, dim={sem.get('dimension')})."),
+        })
+    else:
+        entries.append({
+            "component": "memdb", "level": "warning", "key": "embedding",
+            "value": sem.get("state", "building"),
+            "hint": _semantic_index_hint(sem, pending_noun="turns"),
+        })
+    return entries
 
 
 class CheckMemdbTool(Tool):
@@ -97,9 +165,10 @@ async def check_wechat(client=None, config=None) -> list[dict]:
     """Return WeChat plugin status as health-check entries.
 
     The enabled/disabled flag comes from slife.json5 (read in-process);
-    login/session status is asked of the wechat plugin's internal ``__check``
-    tool through its MCP client (from ``ToolContext.wechat_client``).  When
-    the plugin is not connected, a warning is reported.
+    login/session facts are asked of the wechat plugin's internal ``__check``
+    tool through its MCP client (from ``ToolContext.wechat_client``) and
+    interpreted into health entries.  When the plugin is not connected, a
+    warning is reported.
     """
     results: list[dict] = []
 
@@ -127,12 +196,51 @@ async def check_wechat(client=None, config=None) -> list[dict]:
                      "value": "offline",
                      "hint": "WeChat plugin not connected — login/session status unavailable."}]
         raw = await client.call_tool("__check")
-        return json.loads(raw)
+        data = json.loads(raw)
     except Exception as e:
         logger.warning("wechat_check_failed err=%s", e)
         return [{"component": "wechat", "level": "warning", "key": "plugin",
                  "value": "unavailable",
                  "hint": f"WeChat status unavailable: {e}"}]
+
+    session = data.get("session") or {}
+    age_h = session.get("age_h", 0.0)
+    max_h = session.get("max_age_h", 0.0)
+    remaining_h = max(0.0, round(max_h - age_h, 1))
+
+    last_error = data.get("last_error") or ""
+    if data.get("logged_in"):
+        if data.get("auth_failed"):
+            return [{"component": "wechat", "level": "error", "key": "status",
+                     "value": "session_rejected",
+                     "hint": ("WeChat session was rejected by the server — "
+                              "call wechat_login to re-scan. "
+                              f"Last error: {last_error}")}]
+        if last_error:
+            return [{"component": "wechat", "level": "warning", "key": "status",
+                     "value": "degraded",
+                     "hint": (f"WeChat link is down — messages will not arrive until "
+                              f"it recovers. Last error: {last_error}")}]
+        return [{"component": "wechat", "level": "ok", "key": "status",
+                 "value": "logged_in",
+                 "hint": (f"WeChat logged in. Session age: {age_h:.1f}h, "
+                          f"remaining: {remaining_h:.1f}h.")}]
+
+    if session.get("saved"):
+        if remaining_h <= 0:
+            return [{"component": "wechat", "level": "warning", "key": "status",
+                     "value": "session_expired",
+                     "hint": (f"WeChat session expired ({age_h:.1f}h old, "
+                              f"max {max_h:.0f}h). "
+                              "Call wechat_login to re-scan.")}]
+        return [{"component": "wechat", "level": "ok", "key": "status",
+                 "value": "not_logged_in",
+                 "hint": (f"WeChat not logged in. Saved session "
+                          f"{remaining_h:.1f}h left — restores on the "
+                          "next wechat_check_status.")}]
+    return [{"component": "wechat", "level": "warning", "key": "status",
+             "value": "not_logged_in",
+             "hint": "WeChat not logged in. Call wechat_login to scan the QR code."}]
 
 
 class CheckWechatTool(Tool):
@@ -173,9 +281,13 @@ async def check_sharefile(client=None) -> list[dict]:
             return [{"component": "sharefile", "level": "ok", "key": "tunnel",
                      "value": data.get("url", "?"),
                      "hint": "File sharing tunnel is online."}]
+        reason = (data.get("reason") or "").strip()
+        detail = f" — {reason}" if reason else ""
         return [{"component": "sharefile", "level": "warning", "key": "tunnel",
                  "value": "offline",
-                 "hint": data.get("hint") or "File sharing tunnel unavailable."}]
+                 "hint": (f"File sharing tunnel unavailable.{detail} "
+                          "Check NGROK_AUTHTOKEN credential or ngrok account "
+                          "limits (free tier: 1 online agent — one tunnel per token).")}]
     except Exception as e:
         logger.warning("sharefile_check_failed err=%s", e)
         return [{"component": "sharefile", "level": "warning", "key": "tunnel",
@@ -229,7 +341,7 @@ async def check_memfiles(client=None) -> list[dict]:
                               "pending embedding; keyword search available.")}]
         return [{"component": "memfiles", "level": "warning", "key": "plugin",
                  "value": data.get("state", "degraded"),
-                 "hint": data.get("hint") or "Cabinet store unavailable."}]
+                 "hint": data.get("reason") or "Cabinet store unavailable."}]
     except Exception as e:
         logger.warning("memfiles_check_failed err=%s", e)
         return [{"component": "memfiles", "level": "warning", "key": "plugin",
@@ -653,12 +765,48 @@ async def check_media(client=None) -> list[dict]:
                      "value": "offline",
                      "hint": "media plugin configured but not connected."}]
         raw = await client.call_tool("__check")
-        return json.loads(raw)
+        data = json.loads(raw)
     except Exception as e:
         logger.warning("media_check_failed err=%s", e)
         return [{"component": "media", "level": "warning", "key": "plugin",
                  "value": "unavailable",
                  "hint": f"media status unavailable: {e}"}]
+
+    # The plugin reports facts; shape the health entries here.
+    if data.get("error"):
+        return [{"component": "media", "level": "warning", "key": "config",
+                 "value": "error",
+                 "hint": f"Media config status unavailable: {data.get('error')}"}]
+    if not data.get("configured"):
+        return [{"component": "media", "level": "ok", "key": "enabled",
+                 "value": "not_configured",
+                 "hint": ("Media generation not configured. Add a media: "
+                          "section to slife.json5 to enable generate_image / "
+                          "generate_video / text_to_speech / transcribe_audio.")}]
+    providers = data.get("providers") or []
+    all_kinds = sorted({k for p in providers for k in (p.get("kinds") or [])})
+    results: list[dict] = [{
+        "component": "media", "level": "ok", "key": "enabled",
+        "value": f"{len(providers)} provider(s)",
+        "hint": (f"Media configured: {len(providers)} provider(s), "
+                 f"capabilities {', '.join(all_kinds) or '(none)'}."),
+    }]
+    for p in providers:
+        pid = p.get("id", "?")
+        caps = ", ".join(p.get("kinds") or []) or "(no models)"
+        if p.get("has_api_key"):
+            results.append({
+                "component": "media", "level": "ok", "key": pid,
+                "value": caps,
+                "hint": f"Provider '{pid}' ({p.get('api')}) configured with api_key.",
+            })
+        else:
+            results.append({
+                "component": "media", "level": "warning", "key": pid,
+                "value": caps,
+                "hint": f"Provider '{pid}' has no api_key set — generation calls will fail.",
+            })
+    return results
 
 
 class CheckMediaTool(Tool):

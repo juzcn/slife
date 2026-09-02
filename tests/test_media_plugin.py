@@ -597,7 +597,7 @@ class TestArtifactSaver:
 
 
 class TestCheck:
-    """Tests for the internal __check health tool."""
+    """Tests for the internal __check tool — raw technical facts."""
 
     _check = staticmethod(lambda: getattr(plugin, "__check")())
 
@@ -606,9 +606,8 @@ class TestCheck:
         with patch.object(plugin, "_ensure_config", return_value=MediaConfig()):
             out = await self._check()
         data = json.loads(out)
-        assert data[0]["component"] == "media"
-        assert data[0]["level"] == "ok"
-        assert data[0]["value"] == "not_configured"
+        assert data["configured"] is False
+        assert data["providers"] == []
 
     @pytest.mark.asyncio
     async def test_configured_reports_providers_and_kinds(self):
@@ -621,15 +620,16 @@ class TestCheck:
         with patch.object(plugin, "_ensure_config", return_value=cfg):
             out = await self._check()
         data = json.loads(out)
-        keys = {e["key"] for e in data}
-        assert "enabled" in keys
-        assert "p1" in keys
-        enabled = next(e for e in data if e["key"] == "enabled")
-        assert enabled["level"] == "ok"
-        assert "image" in enabled["hint"]
+        assert data["configured"] is True
+        assert len(data["providers"]) == 1
+        p1 = data["providers"][0]
+        assert p1["id"] == "p1"
+        assert p1["api"] == "openai-images"
+        assert p1["kinds"] == ["image"]
+        assert p1["has_api_key"] is True
 
     @pytest.mark.asyncio
-    async def test_missing_api_key_is_warning(self):
+    async def test_missing_api_key_is_a_fact(self):
         cfg = MediaConfig(providers={
             "p1": ProviderConfig(
                 api="openai-images", base_url="http://x", api_key="",
@@ -639,6 +639,5 @@ class TestCheck:
         with patch.object(plugin, "_ensure_config", return_value=cfg):
             out = await self._check()
         data = json.loads(out)
-        p1 = next(e for e in data if e["key"] == "p1")
-        assert p1["level"] == "warning"
-        assert "api_key" in p1["hint"]
+        p1 = data["providers"][0]
+        assert p1["has_api_key"] is False

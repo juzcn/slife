@@ -543,72 +543,44 @@ async def wechat_send_message(
 @mcp.tool(
     name="__check",
     description=(
-        "WeChat login/session status as health entries. Internal — probed "
-        "by the harness's system_health, never exposed to the LLM."
+        "WeChat login/session raw status: logged_in, auth_failed, last_error, "
+        "session facts. Internal — probed by the harness's system_health, "
+        "never exposed to the LLM."
     ),
 )
 async def __check() -> str:
-    """Return health-check entries for the WeChat plugin (read-only probe).
+    """Return raw WeChat session facts for the harness's health check.
 
     Unlike ``wechat_check_status`` — which can trigger a session restore —
     this probe only reads current state.  Internal: probed by the harness's
-    ``system_health``; never exposed to the LLM.
+    ``system_health``; never exposed to the LLM.  Facts only — no health
+    levels, no remediation hints.
     """
-    entries: list[dict] = []
     saved = load_wechat_config(_agent_name, _work_dir)
+    session: dict = {
+        "saved": False,
+        "saved_at": 0.0,
+        "age_h": 0.0,
+        "max_age_h": round(SESSION_MAX_AGE / 3600, 1),
+    }
     if _client.is_logged_in:
-        session = _client.get_session_dict()
-        age = time.time() - session.get("saved_at", time.time())
-        remaining = max(0, SESSION_MAX_AGE - age)
-        if _client.auth_failed:
-            entries.append({
-                "component": "wechat", "level": "error", "key": "status",
-                "value": "session_rejected",
-                "hint": ("WeChat session was rejected by the server — "
-                         "call wechat_login to re-scan. "
-                         f"Last error: {_client.last_error}"),
-            })
-            return json.dumps(entries, ensure_ascii=False, indent=2)
-        if _client.last_error:
-            entries.append({
-                "component": "wechat", "level": "warning", "key": "status",
-                "value": "degraded",
-                "hint": (f"WeChat link is down — messages will not arrive until "
-                         f"it recovers. Last error: {_client.last_error}"),
-            })
-            return json.dumps(entries, ensure_ascii=False, indent=2)
-        entries.append({
-            "component": "wechat", "level": "ok", "key": "status",
-            "value": "logged_in",
-            "hint": (f"WeChat logged in. Session age: {age / 3600:.1f}h, "
-                     f"remaining: {remaining / 3600:.1f}h."),
-        })
+        s = _client.get_session_dict()
+        saved_at = s.get("saved_at", time.time())
+        session["saved"] = True
+        session["saved_at"] = saved_at
+        session["age_h"] = round(max(0, time.time() - saved_at) / 3600, 1)
     elif saved.get("bot_token"):
-        age = time.time() - saved.get("saved_at", time.time())
-        remaining = max(0, SESSION_MAX_AGE - age)
-        if remaining <= 0:
-            entries.append({
-                "component": "wechat", "level": "warning", "key": "status",
-                "value": "session_expired",
-                "hint": (f"WeChat session expired ({age / 3600:.1f}h old, "
-                         f"max {SESSION_MAX_AGE / 3600:.0f}h). "
-                         "Call wechat_login to re-scan."),
-            })
-        else:
-            entries.append({
-                "component": "wechat", "level": "ok", "key": "status",
-                "value": "not_logged_in",
-                "hint": (f"WeChat not logged in. Saved session "
-                         f"{remaining / 3600:.1f}h left — restores on the "
-                         "next wechat_check_status."),
-            })
-    else:
-        entries.append({
-            "component": "wechat", "level": "warning", "key": "status",
-            "value": "not_logged_in",
-            "hint": "WeChat not logged in. Call wechat_login to scan the QR code.",
-        })
-    return json.dumps(entries, ensure_ascii=False, indent=2)
+        saved_at = saved.get("saved_at", time.time())
+        session["saved"] = True
+        session["saved_at"] = saved_at
+        session["age_h"] = round(max(0, time.time() - saved_at) / 3600, 1)
+    facts = {
+        "logged_in": _client.is_logged_in,
+        "auth_failed": bool(_client.auth_failed),
+        "last_error": _client.last_error or "",
+        "session": session,
+    }
+    return json.dumps(facts, ensure_ascii=False, indent=2)
 
 
 def _last_contact_entry(user_id: str, ctx: str | None = "") -> dict | None:

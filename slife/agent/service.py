@@ -678,7 +678,7 @@ class AgentService:
             if data.get("active"):
                 return  # tunnel is up — nothing to surface
             if data.get("state") == "failed":
-                self._report_tunnel_down(data.get("hint") or "")
+                self._report_tunnel_down(data.get("reason") or "")
                 return
             if _time.monotonic() >= deadline:
                 return  # never reached a terminal state — stay silent

@@ -225,32 +225,24 @@ async def handle_share(request: Request) -> Response:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(name="__check", description="File-sharing tunnel status as JSON. Internal — probed by the harness's system_health.")
+@mcp.tool(name="__check", description="File-sharing tunnel live state as JSON facts. Internal — probed by the harness's system_health.")
 async def __check() -> str:
-    """Return ``{active, state, url, hint}`` for the harness health check.
+    """Return ``{active, state, url, reason}`` live tunnel facts.
 
     ``state`` distinguishes the harness-relevant cases: ``active`` (a public
     URL is live), ``starting`` (an eager start attempt is still in flight —
     the harness waits for it to conclude), ``failed`` (terminal — safe to
-    report the tunnel down), ``idle`` (no attempt made, e.g. subagent
-    reusing the main agent's tunnel).
+    report the tunnel down; ``reason`` carries the last failure message),
+    ``idle`` (no attempt made, e.g. subagent reusing the main agent's
+    tunnel).  Facts only — the harness composes levels/hints.
     """
     st = _tunnel.status()
-    if st["state"] == "active":
-        return json.dumps(
-            {"active": True, "state": "active", "url": st["url"]},
-            ensure_ascii=False,
-        )
     return json.dumps(
         {
-            "active": False,
+            "active": st["state"] == "active",
             "state": st["state"],
-            "url": "",
-            "hint": (
-                "File sharing tunnel unavailable. "
-                "Check NGROK_AUTHTOKEN credential or ngrok account limits "
-                "(free tier: 1 online agent — one tunnel per token)."
-            ),
+            "url": st.get("url", ""),
+            "reason": st.get("reason", ""),
         },
         ensure_ascii=False,
     )

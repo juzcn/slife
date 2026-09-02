@@ -1849,7 +1849,7 @@ class TestSharefileTunnelWatch:
         client = AsyncMock()
         client.call_tool.return_value = _json.dumps({
             "active": False, "state": "failed", "url": "",
-            "hint": "File sharing tunnel unavailable.",
+            "reason": "File sharing tunnel unavailable.",
         })
 
         await service._check_sharefile_tunnel(client)

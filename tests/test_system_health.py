@@ -287,18 +287,41 @@ class TestCheckMemdb:
         assert "not connected" in entries[0]["hint"]
 
     @pytest.mark.asyncio
-    async def test_plugin_passthrough(self):
-        payload = [
-            {"component": "memdb", "level": "ok", "key": "db",
-             "value": "1.0 MB", "hint": "Database ready"},
-            {"component": "memdb", "level": "ok", "key": "embedding",
-             "value": "ready", "hint": "Semantic search ready"},
-        ]
+    async def test_plugin_facts_are_interpreted(self):
+        payload = {
+            "db": {"exists": True, "size_mb": 1.0, "path": "slife.db"},
+            "semantic": {"configured": True, "provider": "local", "model": "bge-m3",
+                         "dimension": 1024, "available": True, "semantic_ready": True,
+                         "state": "ready", "reason": "", "unembedded": 0, "loaded": True},
+        }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         entries = await check_memdb(client=client)
         client.call_tool.assert_called_once_with("__check")
-        assert entries == payload
+        dbs = [e for e in entries if e["key"] == "db"]
+        emb = [e for e in entries if e["key"] == "embedding"]
+        assert len(dbs) == 1 and dbs[0]["level"] == "ok"
+        assert "1.0 MB" in dbs[0]["value"]
+        assert len(emb) == 1 and emb[0]["level"] == "ok" and emb[0]["value"] == "ready"
+
+    @pytest.mark.asyncio
+    async def test_plugin_semantic_building_is_warning(self):
+        payload = {
+            "db": {"exists": False, "path": "slife.db"},
+            "semantic": {"configured": True, "provider": "local", "model": "bge-m3",
+                         "dimension": 1024, "available": True, "semantic_ready": False,
+                         "state": "indexing", "reason": "", "unembedded": 5, "loaded": False},
+        }
+        client = MagicMock()
+        client.call_tool = AsyncMock(return_value=json.dumps(payload))
+        entries = await check_memdb(client=client)
+        dbs = [e for e in entries if e["key"] == "db"]
+        emb = [e for e in entries if e["key"] == "embedding"]
+        assert dbs[0]["level"] == "warning"
+        assert dbs[0]["value"] == "not found"
+        assert emb[0]["level"] == "warning"
+        assert emb[0]["value"] == "indexing"
+        assert "pending embedding" in emb[0]["hint"]
 
     @pytest.mark.asyncio
     async def test_plugin_error_reports_warning(self):
@@ -350,18 +373,35 @@ class TestCheckWechatStatus:
         assert "not connected" in result[0]["hint"]
 
     @pytest.mark.asyncio
-    async def test_enabled_probes_plugin(self):
+    async def test_enabled_probes_plugin_facts(self):
         mock_config = MagicMock()
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
-        payload = [{"component": "wechat", "level": "ok", "key": "status",
-                    "value": "logged_in", "hint": "WeChat logged in"}]
+        payload = {"logged_in": True, "auth_failed": False, "last_error": "",
+                   "session": {"saved": True, "saved_at": 0.0, "age_h": 1.0, "max_age_h": 72.0}}
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         result = await check_wechat(client=client, config=mock_config)
         client.call_tool.assert_called_once_with("__check")
-        assert result == payload
+        assert len(result) == 1
+        assert result[0]["component"] == "wechat"
+        assert result[0]["level"] == "ok"
+        assert result[0]["value"] == "logged_in"
+
+    @pytest.mark.asyncio
+    async def test_expired_session_facts_report_warning(self):
+        mock_config = MagicMock()
+        mock_config.wechat_config = MagicMock()
+        mock_config.wechat_config.enabled = True
+
+        payload = {"logged_in": False, "auth_failed": False, "last_error": "",
+                   "session": {"saved": True, "saved_at": 0.0, "age_h": 73.0, "max_age_h": 72.0}}
+        client = MagicMock()
+        client.call_tool = AsyncMock(return_value=json.dumps(payload))
+        result = await check_wechat(client=client, config=mock_config)
+        assert result[0]["level"] == "warning"
+        assert result[0]["value"] == "session_expired"
 
     @pytest.mark.asyncio
     async def test_plugin_error_reports_warning(self):
@@ -827,7 +867,6 @@ class TestCheckMemfilesFunction:
         data = {
             "ok": True, "connected": True, "state": "ready",
             "semantic_ready": True, "unembedded": 0, "reason": "",
-            "hint": "Cabinet connected; semantic index ready.",
         }
         data.update(overrides)
         return data
@@ -864,7 +903,7 @@ class TestCheckMemfilesFunction:
     async def test_store_error(self):
         client = _FakeMemfilesClient(self._status(
             ok=False, state="store_error", semantic_ready=False,
-            hint="store init failed",
+            reason="store init failed",
         ))
         entries = await check_memfiles(client=client)
         assert entries[0]["level"] == "warning"
@@ -1115,15 +1154,22 @@ class TestCheckMedia:
             assert "not connected" in result[0]["hint"]
 
     @pytest.mark.asyncio
-    async def test_configured_probes_plugin(self):
+    async def test_configured_probes_plugin_facts(self):
         with patch(
             "slife.plugins.media.config.load_media_config",
             return_value=MagicMock(is_empty=MagicMock(return_value=False)),
         ):
-            payload = [{"component": "media", "level": "ok", "key": "enabled",
-                        "value": "1 provider(s)", "hint": "Media configured"}]
+            payload = {
+                "configured": True, "error": "",
+                "providers": [{"id": "p1", "api": "openai-images",
+                               "kinds": ["image"], "has_api_key": True}],
+            }
             client = MagicMock()
             client.call_tool = AsyncMock(return_value=json.dumps(payload))
             result = await check_media(client=client)
             client.call_tool.assert_called_once_with("__check")
-            assert result == payload
+            keys = {e["key"] for e in result}
+            assert "enabled" in keys and "p1" in keys
+            p1 = next(e for e in result if e["key"] == "p1")
+            assert p1["level"] == "ok"
+            assert "image" in p1["value"]

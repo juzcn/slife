@@ -84,6 +84,10 @@ class NgrokTunnel:
         # start or an explicit stop.  Lets the harness report "tunnel down"
         # as a terminal state instead of racing a still-running attempt.
         self._failed: bool = False
+        # Factual message of the last terminal failure (empty when not
+        # failed).  Reported via ``status()`` so the harness can explain
+        # "tunnel down" without the plugin composing remediation text.
+        self._failure_reason: str = ""
 
     # ── Properties ─────────────────────────────────────────────────
 
@@ -125,7 +129,7 @@ class NgrokTunnel:
         if self._starting:
             return {"state": "starting", "url": ""}
         if self._failed:
-            return {"state": "failed", "url": ""}
+            return {"state": "failed", "url": "", "reason": self._failure_reason}
         return {"state": "idle", "url": ""}
 
     # ── Lifecycle ───────────────────────────────────────────────────
@@ -164,6 +168,9 @@ class NgrokTunnel:
             self._starting_at = time.monotonic()
         try:
             return self._do_start(port)
+        except Exception as e:
+            self._failure_reason = str(e)  # factual last-failure message
+            raise
         finally:
             # Only the current owner clears the guard — a superseded thread
             # finishing later must not clobber the newer attempt's state.
@@ -202,6 +209,7 @@ class NgrokTunnel:
                 self._public_url = str(self._listener.url()).rstrip("/")
                 os.environ["SLIFE_SHAREFILE_URL"] = self._public_url
                 self._failed = False
+                self._failure_reason = ""
                 logger.info(
                     "tunnel_started port=%s url=%s attempt=%d",
                     port, self._public_url, attempt,
@@ -227,6 +235,7 @@ class NgrokTunnel:
         # A stopped tunnel is never "failed" — clear the flag even when
         # there is nothing to disconnect (the early return below).
         self._failed = False
+        self._failure_reason = ""
         if self._public_url is None or self._ngrok is None:
             return
 

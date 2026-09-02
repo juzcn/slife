@@ -80,8 +80,7 @@ mcp, _log_path, logger = create_plugin_server(
         "Every turn (user question + your response) is one row, addressed by "
         "its turn id. "
         "LLM-visible tools: turn_list, turn_search (grep/fts5/hybrid/time), "
-        "turn_read, turn_token_usage, turn_count, turn_summarize, "
-        "memdb_semantic_status. "
+        "turn_read, turn_token_usage, turn_count, turn_summarize. "
         "All data is automatically scoped to the current agent."
     ),
     lifespan=_memdb_lifespan,
@@ -637,145 +636,62 @@ async def turn_summarize(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Embedding config tools
+# Internal __check — raw technical status for the harness's system_health
 # ═══════════════════════════════════════════════════════════════════════
-
-
-@mcp.tool(
-    name="memdb_semantic_status",
-    description=(
-        "Semantic index status for the Turns DB (memdb): model, "
-        "dimension, available, semantic_ready (the search gate), state, "
-        "unembedded, hint. Independent from memfiles_semantic_status — each "
-        "plugin reindexes its own DB, so one can be semantically ready while "
-        "the other is still building."
-    ),
-)
-async def memdb_semantic_status() -> str:
-    from slife.plugins.memdb.embedding_config import make_check_report
-    await _ensure_store()
-    manager = _manager
-    try:
-        report = make_check_report()
-        if manager is not None:
-            report["semantic_ready"] = manager.semantic_ready
-            report["state"] = manager.state
-            report["reason"] = manager.reason
-            report["unembedded"] = await manager.unembedded()
-            e = manager.embedder
-            if e is not None:
-                # live embedder facts override the config probe
-                report["model"] = e._model
-                report["dimension"] = e.dimension
-                report["available"] = e.available
-                report["loaded"] = e.loaded
-            # hint by state
-            state = manager.state
-            if state == "ready":
-                report["hint"] = (
-                    f"Embedding model ready: "
-                    f"{report.get('model', '')} (dim={report.get('dimension')})"
-                )
-            elif state in ("loading", "indexing"):
-                report["hint"] = (
-                    f"Semantic index building — {report.get('unembedded', 0)} "
-                    "turns pending embedding. Keyword search remains available."
-                )
-            elif state == "stalled":
-                report["hint"] = report.get("reason", "Semantic index stalled.")
-            elif state == "disabled" and report.get("configured"):
-                report["hint"] = (
-                    "Semantic search disabled — enable with "
-                    "embeddings_enable true, or edit the top-level "
-                    "embeddings section in slife.json5."
-                )
-        return json.dumps(report, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.exception("check_embedding_failed")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 @mcp.tool(
     name="__check",
     description=(
-        "Turns DB + semantic-search status as health entries. Internal — "
-        "probed by the harness's system_health, never exposed to the LLM."
+        "Turns DB + semantic-search raw status: DB file facts and the "
+        "semantic-index gate. Internal — probed by the harness's "
+        "system_health, never exposed to the LLM."
     ),
 )
 async def __check() -> str:
-    """Return health-check entries for the turns DB + embedding status.
+    """Return raw technical status facts for the turns DB + embedding index.
 
-    Internal (``__`` prefix): probed by the harness's ``system_health``.
-    The LLM has ``memdb_semantic_status`` for the semantic index; this is
-    the technical status surface the harness aggregates.
+    Internal (``__`` prefix): probed by the harness's ``system_health``,
+    which interprets the facts into health entries.  Facts only — no health
+    levels, no remediation hints (a 体检报告, not a diagnosis).
     """
     from slife.plugins.memdb.embedding_config import make_check_report
 
-    results: list[dict] = []
-
-    # ── Database file ─────────────────────────────────────────────
+    # ── Database file facts ──────────────────────────────────────
     db_path = _db_path if _db_path is not None else _get_db_path()
-    if db_path.exists():
-        size_mb = db_path.stat().st_size / (1024 * 1024)
-        results.append({
-            "component": "memdb", "level": "ok", "key": "db",
-            "value": f"{size_mb:.1f} MB",
-            "hint": f"Database ready: {db_path}",
-        })
-    else:
-        results.append({
-            "component": "memdb", "level": "warning", "key": "db",
-            "value": "not found",
-            "hint": (f"Database file not found at {db_path}. "
-                     "Will be created on first memory write."),
-        })
+    db: dict = {"exists": db_path.exists()}
+    if db["exists"]:
+        db["size_mb"] = round(db_path.stat().st_size / (1024 * 1024), 1)
+    db["path"] = str(db_path)
 
-    # ── Semantic search ───────────────────────────────────────────
+    # ── Semantic-search facts ────────────────────────────────────
+    semantic: dict = {}
     try:
         await _ensure_store()
         manager = _manager
-        report = make_check_report()
+        semantic = make_check_report()
+        semantic.pop("hint", None)  # facts only — remediation lives in the harness
         if manager is not None:
-            report["semantic_ready"] = manager.semantic_ready
-            report["state"] = manager.state
-            report["reason"] = manager.reason
-            report["unembedded"] = await manager.unembedded()
+            semantic["semantic_ready"] = manager.semantic_ready
+            semantic["state"] = manager.state
+            semantic["reason"] = manager.reason
+            semantic["unembedded"] = await manager.unembedded()
             e = manager.embedder
             if e is not None:
                 # live embedder facts override the config probe
-                report["model"] = e._model
-                report["dimension"] = e.dimension
-                report["available"] = e.available
-                report["loaded"] = e.loaded
-        if report.get("configured") is False or not report.get("available"):
-            results.append({
-                "component": "memdb", "level": "warning", "key": "embedding",
-                "value": "unavailable",
-                "hint": report.get("hint")
-                        or "Semantic search unavailable; keyword search works.",
-            })
-        elif report.get("semantic_ready"):
-            results.append({
-                "component": "memdb", "level": "ok", "key": "embedding",
-                "value": "ready",
-                "hint": (f"Semantic search ready "
-                         f"({report.get('model', '?')}, "
-                         f"dim={report.get('dimension')})."),
-            })
+                semantic["model"] = e._model
+                semantic["dimension"] = e.dimension
+                semantic["available"] = e.available
+                semantic["loaded"] = e.loaded
         else:
-            results.append({
-                "component": "memdb", "level": "warning", "key": "embedding",
-                "value": report.get("state", "building"),
-                "hint": report.get("hint") or "Semantic index building.",
-            })
+            semantic["semantic_ready"] = False
+            semantic["state"] = "no_manager"
+            semantic["unembedded"] = 0
     except Exception as e:
         logger.warning("memdb_check_failed err=%s", e)
-        results.append({
-            "component": "memdb", "level": "warning", "key": "embedding",
-            "value": "unavailable",
-            "hint": f"Semantic status unavailable: {e}",
-        })
-    return json.dumps(results, ensure_ascii=False, indent=2)
+        semantic["error"] = str(e)
+
+    return json.dumps({"db": db, "semantic": semantic}, ensure_ascii=False, indent=2)
 
 
 # ── Entry point ──────────────────────────────────────────────────────

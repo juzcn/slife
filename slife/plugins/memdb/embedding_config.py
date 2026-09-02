@@ -117,7 +117,11 @@ def get_active_endpoint() -> dict:
 
 
 def make_check_report() -> dict:
-    """Build a status report dict for memdb_semantic_status / memfiles_semantic_status."""
+    """Build the semantic config-facts report for the plugins' ``__check``.
+
+    Raw technical facts only (configured/provider/model/dimension/available);
+    the harness's ``system_health`` interprets them into health entries.
+    """
     cfg = read_embedding_config()
 
     if cfg is None:
