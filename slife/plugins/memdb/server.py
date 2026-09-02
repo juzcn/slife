@@ -169,9 +169,17 @@ async def _ensure_store_locked() -> SessionStore:
         and (probe.backend == "transformer" or not probe.dimension_known)
     )
     dim = 0 if defer_vec0 else (probe.dimension if probe.available else 0)
+    # Stamp a model identity ONLY once the model is actually known.  A bare
+    # provider (``active_model: "provider"``) defers the model until
+    # load()/discovery, so ``probe._model`` is "" here — stamping "api:" would
+    # read as a model change against the persisted identity (e.g.
+    # "api:bge-m3") and drop the vec0 index on every start.  The real identity
+    # is recorded by SemanticManager.enable() after discovery; genuine model
+    # or dimension changes still rebuild there.
     model_id = (
         f"{probe.backend}:{probe._model}"
-        if probe.available and not defer_vec0 else ""
+        if probe.available and not defer_vec0 and probe._model
+        else ""
     )
 
     _store = SessionStore(_db_path)
