@@ -1,9 +1,11 @@
-"""Tool catalog store — SQLite DB with FTS5 + BLOB-vector semantic search.
+"""Tool catalog store — in-memory SQLite with FTS5 + BLOB-vector semantic search.
 
 One row = one external MCP tool, keyed by ``full_name`` (``{server}__{tool}``).
-Persists tool names / descriptions / per-tool enabled state so the catalog
-survives restarts.  Keyword search uses FTS5 (with a LIKE fallback for CJK,
-which unicode61 cannot segment); semantic search is brute-force cosine over
+The store lives entirely in memory (``:memory:``), created when the wrapper
+loads and populated from the live connection pool — it is by construction
+identical to the tools the runtime can actually use; nothing persists to
+disk.  Keyword search uses FTS5 (with a LIKE fallback for CJK, which
+unicode61 cannot segment); semantic search is brute-force cosine over
 f32-BLOB vectors (the corpus is small — tens to hundreds of tools — so a
 linear scan beats loading the sqlite-vec binary extension).
 
@@ -223,10 +225,9 @@ def _split_sql(sql_text: str) -> list[str]:
 
 
 class ToolStore:
-    """Manages the mcp-plugin tool catalog database."""
+    """Manages the in-memory mcp-plugin tool catalog."""
 
-    def __init__(self, db_path: Path):
-        self._db_path = db_path
+    def __init__(self):
         self._conn: aiosqlite.Connection | None = None
         # Serializes every mutating statement on the shared connection.  All
         # writers commit on the same aiosqlite connection; without this, one
@@ -239,20 +240,20 @@ class ToolStore:
         assert self._conn is not None
         return self._conn
 
-    @property
-    def db_path(self) -> Path:
-        return self._db_path
-
     # ── Lifecycle ──────────────────────────────────────────────────
 
     async def open(self) -> None:
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = await aiosqlite.connect(str(self._db_path))
+        """Open the catalog as a fresh in-memory database.
+
+        Created at wrapper load and repopulated from the live connection
+        pool, so the catalog can never drift from what the runtime actually
+        offers.  No file, no WAL — the connection lives for the process.
+        """
+        self._conn = await aiosqlite.connect(":memory:")
         self._conn.row_factory = aiosqlite.Row
-        await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._run_schema()
-        logger.info("tool_store_ready path=%s", self._db_path)
+        logger.info("tool_store_ready catalog=in-memory")
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -350,9 +351,9 @@ class ToolStore:
         return cursor.rowcount > 0
 
     async def disable_server_tools(self, server: str) -> int:
-        """Mark every tool of *server* disabled (0). Used by ``mcp-plugin build``
-        and ``mcp_set_enabled(false)`` so a disabled server's catalog entries
-        are indexed but not usable."""
+        """Mark every tool of *server* disabled (0). Used by
+        ``mcp_set_enabled(false)`` so a disabled server's catalog entries
+        are searchable but not usable."""
         return await self._set_server_tools(server, enabled=False)
 
     async def enable_server_tools(self, server: str) -> int:
@@ -626,8 +627,3 @@ class ToolStore:
                 (key, value),
             )
             await self._c.commit()
-
-    async def rebuild_fts(self) -> None:
-        """Rebuild the FTS5 index from the content table (build/repair path)."""
-        await self._c.execute("INSERT INTO tools_fts(tools_fts) VALUES('rebuild')")
-        await self._c.commit()

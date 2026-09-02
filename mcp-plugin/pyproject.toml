@@ -30,9 +30,6 @@ Homepage = "https://github.com/juzcn/slife"
 Repository = "https://github.com/juzcn/slife"
 Documentation = "https://github.com/juzcn/slife/blob/main/mcp-plugin/README.md"
 
-[project.scripts]
-mcp-plugin = "mcp_plugin.__main__:main"
-
 [project.optional-dependencies]
 # ${PLACEHOLDER} secret resolution (shell env → credstore) and OAuth token
 # keyring storage.  Optional — without it, placeholders resolve against the

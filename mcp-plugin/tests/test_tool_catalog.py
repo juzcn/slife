@@ -59,10 +59,10 @@ class _FakePool:
 
 
 @pytest_asyncio.fixture
-async def srv(tmp_path, restore_root_logger):
-    """Server module with a real temp store + fake pool of two servers."""
+async def srv(restore_root_logger):
+    """Server module with a real in-memory store + fake pool of two servers."""
     s = _import_mcp_server()
-    store = ToolStore(tmp_path / "tools.db")
+    store = ToolStore()
     await store.open()
     await store.sync_server("svcA", [
         {"name": "search", "description": "github repository search"},

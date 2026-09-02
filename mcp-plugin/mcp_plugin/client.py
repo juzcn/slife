@@ -183,12 +183,18 @@ def _is_external_cancel() -> bool:
 class MCPClient:
     """MCP client for connecting to Slife plugin servers via Streamable HTTP."""
 
-    def __init__(self, tool_timeout: float = 60.0):
+    def __init__(self, tool_timeout: float = 60.0,
+                 client_info_extra: dict | None = None):
         self._session: ClientSession | None = None
         self._connected: bool = False
         self._exit_stack: AsyncExitStack | None = None
         self._http_client: httpx.AsyncClient | None = None
         self._tool_timeout = tool_timeout
+        # Extra client identity/context the server should see: carried in the
+        # standard ``initialize`` request's ``clientInfo`` (as ``other``), per
+        # the official MCP spec — e.g. the host's active embedding endpoint
+        # when connecting to the mcp-plugin wrapper.  None ⇒ SDK default.
+        self._client_info_extra = client_info_extra
         # Optional async callback(method, params) invoked for server-initiated
         # notifications (e.g. ``notifications/tools/list_changed``).  Must
         # return quickly — it runs on the SDK's receive loop; a handler that
@@ -243,10 +249,21 @@ class MCPClient:
                     read_stream, write_stream, _ = await self._exit_stack.enter_async_context(
                         streamable_http_client(url, http_client=self._http_client),
                     )
+                    client_info = None
+                    if self._client_info_extra:
+                        # Standard clientInfo (per the official MCP spec) —
+                        # the SDK places it in initialize.params.clientInfo;
+                        # extra keys ride in ``other`` (tolerated by
+                        # implementations).
+                        from mcp.types import Implementation
+                        client_info = Implementation(
+                        name="slife", version="0.1.0",
+                    ).model_copy(update={"other": dict(self._client_info_extra)})
                     self._session = await self._exit_stack.enter_async_context(
                         ClientSession(
                             read_stream, write_stream,
                             message_handler=self._handle_server_message,
+                            client_info=client_info,
                         ),
                     )
                     await self._session.initialize()

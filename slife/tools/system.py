@@ -389,7 +389,6 @@ def _diagnose_mcp_server(server: dict) -> dict:
     name = server.get("name", "?")
     state = server.get("state", "unknown")
     enabled = server.get("enabled", True)
-    healthy = server.get("healthy", True)
     tool_count = server.get("tool_count", 0)
     transport = server.get("transport", "")
     error_msg = server.get("error", "")
@@ -399,7 +398,6 @@ def _diagnose_mcp_server(server: dict) -> dict:
             "component": "mcp_servers", "level": "info",
             "key": name, "value": "disabled",
             "enabled": False, "state": "disabled",
-            "healthy": healthy,
             "tool_count": 0,
             "transport": transport,
             "hint": f"MCP server '{name}' is disabled (not connected).",
@@ -411,7 +409,6 @@ def _diagnose_mcp_server(server: dict) -> dict:
             "component": "mcp_servers", "level": "ok",
             "key": name, "value": f"connected ({tool_note})",
             "enabled": True, "state": "connected",
-            "healthy": healthy,
             "tool_count": tool_count,
             "transport": transport,
             "hint": (
@@ -422,35 +419,16 @@ def _diagnose_mcp_server(server: dict) -> dict:
 
     if state == "stopped":
         detail = f" — {error_msg}" if error_msg else ""
-        if not healthy:
-            # build's probe verdict: a known-unusable server (missing apikey,
-            # outdated version, …).  The wrapper registers it but never loads
-            # its tools; only 'mcp-plugin build' re-probes and flips the flag.
-            return {
-                "component": "mcp_servers", "level": "warning",
-                "key": name, "value": f"unhealthy{detail}",
-                "enabled": True, "state": "disconnected",
-                "healthy": False,
-                "tool_count": 0,
-                "transport": transport,
-                "hint": (
-                    f"MCP server '{name}' is flagged unhealthy (healthy=false) "
-                    f"by 'mcp-plugin build' — the last probe could not connect "
-                    f"it (missing apikey / outdated version / another error), "
-                    f"so it is not loaded.{detail} Fix the cause, then run "
-                    f"`mcp-plugin build` to re-probe."
-                ),
-            }
         return {
             "component": "mcp_servers", "level": "warning",
             "key": name, "value": f"disconnected{detail}",
             "enabled": True, "state": "disconnected",
-            "healthy": healthy,
             "tool_count": 0,
             "transport": transport,
             "hint": (
                 f"MCP server '{name}' is enabled but NOT connected.{detail} "
-                f"Use check_mcp to see current status and error details."
+                f"The wrapper auto-reconnects in the background; use check_mcp "
+                f"to see current status and error details."
             ),
         }
 
@@ -459,7 +437,6 @@ def _diagnose_mcp_server(server: dict) -> dict:
         "component": "mcp_servers", "level": "warning",
         "key": name, "value": state,
         "enabled": enabled, "state": state,
-        "healthy": healthy,
         "tool_count": tool_count,
         "transport": transport,
         "hint": f"MCP server '{name}' state={state}.",

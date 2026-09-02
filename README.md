@@ -37,11 +37,11 @@ The installer is best-effort: it uses standard paths, tries several install rout
 | Mosquitto | package manager (winget / apt / brew / dnf / pacman) | A2A MQTT mesh — best-effort auto-install; A2A stays disabled until a broker runs |
 | `unzip` (Linux) | package manager | bun installer dependency |
 
-**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto (always attempted), the three configs (`slife.json5` → `~/.slife/`, `local_embed.json5` → `~/.local-embed/`, `mcp-plugin.json5` → `~/.mcp-plugin/`) seeded from bundled defaults, the bundled skills (`~/.slife/skills/`), and an MCP server catalog built at the end (`mcp-plugin build`).
+**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto (always attempted), the three configs (`slife.json5` → `~/.slife/`, `local_embed.json5` → `~/.local-embed/`, `mcp-plugin.json5` → `~/.mcp-plugin/`) seeded from bundled defaults, and the bundled skills (`~/.slife/skills/`).
 
 If a runtime can't be installed, the installer **warns and continues** — slife itself still installs; only the features needing that runtime are unavailable. For example, on a Linux box older than **glibc 2.28 / libstdc++ 3.4.29**, the Node rootless tarball fallback won't run (the installer reports the missing `GLIBC_2.28` / `GLIBCXX_3.4.xx` symbols). The supported route is **not** an older Node — it's a Node built for your distro (e.g. `module load nodejs` on HPC clusters, or your distro's package). Install that, then re-run this installer — it detects an existing `npx` and skips its own Node install.
 
-If you edit `mcp-plugin.json5` by hand, restore the MCP server catalog with `mcp-plugin build` (both `mcp-plugin` and `local-embed` are on PATH after install). Every optional step is **fail-open**: an error warns and continues, leaving a working core.
+If you edit `mcp-plugin.json5` by hand, the changes apply at the next wrapper start — the tool catalog is rebuilt live from connections, so no offline rebuild step exists (`local-embed` is on PATH after install). Every optional step is **fail-open**: an error warns and continues, leaving a working core.
 
 ### macOS / Linux / WSL
 
@@ -355,7 +355,7 @@ Every tool additionally accepts three tool meta-parameters: `_timeout` (per-call
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 
-Built-in plugin tools are registered under their bare names (e.g. `turn_search`, `wechat_login`, `mcp_set`); each schema carries a `[<server>] ` description prefix. External MCP servers appear as `{server}__{tool}` (e.g. `filesystem__read_file`) and are **loaded on demand**: the LLM discovers them with `mcp_tool_search` — a hybrid keyword/semantic search over the gateway's persistent tool catalog — and loads a chosen one with `mcp_tool_load`. A server with `auto_load: true` keeps the older wholesale registration; enable/disable is server-granular (`mcp_set_enabled`), and `mcp-plugin build` rebuilds the catalog and its search index from live connections.
+Built-in plugin tools are registered under their bare names (e.g. `turn_search`, `wechat_login`, `mcp_set`); each schema carries a `[<server>] ` description prefix. External MCP servers appear as `{server}__{tool}` (e.g. `filesystem__read_file`) and are **loaded on demand**: the LLM discovers them with `mcp_tool_search` — a hybrid keyword/semantic search over the gateway's in-memory tool catalog — and loads a chosen one with `mcp_tool_load`. The catalog is rebuilt live from connections at load and on every (re)connect, so it always reflects exactly what the runtime can use — no offline rebuild step exists. A server with `auto_load: true` keeps the older wholesale registration; enable/disable is server-granular (`mcp_set_enabled`).
 
 **Windows execution.** `execute_shell` runs in the detected shell — PowerShell or cmd (the same value the system prompt reports, so the LLM's syntax actually executes) — and its output is decoded with the system code page (GBK/cp936 on Chinese Windows). `run_python_script` forces the child Python to UTF-8 (`-X utf8`) so non-ASCII output can't crash the child.
 
@@ -405,7 +405,7 @@ Six built-in plugins as independent child processes, plus the standalone
 
 | Plugin | Role |
 |--------|------|
-| **slife-mcp** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — the standalone `mcp-plugin` package, registered via `plugins.external`. Keeps a persistent tool catalog (`mcp-plugin.db`) searched by `mcp_tool_search`; external tools load on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration) |
+| **slife-mcp** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — the standalone `mcp-plugin` package, registered via `plugins.external`. Maintains an in-memory tool catalog (rebuilt live from connections) searched by `mcp_tool_search`; external tools load on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration) |
 | **local-embed** | OpenAI-compatible embedding endpoint (`/v1/embeddings`) from one local GGUF/transformer model, loaded once and shared by memdb, memfiles, and the mcp tool catalog — registered via `plugins.external` |
 | **slife-memdb** | Turns database with hybrid search |
 | **slife-wechat** | Bidirectional WeChat messaging |

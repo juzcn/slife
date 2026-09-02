@@ -1,21 +1,24 @@
 """mcp-plugin config — load/save ``mcp-plugin.json5``, path resolution, secrets.
 
 Path precedence (one loader, every consumer) — mirrors credstore:
-  1. ``$MCP_PLUGIN_FILE`` — Slife exports this = ``<dir of slife.json5>/mcp-plugin.json5``
-     before it launches the plugin child, so a Slife user's MCP config sits
-     next to their slife config
+  1. ``$MCP_PLUGIN_FILE`` — explicit override (the host used to export this
+     with its config dir; now it is a test/dev escape hatch only)
   2. slife project root (dev): CWD is the slife source root (``pyproject.toml``
      ``project.name == "slife"``) — ``./mcp-plugin.json5`` (credstore's
      ``is_slife_dev`` pattern)
   3. ``~/.mcp-plugin/mcp-plugin.json5`` (standalone default, credstore-style)
 
 Server entries hold: ``command/args/env/url/headers/auth/description/enabled/source``
-plus ``os_paths`` and ``healthy`` (a build-set probe verdict boolean;
-absent = true).
+plus ``os_paths``.
 ``env`` and ``auth.client_id``/``client_secret`` support
 ``${VAR}`` / ``keyring:`` references resolved through **os.environ → credstore →
 literal**.  REST APIs are ordinary ``npx anyapi-mcp-server`` entries tagged
 ``source.type == "rest_api"``.
+
+The top-level ``embeddings`` section is the **fallback** embedding config: a
+connecting host may pass its own endpoint via the standard ``initialize``
+handshake's ``clientInfo``, which wins when present (see
+:mod:`mcp_plugin.embeddings`).
 """
 
 from __future__ import annotations
@@ -240,14 +243,6 @@ def current_path() -> Path:
     return _CURRENT_PATH or resolve_config_path()
 
 
-def db_path() -> Path:
-    """The tool catalog DB file: ``$MCP_PLUGIN_DB`` else next to the config."""
-    env = os.environ.get("MCP_PLUGIN_DB")
-    if env:
-        return Path(env).expanduser()
-    return current_path().parent / "mcp-plugin.db"
-
-
 def _servers_dict(raw: dict) -> dict:
     servers = raw.get("servers", {})
     return servers if isinstance(servers, dict) else {}
@@ -324,49 +319,6 @@ def set_server_enabled(name: str, enabled: bool) -> bool:
     return True
 
 
-def set_server_healthy(name: str, healthy: bool) -> bool:
-    """Persist the health verdict for *name*; True if it existed.
-
-    ``healthy`` is an explicit boolean: ``"healthy": true`` / ``"healthy":
-    false`` (absent = true, the backward-compatible default).  ``mcp-plugin
-    build`` is the primary writer — it is the probe that sets this switch.
-    ``mcp_set`` also resets it to True when a server is re-added (an
-    idempotent re-add is a fresh attempt, so a stale build verdict no longer
-    applies).
-
-    No rewrite happens when the file already holds the desired explicit
-    value; a server that never had the field gains it on the first set.
-    """
-    raw = _load_raw()
-    servers = _servers_dict(raw)
-    if name not in servers:
-        return False
-    if servers[name].get("healthy") == healthy:
-        return True  # already in the desired explicit state — no rewrite
-    servers[name]["healthy"] = bool(healthy)
-    write_config(current_path(), raw)
-    return True
-
-
-def set_embeddings(values: dict) -> None:
-    """Upsert the top-level ``embeddings`` section with merge semantics.
-
-    Present keys overwrite; ``None`` values are skipped so existing fields
-    are preserved.  Creates the section (with unknown keys preserved) when
-    absent.  ``values`` are stored verbatim — a ``${VAR}`` api_key stays a
-    placeholder in the file and resolves at use time.
-    """
-    raw = _load_raw()
-    emb = raw.get("embeddings")
-    section: dict = dict(emb) if isinstance(emb, dict) else {}
-    for key, value in values.items():
-        if value is None:
-            continue
-        section[key] = value
-    raw["embeddings"] = section
-    write_config(current_path(), raw)
-
-
 def _load_raw() -> dict:
     return read_config(current_path())
 
@@ -400,7 +352,6 @@ def resolve_server_config(name: str, raw_entry: dict):
         url=str(raw_entry.get("url", "")),
         headers=_dict_copy(raw_entry.get("headers")),
         enabled=raw_entry.get("enabled", True) is not False,
-        healthy=raw_entry.get("healthy", True) is not False,
         description=str(raw_entry.get("description", "")),
         auth=auth,
         source=_dict_copy(raw_entry.get("source")),

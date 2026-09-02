@@ -92,6 +92,31 @@ READY_READY = "ready"
 READY_FAILED = "failed"
 
 
+def client_info_extra_for(name: str) -> dict | None:
+    """Initialize-``clientInfo`` extras for a plugin connection.
+
+    The mechanism is uniform — every plugin connects as a Streamable MCP
+    server through the same path, and host params ride in the standard
+    ``initialize`` ``clientInfo`` (official MCP spec).  The *content* is
+    per-plugin and lives in this one mapping: today only the mcp gateway
+    consumes host params (the active embedding endpoint, so its tool catalog
+    embeds against the agent's endpoint), a future plugin adds its own entry.
+    """
+    if name == "mcp":
+        try:
+            from slife.plugins.memdb.embedding_config import get_active_endpoint
+            ep = get_active_endpoint()
+            if ep.get("base_url"):
+                return {"embeddings": {
+                    "base_url": ep["base_url"],
+                    "api_key": ep.get("api_key", ""),
+                    "model": ep.get("model", ""),
+                }}
+        except Exception:
+            logger.debug("mcp_client_info_extra_failed", exc_info=True)
+    return None
+
+
 class PluginLifecycle:
     """Generic plugin child-process lifecycle manager.
 
@@ -164,7 +189,9 @@ class PluginLifecycle:
         os.environ[env_key] = str(self.port)
 
         try:
-            client = await process.create_client()
+            client = await process.create_client(
+                client_info_extra=client_info_extra_for(self.name),
+            )
             self.client = client
 
             # Discover and register LLM-visible tools
@@ -447,7 +474,10 @@ class PluginLifecycle:
                     "%s_http_reconnect_old_disconnect_error err=%s",
                     self.name, e, exc_info=True,
                 )
-        client = MCPClient(tool_timeout=self._service.config.tool_timeout)
+        client = MCPClient(
+            tool_timeout=self._service.config.tool_timeout,
+            client_info_extra=client_info_extra_for(self.name),
+        )
         await client.connect(f"http://127.0.0.1:{port}/mcp")
         self.client = client
         self.port = port

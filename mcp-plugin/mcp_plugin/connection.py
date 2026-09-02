@@ -60,7 +60,6 @@ class ServerConfig:
     url: str = ""                           # http: MCP endpoint URL
     headers: dict[str, str] | None = None   # http: extra request headers
     enabled: bool = True  # False = don't auto-connect at startup
-    healthy: bool = True  # False = build-set probe failure verdict; never connect
     description: str = ""
     auth: dict | None = None  # OAuth config for device code flow
     source: dict | None = None  # provenance metadata (e.g. {"type": "rest_api"})
@@ -220,20 +219,26 @@ class MCPServerConnection:
                     else:
                         await self._connect_http()
 
-                # MCP initialize handshake (transport-agnostic).  Protocol
+                # MCP initialize handshake (transport-agnostic).  Follows the
+                # official spec: standard params (protocolVersion,
+                # capabilities, clientInfo) all live in the request's
+                # ``params`` object; the client advertises the latest protocol
+                # version it understands and the server negotiates.  Protocol
                 # period — no client timer; the server's own response governs.
+                from mcp.types import LATEST_PROTOCOL_VERSION
                 init_result = await self._request("initialize", {
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": LATEST_PROTOCOL_VERSION,
                     "capabilities": {},
                     "clientInfo": {"name": "mcp-plugin", "version": "0.1.0"},
                 })
 
                 server_info = init_result.get("serverInfo", {})
                 logger.debug(
-                    "mcp_initialized server=%s remote=%s ver=%s",
+                    "mcp_initialized server=%s remote=%s ver=%s proto=%s",
                     self.config.name,
                     server_info.get("name", "unknown"),
                     server_info.get("version", ""),
+                    init_result.get("protocolVersion", ""),
                 )
 
                 # Send initialized notification
@@ -283,9 +288,9 @@ class MCPServerConnection:
                 # Reset to DISCONNECTED so both paths retry.
                 if self._status == ServerStatus.CONNECTING:
                     self._status = ServerStatus.DISCONNECTED
-                # An externally-timed-out connect (mcp-plugin build's per-server
-                # cap, a tool-call wait_for) must not leak its transport: the
-                # spawned npx/uvx process, http client and stderr relay would
+                # An externally-timed-out connect (e.g. a tool-call wait_for)
+                # must not leak its transport: the spawned npx/uvx process,
+                # http client and stderr relay would
                 # otherwise keep running — and cold-starting on a slow machine
                 # — after the caller gave up.  The Exception path already
                 # cleans up; cancellation now does too.
@@ -995,7 +1000,7 @@ class MCPServerConnection:
                 # interval + backoff, so a down server isn't polled ~30s
                 # later than the documented backoff promises.
                 wait = _HEALTH_CHECK_INTERVAL
-                if not self.config.enabled or not self.config.healthy:
+                if not self.config.enabled:
                     return
                 if self._status == ServerStatus.CONNECTING:
                     pass  # a manual connect is already in progress — wait
@@ -1036,26 +1041,19 @@ class MCPServerConnection:
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         if self._status != ServerStatus.CONNECTED:
             # The health monitor marks a dead/hung server DISCONNECTED.  If
-            # the server is enabled AND healthy, try a lazy reconnect first —
-            # it may have recovered while the monitor's reconnect backoff was
-            # counting down.  A healthy=false server is never reconnected: its
-            # load gate is build's probe verdict, not a live reconnect.
-            if (
-                self.config.enabled and self.config.healthy
-                and self._status == ServerStatus.DISCONNECTED
-            ):
+            # the server is enabled, try a lazy reconnect first — it may have
+            # recovered while the monitor's reconnect backoff was counting
+            # down.  Connecting IS the probe, so nothing gates this but the
+            # enabled flag.
+            if self.config.enabled and self._status == ServerStatus.DISCONNECTED:
                 try:
                     await self.connect()
                 except Exception:
                     pass
             if self._status != ServerStatus.CONNECTED:
-                hint = (
-                    " (healthy=false — flagged by 'mcp-plugin build'; re-run "
-                    "build to re-probe)" if not self.config.healthy else ""
-                )
                 raise ValueError(
                     f"Server '{self.config.name}' is not connected "
-                    f"(status: {self._status.value}){hint}"
+                    f"(status: {self._status.value})"
                 )
 
         logger.debug("mcp_tool_call server=%s tool=%s", self.config.name, tool_name)
@@ -1130,15 +1128,10 @@ class ConnectionPool:
             await self.remove_server(config.name)
         conn = MCPServerConnection(config=config, on_connected=self._on_connected)
         self._connections[config.name] = conn
-        if config.enabled and config.healthy:
+        if config.enabled:
             await conn.connect()
-        elif not config.enabled:
-            logger.info("mcp_server_disabled name=%s", config.name)
         else:
-            # healthy=false is a build-set probe verdict — this server is known
-            # unusable (missing apikey / outdated version/…) and must not be
-            # loaded.  Only 'mcp-plugin build' re-probes and flips the flag.
-            logger.info("mcp_server_unhealthy name=%s healthy=0", config.name)
+            logger.info("mcp_server_disabled name=%s", config.name)
         return conn
 
     async def remove_server(self, name: str) -> None:
@@ -1179,7 +1172,6 @@ class ConnectionPool:
                 "args": list(conn.config.args),
                 "url": conn.config.url,
                 "enabled": conn.config.enabled,
-                "healthy": conn.config.healthy,
                 "auto_load": conn.config.auto_load,
                 "description": conn.config.description,
             }
@@ -1193,7 +1185,6 @@ class ConnectionPool:
                 "state": "running" if conn.status == ServerStatus.CONNECTED else "stopped",
                 "status": conn.status.value,
                 "enabled": conn.config.enabled,
-                "healthy": conn.config.healthy,
                 "tool_count": conn.tool_count, "error": conn.error,
                 "transport": conn.config.transport,
                 "command": conn.config.command, "args": conn.config.args,

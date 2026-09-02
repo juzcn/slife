@@ -79,41 +79,11 @@ class TestAutoConnectConfigured:
         assert added["serper"].enabled is True
         assert added["disabled_svc"].enabled is False
 
-    @pytest.mark.asyncio
-    async def test_registers_unhealthy_server(self, restore_root_logger):
-        """healthy=false servers are still registered (so mcp_list shows them)
-        — the "don't load" gate lives in ConnectionPool.add_server, not here."""
-        srv = _import_mcp_server()
-        pool = MagicMock()
-        pool.add_server = AsyncMock()
-        fake_config = MagicMock()
-        fake_config.load_config.return_value = {
-            "servers": {"sick": {"command": "echo", "healthy": False}},
-        }
-        fake_config.resolve_server_config.side_effect = (
-            lambda name, entry: ServerConfig(
-                name=name, command="echo",
-                enabled=entry.get("enabled", True),
-                healthy=entry.get("healthy", True),
-            )
-        )
-        with (
-            patch.object(srv, "_pool", pool),
-            patch.object(srv, "plugin_config", fake_config),
-        ):
-            await srv._auto_connect_configured()
 
-        added = {c[0][0].name: c[0][0] for c in pool.add_server.await_args_list}
-        assert set(added) == {"sick"}
-        assert added["sick"].healthy is False
+class TestPersistEntry:
+    """A server definition persists to config via add_server_entry."""
 
-
-class TestPersistEntryResetsHealthy:
-    """A re-add via mcp_set resets build's healthy verdict to true (fresh
-    attempt — an idempotent mcp_set must not leave a stale healthy:false
-    in the file)."""
-
-    def test_persist_entry_clears_healthy(self, restore_root_logger):
+    def test_persist_entry_calls_add_server_entry(self, restore_root_logger):
         srv = _import_mcp_server()
         fake_cfg = MagicMock()
         with patch.object(srv, "plugin_config", fake_cfg):
@@ -121,36 +91,38 @@ class TestPersistEntryResetsHealthy:
                 "srv", "echo", [], None, "", None, "desc", None, None,
             )
         fake_cfg.add_server_entry.assert_called_once()
-        fake_cfg.set_server_healthy.assert_called_once_with("srv", True)
 
 
-class TestMcpSetEnabledHealthyGate:
-    """mcp_set_enabled must not LOAD a server build flagged unhealthy
-    (healthy=false) — enabling is exactly the 'load this server' action the
-    gate forbids.  The fix is a re-probe via 'mcp-plugin build'."""
+class TestMcpSetEnabled:
+    """mcp_set_enabled toggles connect state — the connect attempt itself is
+    the probe (no persisted healthy verdict gates enable anymore)."""
 
     @pytest.mark.asyncio
-    async def test_enable_refuses_unhealthy_server(self, restore_root_logger):
+    async def test_enable_connected_returns_connected(self, restore_root_logger):
         import json as _json
 
         srv = _import_mcp_server()
         conn = MagicMock()
-        conn.config.healthy = False
+        conn.config = ServerConfig(name="live", command="echo")
+        conn.status = ServerStatus.CONNECTED
+        conn.list_tools.return_value = []
         pool = MagicMock()
         pool.get_server.return_value = conn
-        with patch.object(srv, "_pool", pool):
-            result = await srv.mcp_set_enabled(name="sick", enabled=True)
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv, "_ensure_store", AsyncMock(return_value=None)),
+        ):
+            result = await srv.mcp_set_enabled(name="live", enabled=True)
         parsed = _json.loads(result)
-        assert parsed["status"] == "unhealthy"
-        assert "mcp-plugin build" in parsed["error"]
+        assert parsed["status"] == "connected"
 
     @pytest.mark.asyncio
-    async def test_disable_allowed_on_unhealthy_server(self, restore_root_logger):
+    async def test_disable_disconnects(self, restore_root_logger):
         import json as _json
 
         srv = _import_mcp_server()
         conn = MagicMock()
-        conn.config.healthy = False
+        conn.status = ServerStatus.CONNECTED
         pool = MagicMock()
         pool.get_server.return_value = conn
         pool.disconnect_server = AsyncMock()
@@ -158,9 +130,10 @@ class TestMcpSetEnabledHealthyGate:
             patch.object(srv, "_pool", pool),
             patch.object(srv, "_ensure_store", AsyncMock(return_value=None)),
         ):
-            result = await srv.mcp_set_enabled(name="sick", enabled=False)
+            result = await srv.mcp_set_enabled(name="live", enabled=False)
         parsed = _json.loads(result)
         assert parsed["status"] == "disabled"
+        pool.disconnect_server.assert_called_once()
 
 
 class TestAddServerToolRegistration:
@@ -287,152 +260,136 @@ class TestWrapperNotifyToolsChanged:
         sess.send_tool_list_changed.assert_awaited_once()
 
 
-class TestMCPListToolsDualRead:
-    """mcp_list_tools — live read + persisted catalog, staleness → build hint."""
+class TestMCPListToolsSingleRead:
+    """mcp_list_tools — a single live read.  The in-memory catalog is a direct
+    projection of the connection pool, so there is no persisted catalog to
+    compare against (the drift/stale machinery is gone entirely)."""
 
     @staticmethod
-    async def _list(srv, *, connected=True, live=None, db=None,
-                    db_unavailable=False, db_raise=""):
-        """Call mcp_list_tools with a patched pool + catalog store."""
+    async def _list(srv, *, connected=True, live=None, live_raise=""):
+        """Call mcp_list_tools with a patched pool (no catalog store involved)."""
         import json as _json
 
         conn = MagicMock()
         conn.status = ServerStatus.CONNECTED if connected else ServerStatus.DISCONNECTED
         pool = MagicMock()
         pool.get_server.return_value = conn
-        pool.list_all_tools.return_value = live or []
+        if live_raise:
+            pool.list_all_tools.side_effect = RuntimeError(live_raise)
+        else:
+            pool.list_all_tools.return_value = live or []
 
-        async def fake_ensure_store():
-            if db_unavailable:
-                return None
-            if db_raise:
-                raise RuntimeError(db_raise)
-            store = AsyncMock()
-            store.list_tools_by_server.return_value = db or []
-            return store
-
-        with (
-            patch.object(srv, "_pool", pool),
-            patch.object(srv, "_ensure_store", fake_ensure_store),
-        ):
+        with patch.object(srv, "_pool", pool):
             raw = await srv.mcp_list_tools(server="fs")
         return _json.loads(raw)
-
-    @staticmethod
-    def _db_row(name, desc, enabled=1):
-        return {"full_name": f"fs__{name}", "server": "fs",
-                "name": name, "description": desc, "enabled": enabled}
 
     @staticmethod
     def _live(name, desc=""):
         return {"name": name, "description": desc, "inputSchema": {"type": "object"}}
 
     @pytest.mark.asyncio
-    async def test_synced_catalog_no_hint(self, restore_root_logger):
+    async def test_connected_lists_live_tools(self, restore_root_logger):
         srv = _import_mcp_server()
         live = [self._live("a", "read a"), self._live("b", "read b")]
-        db = [self._db_row("a", "read a"), self._db_row("b", "read b")]
-        out = await self._list(srv, live=live, db=db)
+        out = await self._list(srv, live=live)
 
         assert out["status"] == "ok"
         assert out["connected"] is True
         assert out["tools"] == live
-        assert out["catalog"] == {"available": True, "count": 2,
-                                  "names": ["a", "b"]}
-        assert out["stale"] is False
-        assert out["hint"] == ""
-        assert out["reason"] == ""
+        assert out["tool_count"] == 2
+        assert out["note"] == "catalog rebuilt live in memory"
+        assert "stale" not in out
+        assert "hint" not in out
 
     @pytest.mark.asyncio
-    async def test_db_missing_live_tool_is_stale(self, restore_root_logger):
+    async def test_connected_empty_tools(self, restore_root_logger):
         srv = _import_mcp_server()
-        # Server added tool 'b' but the catalog wasn't re-synced ⇒ db behind.
-        out = await self._list(
-            srv, live=[self._live("a"), self._live("b")],
-            db=[self._db_row("a", "")],
-        )
-        assert out["stale"] is True
-        assert "b" in out["reason"]
-        assert "mcp-plugin build" in out["hint"]
+        out = await self._list(srv, live=[])
+        assert out["connected"] is True
+        assert out["tools"] == []
+        assert out["tool_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_db_extra_tool_is_stale(self, restore_root_logger):
+    async def test_not_connected_returns_note(self, restore_root_logger):
         srv = _import_mcp_server()
-        # Server dropped a tool but the catalog still lists it.
-        out = await self._list(srv, live=[self._live("a")],
-                               db=[self._db_row("a", ""), self._db_row("old", "")])
-        assert out["stale"] is True
-        assert "old" in out["reason"]
-        assert "mcp-plugin build" in out["hint"]
-
-    @pytest.mark.asyncio
-    async def test_description_drift_is_stale(self, restore_root_logger):
-        srv = _import_mcp_server()
-        out = await self._list(srv, live=[self._live("a", "new desc")],
-                               db=[self._db_row("a", "old desc")])
-        assert out["stale"] is True
-        assert "a" in out["reason"]
-
-    @pytest.mark.asyncio
-    async def test_db_unavailable_hints_build(self, restore_root_logger):
-        srv = _import_mcp_server()
-        out = await self._list(srv, live=[self._live("a")], db_unavailable=True)
-        assert out["stale"] is True
-        assert "catalog unavailable" in out["reason"]
-        assert "mcp-plugin build" in out["hint"]
-
-    @pytest.mark.asyncio
-    async def test_live_read_failure_reports_unavailable_and_exits(
-        self, restore_root_logger,
-    ):
-        """A live read exception ⇒ 'MCP unavailable' error — no catalog read."""
-        import json as _json
-
-        srv = _import_mcp_server()
-        conn = MagicMock()
-        conn.status = ServerStatus.CONNECTED
-        pool = MagicMock()
-        pool.get_server.return_value = conn
-        pool.list_all_tools.side_effect = RuntimeError("pool boom")
-        store = AsyncMock()
-
-        with (
-            patch.object(srv, "_pool", pool),
-            patch.object(srv, "_ensure_store", AsyncMock(return_value=store)),
-        ):
-            raw = await srv.mcp_list_tools(server="fs")
-
-        out = _json.loads(raw)
-        assert out["status"] == "error"
-        assert "MCP unavailable" in out["error"]
-        assert "pool boom" in out["error"]
-        store.list_tools_by_server.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_db_read_failure_hints_build(self, restore_root_logger):
-        srv = _import_mcp_server()
-        out = await self._list(srv, live=[self._live("a")], db_raise="db broke")
-        assert out["stale"] is True
-        assert "db broke" in out["reason"]
-        assert "mcp-plugin build" in out["hint"]
-
-    @pytest.mark.asyncio
-    async def test_not_connected_shows_persisted_catalog(self, restore_root_logger):
-        srv = _import_mcp_server()
-        out = await self._list(srv, connected=False, live=[], db=[self._db_row("a", "")])
+        out = await self._list(srv, connected=False)
         assert out["connected"] is False
         assert out["tools"] == []
-        assert out["catalog"]["names"] == ["a"]
-        assert out["stale"] is False
-        assert out["hint"] == ""
+        assert out["tool_count"] == 0
         assert "not connected" in out["note"]
 
     @pytest.mark.asyncio
-    async def test_not_connected_and_db_gone_hints_build(self, restore_root_logger):
+    async def test_live_read_failure_reports_unavailable(self, restore_root_logger):
+        """A live read exception on a connected server ⇒ 'MCP unavailable'."""
         srv = _import_mcp_server()
-        out = await self._list(srv, connected=False, live=[], db_unavailable=True)
-        assert out["connected"] is False
-        assert out["tools"] == []
-        assert out["catalog"]["available"] is False
-        assert out["stale"] is True
-        assert "mcp-plugin build" in out["hint"]
+        out = await self._list(srv, connected=True, live_raise="pool boom")
+
+        assert out["status"] == "error"
+        assert "MCP unavailable" in out["error"]
+        assert "pool boom" in out["error"]
+
+
+class TestCaptureClientEmbeddings:
+    """The initialize middleware stores clientInfo.other.embeddings (standard
+    handshake params) for the semantic warm-up."""
+
+    def test_captures_embeddings_from_initialize(self, restore_root_logger):
+        import asyncio as _asyncio
+        from types import SimpleNamespace
+
+        from mcp.types import (
+            ClientCapabilities,
+            Implementation,
+            InitializeRequest,
+            InitializeRequestParams,
+        )
+
+        srv = _import_mcp_server()
+        req = InitializeRequest(
+            params=InitializeRequestParams(
+                protocolVersion="2025-06-18",
+                capabilities=ClientCapabilities(),
+                clientInfo=Implementation(
+                    name="slife", version="0.1.0",
+                ).model_copy(update={"other": {"embeddings": {"base_url": "http://host.example/v1"}}}),
+            )
+        )
+        mw = srv._CaptureClientEmbeddings()
+        context = SimpleNamespace(message=req)
+
+        async def call_next(ctx):
+            return None
+
+        srv._client_embeddings = None
+        _asyncio.run(mw.on_initialize(context, call_next))
+        assert srv._client_embeddings == {"base_url": "http://host.example/v1"}
+        srv._client_embeddings = None
+
+    def test_no_embeddings_keeps_fallback(self, restore_root_logger):
+        import asyncio as _asyncio
+        from types import SimpleNamespace
+
+        from mcp.types import (
+            ClientCapabilities,
+            Implementation,
+            InitializeRequest,
+            InitializeRequestParams,
+        )
+
+        srv = _import_mcp_server()
+        req = InitializeRequest(
+            params=InitializeRequestParams(
+                protocolVersion="2025-06-18",
+                capabilities=ClientCapabilities(),
+                clientInfo=Implementation(name="other", version="1.0"),
+            )
+        )
+        mw = srv._CaptureClientEmbeddings()
+        context = SimpleNamespace(message=req)
+
+        async def call_next(ctx):
+            return None
+
+        srv._client_embeddings = None
+        _asyncio.run(mw.on_initialize(context, call_next))
+        assert srv._client_embeddings is None

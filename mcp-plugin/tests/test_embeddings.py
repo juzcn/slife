@@ -188,11 +188,80 @@ def test_resolve_server_config_auto_load():
     assert cfg2.auto_load is False
 
 
-def test_resolve_server_config_healthy():
-    # healthy is a build-set probe verdict — default True, parsed from the flag.
-    cfg = plugin_config.resolve_server_config("svcA", {"command": "npx"})
-    assert cfg.healthy is True
-    cfg_bad = plugin_config.resolve_server_config(
-        "svcB", {"command": "npx", "healthy": False},
+# ── Host-provided override (initialize clientInfo) precedence ────────────
+
+
+def test_from_plugin_config_override_wins(tmp_path):
+    """A host-passed embedding endpoint (initialize clientInfo) beats json5."""
+    cfg = tmp_path / "mcp-plugin.json5"
+    cfg.write_text(
+        json.dumps({"embeddings": {"base_url": "http://own.example/v1"}}),
+        encoding="utf-8",
     )
-    assert cfg_bad.healthy is False
+    c = EmbeddingClient.from_plugin_config(
+        config_path=str(cfg),
+        override={"base_url": "http://host.example/v1",
+                  "model": "bge-m3", "api_key": "k"},
+    )
+    assert c.available
+    assert c.base_url == "http://host.example/v1"
+    assert c.model == "bge-m3"
+    assert c.api_key == "k"
+
+
+def test_from_plugin_config_no_override_uses_own_json5(tmp_path):
+    cfg = tmp_path / "mcp-plugin.json5"
+    cfg.write_text(
+        json.dumps({"embeddings": {"base_url": "http://own.example/v1",
+                                   "model": "own-model"}}),
+        encoding="utf-8",
+    )
+    c = EmbeddingClient.from_plugin_config(config_path=str(cfg), override=None)
+    assert c.available
+    assert c.base_url == "http://own.example/v1"
+    assert c.model == "own-model"
+
+
+def test_from_plugin_config_unusable_override_falls_back(tmp_path):
+    """A placeholder/empty override base_url is not "passed" — fall back."""
+    cfg = tmp_path / "mcp-plugin.json5"
+    cfg.write_text(
+        json.dumps({"embeddings": {"base_url": "http://own.example/v1"}}),
+        encoding="utf-8",
+    )
+    c = EmbeddingClient.from_plugin_config(
+        config_path=str(cfg),
+        override={"base_url": "${UNRESOLVED_EMB}"},
+    )
+    assert c.base_url == "http://own.example/v1"
+    assert c.available
+
+
+def test_from_plugin_config_no_usable_config_disabled(tmp_path):
+    cfg = tmp_path / "mcp-plugin.json5"
+    cfg.write_text(json.dumps({}), encoding="utf-8")
+    c = EmbeddingClient.from_plugin_config(config_path=str(cfg), override=None)
+    assert not c.available
+
+
+def test_implementation_other_roundtrips():
+    """clientInfo extras ride in ``other`` and survive the SDK model round-trip.
+
+    The official MCP spec puts ``clientInfo`` in the initialize ``params``;
+    extra host params are tolerated via ``other`` — this locks the server's
+    ability to read them back.
+    """
+    from mcp.types import Implementation
+
+    impl = Implementation(
+        name="slife", version="0.1.0",
+    ).model_copy(update={"other": {"embeddings": {
+        "base_url": "http://host.example/v1", "api_key": "", "model": "",
+    }}})
+    assert impl.other["embeddings"]["base_url"] == "http://host.example/v1"
+    dumped = impl.model_dump(by_alias=True)
+    assert dumped["other"]["embeddings"]["base_url"] == "http://host.example/v1"
+    parsed = Implementation.model_validate(dumped)
+    assert parsed.other["embeddings"]["base_url"] == "http://host.example/v1"
+
+

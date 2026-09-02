@@ -52,7 +52,7 @@ uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url http
 # （不做按需下载 — 模型必须已预下载到缓存。）
 ```
 
-若手工编辑了 `mcp-plugin.json5`，重建 MCP 服务器目录：`"$(uv tool dir)/slife/bin/mcp-plugin" build`。所有可选步骤都**fail-open**：出错只警告、继续，核心安装始终可用。
+若手工编辑了 `mcp-plugin.json5`，改动在下一次启动 wrapper 时生效——工具目录由持久连接在内存中重建，不存在离线重建命令。所有可选步骤都**fail-open**：出错只警告、继续，核心安装始终可用。
 
 若你的 Linux 低于 glibc 2.28，Node 官方 tarball 无法运行。受支持的路线**不是**安装旧版 Node——而是安装为你的发行版构建的 Node（例如 HPC 集群中的 `module load nodejs`，或发行版自带包）。装好后再运行安装器——它会检测到已有的 `npx` 并跳过自己的 Node 安装。
 

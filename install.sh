@@ -757,10 +757,11 @@ echo -e "${GRAY}  model yourself — see README.md → Install → Semantic memo
 #
 echo -e "${YELLOW}[5/5] Cleaning up previous installation artifacts…${NC}"
 
-# Ensure ~/.local/bin and the slife tool venv bin (mcp-plugin / local-embed)
-# are on PATH (uv puts tool executables here, and Step 1 only added the former
-# to the current session).  The tool bin entry is what makes the documented
-# `mcp-plugin build` / `local-embed set-gguf` commands work out-of-the-box.
+# Ensure ~/.local/bin and the slife tool venv bin (local-embed) are on PATH
+# (uv puts tool executables here, and Step 1 only added the former to the
+# current session).  The tool bin entry is what makes the documented
+# `local-embed set-gguf` command work out-of-the-box.  mcp-plugin is an MCP
+# server with no CLI — the host spawns `python -m mcp_plugin.server` itself.
 SLIFE_TOOL_BIN="$(uv tool dir)/slife/bin"
 for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.config/fish/config.fish"; do
     if [ -f "$rc" ]; then
@@ -822,7 +823,7 @@ fi
 echo -e "${CYAN}Get started:${NC}"
 echo "  1. Semantic search (optional) — set up per README → Semantic Memory Search"
 echo "  2. Configure secrets with credstore — credstore set-password, then credstore set <API_KEY> <value>"
-echo "  3. Run mcp-plugin build — build the MCP server catalog (external MCP servers)"
+echo "  3. Configure external MCP servers — edit ~/.mcp-plugin/mcp-plugin.json5 (they apply at the next slife start)"
 echo ""
 if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
     if [ "${PRESERVE_OK:-0}" = "1" ]; then
@@ -835,10 +836,10 @@ if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
     fi
 fi
 if [ "$CORE_MODE" = true ]; then
-    echo -e "${CYAN}Core install done${NC} — external MCP servers (catalog via 'mcp-plugin build'), Mosquitto"
+    echo -e "${CYAN}Core install done${NC} — external MCP servers, Mosquitto"
     echo "  (yt-dlp / browser-harness skipped — add later: uv tool install --python 3.12 browser-harness)"
 else
-    echo -e "${CYAN}Installed${NC} — slife + credstore, external MCP servers (catalog via 'mcp-plugin build'), Mosquitto, yt-dlp, browser-harness"
+    echo -e "${CYAN}Installed${NC} — slife + credstore, external MCP servers, Mosquitto, yt-dlp, browser-harness"
 fi
 echo "  Semantic memory search: not installed by default — see README.md → Install → Semantic memory search"
 echo ""

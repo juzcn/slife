@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastmcp.server.context import Context
+from fastmcp.server.middleware import Middleware
 
 from mcp_plugin import config as plugin_config
 from mcp_plugin.connection import ConnectionPool, ServerConfig, ServerStatus
@@ -32,16 +33,18 @@ from mcp_plugin.store import ToolStore
 async def _mcp_lifespan(_app):
     """Self-host config; release all external MCP connections on shutdown.
 
-    The lifespan schedules auto-connect + semantic warm-up and returns
-    immediately, so the ready port signal (fired by the server runtime once
-    the lifespan completes) is never blocked by a slow external server.
+    The lifespan schedules auto-connect and returns immediately, so the ready
+    port signal (fired by the server runtime once the lifespan completes) is
+    never blocked by a slow external server.  The semantic warm-up runs
+    AFTER the first handshake instead (see ``_WarmSemanticAfterHandshake``) —
+    a connecting client may pass its own embedding endpoint via the
+    standard ``initialize`` clientInfo, which is only known post-handshake.
     Runs on the server's event loop (uvicorn lifespan), so the pool's async
     HTTP/SSE clients, stdio processes and health-monitor tasks are closed on
     the same loop that created them — otherwise connections leak on exit.
     """
     await _ensure_store()
     asyncio.ensure_future(_auto_connect_configured())
-    asyncio.ensure_future(_warm_semantic())
     try:
         yield
     finally:
@@ -100,6 +103,75 @@ async def _auto_connect_configured() -> None:
     await asyncio.gather(*(_connect_one(n, e) for n, e in configured))
 
 
+# A connecting client can pass its own embedding endpoint via the standard
+# ``initialize`` request's ``clientInfo`` (official-spec params).  The
+# first handshake that carries ``clientInfo.other.embeddings`` wins; absent
+# ⇒ the wrapper falls back to its own ``mcp-plugin.json5`` embeddings section.
+_client_embeddings: dict | None = None
+
+
+class _CaptureClientEmbeddings(Middleware):
+    """Store the connecting client's embedding params from ``initialize``.
+
+    Runs inside the standard ``initialize`` request pipeline; extracts
+    ``params.clientInfo.other.embeddings`` (base_url/api_key/model) into the
+    module global that ``_warm_semantic`` reads.  A client that sends no
+    embeddings leaves the global None → json5 fallback.
+    """
+
+    async def on_initialize(self, context, call_next):
+        global _client_embeddings
+        try:
+            req = getattr(context, "message", None)
+            params = getattr(req, "params", None)
+            client_info = getattr(params, "clientInfo", None) if params is not None else None
+            if client_info is not None:
+                other = getattr(client_info, "other", None)
+                emb = (other or {}).get("embeddings")
+                if isinstance(emb, dict):
+                    _client_embeddings = {
+                        k: str(emb[k]) for k in ("base_url", "api_key", "model")
+                        if k in emb
+                    }
+                    logger.info(
+                        "client_embeddings_captured base_url=%s model=%s",
+                        _client_embeddings.get("base_url", ""),
+                        _client_embeddings.get("model", ""),
+                    )
+        except Exception:
+            logger.debug("client_embeddings_capture_failed", exc_info=True)
+        return await call_next(context)
+
+
+class _WarmSemanticAfterHandshake(Middleware):
+    """Run the semantic warm-up after the first ``tools/list``.
+
+    Post-handshake by design: the embedding endpoint may arrive with the
+    ``initialize`` clientInfo, which is only known once the client has
+    initialised — warming from the lifespan would embed blind.  Mirrors the
+    memdb/memfiles pattern (warm the index in the background, never gate
+    readiness on it).
+    """
+
+    def __init__(self, delay: float = 0.25):
+        self._delay = delay
+        self._started = False
+
+    async def on_list_tools(self, context, call_next):
+        result = await call_next(context)
+        if not self._started:
+            self._started = True
+            asyncio.get_running_loop().create_task(self._go())
+        return result
+
+    async def _go(self) -> None:
+        await asyncio.sleep(self._delay)
+        try:
+            await _warm_semantic()
+        except Exception:
+            logger.debug("semantic_warm_failed", exc_info=True)
+
+
 mcp, _log_path, logger = create_plugin_server(
     "mcp-plugin",
     instructions=(
@@ -109,6 +181,8 @@ mcp, _log_path, logger = create_plugin_server(
     ),
     lifespan=_mcp_lifespan,
 )
+mcp.add_middleware(_CaptureClientEmbeddings())
+mcp.add_middleware(_WarmSemanticAfterHandshake())
 
 # ── Global state ─────────────────────────────────────────────────────
 
@@ -140,11 +214,12 @@ async def _notify_tools_changed() -> None:
             _active_sessions.discard(sess)
 
 
-# ── Tool catalog (mcp-plugin.db) ────────────────────────────────────────
-# Persists every loaded external MCP tool (name/description/enabled) so the
-# catalog survives restarts and supports keyword/semantic search.  Failure
-# to open the DB only degrades these features — the gateway itself keeps
-# working (management tools + calls still serve).
+# ── Tool catalog (in-memory) ────────────────────────────────────────────
+# Every connected external MCP tool (name/description/enabled) lives in an
+# in-memory catalog created at load and synced from the live connection
+# pool — by construction identical to what the runtime can use.  Failure
+# to open it only degrades search/catalog features — the gateway itself
+# keeps working (management tools + calls still serve).
 
 _store: ToolStore | None = None
 _manager: SemanticManager | None = None
@@ -180,24 +255,29 @@ async def _ensure_store() -> ToolStore | None:
         if _store is not None:
             return _store
         try:
-            store = ToolStore(plugin_config.db_path())
+            store = ToolStore()
             await store.open()
             _store = store
-            logger.info("tool_store_opened path=%s", plugin_config.db_path())
+            logger.info("tool_store_opened catalog=in-memory")
         except Exception as e:
-            logger.warning("tool_store_open_failed path=%s err=%s", plugin_config.db_path(), e)
+            logger.warning("tool_store_open_failed err=%s", e)
             _store = None
     return _store
 
 
 async def _warm_semantic() -> None:
-    """Build the semantic manager and enable it when embeddings are configured."""
+    """Build the semantic manager and enable it when embeddings are configured.
+
+    Uses the connecting client's embedding params (from the initialize
+    handshake's ``clientInfo``) when the client passed them; otherwise falls
+    back to the plugin's own ``embeddings`` section.
+    """
     global _manager
     store = await _ensure_store()
     if store is None:
         return
     try:
-        _manager = SemanticManager(store)
+        _manager = SemanticManager(store, client_embeddings=_client_embeddings)
         await _manager.start()
     except Exception as e:
         logger.warning("semantic_warm_failed err=%s", e)
@@ -237,9 +317,9 @@ _RESERVED_SERVER_NAMES = frozenset(
 def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
     """Compare two ServerConfigs for equality.
 
-    ``description``/``source``/``healthy`` are deliberately ignored: healthy
-    is build's probe verdict, not part of the connection definition — a flip
-    must not trigger a spurious restart.
+    ``description``/``source`` are deliberately ignored — metadata, not part
+    of the connection definition — so a change must not trigger a spurious
+    restart.
     """
     return (
         a.name == b.name
@@ -271,11 +351,6 @@ def _persist_entry(
     ``enabled=True`` (the default) leaves the flag untouched — only
     ``mcp_set_enabled`` flips enable/disable; ``enabled=False`` is written
     so the server stays disconnected on the next wrapper start.
-
-    The ``healthy`` verdict is also reset: an idempotent ``mcp_set`` re-add
-    is a fresh attempt, so a stale ``healthy: false`` from an earlier build
-    must not keep the file (and the next startup) skipping a server the
-    caller just re-established.
     """
     entry: dict = {
         "command": command,
@@ -290,7 +365,6 @@ def _persist_entry(
     if not enabled:
         entry["enabled"] = False
     plugin_config.add_server_entry(name, entry)
-    plugin_config.set_server_healthy(name, True)  # no-op when already healthy
 
 
 @mcp.tool(
@@ -298,9 +372,7 @@ def _persist_entry(
     description=(
         "Add or update an external MCP server connection (upsert — add + update "
         "in one call). Provide either stdio (`command` + `args`) or http (`url`). "
-        "Runtime enable/disable is handled by mcp_set_enabled. Re-adding a server "
-        "resets any stale 'healthy' verdict (set by 'mcp-plugin build') — the "
-        "fresh entry is treated as healthy until the next build re-probes it."
+        "Runtime enable/disable is handled by mcp_set_enabled."
     ),
 )
 async def mcp_set(
@@ -431,17 +503,6 @@ async def mcp_set_enabled(name: str, enabled: bool) -> str:
             f"Server '{name}' not found. Use mcp_set to add it first.",
             server=name,
         )
-    if enabled and not existing.config.healthy:
-        # Enabling IS loading this server — the healthy=false gate forbids it.
-        # Only 'mcp-plugin build' re-probes and flips the switch.
-        return error_json(
-            f"Server '{name}' is flagged unhealthy (healthy=false) by "
-            f"'mcp-plugin build' — it could not be connected (missing apikey, "
-            f"outdated version, or another error). Fix the cause, then run "
-            f"`mcp-plugin build` to re-probe.",
-            status="unhealthy",
-            server=name,
-        )
     existing.config.enabled = enabled
     if enabled:
         if existing.status != ServerStatus.CONNECTED:
@@ -541,21 +602,36 @@ async def __check(ctx: Context | None = None) -> str:
 @mcp.tool(
     name="mcp_list_tools",
     description=(
-        "List a server's tools — double read: the live connected tools AND the "
-        "persisted catalog (mcp-plugin.db). When the catalog is unavailable, or "
-        "its data is out of date vs the live tools (the db is stale), the "
-        "response says to run 'mcp-plugin build' offline to rebuild it. Names "
-        "are prefixed server__tool."
+        "List a connected server's tools, prefixed server__tool. The tool "
+        "catalog is rebuilt live in memory from connections, so this always "
+        "reflects exactly what the runtime can call. Use mcp_list to "
+        "discover server names."
     ),
 )
 async def mcp_list_tools(server: str) -> str:
-    """List a server's tools: live read + persisted catalog comparison.
+    """List a server's live tools (single read).
+
+    The in-memory catalog is a direct projection of the live connection pool
+    (synced on every connect/reconnect), so there is nothing persisted to
+    compare against or rebuild.
 
     Args:
         server: Server name (required). Use mcp_list to discover server names.
     """
     conn = _pool.get_server(server)
     connected = conn is not None and conn.status == ServerStatus.CONNECTED
+
+    if not connected:
+        return ok_json(
+            server=server,
+            connected=False,
+            tools=[],
+            tool_count=0,
+            note=(
+                f"Server '{server}' is not connected — its tools load when it "
+                "connects. Use mcp_list to see configured servers."
+            ),
+        )
 
     try:
         live = _pool.list_all_tools(server_name=server)
@@ -566,73 +642,12 @@ async def mcp_list_tools(server: str) -> str:
             server=server,
         )
 
-    # Second read: the sqlite catalog. Unavailable ⇒ stale-by-default.
-    catalog_ok = False
-    catalog_names: list[str] = []
-    catalog_error = ""
-    rows: list[dict] = []
-    try:
-        store = await _ensure_store()
-        if store is None:
-            catalog_error = "sqlite catalog could not be opened"
-            logger.warning("mcp_list_tools_db_unavailable server=%s", server)
-        else:
-            rows = await store.list_tools_by_server(server)
-            catalog_ok = True
-            catalog_names = [r["name"] for r in rows]
-    except Exception as e:
-        catalog_error = str(e)
-        logger.warning("mcp_list_tools_db_failed server=%s err=%s", server, e)
-
-    # Staleness: the db is stale when it disagrees with the live tools
-    # (a tool was added/removed/renamed, or its description changed).
-    stale = False
-    reason = ""
-    if not catalog_ok:
-        stale = True
-        reason = f"catalog unavailable — {catalog_error}" if catalog_error else "catalog unavailable"
-    elif connected:
-        drift: list[str] = []
-        db_desc = {r["name"]: (r.get("description") or "") for r in rows}
-        for t in live:
-            name = t.get("name", "")
-            if not name:
-                continue
-            if name not in db_desc or db_desc[name] != (t.get("description") or ""):
-                drift.append(name)
-        for name in db_desc:
-            if name not in {t.get("name") for t in live}:
-                drift.append(name)
-        if drift:
-            stale = True
-            reason = (
-                "catalog out of date — sqlite db differs from the live server: "
-                + ", ".join(sorted(set(drift)))
-            )
-
-    note = ""
-    if not connected:
-        note = f"Server '{server}' is not connected — showing its persisted catalog."
-    elif not live:
-        note = f"No tools from server '{server}'."
-    hint = (
-        "Catalog is missing or out of date — run `mcp-plugin build` offline "
-        "(from a terminal) to rebuild it from the live connections."
-    ) if stale else ""
-
     return ok_json(
         server=server,
-        connected=connected,
+        connected=True,
         tools=live,
-        catalog={
-            "available": catalog_ok,
-            "count": len(catalog_names),
-            "names": catalog_names,
-        },
-        stale=stale,
-        reason=reason,
-        note=note,
-        hint=hint,
+        tool_count=len(live),
+        note="catalog rebuilt live in memory",
     )
 
 
@@ -779,8 +794,8 @@ async def mcp_tool_search(
             else:
                 hint = (
                     "semantic search unavailable — no embeddings endpoint "
-                    "configured. Add an 'embeddings' section to mcp-plugin.json5 "
-                    "and run mcp-plugin build."
+                    "configured. Add an 'embeddings' section to "
+                    "mcp-plugin.json5; it applies at the next wrapper start."
                 )
     reported_mode = mode if mode == "grep" else ("hybrid" if semantic_available else "fts5")
     results = results[:limit]

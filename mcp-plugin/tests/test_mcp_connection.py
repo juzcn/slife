@@ -42,9 +42,9 @@ class TestServerConfig:
         assert len(cfg.args) == 2
         assert cfg.env == {"HOME": "/tmp"}
 
-    def test_healthy_defaults_true(self):
+    def test_transport_defaults_stdio(self):
         cfg = ServerConfig(name="test")
-        assert cfg.healthy is True
+        assert cfg.transport == "stdio"
 
 
 # ── ServerStatus ─────────────────────────────────────────────────────────────
@@ -155,7 +155,6 @@ class TestConnectionPoolListServers:
         assert s["status"] == "disconnected"
         assert s["tool_count"] == 2
         assert s["description"] == "First"
-        assert s["healthy"] is True
 
 
 class TestConnectionPoolListConfigured:
@@ -181,7 +180,6 @@ class TestConnectionPoolListConfigured:
         assert s["args"] == ["-a"]
         assert s["url"] == ""
         assert s["enabled"] is True
-        assert s["healthy"] is True
         assert s["description"] == "First"
         # No live state — those belong to list_servers / __check
         assert "status" not in s
@@ -209,34 +207,33 @@ class TestConnectionPoolListConfigured:
             assert secret_field not in s
 
 
-class TestConnectionPoolAddServerHealthyGate:
-    """add_server's load gate: healthy=false servers are registered in the pool
-    (so they stay visible in mcp_list) but never connected — build's probe
-    verdict, only re-evaluated by a later 'mcp-plugin build'."""
+class TestConnectionPoolAddServerGate:
+    """add_server's connect gate — only the enabled flag governs.  Connecting IS
+    the probe; there is no persisted healthy verdict to gate on anymore."""
 
     @pytest.mark.asyncio
-    async def test_unhealthy_server_registered_but_not_connected(self):
+    async def test_disabled_server_registered_but_not_connected(self):
         pool = ConnectionPool()
         with patch(
             "mcp_plugin.connection.MCPServerConnection.connect",
             new=AsyncMock(),
         ) as mock_connect:
             conn = await pool.add_server(
-                ServerConfig(name="broken", command="npx", healthy=False),
+                ServerConfig(name="off", command="npx", enabled=False),
             )
-        assert pool.get_server("broken") is conn
+        assert pool.get_server("off") is conn
         assert conn.status == ServerStatus.DISCONNECTED
         mock_connect.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_healthy_enabled_server_connects(self):
+    async def test_enabled_server_connects(self):
         pool = ConnectionPool()
         with patch(
             "mcp_plugin.connection.MCPServerConnection.connect",
             new=AsyncMock(),
         ) as mock_connect:
             await pool.add_server(
-                ServerConfig(name="ok", command="npx", healthy=True),
+                ServerConfig(name="ok", command="npx"),
             )
         mock_connect.assert_awaited_once()
 
@@ -988,28 +985,13 @@ class TestMCPServerConnectionLazyReconnect:
 
         conn.connect.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_call_tool_does_not_reconnect_unhealthy(self):
-        """healthy=false is a load gate, not a live reconnect state — a tool
-        call must NOT lazy-reconnect a server build flagged unusable."""
-        cfg = ServerConfig(name="test", command="echo", healthy=False)
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.DISCONNECTED
-        conn.connect = AsyncMock()
-
-        with pytest.raises(ValueError, match="not connected.*healthy=false"):
-            await conn.call_tool("echo", {})
-
-        conn.connect.assert_not_called()
-
-
 class TestMCPServerConnectionCancelCleanup:
     """A cancelled connect must tear its transport down.
 
-    mcp-plugin build's per-server cap (asyncio.timeout around add_server)
-    cancels connect() mid-flight.  Before this, the CancelledError path did
+    An asyncio.timeout around add_server/connect cancels connect()
+    mid-flight.  Before this, the CancelledError path did
     not run _cleanup_resources — the spawned npx/uvx process, http client
-    and stderr relay leaked for the rest of the build.
+    and stderr relay leaked.
     """
 
     @pytest.mark.asyncio
@@ -1027,7 +1009,6 @@ class TestMCPServerConnectionCancelCleanup:
 
         mock_cleanup.assert_awaited_once()
         assert conn.status == ServerStatus.DISCONNECTED
-
 
 class TestMCPServerConnectionTreeKill:
     """REVIEW M4 — stdio teardown kills the whole process tree, not just the

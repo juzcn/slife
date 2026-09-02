@@ -444,11 +444,12 @@ server are namespaced with the server name and a double underscore
 *See also* Native tool; External server tool; Tool search.
 
 **Tool catalog**
-The persistent index of external MCP tools, maintained by the MCP gateway and
-queried by the model through *tool search*: each entry carries the server
-name, the tool's bare name, its description, and whether it is enabled. The
-catalog survives restarts, so a search works before any server reconnects.
-*See also* External server tool; Tool search; Semantic index.
+The index of external MCP tools, maintained live in memory by the MCP gateway
+and queried by the model through *tool search*: each entry carries the server
+name, the tool's bare name, its description, and whether it is enabled. It is
+rebuilt from the live connection pool at each wrapper load, so a search
+reflects exactly what the runtime can use. *See also* External server tool;
+Tool search; Semantic index.
 
 **Tool search**
 The tool the model uses to find external MCP tools. It accepts a query and
@@ -688,9 +689,9 @@ endpoints (``base_url`` + ``api_key``) and an ``active_model`` ref that is
 configuration-authoritative over the endpoint's own active-model flag. The
 local-embed plugin serves a local model behind it. The MCP gateway keeps its
 *own* ``embeddings`` section in ``mcp-plugin.json5`` — a single flat config
-(base_url + optional model/api_key), edited by hand and refreshed with
-``mcp-plugin build``. *See also* local-embed; Semantic index (Part II);
-mcp-plugin.
+(base_url + optional model/api_key), edited by hand; the index drains
+automatically at the next wrapper start. *See also* local-embed; Semantic
+index (Part II); mcp-plugin.
 
 **External plugin**
 A plugin package that is not part of the Slife source tree: registered via
@@ -774,17 +775,18 @@ The standalone PyPI package that implements the MCP gateway — the plugin that
 connects Slife to external MCP servers (stdio / SSE / Streamable HTTP). It
 lives in the `mcp-plugin/` workspace member (module `mcp_plugin.server`), is
 registered via `plugins.external` in `slife.json5`, and exposes the `mcp_set` /
-`mcp_list` / … management tools, the tool-catalog tool (`mcp_tool_search`,
-…), and its own `mcp-plugin` CLI
-(`set`, `remove`, `build`). It keeps a persistent **tool catalog**
-(`mcp-plugin.db`) of every loaded external tool — name, description, and
+`mcp_list` / … management tools, and the tool-catalog tool (`mcp_tool_search`,
+…). Everything — including configuration — is an MCP tool or a hand-edited
+`mcp-plugin.json5`; there is no CLI. It keeps an in-memory **tool catalog**
+(rebuilt live from the connection pool at load and on every reconnect) of
+every loaded external tool — name, description, and
 enabled state — indexed for keyword and semantic search. External tools are
 **loaded on demand**: the host registers none of them by default; the model
 discovers one with `mcp_tool_search` and loads it with `mcp_tool_load`.
-Enable/disable is server-granular (`mcp_set_enabled`), and `mcp-plugin build`
-rebuilds the catalog and its index from live connections, marking a disabled
-server's tools disabled. It self-hosts an ``embeddings`` section in
-``mcp-plugin.json5`` (edited by hand; refreshed by ``mcp-plugin build``) that
+Enable/disable is server-granular (`mcp_set_enabled`); the catalog syncs
+itself from the live connections, so there is no offline rebuild. It
+self-hosts an ``embeddings`` section in
+``mcp-plugin.json5`` (edited by hand; the drainer runs at startup) that
 feeds the catalog's semantic index. *See also*
 Plugin (Part II); Built-in plugin; Plugin contract; Tool catalog; Tool
 loading; local-embed.
@@ -930,9 +932,12 @@ modules are collected by auto-discovery. *See also* Auto-discovery; Tool
 (Part II).
 
 **Tool catalog**
-The MCP gateway's SQLite store (`mcp-plugin.db`) holding one row per loaded
+The MCP gateway's in-memory SQLite store (created at wrapper load, `:memory:`)
+holding one row per connected
 external MCP tool — *server__tool*, name, description, and a per-tool enabled
-flag derived from the server's state. Backed by an FTS5 keyword index and a
+flag derived from the server's state. Re-synced from the live connection pool
+on every (re)connect, so it always equals what the runtime can use. Backed by
+an FTS5 keyword index and a
 BLOB-vector semantic index produced against the configured embeddings
 endpoint. *See also* mcp-plugin; auto_load; Semantic index (Part II).
 

@@ -796,10 +796,11 @@ try {
     Write-Dim "  Keyword search works now.  For semantic/hybrid search, set up the embedding"
     Write-Dim "  backend + model yourself — see README.md -> Install -> Semantic memory search."
 
-    # MCP server catalog is built by the USER (post-install) — step [4e] was
-    # removed: a first-run build spawns every configured npx/uvx server and
-    # can take minutes, and the servers need API keys first (credstore).
-    # See "Get started" below: credstore → `mcp-plugin build` → slife.
+    # MCP servers are configured by the USER (post-install) — step [4e] was
+    # removed: a first-run connect spawns every configured npx/uvx server and
+    # the servers need API keys first (credstore).  The tool catalog is built
+    # live from connections at slife start, so no build step exists.
+    # See "Get started" below: credstore → edit ~/.mcp-plugin/mcp-plugin.json5 → slife.
 
     # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."
@@ -809,10 +810,11 @@ try {
     $toolScripts = Join-Path (uv tool dir) "slife\Scripts"   # mcp-plugin / local-embed live here
     $scriptsDir  = "$env:USERPROFILE\.slife\Scripts"
 
-    # Ensure ~/.local/bin, the slife tool venv Scripts (mcp-plugin / local-embed),
+    # Ensure ~/.local/bin, the slife tool venv Scripts (local-embed),
     # and ~/.bun/bin are on PATH; remove stale venv entries.  The tool venv
-    # Scripts entry is what makes the documented `mcp-plugin build` /
-    # `local-embed set-gguf` commands work out-of-the-box.
+    # Scripts entry is what makes the documented `local-embed set-gguf`
+    # command work out-of-the-box.  mcp-plugin is an MCP server with no CLI —
+    # the host spawns `python -m mcp_plugin.server` itself.
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $newPath  = ($userPath -split ';' | Where-Object { $_ -and $_ -ne $scriptsDir }) -join ';'
     if ($newPath -notlike "*$localBin*") {
@@ -858,13 +860,13 @@ try {
     Write-Host "Get started:" -ForegroundColor Cyan
     Write-Host "  1. Semantic search (optional) — set up per README -> Semantic Memory Search"
     Write-Host "  2. Configure secrets with credstore — credstore set-password, then credstore set <API_KEY> <value>"
-    Write-Host "  3. Run mcp-plugin build — build the MCP server catalog (external MCP servers)"
+    Write-Host "  3. Configure external MCP servers — edit ~/.mcp-plugin/mcp-plugin.json5 (they apply at the next slife start)"
     Write-Host ""
     if ($coreMode) {
-        Write-Host "Core install done — external MCP servers (catalog via 'mcp-plugin build'), Mosquitto" -ForegroundColor Cyan
+        Write-Host "Core install done — external MCP servers, Mosquitto" -ForegroundColor Cyan
         Write-Host "  (yt-dlp / browser-harness skipped — add later: uv tool install --python 3.12 browser-harness)"
     } else {
-        Write-Host "Installed — slife + credstore, external MCP servers (catalog via 'mcp-plugin build'), Mosquitto, yt-dlp, browser-harness" -ForegroundColor Cyan
+        Write-Host "Installed — slife + credstore, external MCP servers, Mosquitto, yt-dlp, browser-harness" -ForegroundColor Cyan
     }
     Write-Host "  Semantic memory search: not installed by default — see README.md -> Install -> Semantic memory search"
     Write-Host ""

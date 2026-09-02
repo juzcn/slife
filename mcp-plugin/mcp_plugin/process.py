@@ -199,9 +199,15 @@ class MCPWrapperProcess:
 
         logger.info("wrapper_port pid=%s port=%s", self._process.pid, self._port)
 
-    async def create_client(self, tool_timeout: float = 60.0) -> "MCPClient":
+    async def create_client(
+        self, tool_timeout: float = 60.0,
+        client_info_extra: dict | None = None,
+    ) -> "MCPClient":
         """Create an MCPClient connected to the plugin's Streamable HTTP endpoint.
 
+        ``client_info_extra`` is carried in the initialize handshake's
+        standard ``clientInfo`` (see ``MCPClient``) — used by a host to pass
+        its own params (e.g. the active embedding endpoint) to the server.
         Disconnecting the client does NOT stop the process — call stop()
         separately to terminate the plugin.
         """
@@ -232,7 +238,10 @@ class MCPWrapperProcess:
             )
 
         url = f"http://127.0.0.1:{self._port}/mcp"
-        client = MCPClient(tool_timeout=tool_timeout)
+        client = MCPClient(
+            tool_timeout=tool_timeout,
+            client_info_extra=client_info_extra,
+        )
         await client.connect(url)
         return client
 

@@ -51,9 +51,14 @@ def _backend_unavailable_reason(embedder: EmbeddingClient) -> str:
 class SemanticManager:
     """The semantic-search actor: gate + embedder + event-driven drainer."""
 
-    def __init__(self, store, config_path: str | None = None):
+    def __init__(self, store, config_path: str | None = None,
+                 client_embeddings: dict | None = None):
         self._store = store
         self._config_path = config_path
+        # Host-provided embedding endpoint from the connection's initialize
+        # handshake (``clientInfo``) — wins over the plugin's own
+        # ``embeddings`` section when present (see EmbeddingClient).
+        self._client_embeddings = client_embeddings
         self._embedder: EmbeddingClient | None = None
         self._semantic_ready = False
         self._state = "disabled"   # disabled | loading | indexing | ready | stalled
@@ -71,7 +76,10 @@ class SemanticManager:
         try:
             from mcp_plugin.embeddings import EmbeddingClient
 
-            probe = EmbeddingClient.from_plugin_config(config_path=self._config_path)
+            probe = EmbeddingClient.from_plugin_config(
+                config_path=self._config_path,
+                override=self._client_embeddings,
+            )
             if probe.available:
                 await self.enable()
             else:
@@ -94,7 +102,10 @@ class SemanticManager:
             self._state = "loading"
             self._reason = ""
 
-            embedder = EmbeddingClient.from_plugin_config(config_path=self._config_path)
+            embedder = EmbeddingClient.from_plugin_config(
+                config_path=self._config_path,
+                override=self._client_embeddings,
+            )
             if not embedder.available:
                 self._state = "disabled"
                 self._reason = _backend_unavailable_reason(embedder)

@@ -7,8 +7,8 @@ from mcp_plugin.store import ToolStore, _cosine_distance, _deserialize_f32, _ser
 
 
 @pytest_asyncio.fixture
-async def store(tmp_path):
-    s = ToolStore(tmp_path / "tools.db")
+async def store():
+    s = ToolStore()
     await s.open()
     yield s
     await s.close()

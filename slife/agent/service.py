@@ -728,7 +728,11 @@ class AgentService:
         )
         try:
             await process.start()
-            client = await process.create_client(tool_timeout=self.config.tool_timeout)
+            from slife.agent.plugins import client_info_extra_for
+            client = await process.create_client(
+                tool_timeout=self.config.tool_timeout,
+                client_info_extra=client_info_extra_for(name),
+            )
 
             # Discover tools — retry once on a timeout.  A Streamable HTTP
             # session established in the plugin's "signalled but not yet
@@ -743,6 +747,7 @@ class AgentService:
                 await client.disconnect()
                 client = await process.create_client(
                     tool_timeout=self.config.tool_timeout,
+                    client_info_extra=client_info_extra_for(name),
                 )
                 plugin_tools = await client.list_tools()
             logger.debug("plugin_tools name=%s count=%d names=%s",
