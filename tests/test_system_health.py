@@ -29,7 +29,6 @@ from slife.tools.system import (
     _dedupe_records,
     SystemHealthTool,
     CheckWatchdogTool,
-    CheckMcpTool,
     CheckA2aTool,
 )
 
@@ -584,7 +583,7 @@ class TestSystemHealthToolExecute:
         assert len(wd) == 2  # no duplicates
 
 
-# ── CheckWatchdogTool / CheckMcpTool ───────────────────────────────────
+# ── CheckWatchdogTool ──────────────────────────────────────────────────
 
 
 class TestCheckWatchdogTool:
@@ -608,41 +607,6 @@ class TestCheckWatchdogTool:
             parsed = json.loads(result)
             assert parsed[0]["component"] == "watchdog"
             assert parsed[0]["value"] == "running"
-
-
-class TestCheckMcpTool:
-    """Tests for CheckMcpTool metadata and execute."""
-
-    def test_metadata(self):
-        tool = CheckMcpTool()
-        assert tool.name == "check_mcp"
-        assert "mcp" in tool.description.lower()
-        assert tool.parameters["type"] == "object"
-        assert tool.parameters["required"] == []
-        assert "server" in tool.parameters["properties"]
-        assert tool.parameters["properties"]["server"]["default"] == ""
-
-    @pytest.mark.asyncio
-    async def test_execute_returns_json(self):
-        tool = CheckMcpTool()
-        with patch("slife.tools.system.check_mcp",
-                   new=AsyncMock(return_value=[
-                       {"component": "mcp_servers", "level": "ok",
-                        "key": "server_a", "value": "connected (5 tools loaded)",
-                        "hint": "all good"},
-                   ])):
-            result = await tool.execute()
-            parsed = json.loads(result)
-            assert parsed[0]["component"] == "mcp_servers"
-            assert parsed[0]["value"] == "connected (5 tools loaded)"
-
-    @pytest.mark.asyncio
-    async def test_execute_forwards_server_param(self):
-        tool = CheckMcpTool()
-        mock = AsyncMock(return_value=[])
-        with patch("slife.tools.system.check_mcp", new=mock):
-            await tool.execute(server="github")
-        mock.assert_awaited_once_with(server="github", client=None)
 
 
 class _FakeMcpClient:
@@ -722,6 +686,46 @@ class TestCheckMcpFunction:
         entries = await check_mcp()
         assert entries[0]["value"] == "client_unavailable"
         assert entries[0]["level"] == "warning"
+
+    @pytest.mark.asyncio
+    async def test_semantic_missing_surfaces_warning(self):
+        """The wrapper's __check semantic block, when unavailable, becomes a
+        health warning alongside the per-server records (memdb-style)."""
+        payload = {
+            "servers": [self._server("fs")],
+            "semantic": {"configured": True, "available": False,
+                         "semantic_ready": False, "state": "unavailable",
+                         "model": "bge-m3", "dimension": 1024,
+                         "reason": "embeddings endpoint unreachable"},
+        }
+        entries = await check_mcp(client=self._client(payload))
+        assert [e["key"] for e in entries] == ["fs", "semantic"]
+        sem = entries[-1]
+        assert sem["level"] == "warning"
+        assert sem["value"] == "unavailable"
+        assert "endpoint unreachable" in sem["hint"]
+
+    @pytest.mark.asyncio
+    async def test_semantic_ready_reports_ok(self):
+        payload = {
+            "servers": [],
+            "semantic": {"configured": True, "available": True,
+                         "semantic_ready": True, "state": "ready",
+                         "model": "bge-m3", "dimension": 1024},
+        }
+        entries = await check_mcp(client=self._client(payload))
+        sem = next(e for e in entries if e["key"] == "semantic")
+        assert sem["level"] == "ok"
+        assert sem["value"] == "ready"
+        assert "bge-m3" in sem["hint"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_bare_list_payload_still_works(self):
+        """A wrapper that returns a bare server list (no semantic block)
+        keeps the old per-server-only behavior."""
+        payload = [self._server("fs")]
+        entries = await check_mcp(client=self._client(payload))
+        assert [e["key"] for e in entries] == ["fs"]
 
 
 class _FakeA2aClient:
@@ -1072,7 +1076,6 @@ class TestCheckToolsInternal:
         CheckLocalEmbedTool,
         CheckSharefileTool,
         CheckMediaTool,
-        CheckMcpTool,
         CheckA2aTool,
         CheckWatchdogTool,
     )

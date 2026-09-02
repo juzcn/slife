@@ -443,6 +443,40 @@ def _diagnose_mcp_server(server: dict) -> dict:
     }
 
 
+def _diagnose_mcp_semantic(sem: dict) -> dict:
+    """Health entry for the wrapper's semantic-index status (memdb-style).
+
+    ``sem`` is the ``semantic`` block of the wrapper ``__check`` payload:
+    configured/available (embedder), semantic_ready (gate), state, reason,
+    model/dimension/unembedded.  Reports ok only when the gate is ready;
+    anything warm-up-shaped (not started / building / stalled / unavailable)
+    is a warning so the harness can tell readiness from degradation without
+    an LLM round-trip.  Mirrors the memdb embedding health entry.
+    """
+    model = sem.get("model") or "?"
+    dim = sem.get("dimension") or 0
+    state = sem.get("state", "not_started")
+    reason = sem.get("reason") or ""
+    comp = {"component": "mcp_semantic", "key": "semantic"}
+    if sem.get("configured") is False or sem.get("available") is False:
+        return {
+            **comp, "level": "warning", "value": "unavailable",
+            "hint": reason or (
+                "Semantic tool search unavailable — no embeddings endpoint. "
+                "Keyword/grep (fts5) tool search still works."
+            ),
+        }
+    if sem.get("semantic_ready"):
+        return {
+            **comp, "level": "ok", "value": "ready",
+            "hint": f"Semantic tool search ready ({model}, dim={dim}).",
+        }
+    return {
+        **comp, "level": "warning", "value": state,
+        "hint": reason or "Semantic tool index building.",
+    }
+
+
 async def check_mcp(server: str = "", client=None) -> list[dict]:
     """Check MCP wrapper health + diagnose external MCP server(s).
 
@@ -483,12 +517,22 @@ async def check_mcp(server: str = "", client=None) -> list[dict]:
         raw = await client.call_tool("__check")
         data = json.loads(raw)
 
+        # Current wrapper shape: {"servers": [...], "semantic": {...}}.
+        # An older/standalone wrapper returns a bare server list — handle both.
+        semantic = None
+        if isinstance(data, dict):
+            semantic = data.get("semantic")
+            data = data.get("servers") or []
+
         if not isinstance(data, list) or len(data) == 0:
             if server:
                 return _not_found(server)
-            return [{"component": "mcp_servers", "level": "ok",
-                     "key": "status", "value": "none",
-                     "hint": "No external MCP servers configured."}]
+            records = [{"component": "mcp_servers", "level": "ok",
+                        "key": "status", "value": "none",
+                        "hint": "No external MCP servers configured."}]
+            if semantic is not None:
+                records.append(_diagnose_mcp_semantic(semantic))
+            return records
 
         if server:
             matched = [s for s in data if s.get("name") == server]
@@ -496,40 +540,16 @@ async def check_mcp(server: str = "", client=None) -> list[dict]:
                 return _not_found(server)
             data = matched
 
-        return [_diagnose_mcp_server(s) for s in data]
+        records = [_diagnose_mcp_server(s) for s in data]
+        if semantic is not None:
+            records.append(_diagnose_mcp_semantic(semantic))
+        return records
 
     except Exception as e:
         logger.warning("check_mcp_failed err=%s", e)
         return [{"component": "mcp_servers", "level": "error",
                  "key": "check_failed", "value": str(e),
                  "hint": f"Failed to check MCP servers: {e}"}]
-
-
-class CheckMcpTool(Tool):
-    """Check external MCP server connection status."""
-
-    name = "check_mcp"
-    category: ClassVar[str] = "System"
-    _skip_auto_register: ClassVar[bool] = True
-    description = ("External MCP server status: connected/disconnected/disabled per server, "
-                   "with tool counts and error details. Pass 'server' to check a single server; "
-                   "omit it to check all. One subsystem of system_health.")
-    parameters = {
-        "type": "object",
-        "properties": {
-            "server": {
-                "type": "string",
-                "description": "Server name to check alone. Leave empty to check all configured servers.",
-                "default": "",
-            },
-        },
-        "required": [],
-    }
-
-    async def execute(self, server: str = "", **kwargs) -> str:
-        ctx = getattr(self, "_ctx", None)
-        client = getattr(ctx, "mcp_client", None) if ctx is not None else None
-        return json.dumps(await check_mcp(server=server, client=client), ensure_ascii=False, indent=2)
 
 
 # ═══════════════════════════════════════════════════════════════════════
