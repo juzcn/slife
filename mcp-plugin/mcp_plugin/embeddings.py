@@ -1,7 +1,7 @@
-"""Embedding client — OpenAI-compatible HTTP backend only (httpx, no openai).
+"""Embedding client — OpenAI-compatible HTTP backend only (httpx2, no openai).
 
 The plugin stays standalone (no ``slife`` / ``openai`` deps), so embeddings
-go straight over ``httpx`` to any OpenAI-compatible ``/v1/embeddings``
+go straight over ``httpx2`` to any OpenAI-compatible ``/v1/embeddings``
 endpoint — the deployment uses the ``local-embed`` plugin at
 ``http://127.0.0.1:17347/v1``.
 
@@ -21,7 +21,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-import httpx
+import httpx2
 
 from mcp_plugin.config import _resolve_secret, load_config, read_config
 
@@ -47,7 +47,7 @@ class EmbeddingClient:
         dim: int = 0,
         dim_known: bool | None = None,
         enabled: bool = True,
-        transport: httpx.AsyncBaseTransport | None = None,
+        transport: httpx2.AsyncBaseTransport | None = None,
     ):
         self._model = model
         self._api_key = api_key
@@ -56,9 +56,9 @@ class EmbeddingClient:
         self._dim_known = dim_known
         self._enabled = enabled
         self._loaded = False
-        self._client: httpx.AsyncClient | None = None
+        self._client: httpx2.AsyncClient | None = None
         self._client_init_lock = asyncio.Lock()
-        self._transport = transport  # test hook (httpx.MockTransport)
+        self._transport = transport  # test hook (httpx2.MockTransport)
 
     # ── Construction from plugin config ─────────────────────────────
 
@@ -150,7 +150,7 @@ class EmbeddingClient:
 
     # ── Load / discover ─────────────────────────────────────────────
 
-    async def _get_client(self) -> httpx.AsyncClient:
+    async def _get_client(self) -> httpx2.AsyncClient:
         if self._client is None:
             async with self._client_init_lock:
                 if self._client is None:
@@ -159,11 +159,11 @@ class EmbeddingClient:
                         headers["Authorization"] = f"Bearer {self._api_key}"
                     client_kwargs: dict = {
                         "headers": headers,
-                        "timeout": httpx.Timeout(_EMBED_TIMEOUT),
+                        "timeout": httpx2.Timeout(_EMBED_TIMEOUT),
                     }
                     if self._transport is not None:
                         client_kwargs["transport"] = self._transport
-                    self._client = httpx.AsyncClient(**client_kwargs)
+                    self._client = httpx2.AsyncClient(**client_kwargs)
         return self._client
 
     async def close(self) -> None:

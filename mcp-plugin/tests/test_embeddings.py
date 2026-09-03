@@ -2,7 +2,7 @@
 
 import json
 
-import httpx
+import httpx2
 import pytest
 import pytest_asyncio
 
@@ -16,9 +16,9 @@ def _make_transport(models=None, embeddings_dim=3):
         {"id": "bge-m3", "dimension": embeddings_dim, "active": True},
     ]
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path.endswith("/models"):
-            return httpx.Response(200, json={"data": models})
+            return httpx2.Response(200, json={"data": models})
         if request.url.path.endswith("/embeddings"):
             body = json.loads(request.content or b"{}")
             n = len(body.get("input", []))
@@ -27,10 +27,10 @@ def _make_transport(models=None, embeddings_dim=3):
                  "embedding": [float(i + 1)] + [0.0] * (embeddings_dim - 1)}
                 for i in range(n)
             ]
-            return httpx.Response(200, json={"data": data})
-        return httpx.Response(404, json={"error": "not found"})
+            return httpx2.Response(200, json={"data": data})
+        return httpx2.Response(404, json={"error": "not found"})
 
-    return httpx.MockTransport(handler)
+    return httpx2.MockTransport(handler)
 
 
 @pytest_asyncio.fixture
@@ -103,11 +103,11 @@ async def test_api_key_placeholder_resolved_value_sent_as_bearer(tmp_path, monke
     monkeypatch.setenv("EMBED_API_KEY", "sk-test")
     seen = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen["authorization"] = request.headers.get("authorization")
         if request.url.path.endswith("/models"):
-            return httpx.Response(200, json={"data": [{"id": "bge-m3", "dimension": 3, "active": True}]})
-        return httpx.Response(404, json={"error": "not found"})
+            return httpx2.Response(200, json={"data": [{"id": "bge-m3", "dimension": 3, "active": True}]})
+        return httpx2.Response(404, json={"error": "not found"})
 
     cfg = {"servers": {}, "embeddings": {
         "base_url": "http://127.0.0.1:17347/v1",
@@ -116,7 +116,7 @@ async def test_api_key_placeholder_resolved_value_sent_as_bearer(tmp_path, monke
     path = tmp_path / "mcp-plugin.json5"
     plugin_config.write_config(path, cfg)
     c = EmbeddingClient.from_plugin_config(config_path=str(path))
-    c._transport = httpx.MockTransport(handler)  # test hook, see EmbeddingClient.__init__
+    c._transport = httpx2.MockTransport(handler)  # test hook, see EmbeddingClient.__init__
     assert await c.load() is True
     assert seen["authorization"] == "Bearer sk-test"
     await c.close()

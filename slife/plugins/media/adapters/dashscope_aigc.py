@@ -21,7 +21,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-import httpx
+import httpx2
 
 from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError
 from slife.plugins.media.config import ProviderConfig
@@ -45,18 +45,18 @@ _DEFAULT_IMAGE_FIELD = "image_url"
 class DashScopeAIGCAdapter:
     def __init__(self, config: ProviderConfig):
         self._config = config
-        self._client: httpx.AsyncClient | None = None
+        self._client: httpx2.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
         self._saver = ArtifactSaver()
 
     # ── HTTP plumbing ────────────────────────────────────────────────
 
-    async def _ensure_client(self) -> httpx.AsyncClient:
+    async def _ensure_client(self) -> httpx2.AsyncClient:
         if self._client is None:
             async with self._client_lock:
                 if self._client is None:
-                    self._client = httpx.AsyncClient(
-                        timeout=httpx.Timeout(180.0, connect=30.0),
+                    self._client = httpx2.AsyncClient(
+                        timeout=httpx2.Timeout(180.0, connect=30.0),
                         headers={
                             "Authorization": f"Bearer {self._config.api_key}",
                         },
@@ -131,7 +131,7 @@ class DashScopeAIGCAdapter:
             resp = await client.request(
                 method, url, headers=extra_headers, json=json_body,
             )
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             raise MediaAdapterError(
                 f"Bailian request failed ({method} {url}): {e}"
             ) from e
@@ -267,8 +267,8 @@ class DashScopeAIGCAdapter:
             if data.get(src):
                 form[dst] = str(data[src])
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(300.0, connect=30.0),
+            async with httpx2.AsyncClient(
+                timeout=httpx2.Timeout(300.0, connect=30.0),
             ) as upload_client:
                 with open(file_path, "rb") as f:
                     resp = await upload_client.post(
@@ -276,7 +276,7 @@ class DashScopeAIGCAdapter:
                         files={"file": (file_path.name, f)},
                     )
                     resp.raise_for_status()
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             raise MediaAdapterError(
                 f"Failed to upload file '{file_path.name}': {e}"
             ) from e
@@ -293,7 +293,7 @@ class DashScopeAIGCAdapter:
             resp = await client.get(
                 url, params={"action": "getPolicy", "model": model},
             )
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             raise MediaAdapterError(
                 f"Upload policy request failed: {e}"
             ) from e

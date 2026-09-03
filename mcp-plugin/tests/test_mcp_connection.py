@@ -346,12 +346,12 @@ class TestMCPServerConnectionHTTP:
     @pytest.mark.asyncio
     async def test_connect_http_handshake(self):
         """Verify HTTP initialize extracts session ID and result."""
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
         resp = MagicMock()
         resp.headers = {"mcp-session-id": "abc123"}
         resp.raise_for_status = MagicMock()
@@ -373,12 +373,12 @@ class TestMCPServerConnectionHTTP:
     @pytest.mark.asyncio
     async def test_tools_list_via_http(self):
         """Verify tools/list via HTTP."""
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
         resp = MagicMock()
         resp.headers = {}
         resp.raise_for_status = MagicMock()
@@ -398,13 +398,13 @@ class TestMCPServerConnectionHTTP:
     @pytest.mark.asyncio
     async def test_request_http_passes_session_id(self):
         """Subsequent HTTP requests carry the mcp-session-id header."""
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
         conn._session_id = "existing-sid"
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
         resp = MagicMock()
         resp.headers = {}
         resp.raise_for_status = MagicMock()
@@ -424,13 +424,13 @@ class TestMCPServerConnectionHTTP:
     @pytest.mark.asyncio
     async def test_request_http_error_status(self):
         """HTTP 4xx raises ConnectionError."""
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.post.side_effect = httpx.HTTPStatusError(
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
+        mock_client.post.side_effect = httpx2.HTTPStatusError(
             "Not Found",
             request=MagicMock(),
             response=MagicMock(status_code=404),
@@ -445,12 +445,12 @@ class TestMCPServerConnectionHTTP:
     @pytest.mark.asyncio
     async def test_request_http_jsonrpc_error(self):
         """A 200 with JSON-RPC error raises Exception."""
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
         resp = MagicMock()
         resp.headers = {}
         resp.raise_for_status = MagicMock()
@@ -469,7 +469,7 @@ class TestMCPServerConnectionHTTP:
     @pytest.mark.asyncio
     async def test_request_http_sse_stream_response(self):
         """A streamable server streaming text/event-stream is parsed."""
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
@@ -479,7 +479,7 @@ class TestMCPServerConnectionHTTP:
             yield 'data: {"jsonrpc": "2.0", "id": 1, "result": "ok"}'
             yield ""
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
         resp = MagicMock()
         resp.headers = {"content-type": "text/event-stream"}
         resp.raise_for_status = MagicMock()
@@ -500,7 +500,7 @@ class TestMCPServerConnectionHTTP:
     @pytest.mark.asyncio
     async def test_request_http_sse_stream_jsonrpc_error(self):
         """An SSE-streamed response carrying a JSON-RPC error is raised."""
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
@@ -512,7 +512,7 @@ class TestMCPServerConnectionHTTP:
             )
             yield ""
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
         resp = MagicMock()
         resp.headers = {"content-type": "text/event-stream"}
         resp.raise_for_status = MagicMock()
@@ -529,7 +529,7 @@ class TestMCPServerConnectionHTTP:
     @pytest.mark.asyncio
     async def test_request_http_sse_stream_no_matching_id(self):
         """An SSE stream without a matching response id raises ConnectionError."""
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
@@ -539,7 +539,7 @@ class TestMCPServerConnectionHTTP:
             yield 'data: {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}'
             yield ""
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
         resp = MagicMock()
         resp.headers = {"content-type": "text/event-stream"}
         resp.raise_for_status = MagicMock()
@@ -556,13 +556,13 @@ class TestMCPServerConnectionHTTP:
     @pytest.mark.asyncio
     async def test_notify_http_fire_and_forget(self):
         """HTTP notify creates a background POST task."""
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
         conn._session_id = "sid123"
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
         mock_client.post = AsyncMock(return_value=MagicMock())
         conn._http_client = mock_client
 
@@ -578,13 +578,13 @@ class TestMCPServerConnectionHTTP:
     @pytest.mark.asyncio
     async def test_disconnect_http_closes_client(self):
         """HTTP disconnect sends DELETE and closes the client."""
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
         conn._session_id = "sid-to-delete"
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
         mock_client.delete = AsyncMock()
         mock_client.aclose = AsyncMock()
         conn._http_client = mock_client
@@ -646,11 +646,11 @@ class TestMCPServerConnectionHTTP:
     async def test_http_headers_passed_to_client(self):
         """Custom config.headers are used in Streamable HTTP requests.
 
-        _connect_http creates a single httpx client already carrying the
+        _connect_http creates a single httpx2 client already carrying the
         resolved headers, so the SSE detection GET and subsequent
         Streamable HTTP POST requests all inherit them (REVIEW M7).
         """
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(
             name="http_srv",
@@ -661,11 +661,11 @@ class TestMCPServerConnectionHTTP:
 
         # Mock the SSE detection send() to raise, falling through
         # to Streamable HTTP where config.headers are already on the client.
-        mock_client1 = MagicMock(spec=httpx.AsyncClient)
+        mock_client1 = MagicMock(spec=httpx2.AsyncClient)
         mock_client1.send = MagicMock(side_effect=ConnectionError("refused"))
         mock_client1.aclose = AsyncMock()
 
-        with patch.object(httpx, "AsyncClient") as mock_cls:
+        with patch.object(httpx2, "AsyncClient") as mock_cls:
             mock_cls.side_effect = [mock_client1]
 
             await conn._connect_http()
@@ -693,7 +693,7 @@ class TestMCPServerConnectionHTTP:
         _read_sse_stream task (which closes it), not closed on function
         return as the old ``async with stream(...)`` did.
         """
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(
             name="sse_srv",
@@ -708,17 +708,17 @@ class TestMCPServerConnectionHTTP:
             yield ""
             await asyncio.sleep(3600)  # keep the stream alive
 
-        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp = MagicMock(spec=httpx2.Response)
         mock_resp.status_code = 200
         mock_resp.headers = {"content-type": "text/event-stream"}
         mock_resp.aiter_lines = sse_lines
         mock_resp.aclose = AsyncMock()
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
         mock_client.build_request.return_value = MagicMock()
         mock_client.send = AsyncMock(return_value=mock_resp)
 
-        with patch.object(httpx, "AsyncClient", return_value=mock_client):
+        with patch.object(httpx2, "AsyncClient", return_value=mock_client):
             await conn._connect_http()
 
         assert conn._sse_mode is True
@@ -740,7 +740,7 @@ class TestMCPServerConnectionHTTP:
         The reader passes non-JSON payloads through raw, and _connect_http
         resolves the path against the base URL.
         """
-        import httpx
+        import httpx2
 
         cfg = ServerConfig(
             name="sse_srv",
@@ -754,17 +754,17 @@ class TestMCPServerConnectionHTTP:
             yield ""
             await asyncio.sleep(3600)
 
-        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp = MagicMock(spec=httpx2.Response)
         mock_resp.status_code = 200
         mock_resp.headers = {"content-type": "text/event-stream"}
         mock_resp.aiter_lines = sse_lines
         mock_resp.aclose = AsyncMock()
 
-        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
         mock_client.build_request.return_value = MagicMock()
         mock_client.send = AsyncMock(return_value=mock_resp)
 
-        with patch.object(httpx, "AsyncClient", return_value=mock_client):
+        with patch.object(httpx2, "AsyncClient", return_value=mock_client):
             await conn._connect_http()
 
         assert conn._sse_mode is True

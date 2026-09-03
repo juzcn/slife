@@ -262,10 +262,10 @@ class TestMCPClientConnect:
         """Local plugin traffic must not route through the OS proxy.
 
         Regression: a Windows system proxy (e.g. 127.0.0.1:7890) was being
-        picked up via the MCP SDK's default httpx client (trust_env=True),
+        picked up via the MCP SDK's default httpx2 client (trust_env=True),
         502ing every localhost plugin session — so plugin startup hung and
         the "插件已加载" messages never rendered.  connect() now supplies its
-        own httpx.AsyncClient(trust_env=False).
+        own httpx2.AsyncClient(trust_env=False).
         """
         client = MCPClient()
         mock_session = MagicMock()

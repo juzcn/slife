@@ -12,7 +12,7 @@ import base64
 import logging
 from pathlib import Path
 
-import httpx
+import httpx2
 
 from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError
 from slife.plugins.media.config import ProviderConfig
@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 class OpenAICompatAdapter:
     def __init__(self, config: ProviderConfig):
         self._config = config
-        self._client: httpx.AsyncClient | None = None
+        self._client: httpx2.AsyncClient | None = None
         self._saver = ArtifactSaver()
 
-    async def _ensure_client(self) -> httpx.AsyncClient:
+    async def _ensure_client(self) -> httpx2.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(180.0, connect=30.0),
+            self._client = httpx2.AsyncClient(
+                timeout=httpx2.Timeout(180.0, connect=30.0),
                 headers={"Authorization": f"Bearer {self._config.api_key}"},
             )
         return self._client
@@ -58,7 +58,7 @@ class OpenAICompatAdapter:
             resp = await client.post(
                 f"{self._config.base_url}/images/generations", json=body,
             )
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             raise MediaAdapterError(f"Image generation request failed: {e}") from e
         if resp.status_code >= 400:
             raise MediaAdapterError(

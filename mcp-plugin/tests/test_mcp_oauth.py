@@ -9,7 +9,7 @@ import time as _time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import httpx
+import httpx2
 
 from mcp_plugin.oauth import (
     OAuthTokens,
@@ -116,7 +116,7 @@ class TestStoreTokens:
 
 
 def _make_http_mock(*responses: dict | Exception):
-    """Build a mock httpx.AsyncClient that returns *responses* from post().
+    """Build a mock httpx2.AsyncClient that returns *responses* from post().
 
     Each response is either a dict (→ ``resp.json()`` returns it) or an
     Exception (→ ``resp.raise_for_status()`` raises it).
@@ -147,11 +147,11 @@ def _make_http_mock(*responses: dict | Exception):
 
 
 def _closed_aware_client(*responses: dict | Exception):
-    """A mock httpx.AsyncClient whose post() raises RuntimeError once closed.
+    """A mock httpx2.AsyncClient whose post() raises RuntimeError once closed.
 
-    Mirrors real httpx: a client used inside ``async with`` is closed when the
+    Mirrors real httpx2: a client used inside ``async with`` is closed when the
     block exits, and posting to a closed client raises ``RuntimeError`` — which
-    is NOT an ``httpx.HTTPError``, so poll loops cannot swallow it.
+    is NOT an ``httpx2.HTTPError``, so poll loops cannot swallow it.
     """
     client = MagicMock()
     client._closed = False
@@ -197,7 +197,7 @@ class TestDeviceCodeFlow:
         }
         mock_http = _make_http_mock(device_data, token_data)
 
-        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+        with patch("mcp_plugin.oauth.httpx2.AsyncClient", return_value=mock_http), \
              patch("mcp_plugin.oauth._store_tokens") as mock_store, \
              patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             result = await run_device_code_flow(AUTH, "test-server")
@@ -208,7 +208,7 @@ class TestDeviceCodeFlow:
 
     @pytest.mark.asyncio
     async def test_poll_runs_on_fresh_client_after_device_post(self):
-        """Regression: polling a closed httpx client raised RuntimeError and
+        """Regression: polling a closed httpx2 client raised RuntimeError and
         wedged connect() at CONNECTING — the device-code POST client is closed
         before polling starts, so the poll must run on a fresh client."""
         device_data = {
@@ -228,7 +228,7 @@ class TestDeviceCodeFlow:
         poll_client = _closed_aware_client(token_data)
 
         with patch(
-            "mcp_plugin.oauth.httpx.AsyncClient",
+            "mcp_plugin.oauth.httpx2.AsyncClient",
             side_effect=[device_client, poll_client],
         ), \
             patch("mcp_plugin.oauth._store_tokens") as mock_store, \
@@ -237,7 +237,7 @@ class TestDeviceCodeFlow:
 
         assert result.access_token == "gh_token_abc"
         # The device client was closed after its POST and must not serve the
-        # poll (real httpx raises RuntimeError there); the poll ran on the
+        # poll (real httpx2 raises RuntimeError there); the poll ran on the
         # fresh client instead.
         assert device_client.served == 1
         assert poll_client.served >= 1
@@ -287,7 +287,7 @@ class TestDeviceCodeFlow:
         }
         mock_http = _make_http_mock(device_data, token_data)
 
-        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+        with patch("mcp_plugin.oauth.httpx2.AsyncClient", return_value=mock_http), \
              patch("mcp_plugin.oauth._store_tokens") as mock_store, \
              patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             result = await run_device_code_flow(AUTH, "test-server")
@@ -327,7 +327,7 @@ class TestDeviceCodeFlow:
         }
         mock_http = _make_http_mock(device_data, pending, token_data)
 
-        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+        with patch("mcp_plugin.oauth.httpx2.AsyncClient", return_value=mock_http), \
              patch("mcp_plugin.oauth._store_tokens") as mock_store, \
              patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             result = await run_device_code_flow(AUTH, "test-server")
@@ -347,7 +347,7 @@ class TestDeviceCodeFlow:
         expired = {"error": "expired_token"}
         mock_http = _make_http_mock(device_data, expired)
 
-        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+        with patch("mcp_plugin.oauth.httpx2.AsyncClient", return_value=mock_http), \
              patch("mcp_plugin.oauth._delete_tokens") as mock_delete, \
              patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             with pytest.raises(RuntimeError, match="expired"):
@@ -366,7 +366,7 @@ class TestDeviceCodeFlow:
         denied = {"error": "access_denied", "error_description": "user said no"}
         mock_http = _make_http_mock(device_data, denied)
 
-        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+        with patch("mcp_plugin.oauth.httpx2.AsyncClient", return_value=mock_http), \
              patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             with pytest.raises(RuntimeError, match="access_denied"):
                 await run_device_code_flow(AUTH, "test-server")
@@ -393,7 +393,7 @@ class TestRefreshToken:
         }
         mock_http.post = AsyncMock(return_value=refresh_resp)
 
-        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+        with patch("mcp_plugin.oauth.httpx2.AsyncClient", return_value=mock_http), \
              patch("mcp_plugin.oauth.get_credential", return_value=raw), \
              patch("mcp_plugin.oauth._store_tokens") as mock_store:
             result = await refresh_access_token(AUTH, "test-server")
@@ -424,9 +424,9 @@ class TestRefreshToken:
         mock_http = MagicMock()
         mock_http.__aenter__ = AsyncMock(return_value=mock_http)
         mock_http.__aexit__ = AsyncMock(return_value=None)
-        mock_http.post = AsyncMock(side_effect=httpx.ConnectError("connection reset"))
+        mock_http.post = AsyncMock(side_effect=httpx2.ConnectError("connection reset"))
 
-        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+        with patch("mcp_plugin.oauth.httpx2.AsyncClient", return_value=mock_http), \
              patch("mcp_plugin.oauth.get_credential", return_value=raw), \
              patch("mcp_plugin.oauth._delete_tokens") as mock_delete:
             with pytest.raises(RuntimeError, match="refresh failed"):
@@ -442,11 +442,11 @@ class TestRefreshToken:
         mock_http = MagicMock()
         mock_http.__aenter__ = AsyncMock(return_value=mock_http)
         mock_http.__aexit__ = AsyncMock(return_value=None)
-        mock_http.post = AsyncMock(return_value=httpx.Response(
-            400, request=httpx.Request("POST", "https://token.example.com"),
+        mock_http.post = AsyncMock(return_value=httpx2.Response(
+            400, request=httpx2.Request("POST", "https://token.example.com"),
         ))
 
-        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+        with patch("mcp_plugin.oauth.httpx2.AsyncClient", return_value=mock_http), \
              patch("mcp_plugin.oauth.get_credential", return_value=raw), \
              patch("mcp_plugin.oauth._delete_tokens") as mock_delete:
             with pytest.raises(RuntimeError, match="refresh failed"):
@@ -476,7 +476,7 @@ class TestSlowDown:
         }
         mock_http = _make_http_mock(device_data, slow_down, token_data)
 
-        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+        with patch("mcp_plugin.oauth.httpx2.AsyncClient", return_value=mock_http), \
              patch("mcp_plugin.oauth._store_tokens"), \
              patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             result = await run_device_code_flow(AUTH, "test-server")

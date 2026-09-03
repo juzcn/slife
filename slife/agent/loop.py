@@ -1,6 +1,7 @@
 """Function-calling agent loop with real-time streaming and thinking support."""
 
 import asyncio
+import importlib
 import itertools
 import json
 import logging
@@ -74,23 +75,38 @@ class StreamStallError(TimeoutError):
 def _is_retryable_stream_error(exc: BaseException) -> bool:
     """True if *exc* is a transient LLM transport failure worth retrying.
 
-    ``httpx.TransportError`` covers ``RemoteProtocolError`` (peer closed the
-    connection before the chunked body completed), ``ReadError``,
-    ``ConnectError`` and the timeout classes. The SDKs' ``*APIConnectionError`` /
-    ``*APITimeoutError`` wrap the same httpx failures at request time and are
-    also retried. ``StreamStallError`` (a silent provider, enforced by the
-    loop's inactivity watchdog) is retried too. Bad-request, content-filter
-    and auth errors are NOT retried here — they are the SDK's / inbox's
-    concern, and 429/5xx are already retried by the SDK internally.
+    The ``*TransportError`` base covers ``RemoteProtocolError`` (peer closed
+    the connection before the chunked body completed), ``ReadError``,
+    ``ConnectError`` and the timeout classes.  Two HTTP generations coexist
+    in the runtime — the classic ``httpx``/``httpcore`` stack and the
+    ``httpx2``/``httpcore2`` fork the current anthropic / openai / mcp SDKs
+    are built on — and a provider that drops the streamed connection raises
+    a transport error from *either* generation (both have ``ReadError``
+    variants that stringify to ``""``), so both must be classified here.
+    ``httpcore2`` names its transport base ``NetworkError``, not
+    ``TransportError``.  The SDKs' ``*APIConnectionError`` /
+    ``*APITimeoutError`` wrap the same transport failures at request time
+    and are also retried.  ``StreamStallError`` (a silent provider,
+    enforced by the loop's inactivity watchdog) is retried too.
+    Bad-request, content-filter and auth errors are NOT retried here — they
+    are the SDK's / inbox's concern, and 429/5xx are already retried by the
+    SDK internally.
     """
     if isinstance(exc, StreamStallError):
         return True
-    try:
-        import httpx
-    except ImportError:
-        httpx = None
-    if httpx is not None and isinstance(exc, httpx.TransportError):
-        return True
+    for _lib, _base in (
+        ("httpx2", "TransportError"),
+        ("httpcore2", "NetworkError"),
+        ("httpx", "TransportError"),
+        ("httpcore", "NetworkError"),
+    ):
+        try:
+            _mod = importlib.import_module(_lib)
+        except ImportError:
+            continue
+        _exc_type = getattr(_mod, _base, None)
+        if _exc_type is not None and isinstance(exc, _exc_type):
+            return True
     try:
         import openai
     except ImportError:
@@ -870,9 +886,9 @@ class AgentLoop:
                     # the inbox keeps the history intact — correct for a
                     # transient failure.  ``str(e) or type(e).__name__``
                     # guards against provider exceptions that stringify to
-                    # empty (e.g. an httpx ReadError wrapping a message-less
-                    # BrokenResourceError) — an empty "Error: " must never
-                    # reach the user.
+                    # empty (e.g. an httpx2 / httpcore2 ReadError wrapping
+                    # a message-less BrokenResourceError) — an empty
+                    # "Error: " must never reach the user.
                     detail = str(e) or type(e).__name__
                     raise RuntimeError(
                         f"LLM stream failed after {attempts} attempts: {detail}"

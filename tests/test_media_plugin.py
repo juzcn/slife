@@ -502,7 +502,7 @@ class TestDashScopeAdapter:
         fake_client.__aenter__ = AsyncMock(return_value=fake_client)
         fake_client.__aexit__ = AsyncMock(return_value=False)
         monkeypatch.setattr(
-            dashscope_aigc.httpx, "AsyncClient",
+            dashscope_aigc.httpx2, "AsyncClient",
             lambda **kw: fake_client)
         result = await adapter.upload_file(model="m", file_path=f)
         assert result == "oss://dir/sub/pic.png"

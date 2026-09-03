@@ -44,6 +44,13 @@ _NOISY_LOGGER_NAMES = (
     "httpcore.proxy",
     "httpcore._synchronization",
     "httpx",
+    # The httpx2/httpcore2 generation the anthropic/openai/mcp SDKs are
+    # built on logs under its own namespace — same DEBUG dump hazard.
+    "httpcore2.connection",
+    "httpcore2.http11",
+    "httpcore2.proxy",
+    "httpcore2._synchronization",
+    "httpx2",
     "asyncio",
     "urllib3",
     "aiosqlite",              # dumps full SQL with messages JSON at DEBUG

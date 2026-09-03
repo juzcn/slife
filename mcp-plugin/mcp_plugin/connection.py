@@ -22,7 +22,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
-import httpx
+import httpx2
 
 from mcp_plugin.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
 from mcp_plugin.platform import kill_process_tree, resolve_command, terminate_process
@@ -102,7 +102,7 @@ class MCPServerConnection:
         # a "reconnect" in the _ever_connected sense.
         self._notify_on_next_success = False
         self._process: asyncio.subprocess.Process | None = None
-        self._http_client: httpx.AsyncClient | None = None
+        self._http_client: httpx2.AsyncClient | None = None
         self._session_id: str | None = None
         self._next_id: int = 0
         self._lock = asyncio.Lock()
@@ -401,9 +401,9 @@ class MCPServerConnection:
         # trigger the reconnect path.  Only connect/pool are bounded so a dead
         # endpoint can't hang the handshake; ping carries its own
         # 5s wait_for.
-        self._http_client = httpx.AsyncClient(
+        self._http_client = httpx2.AsyncClient(
             headers=headers,
-            timeout=httpx.Timeout(connect=10.0, read=None, write=None, pool=10.0),
+            timeout=httpx2.Timeout(connect=10.0, read=None, write=None, pool=10.0),
         )
 
         # Detect SSE: send GET with Accept: text/event-stream
@@ -418,7 +418,7 @@ class MCPServerConnection:
             "GET", url,
             headers={"Accept": "text/event-stream", **headers},
         )
-        resp: httpx.Response | None = None
+        resp: httpx2.Response | None = None
         try:
             resp = await self._http_client.send(request, stream=True)
             if (
@@ -464,7 +464,7 @@ class MCPServerConnection:
                 return
             else:
                 # Non-200 or wrong content-type — drain the response body
-                # (bounded) so the httpx connection is returned to the pool,
+                # (bounded) so the httpx2 connection is returned to the pool,
                 # then fall through to streamable HTTP.  aclose() without
                 # reading leaks the connection on every reconnect.
                 try:
@@ -723,7 +723,7 @@ class MCPServerConnection:
                 url, json=request, headers=headers,
             )
             resp.raise_for_status()
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             raise ConnectionError(
                 f"HTTP error from '{self.config.name}': {e}"
             ) from e

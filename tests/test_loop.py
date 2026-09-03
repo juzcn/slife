@@ -356,8 +356,8 @@ class TestProcessStream:
     async def test_retries_transient_error(
         self, sample_model_config, empty_registry, history,
     ):
-        """A transient httpx transport failure is retried transparently."""
-        import httpx
+        """A transient httpx2 transport failure is retried transparently."""
+        import httpx2
 
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -366,7 +366,7 @@ class TestProcessStream:
         async def flaky_stream(messages, tools, **kwargs):
             calls.append(1)
             if len(calls) == 1:
-                raise httpx.RemoteProtocolError(
+                raise httpx2.RemoteProtocolError(
                     "peer closed connection without sending complete message "
                     "body (incomplete chunked read)"
                 )
@@ -410,7 +410,7 @@ class TestProcessStream:
         self, sample_model_config, empty_registry, history,
     ):
         """Partial streamed output is cleared via on_stream_retry before retry."""
-        import httpx
+        import httpx2
 
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -421,7 +421,7 @@ class TestProcessStream:
             calls.append(1)
             if len(calls) == 1:
                 yield StreamChunk(thinking="partial thinking...")
-                raise httpx.RemoteProtocolError("connection dropped mid-stream")
+                raise httpx2.RemoteProtocolError("connection dropped mid-stream")
             yield StreamChunk(content="clean answer")
             yield StreamChunk(usage=TokenUsage(2, 1, 3))
 
@@ -441,7 +441,7 @@ class TestProcessStream:
         self, sample_model_config, empty_registry, history,
     ):
         """Retryable failures stop after the max retries and wrap the error."""
-        import httpx
+        import httpx2
 
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -449,7 +449,7 @@ class TestProcessStream:
 
         async def always_fails(messages, tools, **kwargs):
             calls.append(1)
-            raise httpx.RemoteProtocolError("peer closed connection")
+            raise httpx2.RemoteProtocolError("peer closed connection")
             yield  # pragma: no cover — marks this as an async generator
 
         with (
@@ -486,7 +486,7 @@ class TestProcessStream:
     ):
         """``stream_max_retries=0`` disables retry — one attempt, then the
         transient error propagates immediately (subagent fail-fast)."""
-        import httpx
+        import httpx2
 
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry, stream_max_retries=0)
@@ -494,7 +494,7 @@ class TestProcessStream:
 
         async def flaky_stream(messages, tools, **kwargs):
             calls.append(1)
-            raise httpx.RemoteProtocolError("peer closed connection")
+            raise httpx2.RemoteProtocolError("peer closed connection")
             yield  # pragma: no cover — marks this as an async generator
 
         with (
@@ -513,6 +513,34 @@ class TestProcessStream:
         transient transport failures."""
         from slife.agent.loop import _is_retryable_stream_error
         assert _is_retryable_stream_error(StreamStallError(120.0)) is True
+
+    def test_httpx2_httpcore2_transport_errors_retryable(self):
+        """The runtime's second HTTP generation (``httpx2``/``httpcore2`` —
+        what the current anthropic / openai / mcp SDKs are built on) must be
+        classified retryable too.  A provider that drops the streamed
+        connection surfaces as a message-less ``ReadError`` there (str() ==
+        ""); previously it was exempted from the retry ladder and bubbled to
+        the user as an empty ✗.
+        """
+        from slife.agent.loop import _is_retryable_stream_error
+        import httpx2
+        assert _is_retryable_stream_error(httpx2.ReadError("")) is True
+        assert (
+            _is_retryable_stream_error(httpx2.RemoteProtocolError("x", request=None))
+            is True
+        )
+        try:
+            import httpcore2
+            from anyio import BrokenResourceError
+        except ImportError:
+            httpcore2 = None
+        if httpcore2 is not None:
+            # The exact chain from the failing anthropic stream: httpcore2
+            # surfaces ReadError wrapping a message-less BrokenResourceError.
+            assert (
+                _is_retryable_stream_error(httpcore2.ReadError(BrokenResourceError()))
+                is True
+            )
 
     @pytest.mark.asyncio
     async def test_stream_stall_fails_fast(
@@ -593,7 +621,7 @@ class TestProcessStream:
     ):
         """Retry exhaustion wraps even an error that stringifies to empty in
         an actionable RuntimeError (detail falls back to the type name)."""
-        import httpx
+        import httpx2
 
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -601,7 +629,7 @@ class TestProcessStream:
 
         async def empty_err_stream(messages, tools, **kwargs):
             calls.append(1)
-            raise httpx.ReadError("")  # str() == "" — the empty-message case
+            raise httpx2.ReadError("")  # str() == "" — the empty-message case
             yield  # pragma: no cover — marks this as an async generator
 
         with (

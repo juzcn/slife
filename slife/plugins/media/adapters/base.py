@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-import httpx
+import httpx2
 
 logger = logging.getLogger(__name__)
 
@@ -91,14 +91,14 @@ class ArtifactSaver:
         if not ext:
             ext = Path(url.split("?")[0]).suffix.lstrip(".") or "bin"
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(300.0, connect=30.0),
+            async with httpx2.AsyncClient(
+                timeout=httpx2.Timeout(300.0, connect=30.0),
                 follow_redirects=True,
             ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 data = resp.content
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             raise MediaAdapterError(
                 f"Failed to download generated {kind}: {e}"
             ) from e

@@ -24,7 +24,7 @@ import sys
 import time as _time
 from dataclasses import dataclass
 
-import httpx
+import httpx2
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +213,7 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
     if client_secret:
         body["client_secret"] = client_secret
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as http:
+    async with httpx2.AsyncClient(timeout=httpx2.Timeout(30.0)) as http:
         try:
             resp = await http.post(
                 device_auth_url,
@@ -222,7 +222,7 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
             )
             resp.raise_for_status()
             device_data = resp.json()
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             raise ConnectionError(
                 f"Failed to request device code from {device_auth_url}: {e}"
             ) from e
@@ -280,7 +280,7 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
     # The device-code POST above used its own short-lived client (now closed).
     # Polling must run on a fresh client owned by this function — reusing the
     # closed one raises RuntimeError on the first poll and wedges connect().
-    http = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+    http = httpx2.AsyncClient(timeout=httpx2.Timeout(30.0))
     try:
         return await _poll_token(
             http, server_name, token_url, poll_body, deadline, poll_interval,
@@ -290,7 +290,7 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
 
 
 async def _poll_token(
-    http: httpx.AsyncClient,
+    http: httpx2.AsyncClient,
     server_name: str,
     token_url: str,
     poll_body: dict,
@@ -315,7 +315,7 @@ async def _poll_token(
             )
             resp.raise_for_status()
             token_data = resp.json()
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             logger.warning("oauth_poll_error server=%s err=%s", server_name, e)
             continue
 
@@ -413,7 +413,7 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
     if client_secret:
         body["client_secret"] = client_secret
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as http:
+    async with httpx2.AsyncClient(timeout=httpx2.Timeout(30.0)) as http:
         try:
             resp = await http.post(
                 token_url,
@@ -422,7 +422,7 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
             )
             resp.raise_for_status()
             data = resp.json()
-        except httpx.HTTPStatusError as e:
+        except httpx2.HTTPStatusError as e:
             # A 4xx from the token endpoint usually means the grant is dead
             # (invalid_grant / invalid_client) — only then destroy the stored
             # refresh token so the user must re-authorize.
@@ -432,7 +432,7 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
                 f"Token refresh failed for '{server_name}': {e}. "
                 f"Re-run device code flow."
             ) from e
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             # Transient transport failure (connection reset, timeout) — keep
             # the stored refresh token so the next refresh can succeed.
             raise RuntimeError(

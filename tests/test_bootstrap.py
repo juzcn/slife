@@ -107,9 +107,11 @@ class TestSetupLogging:
         bootstrap.setup_logging()
 
         assert logging.getLogger("httpx").level == logging.WARNING
+        assert logging.getLogger("httpx2").level == logging.WARNING
         assert logging.getLogger("asyncio").level == logging.WARNING
         assert logging.getLogger("openai._base_client").level == logging.WARNING
         assert logging.getLogger("httpcore.connection").level == logging.WARNING
+        assert logging.getLogger("httpcore2.http11").level == logging.WARNING
 
         # Cleanup — close file handlers to avoid ResourceWarning
         for h in root.handlers:
