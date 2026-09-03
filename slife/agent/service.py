@@ -1242,37 +1242,52 @@ class AgentService:
             if not started:
                 raise RuntimeError("wechat plugin spawn failed")
 
-            # Auto-restore session at startup (triggers server-side poll loop)
             wechat_client = self._plugins["wechat"].client
             assert wechat_client is not None
             self._tool_ctx.wechat_client = wechat_client
-            try:
-                await wechat_client.call_tool("wechat_check_status", {})
-                logger.debug("wechat_auto_restore_triggered")
-            except Exception:
-                pass
 
-            # Start background poll loop — injects WeChat messages into the inbox
-            self._plugins["wechat"].poll_task = asyncio.create_task(self._wechat_poll_loop())
+            # Best-effort session restore (triggers the server-side poll loop).
+            # Runs as a supervised background task — never awaited in the
+            # startup path — so a slow or hung iLink endpoint degrades (the
+            # restore is re-triggerable any time via the wechat_check_status
+            # tool) instead of stalling the watchdog install and the rest of
+            # startup.  Bounded by the shared config ``tool_timeout``.  Reads
+            # the client at call time so the same helper serves both startup
+            # and watchdog-restart paths.
+            async def _restore_session() -> None:
+                client = self._plugins["wechat"].client
+                if client is None:
+                    return
+                try:
+                    await client.call_tool("wechat_check_status", {})
+                    logger.debug("wechat_auto_restore_triggered")
+                except Exception as e:
+                    logger.debug("wechat_restore_failed err=%r", e)
 
-            # Watchdog: on crash, respawn + restore poll loop
+            # Watchdog first — the normal spawn flow: a crash is supervised
+            # regardless of network state.  On restart it re-spawns and
+            # re-fires the same best-effort glue (restore + poll loop).
             async def _restart_wechat():
                 self._cancel_plugin_task("wechat")
+                self._cancel_plugin_task("wechat", "restore_task")
                 await self._spawn_plugin_generic(
                     "wechat", "slife.plugins.wechat.server",
                 )
                 wc = self._plugins["wechat"].client
                 if wc is not None:
                     self._tool_ctx.wechat_client = wc
-                    try:
-                        await wc.call_tool("wechat_check_status", {})
-                    except Exception:
-                        pass
+                    self._plugins["wechat"].restore_task = asyncio.create_task(
+                        _restore_session(),
+                    )
                 self._plugins["wechat"].poll_task = asyncio.create_task(
                     self._wechat_poll_loop(),
                 )
 
             self._plugins["wechat"].start_watchdog(restart_cb=_restart_wechat)
+
+            # Background work: receive messages (poll) + auto-restore session.
+            self._plugins["wechat"].poll_task = asyncio.create_task(self._wechat_poll_loop())
+            self._plugins["wechat"].restore_task = asyncio.create_task(_restore_session())
 
             logger.info("wechat_init_done tools=%d", len(self.tool_registry.list_tools()))
             from slife.health import record

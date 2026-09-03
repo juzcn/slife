@@ -136,6 +136,11 @@ class PluginLifecycle:
         self.process = None     # MCPWrapperProcess
         self.port: int = 0
         self.poll_task: asyncio.Task | None = None
+        # Optional plugin-side background task, reseeded on watchdog restart
+        # (e.g. wechat's best-effort session-restore trigger) — supervised
+        # like poll_task, so a pending network call can't linger against a
+        # dead or replaced client.
+        self.restore_task: asyncio.Task | None = None
 
         # Exact tool names this plugin registered (bare names — no {name}__
         # prefix), so dead-process cleanup and stop can unregister them by
@@ -515,6 +520,17 @@ class PluginLifecycle:
             except asyncio.CancelledError:
                 pass
             self.poll_task = None
+
+        # Same supervision for the optional plugin-side restore task — cancel
+        # any pending best-effort restore (e.g. wechat's session trigger) so
+        # it can't drain against a client we are about to disconnect.
+        if self.restore_task is not None:
+            self.restore_task.cancel()
+            try:
+                await self.restore_task
+            except asyncio.CancelledError:
+                pass
+            self.restore_task = None
 
         if self.client is not None and self.client.is_connected:
             try:
