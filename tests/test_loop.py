@@ -14,6 +14,7 @@ from slife.agent.loop import (
     AgentResult,
     MaxIterationsExceeded,
     AgentEventHandler,
+    StreamStallError,
 )
 from slife.agent.llm_client import LLMClient, TokenUsage, StreamChunk
 
@@ -506,6 +507,111 @@ class TestProcessStream:
                 await loop._process_stream(history, None)
 
         assert len(calls) == 1
+
+    def test_stall_error_is_retryable(self):
+        """StreamStallError routes through the retry ladder like other
+        transient transport failures."""
+        from slife.agent.loop import _is_retryable_stream_error
+        assert _is_retryable_stream_error(StreamStallError(120.0)) is True
+
+    @pytest.mark.asyncio
+    async def test_stream_stall_fails_fast(
+        self, sample_model_config, empty_registry, history,
+    ):
+        """A silent provider (no chunk, no error) trips the inactivity
+        watchdog and fails fast (subagent-style) with an actionable error."""
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(
+            llm, empty_registry,
+            stream_stall_timeout=0.05, stream_max_retries=0,
+        )
+        calls: list[int] = []
+
+        async def silent_stream(messages, tools, **kwargs):
+            calls.append(1)
+            await asyncio.sleep(3600)
+            yield  # pragma: no cover — marks this as an async generator
+
+        with patch.object(llm, "chat_stream", side_effect=silent_stream):
+            with pytest.raises(
+                RuntimeError, match="LLM stream stalled — no data for",
+            ):
+                await loop._process_stream(history, None)
+
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_stall_retries_then_succeeds(
+        self, sample_model_config, empty_registry, history,
+    ):
+        """A stall is retryable — a second attempt that streams recovers."""
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, empty_registry, stream_stall_timeout=0.05)
+        calls: list[int] = []
+
+        async def silent_then_clean(messages, tools, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                await asyncio.sleep(3600)
+                yield  # pragma: no cover
+            yield StreamChunk(content="clean answer")
+            yield StreamChunk(usage=TokenUsage(2, 1, 3))
+
+        with (
+            patch.object(llm, "chat_stream", side_effect=silent_then_clean),
+            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+        ):
+            result = await loop._process_stream(history, None)
+
+        assert result.content == "clean answer"
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_stream_stall_resets_per_chunk_not_total_cap(
+        self, sample_model_config, empty_registry, history,
+    ):
+        """The watchdog resets on every chunk — a slow-but-live stream that
+        takes longer in total than the stall window is never cut (a total
+        cap of the same size would kill it)."""
+        llm = LLMClient(sample_model_config)
+        # 2 chunks 100ms apart = 200ms total, but each gap < 150ms stall.
+        loop = AgentLoop(llm, empty_registry, stream_stall_timeout=0.15)
+
+        async def slow_but_alive(messages, tools, **kwargs):
+            for text in ("a", "b"):
+                await asyncio.sleep(0.1)
+                yield StreamChunk(content=text)
+
+        with patch.object(llm, "chat_stream", side_effect=slow_but_alive):
+            result = await loop._process_stream(history, None)
+
+        assert result.content == "ab"
+
+    @pytest.mark.asyncio
+    async def test_retry_exhaustion_keeps_non_empty_detail(
+        self, sample_model_config, empty_registry, history,
+    ):
+        """Retry exhaustion wraps even an error that stringifies to empty in
+        an actionable RuntimeError (detail falls back to the type name)."""
+        import httpx
+
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, empty_registry)
+        calls: list[int] = []
+
+        async def empty_err_stream(messages, tools, **kwargs):
+            calls.append(1)
+            raise httpx.ReadError("")  # str() == "" — the empty-message case
+            yield  # pragma: no cover — marks this as an async generator
+
+        with (
+            patch.object(llm, "chat_stream", side_effect=empty_err_stream),
+            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+        ):
+            with pytest.raises(RuntimeError, match="ReadError"):
+                await loop._process_stream(history, None)
+
+        assert len(calls) == 3
 
 
 # ── _execute_tools ────────────────────────────────────────────────────

@@ -43,6 +43,33 @@ _MAX_USAGE_CACHE = 1000
 _MAX_CONTEXT_DATES = 5000
 _LLM_STREAM_RETRY_BASE_DELAY = 0.5  # seconds, linear backoff: 0.5 * attempt
 
+#: Inactivity watchdog on LLM streaming: a stream that produces no chunk
+#: for this many seconds is declared "stalled" — the provider accepted the
+#: request (``200 OK``) then went silent (Bailian served the weather turn
+#: exactly like this: zero bytes for ~7 min before dropping the
+#: connection).  Unlike ``stream_timeout`` — a *total* wall-clock cap on
+#: one stream call — this resets on every chunk, so a slow-but-live
+#: generation is never cut; only a truly dead stream is.  A stall routes
+#: through the same retry ladder as any other transient transport failure.
+_LLM_STREAM_STALL_TIMEOUT = 120.0
+
+
+class StreamStallError(TimeoutError):
+    """An LLM stream produced no chunk for the inactivity deadline.
+
+    Raised by the contract layer's read loop — a provider that answers
+    ``200 OK`` and then sends nothing is indistinguishable from a slow
+    generation anywhere higher up, so the stall is enforced with a
+    per-chunk timeout (reset on every received chunk), never a total cap.
+    Carries an actionable message: the deep ``ReadError`` chains from some
+    gateways stringify to ``""``, which would otherwise surface to the
+    user as an empty ``Error: ``.
+    """
+
+    def __init__(self, timeout: float):
+        self.stall_timeout = timeout
+        super().__init__(f"LLM stream stalled — no data for {timeout:g}s")
+
 
 def _is_retryable_stream_error(exc: BaseException) -> bool:
     """True if *exc* is a transient LLM transport failure worth retrying.
@@ -51,10 +78,13 @@ def _is_retryable_stream_error(exc: BaseException) -> bool:
     connection before the chunked body completed), ``ReadError``,
     ``ConnectError`` and the timeout classes. The SDKs' ``*APIConnectionError`` /
     ``*APITimeoutError`` wrap the same httpx failures at request time and are
-    also retried. Bad-request, content-filter and auth errors are NOT retried
-    here — they are the SDK's / inbox's concern, and 429/5xx are already
-    retried by the SDK internally.
+    also retried. ``StreamStallError`` (a silent provider, enforced by the
+    loop's inactivity watchdog) is retried too. Bad-request, content-filter
+    and auth errors are NOT retried here — they are the SDK's / inbox's
+    concern, and 429/5xx are already retried by the SDK internally.
     """
+    if isinstance(exc, StreamStallError):
+        return True
     try:
         import httpx
     except ImportError:
@@ -239,6 +269,7 @@ class AgentLoop:
         advance_context_start: Callable[[int], Awaitable[bool]] | None = None,
         stream_timeout: float | None = None,
         stream_max_retries: int | None = None,
+        stream_stall_timeout: float | None = None,
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -262,6 +293,17 @@ class AgentLoop:
             stream_max_retries
             if stream_max_retries is not None
             else _LLM_STREAM_MAX_RETRIES
+        )
+        #: Inactivity watchdog on LLM streaming: seconds of silence before
+        #: a stream is declared stalled (reset on every chunk).  ``None``
+        #: inherits the module default; ``0``/negative disables.  Unlike
+        #: ``stream_timeout`` this is not a total cap — a slow-but-live
+        #: generation streams on, only a dead stream is cut (the TUI would
+        #: otherwise sit on "processing" forever with no error visible).
+        self.stream_stall_timeout = (
+            _LLM_STREAM_STALL_TIMEOUT
+            if stream_stall_timeout is None
+            else stream_stall_timeout
         )
         #: Persist the live-context start boundary after a trim evicted
         #: *count* oldest turns, so a restart rebuilds the exit-time context
@@ -690,7 +732,31 @@ class AgentLoop:
         later raises.  Returns the accumulated usage.
         """
         stream_usage = TokenUsage()
-        async for chunk in stream_iter:
+        stall = (
+            self.stream_stall_timeout
+            if self.stream_stall_timeout is not None and self.stream_stall_timeout > 0
+            else None
+        )
+        while True:
+            if stall is not None:
+                try:
+                    async with asyncio.timeout(stall):
+                        try:
+                            chunk = await stream_iter.__anext__()
+                        except StopAsyncIteration:
+                            return stream_usage
+                except TimeoutError:
+                    # Provider answered but is sending nothing — a stall,
+                    # not a slow generation.  The retry ladder in
+                    # _process_stream treats it like any other transient
+                    # failure (and its message is non-empty by contract).
+                    raise StreamStallError(stall) from None
+            else:
+                try:
+                    chunk = await stream_iter.__anext__()
+                except StopAsyncIteration:
+                    return stream_usage
+
             emitted[0] = True
 
             if chunk.thinking:
@@ -722,7 +788,6 @@ class AgentLoop:
 
             if chunk.usage:
                 stream_usage = chunk.usage
-        return stream_usage
 
     async def _process_stream(
         self,
@@ -751,8 +816,10 @@ class AgentLoop:
         # is untouched while streaming — the assistant message is only added
         # after this method returns — so a retry sends identical messages.
         # ``stream_max_retries == 0`` disables retry entirely (fail fast);
-        # ``stream_timeout`` caps a single stream call so a silent provider
-        # stall surfaces as a catchable TimeoutError instead of hanging.
+        # ``stream_timeout`` caps a single stream call in TOTAL wall-clock
+        # time (subagents), while ``stream_stall_timeout`` cuts a silent
+        # provider per-chunk (inactivity, applies to every agent) — see
+        # ``_consume_stream``.
         attempts = 0
         max_retries = self.stream_max_retries
         # One-element holder so `emitted_any` survives a mid-stream raise —
@@ -801,9 +868,14 @@ class AgentLoop:
                     # Wrap the exhausted-retries error so the surfaced message
                     # is actionable.  RuntimeError is not a BadRequestError, so
                     # the inbox keeps the history intact — correct for a
-                    # transient failure.
+                    # transient failure.  ``str(e) or type(e).__name__``
+                    # guards against provider exceptions that stringify to
+                    # empty (e.g. an httpx ReadError wrapping a message-less
+                    # BrokenResourceError) — an empty "Error: " must never
+                    # reach the user.
+                    detail = str(e) or type(e).__name__
                     raise RuntimeError(
-                        f"LLM stream failed after {attempts} attempts: {e}"
+                        f"LLM stream failed after {attempts} attempts: {detail}"
                     ) from e
                 # Reset partial state + TUI display before retrying, so the
                 # retried request starts visually clean.
