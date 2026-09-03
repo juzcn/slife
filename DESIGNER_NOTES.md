@@ -79,26 +79,7 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 5.1 启动时（用户手改了大模型设置）或更换大模型时，上下文窗口可能变大或变小，怎么处理？
 
-5.2 定时任务，是不是可以像heart beat那样触发，到时间，则将任务说明注入到inbox里面，排队等待执行。要创建三个native工具，创建定时任务，删除定时任务(包括清空)，查看任务状态。创建定时任务要做成幂等的，用set。slife启动时检查有哪些漏过的执行，大模型自己可以选择执行，或放弃。
-
-5.3 forget 和 recall， 是harness还是大模型选择调用，大模型有上下文的全部内容，它可以选择压缩上下文，唯一的要求就是上下文压缩后，依然符合消息数组的规范要求。recall 这个工具已经有了。
-
-5.4 Refactor marker design
-
-现状：我们有Heartbeat, Subagent, Remote Agent, Schedule, Wechat, TURN, TURN_TRIM，都属于系统生成或更改消息，但机制混乱，语义不清。
-
-
-一、从信息来源上分我们有channel，harness
-
-channel：Heartbeat, Subagent, Remote Agent, Schedule, Wechat
-
-harness: TURN, TURN_TRIM
-
-二、从持久性上分
-
-消息携带的Marker持久到数据库：Heartbeat, Subagent, Remote Agent, Schedule, Wechat
-
-消息携带的Marker不持久到数据库：TURN, TURN_TRIM， TURN从数据库读取，当前session。其中TURN 从数据库读取。
+5.2 forget 和 recall， 是harness还是大模型选择调用，大模型有上下文的全部内容，它可以选择压缩上下文，唯一的要求就是上下文压缩后，依然符合消息数组的规范要求。recall 这个工具已经有了。
 
 
 
