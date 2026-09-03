@@ -77,7 +77,7 @@ class ToolContext:
     set_max_iterations: Callable[[int], str] | None = None
     """Runtime hook to change the agent loop's per-turn iteration cap
     (0 = unlimited).  Populated by AgentService after the loop is built;
-    used by the ``set_max_iterations`` meta tool."""
+    used by the ``set_max_iterations`` tool."""
 
     fire_schedule_now: Callable[[str], Awaitable[str]] | None = None
     """Run a scheduled task immediately (record a run + inject its trigger).

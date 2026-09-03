@@ -1056,7 +1056,7 @@ class AgentLoop:
 
             if is_async:
                 # ── Async: schedule background task ─────────────
-                from slife.tools.meta import schedule as schedule_async
+                from slife.tools.system import schedule as schedule_async
 
                 if _ctx is not None:
                     # The background task runs AFTER _execute_tools' finally

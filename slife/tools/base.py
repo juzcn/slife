@@ -160,7 +160,7 @@ class Tool(ABC):
     # Logical category for grouping in list_native_tools output — a
     # free-form display label each native tool sets itself (e.g. System,
     # Execution, Skills, Models, Config, Credentials, CLI, REST API,
-    # Meta, Vision, Display, Subagent, Harness).  Built-in plugin tools
+    # Vision, Display, Subagent, Harness).  Built-in plugin tools
     # are grouped by their plugin name instead; external MCP tools are
     # excluded from the listing.
     category: ClassVar[str] = ""

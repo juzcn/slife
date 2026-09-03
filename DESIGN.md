@@ -1044,7 +1044,7 @@ slife/
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
     context.py         #   ToolContext — runtime refs (registry, mcp_client, config, history)
     _config_io.py      #   JSON5 read/write helpers
-    system.py          #   system_health + per-plugin checks
+    system.py          #   System tools — health checks, list_native_tools, async tasks, clear_context, set_max_iterations, notify_user
     mcp.py             #   mcp_tool_load — on-demand external tool loading
     exec.py            #   Shell, Python, package install (+ _kill_process_tree)
     schedule.py        #   Scheduled-task tools (scheduled_task_*/scheduled_run_* + run_schedule_now)
@@ -1056,7 +1056,6 @@ slife/
     config.py          #   Config env var + native tool toggles
     credentials.py     #   Credential check/inject/uninject
     embeddings.py      #   embeddings_model_* — first-class embeddings section config
-    meta.py            #   list_native_tools, check_async, cancel_async, clear_context, notify_user
   plugins/             # Built-in plugins (auto-discovered server.py packages)
     memdb/             #   Turns database (store, search, embeddings, schema.sql)
     wechat/            #   WeChat messaging (iLink ClawBot client)

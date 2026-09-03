@@ -1,4 +1,4 @@
-"""Tests for slife.tools.meta — ListNativeToolsTool, CheckAsyncTool, CancelAsyncTool, ClearContextTool."""
+"""Tests for slife.tools.system — ListNativeToolsTool, CheckAsyncTool, CancelAsyncTool, ClearContextTool."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from slife.tools.meta import (
+from slife.tools.system import (
     ListNativeToolsTool,
     CheckAsyncTool,
     CancelAsyncTool,
@@ -114,7 +114,7 @@ class TestListNativeToolsTool:
     def test_metadata(self):
         tool = ListNativeToolsTool()
         assert tool.name == "list_native_tools"
-        assert tool.category == "Meta"
+        assert tool.category == "System"
         assert tool.parameters == {"type": "object", "properties": {}, "required": []}
 
     @pytest.mark.asyncio
@@ -370,7 +370,7 @@ class TestCheckAsyncTool:
     def test_metadata(self):
         tool = CheckAsyncTool()
         assert tool.name == "check_async"
-        assert tool.category == "Meta"
+        assert tool.category == "System"
         assert "task_id" in tool.parameters["required"]
 
     @pytest.mark.asyncio
@@ -451,7 +451,7 @@ class TestCancelAsyncTool:
     def test_metadata(self):
         tool = CancelAsyncTool()
         assert tool.name == "cancel_async"
-        assert tool.category == "Meta"
+        assert tool.category == "System"
 
     @pytest.mark.asyncio
     async def test_task_not_found(self):
@@ -503,7 +503,7 @@ class TestClearContextTool:
     def test_metadata(self):
         tool = ClearContextTool()
         assert tool.name == "clear_context"
-        assert tool.category == "Meta"
+        assert tool.category == "System"
         assert tool.parameters == {"type": "object", "properties": {}, "required": []}
 
     @pytest.mark.asyncio

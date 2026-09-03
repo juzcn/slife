@@ -242,7 +242,7 @@ class AgentService:
             system_prompt=build_system_prompt(self.config),
         )
         self._tool_ctx.message_history = self.message_history
-        # Runtime iteration-cap hook for the set_max_iterations meta tool.
+        # Runtime iteration-cap hook for the set_max_iterations tool.
         self._tool_ctx.set_max_iterations = self.agent_loop.set_max_iterations
         # Scheduled-task manual-fire hook for the run_schedule_now tool.
         # Subagents are workers, never the scheduler — leave it None there.
