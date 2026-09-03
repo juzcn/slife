@@ -77,36 +77,46 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 5. 设计特点
 
-5.1 没有session概念，agent重启使用退出时的上下文。
+5.1 Sessionless：没有session概念，agent重启使用退出时的上下文。
 
-5.2 会话和持久化都是以turn为单位。
+5.2 Turn-based：会话和持久化都是以turn为单位。
 
-5.3 系统架构是主进程+插件。
+5.3 Architecture: 系统架构是主进程+插件。
 - 主进程是TUI、agentloop+和核心工具；
 - 插件是一个标准的http streamable MCP服务，独立进程。
 - 插件契约：在MCP契约之上，增加了内部工具和大模型可见工具的区分，内置工具以__为前缀。每个插件有__check工具。
 
-5.4 所有Function tool都注入timeout, async， approve 参数，由agent运行时选择。
+5.4 Meta arguments: 所有Function tool都注入timeout, async， approve 参数，由agent运行时选择。
 
-5.5 动态提示词通过_sys_note工具对注入，保护缓存命中。
+5.5 Dynamic Prompt: 动态提示词通过_sys_note工具对注入，保护缓存命中。
 
-5.6 通过在原始user和assitant消息中追加Marker来注入需要大模型知道的信息。
+5.6 Marker: 通过在原始user和assitant消息中追加Marker来注入需要大模型知道的信息。
 
-5.7 大模型保持静默的契约是输出".".
+5.7 Silence Contract:大模型保持静默的契约是输出".".
 
-5.8 默认每30分钟，注入一条心跳Marker user消息。
+5.8 Heartbeat: 默认每30分钟，注入一条心跳Marker user消息。
 
-5.9 定时任务也采用用心跳机制。到触发时间，注入一条心跳任务的user消息。
+5.9 Schedule: 定时任务也采用用心跳机制。到触发时间，注入一条心跳任务的user消息。
 
-5.10 多agent依赖mosquitto消息中间件，以A2A标准为蓝本实现。 
+5.10 Multiagents: 多agent依赖mosquitto消息中间件，以A2A标准为蓝本实现。 
 
-5.11 一键安装：从源码安装，避免pypi库的版本冲突；自动安装所有依赖，开箱即用，但语义功能需独立安装和配置。
+5.11 Progressive disclosure: 外部mcp 默认autoload=false, 使用渐进式披露，tool-search, tool-load
+
+5.12 Unified Context: Agent通过Inbox管理输入，维护一个会话上下文和历史。
+
+5.13 Channel: 定义为注入Inbox的来源：System(心跳、定时任务)、Humain（TUI 输入）、Wechat、Subagent（异步结果推送）、Agent（结果推送，非标准a2a模式）。
+
+5.14 Installation: 一键安装：从源码安装，避免pypi库的版本冲突；自动安装所有依赖，开箱即用，但语义功能需独立安装和配置。
 
 6. To do list
 
 6.1 启动时（用户手改了大模型设置）或更换大模型时，上下文窗口可能变大或变小，怎么处理？
 
 6.2 forget 和 recall：目前forget只有两个简单机制，大模型调用的clear context，另一个是harness调用的trim。recall是一个混合检索，以工具结果的形式注入到上下文。
+
+6.3 共享代码库？现在项目里有重复的functions，增大代码量和维护量，是否值得？
+
+6.4 mcp autoload=true的，建索引时跳过。
 
 
 
