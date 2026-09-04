@@ -286,13 +286,13 @@ async def job_run(job: str, params: str = "{}", ctx: Context | None = None) -> s
 @mcp.tool(
     name="job-create",
     description=(
-        "Create a job from Python code. The code must define one public "
-        "function (typed params + docstring) and may import the llm handle "
-        "from slife.plugins.job_coding for one-shot calls (e.g. translate). "
-        "The file is "
-        "written to the jobs directory and the tool registered immediately; "
-        "it persists across restarts. Load the job-coding skill first for "
-        "the exact conventions and a template."
+        "Create a job — the agent's way to add a durable native tool — "
+        "from Python code: the job file becomes its own MCP tool, callable "
+        "directly and persisting across restarts. The code must define one "
+        "public function (typed params + docstring) and may import the llm "
+        "handle from slife.plugins.job_coding for one-shot calls "
+        "(e.g. translate). Load the job-coding skill first for the exact "
+        "conventions and a template."
     ),
 )
 async def job_create(name: str, code: str, ctx: Context | None = None) -> str:

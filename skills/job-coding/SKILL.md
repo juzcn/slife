@@ -1,10 +1,15 @@
+---
+name: job-coding
+description: Create and manage the agent's own native tools — deterministic, code-defined Jobs, each exposed as its own MCP tool (job-create / job-edit / job-list / job-remove / job-run + a per-job tool). Load this skill when the user asks for a reusable tool or automation that is well-specified, repeatable, and data-in/result-out (translate, extract, format, convert). The body covers when a Job fits vs an existing skill vs doing it inline.
+---
+
 # job-coding — how to write a Job
 
 A **Job** is a deterministic, code-defined unit of work. Its control flow
 is Python — not prompts. Each LLM call a job makes is one narrow, explicit
-one-shot chat written by you, the author. Nothing from the conversation
-(history, context, system prompt) ever reaches the model from a job:
-structural guarantee, because the job only sees its declared arguments.
+one-shot chat written by you, the author. A job receives exactly the
+arguments its caller declares, and every `llm.chat` message is built from
+those arguments — that closed boundary is what makes a job deterministic.
 
 ## Where jobs live
 
@@ -134,20 +139,20 @@ catch it). A pure-computation job must NOT import it.
   config); when empty/absent, the job LLM (`job_coding_model`)
   is used — a model you configure explicitly, independent of the
   conversation's active model. See the `translate` sample.
-- Every message is constructed from the job's arguments. **Never** try to
-  reconstruct conversation history, and never pass caller context you were
-  not given as a declared argument.
+- `llm.chat` messages are constructed from the job's arguments only — a
+  deterministic one-shot; there is no history to reconstruct.
 - **A job that does not need the LLM has no `llm` import and calls nothing
   on it** — the handle exists only for LLM jobs. See `slugify` above.
 
 ## Determinism contract
 
 1. `job-run` and the per-job tool invoke the function with **exactly** its
-   declared arguments — nothing more.
-2. Do not read global state you were not given. No sockets, no secrets, no
-   agent context. If a job needs a value, make it a parameter.
-3. The LLM is called only where your code explicitly calls `llm.chat` —
-   control flow stays in Python.
+   declared arguments.
+2. Everything else is plain Python: a job may use any library, call APIs,
+   or reach the network — the author decides. Values the code needs beyond
+   the arguments become parameters.
+3. The LLM is called where your code explicitly calls `llm.chat` — control
+   flow stays in Python.
 4. Jobs are user-written code executed in the plugin process: keep code
    reviewable and defensive (validate input, return clear errors).
 
@@ -162,8 +167,8 @@ catch it). A pure-computation job must NOT import it.
 - **A job name must match the function name exactly.** If `job-create(name,
   code)` writes a file whose function is named differently, registration
   fails with a clear error.
-- **Never read the agent's context** (env vars, the conversation, other
-  tools). A job is self-contained: everything it needs comes in as a
+- **A job is self-contained.** The runner supplies exactly the declared
+  arguments and nothing else — everything the code needs must arrive as a
   parameter.
 - **Validate input defensively** and return a clear error string rather
   than raising deep in library code — the whole tool result is the error
@@ -225,11 +230,19 @@ jobs directory directly (e.g. with the editor tools) — the plugin picks them
 up on restart (`<data_dir>/jobs/`); prefer `job-create`/`job-edit` when you
 want it live immediately.
 
-## When to use a Job vs do it inline
+## When to create a Job vs use a skill vs do it inline
 
-Use a Job when the task is *well-specified, repeatable, and its input is
-just data* — translate, summarize, extract, classify, format, convert,
-structured rewrite. Jobs give deterministic execution and a stable interface.
+A user request like "make a tool that does X" has **three** legitimate
+homes — pick by what X needs:
 
-Do not build a Job for open-ended or exploratory work — that is what the
-agent loop is for.
+| The task needs… | Mechanism |
+|---|---|
+| A stable, reusable operation with a fixed interface — well-specified, repeatable, data-in/result-out ("translate", "summarize", "a tool that searches X and formats the results") | **Job** — `job-create`; any Python the author writes (libraries, APIs, network), exposed as a native tool with a typed schema |
+| Open-ended or exploratory work — research, browsing, flows where the agent must judge as it goes | **Existing skill** — e.g. `baidu-search`, `browser-harness` — or inline |
+| Nothing you'll reuse | Do it inline in the agent loop |
+
+Concrete example: the user asks for "a tool that uses Baidu search to find
+news about a topic". That's well-specified and reusable → a **Job**: the
+code calls the search endpoint and formats the result into a stable tool.
+Use an existing skill instead only when the task is exploratory and the
+agent should decide mid-way.
