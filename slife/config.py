@@ -345,7 +345,7 @@ class Config:
     # reproducible — re-run the tool to retrieve the full version.
     memory_tool_result_chars: int = 8000
     agent_name: str = "slife"
-    tool_timeout: float = 60.0  # seconds, 0 to disable — applies to ALL tools
+    tool_timeout: float = 120.0  # seconds, 0 to disable — fallback wrap for tools w/o native timeout/`_timeout`
     heartbeat_interval: int = 1800  # seconds — autonomous idle heartbeat period
     memdb_config: MemdbConfig | None = None
     embeddings_config: EmbeddingsConfig | None = None
@@ -432,7 +432,7 @@ class Config:
             tools=data.get("tools", []),
             env=data.get("env"),
             max_iterations=data.get("max_iterations", 30),
-            tool_timeout=data.get("tool_timeout", 60.0),
+            tool_timeout=data.get("tool_timeout", 120.0),
             heartbeat_interval=data.get("heartbeat_interval", 1800),
             context_floor=data.get("context_floor", 0.2),
             context_ceiling=data.get("context_ceiling", 0.8),
@@ -831,7 +831,7 @@ class Config:
         # Agent
         agent = _parse_section(raw, "agent", dict, {})
         max_iterations = agent.get("max_iterations", 30)
-        tool_timeout = agent.get("tool_timeout", 60.0)
+        tool_timeout = agent.get("tool_timeout", 120.0)
         heartbeat_interval = agent.get("heartbeat_interval", 1800)
         context_floor = agent.get("context_floor", 0.2)
         context_ceiling = agent.get("context_ceiling", 0.8)

@@ -117,7 +117,7 @@ User Input → MessageHistory.add_user_message()        (secrets sanitized)
 - **Streaming**: thinking and text tokens delivered in real time via `AgentEventHandler` callbacks
 - **Tool accumulation**: tool-call deltas accumulated across chunks, executed as a batch
 - **Concurrent execution**: all calls in a batch run via `asyncio.gather`; approval dialogs serialize behind a lock
-- **Tool timeout**: single enforcement point — `asyncio.wait_for()` wraps every call (default 60 s, `agent.tool_timeout`). Per-call override via `_timeout`; tools with a native `timeout` parameter (`execute_shell`) receive it directly instead of a double wrap
+- **Tool timeout**: single enforcement point — `asyncio.wait_for()` wraps every call (default 120 s, `agent.tool_timeout`) as a **fallback** only — the LLM passes a per-call `_timeout`, and tools with a native `timeout` parameter (`execute_shell`) receive it directly instead of a double wrap
 - **Background execution**: per-call `_async: true` schedules the tool as a background task and returns a task id immediately; poll with `check_async`, cancel with `cancel_async`
 - **Iteration limit**: `max_iterations` (default 30) prevents infinite loops; **0 = unlimited** (the loop only ends via a final response or cancellation). The cap is checked **live each iteration** (not fixed at `run()` start), so a mid-turn `set_max_iterations` (the `set_max_iterations` meta tool) applies to the running turn immediately and to the next. Hitting the cap returns a cancelled result and notifies the handler via `on_max_iterations` — the TUI shows `✗ Agent exceeded maximum of N iterations` instead of stopping silently.
 - **Cancellation**: `Esc` sets a cancel event; checked before each iteration, after each stream, and before each tool batch

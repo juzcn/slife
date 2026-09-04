@@ -272,7 +272,7 @@ class AgentLoop:
         tool_registry: ToolRegistry,
         max_iterations: int = 30,
         max_tool_result_chars: int = 0,
-        tool_timeout: float = 60.0,
+        tool_timeout: float = 120.0,
         context_window: int = 0,
         context_ceiling: float = 0.8,
         context_floor: float = 0.2,

@@ -12,7 +12,6 @@
     max_iterations: 30,
     context_floor: 0.2,
     context_ceiling: 0.8,
-    tool_timeout: 60,
     heartbeat_interval: 1800
   },
   models: {
