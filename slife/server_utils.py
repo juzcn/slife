@@ -127,6 +127,7 @@ import logging
 import os
 import socket
 import sys
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -276,7 +277,51 @@ def setup_server_logging(
     # is safe if a finally block also calls it.
     atexit.register(shutdown_server_logging)
 
+    # Uncaught startup exceptions → one clean line on stderr (the host
+    # relays it as the load-failure reason), full traceback in the log file.
+    install_uncaught_exception_cleanup()
+
     return log_path
+
+
+_uncaught_cleanup_installed = False
+
+
+def install_uncaught_exception_cleanup() -> None:
+    """Plugin-child safety net: an uncaught exception prints ONE actionable
+    line to stderr (what the host relays as the load-failure reason) and the
+    full traceback only to the session log file — never a raw stderr dump.
+
+    Installed by ``setup_server_logging`` so every plugin child fails with a
+    one-line reason on any uncaught startup/config/bind error.  Idempotent.
+    """
+    global _uncaught_cleanup_installed
+    if _uncaught_cleanup_installed:
+        return
+    def _hook(exc_type, exc, tb) -> None:
+        # Full traceback only into the session log FILE handler(s) (devs);
+        # stderr gets the single actionable line the host relays.
+        try:
+            _tb = "".join(traceback.format_exception(exc_type, exc, tb))
+        except Exception:
+            _tb = str(exc)
+        try:
+            _record = logging.LogRecord(
+                "plugin_fatal", logging.ERROR, "", 0,
+                "plugin_fatal: %s", (_tb,), None,
+            )
+            for _h in list(logging.getLogger().handlers):
+                if isinstance(_h, logging.FileHandler):
+                    _h.emit(_record)
+        except Exception:
+            pass
+        try:
+            print(f"[plugin] {exc_type.__name__}: {exc}", file=sys.stderr)
+        except Exception:
+            pass
+
+    sys.excepthook = _hook
+    _uncaught_cleanup_installed = True
 
 
 def shutdown_server_logging(extra_logger_names: tuple[str, ...] = ()) -> None:

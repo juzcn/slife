@@ -33,6 +33,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+#: Public-name override for built-in packages whose canonical plugin name
+#: uses a hyphen (Python package names cannot).  Mirrors how `local-embed`
+#: is named in ``plugins.external`` — plugin names are hyphenated in the
+#: UI/health/tool prefixes, while module paths stay snake_case.
+_PUBLIC_NAME_OVERRIDE: dict[str, str] = {"job_coding": "job-coding"}
+
+
 def _scan_builtins() -> list[tuple[str, str]]:
     """Scan ``slife.plugins.*`` for packages containing ``server.py``.
 
@@ -40,6 +47,7 @@ def _scan_builtins() -> list[tuple[str, str]]:
 
         [("memdb", "slife.plugins.memdb.server"),
          ("wechat", "slife.plugins.wechat.server"),
+         ("job-coding", "slife.plugins.job_coding.server"),
          …]
     """
     import slife.plugins as _pkg
@@ -51,7 +59,9 @@ def _scan_builtins() -> list[tuple[str, str]]:
     ):
         if not is_pkg:
             continue
-        short_name = name.split(".")[-1]
+        short_name = _PUBLIC_NAME_OVERRIDE.get(
+            name.split(".")[-1], name.split(".")[-1]
+        )
         server_module = name + ".server"
 
         # Check that server.py exists — use find_spec to avoid importing the

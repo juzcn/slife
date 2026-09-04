@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 
 from fastmcp import FastMCP
 from starlette.requests import Request
@@ -374,7 +375,15 @@ def main() -> int:
     # Bind the configured port (default {DEFAULT_PORT} — a STABLE port so a
     # host can point its OpenAI-compatible client's base_url at it).  A port
     # already being served is a hard error (no fallback) — see bind_port.
-    sock, port = bind_port(settings["host"], int(settings["port"]))
+    # Fail CLEANLY (one actionable line, not a raw traceback): the host
+    # surfaces this as a plugin load failure (加载失败) and the pre-existing
+    # instance keeps serving embeddings.
+    try:
+        sock, port = bind_port(settings["host"], int(settings["port"]))
+    except RuntimeError as e:
+        logger.error("local_embed_load_failed err=%s", e)
+        print(f"local-embed load failed: {e}", file=sys.stderr)
+        return 1
     logger.info(
         "local_embed_start port=%s active=%s models=%s",
         port, engine.active_model, engine.models,

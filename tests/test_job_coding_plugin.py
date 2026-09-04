@@ -357,19 +357,19 @@ async def test_rescan_registers_and_unregisters(sample_config):
     from slife.agent.plugins import PluginLifecycle
 
     service = AgentService(sample_config)
-    lifecycle = PluginLifecycle("job_coding", service)
+    lifecycle = PluginLifecycle("job-coding", service)
     client = AsyncMock()
     client.is_connected = True
     client.list_tools = AsyncMock(return_value=[
-        {"server": "job_coding", "name": "translate", "description": "",
+        {"server": "job-coding", "name": "translate", "description": "",
          "inputSchema": {"type": "object", "properties": {}}},
     ])
     lifecycle.client = client
     lifecycle.registered_tools = {"gone"}
-    service._plugins["job_coding"] = lifecycle
+    service._plugins["job-coding"] = lifecycle
     service.tool_registry.register(SimpleNamespace(name="gone"))
 
-    await service._rescan_plugin_tools("job_coding")
+    await service._rescan_plugin_tools("job-coding")
 
     names = {t.name for t in service.tool_registry.list_tools()}
     assert "translate" in names

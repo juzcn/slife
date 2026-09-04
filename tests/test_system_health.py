@@ -1189,7 +1189,7 @@ class TestCheckJobCoding:
     @pytest.mark.asyncio
     async def test_offline_warns(self):
         result = await check_job_coding()
-        assert result[0]["component"] == "job_coding"
+        assert result[0]["component"] == "job-coding"
         assert result[0]["value"] == "offline"
         assert "not connected" in result[0]["hint"]
 

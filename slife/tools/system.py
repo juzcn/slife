@@ -851,19 +851,19 @@ async def check_job_coding(client=None) -> list[dict]:
     """
     try:
         if client is None:
-            return [{"component": "job_coding", "level": "warning", "key": "plugin",
+            return [{"component": "job-coding", "level": "warning", "key": "plugin",
                      "value": "offline",
                      "hint": "job-coding plugin not connected — job tools unavailable."}]
         raw = await client.call_tool("__check")
         data = json.loads(raw)
     except Exception as e:
         logger.warning("job_coding_check_failed err=%s", e)
-        return [{"component": "job_coding", "level": "warning", "key": "plugin",
+        return [{"component": "job-coding", "level": "warning", "key": "plugin",
                  "value": "unavailable",
                  "hint": f"job-coding status unavailable: {e}"}]
 
     if data.get("error"):
-        return [{"component": "job_coding", "level": "warning", "key": "config",
+        return [{"component": "job-coding", "level": "warning", "key": "config",
                  "value": "error",
                  "hint": f"job-coding config status unavailable: {data.get('error')}"}]
 
@@ -880,19 +880,19 @@ async def check_job_coding(client=None) -> list[dict]:
             "job-create; load the job-coding skill to author one.",
         )
     entries: list[dict] = [{
-        "component": "job_coding", "level": level, "key": "jobs",
+        "component": "job-coding", "level": level, "key": "jobs",
         "value": value, "hint": hint,
     }]
     if model in ("", "?", "unconfigured"):
         entries.append({
-            "component": "job_coding", "level": "warning", "key": "llm_model",
+            "component": "job-coding", "level": "warning", "key": "llm_model",
             "value": "unconfigured",
             "hint": ("No job LLM resolved (set job_coding_model in slife.json5) — "
                      "jobs that call llm.chat will fail; pure-computation jobs work."),
         })
     else:
         entries.append({
-            "component": "job_coding", "level": "ok", "key": "llm_model",
+            "component": "job-coding", "level": "ok", "key": "llm_model",
             "value": model, "hint": f"Job LLM model: {model}.",
         })
     return entries
@@ -1084,7 +1084,7 @@ class SystemHealthTool(Tool):
     category: ClassVar[str] = "System"
     description = ("Complete health report in one call: every subsystem check "
                    "(memdb, wechat, memfiles, embeddings, sharefile, mcp, a2a, "
-                   "job_coding, watchdog) plus startup records, grouped per "
+                   "job-coding, watchdog) plus startup records, grouped per "
                    "component with an overall healthy flag and summary. One "
                    "call gives the whole picture — no separate health tools "
                    "needed.")

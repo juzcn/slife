@@ -263,7 +263,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 | `sharefile` | `share_file` |
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
-| `job_coding` | `job-list`, `job-create`, `job-edit`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `translate`） |
+| `job-coding` | `job-list`, `job-create`, `job-edit`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `translate`） |
 
 内置插件工具若已自带服务器名前缀（`mcp_set`、`wechat_login`）则原样注册，其余按 `{server}__{tool}` 命名。外部 MCP 服务器（`slife.json5` → `mcp.servers`）一律以 `{server}__{tool}` 出现（如 `filesystem__read_file`）。
 

@@ -355,7 +355,7 @@ class TestAgentServicePluginRescan:
     @staticmethod
     def _tool(name):
         return {
-            "server": "job_coding",
+            "server": "job-coding",
             "name": name,
             "description": "",
             "inputSchema": {"type": "object", "properties": {}},
@@ -373,10 +373,10 @@ class TestAgentServicePluginRescan:
         from slife.agent.plugins import PluginLifecycle
 
         service = AgentService(config)
-        lifecycle = PluginLifecycle("job_coding", service)
+        lifecycle = PluginLifecycle("job-coding", service)
         lifecycle.client = self._client_withtools(names)
         lifecycle.registered_tools = set(registered or ())
-        service._plugins["job_coding"] = lifecycle
+        service._plugins["job-coding"] = lifecycle
         return service
 
     @pytest.mark.asyncio
@@ -385,12 +385,12 @@ class TestAgentServicePluginRescan:
         names = {t.name for t in service.tool_registry.list_tools()}
         assert "translate" not in names
 
-        await service._rescan_plugin_tools("job_coding")
+        await service._rescan_plugin_tools("job-coding")
 
         names = {t.name for t in service.tool_registry.list_tools()}
         assert "translate" in names
         assert "shout" in names
-        assert service._plugins["job_coding"].registered_tools == {"translate", "shout"}
+        assert service._plugins["job-coding"].registered_tools == {"translate", "shout"}
 
     @pytest.mark.asyncio
     async def test_rescan_unregisters_dropped_tools(self, sample_config):
@@ -402,7 +402,7 @@ class TestAgentServicePluginRescan:
         service.tool_registry.register(SimpleNamespace(name="translate"))
         service.tool_registry.register(SimpleNamespace(name="gone"))
 
-        await service._rescan_plugin_tools("job_coding")
+        await service._rescan_plugin_tools("job-coding")
 
         names = {t.name for t in service.tool_registry.list_tools()}
         assert "translate" in names
@@ -411,7 +411,7 @@ class TestAgentServicePluginRescan:
     @pytest.mark.asyncio
     async def test_rescan_filters_internal_tools(self, sample_config):
         service = self._service_with(sample_config, names=["__check", "translate"])
-        await service._rescan_plugin_tools("job_coding")
+        await service._rescan_plugin_tools("job-coding")
         names = {t.name for t in service.tool_registry.list_tools()}
         assert "translate" in names
         assert "__check" not in names
@@ -421,9 +421,9 @@ class TestAgentServicePluginRescan:
         client = AsyncMock()
         client.is_connected = False
         service = self._service_with(sample_config, names=[])
-        service._plugins["job_coding"].client = client
+        service._plugins["job-coding"].client = client
         service.tool_registry.register(SimpleNamespace(name="keep"))
-        await service._rescan_plugin_tools("job_coding")
+        await service._rescan_plugin_tools("job-coding")
         names = {t.name for t in service.tool_registry.list_tools()}
         assert "keep" in names
 

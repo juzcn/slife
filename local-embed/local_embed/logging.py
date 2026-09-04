@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -64,6 +66,42 @@ class _SessionFormatter(logging.Formatter):
         record.sid = _session_id or "--------"
         record.rid = _request_id or "--------"
         return super().format(record)
+
+
+_uncaught_cleanup_installed = False
+
+
+def install_uncaught_exception_cleanup() -> None:
+    """Safety net: an uncaught exception prints ONE actionable line to
+    stderr (the host relays it as the load-failure reason) and the full
+    traceback only to the session log file.  Idempotent."""
+    global _uncaught_cleanup_installed
+    if _uncaught_cleanup_installed:
+        return
+    def _hook(exc_type, exc, tb) -> None:
+        # Full traceback only into the session log FILE handler(s) (devs);
+        # stderr gets the single actionable line the host relays.
+        try:
+            _tb = "".join(traceback.format_exception(exc_type, exc, tb))
+        except Exception:
+            _tb = str(exc)
+        try:
+            _record = logging.LogRecord(
+                "plugin_fatal", logging.ERROR, "", 0,
+                "plugin_fatal: %s", (_tb,), None,
+            )
+            for _h in list(logging.getLogger().handlers):
+                if isinstance(_h, logging.FileHandler):
+                    _h.emit(_record)
+        except Exception:
+            pass
+        try:
+            print(f"[plugin] {exc_type.__name__}: {exc}", file=sys.stderr)
+        except Exception:
+            pass
+
+    sys.excepthook = _hook
+    _uncaught_cleanup_installed = True
 
 
 def setup_logging(level: int = logging.INFO, service_name: str = "local-embed") -> None:
@@ -114,6 +152,10 @@ def setup_logging(level: int = logging.INFO, service_name: str = "local-embed") 
     root.setLevel(level)
     for name in _NOISY:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    # Uncaught startup exceptions → one clean line (host relay); traceback
+    # stays in the session log file.
+    install_uncaught_exception_cleanup()
 
 
 def silence_noisy_loggers() -> None:

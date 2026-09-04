@@ -593,7 +593,7 @@ class AgentService:
         started = await self._spawn_plugin_generic(name, module)
         if started:
             self._start_generic_watchdog(name, module)
-            if name == "job_coding":
+            if name == "job-coding":
                 # Re-point the harness's health client at the live plugin.
                 self._tool_ctx.job_coding_client = self._plugins[name].client
         return (
@@ -637,7 +637,7 @@ class AgentService:
                 # Same re-point for the media plugin — otherwise check_media
                 # reports the restarted plugin offline.
                 self._tool_ctx.media_client = self._plugins[name].client
-            if name == "job_coding":
+            if name == "job-coding":
                 # Same re-point for the job-coding plugin — otherwise
                 # check_job_coding reports the restarted plugin offline.
                 self._tool_ctx.job_coding_client = self._plugins[name].client

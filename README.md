@@ -358,7 +358,7 @@ Every tool additionally accepts three tool meta-parameters: `_timeout` (per-call
 | `sharefile` | `share_file` |
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
-| `job_coding` | `job-list`, `job-create`, `job-edit`, `job-remove`, `job-run` + one tool per registered job (e.g. `translate`) |
+| `job-coding` | `job-list`, `job-create`, `job-edit`, `job-remove`, `job-run` + one tool per registered job (e.g. `translate`) |
 
 Built-in plugin tools are registered under their bare names (e.g. `turn_search`, `wechat_login`, `mcp_set`); each schema carries a `[<server>] ` description prefix. External MCP servers appear as `{server}__{tool}` (e.g. `filesystem__read_file`) and are **loaded on demand**: the LLM discovers them with `mcp_tool_search` — a hybrid keyword/semantic search over the gateway's in-memory tool catalog — and loads a chosen one with `mcp_tool_load`. The catalog is rebuilt live from connections at load and on every (re)connect, so it always reflects exactly what the runtime can use — no offline rebuild step exists. A server with `auto_load: true` keeps the older wholesale registration; enable/disable is server-granular (`mcp_set_enabled`).
 

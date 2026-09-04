@@ -543,7 +543,14 @@ class SlifeApp(App):
 
         # Stop inbox first — completes any in-flight message.
         await _stop_one("inbox", self.service.stop_inbox())
-        # Then kill remaining services in parallel.
+        # Then stop the known services in parallel.
+        # The named set covers the plugin services with bespoke stop
+        # methods (a2a also detaches inbox activity). Any OTHER plugin with
+        # a lifecycle — local-embed, media, job-coding, and auto-discovered
+        # third-party plugins — is stopped here too: a hard-coded list that
+        # misses a plugin would orphan its child process, and its fixed port
+        # (local-embed) would stay held after exit.  The main() finally still
+        # hard-kills everything as the crash-path safety net.
         await asyncio.gather(
             _stop_one("subagent", self.service.stop_subagent()),
             _stop_one("a2a", self.service.stop_a2a()),
@@ -552,6 +559,11 @@ class SlifeApp(App):
             _stop_one("wechat", self.service.stop_wechat()),
             _stop_one("memfiles", self.service.stop_memfiles()),
             _stop_one("sharefile", self.service.stop_sharefile()),
+            *(
+                _stop_one(name, lifecycle.stop(has_poll_task=True))
+                for name, lifecycle in list(self.service._plugins.items())
+                if name not in {"mcp", "memdb", "wechat", "memfiles", "sharefile", "a2a"}
+            ),
             return_exceptions=True,
         )
 
