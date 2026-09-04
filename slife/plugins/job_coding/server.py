@@ -187,7 +187,8 @@ mcp, _log_path, logger = create_plugin_server(
         "Python file in the jobs directory exposing one public function; "
         "job tools are registered dynamically. Management: job-list, "
         "job-create, job-edit, job-remove, job-run. Jobs make one-shot "
-        "LLM calls via the injected llm handle only."
+        "LLM calls via the llm handle they import from "
+        "slife.plugins.job_coding — only LLM jobs import it."
     ),
     lifespan=_job_lifespan,
 )
@@ -221,10 +222,13 @@ def _validate_name(name: str) -> str | None:
 
 
 def _write_job_file(path: Path, code: str) -> None:
-    """Write a job source file, scaffolding the llm import when missing."""
+    """Write a job source file verbatim (no scaffolding).
+
+    The ``llm`` import is the author's responsibility: only LLM jobs need it,
+    and the job-coding skill is the guide. Pure-computation jobs must stay
+    clean.
+    """
     text = str(code)
-    if "job_coding import llm" not in text:
-        text = "from slife.plugins.job_coding import llm\n\n" + text
     if not text.endswith("\n"):
         text += "\n"
     _jobs_dir.mkdir(parents=True, exist_ok=True)

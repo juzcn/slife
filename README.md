@@ -401,7 +401,7 @@ For work that is well-specified and repeatable — translate, summarize, extract
 - `job-create` / `job-edit` / `job-remove` — add, change (a broken edit rolls back), or delete a job; its tool appears/disappears immediately and survives restarts
 - `job-run` — run any job by name, or call the job's own tool directly
 
-A job that needs the LLM calls it **once** via its injected `llm` handle — a narrow, explicit `llm.chat` on `job_coding_model`, a model configured independently of the conversation's active model so jobs stay cheap and never disturb the agent's prompt cache. No conversation history, system prompt, or agent loop ever reaches a job.
+A job that needs the LLM calls it **once** via the `llm` handle it imports itself (`from slife.plugins.job_coding import llm` — nothing is auto-injected, so a pure-computation job simply has no such import): a narrow, explicit `llm.chat` on `job_coding_model`, a model configured independently of the conversation's active model so jobs stay cheap and never disturb the agent's prompt cache. No conversation history, system prompt, or agent loop ever reaches a job.
 
 ### Image & Vision
 

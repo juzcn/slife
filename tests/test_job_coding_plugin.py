@@ -282,6 +282,21 @@ async def test_job_create_registers_tool_and_persists(srv, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_job_create_writes_code_verbatim_no_llm_scaffold(srv, tmp_path):
+    """Pure jobs are written untouched — no llm import is auto-injected."""
+    code = (
+        "def pick(items: str) -> str:\n"
+        "    '''Pick the first item of a comma-separated list.'''\n"
+        "    return items.split(',')[0]"
+    )
+    out = await srv.job_create(name="pick", code=code)
+    assert "created" in out
+    written = (tmp_path / "jobs" / "pick.py").read_text(encoding="utf-8")
+    assert written == code + "\n"  # verbatim, plus the trailing-newline normal
+    assert "job_coding import llm" not in written
+
+
+@pytest.mark.asyncio
 async def test_job_create_requires_matching_function_name(srv):
     out = await srv.job_create(
         name="shout",

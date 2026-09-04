@@ -1,8 +1,3 @@
----
-name: job-coding
-description: Author deterministic Jobs for the job-coding plugin. Load this skill whenever you create or edit a job (job-create / job-edit), or when a repeated, well-specified task should be turned into a reusable job instead of being re-done inline.
----
-
 # job-coding — how to write a Job
 
 A **Job** is a deterministic, code-defined unit of work. Its control flow
@@ -66,9 +61,42 @@ Notes on the signature:
 - Give every parameter a meaningful name; required parameters come first.
 - Document each parameter in the docstring (`Args:` blocks are parsed into
   per-parameter descriptions).
-- **Return** the result — not `print()`. Return a `str`, a JSON-serializable
-  `dict`/`list`, or `None`; results are normalized to text automatically.
-  A `print`ed value is invisible to the caller.
+- **Return the result — not `print()`. A `print`ed value is invisible to
+  the caller.**
+
+### Return value — read this before writing a job
+
+The return value and its **annotation** decide the tool's output schema, and
+the two call paths behave differently:
+
+- **`job-run`** normalizes any return value to text internally — dict, list,
+  str all work.
+- **The direct per-job tool** (the tool named after the function) derives its
+  output schema from your **return annotation**. The runner wraps dict/list
+  returns into a JSON string, which then **mismatches** a `-> dict` / `-> list`
+  schema and fails with `structured_content must be a dict or None. Got str`.
+
+**Rule: return a `str` (or `None`) — always.** A plain `-> str` returning
+formatted text works identically on both call paths. If you truly want
+structured output, only return `dict`/`list` **and** verify with BOTH
+`job-run` and the direct tool call; prefer `str` unless a caller needs
+machine-readable JSON.
+
+Wrong (breaks the direct tool call):
+
+```python
+def stats() -> dict:
+    """Bad: direct tool call fails on structured_content."""
+    return {"turns": 5, "tokens": 1000}
+```
+
+Right (works everywhere):
+
+```python
+def stats() -> str:
+    """Good: formatted text works on both call paths."""
+    return f"turns=5 tokens=1000"
+```
 
 A pure-computation job (no LLM) is just a plain function:
 
@@ -90,6 +118,12 @@ def slugify(title: str, sep: str = "-") -> str:
 `from slife.plugins.job_coding import llm` gives you the one-shot handle. It is the ONLY
 LLM access a job should have:
 
+**Import it yourself — nothing is auto-injected.** `job-create` / `job-edit`
+write your code verbatim. If a job calls the LLM, its file MUST start with
+`from slife.plugins.job_coding import llm` (it's your job to write it — a
+missing import fails at *call* time with `NameError`, registration won't
+catch it). A pure-computation job must NOT import it.
+
 - `llm.chat(system=..., user=..., model=...)` — one **one-shot** call,
   streamed internally on the mature backends (never batch: bailian /
   anthropic proxies refuse non-streaming long requests). You may pass an
@@ -103,7 +137,8 @@ LLM access a job should have:
 - Every message is constructed from the job's arguments. **Never** try to
   reconstruct conversation history, and never pass caller context you were
   not given as a declared argument.
-- A job that does not need the LLM simply doesn't import or call `llm`.
+- **A job that does not need the LLM has no `llm` import and calls nothing
+  on it** — the handle exists only for LLM jobs. See `slugify` above.
 
 ## Determinism contract
 
@@ -173,11 +208,13 @@ want typed arguments.
    template (LLM job) or `slugify` (pure job).
 3. **Self-review before submitting.** Check the file against the fast-fail
    rules: async + `await` for LLM jobs, `from slife.plugins.job_coding
-   import llm` at the top, JSON-serializable params, one public function
-   matching the job name, `return` not `print`.
+   import llm` at the top, JSON-serializable params, **return a `str`**
+   (or `None`), one public function matching the job name, `return` not
+   `print`.
 4. `job-create(name, code)`. The tool is registered immediately.
 5. `job-run(name, '{"...":"..."}')` (or call the job tool directly) to
-   verify. If it errors, `job-edit` with the corrected code and re-run.
+   verify — **test BOTH call paths** for a dict/list return. If it errors,
+   `job-edit` with the corrected code and re-run.
 
 **Edit a job**: `job-edit(name, code)` — the tool re-registers with the new
 schema. Keep the function name stable; a broken edit rolls back, so iterate
