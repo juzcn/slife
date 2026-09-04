@@ -152,8 +152,16 @@ class _LLMProxy:
             msgs.append({"role": "user", "content": user})
         if not msgs:
             raise ValueError("llm.chat() requires user= or messages= (or both)")
-        response, _ = await client.chat(msgs)
-        return response.choices[0].message.content
+        # STREAM, never batch: Anthropic-messages proxies (bailian) and the
+        # Anthropic SDK reject non-streaming requests for long operations
+        # ("Streaming is required for operations that may take longer than
+        # 10 minutes").  Accumulate the assistant text from the stream — one
+        # narrow one-shot call either way, just transport-robust.
+        parts: list[str] = []
+        async for chunk in client.chat_stream(msgs):
+            if chunk.content:
+                parts.append(chunk.content)
+        return "".join(parts)
 
 
 llm = _LLMProxy()

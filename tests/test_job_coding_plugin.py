@@ -29,25 +29,31 @@ def _make_fn(src: str, name: str):
     return ns[name]
 
 
-class _FakeResponse:
-    def __init__(self, text: str):
-        self._text = text
+class _FakeStreamChunk:
+    """minimal StreamChunk stand-in (content only)."""
 
-    @property
-    def choices(self):
-        return [SimpleNamespace(message=SimpleNamespace(content=self._text))]
+    def __init__(self, content: str):
+        self.content = content
+        self.thinking = None
+        self.tool_deltas = None
+        self.usage = None
 
 
 class _FakeClient:
-    """LLMClient stand-in recording the messages it received."""
+    """LLMClient stand-in recording the messages it received.
+
+    Mirrors the real streaming contract (jobs accumulate `chat_stream`).
+    """
 
     def __init__(self, text: str = "ok", usage=None):
         self.text = text
         self.calls: list = []
 
-    async def chat(self, messages, tools=None):
+    async def chat_stream(self, messages, cancel_event=None):
         self.calls.append(messages)
-        return (_FakeResponse(self.text), None)
+        for part in self.text.split("|"):
+            if part:
+                yield _FakeStreamChunk(part)
 
 
 @pytest.fixture
@@ -145,6 +151,21 @@ async def test_wrap_runs_async_job_binds_llm():
 
 
 @pytest.mark.asyncio
+async def test_llm_chat_streams_and_accumulates():
+    """`llm.chat` must STREAM (bailian/anthropic proxies refuse non-streaming
+    long requests) and accumulate the streamed text across chunks."""
+    fn = _make_fn(
+        "from slife.plugins.job_coding import llm\n"
+        "async def trans(text):\n"
+        "    return await llm.chat(user=text)",
+        "trans",
+    )
+    fake = _FakeClient("The| quick| fox")  # 3 stream chunks
+    out = await runner.wrap(fn, fake)(text="x")
+    assert out == "The quick fox"
+
+
+@pytest.mark.asyncio
 async def test_wrap_captures_errors_as_result():
     fn = _make_fn("def boom():\n    raise ValueError('kaboom')", "boom")
     out = await runner.wrap(fn, None)()
@@ -200,13 +221,14 @@ async def test_llm_chat_model_param_resolves(monkeypatch):
     class _FakeLLM:
         def __init__(self, model):
             built["model"] = model
-        async def chat(self, messages, tools=None):
-            return (_FakeResponse("done"), None)
+        async def chat_stream(self, messages, cancel_event=None):
+            yield _FakeStreamChunk("do")
+            yield _FakeStreamChunk("ne")
 
     import slife.agent.llm_client as lc
     monkeypatch.setattr(lc, "LLMClient", _FakeLLM)
     out = await runner.llm.chat(user="hi", model="dp/m2")
-    assert out == "done"
+    assert out == "done"  # two-stream-chunk accumulation
     assert built["model"].ref == "dp/m2"
 
 

@@ -51,24 +51,49 @@ async def translate(text: str, lang: str = "zh", model: str = "") -> str:
 ```
 
 Notes on the signature:
-- Jobs that call the LLM are **`async def`** and `await llm.chat(...)`;
-  pure-computation jobs can be plain `def` — the runner handles both.
-- Use explicit, JSON-serializable types (`str`, `int`, `float`, `bool`,
-  `list[...]`, `dict[...]`). No `*args` / `**kwargs`.
-- Give every parameter a meaningful name and a default where sensible;
-  required parameters come first.
+- **Async decision — get this right first.** A job that calls the LLM MUST
+  be **`async def`** and **`await llm.chat(...)`** (forgetting the `await`
+  makes the job return a coroutine: the tool result comes back empty).
+  A pure-computation job can be plain `def` — the runner awaits async jobs
+  on the event loop and runs sync jobs on a worker thread, so don't rely on
+  loop- or thread-bound local state.
+- Use explicit, JSON-serializable types only — `str`, `int`, `float`,
+  `bool`, `list[...]`, `dict[...]`. **No `*args` / `**kwargs`** and no
+  `datetime`/`Path`/custom objects: the tool schema is derived from the
+  signature, and those break it.
+- Defaults must be simple literals (`""`, `0`, `True`, `[...]`) — a default
+  is serialized into the schema.
+- Give every parameter a meaningful name; required parameters come first.
 - Document each parameter in the docstring (`Args:` blocks are parsed into
   per-parameter descriptions).
-- Return a `str`, a JSON-serializable `dict`/`list`, or `None`. Results are
-  normalized to text automatically.
+- **Return** the result — not `print()`. Return a `str`, a JSON-serializable
+  `dict`/`list`, or `None`; results are normalized to text automatically.
+  A `print`ed value is invisible to the caller.
+
+A pure-computation job (no LLM) is just a plain function:
+
+```python
+def slugify(title: str, sep: str = "-") -> str:
+    """Convert a title into a URL slug.
+
+    Args:
+        title: The title to slugify.
+        sep: Separator between words (default "-").
+    """
+    import re
+    words = re.findall(r"[a-z0-9]+", title.lower())
+    return sep.join(words)
+```
 
 ## The `llm` handle
 
 `from slife.plugins.job_coding import llm` gives you the one-shot handle. It is the ONLY
 LLM access a job should have:
 
-- `llm.chat(system=..., user=..., model=...)` — one batch chat. You may
-  pass an existing `messages` list plus `system=` / `user=` (merged in).
+- `llm.chat(system=..., user=..., model=...)` — one **one-shot** call,
+  streamed internally on the mature backends (never batch: bailian /
+  anthropic proxies refuse non-streaming long requests). You may pass an
+  existing `messages` list plus `system=` / `user=`, which are merged in.
 - **Model selection is a parameter**: give the job an optional `model: str
   = ""` argument and forward it as `model=model or None`. When the caller
   passes `"provider/model"`, that model is used (resolved from the main
@@ -90,6 +115,24 @@ LLM access a job should have:
    control flow stays in Python.
 4. Jobs are user-written code executed in the plugin process: keep code
    reviewable and defensive (validate input, return clear errors).
+
+## Fast-fail rules (things that make a job rejected)
+
+- **One file = one public function.** A second public `def` in the same
+  file becomes a second job tool too — usually unintended. Private helpers
+  are `_`-prefixed so they stay helpers.
+- **Reserved names are rejected** by `job-create`: `job-list`,
+  `job-create`, `job-edit`, `job-remove`, `job-run`, `__check`, and any
+  name starting with `_`. Pick a lowercase identifier like `translate`.
+- **A job name must match the function name exactly.** If `job-create(name,
+  code)` writes a file whose function is named differently, registration
+  fails with a clear error.
+- **Never read the agent's context** (env vars, the conversation, other
+  tools). A job is self-contained: everything it needs comes in as a
+  parameter.
+- **Validate input defensively** and return a clear error string rather
+  than raising deep in library code — the whole tool result is the error
+  message the caller sees.
 
 ## Model configuration
 
@@ -127,13 +170,18 @@ want typed arguments.
 **Create a job** (e.g. turn a recurring task into a job):
 1. `job-list` to see what exists and confirm the name is free.
 2. Write the code following the grammar above — start from the `translate`
-   template.
-3. `job-create(name, code)`. The tool is registered immediately.
-4. `job-run(name, '{"...":"..."}')` (or call the job tool directly) to
-   verify.
+   template (LLM job) or `slugify` (pure job).
+3. **Self-review before submitting.** Check the file against the fast-fail
+   rules: async + `await` for LLM jobs, `from slife.plugins.job_coding
+   import llm` at the top, JSON-serializable params, one public function
+   matching the job name, `return` not `print`.
+4. `job-create(name, code)`. The tool is registered immediately.
+5. `job-run(name, '{"...":"..."}')` (or call the job tool directly) to
+   verify. If it errors, `job-edit` with the corrected code and re-run.
 
 **Edit a job**: `job-edit(name, code)` — the tool re-registers with the new
-schema. Keep the function name stable; a broken edit rolls back.
+schema. Keep the function name stable; a broken edit rolls back, so iterate
+freely.
 
 **Create with your own files**: you may also write/edit `.py` files in the
 jobs directory directly (e.g. with the editor tools) — the plugin picks them
