@@ -113,6 +113,17 @@ def get_skills_dir() -> Path:
     return get_data_dir() / "skills"
 
 
+def get_jobs_dir() -> Path:
+    """Directory containing job modules for the job-coding plugin.
+
+    Each ``*.py`` here defines one or more plain functions that become
+    MCP tools (job-coding convention: any public module-level function is a
+    tool).  Always ``<data_dir>/jobs/`` — ``~/.slife/jobs/`` in production,
+    ``<project_root>/jobs/`` in dev mode.
+    """
+    return get_data_dir() / "jobs"
+
+
 def get_memfiles_dir(agent_name: str = "slife") -> Path:
     """Directory for user-saved files — one per agent.
 

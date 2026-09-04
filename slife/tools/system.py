@@ -837,6 +837,83 @@ class CheckMediaTool(Tool):
         return json.dumps(await check_media(client=client), ensure_ascii=False, indent=2)
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# check_job_coding
+# ═══════════════════════════════════════════════════════════════════════
+
+async def check_job_coding(client=None) -> list[dict]:
+    """Return job-coding plugin status: registered jobs + job LLM model.
+
+    The plugin is a built-in that auto-registers job tools from the jobs
+    directory; this asks its internal ``__check`` (raw facts) through its
+    MCP client (from ``ToolContext.job_coding_client``) and interprets
+    them into health entries.
+    """
+    try:
+        if client is None:
+            return [{"component": "job_coding", "level": "warning", "key": "plugin",
+                     "value": "offline",
+                     "hint": "job-coding plugin not connected — job tools unavailable."}]
+        raw = await client.call_tool("__check")
+        data = json.loads(raw)
+    except Exception as e:
+        logger.warning("job_coding_check_failed err=%s", e)
+        return [{"component": "job_coding", "level": "warning", "key": "plugin",
+                 "value": "unavailable",
+                 "hint": f"job-coding status unavailable: {e}"}]
+
+    if data.get("error"):
+        return [{"component": "job_coding", "level": "warning", "key": "config",
+                 "value": "error",
+                 "hint": f"job-coding config status unavailable: {data.get('error')}"}]
+
+    jobs = data.get("job_names") or []
+    model = data.get("llm_model") or ""
+    hints = [f"Jobs dir: {data.get('jobs_dir') or '(none)'}."]
+    if jobs:
+        hints.insert(0, f"Jobs registered: {', '.join(jobs)}.")
+        level, value, hint = "ok", f"{len(jobs)} job(s)", " ".join(hints)
+    else:
+        level, value, hint = (
+            "ok", "no jobs",
+            "No jobs registered. Add a .py file to the jobs directory or use "
+            "job-create; load the job-coding skill to author one.",
+        )
+    entries: list[dict] = [{
+        "component": "job_coding", "level": level, "key": "jobs",
+        "value": value, "hint": hint,
+    }]
+    if model in ("", "?", "unconfigured"):
+        entries.append({
+            "component": "job_coding", "level": "warning", "key": "llm_model",
+            "value": "unconfigured",
+            "hint": ("No job LLM resolved (set job_coding_model in slife.json5) — "
+                     "jobs that call llm.chat will fail; pure-computation jobs work."),
+        })
+    else:
+        entries.append({
+            "component": "job_coding", "level": "ok", "key": "llm_model",
+            "value": model, "hint": f"Job LLM model: {model}.",
+        })
+    return entries
+
+
+class CheckJobCodingTool(Tool):
+    """Check job-coding plugin status: registered jobs + job LLM model."""
+
+    name = "check_job_coding"
+    category: ClassVar[str] = "System"
+    _skip_auto_register: ClassVar[bool] = True
+    description = ("job-coding status: registered jobs, job LLM model. "
+                   "One subsystem of system_health.")
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs) -> str:
+        ctx = getattr(self, "_ctx", None)
+        client = getattr(ctx, "job_coding_client", None) if ctx is not None else None
+        return json.dumps(await check_job_coding(client=client), ensure_ascii=False, indent=2)
+
+
 _CHECK_FUNCTIONS: list[str] = [
     "check_memdb",
     "check_wechat",
@@ -844,6 +921,7 @@ _CHECK_FUNCTIONS: list[str] = [
     "check_local_embed",
     "check_sharefile",
     "check_media",
+    "check_job_coding",
     "check_mcp",
     "check_a2a",
     "check_watchdog",
@@ -861,6 +939,7 @@ _CLIENT_FIELD: dict[str, str] = {
     "check_local_embed": "local_embed_client",
     "check_sharefile": "sharefile_client",
     "check_media": "media_client",
+    "check_job_coding": "job_coding_client",
     "check_a2a": "a2a_mcp_client",
 }
 
@@ -1005,9 +1084,10 @@ class SystemHealthTool(Tool):
     category: ClassVar[str] = "System"
     description = ("Complete health report in one call: every subsystem check "
                    "(memdb, wechat, memfiles, embeddings, sharefile, mcp, a2a, "
-                   "watchdog) plus startup records, grouped per component with an "
-                   "overall healthy flag and summary. One call gives the whole "
-                   "picture — no separate health tools needed.")
+                   "job_coding, watchdog) plus startup records, grouped per "
+                   "component with an overall healthy flag and summary. One "
+                   "call gives the whole picture — no separate health tools "
+                   "needed.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:

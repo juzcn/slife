@@ -160,6 +160,10 @@ models: {
   },
 },
 active_model: "deepseek/deepseek-v4-pro",
+// job-coding 插件用的大模型 — 复用 models.providers 的 provider/model 引用。
+// 应当与 active_model 配成**不同**（通常更小更快）的模型：job 的一次性嵌套调用
+// 不能扰动主 agent 在 active model 上的 prompt-cache。缺省 → active model。
+job_coding_model: "bailian_personal/qwen3.6-flash",
 ```
 
 支持 `${VAR:-default}` 回退语法（解析顺序：shell 环境变量 → credstore → 字面量默认值）。密钥也可用 `keyring:service/key` URI 形式引用。
@@ -229,7 +233,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 | 类别 | 工具 |
 |------|------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog`, `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_media`, `check_job_coding`, `check_mcp`, `check_a2a`, `check_watchdog`, `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
@@ -259,6 +263,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 | `sharefile` | `share_file` |
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
+| `job_coding` | `job-list`, `job-create`, `job-edit`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `translate`） |
 
 内置插件工具若已自带服务器名前缀（`mcp_set`、`wechat_login`）则原样注册，其余按 `{server}__{tool}` 命名。外部 MCP 服务器（`slife.json5` → `mcp.servers`）一律以 `{server}__{tool}` 出现（如 `filesystem__read_file`）。
 
@@ -293,6 +298,16 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 
 定时任务**只在 Slife 运行时触发**。下次启动时，一次性扫描会结算上一会话留在 `scheduled_run_list` 里的记录：没跑完的记为**未完成（failed）**，Slife 关闭期间到点没做的记为**错过（missed）**。启动不做任何提示、不打扰你——需要的话仍可用 `run_schedule_now` 补做（立即触发），或用 `scheduled_run_skip` 关闭。启动后下一次到点会正常触发。
 
+### Jobs — 确定性、代码定义
+
+对于**定义明确、可重复**的工作——翻译、摘要、抽取、分类、格式化——用 **Job** 跑一个代码定义的函数、只传它声明的参数，而不是把整个会话拖进一个 agent turn。Job 就是 `~/.slife/jobs/` 下的普通 `.py` 文件（一个公开函数 = 一个 job 工具；写法和内置的 `translate` / `summarize` 样例见 `job-coding` skill）。插件每次启动重载该目录，并支持实时管理：
+
+- `job-list` — 查看已注册的 job
+- `job-create` / `job-edit` / `job-remove` — 新增、修改（编辑出错自动回滚）、或删除 job；工具立即出现/消失，重启后依然生效
+- `job-run` — 按名执行任意 job，或直接调用该 job 自己的工具
+
+需要大模型的 job 通过注入的 `llm` 句柄**一次性**调用——`llm.chat` 用 `job_coding_model`（独立于会话 active model 配置的模型，job 调用便宜且不扰动主 agent 的 prompt-cache）。任何对话历史、系统提示词、agent loop 都到不了 job。
+
 ### 图片与视觉
 
 用 `@path` / `@url` 语法附加图片（带空格的路径可加引号），喂给支持视觉的模型：
@@ -305,7 +320,7 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 
 ### 插件
 
-六个内置插件（外加独立的 `mcp-plugin` MCP 网关），独立进程运行：
+七个内置插件（外加独立的 `mcp-plugin` MCP 网关），独立进程运行：
 
 | 插件 | 角色 |
 |------|------|
@@ -316,10 +331,11 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 | **slife-sharefile** | 公开文件分享——唯一工具 `share_file` 把本地文件发布为公开 HTTPS URL（同端口的 `/share` 路由；ngrok 隧道由插件自持） |
 | **slife-a2a** | A2A 网格通道（MQTT binding；仅在 broker 可达时启动） |
 | **slife-media** | 非聊天类 AI 生成（图片 / 视频 / TTS / ASR），对接任意提供商——自持 `media:` 配置段与提供商无关的适配层（`dashscope-aigc`、`openai-images`）。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio` |
+| **slife-job-coding** | 确定性 **Job** 系统（MCP 工具形态）——`~/.slife/jobs/` 里的代码函数按声明的参数精确执行；一次性 LLM 调用走 `llm.chat`、用 `job_coding_model`。工具：`job-list`、`job-create`、`job-edit`、`job-remove`、`job-run` + 每个 job 一个工具 |
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。
 
-所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_local_embed`、`check_sharefile`、`check_mcp`、`check_a2a`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
+所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_local_embed`、`check_sharefile`、`check_media`、`check_job_coding`、`check_mcp`、`check_a2a`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
 
 就绪遵循 MCP 标准：插件在其 `initialize` 握手完成时即视为就绪——服务器只有在自己初始化（FastMCP lifespan）成功后才会应答握手，而插件会在初始化期间建立自身的服务能力（memdb 与 memfiles 要求 store 可用；其余插件无本地要求，能应答即就绪）。不再有 `__ready` 探测工具。外部/从属依赖——外部 MCP 服务器、ngrok 隧道、微信登录、媒体供应商、A2A broker、嵌入后端——从不阻塞就绪：它们不可控、运行时会自愈，并通过各自的状态工具单独上报。只有在每个插件进程都收敛（ready / skipped / failed——lifespan 无法满足要求会以启动失败上报并由看门狗重试）后，服务才对用户输入开放，因此输入绝不会跑在插件启动之前。
 

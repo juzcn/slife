@@ -39,6 +39,7 @@ _SHAREFILE_SERVER = "sharefile"  # built-in public file sharing plugin
 _A2A_SERVER = "a2a"           # built-in A2A mesh plugin (MQTT binding)
 _MEDIA_SERVER = "media"       # built-in media generation plugin (image/video/TTS/ASR)
 _LOCAL_EMBED_SERVER = "local-embed"  # built-in local embedding service (OpenAI-compatible)
+_JOB_CODING_SERVER = "job_coding"  # built-in job-coding plugin (deterministic Jobs)
 _MCP_SET = "mcp_set"
 _MCP_SET_ENABLED = "mcp_set_enabled"
 _MCP_REMOVE = "mcp_remove"
@@ -248,7 +249,7 @@ def _route_for_server(server: str) -> ProxyRoute:
     # Built-in plugins that have their own standalone MCP client
     if server in (_MEMDB_SERVER, _WECHAT_SERVER, _MEMFILES_SERVER,
                   _SHAREFILE_SERVER, _A2A_SERVER, _MEDIA_SERVER,
-                  _LOCAL_EMBED_SERVER):
+                  _LOCAL_EMBED_SERVER, _JOB_CODING_SERVER):
         return ProxyRoute.DIRECT
     # MCP wrapper — has extra config persistence hooks
     if server == _MCP_SERVER:

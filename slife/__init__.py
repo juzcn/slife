@@ -14,7 +14,11 @@ import signal
 import sys
 from pathlib import Path
 
-from slife.bootstrap import restore_windows_console, seed_skills, setup_logging
+from slife.bootstrap import (
+    restore_windows_console,
+    seed_skills,
+    setup_logging,
+)
 from slife.config import Config, parse_cli_agent, parse_cli_config_path, parse_cli_lang
 from slife.logfmt import init_session_id
 from slife.paths import get_config_path, get_data_dir, get_skills_dir

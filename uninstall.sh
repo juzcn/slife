@@ -44,7 +44,7 @@ DATA_DIR="$HOME/.slife"
 REMAIN=()
 if [ -d "$DATA_DIR" ]; then
     SIZE=$(du -sh "$DATA_DIR" 2>/dev/null | cut -f1)
-    REMAIN+=("  ~/.slife/           (${SIZE:-?}) — config, logs, databases, skills")
+    REMAIN+=("  ~/.slife/           (${SIZE:-?}) — config, logs, databases, skills, jobs")
 fi
 if [ -d "$HOME/.credstore" ]; then
     REMAIN+=("  ~/.credstore/       — encrypted credential backup")

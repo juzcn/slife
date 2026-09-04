@@ -347,6 +347,87 @@ class TestAgentServiceMCPDiscovery:
         assert recs[0]["level"] == "warning"
 
 
+class TestAgentServicePluginRescan:
+    """Runtime tool-set resync for plugins that mutate their own tools
+    (job-coding registers/removes job tools on the fly) — the generic
+    ``_rescan_plugin_tools`` diff, mirroring the external-server diff."""
+
+    @staticmethod
+    def _tool(name):
+        return {
+            "server": "job_coding",
+            "name": name,
+            "description": "",
+            "inputSchema": {"type": "object", "properties": {}},
+        }
+
+    def _client_withtools(self, names):
+        client = AsyncMock()
+        client.is_connected = True
+        client.list_tools = AsyncMock(
+            return_value=[self._tool(n) for n in names]
+        )
+        return client
+
+    def _service_with(self, config, names, registered=None):
+        from slife.agent.plugins import PluginLifecycle
+
+        service = AgentService(config)
+        lifecycle = PluginLifecycle("job_coding", service)
+        lifecycle.client = self._client_withtools(names)
+        lifecycle.registered_tools = set(registered or ())
+        service._plugins["job_coding"] = lifecycle
+        return service
+
+    @pytest.mark.asyncio
+    async def test_rescan_registers_new_tools(self, sample_config):
+        service = self._service_with(sample_config, names=["translate", "shout"])
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "translate" not in names
+
+        await service._rescan_plugin_tools("job_coding")
+
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "translate" in names
+        assert "shout" in names
+        assert service._plugins["job_coding"].registered_tools == {"translate", "shout"}
+
+    @pytest.mark.asyncio
+    async def test_rescan_unregisters_dropped_tools(self, sample_config):
+        # State is consistent before the rescan: both tools registered + the
+        # recorded set match; the plugin no longer reports "gone".
+        service = self._service_with(
+            sample_config, names=["translate"], registered={"translate", "gone"},
+        )
+        service.tool_registry.register(SimpleNamespace(name="translate"))
+        service.tool_registry.register(SimpleNamespace(name="gone"))
+
+        await service._rescan_plugin_tools("job_coding")
+
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "translate" in names
+        assert "gone" not in names
+
+    @pytest.mark.asyncio
+    async def test_rescan_filters_internal_tools(self, sample_config):
+        service = self._service_with(sample_config, names=["__check", "translate"])
+        await service._rescan_plugin_tools("job_coding")
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "translate" in names
+        assert "__check" not in names
+
+    @pytest.mark.asyncio
+    async def test_rescan_flag_stays_quiet_when_unconnected(self, sample_config):
+        client = AsyncMock()
+        client.is_connected = False
+        service = self._service_with(sample_config, names=[])
+        service._plugins["job_coding"].client = client
+        service.tool_registry.register(SimpleNamespace(name="keep"))
+        await service._rescan_plugin_tools("job_coding")
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "keep" in names
+
+
 # ── AgentService memory ─────────────────────────────────────────────────────
 
 

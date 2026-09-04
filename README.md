@@ -254,6 +254,11 @@ models: {
   },
 },
 active_model: "deepseek/deepseek-v4-pro",
+// the job-coding plugin's LLM — a provider/model ref reusing models.providers.
+// Should name a DIFFERENT (usually smaller/faster) model than active_model:
+// nested one-shot job calls must not churn the agent loop's prompt-cache.
+// Absent → the active model. Per-call override: llm.chat(model=...).
+job_coding_model: "bailian_personal/qwen3.6-flash",
 ```
 
 `${VAR:-default}` fallback syntax is supported (resolution order: shell env → credstore → literal default). Secrets can also be referenced as `keyring:service/key` URIs.
@@ -353,6 +358,7 @@ Every tool additionally accepts three tool meta-parameters: `_timeout` (per-call
 | `sharefile` | `share_file` |
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
+| `job_coding` | `job-list`, `job-create`, `job-edit`, `job-remove`, `job-run` + one tool per registered job (e.g. `translate`) |
 
 Built-in plugin tools are registered under their bare names (e.g. `turn_search`, `wechat_login`, `mcp_set`); each schema carries a `[<server>] ` description prefix. External MCP servers appear as `{server}__{tool}` (e.g. `filesystem__read_file`) and are **loaded on demand**: the LLM discovers them with `mcp_tool_search` — a hybrid keyword/semantic search over the gateway's in-memory tool catalog — and loads a chosen one with `mcp_tool_load`. The catalog is rebuilt live from connections at load and on every (re)connect, so it always reflects exactly what the runtime can use — no offline rebuild step exists. A server with `auto_load: true` keeps the older wholesale registration; enable/disable is server-granular (`mcp_set_enabled`).
 
@@ -387,6 +393,16 @@ Ask the agent to do something on a schedule — "write a diary entry every night
 
 Tasks fire **only while Slife is running**. At the next start a one-shot sweep settles what a previous session left behind in `scheduled_run_list`: runs that never finished become **failed**, and fires that were due while Slife was closed are marked **missed**. Nothing is announced and nothing waits for your input — a failed or missed run can still be backfilled with `run_schedule_now` (it fires immediately) or closed with `scheduled_run_skip`.
 
+### Jobs — deterministic, code-defined
+
+For work that is well-specified and repeatable — translate, summarize, extract, classify, format — a **Job** runs one code-defined function with exactly the arguments it declares, instead of dragging a whole conversation into an agent turn. Jobs are plain `.py` files in `~/.slife/jobs/` (one public function = one job tool; see the `job-coding` skill for the conventions and the bundled `translate` / `summarize` samples). The plugin reloads them at every start and manages them live:
+
+- `job-list` — see the registered jobs
+- `job-create` / `job-edit` / `job-remove` — add, change (a broken edit rolls back), or delete a job; its tool appears/disappears immediately and survives restarts
+- `job-run` — run any job by name, or call the job's own tool directly
+
+A job that needs the LLM calls it **once** via its injected `llm` handle — a narrow, explicit `llm.chat` on `job_coding_model`, a model configured independently of the conversation's active model so jobs stay cheap and never disturb the agent's prompt cache. No conversation history, system prompt, or agent loop ever reaches a job.
+
 ### Image & Vision
 
 Attach images with `@path` / `@url` syntax (quotes supported for paths with spaces) to feed them to a vision-capable model:
@@ -399,7 +415,7 @@ Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs a
 
 ### Plugins
 
-Six built-in plugins as independent child processes, plus the standalone
+Seven built-in plugins as independent child processes, plus the standalone
 `mcp-plugin` MCP gateway:
 
 | Plugin | Role |
@@ -412,6 +428,7 @@ Six built-in plugins as independent child processes, plus the standalone
 | **slife-sharefile** | Public file sharing — sole tool `share_file` publishes a local file as a public HTTPS URL (`/share` route on the same port; ngrok tunnel owned by the plugin) |
 | **slife-a2a** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
 | **slife-media** | Non-chat AI generation (image, video, TTS, ASR) from any provider — owns the `media:` config section and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
+| **slife-job-coding** | Deterministic **Jobs** as MCP tools — code-defined functions in `~/.slife/jobs/` run with exactly their declared args; one-shot LLM calls via `llm.chat` on `job_coding_model`. Tools: `job-list`, `job-create`, `job-edit`, `job-remove`, `job-run` + one tool per job |
 
 External MCP servers configured in `mcp-plugin.json5` → `servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled). They are **loaded on demand** by default (discover with `mcp_tool_search`, load with `mcp_tool_load`); set `auto_load: true` on a server to bulk-register its tools on connect.
 

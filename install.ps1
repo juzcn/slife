@@ -788,6 +788,38 @@ try {
         }
     }
 
+    # Jobs (job-coding plugin): copy the bundled sample jobs into
+    # ~/.slife/jobs/.  Same semantics as skills — a job file that doesn't
+    # exist yet is seeded as-is; an existing file of the SAME NAME (the user
+    # may have edited it) is only replaced after a per-file confirm.
+    $jobsSrc = Join-Path $extractedDir.FullName "jobs"
+    $jobsDst = "$env:USERPROFILE\.slife\jobs"
+    if (Test-Path $jobsSrc) {
+        Write-Step "[4c] Setting up jobs (bundled defaults)..."
+        New-Item -ItemType Directory -Force $jobsDst | Out-Null
+        $jobFiles = @(Get-ChildItem -Path $jobsSrc -File -Filter *.py)
+        foreach ($job in $jobFiles) {
+            $name = $job.Name
+            $dst = Join-Path $jobsDst $name
+            if (Test-Path $dst) {
+                # Same content as the bundled default — nothing to do.
+                if ((Get-FileHash $job.FullName).Hash -eq (Get-FileHash $dst).Hash) {
+                    Write-Dim "  unchanged  job '$name'"
+                    continue
+                }
+                $ans = "n"
+                if ($assumeYes) { $ans = "y" } else { try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Overwrite job '$jobsDst\$name' with the bundled default? (y/N, default: N)" } } catch { $ans = "n" } }
+                if ($ans -match '^[yY]') {
+                    Copy-Item $job.FullName $dst -Force
+                    Write-Dim "  overwrote job '$jobsDst\$name'"
+                }
+            } else {
+                Copy-Item $job.FullName $dst -Force
+                Write-Dim "  seeded job '$jobsDst\$name'"
+            }
+        }
+    }
+
     # 4d. Semantic memory search — user-run setup.  Needs a model AND one
     # embedding backend.  Not installed by default: the backend build is
     # env-specific and the model download is ~2 GB, so the user sets it up

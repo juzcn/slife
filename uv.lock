@@ -1524,7 +1524,7 @@ source = { editable = "mcp-plugin" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "fastmcp" },
-    { name = "httpx" },
+    { name = "httpx2" },
     { name = "json5" },
     { name = "mcp" },
 ]
@@ -1546,7 +1546,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "credstore", marker = "extra == 'credstore'", editable = "credstore" },
     { name = "fastmcp", specifier = ">=2.0.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx2", specifier = ">=2.7.0" },
     { name = "json5", specifier = ">=0.15.0" },
     { name = "mcp", specifier = ">=1.0.0" },
 ]
@@ -2875,7 +2875,7 @@ dependencies = [
     { name = "credstore" },
     { name = "croniter" },
     { name = "fastmcp" },
-    { name = "httpx" },
+    { name = "httpx2" },
     { name = "jinja2" },
     { name = "json5" },
     { name = "keyring" },
@@ -2922,7 +2922,7 @@ requires-dist = [
     { name = "credstore", editable = "credstore" },
     { name = "croniter", specifier = ">=6.2.4" },
     { name = "fastmcp", specifier = ">=2.0.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx2", specifier = ">=2.7.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "json5", specifier = ">=0.15.0" },
     { name = "keyring", specifier = ">=25.0.0" },

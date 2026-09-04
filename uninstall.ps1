@@ -65,7 +65,7 @@ $remain = @()
 if (Test-Path $dataDir) {
     $size = "{0:F1} MB" -f ((Get-ChildItem $dataDir -Recurse -ErrorAction SilentlyContinue |
         Measure-Object Length -Sum).Sum / 1MB)
-    $remain += "  ~\.slife\           ($size) — config, logs, databases, skills"
+    $remain += "  ~\.slife\           ($size) — config, logs, databases, skills, jobs"
 }
 $credstoreDir = "$env:USERPROFILE\.credstore"
 if (Test-Path $credstoreDir) {

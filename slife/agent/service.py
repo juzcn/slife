@@ -593,6 +593,9 @@ class AgentService:
         started = await self._spawn_plugin_generic(name, module)
         if started:
             self._start_generic_watchdog(name, module)
+            if name == "job_coding":
+                # Re-point the harness's health client at the live plugin.
+                self._tool_ctx.job_coding_client = self._plugins[name].client
         return (
             PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
         )
@@ -634,6 +637,10 @@ class AgentService:
                 # Same re-point for the media plugin — otherwise check_media
                 # reports the restarted plugin offline.
                 self._tool_ctx.media_client = self._plugins[name].client
+            if name == "job_coding":
+                # Same re-point for the job-coding plugin — otherwise
+                # check_job_coding reports the restarted plugin offline.
+                self._tool_ctx.job_coding_client = self._plugins[name].client
             if name == "mcp":
                 # The wrapper restarted on a NEW port — subagents that share it
                 # still point at the dead one; tell them to reconnect.  Re-arming
@@ -643,6 +650,64 @@ class AgentService:
                 await self._notify_subagents_plugin_restart("mcp", self._plugins[name].port)
 
         self._plugins[name].start_watchdog(restart_cb=_restart)
+
+    # ── Runtime tool-set resync ────────────────────────────────────────
+    # Unified mechanism for plugins that mutate their own tool set at
+    # runtime (job-coding registers/removes job tools on the fly): the
+    # plugin pushes the standard MCP ``notifications/tools/list_changed``
+    # after a mutation; this re-lists that plugin's tools and diff-registers
+    # the proxy set.  A plugin that never emits the notification is never
+    # resynced — a pure superset of the spawn-time registration.
+
+    def _plugin_tools_changed_handler(
+        self, name: str,
+    ):
+        """Return the ``on_notification`` handler for *name*'s client."""
+        async def _handler(method: str = "", _params=None, name=name) -> None:
+            if method and not method.endswith("tools/list_changed"):
+                return
+            try:
+                await self._rescan_plugin_tools(name)
+            except Exception:
+                logger.debug(
+                    "plugin_tools_changed_rescan_failed name=%s", name, exc_info=True,
+                )
+        return _handler
+
+    async def _rescan_plugin_tools(self, name: str) -> None:
+        """Re-list plugin *name*'s tools and diff the registry.
+
+        Registers newly-appeared tools and unregisters vanished ones —
+        the same full-diff contract as the mcp wrapper's reconcile, but
+        for a plugin's bare-name tools (e.g. job-coding's per-job tools).
+        Idempotent: tracking ``registered_tools`` makes repeats no-ops.
+        """
+        from slife.mcp.tool_adapter import create_proxy_tools
+
+        lifecycle = self._plugins.get(name)
+        if lifecycle is None or lifecycle.client is None or not lifecycle.client.is_connected:
+            return
+        client = lifecycle.client
+        plugin_tools = await client.list_tools()
+        tagged = [
+            {**t, "server": name}
+            for t in plugin_tools
+            if not is_internal_tool(t.get("name", ""))
+        ]
+        proxy_tools = create_proxy_tools(client, tagged)
+        old_names = set(lifecycle.registered_tools)
+        new_names = {t.name for t in proxy_tools}
+        for tool in proxy_tools:
+            if tool.name not in old_names:
+                self.tool_registry.register(tool)
+        for stale in old_names - new_names:
+            self.tool_registry.unregister(stale)
+        lifecycle.registered_tools = new_names
+        logger.debug(
+            "plugin_tools_resync name=%s added=%d removed=%d total=%d",
+            name, len(new_names - old_names), len(old_names - new_names),
+            len(new_names),
+        )
 
     def _watch_sharefile_tunnel(self) -> None:
         """After sharefile loads, watch its eager ngrok attempt to settle and
@@ -784,6 +849,13 @@ class AgentService:
             self._plugins[name].client = client
             self._plugins[name].process = process
             self._plugins[name].port = process.port
+            # Live tool-set changes (job-coding registers/removes job tools
+            # at runtime): subscribe the generic rescan to the standard MCP
+            # ``notifications/tools/list_changed`` the plugin pushes after a
+            # mutation.  The mcp wrapper overrides this handler in
+            # ``_wire_mcp_glue`` with its own reconcile — every other
+            # plugin uses the generic diff.
+            client.on_notification = self._plugin_tools_changed_handler(name)
             # Save the module for the watchdog's fallback restart path (no
             # restart_cb — same contract as PluginLifecycle.spawn).
             self._plugins[name]._module = module

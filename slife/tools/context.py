@@ -70,6 +70,10 @@ class ToolContext:
     """The media plugin's MCP client — used by ``check_media`` to query
     generation-capability status via the plugin's internal ``__check`` tool."""
 
+    job_coding_client: object | None = None
+    """The job-coding plugin's MCP client — used by ``check_job_coding`` to
+    query registered-job status via the plugin's internal ``__check`` tool."""
+
     message_history: MessageHistory | None = None
     """The active :class:`MessageHistory` (needed by ``clear_context``,
     ``attach_image`` and subagent context cloning)."""

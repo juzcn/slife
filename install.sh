@@ -745,6 +745,46 @@ if [ -d "$SKILLS_SRC" ]; then
     done
 fi
 
+# Jobs (job-coding plugin): copy the bundled sample jobs into ~/.slife/jobs/.
+# Same semantics as skills — a job file that doesn't exist yet is seeded
+# as-is; an existing file of the SAME NAME (the user may have edited it) is
+# only replaced after a per-file confirm.
+JOBS_SRC="$SEED_DIR/jobs"
+JOBS_DST="$HOME/.slife/jobs"
+if [ -d "$JOBS_SRC" ]; then
+    echo -e "${YELLOW}[4c] Setting up jobs (bundled defaults)…${NC}"
+    mkdir -p "$JOBS_DST" 2>/dev/null || true
+    for _job in "$JOBS_SRC"/*.py; do
+        [ -f "$_job" ] || continue
+        _name="$(basename "$_job")"
+        _dst="$JOBS_DST/$_name"
+        if [ -f "$_dst" ]; then
+            # Same content as the bundled default — nothing to do.
+            if diff -q "$_job" "$_dst" >/dev/null 2>&1; then
+                echo -e "  ${GRAY}unchanged  job '$JOBS_DST/$_name'${NC}"
+                continue
+            fi
+            _ask="n"
+            if [ -t 0 ]; then
+                read -p "  Overwrite job '$JOBS_DST/$_name' with the bundled default? (y/N, default: N): " _ask
+            fi
+            if [ "$_ask" = "y" ] || [ "$_ask" = "Y" ]; then
+                if cp "$_job" "$_dst" 2>/dev/null; then
+                    echo -e "  ${GRAY}overwrote job '$JOBS_DST/$_name'${NC}"
+                else
+                    echo -e "  ${RED}⚠ could not write job '$JOBS_DST/$_name'${NC}"
+                fi
+            fi
+        else
+            if cp "$_job" "$_dst" 2>/dev/null; then
+                echo -e "  ${GRAY}seeded job '$JOBS_DST/$_name'${NC}"
+            else
+                echo -e "  ${RED}⚠ could not write job '$JOBS_DST/$_name'${NC}"
+            fi
+        fi
+    done
+fi
+
 #
 # ── Semantic memory search — NOT installed by default ────────────────────
 # The embedding backend is env-specific (CPU / CUDA / Metal) and the model

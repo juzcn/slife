@@ -16,12 +16,14 @@ from slife.tools.system import (
     check_mcp,
     check_a2a,
     check_media,
+    check_job_coding,
     CheckMemdbTool,
     CheckWechatTool,
     CheckSharefileTool,
     CheckMemfilesTool,
     CheckLocalEmbedTool,
     CheckMediaTool,
+    CheckJobCodingTool,
     _group_by_component,
     _component_status,
     _build_summary,
@@ -506,7 +508,8 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_sharefile", return_value=[]), \
              patch("slife.tools.system.check_mcp", return_value=[]), \
              patch("slife.tools.system.check_a2a", return_value=[]), \
-             patch("slife.tools.system.check_media", return_value=[]):
+             patch("slife.tools.system.check_media", return_value=[]), \
+             patch("slife.tools.system.check_job_coding", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert parsed["healthy"] is False
@@ -538,6 +541,8 @@ class TestSystemHealthToolExecute:
             "slife.tools.system.check_a2a", return_value=[],
         ), patch(
             "slife.tools.system.check_media", return_value=[],
+        ), patch(
+            "slife.tools.system.check_job_coding", return_value=[],
         ):
             result = await tool.execute()
             parsed = json.loads(result)
@@ -579,6 +584,8 @@ class TestSystemHealthToolExecute:
             "slife.tools.system.check_a2a", return_value=[],
         ), patch(
             "slife.tools.system.check_media", return_value=[],
+        ), patch(
+            "slife.tools.system.check_job_coding", return_value=[],
         ):
             result = await tool.execute()
             parsed = json.loads(result)
@@ -615,6 +622,7 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_mcp", return_value=[]), \
              patch("slife.tools.system.check_a2a", return_value=[]), \
              patch("slife.tools.system.check_media", return_value=[]), \
+             patch("slife.tools.system.check_job_coding", return_value=[]), \
              patch("slife.tools.system.check_watchdog", return_value=live_watchdog):
             result = await tool.execute()
         parsed = json.loads(result)
@@ -1173,3 +1181,42 @@ class TestCheckMedia:
             p1 = next(e for e in result if e["key"] == "p1")
             assert p1["level"] == "ok"
             assert "image" in p1["value"]
+
+
+class TestCheckJobCoding:
+    """Tests for check_job_coding() — built-in jobs plugin, __check probe."""
+
+    @pytest.mark.asyncio
+    async def test_offline_warns(self):
+        result = await check_job_coding()
+        assert result[0]["component"] == "job_coding"
+        assert result[0]["value"] == "offline"
+        assert "not connected" in result[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_probes_plugin_facts(self):
+        payload = {
+            "jobs_dir": r"C:\jobs", "jobs": 2,
+            "job_names": ["summarize", "translate"],
+            "llm_model": "scnet/DeepSeek-V4-Flash-0731", "error": "",
+        }
+        client = MagicMock()
+        client.call_tool = AsyncMock(return_value=json.dumps(payload))
+        result = await check_job_coding(client=client)
+        client.call_tool.assert_called_once_with("__check")
+        keys = {e["key"] for e in result}
+        assert keys == {"jobs", "llm_model"}
+        jobs = next(e for e in result if e["key"] == "jobs")
+        assert jobs["level"] == "ok" and jobs["value"] == "2 job(s)"
+        model = next(e for e in result if e["key"] == "llm_model")
+        assert model["level"] == "ok" and "scnet/DeepSeek" in model["value"]
+
+    @pytest.mark.asyncio
+    async def test_unresolved_llm_warns(self):
+        payload = {"jobs_dir": r"C:\jobs", "jobs": 0, "job_names": [],
+                   "llm_model": "unconfigured", "error": ""}
+        client = MagicMock()
+        client.call_tool = AsyncMock(return_value=json.dumps(payload))
+        result = await check_job_coding(client=client)
+        model = next(e for e in result if e["key"] == "llm_model")
+        assert model["level"] == "warning" and model["value"] == "unconfigured"

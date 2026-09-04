@@ -212,8 +212,8 @@
             input: [
               "text"
             ],
-            context_window: 163840,
-            max_tokens: 32768
+            context_window: 1000000,
+            max_tokens: 384000
           },
           {
             model: "deepseek-v4-flash-0731",
@@ -311,6 +311,10 @@
     }
   },
   active_model: "scnet/DeepSeek-V4-Flash-0731",
+  // The job-coding plugin's LLM — a provider/model ref reusing the models
+  // above. Used by jobs for their explicit one-shot llm.chat calls;
+  // absent → the active model. Per-call override: llm.chat(model=...).
+  job_coding_model: "bailian_personal/qwen3.6-flash",
   plugins: {
     required: [
       "memdb",
