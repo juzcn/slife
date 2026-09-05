@@ -356,7 +356,10 @@ def resolve_server_config(name: str, raw_entry: dict):
         auth=auth,
         source=_dict_copy(raw_entry.get("source")),
         os_paths=bool(raw_entry.get("os_paths", False)),
-        auto_load=raw_entry.get("auto-load") is True,
+        # The json5 key is "auto-load" — it MUST be quoted in mcp-plugin.json5: a
+# dash is not a valid json5 identifier, so an unquoted `auto-load:` parses
+# as a syntax error and takes down the whole config (an empty pool).
+auto_load=raw_entry.get("auto-load") is True,
     )
 
 

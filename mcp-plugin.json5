@@ -67,7 +67,7 @@
     },
     "duckduckgo-search": {
       command: "uvx",
-      auto-load: true,
+      "auto-load": true,
       args: [
         "--with",
         "duckduckgo-mcp-server[browser]",
