@@ -423,9 +423,8 @@ def _persist_entry(
 @mcp.tool(
     name="mcp_set",
     description=(
-        "Add or update an external MCP server connection (upsert — add + update "
-        "in one call). Provide either stdio (`command` + `args`) or http (`url`). "
-        "Runtime enable/disable is handled by mcp_set_enabled."
+        "Add or update an external MCP server connection (upsert; stdio via "
+        "`command`/`args`, or http via `url`)."
     ),
 )
 async def mcp_set(
@@ -448,16 +447,16 @@ async def mcp_set(
     toggle enable/disable at runtime.  Persisted to mcp-plugin.json5.
 
     Args:
-        name: Unique server name (not a reserved parent-plugin name).
+        name: Unique server name (not a reserved plugin name).
         command: For stdio servers — the binary (npx, uvx, python).
         args: For stdio servers — command-line arguments (list).
         env: Environment overrides. Use ${VAR} refs for secrets, never plaintext.
         url: For http servers — the SSE or streamable endpoint (auto-detected).
         headers: HTTP headers. Use ${VAR} refs for secrets, never plaintext.
         description: What the server does, in its own language — don't translate.
-        enabled: Initial state — true connects now, false adds but stays disconnected.
-        source: Optional provenance (e.g. registry) for future updates.
-        auth: Optional OAuth config for device code flow (auth type 'oauth').
+        enabled: Initial state: true connects now, false stays disconnected.
+        source: Provenance (e.g. registry) for future updates.
+        auth: OAuth config for device code flow (auth type 'oauth').
     """
     # Remember the caller's session so the reconnect hook can push
     # tools/list_changed notifications (see _notify_tools_changed).
@@ -537,10 +536,8 @@ async def mcp_set(
 @mcp.tool(
     name="mcp_set_enabled",
     description=(
-        "Enable or disable an existing MCP server. enabled=true reconnects and "
-        "loads tools; enabled=false disconnects and unloads tools. This toggles "
-        "only the enabled flag — distinct from mcp_set, which configures the "
-        "server definition."
+        "Enable or disable an MCP server (true reconnects + loads tools; "
+        "false disconnects + unloads)."
     ),
 )
 async def mcp_set_enabled(name: str, enabled: bool) -> str:
@@ -548,7 +545,7 @@ async def mcp_set_enabled(name: str, enabled: bool) -> str:
 
     Args:
         name: Server name (from mcp_list).
-        enabled: true reconnects and loads tools; false disconnects and unloads tools.
+        enabled: true = reconnect and load tools; false = disconnect and unload.
     """
     existing = _pool.get_server(name)
     if existing is None:
@@ -626,8 +623,7 @@ async def mcp_remove(name: str) -> str:
 @mcp.tool(
     name="mcp_list",
     description=(
-        "List configured MCP servers (static config: transport, command/url, "
-        "enabled). For live status use __check."
+        "List configured MCP servers (transport, command/url, enabled)."
     ),
 )
 async def mcp_list() -> str:
@@ -665,10 +661,8 @@ async def __check(ctx: Context | None = None) -> str:
 @mcp.tool(
     name="mcp_list_tools",
     description=(
-        "List a connected server's tools, prefixed server__tool. Source: "
-        "the built-in MCP tools/list for on-demand servers (auto_load=false); "
-        "the in-memory catalog — the registration view — for auto_load "
-        "servers. Use mcp_list to discover server names."
+        "List a connected server's tools (full_name server__tool). Use "
+        "mcp_list to discover server names."
     ),
 )
 async def mcp_list_tools(server: str) -> str:
@@ -680,7 +674,7 @@ async def mcp_list_tools(server: str) -> str:
     catalog rows are returned instead of a live round-trip.
 
     Args:
-        server: Server name (required). Use mcp_list to discover server names.
+        server: Server name (from mcp_list).
     """
     conn = _pool.get_server(server)
     if conn is None or conn.status != ServerStatus.CONNECTED:
@@ -816,14 +810,8 @@ async def __mcp_get_tool(full_name: str) -> str:
 @mcp.tool(
     name="mcp_tool_search",
     description=(
-        "Search the MCP tool catalog across enabled, on-demand servers. "
-        "Disabled servers' tools and auto_load servers' tools never appear "
-        "(auto_load tools are already registered in the tool list). Modes: "
-        "'grep' exact substring, 'fts5' BM25 keyword, 'hybrid' fts5 + semantic "
-        "(default). Hybrid degrades to fts5 automatically when no embeddings "
-        "endpoint is configured. Returns full_name '{server}__{tool}' and "
-        "description — use mcp_tool_load with a full_name to make a tool "
-        "callable."
+        "Search the MCP tool catalog: mode hybrid (default)/fts5/grep; "
+        "returns full_name '{server}__{tool}' for mcp_tool_load."
     ),
 )
 async def mcp_tool_search(

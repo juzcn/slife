@@ -242,8 +242,7 @@ def _write_job_file(path: Path, code: str) -> None:
 @mcp.tool(
     name="job-list",
     description=(
-        "List registered jobs: name, description, source file. Call this "
-        "first to see which jobs are available before running one."
+        "List registered jobs (name, description, source file)."
     ),
 )
 async def job_list(ctx: Context | None = None) -> str:
@@ -258,10 +257,7 @@ async def job_list(ctx: Context | None = None) -> str:
 @mcp.tool(
     name="job-run",
     description=(
-        "Run a registered job by name with a JSON object of its arguments. "
-        "Load the job-coding skill for the conventions. Use when you know "
-        "the job name; the per-job tools expose the same jobs with native "
-        "schemas."
+        "Run a registered job by name with a JSON object of its arguments."
     ),
 )
 async def job_run(job: str, params: str = "{}", ctx: Context | None = None) -> str:
@@ -285,16 +281,8 @@ async def job_run(job: str, params: str = "{}", ctx: Context | None = None) -> s
 @mcp.tool(
     name="job-write",
     description=(
-        "Write a job's code — create or replace. If the job does not exist "
-        "it is created as a new durable native tool (the job file becomes "
-        "its own MCP tool, callable directly and persisting across "
-        "restarts); if it exists the tool is re-registered live with the "
-        "new schema/behavior. The code must define one public function "
-        "(typed params + docstring) and may import the llm handle from "
-        "slife.plugins.job_coding for one-shot calls (e.g. translate). On a "
-        "broken write the previous code is restored (a failed new job is "
-        "never left behind). Load the job-coding skill first for the exact "
-        "conventions and a template."
+        "Write a job's code — create or replace; the job file becomes its own "
+        "durable native tool (callable directly, persists across restarts)."
     ),
 )
 async def job_write(name: str, code: str, ctx: Context | None = None) -> str:
@@ -342,8 +330,7 @@ async def job_write(name: str, code: str, ctx: Context | None = None) -> str:
 @mcp.tool(
     name="job-remove",
     description=(
-        "Remove a job: deletes its source file and unregisters its tool. "
-        "Load the job-coding skill first if unsure."
+        "Remove a job: delete its source file and unregister its tool."
     ),
 )
 async def job_remove(name: str, ctx: Context | None = None) -> str:

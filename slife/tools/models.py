@@ -89,8 +89,8 @@ class ListModelsTool(_ConfigPathMixin, Tool):
     name: ClassVar[str] = "model_list"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
-        "List configured LLM models grouped by provider (ref, name, API, context, "
-        "max tokens, thinking/vision support). Active model marked ★."
+        "List configured LLM models grouped by provider (ref, name, context, "
+        "thinking/vision); active model marked ★."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -150,16 +150,15 @@ class SetModelTool(_ModelConfigTool):
     name: ClassVar[str] = "model_set"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
-        "Add/update an LLM model in the configuration (upsert — add + update in "
-        "one call); creates the provider if new. Takes effect immediately — the "
-        "running session's model registry is synced."
+        "Add/update an LLM model (upsert; creates provider if new; takes "
+        "effect immediately)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "provider": {
                 "type": "string",
-                "description": "Provider ID (e.g. deepseek, bailian, openai). Created if new.",
+                "description": "Provider ID, created if new.",
             },
             "model": {
                 "type": "string",
@@ -167,45 +166,43 @@ class SetModelTool(_ModelConfigTool):
             },
             "name": {
                 "type": "string",
-                "description": "Display name for the model (e.g. 'Qwen3.8 Max').",
+                "description": "Display name (e.g. 'Qwen3.8 Max').",
             },
             "api": {
                 "type": "string",
-                "description": "API type: openai-completions, anthropic-messages, or openai-responses. Default: openai-completions.",
+                "description": "API type; default openai-completions.",
                 "enum": ["openai-completions", "anthropic-messages", "openai-responses"],
             },
             "base_url": {
                 "type": "string",
-                "description": "Base URL for the API endpoint. Required for new providers.",
+                "description": "API endpoint base URL (required for new providers).",
             },
             "api_key": {
                 "type": "string",
-                "description": "API key as ${VAR} reference (e.g. ${BAILIAN_API_KEY}). Required for new providers.",
+                "description": "API key as ${VAR} ref (required for new providers).",
             },
             "reasoning": {
                 "type": "boolean",
-                "description": "Whether the model supports reasoning/thinking. Default: false.",
+                "description": "Supports reasoning/thinking.",
             },
             "input": {
                 "type": "array",
-                "description": 'Input modalities, e.g. ["text"] or ["text","image"]. Default: ["text"].',
+                "description": 'Input modalities, e.g. ["text","image"].',
                 "items": {"type": "string"},
             },
             "context_window": {
                 "type": "integer",
-                "description": "Context window size in tokens. Default: 131072.",
+                "description": "Context window size in tokens.",
             },
             "max_tokens": {
                 "type": "integer",
-                "description": "Max output tokens. Default: 4096.",
+                "description": "Max output tokens.",
             },
             "compat": {
                 "type": "object",
                 "description": (
-                    "Provider-specific compatibility overrides, e.g. "
-                    "{thinkingFormat: 'openai'} for Bailian/Qwen anthropic models, "
-                    "or {thinking: 'omit'} to skip the thinking parameter entirely "
-                    "(MiniMax-style openai-compat gateways)."
+                    "Provider-specific compat overrides, e.g. {thinkingFormat: "
+                    "'openai'}."
                 ),
                 "additionalProperties": True,
             },
@@ -312,10 +309,8 @@ class RemoveModelTool(_ModelConfigTool):
     name: ClassVar[str] = "model_remove"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
-        "Remove an LLM model from the configuration by its ref "
-        "(e.g. 'bailian/qwen3.8-max').  Takes effect immediately — the running "
-        "session's model registry is synced.  Cannot remove the active model; "
-        "switch to another model first (model_switch)."
+        "Remove an LLM model by ref (provider/model); cannot remove the "
+        "active model."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -392,7 +387,7 @@ class SwitchModelTool(_ModelConfigTool):
     name: ClassVar[str] = "model_switch"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
-        "Switch the active LLM model (takes effect next turn). ref from model_list."
+        "Switch the active LLM model; ref from model_list."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -473,10 +468,8 @@ class AttachImageTool(Tool):
     category: ClassVar[str] = "Models"
     _requires_vision: ClassVar[bool] = True
     description: ClassVar[str] = (
-        "Attach one or more images for vision processing. "
-        "Pass a list via 'sources' (data URI, local file path, or "
-        "HTTP(S) URL each); a single image also works via 'source'. "
-        "Works like @ syntax."
+        "Attach image(s) for vision (data URI, local path, or URL; list via "
+        "'sources', single via 'source')."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -486,21 +479,17 @@ class AttachImageTool(Tool):
                 "items": {
                     "type": "string",
                     "description": (
-                        "Data URI (e.g. 'data:image/png;base64,<b64>'), "
-                        "local file path (e.g. 'D:\\Downloads\\photo.jpg'), "
-                        "or HTTP(S) URL (e.g. 'https://example.com/photo.jpg')."
+                        "Data URI, local file path, or HTTP(S) URL."
                     ),
                 },
                 "description": (
-                    "One or more image sources to attach in this call."
+                    "Images to attach."
                 ),
             },
             "source": {
                 "type": "string",
                 "description": (
-                    "A single image source (data URI, local file path, or "
-                    "HTTP(S) URL).  Alias for 'sources' with one element — "
-                    "prefer 'sources' when attaching multiple images."
+                    "Single image source (data URI, local path, or URL)."
                 ),
             },
         },
@@ -607,11 +596,9 @@ _SYS_NOTE_PARAMS = make_params(
     presence_events={"type": "array", "default": [],
                      "description": "Peer online/offline events since the last poll."},
     schedule_status={"type": "array", "default": [],
-                     "description": "Open failed/missed scheduled runs "
-                                    "(objects with name / due_at / status)."},
+                     "description": "Open failed/missed runs (name/due_at/status)."},
     restarted={"type": "boolean", "default": False,
-               "description": "True on the first turn after a system restart "
-                              "(session restored from memory)."},
+               "description": "True on the first turn after a system restart."},
 )
 
 
@@ -621,10 +608,8 @@ class SysNoteTool(Tool):
 
     name = "_sys_note"
     category = "Models"
-    description = ("Current context status: time, context usage %, token "
-                   "usage, peer online/offline events, unresolved scheduled "
-                   "runs. The harness auto-invokes this each turn and injects "
-                   "its result into the conversation.")
+    description = ("Current context status: time, context %, tokens, peer "
+                   "events, open scheduled runs.")
     parameters = _SYS_NOTE_PARAMS
 
     async def execute(self, **kwargs) -> str:

@@ -91,19 +91,14 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
     name = "scheduled_task_set"
     category: ClassVar[str] = "Schedule"
     description = (
-        "Create or update a scheduled task (idempotent upsert by name).  "
-        "Stores the task's description, cron schedule, timezone and enabled "
-        "flag.  Returns the task's name and id."
+        "Create or update a scheduled task (upsert by name)."
     )
     parameters = make_params(
         name={
             "type": "string",
             "description": (
-                "Unique task name (e.g. daily_report, morning_digest) — it is "
-                "also the subagent worker name that runs the task, so it "
-                "appears in list_subagents / report_save / run_schedule_now.  "
-                "Use a short ASCII slug: start with a letter or digit, then "
-                "A-Za-z0-9_.- (max 64 chars)."
+                "Unique task name — ASCII slug (letter/digit start, "
+                "A-Za-z0-9_.-, max 64); also the subagent worker name."
             ),
         },
         description={
@@ -116,18 +111,18 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
             "default": "",
             "description": (
                 "5-field cron expression (\"minute hour dom month dow\"), or "
-                "\"manual\" for a task that only runs via run_schedule_now."
+                "\"manual\" (runs only via run_schedule_now)."
             ),
         },
         timezone={
             "type": "string",
             "default": "",
-            "description": "IANA timezone for the trigger (empty = system local).",
+            "description": "IANA timezone (empty = system local).",
         },
         enabled={
             "type": "boolean",
             "default": True,
-            "description": "Whether the schedule loop fires this task (default true).",
+            "description": "Fire this task on schedule.",
         },
     )
 
@@ -159,8 +154,7 @@ class ScheduledTaskRemoveTool(_ScheduleMixin, Tool):
     name = "scheduled_task_remove"
     category: ClassVar[str] = "Schedule"
     description = (
-        "Delete a scheduled task and its run history by name.  Saved reports "
-        "are kept.  Returns whether a task was removed."
+        "Delete a scheduled task and its run history by name (saved reports kept)."
     )
     parameters = make_params(
         name={
@@ -181,8 +175,7 @@ class ScheduledTaskListTool(_ScheduleMixin, Tool):
     name = "scheduled_task_list"
     category: ClassVar[str] = "Schedule"
     description = (
-        "List scheduled tasks with name, description, schedule, timezone and "
-        "enabled flag.  Set enabled_only to list only active tasks."
+        "List scheduled tasks (name, schedule, timezone, enabled)."
     )
     parameters = make_params(
         enabled_only={
@@ -204,25 +197,18 @@ class ScheduledRunListTool(_ScheduleMixin, Tool):
     name = "scheduled_run_list"
     category: ClassVar[str] = "Schedule"
     description = (
-        "List scheduled-task run records (due_at, status, ran_at, report_id, "
-        "error), newest first.  Filter by task name and/or status "
-        "(pending/ran/failed/missed/skipped).  A 'missed' run means the trigger "
-        "time passed while slife was not running; 'failed' means it fired but "
-        "never produced a report (interrupted / error / restart) — offer to "
-        "backfill either.  'pending' is an in-flight run (success unconfirmed); "
-        "'ran' is a confirmed success (report saved); 'skipped' is a missed/"
-        "failed run the user decided not to backfill."
+        "List scheduled-task run records, newest first (name/status filter)."
     )
     parameters = make_params(
         name={
             "type": "string",
             "default": "",
-            "description": "Optional task name to filter on (empty = all tasks).",
+            "description": "Filter by task name (omitted = all).",
         },
         status={
             "type": "string",
             "default": "",
-            "description": "Optional status filter (empty = all statuses).",
+            "description": "pending/ran/failed/missed/skipped",
         },
         limit={
             "type": "integer",
@@ -245,9 +231,8 @@ class ScheduledRunSkipTool(_ScheduleMixin, Tool):
     name = "scheduled_run_skip"
     category: ClassVar[str] = "Schedule"
     description = (
-        "Mark a missed or failed scheduled run as skipped — the user decided "
-        "it does not need to be backfilled.  Only runs in 'missed' or 'failed' "
-        "status change; a successful ('ran') run is never touched."
+        "Mark a missed/failed scheduled run as skipped (only 'missed' or "
+        "'failed' statuses change)."
     )
     parameters = make_params(
         name={
@@ -274,14 +259,7 @@ class RunScheduleNowTool(Tool):
     name = "run_schedule_now"
     category: ClassVar[str] = "Schedule"
     description = (
-        "Trigger a scheduled task now — records a pending run and dispatches "
-        "it immediately to the task's subagent worker (worker name = task "
-        "name).  Called when a '[Schedule <name>]' trigger fires (cron) and "
-        "to backfill a missed/failed run.  A backfill passes the run's due_at "
-        "(the footer reminder / scheduled_run_list shows it) so THAT run "
-        "transitions missed/failed → pending → ran; without due_at a fresh "
-        "run is recorded at now.  The worker saves the report via report_save "
-        "(confirming the run) and notifies the user when done."
+        "Trigger a scheduled task now; backfill: pass the run's due_at."
     )
     parameters = make_params(
         name={
@@ -292,10 +270,8 @@ class RunScheduleNowTool(Tool):
             "type": "string",
             "default": "",
             "description": (
-                "Optional ISO due time of the exact run to trigger — pass the "
-                "missed/failed run's due_at from the footer reminder or "
-                "scheduled_run_list when backfilling.  Omit for a fresh "
-                "cron-fire run."
+                "ISO due time of the run to backfill (from scheduled_run_list); "
+                "omit for a fresh run."
             ),
         },
     )

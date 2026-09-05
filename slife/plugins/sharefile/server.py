@@ -265,8 +265,7 @@ async def __register_file(path: str) -> str:
 @mcp.tool(
     name="share_file",
     description=(
-        "Share a local file as a public HTTPS URL for multimodal LLMs to "
-        "fetch directly.  Requires the file-sharing tunnel to be active."
+        "Share a local file as a public HTTPS URL for multimodal LLMs."
     ),
 )
 async def share_file(path: str) -> str:

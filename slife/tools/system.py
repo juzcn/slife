@@ -1082,12 +1082,8 @@ class SystemHealthTool(Tool):
 
     name = "system_health"
     category: ClassVar[str] = "System"
-    description = ("Complete health report in one call: every subsystem check "
-                   "(memdb, wechat, memfiles, embeddings, sharefile, mcp, a2a, "
-                   "job-coding, watchdog) plus startup records, grouped per "
-                   "component with an overall healthy flag and summary. One "
-                   "call gives the whole picture — no separate health tools "
-                   "needed.")
+    description = ("One-call health report: every subsystem check plus startup "
+                   "records, grouped per component with an overall healthy flag.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -1148,11 +1144,8 @@ class ListNativeToolsTool(Tool):
     name: ClassVar[str] = "list_native_tools"
     category: ClassVar[str] = "System"
     description: ClassVar[str] = (
-        "Inventory of native tools (grouped, first-sentence summaries, "
-        "harness/auto-invoked markers). Includes built-in plugin tools "
-        "(Turns DB, File Cabinet, sharing, media, WeChat, A2A) — they are "
-        "first-class like native tools. External MCP server tools are NOT "
-        "listed — the model already receives their full schemas natively."
+        "List native and built-in plugin tools, grouped by category "
+        "(harness/auto-invoked markers; external MCP excluded)."
     )
     parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
 
@@ -1392,11 +1385,11 @@ class NotifyUserTool(Tool):
         "properties": {
             "title": {
                 "type": "string",
-                "description": "Short notification title (e.g. 'Task Complete', 'Alert').",
+                "description": "Notification title.",
             },
             "message": {
                 "type": "string",
-                "description": "The notification body — be concise (one sentence).",
+                "description": "Notification body (one sentence).",
             },
         },
         "required": ["message"],

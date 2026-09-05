@@ -441,9 +441,7 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
 @mcp.tool(
     name="wechat_login",
     description=(
-        "Generate a WeChat login QR code. Copy the ASCII QR block verbatim "
-        "into your reply — the user cannot see tool output. Then poll "
-        "wechat_check_status until login completes."
+        "Generate a WeChat login QR code."
     ),
 )
 async def wechat_login() -> str:
@@ -492,9 +490,7 @@ async def wechat_login() -> str:
 @mcp.tool(
     name="wechat_send_message",
     description=(
-        "Send a text message to the WeChat user you are chatting with. "
-        "peer_wechat_id/context_token from wechat_check_status.last_contact; "
-        "context_token may be empty for the first message."
+        "Send a text message to the WeChat user you are chatting with."
     ),
 )
 async def wechat_send_message(
@@ -505,9 +501,9 @@ async def wechat_send_message(
     """Send a text message to the WeChat user you are chatting with.
 
     Args:
-        peer_wechat_id: The WeChat user id you are talking to (from
+        peer_wechat_id: The WeChat user id to message (from
             wechat_check_status.last_contact / the [WECHAT: ...] input marker).
-        context_token: Conversation token for replying in a thread; may be empty for the first message.
+        context_token: Thread context token; empty for the first message.
         text: The message body.
     """
     global _client
@@ -603,8 +599,7 @@ def _last_contact_entry(user_id: str, ctx: str | None = "") -> dict | None:
 @mcp.tool(
     name="wechat_check_status",
     description=(
-        "WeChat connection status: logged in?, time remaining, polling "
-        "active, last_contact (peer_wechat_id + context_token)."
+        "WeChat connection status: logged in, time remaining, last_contact."
     ),
 )
 async def wechat_check_status() -> str:
@@ -744,8 +739,7 @@ async def wechat_check_status() -> str:
 @mcp.tool(
     name="wechat_logout",
     description=(
-        "Log out of WeChat, clear the saved session, stop polling. "
-        "Call wechat_login to reconnect."
+        "Log out of WeChat and clear the saved session."
     ),
 )
 async def wechat_logout() -> str:

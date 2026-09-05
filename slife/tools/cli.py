@@ -81,14 +81,14 @@ class CliSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
 
     name = "cli_set"
     category = "CLI"
-    description = "Register/update an external CLI in slife.json5 (upsert — add + update in one call). Records the CLI for the LLM to discover later; does not execute it."
+    description = "Register/update an external CLI in slife.json5 for later discovery (does not execute it)."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "Short name (e.g. 'gh', 'yldp')."},
+            "name": {"type": "string", "description": "Short name (e.g. 'gh')."},
             "command": {"type": "string", "description": "Shell invocation (e.g. 'gh', 'python -m mytool')."},
-            "description": {"type": "string", "description": "What it does, subcommands, usage. Write from --help output, in the CLI's own language — don't translate."},
-            "install": {"type": "string", "description": "Install command (e.g. 'npm i -g yldp'). Omit if pre-installed."},
+            "description": {"type": "string", "description": "What it does, from --help output, in the CLI's own language."},
+            "install": {"type": "string", "description": "Install command (e.g. 'npm i -g yldp'); omit if pre-installed."},
             "source": {
                 "type": "object",
                 "description": "Provenance for future updates.",
@@ -190,7 +190,7 @@ class CliListToolsTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
 
     name = "cli_list"
     category = "CLI"
-    description = "List registered CLI tools with descriptions, commands, and install instructions."
+    description = "List registered CLI tools (descriptions, commands, install)."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {},

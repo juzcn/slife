@@ -113,9 +113,7 @@ class ListEmbeddingsTool(_ConfigPathMixin, Tool):
     name: ClassVar[str] = "embeddings_model_list"
     category: ClassVar[str] = "embeddings"
     description: ClassVar[str] = (
-        "List configured embedding providers (OpenAI-compatible endpoints) "
-        "and their models for semantic search. Active model marked ★. "
-        "Providers grouped by id with base_url and whether api_key is set."
+        "List configured embedding providers and models (active model marked ★)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -176,33 +174,31 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
     name: ClassVar[str] = "embeddings_model_set"
     category: ClassVar[str] = "embeddings"
     description: ClassVar[str] = (
-        "Add/update an embedding model in the config (upsert — add + update in "
-        "one call); creates the provider if new.  Each provider is an "
-        "OpenAI-compatible endpoint (base_url + api_key).  Takes effect "
-        "immediately — memdb + memfiles reload their semantic index."
+        "Add/update an embedding model (upsert; creates provider if new; "
+        "hot-reloads the semantic index)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "provider": {
                 "type": "string",
-                "description": "Provider ID (e.g. local, openai). Created if new.",
+                "description": "Provider ID, created if new.",
             },
             "model": {
                 "type": "string",
-                "description": "Embedding model id (e.g. bge-m3, text-embedding-3-small).",
+                "description": "Embedding model id (e.g. bge-m3).",
             },
             "base_url": {
                 "type": "string",
-                "description": "OpenAI-compatible base URL (e.g. http://127.0.0.1:17347/v1). Required for new providers.",
+                "description": "OpenAI-compatible base URL (required for new providers).",
             },
             "api_key": {
                 "type": "string",
-                "description": "API key, as ${VAR} reference or plaintext. Required for new providers.",
+                "description": "API key (${VAR} ref or plaintext); required for new providers.",
             },
             "dim": {
                 "type": "integer",
-                "description": "Embedding dimension. Optional — auto-discovered from the endpoint when omitted.",
+                "description": "Embedding dimension (auto-discovered when omitted).",
             },
         },
         "required": ["provider", "model"],
@@ -274,17 +270,15 @@ class SwitchEmbeddingsTool(_EmbeddingsConfigTool):
     name: ClassVar[str] = "embeddings_model_switch"
     category: ClassVar[str] = "embeddings"
     description: ClassVar[str] = (
-        "Switch the active embedding model/endpoint (ref from "
-        "embeddings_model_list, e.g. 'local/bge-m3' or just 'openai' "
-        "to defer the model to the endpoint). Takes effect immediately — "
-        "memdb + memfiles reload their semantic index."
+        "Switch the active embedding model/endpoint; ref from "
+        "embeddings_model_list."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "ref": {
                 "type": "string",
-                "description": "Ref to activate: 'provider/model' or bare 'provider'.",
+                "description": "Ref to activate ('provider/model' or bare 'provider').",
             },
         },
         "required": ["ref"],
@@ -333,11 +327,8 @@ class RemoveEmbeddingsTool(_EmbeddingsConfigTool):
     name: ClassVar[str] = "embeddings_model_remove"
     category: ClassVar[str] = "embeddings"
     description: ClassVar[str] = (
-        "Remove an embedding model from the config by its ref "
-        "(e.g. 'openai/text-embedding-3-small', or a bare 'provider' to "
-        "remove the whole provider).  Takes effect immediately — memdb + "
-        "memfiles reload.  Cannot remove the active model; switch first "
-        "(embeddings_model_switch)."
+        "Remove an embedding model by ref ('provider/model', or bare "
+        "'provider' for the whole provider); cannot remove the active model."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -405,14 +396,12 @@ class EnableEmbeddingsTool(_EmbeddingsConfigTool):
     name: ClassVar[str] = "embeddings_enable"
     category: ClassVar[str] = "embeddings"
     description: ClassVar[str] = (
-        "Enable or disable semantic (hybrid) search globally.  Disabling "
-        "preserves embeddings; re-enabling re-indexes saved content.  Takes "
-        "effect immediately — memdb + memfiles reload their semantic index."
+        "Enable or disable semantic (hybrid) search globally."
     )
     parameters: ClassVar[dict] = make_params(
         enabled={
             "type": "boolean",
-            "description": "true to enable semantic search, false to disable.",
+            "description": "Enable or disable semantic search.",
         },
     )
 

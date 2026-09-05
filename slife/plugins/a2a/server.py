@@ -221,8 +221,7 @@ async def _on_agent_change(card: AgentCard, event: str) -> None:
 
 @mcp.tool(
     name="a2a_send_task",
-    description="Send a task to a remote A2A mesh peer and wait for the result. "
-    "Requires the A2A mesh (MQTT broker running).",
+    description="Send a task to a remote A2A mesh peer and wait for the result.",
 )
 async def a2a_send_task(agent_name: str, task: str) -> str:
     """Send a task to *agent_name* and wait for the result.
@@ -238,9 +237,8 @@ async def a2a_send_task(agent_name: str, task: str) -> str:
 @mcp.tool(
     name="a2a_send_task_async",
     description="Send a task to a remote A2A mesh peer without waiting — returns a "
-    "task_id. mode='auto' (default) auto-delivers the result when the peer "
-    "completes it; mode='poll' suppresses that — retrieve with "
-    "a2a_get_task_result. Requires the A2A mesh (MQTT broker).",
+    "task_id; mode 'poll' disables auto-delivery (retrieve with "
+    "a2a_get_task_result).",
 )
 async def a2a_send_task_async(agent_name: str, task: str, mode: str = "auto") -> str:
     """Send a task without waiting — returns the correlation/task id.
@@ -248,8 +246,8 @@ async def a2a_send_task_async(agent_name: str, task: str, mode: str = "auto") ->
     Args:
         agent_name: Remote peer's agent_name (from a2a_list_agents).
         task: The task text/instruction for the peer.
-        mode: 'auto' (default) auto-pushes the result when the peer completes;
-            'poll' suppresses the push (retrieve with a2a_get_task_result).
+        mode: 'auto' (default) auto-push the result; 'poll' — retrieve with
+            a2a_get_task_result.
     """
     if mode not in ("auto", "poll"):
         return f"Error: mode must be 'auto' or 'poll', got {mode!r}."
@@ -271,9 +269,7 @@ async def a2a_send_task_async(agent_name: str, task: str, mode: str = "auto") ->
 
 @mcp.tool(
     name="a2a_list_agents",
-    description="List known online A2A mesh agents as JSON agent cards "
-    "({agent_name, status}) — the first entry is this agent itself, the rest "
-    "are remote peers. Requires the A2A mesh (MQTT broker).",
+    description="List online A2A mesh agents as JSON cards ({agent_name, status}).",
 )
 async def a2a_list_agents() -> str:
     """List mesh agents — this agent's own card first, then remote peers."""
@@ -287,9 +283,7 @@ async def a2a_list_agents() -> str:
 
 @mcp.tool(
     name="a2a_get_task_result",
-    description="Return a remote async task's result, or 'pending' if not ready. "
-    "Used to retrieve tasks sent with mode='poll' (auto-delivery disabled); "
-    "auto-mode tasks are delivered automatically. Requires the A2A mesh (MQTT broker).",
+    description="Return a remote async task's result, or 'pending' if not ready.",
 )
 async def a2a_get_task_result(agent_name: str, task_id: str) -> str:
     """Return the result of an async task, or 'pending' if not ready.
@@ -305,9 +299,8 @@ async def a2a_get_task_result(agent_name: str, task_id: str) -> str:
 
 @mcp.tool(
     name="a2a_cancel_task",
-    description="Cancel a pending or async task on a remote A2A mesh peer. Returns "
-    "the task's resulting status: 'cancelled', 'completed', 'failed', or 'not_found'. "
-    "Requires the A2A mesh (MQTT broker).",
+    description="Cancel a pending or async task on a remote peer; reports the "
+    "resulting status.",
 )
 async def a2a_cancel_task(agent_name: str, task_id: str) -> str:
     """Cancel a pending or async task on *agent_name*.
@@ -326,8 +319,7 @@ async def a2a_cancel_task(agent_name: str, task_id: str) -> str:
 
 @mcp.tool(
     name="a2a_list_tasks",
-    description="List A2A mesh task-store entries (filterable by agent/status). "
-    "Requires the A2A mesh (MQTT broker).",
+    description="List A2A mesh task-store entries (agent/status filters).",
 )
 async def a2a_list_tasks(agent_name: str = "", status: str = "") -> str:
     """List A2A task-store entries (filterable by agent/status).
@@ -345,8 +337,7 @@ async def a2a_list_tasks(agent_name: str = "", status: str = "") -> str:
 
 @mcp.tool(
     name="a2a_agent_card",
-    description="Return a mesh peer's card (agent_name, status), or "
-    "'unknown'. Requires the A2A mesh (MQTT broker).",
+    description="Return a mesh peer's card (agent_name, status), or 'unknown'.",
 )
 async def a2a_agent_card(agent_name: str) -> str:
     """Return a mesh peer's card (agent_name, status), or 'unknown'.
@@ -366,8 +357,7 @@ async def a2a_agent_card(agent_name: str) -> str:
 
 @mcp.tool(
     name="a2a_broadcast",
-    description="Send a task to every known A2A mesh peer (fire-and-forget). "
-    "Requires the A2A mesh (MQTT broker).",
+    description="Send a task to every known A2A mesh peer (fire-and-forget).",
 )
 async def a2a_broadcast(task: str) -> str:
     """Send *task* to every known A2A mesh peer (fire-and-forget).

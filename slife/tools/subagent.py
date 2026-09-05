@@ -66,9 +66,8 @@ class ListSubagentsTool(Tool):
     name = "list_subagents"
     category = "Subagent"
     description = (
-        "List local subagent workers with their state: subagent_name, PID, "
-        "readiness, context (clean/cloned), busy/in-flight count, and pending "
-        "async task count. Local workers are not A2A peers."
+        "List local subagent workers and their state (PID, readiness, "
+        "context, busy/async counts)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -107,8 +106,7 @@ class SpawnSubagentTool(Tool):
     name = "spawn_subagent"
     category = "Subagent"
     description = (
-        "Spawn a local subagent worker (agent worker — same LLM config and "
-        "tools) to parallelize work. Workers are local and not A2A peers."
+        "Spawn a local subagent worker (agent worker — same LLM config and tools)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -116,18 +114,16 @@ class SpawnSubagentTool(Tool):
             "subagent_name": {
                 "type": "string",
                 "description": (
-                    'Name for the worker (e.g. "researcher", "coder-1") — its '
-                    "identity, used by list_subagents / subagent_send_task."
+                    'Worker name (e.g. "researcher") — its identity for '
+                    "list_subagents / subagent_send_task."
                 ),
             },
             "clone_context": {
                 "type": "boolean",
                 "default": False,
                 "description": (
-                    "True = continue with the main agent's context: the "
-                    "worker starts with the turns loaded in the main "
-                    "agent's context. False (default) = fresh start: the "
-                    "worker starts with a clean (empty) context."
+                    "True = start with the main agent's loaded turns; "
+                    "false = clean (empty) context."
                 ),
             },
         },
@@ -235,10 +231,8 @@ class SubagentSendTaskTool(Tool):
     name = "subagent_send_task"
     category = "Subagent"
     description = (
-        "Delegate a task to a local subagent worker and wait for the result. "
-        "If the worker is busy, the task is queued and converted to async "
-        "automatically (the result is delivered later). subagent_name from "
-        "spawn_subagent / list_subagents."
+        "Send a task to a local subagent worker and wait for the result; "
+        "if the worker is busy, queues it as async."
     )
     parameters: ClassVar[dict] = make_params(
         subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
@@ -294,10 +288,9 @@ class SubagentSendTaskAsyncTool(Tool):
     name = "subagent_send_task_async"
     category = "Subagent"
     description = (
-        "Delegate a task to a local subagent worker without waiting — returns "
-        "a task_id. mode='auto' (default) auto-pushes the result when complete; "
-        "mode='poll' suppresses the push — retrieve with subagent_get_task_result. "
-        "subagent_name from spawn_subagent / list_subagents."
+        "Send a task to a local subagent worker without waiting — returns a "
+        "task_id; mode 'poll' disables auto-push (retrieve with "
+        "subagent_get_task_result)."
     )
     parameters: ClassVar[dict] = make_params(
         subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
@@ -306,7 +299,7 @@ class SubagentSendTaskAsyncTool(Tool):
             "type": "string",
             "enum": ["auto", "poll"],
             "default": "auto",
-            "description": "Result delivery. 'auto' (default) auto-pushes the result when the worker completes; 'poll' suppresses the push — you must retrieve the result with subagent_get_task_result.",
+            "description": "'auto' (default) auto-push the result; 'poll' — retrieve with subagent_get_task_result.",
         },
     )
 
@@ -343,9 +336,7 @@ class SubagentGetTaskResultTool(Tool):
     category = "Subagent"
     description = (
         "Return an async subagent task's result, or 'pending' if not ready. "
-        "Used to retrieve tasks sent with mode='poll' (auto-push disabled); "
-        "auto-mode tasks are delivered automatically. task_id comes from "
-        "subagent_send_task_async."
+        "task_id from subagent_send_task_async."
     )
     parameters: ClassVar[dict] = make_params(
         subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
@@ -369,12 +360,11 @@ class SubagentListTasksTool(Tool):
     category = "Subagent"
     description = (
         "List worker task records across local subagents (task_id, worker, "
-        "status, preview, result) — filterable by subagent_name/status. Useful to "
-        "track multiple async tasks sent via subagent_send_task_async."
+        "status, preview, result)."
     )
     parameters: ClassVar[dict] = make_params(
-        subagent_name={"type": "string", "description": "Optional worker subagent_name to filter on.", "default": ""},
-        status={"type": "string", "description": "Optional status filter (pending/completed/failed).", "default": ""},
+        subagent_name={"type": "string", "description": "Filter by worker name (omitted = all).", "default": ""},
+        status={"type": "string", "description": "pending/completed/failed", "default": ""},
     )
 
     async def execute(self, subagent_name: str = "", status: str = "", **kwargs) -> str:
@@ -402,9 +392,7 @@ class SubagentCancelTaskTool(Tool):
     name = "subagent_cancel_task"
     category = "Subagent"
     description = (
-        "Cancel a subagent task (task_id from subagent_send_task_async). "
-        "Preempts a running task at the next safe point (like Esc) and "
-        "drops a still-queued task; the worker moves on to the next task."
+        "Cancel a subagent task (queued or running)."
     )
     parameters: ClassVar[dict] = make_params(
         subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},

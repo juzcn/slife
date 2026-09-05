@@ -208,8 +208,7 @@ class RunPythonScriptTool(Tool):
     name = "run_python_script"
     category = "Execution"
     description = (
-        "Run a Python script or inline code. "
-        "Script: 'path/to/script.py {\"arg\": \"val\"}'. Inline: '-c print(1+1)'."
+        "Run a Python script (path + JSON args) or inline code ('-c <code>')."
     )
     parameters = {
         "type": "object",

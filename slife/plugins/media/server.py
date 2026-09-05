@@ -132,8 +132,7 @@ def _error(e: Exception) -> str:
 @mcp.tool(
     name="generate_image",
     description=(
-        "Generate an image from a text prompt and save it locally; "
-        "returns the absolute path of the saved image file."
+        "Generate an image from a prompt; returns the saved file's absolute path."
     ),
 )
 async def generate_image(
@@ -143,15 +142,11 @@ async def generate_image(
     """Generate an image from a text prompt.
 
     Args:
-        prompt: Text description of the image to generate.
-        model: Model reference as 'provider/model' or a bare configured
-            model name; provider default when omitted.
-        size: Output dimensions, e.g. '1024*1024'; provider default when
-            omitted.
-        image: Reference image for image-conditioned generation — a
-            public http(s) URL (e.g. from share_file), a Base64 Data URI,
-            or an absolute local path.
-        folder: Directory to save the image into (default: working dir).
+        prompt: Image description.
+        model: Model ref ('provider/model' or bare name); omit for provider default.
+        size: Output dimensions, e.g. '1024*1024'.
+        image: Reference image: http(s) URL, data URI, or local path.
+        folder: Output folder (default: working dir).
     """
     try:
         cfg = _ensure_config()
@@ -184,10 +179,8 @@ async def generate_image(
 @mcp.tool(
     name="generate_video",
     description=(
-        "Generate a video from a text prompt (optionally conditioned on "
-        "a reference image) and save it locally. By default saves to the "
-        "working directory; pass folder to save to a specific directory. "
-        "Returns the absolute path of the saved MP4 file."
+        "Generate a video from a prompt (optionally with a reference image); "
+        "returns the saved file's absolute path."
     ),
 )
 async def generate_video(
@@ -198,18 +191,13 @@ async def generate_video(
     """Generate a video from a text prompt.
 
     Args:
-        prompt: Text description of the video to generate.
-        model: Model reference as 'provider/model' or a bare configured
-            model name; provider default when omitted.
-        image: Absolute local path to a reference image for
-            image-to-video / reference-to-video models (uploaded
-            automatically).
-        resolution: Output resolution, e.g. '720P', '1080P'; model
-            default when omitted.
-        ratio: Aspect ratio, e.g. '16:9', '9:16', '1:1'; model default
-            when omitted.
-        duration: Video duration in seconds; model default when omitted.
-        folder: Directory to save the video into (default: working dir).
+        prompt: Video description.
+        model: Model ref ('provider/model' or bare name); omit for provider default.
+        image: Reference-image local path (image-to-video models).
+        resolution: Output resolution, e.g. '720P', '1080P'.
+        ratio: Aspect ratio, e.g. '16:9', '9:16', '1:1'.
+        duration: Video duration in seconds.
+        folder: Output folder (default: working dir).
     """
     try:
         cfg = _ensure_config()
@@ -248,10 +236,7 @@ async def generate_video(
 @mcp.tool(
     name="text_to_speech",
     description=(
-        "Synthesize speech from text and save it locally. By default "
-        "saves to the working directory; pass folder to save to a "
-        "specific directory. Returns the absolute path of the saved "
-        "audio file."
+        "Synthesize speech from text; returns the saved file's absolute path."
     ),
 )
 async def text_to_speech(
@@ -261,12 +246,9 @@ async def text_to_speech(
 
     Args:
         text: Text to synthesize into speech.
-        model: Model reference as 'provider/model' or a bare configured
-            model name. Uses the configured tts default when omitted.
-        voice: Voice identifier (e.g. 'longxiaochun'). Uses the model's
-            configured default voice when omitted.
-        folder: Directory to save the audio into (default: the working
-            directory).
+        model: Model ref ('provider/model' or bare name); omit for tts default.
+        voice: Voice identifier (e.g. 'longxiaochun'); omit for model default.
+        folder: Output folder (default: working dir).
     """
     try:
         cfg = _ensure_config()
@@ -298,8 +280,7 @@ async def text_to_speech(
 @mcp.tool(
     name="transcribe_audio",
     description=(
-        "Transcribe speech from an audio file. Returns the transcript "
-        "text."
+        "Transcribe speech from an audio file; returns the transcript."
     ),
 )
 async def transcribe_audio(path: str, model: str = "") -> str:
@@ -307,8 +288,7 @@ async def transcribe_audio(path: str, model: str = "") -> str:
 
     Args:
         path: Absolute local path to the audio file to transcribe.
-        model: Model reference as 'provider/model' or a bare configured
-            model name. Uses the configured asr default when omitted.
+        model: Model ref ('provider/model' or bare name); omit for asr default.
     """
     try:
         cfg = _ensure_config()

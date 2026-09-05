@@ -149,7 +149,7 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
 class ConfigEnvGetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_get"
     category: ClassVar[str] = "Config"
-    description = "Look up an env var: shell first, then slife.json5. ${VAR} refs shown as-is. Omit key to list all."
+    description = "Read an env var (shell → slife.json5 → mcp env). Omit key to list all."
     parameters = {
         "type": "object",
         "properties": {

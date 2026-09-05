@@ -275,10 +275,8 @@ def _detect_category(filename: str, override: str = "") -> str:
 @mcp.tool(
     name="note_save",
     description=(
-        "Write or update a private note for a subject.  Appends a "
-        "timestamped section to the local file notes/<subject>.md and "
-        "re-indexes it for search.  The note is private — returns the "
-        "local file path, never a public share URL."
+        "Write or update a private note for a subject (notes/<subject>.md), "
+        "re-indexed for search."
     ),
 )
 async def note_save(
@@ -287,9 +285,9 @@ async def note_save(
     """Write or update a private note for a subject.
 
     Args:
-        subject: The note's subject — also its filename (notes/<subject>.md).
+        subject: Subject — also the filename (notes/<subject>.md).
         content: The note body (Markdown).
-        tags: Optional comma-separated tags for search.
+        tags: Comma-separated tags for search.
     """
     store = await _ensure_store()
     try:
@@ -304,11 +302,8 @@ async def note_save(
 @mcp.tool(
     name="diary_write",
     description=(
-        "Write today's (or a given date's) diary entry.  Appends a "
-        "timestamped section to the local file diary/<date>.md and "
-        "re-indexes it for search.  date defaults to today (YYYY-MM-DD). "
-        "The diary is private — returns the local file path, never a "
-        "public share URL."
+        "Write a date's diary entry (diary/<date>.md; default today), "
+        "re-indexed for search."
     ),
 )
 async def diary_write(
@@ -319,7 +314,7 @@ async def diary_write(
     Args:
         date: The diary date, YYYY-MM-DD (default: today).
         content: The diary entry body (Markdown).
-        tags: Optional comma-separated tags for search.
+        tags: Comma-separated tags for search.
     """
     store = await _ensure_store()
     day = date or datetime.now().strftime("%Y-%m-%d")
@@ -335,13 +330,8 @@ async def diary_write(
 @mcp.tool(
     name="file_save",
     description=(
-        "Copy one or more local files into the agent's files folder and "
-        "record them.  Auto-filed under files/<category>/ by extension "
-        "(images / documents / archives / code / audio / video / data / other); "
-        "pass category to override.  Optionally give a title and an LLM "
-        "summary (the summary makes the file findable by semantic search). "
-        "Returns the saved local paths (clickable); to publish a file as a "
-        "public URL call share_file on the returned path."
+        "Copy local file(s) into the cabinet (files/<category>/ by "
+        "extension); an optional summary enables semantic search."
     ),
 )
 async def file_save(
@@ -351,11 +341,11 @@ async def file_save(
     """Copy local files into the cabinet and record them.
 
     Args:
-        paths: Absolute paths of the local files to copy into the cabinet.
+        paths: Absolute paths of the files to copy.
         title: Display title (default: the source filename).
-        tags: Optional comma-separated tags for search.
-        summary: Optional LLM summary — makes the file findable by semantic search.
-        category: Optional subfolder override (files/<category>/); auto-detected by extension.
+        tags: Comma-separated tags for search.
+        summary: LLM summary (enables semantic search).
+        category: Subfolder override (files/<category>/); auto-detected by extension.
     """
     store = await _ensure_store()
     mem_dir = store.mem_dir
@@ -395,12 +385,8 @@ async def file_save(
 @mcp.tool(
     name="url_save",
     description=(
-        "Download a public http(s) URL into the agent's files folder and "
-        "record it.  Auto-filed under files/<category>/ by extension; pass "
-        "category to override.  Optionally give a title and an LLM summary "
-        "(for semantic search).  Only publicly reachable URLs are accepted. "
-        "Returns the saved local path (clickable); to publish the file as a "
-        "public URL call share_file on the returned path."
+        "Download a public http(s) URL into the cabinet (files/<category>/ by "
+        "extension); an optional summary enables semantic search."
     ),
 )
 async def url_save(
@@ -412,9 +398,9 @@ async def url_save(
     Args:
         url: The public http(s) URL to download.
         title: Display title (default: derived from the URL).
-        tags: Optional comma-separated tags for search.
-        summary: Optional LLM summary — makes the file findable by semantic search.
-        category: Optional subfolder override (files/<category>/); auto-detected by extension.
+        tags: Comma-separated tags for search.
+        summary: LLM summary (enables semantic search).
+        category: Subfolder override (files/<category>/); auto-detected by extension.
     """
     import aiohttp
 
@@ -505,10 +491,8 @@ async def url_save(
 @mcp.tool(
     name="cabinet_search",
     description=(
-        "Search the file cabinet (notes, diary and saved files).  kind: "
-        "note | diary | file | all (default).  mode: hybrid (keyword + "
-        "semantic) or fts5.  Returns matches with their relative path, "
-        "snippet and kind."
+        "Search the cabinet (notes, diary, saved files): kind "
+        "note/diary/file/all, mode hybrid (default)/fts5."
     ),
 )
 async def cabinet_search(
@@ -519,7 +503,7 @@ async def cabinet_search(
     Args:
         query: The search text.
         kind: note | diary | file | all (default).
-        mode: hybrid (keyword + semantic, default) | fts5 (keyword only).
+        mode: hybrid (default) | fts5.
         limit: Maximum results.
     """
     store = await _ensure_store()
@@ -635,9 +619,7 @@ async def __memfiles_reload_semantic(enabled: bool = True) -> str:
 @mcp.tool(
     name="cabinet_read",
     description=(
-        "Read a saved file's content by its relative path under the agent's "
-        "files folder (as returned by file_save / cabinet_search), e.g. "
-        "notes/python.md or diary/2026-08-15.md."
+        "Read a saved file's content by its cabinet-relative path."
     ),
 )
 async def cabinet_read(path: str) -> str:
@@ -665,10 +647,7 @@ async def cabinet_read(path: str) -> str:
 @mcp.tool(
     name="note_list",
     description=(
-        "List notes (newest-updated first): subject, tags, file path, "
-        "timestamps.  Returns {total, limit, offset, entries} — if "
-        "offset + len(entries) < total, pass a higher offset to page. "
-        "Use note_read(subject) for full content."
+        "List notes (newest-updated first); pass a higher offset to page."
     ),
 )
 async def note_list(limit: int = 50, offset: int = 0) -> str:
@@ -690,10 +669,8 @@ async def note_list(limit: int = 50, offset: int = 0) -> str:
 @mcp.tool(
     name="diary_list",
     description=(
-        "List diary entries (newest first), optionally within a date range "
-        "since/until (YYYY-MM-DD).  Returns {total, limit, offset, entries} — "
-        "if offset + len(entries) < total, pass a higher offset to page. "
-        "Use diary_read(date) for full content."
+        "List diary entries (newest first), optionally within a since/until "
+        "date range; pass a higher offset to page."
     ),
 )
 async def diary_list(
@@ -754,18 +731,15 @@ async def diary_read(date: str) -> str:
 @mcp.tool(
     name="list_files",
     description=(
-        "List saved files (newest first) with their category, size, mime, "
-        "tags, summary.  Returns {total, limit, offset, entries} — if "
-        "offset + len(entries) < total, pass a higher offset to page. "
-        "Optionally filter by category (images/documents/archives/code/audio/"
-        "video/data/other).  Use cabinet_read(path) for text content."
+        "List saved files (newest first), filterable by category; pass a "
+        "higher offset to page."
     ),
 )
 async def list_files(category: str = "", limit: int = 50, offset: int = 0) -> str:
     """List saved files, newest first.
 
     Args:
-        category: Optional filter — see description for the category list.
+        category: images/documents/archives/code/audio/video/data/other.
         limit: Maximum entries to return.
         offset: Skip this many entries (for paging).
     """
@@ -997,13 +971,8 @@ async def __user_pref_append(preference: str) -> str:
 @mcp.tool(
     name="report_save",
     description=(
-        "Save a report into the cabinet (reports/<slug>.md).  Reports are a "
-        "general document type here (like notes and diary); the optional "
-        "'name' binds the report to a scheduled task and confirms the run it "
-        "was dispatched for (pending → ran), which is how a schedule worker "
-        "completes its task.  Pass due_at (from the schedule.j2 task text) to "
-        "confirm an exact run, e.g. a backfilled missed/failed run; omit to "
-        "confirm the newest un-reported run.  Returns the report's file path."
+        "Save a report into the cabinet (reports/<slug>.md); with 'name', "
+        "binds it to a scheduled task and confirms the run."
     ),
 )
 async def report_save(
@@ -1014,18 +983,14 @@ async def report_save(
     """Save a report (bound to a scheduled task when name is given).
 
     Args:
-        name: Optional scheduled task's name (from scheduled_task_set).  Given
-            and known: the report is bound to the task and confirms the run it
-            was dispatched for.  Empty: saves a standalone report with no run
-            to confirm.
-        title: Report title — also its filename (reports/<title>.md).
+        name: Task name to bind to (confirms the dispatched run); empty = standalone report.
+        title: Title — also the filename (reports/<title>.md).
         content: The report body (Markdown).
-        tags: Optional comma-separated tags for search.
-        period_start: Optional ISO start of the period the report covers.
-        period_end: Optional ISO end of the period the report covers.
-        due_at: Optional ISO due time of the exact run to confirm (from the
-            worker's task text).  Backfills pass it so the missed/failed run
-            they transitioned is the one confirmed.
+        tags: Comma-separated tags for search.
+        period_start: ISO start of the covered period.
+        period_end: ISO end of the covered period.
+        due_at: ISO due time of the exact run to confirm (backfills pass the
+            missed/failed run's due_at).
     """
     store = await _ensure_store()
     task_id = None
@@ -1060,16 +1025,15 @@ async def report_save(
 @mcp.tool(
     name="report_list",
     description=(
-        "List reports (newest first) with title, task_id, period and "
-        "file_path.  Optionally filter by task name.  Use "
-        "report_read(report_id) for full content."
+        "List reports (newest first), filterable by task name; pass a higher "
+        "offset to page."
     ),
 )
 async def report_list(name: str = "", limit: int = 50, offset: int = 0) -> str:
     """List reports.
 
     Args:
-        name: Optional task name to filter on (empty = all tasks).
+        name: Filter by task name (omitted = all).
         limit: Maximum entries to return.
         offset: Skip this many entries (for paging).
     """

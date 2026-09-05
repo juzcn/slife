@@ -25,9 +25,8 @@ class McpToolLoadTool(Tool):
     name = "mcp_tool_load"
     category = "mcp"
     description = (
-        "Load an external MCP tool into the LLM's tool list by full_name "
-        "'{server}__{tool}' (find it with mcp_tool_search). Tools of a disabled "
-        "server are refused — enable the server first with mcp_set_enabled."
+        "Load an external MCP tool by full_name '{server}__{tool}' into the "
+        "LLM's tool list (find it with mcp_tool_search)."
     )
     parameters = {
         "type": "object",

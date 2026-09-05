@@ -333,11 +333,8 @@ async def __memory_context_start_advance(count: int) -> str:
 @mcp.tool(
     name="turn_list",
     description=(
-        "List turns (newest first): turn id, truncated user_message, summary, "
-        "tags, created_at. Use turn_read for full content. "
-        "before_turn_id / after_turn_id anchor the window by turn id (exclusive): "
-        "page older than a [INFO: {\"turn_id\": N, …}] footnote with before_turn_id, newer "
-        "with after_turn_id."
+        "List turns (newest first): id, user_message, summary, tags; page "
+        "with before/after_turn_id."
     ),
 )
 async def turn_list(
@@ -349,7 +346,7 @@ async def turn_list(
 
     Args:
         limit: Maximum number of turns to return.
-        before_turn_id: Only turns with id < this (older) — page back from a turn you can see in context.
+        before_turn_id: Only turns with id < this (older).
         after_turn_id: Only turns with id > this (newer).
     """
     store = await _ensure_store()
@@ -371,11 +368,8 @@ async def turn_list(
 @mcp.tool(
     name="turn_token_usage",
     description=(
-        "Token consumption per turn. Options: turn_id (one turn), since/until "
-        "(ISO datetime time range), limit (cap on turns returned, default 50). "
-        "Each turn reports token_count (cumulative billed tokens) and "
-        "prompt_tokens (context size at the last call). Returns the turns "
-        "plus a summary of totals/averages across the filtered set."
+        "Token consumption per turn, with totals/averages; filter by turn id "
+        "or ISO time range."
     ),
 )
 async def turn_token_usage(
@@ -388,7 +382,7 @@ async def turn_token_usage(
 
     Args:
         turn_id: Restrict to a single turn by its id.
-        since: Lower bound, ISO datetime (relative words like 'yesterday' accepted).
+        since: Lower bound, ISO datetime.
         until: Upper bound, ISO datetime.
         limit: Maximum number of turns to return (newest first).
     """
@@ -406,9 +400,8 @@ async def turn_token_usage(
 @mcp.tool(
     name="turn_count",
     description=(
-        "Count turns. No params: total. since/until: count in an ISO time "
-        "range (use 'since' alone for 'since last month'). query+mode: count "
-        "search matches (grep/fts5)."
+        "Count turns (all, within an ISO time range, or search matches via "
+        "grep/fts5)."
     ),
 )
 async def turn_count(
@@ -420,10 +413,10 @@ async def turn_count(
     """Count turns.
 
     Args:
-        since: Lower bound, ISO datetime. "since" alone = count since that time.
+        since: Lower bound, ISO datetime.
         until: Upper bound, ISO datetime.
         query: Search text to count matches for (grep/fts5 modes).
-        mode: Search mode for counting: grep or fts5 (default fts5).
+        mode: grep or fts5 (default fts5).
     """
     store = await _ensure_store()
     try:
@@ -439,17 +432,15 @@ async def turn_count(
 @mcp.tool(
     name="turn_read",
     description=(
-        "Load a turn by turn id: full messages (OpenAI JSON) incl. thinking, "
-        "tool calls, tool results. The id comes from turn_list / "
-        "turn_search (each result carries the turn id)."
+        "Load a full turn by turn id (messages incl. thinking, tool calls, "
+        "tool results)."
     ),
 )
 async def turn_read(turn_id: int) -> str:
     """Load a full turn by turn id.
 
     Args:
-        turn_id: The turn id (same id as a `[INFO: {"turn_id": N, …}]` footnote or a
-            turn_list / turn_search result).
+        turn_id: Turn id (from turn_list / turn_search / a [INFO] footnote).
     """
     store = await _ensure_store()
     try:
@@ -469,10 +460,8 @@ async def turn_read(turn_id: int) -> str:
 @mcp.tool(
     name="turn_search",
     description=(
-        "Search turns (each result = one turn, carrying its turn id). "
-        "Modes: 'grep' exact substring, 'fts5' BM25 keyword, 'hybrid' "
-        "fts5 + semantic (default), 'time' browse by date range (no query). "
-        "Use turn_read with the result's turn id for full turns."
+        "Search turns (each result carries its turn id); mode hybrid "
+        "(default)/fts5/grep/time. Use turn_read for full turns."
     ),
 )
 async def turn_search(
@@ -485,10 +474,10 @@ async def turn_search(
     """Search memories (each result = one turn).
 
     Args:
-        query: The search text. Required except for mode="time".
-        mode: grep | fts5 | hybrid (default) | time. See description.
+        query: Search text (not needed for mode="time").
+        mode: grep | fts5 | hybrid (default) | time.
         limit: Maximum results.
-        since: Lower bound, ISO datetime (relative words like 'yesterday' accepted).
+        since: Lower bound, ISO datetime.
         until: Upper bound, ISO datetime.
     """
     store = await _ensure_store()
@@ -596,10 +585,8 @@ async def turn_search(
 @mcp.tool(
     name="turn_summarize",
     description=(
-        "Write a summary (1-2 sentences) and comma-separated tags for a turn, "
-        "making it findable via keyword search. Both optional. Works for the "
-        "current turn (omit turn_id) and for any historical turn "
-        "(pass its turn_id). Does NOT touch the semantic index."
+        "Write a summary and tags for a turn, making it findable via keyword "
+        "search (not the semantic index)."
     ),
 )
 async def turn_summarize(
@@ -609,10 +596,9 @@ async def turn_summarize(
     """Write a summary and tags for a turn, making it findable by keyword search.
 
     Args:
-        turn_id: The turn id to annotate (historical turn). Omit to
-            annotate the current turn.
+        turn_id: Turn id to annotate (historical); omit for the current turn.
         summary: A 1-2 sentence summary of the turn.
-        tags: Comma-separated tags for keyword search.
+        tags: Comma-separated tags.
     """
     store = await _ensure_store()
     try:

@@ -306,14 +306,14 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
 
     name = "skill_set"
     category = "Skills"
-    description = "Install/update a skill (upsert — add + update in one call) from [{path, content}] files or a base64 .zip/.tar.gz archive."
+    description = "Install/update a skill from [{path, content}] files or a base64 .zip/.tar.gz archive."
     parameters = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Directory name, kebab-case (e.g. 'browser-use')."},
             "files": {
                 "type": "array",
-                "description": "[{path, content}]. Must include SKILL.md with YAML frontmatter — write its description in the skill's own language.",
+                "description": "[{path, content}]; must include SKILL.md with YAML frontmatter.",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -538,8 +538,8 @@ class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompati
     name = "skill_set_enabled"
     category = "Skills"
     category: ClassVar[str] = "Skills"
-    description = ("Enable or disable a skill. Takes effect immediately: skill_list "
-                   "hides disabled skills and skill_use refuses them.")
+    description = ("Enable or disable a skill (skill_list hides / skill_use "
+                   "refuses disabled).")
     parameters = {
         "type": "object",
         "properties": {

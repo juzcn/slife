@@ -55,18 +55,15 @@ class AddUserPrefTool(_MemfilesCallMixin, Tool):
     category: ClassVar[str] = "System"
 
     description = (
-        "Record one standing user preference into USER.md — the 'User "
-        "Preferences' file appended to the system prompt, kept across "
-        "sessions.  Transcribes what the user has stated (e.g. 'for Chinese "
-        "news searches use Baidu'); deduplicated and structure-preserving."
+        "Record a standing user preference into USER.md (the 'User "
+        "Preferences' file appended to the system prompt, kept across sessions)."
     )
     parameters = make_params(
         preference={
             "type": "string",
             "description": (
-                "One preference in the User Preferences style: a bold key "
-                "term then the statement — e.g. \"**Search** — for Chinese "
-                "domestic news use Baidu, not the generic web search.\""
+                "Bold key term + statement, e.g. \"**Search** — use Baidu for "
+                "Chinese news.\""
             ),
         },
     )
