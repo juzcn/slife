@@ -297,6 +297,53 @@ async def _pending_schedule_runs(client) -> list[dict]:
     return runs[:_SYS_NOTE_MAX_RUNS]
 
 
+async def _schedule_completion_content(service, name: str) -> str:
+    """Post-hoc truth for a scheduled worker's completion notification.
+
+    A run is confirmed only by ``report_save``, so the run record — never the
+    worker's narrated success — decides what the user is told.  The worker's
+    report generation is one LLM stream; when it dies (stall/timeout exhausted
+    the retry ladder) before the save landed, the run is still ``pending`` at
+    completion.  Settle such runs to ``failed`` (best-effort —
+    ``mark_run_failed`` only flips a genuinely still-pending row) so the
+    incomplete run is visible for backfill instead of silently waiting for the
+    next-process startup sweep, and say so honestly rather than claiming the
+    report was saved.
+    """
+    client = _memfiles_client(service)
+    if client is None:
+        return (
+            f"Scheduled task **{name}** finished — report status unverified "
+            f"(cabinet not connected)."
+        )
+    task = await _call(client, "__scheduled_task_by_name", {"name": name})
+    if not task:
+        return (
+            f"Scheduled task **{name}** finished — but no scheduled-task "
+            f"record exists, so no run could be confirmed."
+        )
+    task_id = task["id"]
+    data = await _call(client, "__scheduled_runs_list",
+                       {"name": name, "status": "", "limit": 1})
+    runs = (data or {}).get("runs") or []
+    if runs and runs[0].get("status") == "ran":
+        return f"Scheduled task **{name}** completed — report saved."
+    # The newest run was not confirmed.  Whatever is still pending can never
+    # complete (this worker is done) — close it so the run shows up for
+    # backfill, then report honestly.
+    pending = await _call(client, "__scheduled_runs_list",
+                          {"name": name, "status": "pending", "limit": 20})
+    for r in (pending or {}).get("runs") or []:
+        await _call(client, "__scheduled_mark_run_failed",
+                    {"task_id": task_id, "due_at": r.get("due_at", ""),
+                     "error": "worker finished without confirming the run"})
+    return (
+        f"Scheduled task **{name}** finished, but its report was not saved — "
+        f"the run is recorded as **failed**. Ask me to backfill it or run it "
+        f"again."
+    )
+
+
 async def _refresh_schedule_status(service, client) -> None:
     """Re-publish the open failed/missed runs for the ``_sys_note`` footer."""
     runs = await _pending_schedule_runs(client)

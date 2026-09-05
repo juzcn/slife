@@ -2305,14 +2305,18 @@ class AgentService:
         # When a subagent completes an async task, push the result into
         # the inbox so the user sees it without having to poll.  A worker
         # that ran a scheduled task is reported as the task completing
-        # (hides the subagent detail).
+        # (hides the subagent detail); what is said is decided by the run
+        # record, not the worker's narration — a worker whose report
+        # generation died is never announced as "report saved".
         async def _on_subagent_done(agent_name: str, task_id: str, result: str) -> None:
             from slife.a2a.identity import AgentMessage, Channel
             from slife.subagent.identity import SUBAGENT
-            from slife.agent.schedules import _SCHEDULE_WORKERS
+            from slife.agent.schedules import (
+                _SCHEDULE_WORKERS, _schedule_completion_content,
+            )
             scheduled = agent_name in _SCHEDULE_WORKERS
             if scheduled:
-                content = f"Scheduled task **{agent_name}** completed — report saved."
+                content = await _schedule_completion_content(self, agent_name)
             else:
                 content = (
                     f"Subagent **{agent_name}** completed async task "

@@ -4,6 +4,7 @@ exercised via a mocked memfiles client.
 """
 
 import asyncio
+import json
 import re
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -607,3 +608,71 @@ async def test_run_schedule_now_tool_passes_backfill_due_at():
     result = await tool.execute(name="daily", due_at=due)
     assert result == "dispatched"
     ctx.fire_schedule_now.assert_awaited_once_with("daily", due)
+
+
+# ── completion reconciliation: run record, not worker narration ─────
+
+def _client_with_runs(latest_runs, pending_runs, mark_calls):
+    """Memfiles stub: newest run (status "") and the pending-run list."""
+    client = AsyncMock()
+
+    async def fake_call_tool(name, arguments=None):
+        arguments = arguments or {}
+        if name == "__scheduled_task_by_name":
+            return '{"id": 7, "name": "daily"}'
+        if name == "__scheduled_runs_list":
+            runs = pending_runs if arguments.get("status") == "pending" else latest_runs
+            return json.dumps({"runs": runs})
+        if name == "__scheduled_mark_run_failed":
+            mark_calls.append(arguments)
+            return "{}"
+        return "{}"
+
+    client.call_tool = fake_call_tool
+    return client
+
+
+@pytest.mark.asyncio
+async def test_completion_content_only_claims_saved_when_run_ran():
+    due = "2026-08-25T09:00:00"
+    mark_calls: list[dict] = []
+    latest = [{"status": "ran", "due_at": due}]
+    client = _client_with_runs(latest, [], mark_calls)
+    service = _make_service(client, [])
+
+    msg = await S._schedule_completion_content(service, "daily")
+
+    assert "completed — report saved" in msg
+    assert mark_calls == []  # confirmed run → nothing to settle
+
+
+@pytest.mark.asyncio
+async def test_completion_content_settles_unconfirmed_run_and_says_so():
+    """A worker that ended with its run still pending (report_save never
+    landed) must be reported as failed, not as "report saved" — and the run
+    settles to failed so it is backfillable instead of silent."""
+    due = "2026-08-25T09:00:00"
+    mark_calls: list[dict] = []
+    latest = [{"status": "pending", "due_at": due}]
+    pending = [{"status": "pending", "due_at": due}]
+    client = _client_with_runs(latest, pending, mark_calls)
+    service = _make_service(client, [])
+
+    msg = await S._schedule_completion_content(service, "daily")
+
+    assert "report saved" not in msg
+    assert "report was not saved" in msg
+    assert "failed" in msg
+    assert mark_calls == [{"task_id": 7, "due_at": due,
+                           "error": "worker finished without confirming the run"}]
+
+
+@pytest.mark.asyncio
+async def test_completion_content_never_claims_saved_without_client():
+    service = MagicMock()
+    service._tool_ctx = None
+
+    msg = await S._schedule_completion_content(service, "daily")
+
+    assert "daily" in msg
+    assert "report saved" not in msg

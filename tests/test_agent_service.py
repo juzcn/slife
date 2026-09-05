@@ -1093,9 +1093,30 @@ class TestAgentServiceSubagent:
 
     @pytest.mark.asyncio
     async def test_subagent_done_rewords_schedule_workers(self, sample_config):
-        """A worker that ran a scheduled task is reported as the task
-        completing (hides the subagent); plain subagents keep the detail."""
+        """A worker that ran a scheduled task is reported by its run record —
+        "report saved" only when the run was actually confirmed, otherwise the
+        run is settled failed and reported honestly (never a false success);
+        plain subagents keep the detail."""
         from slife.agent.schedules import _SCHEDULE_WORKERS
+
+        def make_client(latest, pending):
+            marked: dict = {}
+
+            async def fake_call_tool(name, arguments=None):
+                arguments = arguments or {}
+                if name == "__scheduled_task_by_name":
+                    return '{"id": 1, "name": "daily_report"}'
+                if name == "__scheduled_runs_list":
+                    runs = pending if arguments.get("status") == "pending" else latest
+                    return _json.dumps({"runs": runs})
+                if name == "__scheduled_mark_run_failed":
+                    marked.setdefault("calls", []).append(arguments)
+                    return "{}"
+                return "{}"
+
+            client = AsyncMock()
+            client.call_tool = fake_call_tool
+            return client, marked
 
         service = AgentService(sample_config)
         await service.start_subagent()
@@ -1105,12 +1126,37 @@ class TestAgentServiceSubagent:
 
         _SCHEDULE_WORKERS.add("daily_report")
         try:
+            # Confirmed run → the completion is announced as saved.
+            due = "2026-08-25T09:00:00"
+            client, marked = make_client(
+                [{"status": "ran", "due_at": due}], [],
+            )
+            service._tool_ctx.memfiles_client = client
             await cb("daily_report", "t-1", "result text")
             content = service.inbox.post.call_args.args[0].content
             assert "Subagent" not in content
             assert "daily_report" in content
+            assert "completed — report saved" in content
+            assert marked == {}  # confirmed run → nothing settled
 
-            await cb("researcher", "t-2", "the result")
+            # Unconfirmed run → never claim saved; settle the run failed so it
+            # is backfillable and say so.
+            client2, marked2 = make_client(
+                [{"status": "pending", "due_at": due}],
+                [{"status": "pending", "due_at": due}],
+            )
+            service._tool_ctx.memfiles_client = client2
+            await cb("daily_report", "t-2", "result text")
+            content = service.inbox.post.call_args.args[0].content
+            assert "report saved" not in content
+            assert "report was not saved" in content
+            assert "failed" in content
+            assert marked2["calls"] == [
+                {"task_id": 1, "due_at": due,
+                 "error": "worker finished without confirming the run"},
+            ]
+
+            await cb("researcher", "t-3", "the result")
             content2 = service.inbox.post.call_args.args[0].content
             assert "Subagent **researcher**" in content2
             assert "the result" in content2
