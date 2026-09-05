@@ -5,9 +5,8 @@ an MCP tool named after the function (schema from its signature/docstring).
 Job tools are registered **dynamically** by the management tools:
 
   job-list      — list registered jobs
-  job-create    — create a job from code (writes the file, registers now,
-                  persists across restart)
-  job-edit      — rewrite a job's code (file + re-register, rollback on error)
+  job-write     — write a job's code (create or replace; file + re-register,
+                  broken writes roll back)
   job-remove    — delete a job (file + unregister)
   job-run       — generic executor by name (works before the harness resync
                   picks up a brand-new job tool)
@@ -41,7 +40,7 @@ from slife.server_utils import create_plugin_server, run_plugin_server
 
 #: Job names that would collide with this plugin's own tools.
 _RESERVED_NAMES = frozenset({
-    "job-create", "job-edit", "job-remove", "job-list", "job-run", "__check",
+    "job-write", "job-remove", "job-list", "job-run", "__check",
 })
 
 _NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -186,7 +185,7 @@ mcp, _log_path, logger = create_plugin_server(
         "job-coding — deterministic Jobs as MCP tools. Every job is a "
         "Python file in the jobs directory exposing one public function; "
         "job tools are registered dynamically. Management: job-list, "
-        "job-create, job-edit, job-remove, job-run. Jobs make one-shot "
+        "job-write, job-remove, job-run. Jobs make one-shot "
         "LLM calls via the llm handle they import from "
         "slife.plugins.job_coding — only LLM jobs import it."
     ),
@@ -284,78 +283,59 @@ async def job_run(job: str, params: str = "{}", ctx: Context | None = None) -> s
 
 
 @mcp.tool(
-    name="job-create",
+    name="job-write",
     description=(
-        "Create a job — the agent's way to add a durable native tool — "
-        "from Python code: the job file becomes its own MCP tool, callable "
-        "directly and persisting across restarts. The code must define one "
-        "public function (typed params + docstring) and may import the llm "
-        "handle from slife.plugins.job_coding for one-shot calls "
-        "(e.g. translate). Load the job-coding skill first for the exact "
+        "Write a job's code — create or replace. If the job does not exist "
+        "it is created as a new durable native tool (the job file becomes "
+        "its own MCP tool, callable directly and persisting across "
+        "restarts); if it exists the tool is re-registered live with the "
+        "new schema/behavior. The code must define one public function "
+        "(typed params + docstring) and may import the llm handle from "
+        "slife.plugins.job_coding for one-shot calls (e.g. translate). On a "
+        "broken write the previous code is restored (a failed new job is "
+        "never left behind). Load the job-coding skill first for the exact "
         "conventions and a template."
     ),
 )
-async def job_create(name: str, code: str, ctx: Context | None = None) -> str:
-    """Create a job: writes <name>.py in the jobs directory and registers
-    the tool now (persists across restart)."""
+async def job_write(name: str, code: str, ctx: Context | None = None) -> str:
+    """Write a job's code: creates <name>.py (or replaces it) and registers
+    the tool now (persists across restart); a broken write rolls back."""
     _capture_session(ctx)
     err = _validate_name(name)
     if err:
         return err
     path = _jobs_dir / f"{name}.py"
-    if path.exists():
-        return f"Error: job '{name}' already exists (use job-edit)"
+    created = not path.exists()
+    previous = path.read_text(encoding="utf-8") if not created else ""
+    if not created:
+        _unregister_tool(name)
     _write_job_file(path, code)
     failure = _load_file(path)
-    if failure:
-        path.unlink(missing_ok=True)  # don't leave a broken file behind
-        return failure
-    if name not in _registry:
+    if failure or name not in _registry:
+        if not created:
+            # Roll back to the previous working code.
+            reason = failure or (
+                f"the code must define a public function named '{name}' "
+                f"(received {sorted(_registry) or '(none)'})"
+            )
+            _unregister_tool(name)
+            _write_job_file(path, previous)
+            failure2 = _load_file(path)
+            if failure2:
+                _unregister_tool(name)
+            return f"Error: write failed — previous code restored ({reason})"
+        # A new job that fails to load is never left as a broken file.
         path.unlink(missing_ok=True)
-        return (
+        return failure or (
             f"Error: the code must define a public function named '{name}' "
             f"(received {sorted(_registry) or '(none)'})"
         )
     await _notify_tools_changed()
-    return (
-        f"Job '{name}' created and registered as the tool '{name}'. "
-        f"Load the job-coding skill to author more."
-    )
-
-
-@mcp.tool(
-    name="job-edit",
-    description=(
-        "Edit an existing job's code. Rewrites <name>.py and re-registers "
-        "the tool (schema and behavior update live). On a broken edit the "
-        "previous code is restored. Load the job-coding skill first."
-    ),
-)
-async def job_edit(name: str, code: str, ctx: Context | None = None) -> str:
-    """Replace a job's code, restoring the previous version on failure."""
-    _capture_session(ctx)
-    if name not in _registry:
-        return f"Error: unknown job '{name}' (use job-create first)"
-    path = _jobs_dir / f"{name}.py"
-    if not path.exists():
-        return f"Error: job file {path.name} missing"
-    previous = path.read_text(encoding="utf-8")
-    _unregister_tool(name)
-    _write_job_file(path, code)
-    failure = _load_file(path)
-    if failure or name not in _registry:
-        reason = failure or (
-            f"the code must define a public function named '{name}' "
-            f"(received {sorted(_registry) or '(none)'})"
+    if created:
+        return (
+            f"Job '{name}' created and registered as the tool '{name}'. "
+            f"Load the job-coding skill to author more."
         )
-        # Roll back to the previous working code.
-        _unregister_tool(name)
-        _write_job_file(path, previous)
-        failure2 = _load_file(path)
-        if failure2:
-            _unregister_tool(name)
-        return f"Error: edit failed — previous code restored ({reason})"
-    await _notify_tools_changed()
     return f"Job '{name}' updated and re-registered."
 
 

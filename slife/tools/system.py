@@ -877,7 +877,7 @@ async def check_job_coding(client=None) -> list[dict]:
         level, value, hint = (
             "ok", "no jobs",
             "No jobs registered. Add a .py file to the jobs directory or use "
-            "job-create; load the job-coding skill to author one.",
+            "job-write; load the job-coding skill to author one.",
         )
     entries: list[dict] = [{
         "component": "job-coding", "level": level, "key": "jobs",

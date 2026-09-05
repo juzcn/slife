@@ -263,7 +263,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 | `sharefile` | `share_file` |
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
-| `job-coding` | `job-list`, `job-create`, `job-edit`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `translate`） |
+| `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `translate`） |
 
 内置插件工具若已自带服务器名前缀（`mcp_set`、`wechat_login`）则原样注册，其余按 `{server}__{tool}` 命名。外部 MCP 服务器（`slife.json5` → `mcp.servers`）一律以 `{server}__{tool}` 出现（如 `filesystem__read_file`）。
 
@@ -303,7 +303,7 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 对于**定义明确、可重复**的工作——翻译、摘要、抽取、分类、格式化——用 **Job** 跑一个代码定义的函数、只传它声明的参数，而不是把整个会话拖进一个 agent turn。Job 就是 `~/.slife/jobs/` 下的普通 `.py` 文件（一个公开函数 = 一个 job 工具；写法和内置的 `translate` / `summarize` 样例见 `job-coding` skill）。插件每次启动重载该目录，并支持实时管理：
 
 - `job-list` — 查看已注册的 job
-- `job-create` / `job-edit` / `job-remove` — 新增、修改（编辑出错自动回滚）、或删除 job；工具立即出现/消失，重启后依然生效
+- `job-write` / `job-remove` — 新增/修改（建或改一体；写入出错自动回滚）、或删除 job；工具立即出现/消失，重启后依然生效
 - `job-run` — 按名执行任意 job，或直接调用该 job 自己的工具
 
 需要大模型的 job 通过注入的 `llm` 句柄**一次性**调用——`llm.chat` 用 `job_coding_model`（独立于会话 active model 配置的模型，job 调用便宜且不扰动主 agent 的 prompt-cache）。任何对话历史、系统提示词、agent loop 都到不了 job。
@@ -331,7 +331,7 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 | **slife-sharefile** | 公开文件分享——唯一工具 `share_file` 把本地文件发布为公开 HTTPS URL（同端口的 `/share` 路由；ngrok 隧道由插件自持） |
 | **slife-a2a** | A2A 网格通道（MQTT binding；仅在 broker 可达时启动） |
 | **slife-media** | 非聊天类 AI 生成（图片 / 视频 / TTS / ASR），对接任意提供商——自持 `media:` 配置段与提供商无关的适配层（`dashscope-aigc`、`openai-images`）。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio` |
-| **slife-job-coding** | 确定性 **Job** 系统（MCP 工具形态）——`~/.slife/jobs/` 里的代码函数按声明的参数精确执行；一次性 LLM 调用走 `llm.chat`、用 `job_coding_model`。工具：`job-list`、`job-create`、`job-edit`、`job-remove`、`job-run` + 每个 job 一个工具 |
+| **slife-job-coding** | 确定性 **Job** 系统（MCP 工具形态）——`~/.slife/jobs/` 里的代码函数按声明的参数精确执行；一次性 LLM 调用走 `llm.chat`、用 `job_coding_model`。工具：`job-list`、`job-write`、`job-remove`、`job-run` + 每个 job 一个工具 |
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。
 

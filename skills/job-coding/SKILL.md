@@ -1,6 +1,6 @@
 ---
 name: job-coding
-description: Create and manage the agent's own native tools — deterministic, code-defined Jobs, each exposed as its own MCP tool (job-create / job-edit / job-list / job-remove / job-run + a per-job tool). Load this skill when the user asks for a reusable tool or automation that is well-specified, repeatable, and data-in/result-out (translate, extract, format, convert). The body covers when a Job fits vs an existing skill vs doing it inline.
+description: Create and manage the agent's own native tools — deterministic, code-defined Jobs, each exposed as its own MCP tool (job-write / job-list / job-remove / job-run + a per-job tool). Load this skill when the user asks for a reusable tool or automation that is well-specified, repeatable, and data-in/result-out (translate, extract, format, convert). The body covers when a Job fits vs an existing skill vs doing it inline.
 ---
 
 # job-coding — how to write a Job
@@ -18,7 +18,7 @@ those arguments — that closed boundary is what makes a job deterministic.
 - **One job = one `.py` file** with one public function. Private helpers
   use a leading underscore (`_helper`) and are never exposed as tools.
 - Files are re-scanned at plugin startup (restart → jobs re-register) and
-  reloaded immediately by `job-create` / `job-edit`.
+  reloaded immediately by `job-write`.
 
 ## Job grammar
 
@@ -123,8 +123,8 @@ def slugify(title: str, sep: str = "-") -> str:
 `from slife.plugins.job_coding import llm` gives you the one-shot handle. It is the ONLY
 LLM access a job should have:
 
-**Import it yourself — nothing is auto-injected.** `job-create` / `job-edit`
-write your code verbatim. If a job calls the LLM, its file MUST start with
+**Import it yourself — nothing is auto-injected.** `job-write`
+writes your code verbatim. If a job calls the LLM, its file MUST start with
 `from slife.plugins.job_coding import llm` (it's your job to write it — a
 missing import fails at *call* time with `NameError`, registration won't
 catch it). A pure-computation job must NOT import it.
@@ -161,10 +161,10 @@ catch it). A pure-computation job must NOT import it.
 - **One file = one public function.** A second public `def` in the same
   file becomes a second job tool too — usually unintended. Private helpers
   are `_`-prefixed so they stay helpers.
-- **Reserved names are rejected** by `job-create`: `job-list`,
-  `job-create`, `job-edit`, `job-remove`, `job-run`, `__check`, and any
+- **Reserved names are rejected** by `job-write`: `job-list`,
+  `job-write`, `job-remove`, `job-run`, `__check`, and any
   name starting with `_`. Pick a lowercase identifier like `translate`.
-- **A job name must match the function name exactly.** If `job-create(name,
+- **A job name must match the function name exactly.** If `job-write(name,
   code)` writes a file whose function is named differently, registration
   fails with a clear error.
 - **A job is self-contained.** The runner supplies exactly the declared
@@ -197,8 +197,7 @@ same endpoint family's smallest flash model (e.g. `bailian_personal/qwen3.6-flas
 |---|---|
 | `job-list` | List registered jobs: name, description, source file. Call this first. |
 | `job-run` | `job-run(job, params)` — run a job by name with a JSON object of args. |
-| `job-create` | `job-create(name, code)` — write a new job file and register its tool now (persists across restart). |
-| `job-edit` | `job-edit(name, code)` — replace a job's code; previous version restored on a broken edit. |
+| `job-write` | `job-write(name, code)` — write a job's code, creating it or replacing it; the tool (re)registers now and a broken write restores the previous version. |
 | `job-remove` | `job-remove(name)` — delete a job file and unregister its tool. |
 
 Each job also appears as its **own tool** (named after the function) with a
@@ -216,18 +215,18 @@ want typed arguments.
    import llm` at the top, JSON-serializable params, **return a `str`**
    (or `None`), one public function matching the job name, `return` not
    `print`.
-4. `job-create(name, code)`. The tool is registered immediately.
+4. `job-write(name, code)` — created or replaced and registered immediately.
 5. `job-run(name, '{"...":"..."}')` (or call the job tool directly) to
    verify — **test BOTH call paths** for a dict/list return. If it errors,
-   `job-edit` with the corrected code and re-run.
+   `job-write` with the corrected code and re-run.
 
-**Edit a job**: `job-edit(name, code)` — the tool re-registers with the new
-schema. Keep the function name stable; a broken edit rolls back, so iterate
-freely.
+**Update a job**: `job-write(name, code)` on an existing job re-registers the
+tool with the new schema (create and update are the same tool). Keep the
+function name stable; a broken write rolls back, so iterate freely.
 
 **Create with your own files**: you may also write/edit `.py` files in the
 jobs directory directly (e.g. with the editor tools) — the plugin picks them
-up on restart (`<data_dir>/jobs/`); prefer `job-create`/`job-edit` when you
+up on restart (`<data_dir>/jobs/`); prefer `job-write` when you
 want it live immediately.
 
 ## When to create a Job vs use a skill vs do it inline
@@ -237,7 +236,7 @@ homes — pick by what X needs:
 
 | The task needs… | Mechanism |
 |---|---|
-| A stable, reusable operation with a fixed interface — well-specified, repeatable, data-in/result-out ("translate", "summarize", "a tool that searches X and formats the results") | **Job** — `job-create`; any Python the author writes (libraries, APIs, network), exposed as a native tool with a typed schema |
+| A stable, reusable operation with a fixed interface — well-specified, repeatable, data-in/result-out ("translate", "summarize", "a tool that searches X and formats the results") | **Job** — `job-write`; any Python the author writes (libraries, APIs, network), exposed as a native tool with a typed schema |
 | Open-ended or exploratory work — research, browsing, flows where the agent must judge as it goes | **Existing skill** — e.g. `baidu-search`, `browser-harness` — or inline |
 | Nothing you'll reuse | Do it inline in the agent loop |
 

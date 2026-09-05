@@ -270,8 +270,8 @@ async def test_job_list_empty(srv):
 
 
 @pytest.mark.asyncio
-async def test_job_create_registers_tool_and_persists(srv, tmp_path):
-    out = await srv.job_create(
+async def test_job_write_creates_registers_tool_and_persists(srv, tmp_path):
+    out = await srv.job_write(
         name="shout",
         code="def shout(msg: str) -> str:\n    '''Uppercase a message.'''\n    return msg.upper()",
     )
@@ -282,14 +282,14 @@ async def test_job_create_registers_tool_and_persists(srv, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_job_create_writes_code_verbatim_no_llm_scaffold(srv, tmp_path):
+async def test_job_write_writes_code_verbatim_no_llm_scaffold(srv, tmp_path):
     """Pure jobs are written untouched — no llm import is auto-injected."""
     code = (
         "def pick(items: str) -> str:\n"
         "    '''Pick the first item of a comma-separated list.'''\n"
         "    return items.split(',')[0]"
     )
-    out = await srv.job_create(name="pick", code=code)
+    out = await srv.job_write(name="pick", code=code)
     assert "created" in out
     written = (tmp_path / "jobs" / "pick.py").read_text(encoding="utf-8")
     assert written == code + "\n"  # verbatim, plus the trailing-newline normal
@@ -297,8 +297,8 @@ async def test_job_create_writes_code_verbatim_no_llm_scaffold(srv, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_job_create_requires_matching_function_name(srv):
-    out = await srv.job_create(
+async def test_job_write_requires_matching_function_name(srv):
+    out = await srv.job_write(
         name="shout",
         code="def other(msg):\n    return msg",
     )
@@ -307,15 +307,15 @@ async def test_job_create_requires_matching_function_name(srv):
 
 
 @pytest.mark.asyncio
-async def test_job_create_rejects_invalid_names(srv):
-    for bad in ("bad-name", "job-create", "_priv"):
-        out = await srv.job_create(name=bad, code="def x():\n    return 1")
+async def test_job_write_rejects_invalid_names(srv):
+    for bad in ("bad-name", "job-write", "_priv"):
+        out = await srv.job_write(name=bad, code="def x():\n    return 1")
         assert "Error" in out
 
 
 @pytest.mark.asyncio
 async def test_job_run_executes(srv):
-    await srv.job_create(
+    await srv.job_write(
         name="echo",
         code="def echo(text: str, times: int = 2) -> str:\n    return (text * times).upper()",
     )
@@ -331,7 +331,7 @@ async def test_job_run_unknown(srv):
 
 @pytest.mark.asyncio
 async def test_job_run_bad_params_json(srv):
-    await srv.job_create(
+    await srv.job_write(
         name="echo",
         code="def echo(text: str) -> str:\n    return text",
     )
@@ -340,29 +340,29 @@ async def test_job_run_bad_params_json(srv):
 
 
 @pytest.mark.asyncio
-async def test_job_edit_reruns_and_rolls_back(srv):
-    await srv.job_create(
+async def test_job_write_updates_and_rolls_back(srv):
+    await srv.job_write(
         name="shout",
         code="def shout(msg: str) -> str:\n    return msg.upper()",
     )
     assert await srv.job_run(job="shout", params='{"msg": "hi"}') == "HI"
 
-    out = await srv.job_edit(
+    out = await srv.job_write(
         name="shout",
         code="def shout(msg: str) -> str:\n    return f'[{msg.upper()}]'",
     )
     assert "updated" in out
     assert await srv.job_run(job="shout", params='{"msg": "hi"}') == "[HI]"
 
-    # Broken edit rolls back to the previous working code.
-    out = await srv.job_edit(name="shout", code="def broken(:\n")
+    # Broken write rolls back to the previous working code.
+    out = await srv.job_write(name="shout", code="def broken(:\n")
     assert "previous code restored" in out
     assert await srv.job_run(job="shout", params='{"msg": "hi"}') == "[HI]"
 
 
 @pytest.mark.asyncio
 async def test_job_remove_unregisters(srv, tmp_path):
-    await srv.job_create(
+    await srv.job_write(
         name="shout",
         code="def shout(msg: str) -> str:\n    return msg.upper()",
     )
@@ -376,7 +376,7 @@ async def test_job_remove_unregisters(srv, tmp_path):
 
 @pytest.mark.asyncio
 async def test_check_reports_facts(srv):
-    await srv.job_create(
+    await srv.job_write(
         name="shout",
         code="def shout(msg: str) -> str:\n    return msg.upper()",
     )

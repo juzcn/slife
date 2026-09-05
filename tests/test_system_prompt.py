@@ -142,8 +142,12 @@ class TestBuild:
             assert not line.startswith("/help ")
             assert not line.startswith("/clear ")
 
-    def test_mcp_not_hardcoded(self, cfg):
+    def test_mcp_not_hardcoded(self, cfg, monkeypatch):
         """No specific MCP server names — LLM discovers at runtime."""
+        # USER.md is free-form, user-edited content appended verbatim — its
+        # example text may contain any string.  Drop SLIFE_AGENT_NAME so the
+        # render never picks up the real per-agent USER.md (test_paths style).
+        monkeypatch.delenv("SLIFE_AGENT_NAME", raising=False)
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "duckduckgo-search" not in result
@@ -278,6 +282,10 @@ class TestStructure:
 
     def test_common_world_identical_across_roles(self, cfg, monkeypatch):
         """The slife.j2 world block is byte-identical in both compositions."""
+        # USER.md is free-form appending to both identities' tails; a real
+        # USER.md (via SLIFE_AGENT_NAME) would make the subagent's world slice
+        # include the User Preferences section the main slice cuts before.
+        monkeypatch.delenv("SLIFE_AGENT_NAME", raising=False)
         from slife.agent.system_prompt import build
         self._env_sub(monkeypatch)
 

@@ -48,7 +48,7 @@ def load_module(path: Path) -> types.ModuleType:
     """Import one job file; evicts any prior version first.
 
     Compiled via ``compile``+``exec`` (not a spec loader) so a rewritten
-    file is ALWAYS re-read — a fast ``job-edit`` rewrite + reload at the
+    file is ALWAYS re-read — a fast ``job-write`` rewrite + reload at the
     same mtime would otherwise be served the stale bytecode cache.
 
     Raises:
@@ -101,8 +101,8 @@ def collect_jobs(module: types.ModuleType) -> list[Job]:
 def scan_jobs_dir(jobs_dir: Path) -> list[Job]:
     """Scan *jobs_dir* and return every job across all job files.
 
-    A file that fails to import is logged and skipped (broken edits surface
-    via ``job-edit``'s rollback), never fatal.
+    A file that fails to import is logged and skipped (broken writes surface
+    via ``job-write``'s rollback), never fatal.
     """
     if not jobs_dir.is_dir():
         return []
