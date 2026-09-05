@@ -244,6 +244,10 @@ class AgentService:
         self._tool_ctx.message_history = self.message_history
         # Runtime iteration-cap hook for the set_max_iterations tool.
         self._tool_ctx.set_max_iterations = self.agent_loop.set_max_iterations
+        # USER.md write hook for the add_user_pref tool — re-render the
+        # system prompt (re-reads USER.md) so the new preference is live
+        # from the next call.  Populated for the main agent and subagents.
+        self._tool_ctx.refresh_system_prompt = self.refresh_system_prompt
         # Scheduled-task manual-fire hook for the run_schedule_now tool.
         # Subagents are workers, never the scheduler — leave it None there.
         if not is_subagent:
@@ -434,10 +438,7 @@ class AgentService:
 
         # Rebuild system prompt with updated model info — for the human
         # history AND every persistent one (WeChat) and future ones.
-        new_system = build_system_prompt(self.config)
-        if self.message_history.messages and self.message_history.messages[0]["role"] == "system":
-            self.message_history.messages[0]["content"] = new_system
-        self.inbox._histories.update_system_prompt(new_system)
+        self.refresh_system_prompt()
 
     @property
     def mcp_enabled(self) -> bool:
@@ -1947,6 +1948,19 @@ class AgentService:
         from slife.agent.schedules import fire_task_now
 
         return await fire_task_now(self, name, due_at)
+
+    def refresh_system_prompt(self) -> None:
+        """Re-render the system prompt and replace it in the live history
+        and the per-history store, so the next API call reads the new bytes.
+
+        Called when model info changes (``reload_active_model``) and after a
+        ``add_user_pref`` write (the USER.md section changed).  The byte
+        change touches the prompt cache — accepted, both events are rare.
+        """
+        new_system = build_system_prompt(self.config)
+        if self.message_history.messages and self.message_history.messages[0]["role"] == "system":
+            self.message_history.messages[0]["content"] = new_system
+        self.inbox._histories.update_system_prompt(new_system)
 
     # ── Inbox lifecycle (always active) ────────────────────────────────
 

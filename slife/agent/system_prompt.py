@@ -75,6 +75,10 @@ def _render_context(config: Config) -> dict:
         # When the agent's persisted memory began (earliest diary turn) —
         # tells the LLM the origin of its session history.
         "memory_start_time": _memory_start_time(config.agent_name),
+        # The user's standing preferences (USER.md), appended as the final
+        # system-prompt section by both identity templates.  Absent → "" and
+        # the section is skipped, keeping the prompt byte-identical to today.
+        "user_preferences": _user_preferences(config.agent_name),
         # ── 环境 ──
         "platform_type": _platform_type(),
         "platform_name": _os_name(),
@@ -208,6 +212,39 @@ def _memory_start_time(agent_name: str) -> str:
             return row[0] if row and row[0] else ""
         finally:
             con.close()
+    except Exception:
+        return ""
+
+
+#: Defensive cap for the USER.md read into the prompt.  The file is
+#: user-curated and normally a few hundred tokens; this only guards against
+#: a pathological size blowing the context.
+_USER_PREFS_MAX_CHARS = 32_768
+
+
+def _user_preferences(agent_name: str) -> str:
+    """The user's standing preferences (File Cabinet's ``USER.md``) —
+    ``""`` when absent.
+
+    Read synchronously at prompt-build time (like :func:`_memory_start_time`).
+    The ``**User Preferences**`` section header is rendered by the identity
+    templates; a leading ``#`` title line found in the file is stripped so
+    the prompt never shows the heading twice.  The rest of the body is
+    included verbatim — the harness never rewrites the user's bytes.
+    """
+    try:
+        from slife.paths import get_memfiles_dir
+
+        path = get_memfiles_dir(agent_name) / "USER.md"
+        if not path.is_file():
+            return ""
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if len(text) > _USER_PREFS_MAX_CHARS:
+            text = text[:_USER_PREFS_MAX_CHARS]
+        lines = text.splitlines()
+        if lines and lines[0].lstrip().startswith("#"):
+            lines = lines[1:]
+        return "\n".join(lines).strip()
     except Exception:
         return ""
 

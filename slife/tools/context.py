@@ -83,6 +83,12 @@ class ToolContext:
     (0 = unlimited).  Populated by AgentService after the loop is built;
     used by the ``set_max_iterations`` tool."""
 
+    refresh_system_prompt: Callable[[], None] | None = None
+    """Re-render the session's system prompt after USER.md changed — called
+    by the ``add_user_pref`` tool so the new preference is live from the next
+    API call (the byte change touches the prompt cache; accepted, writes are
+    rare).  Populated by AgentService."""
+
     fire_schedule_now: Callable[[str], Awaitable[str]] | None = None
     """Run a scheduled task immediately (record a run + inject its trigger).
     Populated by AgentService (main agent only); used by the

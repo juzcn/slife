@@ -12,3 +12,8 @@ You are {{ subagent_name }}, an agent worker of {{ agent_name }}, created at {{ 
 The Slife runtime below is the world {{ agent_name }} lives in — your working environment and capabilities as a worker.
 
 {% include 'slife.j2' %}
+
+{% if user_preferences %}
+**User Preferences**
+{{ user_preferences }}
+{% endif %}
