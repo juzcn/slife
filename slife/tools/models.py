@@ -468,8 +468,8 @@ class AttachImageTool(Tool):
     category: ClassVar[str] = "Models"
     _requires_vision: ClassVar[bool] = True
     description: ClassVar[str] = (
-        "Attach image(s) for vision (data URI, local path, or URL; list via "
-        "'sources', single via 'source')."
+        "Attach one or more images for vision (data URI, local path, or URL; "
+        "list via 'sources', single via 'source')."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
