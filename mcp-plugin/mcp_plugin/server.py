@@ -340,7 +340,10 @@ async def _on_connected(server_name: str) -> None:
     store = await _ensure_store()
     if conn is not None and store is not None:
         try:
-            await store.sync_server(server_name, conn.list_tools())
+            await store.sync_server(
+                server_name, conn.list_tools(),
+                auto_load=conn.config.auto_load,
+            )
             if _manager is not None:
                 _manager.on_saved()
         except Exception as e:
@@ -555,15 +558,18 @@ async def mcp_set_enabled(name: str, enabled: bool) -> str:
         )
     existing.config.enabled = enabled
     if enabled:
+        # Persist the flag: enabled is the default, so this removes the
+        # ``enabled: false`` a prior disable wrote — otherwise the re-enable
+        # would be lost on the next restart (the server would load disabled).
+        plugin_config.set_server_enabled(name, True)
         if existing.status != ServerStatus.CONNECTED:
             await existing.connect()  # fires _on_connected → sync_server
         if existing.status == ServerStatus.CONNECTED:
             tools = existing.list_tools()
-            # Server-level toggle → all its catalog tools enabled (no reindex —
-            # the semantic vectors only depend on name+description).
+            # Server-level toggle (per-mcp only — no per-tool state exists).
             store = await _ensure_store()
             if store is not None:
-                await store.enable_server_tools(name)
+                await store.set_server_enabled(name, True)
             return ok_json(
                 status="connected",
                 server=name,
@@ -579,10 +585,10 @@ async def mcp_set_enabled(name: str, enabled: bool) -> str:
         )
     await _pool.disconnect_server(name)
     plugin_config.set_server_enabled(name, False)
-    # Server-level toggle → its catalog tools marked disabled (no reindex).
+    # Server-level toggle (per-mcp only) — search/call gate read this.
     store = await _ensure_store()
     if store is not None:
-        await store.disable_server_tools(name)
+        await store.set_server_enabled(name, False)
     # Notify so the host reconcile drops this server's loaded proxies.
     await _notify_tools_changed()
     return ok_json(
@@ -659,26 +665,25 @@ async def __check(ctx: Context | None = None) -> str:
 @mcp.tool(
     name="mcp_list_tools",
     description=(
-        "List a connected server's tools, prefixed server__tool. The tool "
-        "catalog is rebuilt live in memory from connections, so this always "
-        "reflects exactly what the runtime can call. Use mcp_list to "
-        "discover server names."
+        "List a connected server's tools, prefixed server__tool. Source: "
+        "the built-in MCP tools/list for on-demand servers (auto_load=false); "
+        "the in-memory catalog — the registration view — for auto_load "
+        "servers. Use mcp_list to discover server names."
     ),
 )
 async def mcp_list_tools(server: str) -> str:
-    """List a server's live tools (single read).
+    """List a server's tools (single read).
 
-    The in-memory catalog is a direct projection of the live connection pool
-    (synced on every connect/reconnect), so there is nothing persisted to
-    compare against or rebuild.
+    For on-demand servers (``auto_load=false``) the live MCP ``tools/list``
+    is authoritative.  For ``auto_load`` servers the catalog IS the
+    registration view (their tools are already in the toolset), so the
+    catalog rows are returned instead of a live round-trip.
 
     Args:
         server: Server name (required). Use mcp_list to discover server names.
     """
     conn = _pool.get_server(server)
-    connected = conn is not None and conn.status == ServerStatus.CONNECTED
-
-    if not connected:
+    if conn is None or conn.status != ServerStatus.CONNECTED:
         return ok_json(
             server=server,
             connected=False,
@@ -689,6 +694,28 @@ async def mcp_list_tools(server: str) -> str:
                 "connects. Use mcp_list to see configured servers."
             ),
         )
+
+    if conn.config.auto_load:
+        store = await _ensure_store()
+        if store is not None:
+            rows = await store.list_tools_by_server(server)
+            tools = [
+                {
+                    "name": r["name"],
+                    "description": r["description"],
+                    "server": server,
+                    "full_name": r["full_name"],
+                }
+                for r in rows
+            ]
+            return ok_json(
+                server=server,
+                connected=True,
+                source="catalog",
+                tools=tools,
+                tool_count=len(tools),
+                note="Catalog view — this server's tools are already in the toolset.",
+            )
 
     try:
         live = _pool.list_all_tools(server_name=server)
@@ -702,9 +729,10 @@ async def mcp_list_tools(server: str) -> str:
     return ok_json(
         server=server,
         connected=True,
+        source="live",
         tools=live,
         tool_count=len(live),
-        note="catalog rebuilt live in memory",
+        note="Live tool list from the connected server (built-in MCP tools/list).",
     )
 
 
@@ -735,14 +763,13 @@ async def __mcp_call_tool(
     except json.JSONDecodeError:
         return f"Error: arguments must be valid JSON. Got: {arguments}"
 
-    # Call-time enforcement: a per-tool disabled flag refuses the call.
+    # Call-time enforcement (per-mcp): a disabled server refuses the call.
     store = await _ensure_store()
     if store is not None:
-        row = await store.get_tool(f"{server}__{tool_name}")
-        if row is not None and not row["enabled"]:
+        srv = await store.get_server(server)
+        if srv is not None and not srv["enabled"]:
             return error_json(
-                f"Tool '{server}__{tool_name}' is disabled (its server is "
-                f"disabled). Enable it with mcp_set_enabled.",
+                f"Server '{server}' is disabled — enable it with mcp_set_enabled.",
                 server=server, tool=tool_name,
             )
 
@@ -758,12 +785,12 @@ async def __mcp_call_tool(
 @mcp.tool(
     name="__mcp_get_tool",
     description=(
-        "Fetch a tool's live schema + enabled status by full_name "
+        "Fetch a tool's live schema + its server's enabled state by full_name "
         "'{server}__{tool}'. Internal — invoked by the host's mcp_tool_load."
     ),
 )
 async def __mcp_get_tool(full_name: str) -> str:
-    """Return a tool's schema + enabled status for host-side loading."""
+    """Return a tool's schema + server enabled state for host-side loading."""
     server, tool = _split_full_name(full_name)
     conn = _pool.get_server(server)
     if conn is None or conn.status != ServerStatus.CONNECTED:
@@ -774,26 +801,29 @@ async def __mcp_get_tool(full_name: str) -> str:
             f"Tool '{full_name}' not found on server '{server}'.", full_name=full_name,
         )
     store = await _ensure_store()
-    row = await store.get_tool(full_name) if store else None
+    srv = await store.get_server(server) if store else None
     return ok_json(
         full_name=full_name,
         server=server,
         name=tool,
         description=info.get("description", ""),
         inputSchema=info.get("inputSchema", {"type": "object", "properties": {}}),
-        enabled=bool(row["enabled"]) if row else True,
+        enabled=bool(srv["enabled"]) if srv else True,
+        auto_load=bool(srv["auto_load"]) if srv else False,
     )
 
 
 @mcp.tool(
     name="mcp_tool_search",
     description=(
-        "Search the MCP tool catalog across all loaded servers. Modes: "
+        "Search the MCP tool catalog across enabled, on-demand servers. "
+        "Disabled servers' tools and auto_load servers' tools never appear "
+        "(auto_load tools are already registered in the tool list). Modes: "
         "'grep' exact substring, 'fts5' BM25 keyword, 'hybrid' fts5 + semantic "
         "(default). Hybrid degrades to fts5 automatically when no embeddings "
-        "endpoint is configured. Returns full_name '{server}__{tool}', "
-        "description, and enabled status — use mcp_tool_load with a full_name "
-        "to make a tool callable."
+        "endpoint is configured. Returns full_name '{server}__{tool}' and "
+        "description — use mcp_tool_load with a full_name to make a tool "
+        "callable."
     ),
 )
 async def mcp_tool_search(
@@ -801,7 +831,6 @@ async def mcp_tool_search(
     mode: str = "hybrid",
     limit: int = 10,
     server: str | None = None,
-    include_disabled: bool = True,
 ) -> str:
     """Search the tool catalog: grep / fts5 / hybrid (semantic + keyword)."""
     store = await _ensure_store()
@@ -819,11 +848,11 @@ async def mcp_tool_search(
 
     if mode == "grep":
         results = await store.search_grep(
-            query, limit=limit, server=server, include_disabled=include_disabled,
+            query, limit=limit, server=server,
         )
     else:
         keyword_hits = await store.search_keyword(
-            query, limit=limit * 2, server=server, include_disabled=include_disabled,
+            query, limit=limit * 2, server=server,
         )
         if mode == "hybrid" and (
             _manager is not None and _manager.semantic_ready
@@ -833,7 +862,6 @@ async def mcp_tool_search(
             if emb:
                 semantic_hits = await store.search_semantic(
                     emb, limit=limit * 2, server=server,
-                    include_disabled=include_disabled,
                 )
                 semantic_available = True
                 results = merge_hybrid(keyword_hits, semantic_hits, key_field="full_name")

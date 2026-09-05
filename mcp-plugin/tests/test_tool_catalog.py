@@ -60,7 +60,11 @@ class _FakePool:
 
 @pytest_asyncio.fixture
 async def srv(restore_root_logger):
-    """Server module with a real in-memory store + fake pool of two servers."""
+    """Server module with a real in-memory store + fake pool of two servers.
+
+    ``svcC`` is an auto_load server — its tools synced but never discoverable
+    via ``mcp_tool_search`` (only present to exercise the visibility filter).
+    """
     s = _import_mcp_server()
     store = ToolStore()
     await store.open()
@@ -71,6 +75,9 @@ async def srv(restore_root_logger):
     await store.sync_server("svcB", [
         {"name": "search", "description": "search the web"},
     ])
+    await store.sync_server("svcC", [
+        {"name": "search", "description": "autoload tool"},
+    ], auto_load=True)
     s._store = store
     pool = _FakePool()
     pool._connections = {
@@ -110,21 +117,21 @@ async def test_tool_search_server_filter(srv):
 
 
 @pytest.mark.asyncio
-async def test_tool_search_include_disabled(srv):
-    s, store = srv
-    await store.set_tool_enabled("svcA__search", False)
-    raw = await s.mcp_tool_search("search", include_disabled=False)
+async def test_tool_search_hides_auto_load_servers(srv):
+    """Per-mcp: auto_load servers' tools (already in the toolset) never
+    surface in tool_search — only enabled, on-demand servers' tools do."""
+    s, _store = srv
+    raw = await s.mcp_tool_search("search", mode="hybrid")
     data = json.loads(raw)
-    assert "svcA__search" not in {r["full_name"] for r in data["results"]}
-    raw = await s.mcp_tool_search("search", include_disabled=True)
-    data = json.loads(raw)
-    assert "svcA__search" in {r["full_name"] for r in data["results"]}
+    names = {r["full_name"] for r in data["results"]}
+    assert "svcA__search" in names and "svcB__search" in names
+    assert "svcC__search" not in names
 
 
 @pytest.mark.asyncio
-async def test_call_tool_refuses_disabled(srv):
+async def test_call_tool_refuses_disabled_server(srv):
     s, store = srv
-    await store.set_tool_enabled("svcA__search", False)
+    await store.set_server_enabled("svcA", False)
     raw = await s.__mcp_call_tool("svcA", "search", "{}")
     data = json.loads(raw)
     assert data["status"] == "error"
@@ -153,19 +160,20 @@ async def test_call_tool_passes_when_no_store(restore_root_logger):
 
 
 @pytest.mark.asyncio
-async def test_get_tool_returns_schema_and_enabled(srv):
-    s, _store = srv
+async def test_get_tool_returns_schema_and_server_state(srv):
+    s, store = srv
     raw = await s.__mcp_get_tool("svcA__search")
     data = json.loads(raw)
     assert data["status"] == "ok"
     assert data["server"] == "svcA"
     assert data["name"] == "search"
     assert data["enabled"] is True
+    assert data["auto_load"] is False
     assert isinstance(data["inputSchema"], dict)
 
-    await _store.set_tool_enabled("svcA__search", False)
-    raw = await s.__mcp_get_tool("svcA__search")
-    data = json.loads(raw)
+    # Per-mcp: the enabled flag is the SERVER's, not the tool's.
+    await store.set_server_enabled("svcA", False)
+    data = json.loads(await s.__mcp_get_tool("svcA__search"))
     assert data["enabled"] is False
 
 

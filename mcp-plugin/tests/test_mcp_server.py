@@ -129,11 +129,37 @@ class TestMcpSetEnabled:
         with (
             patch.object(srv, "_pool", pool),
             patch.object(srv, "_ensure_store", AsyncMock(return_value=None)),
+            patch.object(srv.plugin_config, "set_server_enabled", return_value=True) as persist,
         ):
             result = await srv.mcp_set_enabled(name="live", enabled=False)
         parsed = _json.loads(result)
         assert parsed["status"] == "disabled"
         pool.disconnect_server.assert_called_once()
+        persist.assert_called_once_with("live", False)
+
+    @pytest.mark.asyncio
+    async def test_enable_persists_true(self, restore_root_logger):
+        """Re-enable must clear the persisted ``enabled: false`` a prior
+        disable wrote — otherwise the server loads disabled again on the
+        next restart (the disable path persists; the enable path must too)."""
+        import json as _json
+
+        srv = _import_mcp_server()
+        conn = MagicMock()
+        conn.config = ServerConfig(name="live", command="echo")
+        conn.status = ServerStatus.CONNECTED
+        conn.list_tools.return_value = []
+        pool = MagicMock()
+        pool.get_server.return_value = conn
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv, "_ensure_store", AsyncMock(return_value=None)),
+            patch.object(srv.plugin_config, "set_server_enabled", return_value=True) as persist,
+        ):
+            result = await srv.mcp_set_enabled(name="live", enabled=True)
+        parsed = _json.loads(result)
+        assert parsed["status"] == "connected"
+        persist.assert_called_once_with("live", True)
 
 
 class TestAddServerToolRegistration:
@@ -261,17 +287,22 @@ class TestWrapperNotifyToolsChanged:
 
 
 class TestMCPListToolsSingleRead:
-    """mcp_list_tools — a single live read.  The in-memory catalog is a direct
-    projection of the connection pool, so there is no persisted catalog to
-    compare against (the drift/stale machinery is gone entirely)."""
+    """mcp_list_tools — per-mcp source branching.
+
+    ``auto_load=false`` (on-demand) servers list via the built-in MCP
+    ``tools/list`` (live ``list_all_tools``); ``auto_load`` servers list the
+    in-memory catalog (the registration view).
+    """
 
     @staticmethod
-    async def _list(srv, *, connected=True, live=None, live_raise=""):
-        """Call mcp_list_tools with a patched pool (no catalog store involved)."""
+    async def _list(srv, *, connected=True, live=None, live_raise="", autoload=False):
+        """Call mcp_list_tools with a patched pool (no real catalog store)."""
+        import contextlib
         import json as _json
 
         conn = MagicMock()
         conn.status = ServerStatus.CONNECTED if connected else ServerStatus.DISCONNECTED
+        conn.config = ServerConfig(name="fs", command="x", auto_load=autoload)
         pool = MagicMock()
         pool.get_server.return_value = conn
         if live_raise:
@@ -279,7 +310,16 @@ class TestMCPListToolsSingleRead:
         else:
             pool.list_all_tools.return_value = live or []
 
-        with patch.object(srv, "_pool", pool):
+        targets = [patch.object(srv, "_pool", pool)]
+        if autoload:
+            fake_store = AsyncMock()
+            fake_store.list_tools_by_server.return_value = []
+            targets.append(
+                patch.object(srv, "_ensure_store", AsyncMock(return_value=fake_store))
+            )
+        with contextlib.ExitStack() as stack:
+            for t in targets:
+                stack.enter_context(t)
             raw = await srv.mcp_list_tools(server="fs")
         return _json.loads(raw)
 
@@ -289,17 +329,30 @@ class TestMCPListToolsSingleRead:
 
     @pytest.mark.asyncio
     async def test_connected_lists_live_tools(self, restore_root_logger):
+        """auto_load=false → the live built-in MCP tools/list is the source."""
         srv = _import_mcp_server()
         live = [self._live("a", "read a"), self._live("b", "read b")]
         out = await self._list(srv, live=live)
 
         assert out["status"] == "ok"
         assert out["connected"] is True
+        assert out["source"] == "live"
         assert out["tools"] == live
         assert out["tool_count"] == 2
-        assert out["note"] == "catalog rebuilt live in memory"
-        assert "stale" not in out
+        assert "tools/list" in out["note"]
         assert "hint" not in out
+
+    @pytest.mark.asyncio
+    async def test_autoload_lists_catalog(self, restore_root_logger):
+        """auto_load=true → the catalog (registration view), not a live read."""
+        srv = _import_mcp_server()
+        out = await self._list(srv, autoload=True)
+
+        assert out["status"] == "ok"
+        assert out["connected"] is True
+        assert out["source"] == "catalog"
+        assert out["tools"] == []
+        assert out["tool_count"] == 0
 
     @pytest.mark.asyncio
     async def test_connected_empty_tools(self, restore_root_logger):

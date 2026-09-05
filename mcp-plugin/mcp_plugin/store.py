@@ -27,6 +27,15 @@ logger = logging.getLogger(__name__)
 
 _MAX_SEARCH_LIMIT = 200
 
+#: Search-visibility (per-mcp): tool_search only surfaces tools of servers
+#: that are enabled AND not auto_load.  Disabled servers' tools are not
+#: discoverable (they cannot be loaded), and auto_load servers' tools are
+#: already registered in the toolset — no discovery needed.
+_SEARCH_VISIBLE_JOIN = (
+    "JOIN servers s ON s.name = tools.server "
+    "AND s.enabled = 1 AND s.auto_load = 0"
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -277,17 +286,29 @@ class ToolStore:
 
     # ── Catalog ────────────────────────────────────────────────────
 
-    async def sync_server(self, server: str, tools: list[dict]) -> dict:
-        """Upsert *server*'s live tools; delete tools the server no longer offers.
+    async def sync_server(
+        self, server: str, tools: list[dict], auto_load: bool = False,
+    ) -> dict:
+        """Upsert *server*'s live tools; delete tools it no longer offers.
 
-        PRESERVES the per-tool ``enabled`` flag on re-upsert (user-set status
-        survives reconnects and description edits).  Returns
-        ``{"upserted": n, "deleted": m}``.
+        Also upserts the server's per-mcp row (``enabled`` preserved from the
+        current state, ``auto_load`` refreshed from the connection config).
+        Returns ``{"upserted": n, "deleted": m}``.
         """
         now = _now()
         upserted = 0
         names: list[str] = []
         async with self._write_lock:
+            # Per-mcp row first (tools FK-cascade from it).  enabled is NOT
+            # touched on conflict — a server that was disabled stays disabled.
+            await self._c.execute(
+                """INSERT INTO servers(name, enabled, auto_load)
+                   VALUES (?, 1, ?)
+                   ON CONFLICT(name) DO UPDATE SET
+                       auto_load = excluded.auto_load
+                """,
+                (server, 1 if auto_load else 0),
+            )
             for t in tools:
                 name = t.get("name", "")
                 if not name:
@@ -306,18 +327,16 @@ class ToolStore:
                 )
                 prev_row = await prev.fetchone()
                 desc_changed = prev_row is not None and (prev_row[0] or "") != desc
-                cursor = await self._c.execute(
+                await self._c.execute(
                     """INSERT INTO tools(
-                           full_name, server, name, description, enabled,
+                           full_name, server, name, description,
                            last_seen, created_at)
-                       VALUES (?, ?, ?, ?, 1, ?, ?)
+                       VALUES (?, ?, ?, ?, ?, ?)
                        ON CONFLICT(full_name) DO UPDATE SET
                            server     = excluded.server,
                            name       = excluded.name,
                            description = excluded.description,
                            last_seen  = excluded.last_seen
-                       -- enabled deliberately NOT in the update list: a
-                       -- user-set disabled flag survives re-sync
                     """,
                     (full_name, server, name, desc, now, now),
                 )
@@ -347,48 +366,46 @@ class ToolStore:
         return {"upserted": upserted, "deleted": deleted}
 
     async def remove_server(self, server: str) -> int:
-        """Delete every tool row for *server* (FK cascades embeddings)."""
+        """Delete the server's per-mcp row and every tool row for it.
+
+        Returns how many tools were removed (the servers row is also dropped).
+        """
         async with self._write_lock:
             cursor = await self._c.execute(
                 "DELETE FROM tools WHERE server = ?", (server,),
             )
-            await self._c.commit()
-        logger.info("tool_remove_server server=%s deleted=%d", server, cursor.rowcount)
-        return cursor.rowcount
-
-    async def set_tool_enabled(self, full_name: str, enabled: bool) -> bool:
-        """Set the per-tool enabled flag. Returns True if the tool exists."""
-        async with self._write_lock:
-            cursor = await self._c.execute(
-                "UPDATE tools SET enabled = ? WHERE full_name = ?",
-                (1 if enabled else 0, full_name),
+            deleted = cursor.rowcount
+            await self._c.execute(
+                "DELETE FROM servers WHERE name = ?", (server,),
             )
             await self._c.commit()
-        return cursor.rowcount > 0
+        logger.info("tool_remove_server server=%s deleted=%d", server, deleted)
+        return deleted
 
-    async def disable_server_tools(self, server: str) -> int:
-        """Mark every tool of *server* disabled (0). Used by
-        ``mcp_set_enabled(false)`` so a disabled server's catalog entries
-        are searchable but not usable."""
-        return await self._set_server_tools(server, enabled=False)
-
-    async def enable_server_tools(self, server: str) -> int:
-        """Mark every tool of *server* enabled (1) — ``mcp_set_enabled(true)``."""
-        return await self._set_server_tools(server, enabled=True)
-
-    async def _set_server_tools(self, server: str, *, enabled: bool) -> int:
+    async def set_server_enabled(self, server: str, enabled: bool) -> int:
+        """Flip the server's per-mcp enabled flag — the only enable/disable
+        state that exists (per-mcp only, no per-tool flags)."""
         async with self._write_lock:
             cursor = await self._c.execute(
-                "UPDATE tools SET enabled = ? WHERE server = ?",
+                "UPDATE servers SET enabled = ? WHERE name = ?",
                 (1 if enabled else 0, server),
             )
             await self._c.commit()
         return cursor.rowcount
 
-    async def get_tool(self, full_name: str) -> dict | None:
-        """Fetch one tool row (with full_name/server/name/description/enabled)."""
+    async def get_server(self, server: str) -> dict | None:
+        """Return the server's per-mcp row (``enabled`` / ``auto_load``)."""
         cursor = await self._c.execute(
-            "SELECT full_name, server, name, description, enabled FROM tools WHERE full_name = ?",
+            "SELECT name, enabled, auto_load FROM servers WHERE name = ?",
+            (server,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_tool(self, full_name: str) -> dict | None:
+        """Fetch one tool row (full_name/server/name/description)."""
+        cursor = await self._c.execute(
+            "SELECT full_name, server, name, description FROM tools WHERE full_name = ?",
             (full_name,),
         )
         row = await cursor.fetchone()
@@ -410,11 +427,10 @@ class ToolStore:
         """Return every catalog row for *server*.
 
         One dict per tool: ``full_name`` / ``server`` / ``name`` /
-        ``description`` / ``enabled`` — the persisted view used to compare
-        against a live server's tools.
+        ``description`` — the catalog view of a server's tools.
         """
         cursor = await self._c.execute(
-            "SELECT full_name, server, name, description, enabled "
+            "SELECT full_name, server, name, description "
             "FROM tools WHERE server = ?",
             (server,),
         )
@@ -425,31 +441,34 @@ class ToolStore:
 
     async def search_keyword(
         self, query: str, limit: int = 20,
-        server: str | None = None, include_disabled: bool = True,
+        server: str | None = None,
     ) -> list[dict]:
-        """FTS5 keyword search with snippet highlighting."""
+        """FTS5 keyword search with snippet highlighting.
+
+        Only tools of enabled, non-auto_load servers are discoverable (see
+        ``_SEARCH_VISIBLE_JOIN``) — disabled and auto_load servers' tools
+        never surface.
+        """
         limit = _clamp_limit(limit)
         # FTS5 unicode61 does not segment CJK — route Chinese queries to the
         # LIKE fallback (same shape, so callers and merge_hybrid are agnostic).
         if _contains_cjk(query):
-            return await self._search_like(
-                query, limit=limit, server=server, include_disabled=include_disabled,
-            )
+            return await self._search_like(query, limit=limit, server=server)
         fts_query = _to_fts5_query(query)
         clauses = ""
         params: list = [fts_query]
         if server:
             clauses += " AND t.server = ?"
             params.append(server)
-        if not include_disabled:
-            clauses += " AND t.enabled = 1"
         params.append(limit)
         try:
             cursor = await self._c.execute(
-                f"""SELECT t.full_name, t.server, t.name, t.description, t.enabled,
+                f"""SELECT t.full_name, t.server, t.name, t.description,
                           snippet(tools_fts, 3, '…', '…', '…', 40) AS snippet, rank
                    FROM tools_fts fts
                    JOIN tools t ON fts.rowid = t.rowid
+                   JOIN servers s ON s.name = t.server
+                        AND s.enabled = 1 AND s.auto_load = 0
                    WHERE tools_fts MATCH ?{clauses}
                    ORDER BY rank LIMIT ?""",
                 params,
@@ -463,7 +482,7 @@ class ToolStore:
 
     async def _search_like(
         self, pattern: str, limit: int,
-        server: str | None = None, include_disabled: bool = True,
+        server: str | None = None,
     ) -> list[dict]:
         """Substring (LIKE) search — CJK fallback for :meth:`search_keyword`.
 
@@ -480,24 +499,24 @@ class ToolStore:
             safe = _like_escape(w)
             like = f"%{safe}%"
             and_clauses.append(
-                "(full_name LIKE ? ESCAPE '\\' OR server LIKE ? ESCAPE '\\'"
-                " OR name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')"
+                "(t.full_name LIKE ? ESCAPE '\\' OR t.server LIKE ? ESCAPE '\\'"
+                " OR t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\')"
             )
             params.extend([like, like, like, like])
         where = " AND ".join(and_clauses)
         if server:
-            where += " AND server = ?"
+            where += " AND t.server = ?"
             params.append(server)
-        if not include_disabled:
-            where += " AND enabled = 1"
         params.append(limit)
         cursor = await self._c.execute(
-            f"""SELECT full_name, server, name, description, enabled,
-                      substr(description, max(0, instr(description, ?) - 40), 160) AS snippet,
+            f"""SELECT t.full_name, t.server, t.name, t.description,
+                      substr(t.description, max(0, instr(t.description, ?) - 40), 160) AS snippet,
                       0 AS rank
-               FROM tools
+               FROM tools t
+               JOIN servers s ON s.name = t.server
+                    AND s.enabled = 1 AND s.auto_load = 0
                WHERE {where}
-               ORDER BY full_name LIMIT ?""",
+               ORDER BY t.full_name LIMIT ?""",
             params,
         )
         results = [dict(row) for row in await cursor.fetchall()]
@@ -506,29 +525,32 @@ class ToolStore:
 
     async def search_grep(
         self, pattern: str, limit: int = 20,
-        server: str | None = None, include_disabled: bool = True,
+        server: str | None = None,
     ) -> list[dict]:
-        """Exact substring search over the tool catalog columns."""
+        """Exact substring search over the tool catalog columns.
+
+        Only tools of enabled, non-auto_load servers are discoverable.
+        """
         limit = _clamp_limit(limit)
         safe = _like_escape(pattern)
         like_pattern = f"%{safe}%"
         clauses = ""
         params: list = [pattern, like_pattern, like_pattern, like_pattern, like_pattern]
         if server:
-            clauses += " AND server = ?"
+            clauses += " AND t.server = ?"
             params.append(server)
-        if not include_disabled:
-            clauses += " AND enabled = 1"
         params.append(limit)
         cursor = await self._c.execute(
-            f"""SELECT full_name, server, name, description, enabled,
-                      substr(description, max(0, instr(description, ?) - 40), 160) AS snippet,
+            f"""SELECT t.full_name, t.server, t.name, t.description,
+                      substr(t.description, max(0, instr(t.description, ?) - 40), 160) AS snippet,
                       0 AS rank
-               FROM tools
-               WHERE (full_name LIKE ? ESCAPE '\\' OR server LIKE ? ESCAPE '\\'
-                      OR name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
+               FROM tools t
+               JOIN servers s ON s.name = t.server
+                    AND s.enabled = 1 AND s.auto_load = 0
+               WHERE (t.full_name LIKE ? ESCAPE '\\' OR t.server LIKE ? ESCAPE '\\'
+                      OR t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\')
                      {clauses}
-               ORDER BY full_name LIMIT ?""",
+               ORDER BY t.full_name LIMIT ?""",
             params,
         )
         results = [dict(row) for row in await cursor.fetchall()]
@@ -537,26 +559,27 @@ class ToolStore:
 
     async def search_semantic(
         self, vec: list[float], limit: int = 20,
-        server: str | None = None, include_disabled: bool = True,
+        server: str | None = None,
     ) -> list[dict]:
         """Brute-force cosine KNN over stored BLOB vectors.
 
+        Only tools of enabled, non-auto_load servers are discoverable.
         Vectors whose width differs from *vec* are skipped (defensive against
         stale rows from a previous embedding model).
         """
         limit = _clamp_limit(limit)
         cursor = await self._c.execute(
-            """SELECT t.full_name, t.server, t.name, t.description, t.enabled,
+            """SELECT t.full_name, t.server, t.name, t.description,
                       te.embedding
                FROM tool_embeddings te
-               JOIN tools t ON te.full_name = t.full_name"""
+               JOIN tools t ON te.full_name = t.full_name
+               JOIN servers s ON s.name = t.server
+                    AND s.enabled = 1 AND s.auto_load = 0"""
         )
         matches: list[dict] = []
         for row in await cursor.fetchall():
             r = dict(row)
             if server and r["server"] != server:
-                continue
-            if not include_disabled and not r["enabled"]:
                 continue
             stored = _deserialize_f32(r.pop("embedding"))
             if len(stored) != len(vec):

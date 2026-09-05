@@ -356,7 +356,7 @@ def resolve_server_config(name: str, raw_entry: dict):
         auth=auth,
         source=_dict_copy(raw_entry.get("source")),
         os_paths=bool(raw_entry.get("os_paths", False)),
-        auto_load=raw_entry.get("auto_load") is True,
+        auto_load=raw_entry.get("auto-load") is True,
     )
 
 

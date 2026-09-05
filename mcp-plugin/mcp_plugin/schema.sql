@@ -7,12 +7,21 @@
 -- ═══════════════════════════════════════════════════════════════
 
 
+-- 服务级元数据（per-mcp，无 per-tool 状态）：决定大模型可见性。
+--   enabled   = 服务启用/禁用（禁用 → 不注册、不进 tool_search、不可用）
+--   auto_load = true  → 工具注册到大模型（tool list），tool_search 不可见
+--                false → 工具不注册，tool_search 可见，经 tool_load 可用
+CREATE TABLE IF NOT EXISTS servers (
+    name       TEXT PRIMARY KEY,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    auto_load  INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS tools (
     full_name    TEXT PRIMARY KEY,            -- "{server}__{tool}"
-    server       TEXT NOT NULL,
+    server       TEXT NOT NULL REFERENCES servers(name) ON DELETE CASCADE,
     name         TEXT NOT NULL,               -- 外部 MCP 原样工具名
     description  TEXT NOT NULL DEFAULT '',
-    enabled      INTEGER NOT NULL DEFAULT 1,  -- 单工具启用/禁用（0/1）
     last_seen    TEXT NOT NULL,               -- ISO-8601，最近一次 sync_server 见到
     created_at   TEXT NOT NULL
 );

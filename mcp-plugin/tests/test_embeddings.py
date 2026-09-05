@@ -182,7 +182,7 @@ async def test_probe_available_false_when_endpoint_unreachable():
 
 
 def test_resolve_server_config_auto_load():
-    cfg = plugin_config.resolve_server_config("svcA", {"command": "npx", "auto_load": True})
+    cfg = plugin_config.resolve_server_config("svcA", {"command": "npx", "auto-load": True})
     assert cfg.auto_load is True
     cfg2 = plugin_config.resolve_server_config("svcB", {"command": "npx"})
     assert cfg2.auto_load is False

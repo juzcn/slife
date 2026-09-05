@@ -19,17 +19,24 @@ def _tool(name, description=""):
 
 
 @pytest.mark.asyncio
-async def test_sync_server_upserts_and_preserves_enabled(store):
+async def test_sync_server_upserts_tools_and_server_meta(store):
     await store.sync_server("svcA", [_tool("search", "full-text search"), _tool("fetch")])
     assert await store.count_by_server("svcA") == 2
     assert await store.get_tool("svcA__search") is not None
+    srv = await store.get_server("svcA")
+    assert srv["enabled"] == 1 and srv["auto_load"] == 0
 
-    # Disable one tool, then re-sync the same server — the flag must survive.
-    assert await store.set_tool_enabled("svcA__search", False)
-    await store.sync_server("svcA", [_tool("search", "updated description"), _tool("fetch")])
-    row = await store.get_tool("svcA__search")
-    assert row["enabled"] == 0
-    assert row["description"] == "updated description"
+    # Per-mcp: a disabled server stays disabled across a re-sync (enabled is
+    # preserved); auto_load is refreshed from the connection config.
+    await store.set_server_enabled("svcA", False)
+    await store.sync_server(
+        "svcA", [_tool("search", "updated description"), _tool("fetch")],
+        auto_load=True,
+    )
+    srv = await store.get_server("svcA")
+    assert srv["enabled"] == 0
+    assert srv["auto_load"] == 1
+    assert (await store.get_tool("svcA__search"))["description"] == "updated description"
 
 
 @pytest.mark.asyncio
@@ -67,39 +74,55 @@ async def test_remove_server(store):
 async def test_list_tools_by_server(store):
     await store.sync_server("svcA", [_tool("search", "find files"), _tool("fetch")])
     await store.sync_server("svcB", [_tool("list")])
-    await store.set_tool_enabled("svcA__search", False)
 
     rows = await store.list_tools_by_server("svcA")
     assert [r["name"] for r in rows] == ["search", "fetch"]
     search = {r["name"]: r for r in rows}["search"]
     assert search["full_name"] == "svcA__search"
     assert search["description"] == "find files"
-    assert search["enabled"] == 0
+    assert "enabled" not in search  # per-mcp only — no per-tool state
     assert await store.list_tools_by_server("svcB") == [
         {"full_name": "svcB__list", "server": "svcB", "name": "list",
-         "description": "", "enabled": 1},
+         "description": ""},
     ]
     assert await store.list_tools_by_server("svcNope") == []
 
 
 @pytest.mark.asyncio
-async def test_set_tool_enabled_unknown(store):
-    assert await store.set_tool_enabled("nope__x", True) is False
+async def test_set_server_enabled(store):
+    await store.sync_server("svcA", [_tool("search"), _tool("fetch")])
+    await store.sync_server("svcB", [_tool("list")])
+    assert await store.set_server_enabled("svcA", False) == 1
+    assert (await store.get_server("svcA"))["enabled"] == 0
+    assert (await store.get_server("svcB"))["enabled"] == 1
+    assert await store.set_server_enabled("svcA", True) == 1
+    assert (await store.get_server("svcA"))["enabled"] == 1
+    # Unknown server → 0 rows changed, no server row.
+    assert await store.set_server_enabled("nope", True) == 0
+    assert await store.get_server("nope") is None
 
 
 @pytest.mark.asyncio
-async def test_disable_server_tools(store):
-    await store.sync_server("svcA", [_tool("search"), _tool("fetch")])
-    await store.sync_server("svcB", [_tool("list")])
-    # Enabled-by-default tools of svcB stay enabled; svcA's all go disabled.
-    assert await store.disable_server_tools("svcA") == 2
-    assert (await store.get_tool("svcA__search"))["enabled"] == 0
-    assert (await store.get_tool("svcA__fetch"))["enabled"] == 0
-    assert (await store.get_tool("svcB__list"))["enabled"] == 1
-    # Re-enabling the server flips all its tools back to enabled.
-    assert await store.enable_server_tools("svcA") == 2
-    assert (await store.get_tool("svcA__search"))["enabled"] == 1
-    assert (await store.get_tool("svcB__list"))["enabled"] == 1
+async def test_search_hides_disabled_and_auto_load_servers(store):
+    # Per-mcp visibility: search only surfaces tools of enabled, non-auto_load
+    # servers — auto_load tools are already in the toolset, disabled servers
+    # cannot be loaded.
+    await store.sync_server("svcA", [_tool("search", "find files")])
+    await store.sync_server("svcB", [_tool("search", "find files")])
+    await store.sync_server("svcC", [_tool("search", "find files")], auto_load=True)
+
+    hits = await store.search_keyword("find", server="svcB")
+    assert [h["full_name"] for h in hits] == ["svcB__search"]
+
+    hits = await store.search_keyword("find")
+    assert {h["full_name"] for h in hits} == {"svcA__search", "svcB__search"}
+
+    # Auto_load server's tools are never discoverable.
+    assert await store.search_keyword("find", server="svcC") == []
+    # Disabled server's tools disappear from discovery too.
+    await store.set_server_enabled("svcA", False)
+    hits = await store.search_keyword("find")
+    assert [h["full_name"] for h in hits] == ["svcB__search"]
 
 
 @pytest.mark.asyncio
@@ -116,22 +139,6 @@ async def test_search_keyword_cjk_routes_to_like(store):
     await store.sync_server("svcA", [_tool("search", "文件搜索工具")])
     hits = await store.search_keyword("文件")
     assert len(hits) == 1 and hits[0]["full_name"] == "svcA__search"
-
-
-@pytest.mark.asyncio
-async def test_search_keyword_server_and_disabled_filters(store):
-    await store.sync_server("svcA", [_tool("search", "find files")])
-    await store.sync_server("svcB", [_tool("search", "find files")])
-    await store.set_tool_enabled("svcA__search", False)
-
-    hits = await store.search_keyword("find", server="svcB")
-    assert [h["full_name"] for h in hits] == ["svcB__search"]
-
-    hits = await store.search_keyword("find", include_disabled=False)
-    assert [h["full_name"] for h in hits] == ["svcB__search"]
-
-    hits = await store.search_keyword("find", include_disabled=True)
-    assert len(hits) == 2
 
 
 @pytest.mark.asyncio
