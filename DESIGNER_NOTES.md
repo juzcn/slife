@@ -88,7 +88,7 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 5.4 Meta arguments: 所有Function tool都注入timeout, async， approve 参数，由agent运行时选择。
 
-5.5 Dynamic Prompt: 动态提示词通过_sys_note工具对注入，保护缓存命中。
+5.5 Dynamic Prompt: 动态提示词通过_sys_note工具对注入，保护缓存命中，并进入会话历史，让agent能够记住。
 
 5.6 Marker: 通过在原始user和assitant消息中追加Marker来注入需要大模型知道的信息。
 
