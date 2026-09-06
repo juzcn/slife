@@ -219,7 +219,16 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
             if new_count:
                 logger.debug("poll_new msgs=%d queued=%d", new_count, len(_pending))
 
-            backoff = poll_interval  # reset on success
+            # poll_updates() swallows network errors (recording them in
+            # ``last_error`` and returning ``[]`` so health status can surface
+            # them); the loop reads ``last_error`` here — otherwise a down
+            # endpoint is re-POSTed every interval forever with no backoff.  A
+            # clean poll clears ``last_error`` (client), which resets the
+            # backoff below.
+            if _client.last_error:
+                backoff = min(backoff * 1.5, 30.0)
+            else:
+                backoff = poll_interval
         except Exception as e:
             logger.debug("poll_error err=%s", e)
             # Surface to the LLM: status reports degraded until the link

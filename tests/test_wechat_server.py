@@ -117,6 +117,57 @@ class TestPollLoopDedup:
         assert len(ws._seen_keys) == 1  # one distinct key for both
 
 
+class TestPollLoopBackoff:
+    """A failed poll (network error recorded as ``last_error``, then a clean
+    ``poll_updates`` return of []) must drive exponential backoff, not an
+    unchanged-interval hot loop against a down endpoint."""
+
+    def setup_method(self):
+        ws._pending.clear()
+        ws._seen_keys.clear()
+
+    @pytest.mark.asyncio
+    async def test_last_error_backs_off_then_resets(self):
+        import asyncio as _asyncio
+
+        client = MagicMock()
+        client.is_logged_in = True
+        client.auth_failed = False
+        client.last_error = None
+        client.last_contact = None
+        ws._client = client
+
+        sleeps = []
+        calls = 0
+
+        async def _poll():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                client.last_error = "simulated network failure"
+            else:
+                client.last_error = None
+                client.is_logged_in = False  # stop after the recovery poll
+            return []
+
+        client.poll_updates = AsyncMock(side_effect=_poll)
+
+        async def _sleep(delay):
+            sleeps.append(delay)
+
+        with (
+            patch.object(ws, "_flush_logs", lambda: None),
+            patch.object(_asyncio, "sleep", AsyncMock(side_effect=_sleep)),
+        ):
+            await ws._poll_loop(poll_interval=3.0)
+
+        # First sleep (after the failed poll) must be the enlarged backoff
+        # (3.0 * 1.5 = 4.5), NOT the base interval — that is the bug: the
+        # swallow in poll_updates() previously reset backoff to 3.0.
+        assert calls == 2
+        assert sleeps and sleeps[0] == pytest.approx(4.5)
+
+
 class TestCheckStatusLastContactShape:
     """last_contact must have the same shape — both from_user_id and
     to_user_id — on the live-polling AND session-restore paths.
