@@ -45,6 +45,8 @@ class _StubEngine(Engine):
     async def embed(self, texts, model=None):
         if not self._avail:
             raise RuntimeError("embedding backend unavailable")
+        if model and model not in self.models:
+            raise KeyError(f"unknown model: {model}")
         return [[0.5] * self._dim_val for _ in texts]
 
 
@@ -79,7 +81,7 @@ class TestV1Embeddings:
 
     def test_list_input(self, client):
         resp = client.post(
-            "/v1/embeddings", json={"input": ["a", "b"], "model": "m"}
+            "/v1/embeddings", json={"input": ["a", "b"], "model": "bge-m3"}
         )
         assert resp.status_code == 200
         assert len(resp.json()["data"]) == 2
@@ -95,6 +97,11 @@ class TestV1Embeddings:
     def test_bad_json(self, client):
         resp = client.post("/v1/embeddings", content=b"", headers={"Content-Type": "application/json"})
         assert resp.status_code in (400, 422)
+
+    def test_unknown_model_404(self, client):
+        resp = client.post("/v1/embeddings", json={"input": "x", "model": "typo"})
+        assert resp.status_code == 404
+        assert resp.json()["error"]["type"] == "invalid_request_error"
 
     def test_backend_failure_503(self):
         build_server(_make_engine(available=False))

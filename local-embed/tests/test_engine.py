@@ -271,3 +271,16 @@ class TestMultiModel:
             )
             vecs = await e.embed(["hello"], model="other")
             assert len(vecs[0]) == 1024
+
+    @pytest.mark.asyncio
+    async def test_embed_unknown_model_raises(self):
+        """An explicitly-named unknown model must raise, not silently
+        fall back to the active model (which would return the wrong
+        vectors labeled with the requested name)."""
+        with patch("local_embed.engine._Llama", MagicMock()):
+            e = Engine(
+                specs=[ModelSpec("bge-m3", backend="gguf", gguf_path="/x.gguf")],
+                active="bge-m3",
+            )
+            with pytest.raises(KeyError, match="unknown model"):
+                await e.embed(["hello"], model="typo")

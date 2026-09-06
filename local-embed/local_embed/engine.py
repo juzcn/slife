@@ -375,10 +375,13 @@ class Engine:
         """Embed a list of texts with *model* (default active).
 
         Returns one vector per non-empty input; empty/whitespace inputs get
-        a zero vector of the model's dim (row alignment).  Raises when the
-        backend is unavailable — the server turns that into a 503.
+        a zero vector of the model's dim (row alignment).  Raises ``KeyError``
+        for an explicitly-named unknown model (never silently substitutes the
+        active model), and ``RuntimeError`` when the backend is unavailable.
         """
-        name = model if (model and model in self._specs) else self._active
+        if model and model not in self._specs:
+            raise KeyError(f"unknown model: {model}") from None
+        name = model if model else self._active
         spec = self.model_spec(name)
         # Resolving here (not in runtime_available) means the backend's
         # heavy import happens exactly once, only when that model is about
