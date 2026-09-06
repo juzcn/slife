@@ -1,9 +1,9 @@
 """credstore — secure credential storage via OS keyring.
 
 Cross-platform API for retrieving secrets stored in the OS keyring
-with keyrings.cryptfile encrypted backup.  Secrets are *stored* only
-via the CLI (``credstore set``) which reads from masked stdin — never
-through Python function arguments.
+with keyrings.cryptfile encrypted backup.  The CLI (``credstore set``)
+reads secrets from masked stdin and dual-writes both stores; the Python
+API's ``set_credential()`` writes the system keyring only.
 
 Modules::
 

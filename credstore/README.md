@@ -2,17 +2,31 @@
 
 Cross-platform credential storage — OS keyring with AES-encrypted file backup.
 
-A standalone secret manager that ships with [Slife](https://github.com/juzcn/slife) but has **no dependency on it**. Depends only on `keyring`, `keyring-wincred`, and `keyrings-cryptfile`.
+A standalone secret manager that ships with [Slife](https://github.com/juzcn/slife) but has **no dependency on it**. Declares three runtime dependencies: `keyring`, `keyring-wincred`, and `keyrings-cryptfile`.
 
-Supports **Windows**, **macOS**, **Linux** (desktop + headless), and **WSL** (Windows Credential Manager via PowerShell bridge).
+Supports **Windows**, **macOS** (GUI + headless), **Linux** (desktop + headless), and **WSL** (Windows Credential Manager via a PowerShell bridge).
 
 ## Install
 
+Requires **Python ≥ 3.13**.
+
 ```bash
 pip install credstore
-# or bundled with Slife:
-uv tool install git+https://github.com/juzcn/slife.git
+# or, in an isolated environment:
+uv tool install credstore
 ```
+
+One-click installers (install `uv` if needed, then `uv tool install credstore`):
+
+```bash
+# macOS / Linux / WSL
+curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh | bash
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.ps1 | iex"
+```
+
+Uninstall with `uninstall.sh` / `uninstall.ps1` (user data under `~/.credstore/` is left in place).
 
 Verify: `credstore status`
 
@@ -20,32 +34,40 @@ No configuration needed. Run `credstore set-password` to enable encrypted backup
 
 ## CLI
 
+All secret entry uses masked input — each keystroke echoes `*`, paste works, the actual value is never displayed or logged.
+
+> **Interactive terminal required.** Every command except `status` and `uninject` reads from an interactive TTY (`@requires_tty`); run them from a real terminal, not a piped shell or CI step.
+
 ### Setup
 
 ```bash
-credstore set-password    # creates ~/.credstore/credentials.crypt
+credstore set-password    # creates ~/.credstore/credentials.crypt (or change the master key)
 ```
 
 Path overridable via the `CREDSTORE_FILE` env var.
 
 ### Commands
 
-| Command | Auth | Description |
-|---------|------|-------------|
-| `set-password` | sets it | Create or change master key (≥8 chars) |
+| Command | Master key | Description |
+|---------|-----------|-------------|
+| `set-password` | sets it | Create or change the master key (≥8 chars) |
 | `status` | — | Show backend health |
-| `set KEY` | master + secret | Atomic dual-write: cryptfile → keyring. Rolls back on keyring failure |
-| `get KEY` | — | Keyring only, masked output (`sk-5f…b722`) |
-| `get KEY -p` | master | Dual-query keyring + cryptfile, plaintext. Fails on mismatch |
-| `remove KEY` | master | Remove from both stores |
-| `copy SOURCE DEST` | master | Idempotent copy (keyring + cryptfile). Re-injects dest to env if previously injected |
-| *(no command)* | master¹ | Triple-read: keyring + cryptfile + env. Shows sync status per key |
-| `inject KEY… [--shell]` | master¹ | Persist to system env: registry (Win) or shell profile (Unix). Reads keyring; in cryptfile-only mode reads the backup (prompts master pw) |
+| `set KEY` | required¹ | Atomic dual-write: cryptfile → keyring. Rolls back on keyring failure |
+| `get KEY` | — | Keyring only, masked output (`sk-…b722`) |
+| `get KEY -p` | prompted | Dual-query keyring + cryptfile, plaintext. Fails on mismatch |
+| `remove KEY` | prompted² | Remove from both stores (best-effort) |
+| `copy SOURCE DEST` | required¹ | Idempotent copy (keyring + cryptfile). Re-injects dest to env if previously injected |
+| *(no command)* | prompted³ | Triple-read: keyring + cryptfile + env. Shows sync status per key |
+| `inject KEY… [--shell]` | prompted³ | Persist to system env: registry (Win) or shell profile (Unix). Reads keyring; in cryptfile-only mode reads the backup (prompts master pw) |
 | `uninject KEY… [--shell]` | — | Remove from system env |
-| `reset-keyring` | master | Restore all from cryptfile → keyring (disaster recovery) |
-| `reset-backup` | master | Sync keyring → cryptfile |
+| `reset-keyring` | prompted | Restore all from cryptfile → keyring (disaster recovery) |
+| `reset-backup` | required¹ | Sync keyring → cryptfile |
 
-¹ Master password required only if cryptfile exists.
+¹ `set`, `copy`, and `reset-backup` are gated up front — they refuse to run until the master key has been set (`credstore set-password`).
+² `remove` prompts for the master key to clean the cryptfile copy; the keyring copy is removed regardless.
+³ Master password prompted only if a cryptfile exists.
+
+`--shell` accepts `auto` (default), `bash`, `powershell`, or `cmd`.
 
 ### `get` Modes
 
@@ -55,6 +77,7 @@ Path overridable via the `CREDSTORE_FILE` env var.
 | `get KEY -p` | Keyring + cryptfile | Plaintext | Verify consistency, pipe to another tool |
 
 `-p` mode performs a dual-query consistency check:
+
 - Both stores have the value AND they match → prints plaintext
 - One store missing → error with recovery instructions
 - Values differ → error, tells you which tool to run
@@ -100,12 +123,14 @@ Invoke-Expression (credstore inject DEEPSEEK_API_KEY)  # PowerShell — activate
 | `ENV` | ✔ = currently set as environment variable |
 | `STATUS` | `synced`, `keyring only`, `cryptfile only`, or `MISMATCH ⚠` |
 
+> On **macOS** and **Linux** the system keyring cannot be enumerated (no list API), so the `SYSTEM KEYRING` column is derived from the cryptfile and env. Only **Windows** and **WSL** enumerate Credential Manager directly.
+
 ## Memory Safety
 
 Secrets are immutable Python `str` objects — they cannot be zeroed in place. Mitigations:
 
 1. **Never batch-load** — `list` collects only key names. Sync comparison fetches one value at a time and immediately `del`s it.
-2. **Prefer existence checks** — `exists_credential()` / `list_credential_keys()` never retrieve secret content.
+2. **Prefer existence checks** — `exists_credential()` / `list_credential_keys()` never return secret content.
 3. **Explicit cleanup** — every CLI handler `del`s secret references on all exit paths including error branches.
 
 | Operation | Cleanup |
@@ -142,13 +167,17 @@ credstore.format_export("KEY", "secret", "bash")   # → "export KEY='secret'"
 credstore.format_unset("KEY", "bash")              # → "unset KEY"
 
 # Diagnostics
-credstore.check_backend()      # → {"available": True, "backend": "…", …}
-credstore.get_backend_name()   # → "system keyring + cryptfile (dual-write)"
+credstore.init_store()              # → CredentialStore (explicit lazy init)
+credstore.check_backend()           # → {"available": True, "backend": "…", …}
+credstore.get_backend_name()        # → "system keyring + cryptfile (dual-write)"
 ```
 
-**Python API talks to system keyring only** — no master password, no prompt. Dual-write (keyring + cryptfile) is handled by the CLI.
+**Python API talks to system keyring only** — no master password, no prompt. Dual-write (keyring + cryptfile) is handled by the CLI. Two exceptions worth noting:
 
-Callers of `get_credential()` and `resolve_uri()` must `del` the returned value after use. Prefer `exists_credential()` when you only need to know if a credential exists.
+- `set_credential()` writes only to the system keyring, but it still **requires the master key to have been set** (`credstore set-password` run once — the cryptfile must exist) and raises `RuntimeError` otherwise. This is deliberate: a secret is never written to the keyring without an encrypted backup to survive OS password changes. It never prompts.
+- `get_credential()` and `resolve_uri()` return `None` / raise `KeyError` in cryptfile-only mode; only the CLI can read the encrypted backup.
+
+Callers of `get_credential()` and `resolve_uri()` must `del` the returned value after use. Prefer `exists_credential()` when you only need to know if a credential exists. `reset_credentials()` exists internally for the CLI (`reset-keyring`) but is not part of the public package API.
 
 ## Configuration
 
@@ -163,7 +192,7 @@ The encrypted credential file's path is resolved by precedence:
 
 ### Backend Matrix
 
-Backend selection is **deterministic by platform** — no keyring auto-discovery. Exactly five backends are supported; anything else is rejected with a clear error.
+Backend selection is **deterministic by platform** — no keyring auto-discovery. Exactly five platform configurations are supported; anything else is rejected with a clear error.
 
 | Platform | Backend | Mechanism |
 |----------|---------|-----------|
@@ -171,7 +200,9 @@ Backend selection is **deterministic by platform** — no keyring auto-discovery
 | **WSL** | `WslBackend` | PowerShell → advapi32.dll CredReadW/CredWriteW (C# P/Invoke) — same CredMan store as Windows |
 | **macOS** (GUI) | `macOS.Keyring` | macOS login keychain |
 | **macOS** (headless) | `macOS.Keyring` + isolated keychain | `CREDSTORE_KEYCHAIN` (or `~/.credstore/credentials.keychain-db`); auto-created via `security create-keychain` |
-| **Linux** | `KeyutilsBackend` | Kernel persistent keyring (`@p`) via `add_key`/`keyctl` syscalls (ctypes, zero deps) |
+| **Linux** | `KeyutilsBackend` | Kernel persistent keyring (`@p`) via `add_key`/`keyctl` syscalls (ctypes, zero extra deps) |
+
+`WslBackend` (priority 9.5) and `KeyutilsBackend` (priority 1.5) are also registered as standard `keyring.backends` entry points, so they participate correctly in keyring's own priority chain for external consumers — but credstore's own dispatch selects them directly, never by discovery.
 
 ### Dual-Write Flow
 
@@ -197,11 +228,11 @@ Backend selection is **deterministic by platform** — no keyring auto-discovery
 
 ### WSL Backend
 
-On WSL, no Linux desktop keyring is available. `WslBackend` bridges to Windows Credential Manager by calling `powershell.exe` with embedded C# that P/Invokes `advapi32.dll` (`CredReadW`, `CredWriteW`, `CredDeleteW`). Because it targets CredMan directly, WSL and native Windows share the same credential store — `credstore set` on either side is visible on the other. Unlike the platform auto-discovery it replaces, `WslBackend` is selected deterministically (no priority roulette).
+On WSL, no Linux desktop keyring is available. `WslBackend` bridges to Windows Credential Manager by calling `powershell.exe` with embedded C# that P/Invokes `advapi32.dll` (`CredReadW`, `CredWriteW`, `CredDeleteW`). Because it targets CredMan directly, WSL and native Windows share the same credential store — `credstore set` on either side is visible on the other. It also reads the native-Windows layout (`TargetName = service`, key in the `UserName` field) so credentials written by `WinVaultKeyring` resolve correctly on WSL. Unlike platform auto-discovery, `WslBackend` is selected deterministically (no priority roulette).
 
 ### Keyutils Backend
 
-On Linux (desktop and headless alike), `KeyutilsBackend` stores credentials in the Linux kernel's persistent keyring (`@p`). Calls `add_key` and `keyctl` syscalls directly through `ctypes` — zero Python dependencies beyond stdlib. Each credential is a `"user"` key with description `"credstore:<service>/<key>"`. If the kernel keyring is unavailable (e.g. keyctl blocked by seccomp on an HPC login node), credstore degrades to **cryptfile-only** mode: `set` stores in the AES backup with a notice, `set-password`/`status`/`get -p`/`remove` keep working, and the reason is visible in `credstore status`. A fully unsupported platform still raises rather than picking a wrong backend.
+On Linux (desktop and headless alike), `KeyutilsBackend` stores credentials in the Linux kernel's persistent keyring (`@p`). Calls `add_key` and `keyctl` syscalls directly through `ctypes` — zero Python dependencies beyond stdlib. Each credential is a `"user"` key with description `"credstore:<service>/<key>"`. Unsupported CPU architectures are rejected rather than guessed. If the kernel keyring is unavailable (e.g. keyctl blocked by seccomp on an HPC login node), credstore degrades to **cryptfile-only** mode: `set` stores in the AES backup with a notice, `set-password`/`status`/`get -p`/`remove` keep working, and the reason is visible in `credstore status`. A fully unsupported platform still raises rather than picking a wrong backend.
 
 ### macOS Backend
 
@@ -215,7 +246,7 @@ macOS uses `keyring.backends.macOS.Keyring` (the login keychain) in GUI sessions
 |----------|-----|
 | **Windows** | `win32cred.CredEnumerate` |
 | **WSL** | `powershell.exe` + inline C# `CredEnumerateW` via `advapi32.dll` |
-| **Other** | Unsupported — re-run `credstore set <KEY>` to populate cryptfile |
+| **Other** | Unsupported — only cryptfile + env are listed |
 
 Enumeration retrieves key names only — secret values are never batch-loaded. Sync comparison fetches one value at a time and immediately discards it.
 

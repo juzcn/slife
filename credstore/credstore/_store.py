@@ -2,8 +2,8 @@
 
 - get():      system keyring only (fast, no master key)
 - list_keys(): system keyring keys only — NEVER returns secret values
-- set():      system keyring only (cryptfile backup handled by CLI layer)
-- delete():   both stores (cryptfile delete does not need master key)
+- set():      system keyring only — requires the master key to already be set
+- delete():   system keyring only (cryptfile cleanup handled by CLI layer)
 - reset():    cryptfile → system keyring (explicit recovery, needs master key)
 
 Memory safety: secrets are Python ``str`` objects (immutable).  Callers MUST
@@ -36,8 +36,7 @@ class CredentialStore:
         """Retrieve from system keyring only — fast, no master key.
 
         Prefer ``exists()`` when you only need to know whether a
-        credential is stored — it avoids pulling the full secret
-        into process memory.
+        credential is stored — it returns a bool instead of the secret.
         """
         sk = _be.get_system_keyring()
         if sk is not None:
@@ -45,9 +44,10 @@ class CredentialStore:
         return None
 
     def exists(self, key: str) -> bool:
-        """Check whether a credential exists without retrieving its value.
+        """Check whether a credential exists.
 
-        Returns True/False — NEVER the secret content.
+        Returns True/False — the value is fetched only to test existence,
+        discarded immediately, and never returned.
         """
         return self.get(key) is not None
 
@@ -57,7 +57,7 @@ class CredentialStore:
         Returns key names only.  Delegates to platform-specific
         enumeration (win32cred on Windows, PowerShell CredEnumerate
         on WSL).  Use ``exists()`` to check individual credentials
-        without pulling secrets into memory.
+        without returning the secret.
         """
         from credstore._enumerate import enumerate_system_keyring
 
@@ -69,10 +69,16 @@ class CredentialStore:
     # ── set ───────────────────────────────────────────────────
 
     def set(self, key: str, secret: str) -> None:
-        """Store to system keyring.
+        """Store to system keyring only.
 
-        Requires master key to have been set (cryptfile exists).
-        Cryptfile backup is handled by the CLI layer.
+        The encrypted cryptfile backup is written separately by the CLI
+        layer (``credstore set``), which dual-writes both stores.
+
+        Requires the master key to already be set (``credstore set-password``
+        run once, so the cryptfile exists) and raises ``RuntimeError``
+        otherwise. This is deliberate: a secret is never written to the
+        keyring alone without an encrypted backup to recover from OS
+        password changes.
         """
         if not _be.has_master_key():
             raise RuntimeError(
@@ -207,11 +213,11 @@ def get_credential(key: str) -> str | None:
 
 
 def exists_credential(key: str) -> bool:
-    """Check whether a credential exists WITHOUT retrieving its value.
+    """Check whether a credential exists.
 
-    Returns True/False — NEVER the secret content.
-    Prefer this over ``get_credential()`` when you only need to know
-    if a key is stored.
+    Returns True/False — the value is fetched only to test existence,
+    discarded immediately, and never returned. Prefer this over
+    ``get_credential()`` when you only need to know if a key is stored.
     """
     return _get_store().exists(key)
 
@@ -227,6 +233,12 @@ def list_credential_keys() -> list[str]:
 
 
 def set_credential(key: str, secret: str) -> None:
+    """Store a credential to the system keyring.
+
+    Writes the keyring only; the cryptfile backup is handled by the CLI.
+    Requires the master key to already be set (``credstore set-password``)
+    and raises ``RuntimeError`` otherwise. See ``CredentialStore.set``.
+    """
     _get_store().set(key, secret)
 
 

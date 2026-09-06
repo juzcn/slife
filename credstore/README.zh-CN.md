@@ -2,18 +2,31 @@
 
 跨平台凭证存储 — 操作系统密钥链 + AES 加密文件备份。
 
-一个独立的密钥管理器，随 [Slife](https://github.com/juzcn/slife) 一同发布，但**不依赖** Slife。仅依赖 `keyring`、`keyring-wincred` 和 `keyrings-cryptfile`。
+一个独立的密钥管理器，随 [Slife](https://github.com/juzcn/slife) 一同发布，但**不依赖** Slife。声明三个运行时依赖：`keyring`、`keyring-wincred` 和 `keyrings-cryptfile`。
 
-支持 **Windows**、**macOS**、**Linux**（桌面 + 无桌面）和 **WSL**（通过 PowerShell 桥接 Windows 凭据管理器）。
+支持 **Windows**、**macOS**（桌面 + 无头）、**Linux**（桌面 + 无头）和 **WSL**（通过 PowerShell 桥接 Windows 凭据管理器）。
 
 ## 安装
 
+需要 **Python ≥ 3.13**。
+
 ```bash
 pip install credstore
-# 或随 Slife 一同安装：
-uv tool install git+https://github.com/juzcn/slife.git      # 海外
-uv tool install git+https://gitee.com/juzcn/slife.git       # 国内
+# 或在隔离环境中：
+uv tool install credstore
 ```
+
+一键安装脚本（必要时先装 `uv`，再 `uv tool install credstore`）：
+
+```bash
+# macOS / Linux / WSL
+curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh | bash
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.ps1 | iex"
+```
+
+卸载用 `uninstall.sh` / `uninstall.ps1`（`~/.credstore/` 下的用户数据会保留）。
 
 验证：`credstore status`
 
@@ -21,32 +34,40 @@ uv tool install git+https://gitee.com/juzcn/slife.git       # 国内
 
 ## CLI
 
+所有密钥输入均使用脱敏输入——每次按键回显 `*`，支持粘贴，实际值从不显示、不落日志。
+
+> **需要交互式终端。** 除 `status` 和 `uninject` 外，所有命令都要求交互式 TTY（`@requires_tty`）；请在真实终端中运行，而不是管道或 CI 步骤。
+
 ### 初始化
 
 ```bash
-credstore set-password    # 创建 ~/.credstore/credentials.crypt
+credstore set-password    # 创建 ~/.credstore/credentials.crypt（或修改主密码）
 ```
 
 路径可通过 `CREDSTORE_FILE` 环境变量覆盖。
 
 ### 命令
 
-| 命令 | 需要认证 | 说明 |
-|------|---------|------|
+| 命令 | 主密码 | 说明 |
+|------|--------|------|
 | `set-password` | 设置密码 | 创建或修改主密码（≥8 字符） |
 | `status` | — | 查看后端状态 |
-| `set KEY` | 主密码 + 密钥 | 原子双写：cryptfile → 密钥链。密钥链失败时回滚 |
-| `get KEY` | — | 仅密钥链，脱敏输出（`sk-5f…b722`） |
-| `get KEY -p` | 主密码 | 双查询密钥链 + cryptfile，明文输出。不一致时报错 |
-| `remove KEY` | 主密码 | 从两个存储中删除 |
-| `copy SOURCE DEST` | 主密码 | 幂等复制（密钥链 + cryptfile）。若目标已注入环境变量则自动重新注入 |
-| *（无命令）* | 主密码¹ | 三重读取：密钥链 + cryptfile + 环境变量。显示每个 key 的同步状态 |
-| `inject KEY… [--shell]` | 主密码¹ | 持久化到系统环境：注册表（Win）或 shell 配置文件（Unix）。读密钥链；cryptfile-only 模式下读加密备份（询问主密码） |
+| `set KEY` | 必需¹ | 原子双写：cryptfile → 密钥链。密钥链失败时回滚 |
+| `get KEY` | — | 仅密钥链，脱敏输出（`sk-…b722`） |
+| `get KEY -p` | 询问 | 双查询密钥链 + cryptfile，明文输出。不一致时报错 |
+| `remove KEY` | 询问² | 从两个存储中删除（尽力而为） |
+| `copy SOURCE DEST` | 必需¹ | 幂等复制（密钥链 + cryptfile）。若目标已注入环境变量则自动重新注入 |
+| *（无命令）* | 询问³ | 三重读取：密钥链 + cryptfile + 环境变量。显示每个 key 的同步状态 |
+| `inject KEY… [--shell]` | 询问³ | 持久化到系统环境：注册表（Win）或 shell 配置文件（Unix）。读密钥链；cryptfile-only 模式下读加密备份（询问主密码） |
 | `uninject KEY… [--shell]` | — | 从系统环境中移除 |
-| `reset-keyring` | 主密码 | 从 cryptfile 恢复全部 → 密钥链（灾难恢复） |
-| `reset-backup` | 主密码 | 同步密钥链 → cryptfile |
+| `reset-keyring` | 询问 | 从 cryptfile 恢复全部 → 密钥链（灾难恢复） |
+| `reset-backup` | 必需¹ | 同步密钥链 → cryptfile |
 
-¹ 仅当 cryptfile 存在时要求主密码。
+¹ `set`、`copy` 和 `reset-backup` 前置门控——主密码未设置前（`credstore set-password`）拒绝运行。
+² `remove` 会询问主密码以清理 cryptfile 副本；密钥链副本无论如何都会删除。
+³ 仅当 cryptfile 存在时询问主密码。
+
+`--shell` 可选 `auto`（默认）、`bash`、`powershell` 或 `cmd`。
 
 ### `get` 模式
 
@@ -56,11 +77,12 @@ credstore set-password    # 创建 ~/.credstore/credentials.crypt
 | `get KEY -p` | 密钥链 + cryptfile | 明文 | 验证一致性，管道传递给其他工具 |
 
 `-p` 模式执行双查询一致性校验：
+
 - 两个存储都有且一致 → 打印明文
 - 一个存储缺失 → 报错并给出恢复指令
 - 值不一致 → 报错，告知应执行哪个命令
 
-**仅加密文件模式**（无系统密钥链可用——例如 Linux 上 keyctl 被安全策略屏蔽）：AES cryptfile 是唯一存储。`set`/`copy` 写入并给出提示，`status` 显示 "cryptfile-only mode"，`get -p` 直接返回 cryptfile 的值（不存在双查询不一致），`inject` 会询问主密码并从备份读取后注入环境。
+**仅加密文件模式**（无系统密钥链可用——例如 Linux 上 keyctl 被安全策略屏蔽）：AES cryptfile 是唯一存储。`set`/`copy` 写入并给出提示，`status` 显示 "cryptfile-only mode"，`get -p` 直接返回 cryptfile 的值（不存在双查询不一致）。
 
 > ⚠️ **仅 CLI。** Python API（`get_credential`、`exists_credential`、`resolve_uri`）在 cryptfile-only 模式下只读系统密钥链并返回 `None`，从不弹窗。依赖免密码启动解析的消费方（如 **sLife**）因此**不支持 cryptfile-only 模式**——请使用 CLI（`credstore get KEY -p`），或对 sLife 使用 shell 环境变量（完全兼容，sLife 先查 `os.environ` 再查 credstore）。
 
@@ -101,12 +123,14 @@ Invoke-Expression (credstore inject DEEPSEEK_API_KEY)  # PowerShell — 立即�
 | `ENV` | ✔ = 当前已设为环境变量 |
 | `STATUS` | `synced`（已同步）、`keyring only`、`cryptfile only` 或 `MISMATCH ⚠`（不一致） |
 
+> 在 **macOS** 和 **Linux** 上系统密钥链无法枚举（无列表 API），因此 `SYSTEM KEYRING` 列由 cryptfile 和环境变量推导。只有 **Windows** 和 **WSL** 会直接枚举凭据管理器。
+
 ## 内存安全
 
 密钥是不可变的 Python `str` 对象——无法原地归零。缓解措施：
 
 1. **绝不批量加载** — `list` 仅收集 key 名称。同步比对时逐个取值并立即 `del`。
-2. **优先存在性检查** — `exists_credential()` / `list_credential_keys()` 从不获取密钥内容。
+2. **优先存在性检查** — `exists_credential()` / `list_credential_keys()` 从不返回密钥内容。
 3. **显式清理** — 每个 CLI 处理器在所有退出路径（含错误分支）上 `del` 密钥引用。
 
 | 操作 | 清理方式 |
@@ -143,13 +167,17 @@ credstore.format_export("KEY", "secret", "bash")   # → "export KEY='secret'"
 credstore.format_unset("KEY", "bash")              # → "unset KEY"
 
 # 诊断
-credstore.check_backend()      # → {"available": True, "backend": "…", …}
-credstore.get_backend_name()   # → "system keyring + cryptfile (dual-write)"
+credstore.init_store()              # → CredentialStore（显式懒初始化）
+credstore.check_backend()           # → {"available": True, "backend": "…", …}
+credstore.get_backend_name()        # → "system keyring + cryptfile (dual-write)"
 ```
 
-**Python API 仅操作系统密钥链**——无需主密码，无需交互。双写（密钥链 + cryptfile）由 CLI 层处理。
+**Python API 仅操作系统密钥链**——无需主密码，无需交互。双写（密钥链 + cryptfile）由 CLI 层处理。有两点值得注意：
 
-`get_credential()` 和 `resolve_uri()` 的调用者必须在用完后 `del` 返回值。仅需判断是否存在时，优先使用 `exists_credential()`。
+- `set_credential()` 只写系统密钥链，但仍**要求主密码已设置**（运行过一次 `credstore set-password`——cryptfile 必须存在），否则抛出 `RuntimeError`。这是刻意的：绝不让密钥只存在于密钥链而没有加密备份（用于抵御 OS 密码变更）。它从不弹窗。
+- `get_credential()` 和 `resolve_uri()` 在 cryptfile-only 模式下返回 `None` / 抛 `KeyError`；只有 CLI 能读加密备份。
+
+`get_credential()` 和 `resolve_uri()` 的调用者必须在用完后 `del` 返回值。仅需判断是否存在时，优先使用 `exists_credential()`。`reset_credentials()` 仅供 CLI 内部使用（`reset-keyring`），不属于公开包 API。
 
 ## 配置
 
@@ -163,7 +191,7 @@ credstore.get_backend_name()   # → "system keyring + cryptfile (dual-write)"
 
 ### 后端矩阵
 
-后端选择**按平台确定性分发**——不依赖 keyring 的自动发现。仅支持以下五个后端，其它平台直接报清晰错误。
+后端选择**按平台确定性分发**——不依赖 keyring 的自动发现。仅支持以下五种平台配置，其它平台直接报清晰错误。
 
 | 平台 | 后端 | 机制 |
 |------|------|------|
@@ -171,7 +199,9 @@ credstore.get_backend_name()   # → "system keyring + cryptfile (dual-write)"
 | **WSL** | `WslBackend` | PowerShell → advapi32.dll CredReadW/CredWriteW（C# P/Invoke）——与 Windows 共享同一 CredMan 存储 |
 | **macOS**（GUI） | `macOS.Keyring` | macOS 登录钥匙串 |
 | **macOS**（无头） | `macOS.Keyring` + 隔离钥匙串 | `CREDSTORE_KEYCHAIN`（或 `~/.credstore/credentials.keychain-db`）；首次使用时自动通过 `security create-keychain` 创建 |
-| **Linux** | `KeyutilsBackend` | 内核持久化 keyring（`@p`），通过 `add_key`/`keyctl` 系统调用（ctypes，零依赖） |
+| **Linux** | `KeyutilsBackend` | 内核持久化 keyring（`@p`），通过 `add_key`/`keyctl` 系统调用（ctypes，零额外依赖） |
+
+`WslBackend`（优先级 9.5）和 `KeyutilsBackend`（优先级 1.5）也注册为标准 `keyring.backends` 入口点，因此对外部消费方会正确参与 keyring 自身的优先级链——但 credstore 自身的分发是直接选定它们，从不靠发现。
 
 ### 双写流程
 
@@ -197,11 +227,11 @@ credstore.get_backend_name()   # → "system keyring + cryptfile (dual-write)"
 
 ### WSL 后端
 
-在 WSL 上，没有可用的 Linux 桌面密钥链。`WslBackend` 通过调用 `powershell.exe` 并嵌入 C# 代码 P/Invoke `advapi32.dll`（`CredReadW`、`CredWriteW`、`CredDeleteW`）来桥接 Windows 凭据管理器。由于直接对接 CredMan，WSL 与原生 Windows 共享同一凭据存储——任一侧 `credstore set` 的数据另一侧都能读到。`WslBackend` 按平台确定性地选中，不经过优先级竞争。
+在 WSL 上，没有可用的 Linux 桌面密钥链。`WslBackend` 通过调用 `powershell.exe` 并嵌入 C# 代码 P/Invoke `advapi32.dll`（`CredReadW`、`CredWriteW`、`CredDeleteW`）来桥接 Windows 凭据管理器。由于直接对接 CredMan，WSL 与原生 Windows 共享同一凭据存储——任一侧 `credstore set` 的数据另一侧都能读到。它还能读取原生 Windows 布局（`TargetName = service`，key 在 `UserName` 字段），使 `WinVaultKeyring` 写入的凭据在 WSL 上也能正确解析。与平台自动发现不同，`WslBackend` 被确定性地选中（无优先级竞争）。
 
 ### Keyutils 后端
 
-在 Linux（无论桌面还是无头）上，`KeyutilsBackend` 将凭据存储在内核的持久化 keyring（`@p`）中。通过 `ctypes` 直接调用 `add_key` 和 `keyctl` 系统调用——标准库外零 Python 依赖。每个凭据是一个 `"user"` 键，描述为 `"credstore:<service>/<key>"`。若内核 keyring 不可用（例如 HPC 登录节点上 seccomp 屏蔽了 keyctl），credstore 降级为**仅加密文件（cryptfile-only）模式**：`set` 存入 AES 备份并给出提示，`set-password`/`status`/`get -p`/`remove` 照常工作，原因可通过 `credstore status` 查看。完全不支持的平台仍然报错，而不是错误选择后端。
+在 Linux（无论桌面还是无头）上，`KeyutilsBackend` 将凭据存储在内核的持久化 keyring（`@p`）中。通过 `ctypes` 直接调用 `add_key` 和 `keyctl` 系统调用——标准库外零 Python 依赖。每个凭据是一个 `"user"` 键，描述为 `"credstore:<service>/<key>"`。不支持的 CPU 架构会被拒绝而非猜测。若内核 keyring 不可用（例如 HPC 登录节点上 seccomp 屏蔽了 keyctl），credstore 降级为**仅加密文件（cryptfile-only）模式**：`set` 存入 AES 备份并给出提示，`set-password`/`status`/`get -p`/`remove` 照常工作，原因可通过 `credstore status` 查看。完全不支持的平台仍然报错，而不是错误选择后端。
 
 ### macOS 后端
 
@@ -215,7 +245,7 @@ macOS 在 GUI 会话中使用 `keyring.backends.macOS.Keyring`（登录钥匙串
 |------|-----|
 | **Windows** | `win32cred.CredEnumerate` |
 | **WSL** | `powershell.exe` + 嵌入式 C# `CredEnumerateW` 通过 `advapi32.dll` |
-| **其他** | 不支持——重新运行 `credstore set <KEY>` 以填充 cryptfile |
+| **其他** | 不支持——仅列出 cryptfile 和环境变量 |
 
 枚举仅获取 key 名称——永远不会批量加载密钥值。同步比对时逐个取值并立即丢弃。
 
