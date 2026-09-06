@@ -59,7 +59,8 @@ class McpToolLoadTool(Tool):
         except Exception as e:
             return f"Error: failed to look up '{full_name}': {e}"
         if data.get("status") != "ok":
-            return raw
+            msg = data.get("error") or data.get("message") or raw
+            return f"Error: {msg}"
         if not data.get("enabled", True):
             return (
                 f"Error: tool '{full_name}' is disabled (its server is "

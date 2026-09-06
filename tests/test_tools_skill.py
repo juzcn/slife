@@ -159,7 +159,7 @@ class TestSetSkillToolExecute:
 
         tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(name="bad")
-        assert "[FAIL]" in result
+        assert result.startswith("Error")
 
     @pytest.mark.asyncio
     async def test_skill_set_both_files_and_archive(self, tmp_path):
@@ -173,7 +173,7 @@ class TestSetSkillToolExecute:
             files=[{"path": "x", "content": "y"}],
             archive="dGVzdA==",
         )
-        assert "[FAIL]" in result
+        assert result.startswith("Error")
 
 
 # ── _iter_skills / get_skills_summary ────────────────────────────────────
@@ -455,7 +455,7 @@ class TestSetSkillToolArchive:
         archive_b64 = base64.b64encode(b"not a valid archive").decode("ascii")
         tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(name="bad-archive", archive=archive_b64)
-        assert "[FAIL]" in result
+        assert result.startswith("Error")
 
     @pytest.mark.asyncio
     async def test_install_error_cleanup(self, tmp_path):
@@ -469,7 +469,7 @@ class TestSetSkillToolArchive:
             name="error-skill",
             files=[{"path": "SKILL.md"}],  # missing 'content' key
         )
-        assert "[FAIL]" in result
+        assert result.startswith("Error")
         # Directory should be cleaned up
         assert not (skills_dir / "error-skill").exists()
 
@@ -493,7 +493,7 @@ class TestSkillSecurity:
             files=[{"path": "SKILL.md", "content": "# x"}],
         )
 
-        assert "[FAIL]" in result
+        assert result.startswith("Error")
         assert not escape_target.exists()
 
     @pytest.mark.asyncio
@@ -508,7 +508,7 @@ class TestSkillSecurity:
             files=[{"path": "../../evil.txt", "content": "pwned"}],
         )
 
-        assert "[FAIL]" in result
+        assert result.startswith("Error")
         assert not (tmp_path / "evil.txt").exists()
         assert not (skills_dir / "s").exists()  # cleaned up
 
@@ -531,7 +531,7 @@ class TestSkillSecurity:
         tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(name="s", archive=archive_b64)
 
-        assert "[FAIL]" in result
+        assert result.startswith("Error")
         assert not (skills_dir / "evil.txt").exists()
         assert not (skills_dir / "s").exists()  # cleaned up
 
@@ -549,6 +549,6 @@ class TestSkillSecurity:
         tool = RemoveSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(skill_name="../victim")
 
-        assert "[FAIL]" in result
+        assert result.startswith("Error")
         assert victim.exists()
         assert (victim / "keep.txt").exists()

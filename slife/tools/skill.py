@@ -346,12 +346,12 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
 
         if not files and not archive_b64:
             return (
-                "[FAIL] Either 'files' or 'archive' is required.\n"
+                "Error: either 'files' or 'archive' is required.\n"
                 "  - files: list of {path, content} (use with GitHub MCP)\n"
                 "  - archive: base64-encoded .zip/.tar.gz (use with fetch MCP)"
             )
         if files and archive_b64:
-            return "[FAIL] Provide 'files' or 'archive', not both."
+            return "Error: provide 'files' or 'archive', not both."
 
         skill_dir = self.skills_dir / name
         # Reject path traversal in the skill name (e.g. "../../foo") before
@@ -359,7 +359,7 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
         try:
             skill_dir = _ensure_within(self.skills_dir, skill_dir)
         except ValueError:
-            return f"[FAIL] Invalid skill name: {name!r}"
+            return f"Error: invalid skill name: {name!r}"
         is_update = skill_dir.exists()
 
         skill_dir.mkdir(parents=True, exist_ok=True)
@@ -381,7 +381,7 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
                 # version intact instead of destroying it.
                 logger.warning("skill_update_failed name=%s err=%s", name, e)
             logger.exception("skill_install_failed name=%s", name)
-            return f"[FAIL] Error installing skill '{name}': {e}"
+            return f"Error: installing skill '{name}': {e}"
 
     def _install_from_files(self, name: str, files: list[dict], skill_dir: Path, is_update: bool = False) -> str:
         """Write individual files to the skill directory."""
@@ -496,7 +496,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
         try:
             _ensure_within(self.skills_dir, self.skills_dir / skill_name)
         except ValueError:
-            return f"[FAIL] Invalid skill name: {skill_name!r}"
+            return f"Error: invalid skill name: {skill_name!r}"
 
         # 1) Try matching via _iter_skills (directories with SKILL.md)
         skills = _iter_skills(self.skills_dir)
