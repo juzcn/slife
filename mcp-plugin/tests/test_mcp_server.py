@@ -355,6 +355,46 @@ class TestMCPListToolsSingleRead:
         assert out["tool_count"] == 0
 
     @pytest.mark.asyncio
+    async def test_autoload_recovers_inputSchema_from_catalog(self, restore_root_logger):
+        """auto_load catalog rows must recover their stored inputSchema — an
+        empty one would register the proxy with no parameters."""
+        import contextlib
+        import json as _json
+
+        srv = _import_mcp_server()
+        conn = MagicMock()
+        conn.status = ServerStatus.CONNECTED
+        conn.config = ServerConfig(name="fs", command="x", auto_load=True)
+        pool = MagicMock()
+        pool.get_server.return_value = conn
+        fake_store = AsyncMock()
+        fake_store.list_tools_by_server.return_value = [{
+            "name": "search",
+            "description": "search things",
+            "server": "fs",
+            "full_name": "fs__search",
+            "input_schema": _json.dumps({
+                "name": "search",
+                "description": "search things",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                },
+            }),
+        }]
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(srv, "_pool", pool))
+            stack.enter_context(
+                patch.object(srv, "_ensure_store", AsyncMock(return_value=fake_store))
+            )
+            raw = await srv.mcp_list_tools(server="fs")
+        out = _json.loads(raw)
+
+        assert out["source"] == "catalog"
+        assert out["tools"][0]["inputSchema"]["properties"]["q"]["type"] == "string"
+
+    @pytest.mark.asyncio
     async def test_connected_empty_tools(self, restore_root_logger):
         srv = _import_mcp_server()
         out = await self._list(srv, live=[])
@@ -446,3 +486,24 @@ class TestCaptureClientEmbeddings:
         srv._client_embeddings = None
         _asyncio.run(mw.on_initialize(context, call_next))
         assert srv._client_embeddings is None
+
+
+class TestSessionCapture:
+    """Request-path tools capture their caller's session so the reconnect hook
+    (``_notify_tools_changed``) can push ``tools/list_changed`` to it.  Without
+    this, an auto_load server that finishes connecting *after* the host's
+    startup sync fires a notification nobody receives, and its tools never
+    register (the "auto_load tool still needs mcp_tool_load" bug)."""
+
+    @pytest.mark.asyncio
+    async def test_sync_path_tools_capture_session(self, restore_root_logger):
+        srv = _import_mcp_server()
+        srv._active_sessions.clear()
+        ctx = MagicMock()
+        ctx.session = object()
+
+        await srv.mcp_list(ctx=ctx)
+        assert ctx.session in srv._active_sessions
+
+        await srv.mcp_list_tools(server="fs", ctx=ctx)
+        assert ctx.session in srv._active_sessions

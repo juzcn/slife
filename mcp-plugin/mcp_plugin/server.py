@@ -547,13 +547,14 @@ async def mcp_set(
         "false disconnects + unloads)."
     ),
 )
-async def mcp_set_enabled(name: str, enabled: bool) -> str:
+async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) -> str:
     """Toggle enable/disable on an existing MCP server.
 
     Args:
         name: Server name (from mcp_list).
         enabled: true = reconnect and load tools; false = disconnect and unload.
     """
+    _capture_session(ctx)
     existing = _pool.get_server(name)
     if existing is None:
         return error_json(
@@ -608,12 +609,13 @@ async def mcp_set_enabled(name: str, enabled: bool) -> str:
         "Remove an MCP server: stop process, unregister tools, persist removal to config."
     ),
 )
-async def mcp_remove(name: str) -> str:
+async def mcp_remove(name: str, ctx: Context | None = None) -> str:
     """Stop and remove an MCP server.
 
     Args:
         name: Server name to remove.
     """
+    _capture_session(ctx)
     try:
         await _pool.remove_server(name)
         plugin_config.remove_server_entry(name)
@@ -633,8 +635,9 @@ async def mcp_remove(name: str) -> str:
         "List configured MCP servers (transport, command/url, enabled)."
     ),
 )
-async def mcp_list() -> str:
+async def mcp_list(ctx: Context | None = None) -> str:
     """List configured external MCP servers (static config view)."""
+    _capture_session(ctx)
     servers = _pool.list_configured()
     return json.dumps(servers, ensure_ascii=False, indent=2)
 
@@ -672,7 +675,7 @@ async def __check(ctx: Context | None = None) -> str:
         "mcp_list to discover server names."
     ),
 )
-async def mcp_list_tools(server: str) -> str:
+async def mcp_list_tools(server: str, ctx: Context | None = None) -> str:
     """List a server's tools (single read).
 
     For on-demand servers (``auto_load=false``) the live MCP ``tools/list``
@@ -683,6 +686,7 @@ async def mcp_list_tools(server: str) -> str:
     Args:
         server: Server name (from mcp_list).
     """
+    _capture_session(ctx)
     conn = _pool.get_server(server)
     if conn is None or conn.status != ServerStatus.CONNECTED:
         return ok_json(
@@ -700,15 +704,26 @@ async def mcp_list_tools(server: str) -> str:
         store = await _ensure_store()
         if store is not None:
             rows = await store.list_tools_by_server(server)
-            tools = [
-                {
+            tools = []
+            for r in rows:
+                # The catalog stores the full tools/list descriptor
+                # ({name, description, inputSchema}) as compact JSON in
+                # input_schema — recover the inputSchema so an auto_load
+                # proxy registers with its real parameters, not an empty one.
+                input_schema = {"type": "object", "properties": {}}
+                try:
+                    desc = json.loads(r.get("input_schema") or "")
+                    if isinstance(desc, dict) and isinstance(desc.get("inputSchema"), dict):
+                        input_schema = desc["inputSchema"]
+                except (ValueError, TypeError):
+                    pass
+                tools.append({
                     "name": r["name"],
                     "description": r["description"],
                     "server": server,
                     "full_name": r["full_name"],
-                }
-                for r in rows
-            ]
+                    "inputSchema": input_schema,
+                })
             return ok_json(
                 server=server,
                 connected=True,
@@ -749,6 +764,7 @@ async def __mcp_call_tool(
     server: str,
     tool_name: str,
     arguments: str = "{}",
+    ctx: Context | None = None,
 ) -> str:
     """Call a tool on a connected MCP server.
 
@@ -757,6 +773,7 @@ async def __mcp_call_tool(
         tool_name: Tool name (without server prefix).
         arguments: JSON string of tool arguments (e.g. '{"path": "/tmp"}').
     """
+    _capture_session(ctx)
     try:
         args_dict = json.loads(arguments) if isinstance(arguments, str) else arguments
         if not isinstance(args_dict, dict):
@@ -790,8 +807,9 @@ async def __mcp_call_tool(
         "'{server}__{tool}'. Internal — invoked by the host's mcp_tool_load."
     ),
 )
-async def __mcp_get_tool(full_name: str) -> str:
+async def __mcp_get_tool(full_name: str, ctx: Context | None = None) -> str:
     """Return a tool's schema + server enabled state for host-side loading."""
+    _capture_session(ctx)
     server, tool = _split_full_name(full_name)
     conn = _pool.get_server(server)
     if conn is None or conn.status != ServerStatus.CONNECTED:
@@ -826,8 +844,10 @@ async def mcp_tool_search(
     mode: str = "hybrid",
     limit: int = 10,
     server: str | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """Search the tool catalog: grep / fts5 / hybrid (semantic + keyword)."""
+    _capture_session(ctx)
     store = await _ensure_store()
     if store is None:
         return ok_json(
