@@ -21,8 +21,13 @@ and load their tools, call them, check status. Any MCP client can drive it.
   feature surface is 100% MCP tools.
 - **Tool catalog in memory** — built live from live connections at load and on
   every reconnect; never persists, never drifts from what the runtime can use.
-- **Semantic + keyword search** — hybrid (semantic + FTS5) tool discovery that
-  degrades automatically to keyword when no embedding endpoint is available.
+  Every tool row keeps its **complete `tools/list` schema** (`{name,
+  description, inputSchema}`) as one compact JSON text column.
+- **Schema-aware hybrid search** — semantic + FTS5 tool discovery. Keyword
+  indexes name/description/schema text, and the semantic vector is sourced
+  from the full schema alone — so a tool is findable by *what its parameters
+  do*, not just its top-line description. Degrades automatically to keyword
+  when no embedding endpoint is available.
 - **Standalone config** — path + secret handling mirror the ecosystem
   conventions (`$VAR` → env → credential store).
 
@@ -175,6 +180,14 @@ fallback for CJK), never failing:
 
 `mode="grep"` (exact substring) never involves embeddings and always works. The
 result's `mode` field reports what actually ran and a `hint` names the reason.
+
+**What is embedded.** Each tool's vector is a single embedding of the tool's
+complete schema text — name, description, every parameter
+(`name (type, required): description`, nested object/array children folded one
+level) and a return description when present. The keyword arm indexes the same
+schema text alongside the tool's `name`/`description`, so a parameter-level
+intent surfaces the tool from either arm. A schema or description edit at the
+next (re)connect drops that tool's stale vector and re-embeds.
 
 **Embeddings precedence.** As a standard Streamable HTTP MCP server, a
 connecting client can pass its own embedding endpoint through the official

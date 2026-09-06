@@ -420,7 +420,7 @@ Seven built-in plugins as independent child processes, plus the standalone
 
 | Plugin | Role |
 |--------|------|
-| **slife-mcp** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — the standalone `mcp-plugin` package, registered via `plugins.external`. Maintains an in-memory tool catalog (rebuilt live from connections) searched by `mcp_tool_search`; external tools load on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration) |
+| **slife-mcp** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — the standalone `mcp-plugin` package, registered via `plugins.external`. Maintains an in-memory tool catalog (rebuilt live from connections, complete tool schemas included) searched by a schema-aware hybrid `mcp_tool_search`; external tools load on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration) |
 | **local-embed** | OpenAI-compatible embedding endpoint (`/v1/embeddings`) from one local GGUF/transformer model, loaded once and shared by memdb, memfiles, and the mcp tool catalog — registered via `plugins.external` |
 | **slife-memdb** | Turns database with hybrid search |
 | **slife-wechat** | Bidirectional WeChat messaging |

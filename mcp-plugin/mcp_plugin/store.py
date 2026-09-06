@@ -9,17 +9,26 @@ unicode61 cannot segment); semantic search is brute-force cosine over
 f32-BLOB vectors (the corpus is small — tens to hundreds of tools — so a
 linear scan beats loading the sqlite-vec binary extension).
 
+Each tool row also carries its complete ``tools/list`` descriptor —
+``{name, description, inputSchema}`` — as compact JSON in ``input_schema``
+(one column = one text).  Keyword indexes name/server/description/schema
+together; the semantic vector is sourced from this single column ALONE
+(flattened to readable text at embed time), so it covers name +
+description + parameters + return description.
+
 The store is a "document source" for :class:`mcp_plugin.semantic.SemanticManager`
 (``count_unembedded`` / ``get_unembedded_docs`` / ``replace_embedding``) —
 one tool = one document, never chunked.
 """
 
 import asyncio
+import json
 import logging
 import math
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -109,6 +118,107 @@ def _cosine_distance(a: list[float], b: list[float]) -> float:
     if na == 0.0 or nb == 0.0:
         return 1.0
     return max(0.0, min(2.0, 1.0 - dot / math.sqrt(na * nb)))
+
+
+#
+# ── Schema → text (semantic doc source) ───────────────────────────────
+#
+
+def _compact_schema(value: Any) -> str:
+    """Compact JSON text for a tool's ``inputSchema`` (dict/list or JSON str)."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return ""
+
+
+def _fold_children(spec: dict) -> str:
+    """One level of nested parameter text (object properties / array items)."""
+    schemas = None
+    if spec.get("type") == "object":
+        schemas = spec.get("properties")
+    elif spec.get("type") == "array":
+        items = spec.get("items")
+        schemas = items.get("properties") if isinstance(items, dict) else None
+    if not isinstance(schemas, dict):
+        return ""
+    parts = []
+    for cname, cprop in schemas.items():
+        if not isinstance(cprop, dict):
+            continue
+        ctype = cprop.get("type", "")
+        cdesc = str(cprop.get("description", "")).strip()
+        head = f"{cname} ({ctype})" if ctype else cname
+        parts.append(f"{head}: {cdesc}" if cdesc else head)
+    return "; ".join(parts)
+
+
+def _param_line(name: str, spec: dict, required: bool) -> str:
+    """One parameter as readable text: ``name (type, required): desc``."""
+    ptype = str(spec.get("type", ""))
+    desc = str(spec.get("description", "")).strip()
+    children = _fold_children(spec)
+    if children:
+        desc = f"{desc} {children}".strip() if desc else children
+    head = name
+    if ptype:
+        head += f" ({ptype}{', required' if required else ''})"
+    elif required:
+        head += " (required)"
+    return f"{head}: {desc}" if desc else head
+
+
+def _flatten_schema(schema_text: str) -> str:
+    """Single flat readable text of a tool's full schema — the semantic doc.
+
+    The embedding vector represents the ``input_schema`` column alone, and
+    that column stores the COMPLETE ``tools/list`` descriptor as compact JSON
+    (``{name, description, inputSchema}``) — so the doc covers name +
+    description + each parameter + a return description.  A bare input schema
+    (``{type, properties}`` with no descriptor wrapper) is also handled for
+    robustness.  JSON boilerplate is dropped; text that is missing or
+    unparseable yields "" — such a tool simply never gets a vector.
+    """
+    try:
+        doc = json.loads(schema_text or "")
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+
+    name = doc.get("name")
+    description = doc.get("description")
+    inner = doc.get("inputSchema") if isinstance(doc.get("inputSchema"), dict) else doc
+    if not isinstance(inner, dict):
+        inner = {}
+
+    lines: list[str] = []
+    if isinstance(name, str) and name.strip():
+        lines.append(f"name: {name.strip()}")
+    if isinstance(description, str) and description.strip():
+        lines.append(description.strip())
+
+    required_raw = inner.get("required")
+    required = set(required_raw) if isinstance(required_raw, list) else set()
+    props = inner.get("properties")
+    if isinstance(props, dict):
+        params = [
+            _param_line(pname, spec, pname in required)
+            for pname, spec in props.items() if isinstance(spec, dict)
+        ]
+        if params:
+            lines.append("params: " + "; ".join(params))
+
+    for key in ("returns", "return", "result", "response"):
+        ret = inner.get(key)
+        if ret is None:
+            continue
+        ret_desc = ret.get("description") if isinstance(ret, dict) else ret
+        if isinstance(ret_desc, str) and ret_desc.strip():
+            lines.append(f"returns: {ret_desc.strip()}")
+            break
+    return "\n".join(lines)
 
 
 def _looks_like_trigger_start(stmt: str) -> bool:
@@ -316,32 +426,42 @@ class ToolStore:
                 names.append(name)
                 full_name = t.get("full_name") or f"{server}__{name}"
                 desc = t.get("description", "") or ""
-                # Detect a description edit (handled by the ON CONFLICT update
-                # below): without this, a tool whose text changed keeps a
-                # stale vector — the drainer only sees rows with NO embedding
-                # row at all, so a wrong vector survives invisibly.  Drop it
-                # so the caller's on_saved() re-embeds against the new text.
+                # Full tool schema text: the complete tools/list descriptor
+                # {name, description, inputSchema} as one compact JSON — the
+                # semantic vector is sourced from THIS column alone, so it
+                # covers name + description + parameters + return desc.
+                schema_text = _compact_schema(t)
+                # Detect an edit of that text (handled by the ON CONFLICT
+                # update below): the vector's source changed → drop the stale
+                # vector so the drainer re-embeds (keyword stays live through
+                # the FTS5 triggers regardless).
                 prev = await self._c.execute(
-                    "SELECT description FROM tools WHERE full_name = ?",
+                    "SELECT description, input_schema FROM tools WHERE full_name = ?",
                     (full_name,),
                 )
                 prev_row = await prev.fetchone()
-                desc_changed = prev_row is not None and (prev_row[0] or "") != desc
+                schema_changed = (
+                    prev_row is not None and (prev_row[1] or "") != schema_text
+                )
                 await self._c.execute(
                     """INSERT INTO tools(
-                           full_name, server, name, description,
+                           full_name, server, name, description, input_schema,
                            last_seen, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(full_name) DO UPDATE SET
-                           server     = excluded.server,
-                           name       = excluded.name,
-                           description = excluded.description,
-                           last_seen  = excluded.last_seen
+                           server       = excluded.server,
+                           name         = excluded.name,
+                           description  = excluded.description,
+                           input_schema = excluded.input_schema,
+                           last_seen    = excluded.last_seen
                     """,
-                    (full_name, server, name, desc, now, now),
+                    (full_name, server, name, desc, schema_text, now, now),
                 )
                 upserted += 1
-                if desc_changed:
+                if schema_changed or prev_row is None:
+                    # prev_row None ⇒ new tool, never embedded — delete is a
+                    # cheap no-op that also covers an embedding row left from a
+                    # removed-and-re-added tool in the same batch.
                     await self._c.execute(
                         "DELETE FROM tool_embeddings WHERE full_name = ?",
                         (full_name,),
@@ -403,9 +523,10 @@ class ToolStore:
         return dict(row) if row else None
 
     async def get_tool(self, full_name: str) -> dict | None:
-        """Fetch one tool row (full_name/server/name/description)."""
+        """Fetch one catalog row (full_name/server/name/description/input_schema)."""
         cursor = await self._c.execute(
-            "SELECT full_name, server, name, description FROM tools WHERE full_name = ?",
+            "SELECT full_name, server, name, description, input_schema "
+            "FROM tools WHERE full_name = ?",
             (full_name,),
         )
         row = await cursor.fetchone()
@@ -427,10 +548,11 @@ class ToolStore:
         """Return every catalog row for *server*.
 
         One dict per tool: ``full_name`` / ``server`` / ``name`` /
-        ``description`` — the catalog view of a server's tools.
+        ``description`` / ``input_schema`` — the catalog view of a
+        server's tools.
         """
         cursor = await self._c.execute(
-            "SELECT full_name, server, name, description "
+            "SELECT full_name, server, name, description, input_schema "
             "FROM tools WHERE server = ?",
             (server,),
         )
@@ -470,7 +592,10 @@ class ToolStore:
                    JOIN servers s ON s.name = t.server
                         AND s.enabled = 1 AND s.auto_load = 0
                    WHERE tools_fts MATCH ?{clauses}
-                   ORDER BY rank LIMIT ?""",
+                   -- bm25 column weights: name/server dominate, description 1,
+                   -- input_schema 0.5 so generic JSON words (string/array)
+                   -- don't inflate while param/return terms still match.
+                   ORDER BY bm25(tools_fts, 5.0, 5.0, 2.0, 1.0, 0.5) LIMIT ?""",
                 params,
             )
             results = [dict(row) for row in await cursor.fetchall()]
@@ -500,9 +625,10 @@ class ToolStore:
             like = f"%{safe}%"
             and_clauses.append(
                 "(t.full_name LIKE ? ESCAPE '\\' OR t.server LIKE ? ESCAPE '\\'"
-                " OR t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\')"
+                " OR t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\'"
+                " OR t.input_schema LIKE ? ESCAPE '\\')"
             )
-            params.extend([like, like, like, like])
+            params.extend([like, like, like, like, like])
         where = " AND ".join(and_clauses)
         if server:
             where += " AND t.server = ?"
@@ -535,7 +661,9 @@ class ToolStore:
         safe = _like_escape(pattern)
         like_pattern = f"%{safe}%"
         clauses = ""
-        params: list = [pattern, like_pattern, like_pattern, like_pattern, like_pattern]
+        params: list = [
+            pattern, like_pattern, like_pattern, like_pattern, like_pattern, like_pattern,
+        ]
         if server:
             clauses += " AND t.server = ?"
             params.append(server)
@@ -548,7 +676,8 @@ class ToolStore:
                JOIN servers s ON s.name = t.server
                     AND s.enabled = 1 AND s.auto_load = 0
                WHERE (t.full_name LIKE ? ESCAPE '\\' OR t.server LIKE ? ESCAPE '\\'
-                      OR t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\')
+                      OR t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\'
+                      OR t.input_schema LIKE ? ESCAPE '\\')
                      {clauses}
                ORDER BY t.full_name LIMIT ?""",
             params,
@@ -594,22 +723,30 @@ class ToolStore:
     # ── Embedding drainer contract ─────────────────────────────────
 
     async def count_unembedded(self) -> int:
-        """Count tools with no embedding row (the semantic index backlog)."""
+        """Count tools with no embedding row and a non-empty schema text.
+
+        Tools whose flattened schema is empty (no vector source) are skipped
+        so they can never wedge the semantic gate open.
+        """
         cursor = await self._c.execute(
-            """SELECT COUNT(*) FROM tools
+            """SELECT input_schema FROM tools
                WHERE full_name NOT IN (SELECT full_name FROM tool_embeddings)""",
         )
-        row = await cursor.fetchone()
-        return row[0] if row else 0
+        return sum(
+            1 for (schema_text,) in await cursor.fetchall()
+            if _flatten_schema(schema_text or "").strip()
+        )
 
     async def get_unembedded_docs(self, limit: int = 100) -> list[dict]:
         """Return tools lacking an embedding, in the drainer's doc shape.
 
-        Each doc carries ``doc_id`` (the full_name) and ``text``
-        (``"{server} {name}\\n{description}"``) — one tool, one embedding.
+        Each doc carries ``doc_id`` (the full_name) and ``text`` (the
+        full-descriptor column flattened to readable text) — the semantic
+        vector is sourced from the ``input_schema`` column alone, one tool
+        = one vector.  Tools with no flattenable text produce no doc.
         """
         cursor = await self._c.execute(
-            """SELECT full_name, server, name, description FROM tools
+            """SELECT full_name, input_schema FROM tools
                WHERE full_name NOT IN (SELECT full_name FROM tool_embeddings)
                ORDER BY full_name
                LIMIT ?""",
@@ -617,11 +754,10 @@ class ToolStore:
         )
         docs = []
         for row in await cursor.fetchall():
-            r = dict(row)
-            docs.append({
-                "doc_id": r["full_name"],
-                "text": f"{r['server']} {r['name']}\n{r.get('description', '')}",
-            })
+            text = _flatten_schema(row[1] or "")
+            if not text.strip():
+                continue  # no schema text → no vector, and not "unembedded"
+            docs.append({"doc_id": row[0], "text": text})
         return docs
 
     async def replace_embedding(self, full_name: str, vec: list[float], model: str) -> None:

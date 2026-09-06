@@ -488,7 +488,7 @@ Processes communicate through environment variables:
 
 | Plugin | Transport | Role |
 |--------|-----------|------|
-| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config — and keeps an in-memory **tool catalog** of every loaded tool (name, description, enabled), rebuilt live from connections, searched via `mcp_tool_search` and loaded on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration). |
+| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config — and keeps an in-memory **tool catalog** of every loaded tool (name, description, full schema, enabled), rebuilt live from connections, searched via a schema-aware hybrid `mcp_tool_search` and loaded on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration). |
 | **local-embed** | Streamable HTTP + `/v1/embeddings` | External embedding service provider — OpenAI-compatible `POST /v1/embeddings` + `GET /v1/models` (+ `/v1/models/{id}`) on the same port, from one local GGUF/transformer model loaded once and shared by memdb, memfiles, and the mcp tool catalog. Sole MCP tool is the internal `__embed_status`. |
 | **slife-memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[WECHAT]` (model-facing; the TUI strips the marker from display since the `Wechat>` bubble prefix already shows the channel); the model replies itself by calling the LLM-visible `wechat_send_message` — no harness auto-dispatch — addressing the peer by `peer_wechat_id` (from `wechat_check_status.last_contact`). |
@@ -524,15 +524,20 @@ Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remo
 
 **Tool catalog & on-demand loading.** The gateway keeps every loaded
 external tool in an **in-memory** catalog (SQLite `:memory:`): one row per
-`{server}__{tool}` with name, description, and a per-tool `enabled` flag
+`{server}__{tool}` with name, description, the tool's **complete
+`tools/list` schema** (the `{name, description, inputSchema}` descriptor as
+one compact JSON text in `input_schema`), and a per-tool `enabled` flag
 derived from its server's state. The catalog is created at wrapper load and
 re-synced from the live connection pool on every (re)connect, so it is by
 construction identical to what the runtime can use — nothing persists, so it
-can never drift or go stale. It is indexed twice — FTS5 (keyword) and
-f32-BLOB vectors (semantic) produced against the gateway's own `embeddings`
-section of `mcp-plugin.json5`. `mcp_tool_search`
-runs hybrid/keyword/grep retrieval over
-the catalog, degrading to keyword-only when no embedding endpoint is
+can never drift or go stale. It is indexed twice — FTS5 (keyword, over
+name/server/description/schema text) and f32-BLOB vectors (semantic) produced
+against the gateway's own `embeddings` section of `mcp-plugin.json5`. The
+semantic vector is sourced from the **schema text alone** (flattened at embed
+time: name, description, each parameter, return description), making
+`mcp_tool_search` **schema-aware** — a tool is findable by what its parameters
+do, not just its top-line description. It runs hybrid/keyword/grep retrieval
+over the catalog, degrading to keyword-only when no embedding endpoint is
 configured or the semantic index is still building.
 
 External tools are **loaded on demand**: the host registers none of them by
@@ -1134,7 +1139,7 @@ mcp-plugin/             # Standalone workspace member — the external MCP gatew
     connection.py       #   ConnectionPool / MCPServerConnection
     client.py           #   Streamable HTTP client (used by the harness)
     config.py           #   mcp-plugin.json5 (servers, embeddings), auto_load
-    store.py            #   ToolStore — in-memory tool catalog (FTS5 + BLOB vectors)
+    store.py            #   ToolStore — in-memory tool catalog (FTS5 + BLOB vectors, full-schema column + flatten)
     embeddings.py       #   EmbeddingClient (httpx, OpenAI-compatible)
     semantic.py         #   SemanticManager — gate + background embed drainer
     search.py           #   merge_hybrid (RRF)

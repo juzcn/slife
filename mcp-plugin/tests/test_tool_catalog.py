@@ -69,14 +69,20 @@ async def srv(restore_root_logger):
     store = ToolStore()
     await store.open()
     await store.sync_server("svcA", [
-        {"name": "search", "description": "github repository search"},
-        {"name": "list", "description": "list issues"},
+        {"name": "search", "description": "github repository search",
+         "inputSchema": {"type": "object",
+                         "properties": {"repo": {"type": "string",
+                                                 "description": "repo name"}}}},
+        {"name": "list", "description": "list issues",
+         "inputSchema": {"type": "object", "properties": {}}},
     ])
     await store.sync_server("svcB", [
-        {"name": "search", "description": "search the web"},
+        {"name": "search", "description": "search the web",
+         "inputSchema": {"type": "object", "properties": {}}},
     ])
     await store.sync_server("svcC", [
-        {"name": "search", "description": "autoload tool"},
+        {"name": "search", "description": "autoload tool",
+         "inputSchema": {"type": "object", "properties": {}}},
     ], auto_load=True)
     s._store = store
     pool = _FakePool()
@@ -106,6 +112,36 @@ async def test_tool_search_hybrid_returns_distinct_full_names(srv):
     names = {r["full_name"] for r in data["results"]}
     # Same bare name across two servers → two distinct catalog entries.
     assert "svcA__search" in names and "svcB__search" in names
+
+
+@pytest.mark.asyncio
+async def test_tool_search_finds_tool_by_schema_content(restore_root_logger):
+    """A query matching only a parameter embedded in the schema surfaces the
+    tool: the schema column is FTS5-indexed, and the semantic vector is
+    schema-sourced (semantic unavailable here → keyword-only fallback still
+    hits through the schema text)."""
+    s = _import_mcp_server()
+    store = ToolStore()
+    await store.open()
+    await store.sync_server("svcD", [
+        {"name": "query_logs", "description": "generic log accessor",
+         "inputSchema": {"type": "object", "properties": {
+             "window": {"type": "object", "description": "time window",
+                        "properties": {"start": {"type": "string"}}}}}},
+    ])
+    await store.sync_server("svcE", [
+        {"name": "query_logs", "description": "generic log accessor",
+         "inputSchema": {"type": "object", "properties": {
+             "max": {"type": "integer", "description": "max entries"}}}},
+    ])
+    s._store = store
+    with patch.object(s, "_pool", _FakePool()):
+        raw = await s.mcp_tool_search("time window", mode="hybrid")
+    data = json.loads(raw)
+    assert data["status"] == "ok"
+    names = {r["full_name"] for r in data["results"]}
+    assert "svcD__query_logs" in names and "svcE__query_logs" not in names
+    await store.close()
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS tools (
     server       TEXT NOT NULL REFERENCES servers(name) ON DELETE CASCADE,
     name         TEXT NOT NULL,               -- 外部 MCP 原样工具名
     description  TEXT NOT NULL DEFAULT '',
+    input_schema TEXT NOT NULL DEFAULT '',    -- 工具 inputSchema 全文（紧凑 JSON，单一文本源）
     last_seen    TEXT NOT NULL,               -- ISO-8601，最近一次 sync_server 见到
     created_at   TEXT NOT NULL
 );
@@ -34,27 +35,28 @@ CREATE VIRTUAL TABLE IF NOT EXISTS tools_fts USING fts5(
     server,
     name,
     description,
+    input_schema,
     content='tools',
     content_rowid='rowid'
 );
 
 CREATE TRIGGER IF NOT EXISTS tools_ai AFTER INSERT ON tools BEGIN
-    INSERT INTO tools_fts(rowid, full_name, server, name, description)
-    VALUES (new.rowid, new.full_name, new.server, new.name, new.description);
+    INSERT INTO tools_fts(rowid, full_name, server, name, description, input_schema)
+    VALUES (new.rowid, new.full_name, new.server, new.name, new.description, new.input_schema);
 END;
 
 CREATE TRIGGER IF NOT EXISTS tools_ad AFTER DELETE ON tools BEGIN
-    INSERT INTO tools_fts(tools_fts, rowid, full_name, server, name, description)
-    VALUES ('delete', old.rowid, old.full_name, old.server, old.name, old.description);
+    INSERT INTO tools_fts(tools_fts, rowid, full_name, server, name, description, input_schema)
+    VALUES ('delete', old.rowid, old.full_name, old.server, old.name, old.description, old.input_schema);
 END;
 
--- sync_server 更新 description / name —— 外链表必须跟踪 UPDATE，否则
--- 改过的描述对关键词检索不可见。
+-- sync_server 更新 description / name / input_schema —— 外链表必须跟踪 UPDATE，
+-- 否则改过的描述/参数对关键词检索不可见。
 CREATE TRIGGER IF NOT EXISTS tools_au AFTER UPDATE ON tools BEGIN
-    INSERT INTO tools_fts(tools_fts, rowid, full_name, server, name, description)
-    VALUES ('delete', old.rowid, old.full_name, old.server, old.name, old.description);
-    INSERT INTO tools_fts(rowid, full_name, server, name, description)
-    VALUES (new.rowid, new.full_name, new.server, new.name, new.description);
+    INSERT INTO tools_fts(tools_fts, rowid, full_name, server, name, description, input_schema)
+    VALUES ('delete', old.rowid, old.full_name, old.server, old.name, old.description, old.input_schema);
+    INSERT INTO tools_fts(rowid, full_name, server, name, description, input_schema)
+    VALUES (new.rowid, new.full_name, new.server, new.name, new.description, new.input_schema);
 END;
 
 
