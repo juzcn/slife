@@ -59,13 +59,17 @@ def _provider_models(pcfg: dict) -> list:
     return models
 
 
-def _hot_reload(ctx, enabled: bool = True) -> str:
+async def _hot_reload(ctx, enabled: bool = True) -> str:
     """Ask the running memdb + memfiles plugins to reload their semantic index.
 
     ``enabled=True`` → manager.enable() (rebuild); ``False`` → manager.disable().
     Each plugin has an internal ``__*_reload_semantic`` tool.  Failures are
     best-effort — a plugin that is down (or not started) degrades to
     "takes effect on restart".
+
+    ``client.call_tool`` is async (MCPClient) — awaiting is mandatory; a bare
+    call returns an un-awaited coroutine, the reload RPC is never sent, and the
+    coroutine leaks with a "never awaited" warning.
     """
     notes: list[str] = []
     targets = (
@@ -77,7 +81,7 @@ def _hot_reload(ctx, enabled: bool = True) -> str:
             notes.append(f"{name}: plugin not connected — restart to apply")
             continue
         try:
-            raw = client.call_tool(tool, {"enabled": enabled})
+            raw = await client.call_tool(tool, {"enabled": enabled})
             if isinstance(raw, str):
                 raw = json.loads(raw)
             status = raw.get("status", raw) if isinstance(raw, dict) else raw
@@ -256,7 +260,7 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
         write_config(self._config_path, raw)
         action = "Updated" if replaced else "Added"
         ref = f"{pid}/{model_id}"
-        reload_note = _hot_reload(getattr(self, "_ctx", None), enabled=True)
+        reload_note = await _hot_reload(getattr(self, "_ctx", None), enabled=True)
         logger.info("embeddings_model_%s ref=%s", action.lower(), ref)
         return f"[OK] {action} embedding model `{ref}`. {reload_note}"
 
@@ -313,7 +317,7 @@ class SwitchEmbeddingsTool(_EmbeddingsConfigTool):
         old = _active_ref(emb) or "(none)"
         emb["active_model"] = ref
         write_config(self._config_path, raw)
-        reload_note = _hot_reload(getattr(self, "_ctx", None), enabled=True)
+        reload_note = await _hot_reload(getattr(self, "_ctx", None), enabled=True)
         logger.info("embeddings_model_switched from=%s to=%s", old, ref)
         return f"[OK] Switched active embedding model from `{old}` to `{ref}`. {reload_note}"
 
@@ -382,7 +386,7 @@ class RemoveEmbeddingsTool(_EmbeddingsConfigTool):
             raw.pop(_EMBEDDINGS_KEY, None)
 
         write_config(self._config_path, raw)
-        reload_note = _hot_reload(getattr(self, "_ctx", None), enabled=True)
+        reload_note = await _hot_reload(getattr(self, "_ctx", None), enabled=True)
         logger.info("embeddings_model_removed ref=%s", ref)
         return f"[OK] Removed `{ref}`. {reload_note}"
 
@@ -417,7 +421,7 @@ class EnableEmbeddingsTool(_EmbeddingsConfigTool):
             raw[_EMBEDDINGS_KEY] = emb
         emb["enabled"] = enabled
         write_config(self._config_path, raw)
-        reload_note = _hot_reload(getattr(self, "_ctx", None), enabled=enabled)
+        reload_note = await _hot_reload(getattr(self, "_ctx", None), enabled=enabled)
         state = "enabled" if enabled else "disabled"
         logger.info("embeddings_%s", state)
         return f"[OK] Semantic search {state}. {reload_note}"

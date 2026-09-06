@@ -137,10 +137,13 @@ class TestSetEmbeddingsTool:
     async def test_hot_reload_calls_plugins(self, tmp_path):
         p = _make_path(tmp_path)
         tool = SetEmbeddingsTool(config_path=p)
+        # AsyncMock — the MCP client's call_tool is async; a sync MagicMock
+        # would silently mask the un-awaited-call bug (it returns a value
+        # without needing await), exactly how the original defect got through.
         memdb_client = MagicMock()
-        memdb_client.call_tool.return_value = '{"status": "ok"}'
+        memdb_client.call_tool = AsyncMock(return_value='{"status": "ok"}')
         memfiles_client = MagicMock()
-        memfiles_client.call_tool.return_value = '{"status": "ok"}'
+        memfiles_client.call_tool = AsyncMock(return_value='{"status": "ok"}')
         ctx = MagicMock()
         ctx.memdb_client = memdb_client
         ctx.memfiles_client = memfiles_client
