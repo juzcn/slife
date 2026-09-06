@@ -100,14 +100,14 @@ All management is **MCP tools** (there is no CLI).
 | `mcp_remove` | Remove a server: stop its process, unregister its tools, persist the removal. |
 | `mcp_list` | List configured servers (transport, command/url, enabled). |
 | `mcp_list_tools(server)` | List a connected server's live tools (single read — the catalog is the live pool). |
-| `mcp_tool_search(query, mode, limit, server, include_disabled)` | Search the tool catalog — `hybrid` / `fts5` / `grep`. |
+| `mcp_tool_search(query, mode, limit, server)` | Search the tool catalog — `hybrid` / `fts5` / `grep`. |
 | `__check` | Live per-server + semantic raw status (internal — probed by `system_health`). |
 | `__mcp_get_tool(full_name)` | One tool's live schema + enabled status (internal — consumed by `mcp_tool_load`). |
 | `__mcp_call_tool(server, tool_name, arguments)` | Call a tool on a connected server (internal — invoked by per-tool proxies). |
 
 Tool loading on the host side is **on-demand by default** — the model discovers
 tools with `mcp_tool_search` and loads one with `mcp_tool_load`; a disabled
-tool is refused at load/`call` time. Set `auto_load: true` on a server to
+tool is refused at load/`call` time. Set `"auto-load": true` on a server to
 bulk-register its tools on connect.
 
 ## Configuration
@@ -132,7 +132,7 @@ but cannot be parsed raises a clear error instead of being overwritten.
       args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
     },
     github: {
-      auto_load: true,                 // optional; absent/false = on-demand tools
+      "auto-load": true,               // optional; absent/false = on-demand tools
       command: "npx",
       args: [
         "-y", "anyapi-mcp-server",
@@ -160,7 +160,7 @@ but cannot be parsed raises a clear error instead of being overwritten.
 
 **Server entry fields:** `command`/`args` (stdio), `url`/`headers` (http),
 `env`, `description`, `enabled`, `source` (provenance), `auth` (OAuth),
-`os_paths` (inject `--allow-path`), `auto_load`.
+`os_paths` (inject `--allow-path`), `auto-load`.
 
 **Secrets** — every secret field (`env`, `headers`, `auth.client_id`/
 `client_secret`, embeddings `api_key`) accepts `""` (empty), plaintext, or a

@@ -20,6 +20,8 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Implementation
 
+from mcp_plugin import __version__
+
 logger = logging.getLogger(__name__)
 
 # True once the loop-level cancel-scope exception handler is installed.  A
@@ -114,34 +116,6 @@ def _guess_image_extension(data: bytes) -> str | None:
     return None
 
 
-# Temp image files handed to the UI for display; deleted when the MCP client
-# disconnects so a long session's image tool results don't accumulate.
-_temp_image_files: set[str] = set()
-
-
-def _try_save_image_bytes(data: bytes) -> str | None:
-    """Save *data* to a temp file if it looks like an image.
-
-    Returns the absolute path, or ``None`` if the data is not a
-    recognised image format or saving fails.  The file is registered for
-    deletion at client disconnect (:meth:`MCPClient.disconnect`).
-    """
-    ext = _guess_image_extension(data)
-    if ext is None:
-        return None
-    try:
-        tmp = tempfile.NamedTemporaryFile(
-            suffix=ext, delete=False, dir=tempfile.gettempdir(),
-        )
-        tmp.write(data)
-        tmp.close()
-        path = str(Path(tmp.name).resolve())
-        _temp_image_files.add(path)
-        return path
-    except Exception:
-        return None
-
-
 def _is_retryable_connect_error(exc: BaseException) -> bool:
     """True if *exc* is a transient connection/transport failure worth retrying.
 
@@ -191,6 +165,10 @@ class MCPClient:
         self._exit_stack: AsyncExitStack | None = None
         self._http_client: httpx2.AsyncClient | None = None
         self._tool_timeout = tool_timeout
+        # Temp image files handed to the UI for display, deleted on disconnect
+        # so a long session's image tool results don't accumulate.  Per-client
+        # (not module-global) so one client's disconnect can't clear another's.
+        self._temp_image_files: set[str] = set()
         # Extra host params the server should see: carried on the standard
         # ``initialize`` request in ``capabilities.extensions`` (mcp ≥2.0;
         # the ``clientInfo.other`` slot was dropped) — e.g. the host's active
@@ -269,7 +247,7 @@ class MCPClient:
                         ClientSession(
                             read_stream, write_stream,
                             message_handler=self._handle_server_message,
-                            client_info=Implementation(name="slife", version="0.1.0"),
+                            client_info=Implementation(name="slife", version=__version__),
                             extensions=(
                                 dict(self._client_info_extra)
                                 if self._client_info_extra else None
@@ -355,12 +333,12 @@ class MCPClient:
         await self._cleanup()
         # Remove temp images handed out for display — a long session would
         # otherwise accumulate one per image tool result.
-        for p in list(_temp_image_files):
+        for p in list(self._temp_image_files):
             try:
                 Path(p).unlink(missing_ok=True)
             except OSError:
                 pass
-        _temp_image_files.clear()
+        self._temp_image_files.clear()
         logger.info("mcp_client_disconnected")
 
     async def _cleanup(self) -> None:
@@ -452,6 +430,28 @@ class MCPClient:
             for t in result.tools
         ]
 
+    def _save_image_bytes(self, data: bytes) -> str | None:
+        """Save *data* to a temp file if it looks like an image.
+
+        Returns the absolute path, or ``None`` if the data is not a
+        recognised image format or saving fails.  The file is registered for
+        deletion at client disconnect (:meth:`MCPClient.disconnect`).
+        """
+        ext = _guess_image_extension(data)
+        if ext is None:
+            return None
+        try:
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=ext, delete=False, dir=tempfile.gettempdir(),
+            )
+            tmp.write(data)
+            tmp.close()
+            path = str(Path(tmp.name).resolve())
+            self._temp_image_files.add(path)
+            return path
+        except Exception:
+            return None
+
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> str:
         """Call an MCP tool.
 
@@ -490,7 +490,7 @@ class MCPClient:
             if hasattr(block, "text"):
                 parts.append(block.text)  # type: ignore[union-attr]
             elif hasattr(block, "data"):
-                img_path = _try_save_image_bytes(block.data)  # type: ignore[union-attr]
+                img_path = self._save_image_bytes(block.data)  # type: ignore[union-attr]
                 if img_path is not None:
                     # Binary image content is materialized to a temp file so
                     # the LLM can reference it by path — no in-terminal

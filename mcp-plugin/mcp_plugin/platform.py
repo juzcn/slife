@@ -167,6 +167,16 @@ async def kill_process_tree(process: asyncio.subprocess.Process) -> None:
         pass
 
 
+def _ps_quote(value: str) -> str:
+    """Escape a string for a PowerShell single-quoted literal (``'`` → ``''``)."""
+    return value.replace("'", "''")
+
+
+def _applescript_quote(value: str) -> str:
+    """Escape a string for an AppleScript double-quoted literal."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def desktop_notify(title: str, message: str) -> None:
     """Fire a best-effort desktop notification (cross-platform).
 
@@ -181,8 +191,8 @@ def desktop_notify(title: str, message: str) -> None:
                  f"Add-Type -AssemblyName System.Windows.Forms; "
                  f"$n = New-Object System.Windows.Forms.NotifyIcon; "
                  f"$n.Icon = [System.Drawing.SystemIcons]::Information; "
-                 f"$n.BalloonTipTitle = '{title}'; "
-                 f"$n.BalloonTipText = '{message}'; "
+                 f"$n.BalloonTipTitle = '{_ps_quote(title)}'; "
+                 f"$n.BalloonTipText = '{_ps_quote(message)}'; "
                  f"$n.Visible = $true; "
                  f"$n.ShowBalloonTip(5000);"],
                 capture_output=True, timeout=10,
@@ -190,7 +200,7 @@ def desktop_notify(title: str, message: str) -> None:
         elif system == "Darwin":
             _subprocess.run(
                 ["osascript", "-e",
-                 f'display notification "{message}" with title "{title}"'],
+                 f'display notification "{_applescript_quote(message)}" with title "{_applescript_quote(title)}"'],
                 capture_output=True, timeout=5,
             )
         else:

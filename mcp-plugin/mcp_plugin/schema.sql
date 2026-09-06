@@ -2,7 +2,7 @@
 --  mcp-plugin 工具目录库
 --
 --  一行 = 一个外部 MCP 工具（以 ``{server}__{tool}`` 全名标识）。
---  持久化工具名、描述与启用状态；重启后目录仍在。
+--  目录完全驻留内存（:memory:），加载时由活动连接重建，不落盘。
 --  支持关键词（FTS5）+ 语义（BLOB 向量，Python 余弦）混合检索。
 -- ═══════════════════════════════════════════════════════════════
 
@@ -61,7 +61,7 @@ END;
 
 
 -- ── 语义搜索 ──────────────────────────────────────────────────
--- 一个工具一条向量（name + description），不切块。
+-- 一个工具一条向量（完整 schema：name + description + 参数 + 返回说明），不切块。
 -- 向量以 f32 BLOB 存储（struct.pack），检索时 Python 余弦。
 CREATE TABLE IF NOT EXISTS tool_embeddings (
     full_name TEXT PRIMARY KEY REFERENCES tools(full_name) ON DELETE CASCADE,

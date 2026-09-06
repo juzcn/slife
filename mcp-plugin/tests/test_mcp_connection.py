@@ -1076,7 +1076,6 @@ class TestMCPServerConnectionReconnectNotify:
         )
         await conn._fire_on_reconnect()
         cb.assert_awaited_once()
-        assert conn._ever_connected is True
 
     @pytest.mark.asyncio
     async def test_reconnect_notifies(self):
@@ -1090,22 +1089,6 @@ class TestMCPServerConnectionReconnectNotify:
         cb.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_recovery_after_failed_initial_connect_notifies(self):
-        """A failed INITIAL connect (mcp_set saw status=failed) must notify on
-        the health monitor's later recovery — the caller skipped registration."""
-        cb = AsyncMock()
-        conn = MCPServerConnection(
-            ServerConfig(name="test", command="echo"), on_connected=cb,
-        )
-        conn._notify_on_next_success = True  # prior initial connect failed
-
-        await conn._fire_on_reconnect()
-
-        cb.assert_awaited_once()
-        assert conn._ever_connected is True
-        assert conn._notify_on_next_success is False
-
-    @pytest.mark.asyncio
     async def test_listener_error_is_swallowed(self):
         async def boom(server_name):
             raise RuntimeError("listener failed")
@@ -1116,7 +1099,6 @@ class TestMCPServerConnectionReconnectNotify:
         # A failing listener must never propagate into connect().
         await conn._fire_on_reconnect()
         await conn._fire_on_reconnect()
-        assert conn._ever_connected is True
 
     @pytest.mark.asyncio
     async def test_pool_passes_callback_to_connections(self):

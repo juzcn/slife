@@ -10,9 +10,9 @@ Path precedence (one loader, every consumer) — mirrors credstore:
 
 Server entries hold: ``command/args/env/url/headers/auth/description/enabled/source``
 plus ``os_paths``.
-``env`` and ``auth.client_id``/``client_secret`` support
-``${VAR}`` / ``keyring:`` references resolved through **os.environ → credstore →
-literal**.  REST APIs are ordinary ``npx anyapi-mcp-server`` entries tagged
+``env`` and ``auth.client_id``/``client_secret`` support ``${VAR}``
+references resolved through **os.environ → credstore → literal**.  REST APIs
+are ordinary ``npx anyapi-mcp-server`` entries tagged
 ``source.type == "rest_api"``.
 
 The top-level ``embeddings`` section is the **fallback** embedding config: a
@@ -188,20 +188,12 @@ def _resolve_embedded_refs(value: str) -> str:
     return _ENV_REF.sub(_replace, value)
 
 
-def _resolve_secret(value: str, *, accept_keyring_uri: bool = False) -> str:
+def _resolve_secret(value: str) -> str:
     """Resolve a secret value through the full resolution chain.
 
-    1. ``keyring:`` URI → credstore (only when *accept_keyring_uri* is True)
-    2. ``${VAR}`` → os.environ → credstore
-    3. plaintext → as-is
+    1. ``${VAR}`` → os.environ → credstore
+    2. plaintext → as-is
     """
-    if accept_keyring_uri:
-        try:
-            from credstore import is_keyring_uri, resolve_uri
-            if is_keyring_uri(value):
-                return resolve_uri(value)
-        except ImportError:
-            pass
     if value.startswith("${") and value.endswith("}"):
         var_name = value[2:-1]
         env_val = os.environ.get(var_name)
@@ -329,9 +321,9 @@ def _load_raw() -> dict:
 def resolve_server_config(name: str, raw_entry: dict):
     """Build a :class:`~mcp_plugin.connection.ServerConfig` from a raw entry.
 
-    Resolves ``${VAR}``/``keyring:`` refs in ``env`` and ``auth.client_*``
-    fields.  Args/url/headers keep their embedded refs — the connection
-    layer resolves them at connect time (unchanged behaviour).
+    Resolves ``${VAR}`` refs in ``env`` and ``auth.client_*`` fields.
+    Args/url/headers keep their embedded refs — the connection layer
+    resolves them at connect time (unchanged behaviour).
     """
     from mcp_plugin.connection import ServerConfig
 
@@ -356,10 +348,11 @@ def resolve_server_config(name: str, raw_entry: dict):
         auth=auth,
         source=_dict_copy(raw_entry.get("source")),
         os_paths=bool(raw_entry.get("os_paths", False)),
-        # The json5 key is "auto-load" — it MUST be quoted in mcp-plugin.json5: a
-# dash is not a valid json5 identifier, so an unquoted `auto-load:` parses
-# as a syntax error and takes down the whole config (an empty pool).
-auto_load=raw_entry.get("auto-load") is True,
+        # The json5 key is "auto-load" — it MUST be quoted in mcp-plugin.json5:
+        # a dash is not a valid json5 identifier, so an unquoted `auto-load:`
+        # parses as a syntax error and takes down the whole config (an empty
+        # pool).
+        auto_load=raw_entry.get("auto-load") is True,
     )
 
 

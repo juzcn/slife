@@ -53,6 +53,9 @@ class _FakePool:
     def get_server(self, name):
         return self._connections.get(name)
 
+    def server_names(self):
+        return list(self._connections.keys())
+
     async def call_tool(self, server, tool_name, arguments):
         self.calls.append((server, tool_name))
         return f'[fake] {server}__{tool_name} ok'

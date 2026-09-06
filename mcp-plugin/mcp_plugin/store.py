@@ -36,16 +36,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_SEARCH_LIMIT = 200
 
-#: Search-visibility (per-mcp): tool_search only surfaces tools of servers
-#: that are enabled AND not auto_load.  Disabled servers' tools are not
-#: discoverable (they cannot be loaded), and auto_load servers' tools are
-#: already registered in the toolset — no discovery needed.
-_SEARCH_VISIBLE_JOIN = (
-    "JOIN servers s ON s.name = tools.server "
-    "AND s.enabled = 1 AND s.auto_load = 0"
-)
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -567,9 +557,8 @@ class ToolStore:
     ) -> list[dict]:
         """FTS5 keyword search with snippet highlighting.
 
-        Only tools of enabled, non-auto_load servers are discoverable (see
-        ``_SEARCH_VISIBLE_JOIN``) — disabled and auto_load servers' tools
-        never surface.
+        Only tools of enabled, non-auto_load servers are discoverable —
+        disabled and auto_load servers' tools never surface.
         """
         limit = _clamp_limit(limit)
         # FTS5 unicode61 does not segment CJK — route Chinese queries to the

@@ -24,6 +24,7 @@ from enum import Enum
 
 import httpx2
 
+from mcp_plugin import __version__
 from mcp_plugin.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
 from mcp_plugin.platform import kill_process_tree, resolve_command, terminate_process
 
@@ -90,17 +91,6 @@ class MCPServerConnection:
         self.config = config
         self._status = ServerStatus.DISCONNECTED
         self._on_connected = on_connected
-        # True once connect() has succeeded at least once.  Used to tell a
-        # RECONNECT apart from the first connect — only reconnects fire
-        # ``on_connected`` (the initial connect is handled by the caller,
-        # e.g. mcp_set/auto-connect, which already registers tools).
-        self._ever_connected = False
-        # True when the INITIAL connect attempt failed (timed out).  The
-        # caller (mcp_set/auto-connect) saw the failure and skipped tool
-        # registration, so the next successful connect — the health
-        # monitor's recovery — must notify listeners even though it is not
-        # a "reconnect" in the _ever_connected sense.
-        self._notify_on_next_success = False
         self._process: asyncio.subprocess.Process | None = None
         self._http_client: httpx2.AsyncClient | None = None
         self._session_id: str | None = None
@@ -229,7 +219,7 @@ class MCPServerConnection:
                 init_result = await self._request("initialize", {
                     "protocolVersion": LATEST_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "mcp-plugin", "version": "0.1.0"},
+                    "clientInfo": {"name": "mcp-plugin", "version": __version__},
                 })
 
                 server_info = init_result.get("serverInfo", {})
@@ -299,12 +289,6 @@ class MCPServerConnection:
 
             except Exception as e:
                 self._status = ServerStatus.FAILED
-                # A failed INITIAL connect means the caller (mcp_set /
-                # auto-connect) saw the failure and skipped tool registration
-                # — the health monitor's eventual recovery must notify
-                # listeners so the tools still get registered.
-                if not self._ever_connected:
-                    self._notify_on_next_success = True
                 stderr_tail = "".join(self._stderr_buffer[-20:]).strip()
                 if stderr_tail:
                     self._error = f"{e}\n\n[server stderr]\n{stderr_tail}"
@@ -331,8 +315,6 @@ class MCPServerConnection:
         registration on the listener side keeps this idempotent.  Best-effort:
         a failing listener never breaks the connection.
         """
-        self._ever_connected = True
-        self._notify_on_next_success = False
         logger.info("mcp_connected server=%s", self.config.name)
         if self._on_connected is not None:
             try:
@@ -1117,9 +1099,9 @@ class ConnectionPool:
 
     def __init__(self, on_connected: Callable[[str], Awaitable[None]] | None = None):
         self._connections: dict[str, MCPServerConnection] = {}
-        # Fired on every successful RECONNECT of any server (never on the
-        # first connect — see MCPServerConnection.connect).  The wrapper wires
-        # this to a tools/list_changed notification so the agent re-syncs.
+        # Fired on every successful connect (first and reconnects — see
+        # MCPServerConnection._fire_on_reconnect).  The wrapper wires this to
+        # a tools/list_changed notification so the agent re-syncs.
         self._on_connected = on_connected
 
     async def add_server(self, config: ServerConfig) -> MCPServerConnection:
@@ -1153,6 +1135,10 @@ class ConnectionPool:
 
     def get_server(self, name: str) -> MCPServerConnection | None:
         return self._connections.get(name)
+
+    def server_names(self) -> list[str]:
+        """Names of all registered servers (connected, disabled, or failed)."""
+        return list(self._connections.keys())
 
     def list_configured(self) -> list[dict]:
         """List configured servers — static config fields only, no live state.

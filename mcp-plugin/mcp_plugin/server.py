@@ -233,7 +233,7 @@ def _split_full_name(full_name: str) -> tuple[str, str]:
     itself contains ``__``; unknown names fall back to ``rsplit("__", 1)``.
     """
     best: str | None = None
-    for server in _pool._connections.keys():
+    for server in _pool.server_names():
         if full_name.startswith(server + "__") and (
             best is None or len(server) > len(best)
         ):
@@ -475,6 +475,10 @@ async def mcp_set(
             server=name,
         )
 
+    # os_paths / auto_load / source are config-file fields (not mcp_set
+    # params) — preserve them across an upsert so a hand-edited flag isn't
+    # silently reset on the running connection.
+    existing = _pool.get_server(name)
     config = ServerConfig(
         name=name,
         command=command,
@@ -485,10 +489,13 @@ async def mcp_set(
         description=description,
         enabled=enabled,
         auth=auth,
+        os_paths=existing.config.os_paths if existing else False,
+        auto_load=existing.config.auto_load if existing else False,
+        source=(source if source is not None
+                else (existing.config.source if existing else None)),
     )
 
     try:
-        existing = _pool.get_server(name)
         if existing is not None and _server_config_equal(existing.config, config):
             if existing.status == ServerStatus.CONNECTED:
                 tools = existing.list_tools()
