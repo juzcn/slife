@@ -80,6 +80,19 @@ def _detect_shell() -> str:
     return "powershell"
 
 
+_CMD_METACHARS = frozenset("&|<>^()")
+
+
+def _escape_cmd(value: str) -> str:
+    """Escape cmd.exe metacharacters with the caret (^) escape character.
+
+    Handles the characters that would otherwise break or inject a command:
+    ``& | < > ^ ( )``.  ``%`` (variable expansion) is intentionally not
+    escaped — it needs context-dependent quoting and is rare in secrets.
+    """
+    return "".join("^" + c if c in _CMD_METACHARS else c for c in value)
+
+
 def format_export(key: str, value: str, shell: str = "auto") -> str:
     """Format a (key, value) pair as a shell export statement.
 
@@ -90,15 +103,17 @@ def format_export(key: str, value: str, shell: str = "auto") -> str:
 
     >>> format_export("MY_KEY", "sk-abc123", "bash")
     "export MY_KEY='sk-abc123'"
-    >>> format_export("MY_KEY", "abc`def", "powershell")
-    "$env:MY_KEY = 'abc``def'"
+    >>> format_export("MY_KEY", "abc'def", "powershell")
+    "$env:MY_KEY = 'abc''def'"
     """
     fmt = resolve_shell(shell)
     if fmt == "powershell":
-        escaped = value.replace("`", "``")
+        # Single-quoted literal: only ' is special (escaped by doubling).
+        # Backtick and $ are literal inside single quotes — pass through.
+        escaped = value.replace("'", "''")
         return f"$env:{key} = '{escaped}'"
     elif fmt == "cmd":
-        return f"set {key}={value}"
+        return f"set {key}={_escape_cmd(value)}"
     else:  # bash / zsh
         escaped = value.replace("'", "'\\''")
         return f"export {key}='{escaped}'"

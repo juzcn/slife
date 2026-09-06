@@ -274,6 +274,17 @@ class TestInitBackend:
              patch("credstore._backend.has_master_key", return_value=True):
             backend.init_backend()
 
+    def test_init_skips_system_reinit_when_already_set(self):
+        """A second init_backend() does not re-run expensive platform detection."""
+        backend._system_keyring = "already-set"
+        with patch("credstore._backend._init_system") as mock_init_sys, \
+             patch("credstore._backend._init_cryptfile") as mock_init_cf, \
+             patch("credstore._backend.has_master_key", return_value=True):
+            backend.init_backend()
+            mock_init_sys.assert_not_called()
+            assert backend._system_keyring == "already-set"
+            mock_init_cf.assert_called_once_with(None)
+
 
 # ── reinit_cryptfile ──────────────────────────────────────────────────
 

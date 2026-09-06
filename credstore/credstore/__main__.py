@@ -8,7 +8,7 @@ Commands::
     credstore set-password        Set/change cryptfile master password
     credstore status              Show backend status
     credstore set <key>           Store a credential (keyring + cryptfile)
-    credstore get <key>           Retrieve (keyring; cryptfile fallback on miss)
+    credstore get <key>           Retrieve (system keyring only, masked)
     credstore remove <key>        Remove a credential
     credstore (no command)       List credentials (keyring + cryptfile + env)
     credstore reset-keyring       Restore keyring from cryptfile backup
@@ -90,7 +90,7 @@ def _build_parser() -> argparse.ArgumentParser:
     set_p = sub.add_parser("set", help="Store a credential (keyring + encrypted backup)")
     set_p.add_argument("key", help="Credential key, e.g. 'slife/provider/deepseek'")
 
-    get_p = sub.add_parser("get", help="Retrieve a credential (keyring; cryptfile fallback on miss)")
+    get_p = sub.add_parser("get", help="Retrieve a credential from the system keyring (masked output)")
     get_p.add_argument("key", help="Credential key to retrieve")
     get_p.add_argument("--password", "-p", action="store_true",
                        help="Dual-query keyring + cryptfile, output plaintext; fail on mismatch")
@@ -417,6 +417,7 @@ def _cmd_get(key: str, password_mode: bool = False) -> int:
     # -- Password mode: dual-query with consistency check --
     master_pw = masked_input("Master password: ")
     if not master_pw.strip():
+        del master_pw
         _err("master password is required in --password mode.")
         return 1
 
@@ -450,6 +451,7 @@ def _cmd_get(key: str, password_mode: bool = False) -> int:
         return 1
 
     if value_kr is None:
+        del value_cf
         del master_pw
         _err(f"{key} — found in cryptfile but missing from system keyring.")
         print("Run 'credstore reset-keyring' to restore all credentials from backup.",
@@ -486,7 +488,6 @@ def _cmd_get(key: str, password_mode: bool = False) -> int:
 # ── inject / uninject ──────────────────────────────────────────
 
 
-@requires_tty
 def _cmd_inject(keys: list[str], shell: str) -> int:
     """Persist credentials to system environment + print export for current shell.
 
@@ -497,11 +498,22 @@ def _cmd_inject(keys: list[str], shell: str) -> int:
       2. Persist: registry (Windows) or shell profile (Unix).
       3. Print the export command for immediate eval.
       4. ``del`` the secret immediately.
+
+    Not gated on a TTY: keyring mode needs no input, so injection works
+    from scripts and shell profiles. Only the cryptfile-only fallback
+    (which prompts for the master password) requires an interactive terminal.
     """
     for key in keys:
         value = store_mod.get_credential(key)
         if value is None and backend_mod.get_system_keyring() is None:
-            # Cryptfile-only mode: read from the encrypted backup.
+            # Cryptfile-only mode: read from the encrypted backup. Needs the
+            # master password, which can only be read interactively.
+            if not sys.stdin.isatty():
+                _err(
+                    f"'{key}' is only in the encrypted backup; reading it "
+                    "requires an interactive terminal."
+                )
+                return 1
             master_pw = masked_input("Master password (for encrypted backup): ")
             try:
                 value = backend_mod.read_cryptfile_entry(

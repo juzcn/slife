@@ -25,15 +25,25 @@ class TestFormatExport:
         result = format_export("MY_KEY", "my-secret", "powershell")
         assert result == "$env:MY_KEY = 'my-secret'"
 
-    def test_powershell_backtick_escape(self):
+    def test_powershell_single_quote_escape(self):
+        from credstore._shell import format_export
+        result = format_export("KEY", "val'ue", "powershell")
+        assert result == "$env:KEY = 'val''ue'"
+
+    def test_powershell_backtick_is_literal(self):
         from credstore._shell import format_export
         result = format_export("KEY", "abc`def", "powershell")
-        assert result == "$env:KEY = 'abc``def'"
+        assert result == "$env:KEY = 'abc`def'"
 
     def test_cmd(self):
         from credstore._shell import format_export
         result = format_export("MY_KEY", "my-secret", "cmd")
         assert result == "set MY_KEY=my-secret"
+
+    def test_cmd_escapes_metacharacters(self):
+        from credstore._shell import format_export
+        result = format_export("KEY", "a&b|c<d>e", "cmd")
+        assert result == "set KEY=a^&b^|c^<d^>e"
 
     def test_auto_windows(self, monkeypatch):
         monkeypatch.setattr("os.name", "nt")

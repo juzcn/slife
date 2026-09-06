@@ -643,6 +643,30 @@ class TestCliUninject:
         assert main(["uninject", "ANYTHING"]) == 0
 
 
+class TestCliInjectNonTty:
+    """inject works without a TTY when no master-password prompt is needed."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_persist(self, monkeypatch):
+        monkeypatch.setattr("credstore._shell._setx", lambda k, v: None)
+        monkeypatch.setattr("credstore._shell._setx_delete", lambda k: None)
+        monkeypatch.setattr("credstore._shell.add_to_profile", lambda key, shell: True)
+
+    def test_keyring_mode_works_non_tty(self, capsys, mock_backend, in_mem_store, monkeypatch):
+        """Keyring mode needs no input → inject succeeds without a TTY."""
+        monkeypatch.setattr(sys, "stdin", StringIO(""))
+        in_mem_store["MY_KEY"] = "my-secret"
+        assert main(["inject", "MY_KEY", "--shell", "bash"]) == 0
+        out = capsys.readouterr().out
+        assert "export MY_KEY='my-secret'" in out
+
+    def test_cryptfile_only_requires_tty(self, mock_backend_no_keyring, in_mem_cryptfile, monkeypatch):
+        """Cryptfile-only fallback needs the master password → rejects non-tty."""
+        monkeypatch.setattr(sys, "stdin", StringIO(""))
+        in_mem_cryptfile["MY_KEY"] = "sk-cf"
+        assert main(["inject", "MY_KEY", "--shell", "bash"]) == 1
+
+
 # ═══════════════════════════════════════════════════════════════
 # enumeration edge cases
 # ═══════════════════════════════════════════════════════════════

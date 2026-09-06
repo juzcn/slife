@@ -85,8 +85,11 @@ def init_backend(password: str | None = None) -> None:
     """
     global _system_keyring, _cryptfile
 
-    # Init system keyring (always)
-    _system_keyring = _init_system()
+    # Init system keyring once. Platform detection is expensive (WSL
+    # PowerShell probe, macOS keychain creation) and must not re-run on
+    # every call — check_backend()/get_backend_info() call here repeatedly.
+    if _system_keyring is None:
+        _system_keyring = _init_system()
 
     # Init cryptfile (may need password)
     _init_cryptfile(password)
