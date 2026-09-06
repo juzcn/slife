@@ -79,6 +79,20 @@ class TestEngineInit:
         e = Engine(backend="gguf", model="bge-m3", gguf_path="/x.gguf", max_tokens=1000)
         assert e.max_tokens == 1000
 
+    def test_available_for_per_model(self):
+        with patch("local_embed.engine._Llama", MagicMock()):
+            e = Engine(
+                specs=[
+                    ModelSpec("a", backend="gguf", gguf_path="/a.gguf"),
+                    ModelSpec("b", backend="gguf", gguf_path="/b.gguf"),
+                ],
+                active="a",
+            )
+            assert e.available_for("a") is True
+            e._failed.add("b")
+            assert e.available_for("b") is False
+            assert e.available_for("a") is True
+
 
 # ── Engine gguf load ──────────────────────────────────────────────────────
 

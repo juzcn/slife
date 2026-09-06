@@ -141,3 +141,32 @@ class TestGgufPathExpansion:
         monkeypatch.delenv("BGE_M3_GGUF_PATH", raising=False)
         out = resolve_engine_settings()
         assert out["specs"][0].gguf_path == "${BGE_M3_GGUF_PATH}"
+
+
+class TestHostPortEnvOverride:
+    """host/port honor LOCAL_EMBED_HOST / LOCAL_EMBED_PORT like every other
+    key (the documented env-override precedence)."""
+
+    def test_port_env_override(self, monkeypatch):
+        monkeypatch.setattr("local_embed.config.load_config", lambda: {"port": 17347})
+        monkeypatch.setenv("LOCAL_EMBED_PORT", "8080")
+        out = resolve_engine_settings()
+        assert out["port"] == 8080
+
+    def test_host_env_override(self, monkeypatch):
+        monkeypatch.setattr("local_embed.config.load_config", lambda: {"host": "127.0.0.1"})
+        monkeypatch.setenv("LOCAL_EMBED_HOST", "0.0.0.0")
+        out = resolve_engine_settings()
+        assert out["host"] == "0.0.0.0"
+
+
+class TestSingleModelMaxTokens:
+    """Single-model config honors max_tokens (matches the multi-model branch)."""
+
+    def test_single_model_max_tokens(self, monkeypatch):
+        monkeypatch.setattr(
+            "local_embed.config.load_config",
+            lambda: {"backend": "gguf", "model": "bge-m3", "gguf_path": "/x.gguf", "max_tokens": 1234},
+        )
+        out = resolve_engine_settings()
+        assert out["specs"][0].max_tokens == 1234

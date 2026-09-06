@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from starlette.testclient import TestClient
 
-from local_embed.engine import Engine
-from local_embed.server import build_server, mcp
+from local_embed.engine import Engine, ModelSpec
+from local_embed.server import build_server, mcp, serve_standalone
 from local_embed.server_utils import bind_port
 
 
@@ -109,6 +109,23 @@ class TestV1Embeddings:
             resp = c.post("/v1/embeddings", json={"input": "x"})
             assert resp.status_code == 503
 
+    def test_default_model_echoes_key_not_repo_id(self):
+        """When the client omits `model`, the response echoes the addressable
+        config key (the id /v1/models reports), not the internal repo id —
+        the repo id is not an engine key and would 404 if echoed back."""
+        spec = ModelSpec("bge-m3-transformer", backend="transformer", model="BAAI/bge-m3")
+        engine = Engine(specs=[spec], active="bge-m3-transformer")
+
+        async def _embed(texts, model=None):
+            return [[0.5] * 1024 for _ in texts]
+
+        engine.embed = _embed
+        build_server(engine)
+        with TestClient(mcp.http_app(path="/mcp")) as c:
+            resp = c.post("/v1/embeddings", json={"input": "hello"})
+            assert resp.status_code == 200
+            assert resp.json()["model"] == "bge-m3-transformer"
+
 
 # ── /v1/models ───────────────────────────────────────────────────────────
 
@@ -123,6 +140,7 @@ class TestV1Models:
         assert body["data"][0]["id"] == "bge-m3"
         assert body["data"][0]["dimension"] == 1024
         assert body["data"][0]["dimension_known"] is True
+        assert body["data"][0]["created"] > 0
 
     def test_model_retrieve(self, client):
         resp = client.get("/v1/models/bge-m3")
@@ -133,6 +151,7 @@ class TestV1Models:
         assert body["owned_by"] == "local-embed"
         assert body["dimension"] == 1024
         assert body["dimension_known"] is True
+        assert body["created"] > 0
 
     def test_model_retrieve_unknown(self, client):
         resp = client.get("/v1/models/nope")
@@ -189,3 +208,14 @@ class TestBindPort:
             assert sock.getsockname()[1] != 0  # really bound to a real port
         finally:
             sock.close()
+
+    def test_serve_standalone_port_conflict_clean(self, capsys):
+        """A taken port in standalone mode returns 1 with one actionable
+        line, not a raw uvicorn traceback (mirrors the plugin spawn path)."""
+        with patch(
+            "local_embed.server.bind_port",
+            side_effect=RuntimeError("cannot bind 127.0.0.1:17347 — already in use"),
+        ):
+            code = serve_standalone(_make_engine())
+        assert code == 1
+        assert "already in use" in capsys.readouterr().err

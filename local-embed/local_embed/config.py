@@ -224,6 +224,7 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
                 gguf_path=(str(Path(expand_value(_pick("gguf_path", ""))).expanduser()).strip()
                    or None),
                 device=_pick("device", ""),
+                max_tokens=int(_pick("max_tokens", 0) or 0),
             )
         ]
         active = model
@@ -231,8 +232,8 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
     return {
         "specs": specs,
         "active": active,
-        "host": cfg.get("host", overrides.get("host", DEFAULT_HOST)),
-        "port": int(cfg.get("port", overrides.get("port", DEFAULT_PORT))),
+        "host": _pick("host", DEFAULT_HOST),
+        "port": int(_pick("port", DEFAULT_PORT)),
     }
 
 

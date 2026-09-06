@@ -80,3 +80,13 @@ class TestSetupLogging:
             assert len(files) == 1
         finally:
             self._restore()
+
+    def test_keeps_more_verbose_level(self, monkeypatch, tmp_path):
+        """A later setup_logging(INFO) must not downgrade an earlier DEBUG."""
+        monkeypatch.setenv("SLIFE_LOG_DIR", str(tmp_path))
+        try:
+            le_logging.setup_logging(level=logging.DEBUG)
+            le_logging.setup_logging(level=logging.INFO)
+            assert logging.getLogger().level == logging.DEBUG
+        finally:
+            self._restore()

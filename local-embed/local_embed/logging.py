@@ -149,7 +149,12 @@ def setup_logging(level: int = logging.INFO, service_name: str = "local-embed") 
     file_handler.setFormatter(_SessionFormatter(_FILE_LOG_FORMAT))
     root.addHandler(file_handler)
 
-    root.setLevel(level)
+    # Keep the more verbose of the current and requested level: a later call
+    # must not downgrade an already-more-verbose level (e.g. server.py's
+    # import-time setup_logging(INFO) must not clobber the CLI's --log-level).
+    current = root.level
+    if current == logging.NOTSET or level < current:
+        root.setLevel(level)
     for name in _NOISY:
         logging.getLogger(name).setLevel(logging.WARNING)
 

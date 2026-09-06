@@ -294,11 +294,15 @@ class Engine:
     def model(self) -> str:
         return self.model_spec().model
 
+    def available_for(self, name: str) -> bool:
+        """Whether model *name*'s backend is usable (not failed)."""
+        spec = self.model_spec(name)
+        return spec.runtime_available() and name not in self._failed
+
     @property
     def available(self) -> bool:
         """Whether the active model's backend is usable (not failed)."""
-        spec = self.model_spec()
-        return spec.runtime_available() and self._active not in self._failed
+        return self.available_for(self._active)
 
     @property
     def loaded(self) -> bool:

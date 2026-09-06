@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import sys
+import time
 
 from fastmcp import FastMCP
 from starlette.requests import Request
@@ -37,7 +38,7 @@ from starlette.responses import JSONResponse, Response
 from local_embed.config import DEFAULT_PORT
 from local_embed.engine import Engine
 from local_embed.logging import silence_noisy_loggers, setup_logging
-from local_embed.server_utils import create_plugin_server, warm_after_handshake
+from local_embed.server_utils import bind_port, create_plugin_server, warm_after_handshake
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ def _model_status(engine: Engine, name: str) -> dict:
         "dimension": spec.dim,
         "dimension_known": spec.dim_known,
         "loaded": engine.is_loaded(name),
-        "available": spec.runtime_available() and name not in engine._failed,
+        "available": engine.available_for(name),
         "max_tokens": spec.max_tokens,
     }
 
@@ -188,12 +189,12 @@ async def v1_embeddings(request: Request) -> Response:
         {"object": "embedding", "index": i, "embedding": vec}
         for i, vec in enumerate(vecs)
     ]
-    prompt_tokens = sum(len(t) // 4 or 1 for t in texts)  # crude estimate
+    prompt_tokens = sum((len(t) // 4) or 1 for t in texts if t.strip())  # crude estimate
     return JSONResponse(
         {
             "object": "list",
             "data": data,
-            "model": model or engine.model,
+            "model": model or engine.active_model,
             "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
         }
     )
@@ -205,14 +206,14 @@ def _model_entry(engine: Engine, name: str) -> dict:
     return {
         "id": name,
         "object": "model",
-        "created": 0,
+        "created": int(time.time()),
         "owned_by": "local-embed",
         "active": name == engine.active_model,
         "backend": spec.backend,
         "dimension": spec.dim,
         "dimension_known": spec.dim_known,
         "loaded": engine.is_loaded(name),
-        "available": spec.runtime_available() and name not in engine._failed,
+        "available": engine.available_for(name),
         "max_tokens": spec.max_tokens,
     }
 
@@ -311,8 +312,14 @@ def build_server(engine: Engine) -> FastMCP:
 
     async def _warmup() -> None:
         try:
-            dim = await engine.ensure_loaded()
-            logger.info("active_model_warmed name=%s dim=%d", engine.active_model, dim)
+            await engine.ensure_loaded()
+            if engine.loaded:
+                logger.info(
+                    "active_model_warmed name=%s dim=%d",
+                    engine.active_model, engine.dimension,
+                )
+            else:
+                logger.warning("active_model_warm_failed name=%s", engine.active_model)
         except Exception as e:
             logger.warning("active_model_warm_failed err=%s", e)
 
@@ -320,13 +327,14 @@ def build_server(engine: Engine) -> FastMCP:
     return mcp
 
 
-def _run(mcp_server: FastMCP, *, host: str, port: int) -> int:
+def _run(mcp_server: FastMCP, *, host: str, port: int, sockets: list | None = None) -> int:
     """Serve the FastMCP server on Streamable HTTP; block until shutdown."""
     try:
         mcp_server.run(
             transport="streamable-http",
             host=host,
             port=port,
+            sockets=sockets,
             show_banner=False,
             json_response=True,
             uvicorn_config={"log_config": None},
@@ -340,10 +348,21 @@ def _run(mcp_server: FastMCP, *, host: str, port: int) -> int:
 
 
 def serve_standalone(engine: Engine, *, host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> int:
-    """Run as a standalone service on an explicit host:port (CLI path)."""
+    """Run as a standalone service on an explicit host:port (CLI path).
+
+    Pre-binds the port with :func:`bind_port` (probe + clean error) so a
+    port already in use fails with one actionable line — the same behaviour
+    the plugin spawn path gets — instead of a raw uvicorn bind error.
+    """
     build_server(engine)
     logger.info("serve_standalone host=%s port=%s backend=%s", host, port, engine.backend)
-    return _run(mcp, host=host, port=port)
+    try:
+        sock, _ = bind_port(host, port)
+    except RuntimeError as e:
+        logger.error("local_embed_bind_failed err=%s", e)
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    return _run(mcp, host=host, port=port, sockets=[sock])
 
 
 def main() -> int:
@@ -365,7 +384,7 @@ def main() -> int:
     keeps serving embeddings on the original port.
     """
     from local_embed.config import resolve_engine_settings
-    from local_embed.server_utils import bind_port, run_plugin_server
+    from local_embed.server_utils import run_plugin_server
 
     settings = resolve_engine_settings()
 
