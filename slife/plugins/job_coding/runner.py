@@ -28,7 +28,6 @@ function's ``__name__``/docstring/annotations — standard MCP tool norms.
 
 from __future__ import annotations
 
-import asyncio
 import contextvars
 import functools
 import inspect
@@ -201,9 +200,21 @@ def wrap(fn, client) -> Any:
             if inspect.iscoroutinefunction(fn):
                 result = await fn(**kwargs)
             else:
-                # Sync job on a worker thread — to_thread propagates the
-                # current context (incl. our llm client), loop stays free.
-                result = await asyncio.to_thread(fn, **kwargs)
+                # Sync job on a daemon worker thread — run_daemon, NOT
+                # asyncio.to_thread: the default executor's non-daemon worker
+                # threads are joined (wait=True) at interpreter exit, so a
+                # hung blocking job wedges the whole plugin shutdown.
+                # to_thread propagates the contextvar via its internals;
+                # run_daemon does not, so capture the context and run the job
+                # inside it — the llm client stays visible to sync jobs.
+                from slife.threads import run_daemon
+
+                ctx = contextvars.copy_context()
+
+                def _run_sync():
+                    return ctx.run(fn, **kwargs)
+
+                result = await run_daemon(_run_sync, name=f"job-{name}")
             return _to_text(result)
         except Exception as e:
             logger.warning("job_exec_failed name=%s err=%s", name, e)
