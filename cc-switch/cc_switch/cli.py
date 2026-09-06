@@ -2,9 +2,9 @@
 
 Commands::
 
-    cc-switch set <provider> [--name NAME] [--models M1,M2]
+    cc-switch set <provider>
         Create or edit a provider config (base URL + API key name,
-        plus optional models / display name).  Secrets are never stored.
+        plus optional models).  Secrets are never stored.
     cc-switch remove <provider>
         Delete a provider config.
     cc-switch activate <provider>[/<model>]
@@ -181,10 +181,13 @@ def _cmd_activate(args) -> int:
                 print(f"  {i}. {m}")
             try:
                 choice = int(input("Select a model by number: ").strip())
-                model_name = models[choice - 1]
-            except (ValueError, IndexError):
+            except ValueError:
                 _err("invalid selection.")
                 return 1
+            if not 1 <= choice <= len(models):
+                _err("invalid selection.")
+                return 1
+            model_name = models[choice - 1]
     elif model_name not in (provider.get("models") or []):
         print(f"Note: model '{model_name}' is not in the provider's model list.", file=sys.stderr)
 
@@ -198,7 +201,7 @@ def _cmd_activate(args) -> int:
         )
     except _activate.SecretNotFoundError as exc:
         _err(str(exc))
-        _err("settings.json was not updated — store the key, then re-run activate.")
+        _err("settings.json was written, but ANTHROPIC_AUTH_TOKEN was not injected.")
         return 1
 
     print(f"Activated {provider_name}/{model_name}.")

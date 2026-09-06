@@ -27,6 +27,26 @@ from pathlib import Path
 
 CONFIG_PATH = Path(os.environ.get("CC_SWITCH_FILE", str(Path.home() / ".claude" / "cc-switch.json")))
 
+# Env keys owned by cc-switch itself — must never appear in a provider's
+# ``extra_env``.  ANTHROPIC_BASE_URL / ANTHROPIC_MODEL are set from the
+# dedicated fields (an override there would be silently ignored);
+# ANTHROPIC_AUTH_TOKEN would leak a secret into the plaintext config.
+RESERVED_ENV_KEYS = frozenset(
+    {"ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_AUTH_TOKEN"}
+)
+
+
+def _validate_extra_env(extra_env: dict | None) -> None:
+    """Reject provider ``extra_env`` keys that cc-switch owns itself."""
+    if not extra_env:
+        return
+    reserved = RESERVED_ENV_KEYS & set(extra_env)
+    if reserved:
+        raise ValueError(
+            "extra_env contains reserved keys "
+            f"{sorted(reserved)} — these are owned by cc-switch"
+        )
+
 
 def load_config() -> dict:
     """Load provider configs from ``~/.claude/cc-switch.json``.
@@ -62,6 +82,7 @@ def _get_providers() -> dict:
 
 def add_provider(name: str, base_url: str, api_key_name: str, models: list[str], extra_env: dict | None = None) -> None:
     """Add a new provider, or replace an existing one with the same name."""
+    _validate_extra_env(extra_env)
     data = load_config()
     data.setdefault("providers", {})[name] = {
         "base_url": base_url,
@@ -75,6 +96,7 @@ def add_provider(name: str, base_url: str, api_key_name: str, models: list[str],
 def update_provider(name: str, base_url: str | None = None, api_key_name: str | None = None,
                     models: list[str] | None = None, extra_env: dict | None = None) -> None:
     """Merge changes into an existing provider.  Raises KeyError if unknown."""
+    _validate_extra_env(extra_env)
     providers = _get_providers()
     if name not in providers:
         raise KeyError(name)
@@ -96,18 +118,20 @@ def set_provider_models(name: str, models: list[str]) -> list[str]:
 
     A model present in both the input and the stored list is removed;
     a model in only one side is kept.  Re-running the same input undoes
-    the previous run.  A nonexistent provider is created with just the
-    new models.  Returns the resulting (deduped, input-order) model list.
+    the previous run.  Raises KeyError for a nonexistent provider.
+    Returns the resulting (deduped, input-order) model list.
     """
-    current = _get_providers().get(name, {}).get("models", [])
-    current_set = set(current)
+    current = _get_providers().get(name)
+    if current is None:
+        raise KeyError(name)
+    current_models = current.get("models", [])
+    current_set = set(current_models)
     seen: set[str] = set()
     input_unique = [m for m in models if not (m in seen or seen.add(m))]
     new_models = [m for m in input_unique if m not in current_set]
-    removed = [m for m in current if m not in set(input_unique)]
+    removed = [m for m in current_models if m not in set(input_unique)]
     result = new_models + removed
     data = load_config()
-    data.setdefault("providers", {}).setdefault(name, {})
     data["providers"][name]["models"] = result
     save_config(data)
     return result

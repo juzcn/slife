@@ -92,7 +92,7 @@ class TestInjectToken:
     def test_persists_to_system_env(self, monkeypatch):
         calls = {}
         monkeypatch.setattr(
-            "credstore._shell.persist_key",
+            "credstore.persist_key",
             lambda key, value, shell="auto": calls.update({"key": key, "value": value, "shell": shell}),
         )
         out = io.StringIO()
@@ -102,14 +102,14 @@ class TestInjectToken:
         assert calls["shell"] == "powershell"
 
     def test_piped_output_emits_export_line(self, monkeypatch):
-        monkeypatch.setattr("credstore._shell.persist_key", lambda *a, **kw: None)
+        monkeypatch.setattr("credstore.persist_key", lambda *a, **kw: None)
         out = io.StringIO()
         act.inject_token("sk-secret", shell="bash", output=out)
         assert "ANTHROPIC_AUTH_TOKEN" in out.getvalue()
         assert "sk-secret" in out.getvalue()
 
     def test_tty_output_prints_hint_without_secret(self, monkeypatch):
-        monkeypatch.setattr("credstore._shell.persist_key", lambda *a, **kw: None)
+        monkeypatch.setattr("credstore.persist_key", lambda *a, **kw: None)
         out = io.StringIO()
         out.isatty = lambda: True  # type: ignore[assignment]
         act.inject_token("sk-secret", shell="bash", output=out)
@@ -139,7 +139,10 @@ class TestActivate:
         assert captured["args"][0] == "sk-test-secret"
 
     def test_missing_secret_raises_and_writes_settings(self, settings_path, monkeypatch):
-        monkeypatch.setattr(act, "resolve_secret", lambda _name: None)
+        def _raise_missing(_name):
+            raise act.SecretNotFoundError("missing")
+
+        monkeypatch.setattr(act, "resolve_secret", _raise_missing)
 
         with pytest.raises(act.SecretNotFoundError):
             act.activate(PROVIDER, "deepseek-chat")

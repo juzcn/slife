@@ -45,8 +45,14 @@ class TestAddProvider:
         }
 
     def test_add_with_extra_env(self, config_path):
-        api.add_provider("ds", "https://x", "K", ["m"], extra_env={"ANTHROPIC_MODEL": "x"})
-        assert api.load_config()["providers"]["ds"]["extra_env"] == {"ANTHROPIC_MODEL": "x"}
+        api.add_provider("ds", "https://x", "K", ["m"], extra_env={"ANTHROPIC_LOG": "debug"})
+        assert api.load_config()["providers"]["ds"]["extra_env"] == {"ANTHROPIC_LOG": "debug"}
+
+    def test_add_rejects_reserved_extra_env(self, config_path):
+        with pytest.raises(ValueError):
+            api.add_provider("ds", "https://x", "K", ["m"], extra_env={"ANTHROPIC_MODEL": "x"})
+        with pytest.raises(ValueError):
+            api.add_provider("ds", "https://x", "K", ["m"], extra_env={"ANTHROPIC_AUTH_TOKEN": "sk-leak"})
 
     def test_add_overwrites_existing(self, config_path):
         api.add_provider("ds", "https://one", "K1", ["a"])
@@ -84,9 +90,9 @@ class TestSetProviderModels:
         assert api.set_provider_models("ds", ["b", "b"]) == ["b", "a"]
         assert api.load_config()["providers"]["ds"]["models"] == ["b", "a"]
 
-    def test_creates_missing_provider_with_models(self, config_path):
-        assert api.set_provider_models("new", ["m"]) == ["m"]
-        assert api.load_config()["providers"]["new"]["models"] == ["m"]
+    def test_missing_provider_raises(self, config_path):
+        with pytest.raises(KeyError):
+            api.set_provider_models("new", ["m"])
 
     def test_empty_input_is_noop(self, config_path):
         # A △ ∅ = A — blank input leaves the list untouched

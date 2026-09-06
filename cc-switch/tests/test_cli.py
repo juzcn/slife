@@ -145,7 +145,11 @@ class TestActivate:
 
     def test_missing_secret_fails_and_keeps_settings(self, config_path, settings_path, monkeypatch, capsys):
         _api.add_provider("ds", "https://x", "MISSING_KEY", ["m1"])
-        monkeypatch.setattr(_activate, "resolve_secret", lambda _n: None)
+
+        def _raise_missing(_n):
+            raise _activate.SecretNotFoundError("missing")
+
+        monkeypatch.setattr(_activate, "resolve_secret", _raise_missing)
         monkeypatch.setattr(_activate, "SETTINGS_PATH", settings_path)
         assert cli.main(["activate", "ds/m1"]) == 1
         # settings.json still written (shape in place) but env NOT injected

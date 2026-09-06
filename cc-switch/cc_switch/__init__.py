@@ -31,7 +31,12 @@ from cc_switch._defaults import (
     list_default_override_keys,
 )
 
-__version__ = "0.9.6"
+try:
+    from importlib.metadata import version as _version
+
+    __version__ = _version("cc-switch")
+except Exception:
+    __version__ = "0.0.0"
 
 __all__ = [
     "CONFIG_PATH",

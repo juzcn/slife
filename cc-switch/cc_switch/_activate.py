@@ -11,8 +11,10 @@ Windows, shell profile on Unix).  The generated settings.json never
 contains a credential line, and the env injection survives the transient
 cc-switch process so a new Claude Code session picks it up.
 
-If the secret is missing from credstore, activation fails loudly instead
-of writing an unusable settings.json.
+settings.json is written first (so the config shape is in place even if
+the secret lookup then fails), then the secret is resolved from credstore
+and injected.  A missing or unavailable secret fails loudly: the
+generated settings.json is left on disk, but no token is injected.
 
 Memory safety: the keyring value is fetched, used, then ``del``-ed
 immediately.
@@ -30,21 +32,30 @@ SETTINGS_PATH = os.path.expanduser("~/.claude/settings.json")
 
 
 class SecretNotFoundError(RuntimeError):
-    """Raised when a provider's api_key_name is not stored in credstore."""
+    """Raised when the secret can't be resolved — missing or credstore unavailable."""
 
 
-def resolve_secret(api_key_name: str) -> str | None:
+def resolve_secret(api_key_name: str) -> str:
     """Read *api_key_name* from credstore (system keyring).
 
-    Returns the secret, or None when the key is not stored or credstore
-    is unavailable.  The caller must ``del`` the returned value after
-    use.  This is the only place cc-switch touches secret material.
+    Raises :class:`SecretNotFoundError` when the key is not stored or
+    credstore is unavailable.  The caller must ``del`` the returned value
+    after use.  This is the only place cc-switch touches secret material.
     """
     try:
         from credstore import get_credential
-    except Exception:
-        return None
-    return get_credential(api_key_name)
+    except Exception as exc:
+        raise SecretNotFoundError(
+            "credstore is not available — install it first "
+            "(uv/pip install credstore)."
+        ) from exc
+    secret = get_credential(api_key_name)
+    if secret is None:
+        raise SecretNotFoundError(
+            f"'{api_key_name}' is not in credstore.\n"
+            f"Store it first: credstore set {api_key_name}"
+        )
+    return secret
 
 
 def build_env(provider: dict, model_name: str, overrides: dict | None = None) -> dict:
@@ -99,7 +110,7 @@ def inject_token(secret: str, shell: str = "auto", output=None) -> None:
     a TTY it prints an activation hint (no secret); otherwise it prints
     the export line for the current shell.
     """
-    from credstore._shell import format_export, persist_key
+    from credstore import format_export, persist_key
 
     persist_key("ANTHROPIC_AUTH_TOKEN", secret, shell)
 
@@ -123,18 +134,14 @@ def activate(provider: dict, model_name: str, overrides: dict | None = None,
 
     Writes settings.json first (so the config shape is in place even if
     the token lookup then fails), then resolves the API key from
-    credstore.  A missing key raises :class:`SecretNotFoundError` —
-    never a silent skip.  Returns the settings dict that was written.
+    credstore.  A missing or unavailable secret raises
+    :class:`SecretNotFoundError` — never a silent skip.  Returns the
+    settings dict that was written.
     """
     settings = build_settings(provider, model_name, overrides)
     write_settings(settings)
 
     secret = resolve_secret(provider["api_key_name"])
-    if secret is None:
-        raise SecretNotFoundError(
-            f"'{provider['api_key_name']}' is not in credstore.\n"
-            f"Store it first: credstore set {provider['api_key_name']}"
-        )
     try:
         inject_token(secret, shell=shell, output=output)
     finally:
