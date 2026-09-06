@@ -1,6 +1,6 @@
 [project]
 name = "cc-switch"
-version = "0.9.8"
+version = "0.9.9"
 description = "Generate ~/.claude/settings.json from saved provider/model configs"
 readme = "README.md"
 license = { text = "MIT" }
@@ -9,7 +9,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "credstore",
+    "credstore>=0.10.4",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
