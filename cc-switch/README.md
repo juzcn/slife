@@ -6,8 +6,8 @@ a small CLI that mirrors the [credstore](https://github.com/juzcn/slife/blob/mai
 Non-secret provider *shape* lives in `~/.claude/cc-switch.json`.  API
 keys are **never** stored there — the config keeps the key's *name*,
 and the value is read from credstore at activate time and injected into
-the current process environment as `ANTHROPIC_AUTH_TOKEN`.  The
-generated `settings.json` contains no credential line.
+the system environment as `ANTHROPIC_AUTH_TOKEN`.  The generated
+`settings.json` contains no credential line.
 
 ## Install
 
@@ -33,9 +33,11 @@ Create or edit a provider.  Prompts for:
 - **Supported models** (optional; comma, space, or semicolon separated)
 
 If the provider already exists this *edits* it; otherwise it *adds* it.
-The models prompt **toggles** against the provider's current list: a model
-you type that is already listed is removed, one that isn't is added
-(symmetric difference).  Typing the same list again undoes the change.
+When editing, a blank answer keeps the current value.  The models prompt
+**toggles** against the provider's current list: a model you type that is
+already listed is removed, one that isn't is added (symmetric
+difference).  A blank answer leaves the list unchanged, and typing the
+same list again undoes the change.
 
 ```bash
 cc-switch set deepseek
@@ -58,8 +60,10 @@ injects the API key from credstore into the system environment as
 Windows, shell profile on Unix), so a freshly launched Claude Code
 session inherits it.  The settings file contains **no** credential.
 
-If the provider's API key is not in credstore, `activate` fails loudly
-with a `credstore set <key>` hint instead of writing an unusable setup.
+`settings.json` is written first, then the secret is resolved from
+credstore.  If the key is missing — or credstore itself is not
+installed — `activate` fails loudly with the appropriate hint, leaving
+the generated settings file on disk but **not** injecting a token.
 
 ```bash
 cc-switch activate deepseek/deepseek-chat
@@ -70,12 +74,13 @@ used; if several, you are prompted to pick one.
 
 ### `cc-switch activate <provider-name/model-name> --custom`
 
-Like `activate`, but lets you override every model slot first —
+Like `activate`, but lets you override each model slot first —
 `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`,
 `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_CLAUDE_CODE_SUBAGENT_MODEL`,
-`ANTHROPIC_MODEL`, `ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL` — one at a time.
-Enter a value to override, or Enter to keep the default.  Overrides are
-one-shot: they never touch the stored provider config.
+and `ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL` — one at a time.  Enter a value
+to override, or Enter to keep the default.  The main model slot
+(`ANTHROPIC_MODEL`) is chosen on the command line, not here.  Overrides
+are one-shot: they never touch the stored provider config.
 
 ### `cc-switch`
 
@@ -115,6 +120,10 @@ overridden for tests.
   system environment as `ANTHROPIC_AUTH_TOKEN` (registry on Windows /
   shell profile on Unix), mirroring `credstore inject`; it is never
   written to settings.json.
+- A provider's `extra_env` (settable via the Python API) may not contain
+  `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL`, or `ANTHROPIC_AUTH_TOKEN` —
+  cc-switch owns those slots, and a secret must never reach the plaintext
+  config.
 - On a TTY, `activate` prints an activation hint without echoing the
   secret; when stdout is piped it emits the shell export line for `eval`.
 - Restart your shell (or start a new terminal) after activating for the

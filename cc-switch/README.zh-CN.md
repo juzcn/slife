@@ -5,7 +5,7 @@
 
 非敏感的 provider *形状*（shape）存放在 `~/.claude/cc-switch.json`。API
 密钥**绝不**存在这里——配置只保留密钥的*名称*，实际值在 activate 时从
-credstore 读取并作为 `ANTHROPIC_AUTH_TOKEN` 注入当前进程环境。生成的
+credstore 读取并作为 `ANTHROPIC_AUTH_TOKEN` 注入系统环境。生成的
 `settings.json` 不包含任何凭据行。
 
 ## 安装
@@ -29,9 +29,10 @@ uv sync
 - **API key name**——保存密钥的 credstore key（必填）
 - **Supported models**（可选；逗号、空格或分号分隔）
 
-provider 已存在则*编辑*，否则*新增*。
+provider 已存在则*编辑*，否则*新增*。编辑时空输入（回车）等于保留原值。
 models 提示对当前列表做**对称差**（toggle）：输入中已存在的模型被
-**移除**，不存在的被**加入**（对称差）。再次输入相同列表即撤销上次改动。
+**移除**，不存在的被**加入**。空输入保留当前列表，再次输入相同列表即撤销
+上次改动。
 
 ```bash
 cc-switch set deepseek
@@ -39,8 +40,6 @@ cc-switch set deepseek
 # API key name (credstore key): DEEPSEEK_API_KEY
 # Supported models (comma separated; toggles against the current list): deepseek-chat,deepseek-reasoner
 ```
-
-编辑时回车（空输入）等于保留原值——空表与当前列表的对称差就是当前列表本身。
 
 密钥值从不被询问或写入——先用下面的命令存入：
 
@@ -55,8 +54,9 @@ credstore 注入系统环境为 `ANTHROPIC_AUTH_TOKEN`（镜像 `credstore injec
 Windows 注册表，Unix shell 配置文件），新启动的 Claude Code 会话即可继承。
 settings 文件中**不含**任何凭据。
 
-若 provider 的 API 密钥不在 credstore 中，`activate` 会大声报错并提示
-`credstore set <key>`，而不是写出一份不可用的配置。
+先写入 `settings.json`，再从 credstore 解析密钥。若密钥缺失——或 credstore
+本身未安装——`activate` 会大声报错并给出相应提示，settings 文件已留在磁盘上
+但**不会**注入 token。
 
 ```bash
 cc-switch activate deepseek/deepseek-chat
@@ -69,8 +69,9 @@ cc-switch activate deepseek/deepseek-chat
 与 `activate` 相同，但会先让你逐个覆盖每个模型槽位——
 `ANTHROPIC_DEFAULT_HAIKU_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL`、
 `ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_CLAUDE_CODE_SUBAGENT_MODEL`、
-`ANTHROPIC_MODEL`、`ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL`。
-输入值即覆盖，回车保留默认。覆盖是一次性的：从不改动存储的 provider 配置。
+`ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL`——一次一个。输入值即覆盖，回车保留
+默认。主模型槽位（`ANTHROPIC_MODEL`）在命令行上选定，不在此处覆盖。
+覆盖是一次性的：从不改动存储的 provider 配置。
 
 ### `cc-switch`
 
@@ -107,6 +108,9 @@ scnet/scnet-1m
 - `activate` 从 credstore 读取密钥并注入系统环境为 `ANTHROPIC_AUTH_TOKEN`
   （Windows 注册表 / Unix shell 配置文件），镜像 `credstore inject`；绝不
   写入 settings.json。
+- provider 的 `extra_env`（通过 Python API 设置）不得包含
+  `ANTHROPIC_MODEL`、`ANTHROPIC_BASE_URL` 或 `ANTHROPIC_AUTH_TOKEN`——
+  这些槽位归 cc-switch 所有，密钥绝不能进入明文配置。
 - 在 TTY 上，`activate` 打印激活提示而不回显密钥；stdout 被管道化时输出
   供 `eval` 使用的 shell 导出行。
 - 激活后重启 shell（或新开终端）当前会话的环境变更才会生效。
