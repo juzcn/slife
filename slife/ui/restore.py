@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from slife.a2a.identity import Channel
 from slife.agent.message_history import turn_header
 from slife.agent.schedules import is_autonomous_trigger, is_schedule_trigger
+from slife.agent.timer import is_timer_trigger
 from slife.agent.llm_client import TokenUsage
 from slife.ui.chat import ChatView
 from slife.ui.i18n import t
@@ -227,6 +228,7 @@ async def restore_session(
         # somehow appears before any user message (defaults: treat as real).
         is_synthetic = False
         is_schedule = False
+        is_timer = False
         cur_created = ""
         cur_completed = ""
         for idx, msg in enumerate(all_messages):
@@ -260,6 +262,7 @@ async def restore_session(
                 # 📅 scheduled below, or not at all if quiet).
                 is_synthetic = is_autonomous_trigger(raw)
                 is_schedule = is_schedule_trigger(raw)
+                is_timer = is_timer_trigger(raw)
                 if is_synthetic:
                     continue
                 ch = _channel_by_row.get(turn_idx)
@@ -314,7 +317,8 @@ async def restore_session(
                         "tool_calls": [],
                         "is_final": False,
                         "name_prefix": (
-                            t("schedule_prefix") if is_schedule
+                            t("timer_prefix") if is_timer
+                            else t("schedule_prefix") if is_schedule
                             else t("autonomous_prefix")
                         ),
                         "completed_at": cur_completed,

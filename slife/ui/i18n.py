@@ -61,6 +61,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "📅 scheduled: ",
         "zh": "📅 定时: ",
     },
+    "timer_prefix": {
+        "en": "⏰ timer: ",
+        "zh": "⏰ 计时: ",
+    },
     "subagent_prefix": {
         "en": "Subagent({name})> ",
         "zh": "子代理({name})> ",

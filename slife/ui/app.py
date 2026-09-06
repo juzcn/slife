@@ -445,6 +445,8 @@ class SlifeApp(App):
         # Scheduler-driven output (cron fires / backfill) — surface
         # 📅 scheduled messages.
         self.service.on_schedule(self._on_schedule_message)
+        # Timer-driven output (wait_minutes wake) — surface ⏰ timer messages.
+        self.service.on_timer(self._on_timer_message)
         # Fatal memory-save failure — persistent red banner (memory is core).
         self.service.on_memory_broken(self._on_memory_broken)
         # File-sharing tunnel down (harness-probed after sharefile loads) —
@@ -730,6 +732,13 @@ class SlifeApp(App):
         """Mount a scheduler-driven message in the chat — 📅 scheduled."""
         self.query_one("#chat-view", ChatView).add_assistant_message(
             name_prefix=t("schedule_prefix"),
+            timestamp=datetime.now().astimezone(),
+        ).append_text(text)
+
+    async def _on_timer_message(self, text: str) -> None:
+        """Mount a timer-driven message in the chat — ⏰ timer."""
+        self.query_one("#chat-view", ChatView).add_assistant_message(
+            name_prefix=t("timer_prefix"),
             timestamp=datetime.now().astimezone(),
         ).append_text(text)
 

@@ -95,6 +95,11 @@ class ToolContext:
     ``run_schedule_now`` tool to backfill a failed/missed run or fire a task
     now."""
 
+    schedule_wakeup: Callable[[float, str], Awaitable[None]] | None = None
+    """Schedule a one-shot ``[Timer]`` wake after *delay_seconds*.
+    Populated by AgentService (main agent only); used by the ``wait_minutes``
+    tool to resume the agent after a delay.  ``None`` for subagents."""
+
     advance_context_start: Callable[[int], Awaitable[bool]] | None = None
     """Advance the persisted live-context boundary past *count* rows — the
     one cut-op behind every context cut: the internal trim

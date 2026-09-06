@@ -252,6 +252,7 @@ class AgentService:
         # Subagents are workers, never the scheduler — leave it None there.
         if not is_subagent:
             self._tool_ctx.fire_schedule_now = self.fire_schedule_now
+            self._tool_ctx.schedule_wakeup = self.schedule_wakeup
         # Live-context boundary hook — the trim and clear_context (one big
         # trim) advance the boundary so a restart rebuilds the exit-time
         # context.  The bound method resolves the memdb client at call time
@@ -266,6 +267,10 @@ class AgentService:
         self._on_heartbeat = None
         # Scheduler-driven output (cron fires / backfill).
         self._on_schedule = None
+        # Timer-driven output (wait_minutes wake).
+        self._on_timer = None
+        # In-flight timer wakes — cancelled on stop, discarded on completion.
+        self._timer_tasks: set[asyncio.Task] = set()
         self._heartbeat_task: asyncio.Task | None = None
 
         # Scheduled-task trigger loop — times tasks and injects triggers.
@@ -1876,6 +1881,10 @@ class AgentService:
         run_schedule_now backfills)."""
         self._on_schedule = callback
 
+    def on_timer(self, callback) -> None:
+        """Register a callback for timer-driven output (wait_minutes wake)."""
+        self._on_timer = callback
+
     def on_heartbeat(self, callback) -> None:
         """Register a callback for every heartbeat outcome (quiet|act)."""
         self._on_heartbeat = callback
@@ -1909,6 +1918,18 @@ class AgentService:
                 await cb(text)
             except Exception:
                 logger.debug("surface_schedule_error", exc_info=True)
+
+    async def surface_timer(self, text: str) -> None:
+        """Deliver a timer-driven message to the TUI (⏰ timer).
+
+        A ``wait_minutes`` wake resumes the agent's own work, not an
+        autonomous act or a scheduled run — it surfaces here."""
+        cb = self._on_timer
+        if cb is not None:
+            try:
+                await cb(text)
+            except Exception:
+                logger.debug("surface_timer_error", exc_info=True)
 
     async def _notify_heartbeat(self, outcome: str) -> None:
         """Notify the TUI that a heartbeat beat happened (status-bar pulse)."""
@@ -1948,6 +1969,44 @@ class AgentService:
         from slife.agent.schedules import fire_task_now
 
         return await fire_task_now(self, name, due_at)
+
+    async def schedule_wakeup(self, delay_seconds: float, note: str) -> None:
+        """Schedule a one-shot ``[Timer]`` wake after *delay_seconds*.
+
+        The timer is in-memory — it survives exactly as long as this process.
+        When it elapses a ``[Timer]`` message is posted to the inbox, which
+        wakes the main agent as a fresh turn with full prior context (every
+        inbox message runs against the one shared history).
+        """
+        from slife.a2a.identity import SYSTEM, AgentMessage, Channel
+        from slife.agent.heartbeat import _SilentHandler
+        from slife.agent.timer import timer_text
+
+        async def _wake() -> None:
+            await asyncio.sleep(delay_seconds)
+            await self.inbox.post(AgentMessage(
+                source=SYSTEM,
+                content=timer_text(delay_seconds / 60, note),
+                handler=_SilentHandler(),
+                on_reply=self._surface_timer_reply,
+                channel=Channel.system(),
+            ))
+            logger.info("timer_fired delay_seconds=%s", delay_seconds)
+
+        task = asyncio.create_task(_wake())
+        self._timer_tasks.add(task)
+        task.add_done_callback(self._timer_tasks.discard)
+
+    async def _surface_timer_reply(self, text: str, cancelled: bool = False) -> None:
+        """``on_reply`` for timer turns — surface non-silent replies.
+
+        A bare ``.`` or empty reply is suppressed (mirrors the heartbeat/schedule
+        silence contract); anything else is the resumed work's answer, surfaced
+        as ⏰ timer.
+        """
+        t = (text or "").strip()
+        if t and t != ".":
+            await self.surface_timer(t)
 
     def refresh_system_prompt(self) -> None:
         """Re-render the system prompt and replace it in the live history
@@ -2043,6 +2102,11 @@ class AgentService:
             except asyncio.CancelledError:
                 pass
             self._schedule_startup_task = None
+        for t in list(self._timer_tasks):
+            t.cancel()
+        if self._timer_tasks:
+            await asyncio.gather(*self._timer_tasks, return_exceptions=True)
+            self._timer_tasks.clear()
         if self._inbox_task is None:
             return
         self._inbox_task.cancel()

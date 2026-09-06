@@ -64,8 +64,13 @@ def is_autonomous_trigger(text: str) -> bool:
     synthetic user message, skip the turn footnote); distinguishing them for
     *rendering* (⚡ 自主 vs 📅 定时) uses :func:`is_schedule_trigger`."""
     from slife.agent.heartbeat import HEARTBEAT_MARK
+    from slife.agent.timer import TIMER_MARK
 
-    return text.startswith(HEARTBEAT_MARK) or text.startswith(SCHEDULE_MARK)
+    return (
+        text.startswith(HEARTBEAT_MARK)
+        or text.startswith(SCHEDULE_MARK)
+        or text.startswith(TIMER_MARK)
+    )
 
 #: Loop cadence (seconds).  Cron's smallest unit is a minute, so a 30 s poll
 #: fires tasks within half a minute of their due time.
