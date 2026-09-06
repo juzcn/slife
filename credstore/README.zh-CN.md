@@ -166,6 +166,10 @@ credstore.parse_keyring_uri("keyring:srv/k")   # → ("srv", "k") | None
 credstore.format_export("KEY", "secret", "bash")   # → "export KEY='secret'"
 credstore.format_unset("KEY", "bash")              # → "unset KEY"
 
+# 环境持久化（`inject` / `uninject` 的编程形式）
+credstore.persist_key("KEY", "secret", "bash")     # 注册表（Win）/ 配置文件（Unix）
+credstore.unpersist_key("KEY", "bash")             # 从系统环境移除
+
 # 诊断
 credstore.init_store()              # → CredentialStore（显式懒初始化）
 credstore.check_backend()           # → {"available": True, "backend": "…", …}

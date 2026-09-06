@@ -32,11 +32,21 @@ Usage::
     # Shell formatting
     credstore.format_export("KEY", "value", "bash")  # → export statement
 
+    # Persist to the system environment (registry on Windows / shell
+    # profile on Unix) — the programmatic form of ``credstore inject``.
+    credstore.persist_key("KEY", "value", "bash")
+    credstore.unpersist_key("KEY", "bash")
+
     # Check backend
     info = credstore.check_backend()
 """
 
-from credstore._shell import format_export, format_unset
+from credstore._shell import (
+    format_export,
+    format_unset,
+    persist_key,
+    unpersist_key,
+)
 from credstore._store import (
     get_credential,
     exists_credential,
@@ -70,9 +80,11 @@ __all__ = [
     "is_keyring_uri",
     "parse_keyring_uri",
     "resolve_uri",
-    # Shell formatting
+    # Shell formatting / environment persistence
     "format_export",
     "format_unset",
+    "persist_key",
+    "unpersist_key",
     # Diagnostics
     "get_backend_name",
     "check_backend",

@@ -166,6 +166,10 @@ credstore.parse_keyring_uri("keyring:srv/k")   # → ("srv", "k") | None
 credstore.format_export("KEY", "secret", "bash")   # → "export KEY='secret'"
 credstore.format_unset("KEY", "bash")              # → "unset KEY"
 
+# Environment persistence (programmatic form of `inject` / `uninject`)
+credstore.persist_key("KEY", "secret", "bash")     # registry (Win) / profile (Unix)
+credstore.unpersist_key("KEY", "bash")             # remove from system environment
+
 # Diagnostics
 credstore.init_store()              # → CredentialStore (explicit lazy init)
 credstore.check_backend()           # → {"available": True, "backend": "…", …}
