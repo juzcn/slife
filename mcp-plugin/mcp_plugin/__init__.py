@@ -5,6 +5,6 @@ OAuth 2.0 device-code flow, and a management CLI.  Ships with Slife as its MCP
 plugin but has no dependency on it.
 """
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 __all__ = ["__version__"]
