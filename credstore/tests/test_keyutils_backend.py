@@ -238,6 +238,61 @@ class TestKeyutilsSetPassword:
         with pytest.raises(PasswordSetError, match="Cannot store"):
             be.set_password("svc", "usr", "p4ss")
 
+    def test_buffers_alive_at_add_key_call(self, viable_backend, monkeypatch):
+        """Regression: add_key's pointer args must reference live buffers.
+
+        The old one-liner passed ``addressof(create_string_buffer(...))`` of
+        unnamed temporaries — each buffer is freed the moment ``addressof()``
+        evaluates (refcount → 0, ``__del__`` fires synchronously in CPython),
+        so the kernel read freed heap.  This patch makes ``create_string_buffer``
+        track liveness and a real syscall mock dereference the pointers, so the
+        old code fails deterministically and only named-locals pass.
+        """
+        import ctypes as _ct
+        from credstore._keyutils_backend import KEY_TYPE
+
+        be, mock_libc = viable_backend
+
+        real_create = _ct.create_string_buffer
+        real_addressof = _ct.addressof
+        live: set[int] = set()
+
+        class _LiveBuf:
+            def __init__(self, init):
+                self._buf = real_create(init)
+                self.addr = real_addressof(self._buf)
+                live.add(self.addr)
+
+            def __del__(self):
+                live.discard(self.addr)
+
+        monkeypatch.setattr(_ct, "create_string_buffer", _LiveBuf)
+        monkeypatch.setattr(_ct, "addressof", lambda b: b.addr)
+
+        desc_bytes = b"credstore:svc/usr"
+        payload_bytes = b"p4ss"
+        call_count = 0
+
+        def _syscall(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return -126  # _search: no existing key → skip invalidate
+            # add_key call: (num, type_addr, desc_addr, payload_addr, size, spec)
+            type_addr, desc_addr, payload_addr = args[1], args[2], args[3]
+            for addr in (type_addr, desc_addr, payload_addr):
+                assert addr in live, "add_key received a dangling pointer"
+            # And the bytes the kernel would read are correct.
+            assert _ct.string_at(type_addr, len(KEY_TYPE)) == KEY_TYPE
+            assert _ct.string_at(desc_addr, len(desc_bytes)) == desc_bytes
+            assert _ct.string_at(payload_addr, len(payload_bytes)) == payload_bytes
+            return 10
+
+        mock_libc.syscall.side_effect = _syscall
+
+        be.set_password("svc", "usr", "p4ss")
+        assert call_count == 2
+
 
 class TestKeyutilsDeletePassword:
     """Tests for KeyutilsBackend.delete_password."""

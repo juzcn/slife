@@ -202,11 +202,19 @@ class KeyutilsBackend(KeyringBackend):
         if old >= 0:
             _libc.syscall(_SYS_KEYCTL, KEYCTL_INVALIDATE, old, 0, 0, 0)
 
+        # Bind each buffer to a local name BEFORE taking its address.  An
+        # unnamed ``create_string_buffer(...)`` temporary is freed the moment
+        # its ``addressof()`` argument evaluates (refcount drops to zero), so
+        # the old one-liner passed three dangling pointers — the kernel read
+        # freed heap memory and stored a corrupted credential.
+        type_buf = ctypes.create_string_buffer(KEY_TYPE)
+        desc_buf = ctypes.create_string_buffer(desc)
+        payload_buf = ctypes.create_string_buffer(payload)
         kid = _libc.syscall(
             _SYS_add_key,
-            ctypes.addressof(ctypes.create_string_buffer(KEY_TYPE)),
-            ctypes.addressof(ctypes.create_string_buffer(desc)),
-            ctypes.addressof(ctypes.create_string_buffer(payload)),
+            ctypes.addressof(type_buf),
+            ctypes.addressof(desc_buf),
+            ctypes.addressof(payload_buf),
             ctypes.c_size_t(len(payload)),
             ctypes.c_int32(KEY_SPEC_PERSISTENT_KEYRING),
         )
