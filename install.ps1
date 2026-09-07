@@ -718,15 +718,16 @@ try {
 
     # 4c. Configs: seed the git-tracked defaults out-of-the-box.  slife.json5 /
     # local_embed.json5 / mcp-plugin.json5 come from the downloaded source tree
-    # (now git-tracked), and each module hosts its own config in its own data
-    # dir (~/.slife, ~/.local-embed, ~/.mcp-plugin).  Missing ones are copied
-    # silently; an existing one is only replaced (after a per-file "yes") when
-    # its content differs from the bundled default.
+    # (now git-tracked).  slife.json5 and mcp-plugin.json5 (mcp-plugin is a
+    # built-in plugin) live in ~/.slife; local_embed.json5 is local-embed's own
+    # (~/.local-embed).  Missing ones are copied silently; an existing one is
+    # only replaced (after a per-file "yes") when its content differs from the
+    # bundled default.
     Write-Step "[4c] Setting up configs (out-of-the-box defaults)..."
     $seedPairs = @(
         @("slife.json5", "$env:USERPROFILE\.slife\slife.json5"),
         @("local_embed.json5", "$env:USERPROFILE\.local-embed\local_embed.json5"),
-        @("mcp-plugin.json5", "$env:USERPROFILE\.mcp-plugin\mcp-plugin.json5")
+        @("mcp-plugin.json5", "$env:USERPROFILE\.slife\mcp-plugin.json5")
     )
     foreach ($pair in $seedPairs) {
         $src = Join-Path $extractedDir.FullName $pair[0]
@@ -832,7 +833,7 @@ try {
     # removed: a first-run connect spawns every configured npx/uvx server and
     # the servers need API keys first (credstore).  The tool catalog is built
     # live from connections at slife start, so no build step exists.
-    # See "Get started" below: credstore → edit ~/.mcp-plugin/mcp-plugin.json5 → slife.
+    # See "Get started" below: credstore → edit ~/.slife/mcp-plugin.json5 → slife.
 
     # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."
@@ -892,7 +893,7 @@ try {
     Write-Host "Get started:" -ForegroundColor Cyan
     Write-Host "  1. Semantic search (optional) — set up per README -> Semantic Memory Search"
     Write-Host "  2. Configure secrets with credstore — credstore set-password, then credstore set <API_KEY> <value>"
-    Write-Host "  3. Configure external MCP servers — edit ~/.mcp-plugin/mcp-plugin.json5 (they apply at the next slife start)"
+    Write-Host "  3. Configure external MCP servers — edit ~/.slife/mcp-plugin.json5 (they apply at the next slife start)"
     Write-Host ""
     if ($coreMode) {
         Write-Host "Core install done — external MCP servers, Mosquitto" -ForegroundColor Cyan

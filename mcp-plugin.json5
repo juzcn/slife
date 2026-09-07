@@ -9,7 +9,6 @@
         "."
       ],
       description: "Local filesystem operations — read, write, list, and search files within allowed directories.",
-      healthy: true
     },
     serper: {
       command: "npx",
@@ -21,7 +20,6 @@
         SERPER_API_KEY: "${SERPER_API_KEY}"
       },
       description: "Google web search via Serper — search the web and scrape result pages.",
-      healthy: true
     },
     fetch: {
       command: "uvx",
@@ -31,7 +29,6 @@
         "mcp-server-fetch"
       ],
       description: "Fetch and convert web pages to markdown. Pins mcp<1.29 for McpError compatibility.",
-      healthy: true
     },
     "tavily-mcp": {
       command: "npx",
@@ -43,7 +40,6 @@
         TAVILY_API_KEY: "${TAVILY_API_KEY}"
       },
       description: "Tavily AI-optimized web search — designed for LLM agents, returns clean structured results.",
-      healthy: true
     },
     github: {
       command: "npx",
@@ -63,11 +59,10 @@
         GITHUB_TOKEN: "${GITHUB_TOKEN}"
       },
       description: "GitHub REST API via anyapi-mcp-server — manage repos, issues, PRs, users, and more.",
-      healthy: true
     },
     "duckduckgo-search": {
       command: "uvx",
-      "auto-load": true,
+      autoload: true,
       args: [
         "--with",
         "duckduckgo-mcp-server[browser]",
@@ -78,7 +73,6 @@
         "auto"
       ],
       description: "DuckDuckGo search MCP server — web search and content extraction via DuckDuckGo.",
-      healthy: true
     },
     "amap-maps": {
       command: "npx",
@@ -90,7 +84,6 @@
       env: {
         AMAP_MAPS_API_KEY: "${AMAP_MAPS_API_KEY}"
       },
-      healthy: true
     },
     "iflow-mcp": {
       command: "uvx",
@@ -107,7 +100,6 @@
         description: "PyPI package for Claude Code MCP server",
         fetched_at: "2026-07-23T01:42:26.885197+00:00"
       },
-      healthy: true
     },
     "file-search": {
       command: "npx",
@@ -122,7 +114,6 @@
         description: "npm package for fast file search in large codebases",
         fetched_at: "2026-07-23T02:12:23.593046+00:00"
       },
-      healthy: true
     },
     playwright: {
       command: "npx",
@@ -139,7 +130,6 @@
         description: "Official Playwright MCP server from Microsoft",
         fetched_at: "2026-08-02T00:00:00.000000+00:00"
       },
-      healthy: true
     },
     context7: {
       command: "npx",
@@ -158,7 +148,6 @@
         description: "Context7 MCP server from Upstash",
         fetched_at: "2026-08-01T23:30:38.777971+00:00"
       },
-      healthy: true
     },
     "chrome-devtools": {
       command: "npx",
@@ -175,7 +164,6 @@
         description: "Chrome DevTools for coding agents - official Google project",
         fetched_at: "2026-08-01T23:41:47.240842+00:00"
       },
-      healthy: true
     },
     citecheck: {
       command: "npx",
@@ -191,7 +179,6 @@
         description: "MCP server for automatic reference repair in scholarly manuscripts (MIT)",
         fetched_at: "2026-08-01T23:51:06.761712+00:00"
       },
-      healthy: true
     },
     "mcp-pandoc": {
       command: "uvx",
@@ -206,7 +193,6 @@
         description: "Pandoc document conversion MCP server (official MCP servers project)",
         fetched_at: "2026-08-01T23:52:45.022542+00:00"
       },
-      healthy: true
     },
     markitdown: {
       command: "uvx",
@@ -221,7 +207,6 @@
         description: "Microsoft MarkItDown MCP server for document-to-markdown conversion",
         fetched_at: "2026-08-01T23:56:15.694479+00:00"
       },
-      healthy: true
     },
     "office-word-mcp": {
       command: "uvx",
@@ -238,7 +223,6 @@
         description: "MCP server for creating/reading/editing Word documents",
         fetched_at: "2026-08-02T00:00:39.614231+00:00"
       },
-      healthy: true
     },
     "excel-mcp": {
       command: "npx",
@@ -257,7 +241,6 @@
         description: "MCP server for reading/writing MS Excel files",
         fetched_at: "2026-08-02T00:00:58.187765+00:00"
       },
-      healthy: true
     },
     "pdf-toolkit": {
       command: "npx",
@@ -273,7 +256,6 @@
         description: "Write-capable PDF toolkit MCP server (22 tools)",
         fetched_at: "2026-08-02T00:04:47.866829+00:00"
       },
-      healthy: true
     },
     sqlite: {
       command: "uvx",
@@ -290,7 +272,6 @@
         description: "Official SQLite MCP reference server",
         fetched_at: "2026-08-02T00:05:14.333705+00:00"
       },
-      healthy: true
     },
     "mcp-registry": {
       command: "npx",

@@ -264,16 +264,15 @@ class MemdbConfig:
 class EmbeddingsConfig:
     """First-class embeddings config — top-level ``embeddings`` section.
 
-    Two levels mirroring the LLM ``models.providers`` shape:
+    - ``providers``: each provider is **one OpenAI-compatible endpoint** —
+      ``base_url`` + ``api_key`` plus a single ``model`` (the id POSTed on
+      ``/v1/embeddings``).  Model may be omitted; then the endpoint's
+      /v1/models ``active`` (or first) model is used as a fallback (many
+      endpoints, e.g. OpenAI official, have no active flag).
+    - ``active_model``: names the active provider.
 
-    - ``providers``: each provider is an OpenAI-compatible endpoint
-      (``base_url`` + ``api_key``) with an optional ``models`` list
-      (each ``{model, dim?}``).
-    - ``active_model``: ``"provider/model"`` ref (or bare ``"provider"``) —
-      CONFIGURATION-AUTHORITATIVE.  slife embeds against that provider and
-      POSTs the configured model id; the endpoint's /v1/models ``active``
-      flag is only a fallback when no model is configured (many endpoints,
-      e.g. OpenAI official, have no active flag).
+    The vector dimension is never configured — it is auto-detected from the
+    endpoint at runtime (known model families guessed, others probed).
 
     memdb and memfiles share this one section.
     """
@@ -290,12 +289,11 @@ class EmbeddingsConfig:
         providers = data.get("providers", {})
         if not isinstance(providers, dict):
             providers = {}
+        # ``active_model`` names a provider only (no provider/model ref).
+        # A missing/stale ref falls back to the first provider.
         active = data.get("active_model", "")
-        if active and active.split("/", 1)[0] not in providers:
-            # Active provider doesn't exist — fall back to the first provider.
-            active = next((f"{k}" for k in providers), "")
-        elif not active and providers:
-            active = next(iter(providers))
+        if "/" in active or active not in providers:
+            active = next(iter(providers), "")
         return cls(
             providers=providers,
             active_model=active,
@@ -671,11 +669,12 @@ class Config:
         """Seed the git-tracked default configs from the package.
 
         Copies any *missing* config among ``slife.json5`` /
-        ``local_embed.json5`` / ``mcp-plugin.json5`` from the package
-        directory into ``path.parent`` (the data dir) — the
-        out-of-the-box defaults for a fresh install, and a supplement
-        for existing installs that lack newly-added siblings.  Existing
-        files are never overwritten.
+        ``mcp-plugin.json5`` from the package directory into ``path.parent``
+        (the slife data dir) — the out-of-the-box defaults for a fresh
+        install, and a supplement for existing installs that lack a newly
+        added config.  ``local_embed.json5`` seeds to ``~/.local-embed/``
+        (local-embed is a separate standalone app).  Existing files are
+        never overwritten.
 
         A freshly seeded ``slife.json5`` is followed by an active-model
         API-key check: when the key is missing, prints setup
@@ -689,45 +688,51 @@ class Config:
         pkg_dir = _PKG_DIR
 
         fresh = not path.exists()
-        if fresh:
-            pkg = pkg_dir / "slife.json5"
-            if not pkg.exists():
-                raise FileNotFoundError(
-                    f"Config file not found: {path}\n"
-                    f"Run: cp slife.json5 ~/.slife/slife.json5"
-                )
-            shutil.copy(pkg, path)
-            # The seed ships 0644 and shutil.copy preserves that mode, but the
-            # config is where plaintext API keys end up — tighten to owner-only
-            # on POSIX so other local accounts can't read it.
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass  # non-POSIX or filesystem without chmod — best effort
-            logger.info("config_seeded from=%s to=%s", pkg, path)
-            print(f"\n  First run — created: {path}")
-
-        # Siblings — each module hosts its own config in its own data dir
-        # (~/.mcp-plugin, ~/.local-embed — matches its standalone resolver;
-        # we no longer point $MCP_PLUGIN_FILE / $LOCAL_EMBED_FILE at the slife
-        # data dir).  Seed the same way: missing → copy, never overwrite.
-        for name, subdir in (("mcp-plugin.json5", ".mcp-plugin"),
-                             ("local_embed.json5", ".local-embed")):
-            target = Path.home() / subdir / name
+        # Data-dir configs — slife.json5 and (a built-in slife plugin now)
+        # mcp-plugin.json5 both live in the slife data dir (path.parent),
+        # resolved via slife.paths.get_data_dir().  Seed each *missing* one
+        # from the bundled default; never overwrite.
+        for name in ("slife.json5", "mcp-plugin.json5"):
+            target = path.parent / name
             if target.exists():
                 continue
             pkg = pkg_dir / name
             if not pkg.exists():
-                # Wheels predating the git-tracked configs lack siblings.
+                # slife.json5 must be present to configure anything; wheels
+                # predating the git-tracked configs may lack mcp-plugin.json5.
+                if name == "slife.json5":
+                    raise FileNotFoundError(
+                        f"Config file not found: {path}\n"
+                        f"Run: cp slife.json5 ~/.slife/slife.json5"
+                    )
                 continue
-            target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(pkg, target)
+            # The seed ships 0644 and shutil.copy preserves that mode, but the
+            # config is where plaintext API keys end up — tighten to owner-only
+            # on POSIX so other local accounts can't read it.
             try:
                 os.chmod(target, 0o600)
             except OSError:
-                pass
+                pass  # non-POSIX or filesystem without chmod — best effort
             logger.info("config_seeded from=%s to=%s", pkg, target)
-            print(f"  First run — created: {target}")
+            print(f"\n  First run — created: {target}")
+
+        # local-embed is a separate standalone app — it hosts its own config in
+        # its own data dir (~/.local-embed, matching its standalone resolver).
+        # Seed the same way: missing → copy, never overwrite.
+        name = "local_embed.json5"
+        target = Path.home() / ".local-embed" / name
+        if not target.exists():
+            pkg = pkg_dir / name
+            if pkg.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(pkg, target)
+                try:
+                    os.chmod(target, 0o600)
+                except OSError:
+                    pass  # non-POSIX or filesystem without chmod — best effort
+                logger.info("config_seeded from=%s to=%s", pkg, target)
+                print(f"\n  First run — created: {target}")
 
         if not fresh:
             return  # existing user config — the fresh-install key check is moot
@@ -810,8 +815,8 @@ class Config:
         path = Path(path).expanduser()
         logger.debug("config_load path=%s", path)
         # Seeds missing configs from the package defaults (slife.json5 +
-        # siblings local_embed.json5 / mcp-plugin.json5); no-op for files the
-        # user already has.
+        # mcp-plugin.json5 into the data dir, local_embed.json5 into
+        # ~/.local-embed); no-op for files the user already has.
         cls._seed_first_run_config(path)
 
         raw = json5.loads(path.read_text(encoding="utf-8"))
@@ -941,8 +946,10 @@ class Config:
             plugin_server_port=plugin_server_port,
         )
         config._path = path
-        # Each module hosts its own config in its own data dir — we do NOT set
-        # $MCP_PLUGIN_FILE / $LOCAL_EMBED_FILE, so mcp-plugin / local-embed
-        # resolve the same ~/.mcp-plugin / ~/.local-embed files that the
-        # installer and _seed_first_run_config (above) write.
+        # mcp-plugin is a built-in slife plugin — it resolves mcp-plugin.json5
+        # in the same data dir as slife.json5 (via slife.paths.get_data_dir).
+        # local-embed is a separate standalone app that resolves its own
+        # ~/.local-embed/local_embed.json5.  We do NOT set $MCP_PLUGIN_FILE /
+        # $LOCAL_EMBED_FILE — both plugins find the files the installer and
+        # _seed_first_run_config (above) write.
         return config

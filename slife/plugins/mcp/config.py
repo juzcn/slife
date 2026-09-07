@@ -1,12 +1,11 @@
 """mcp-plugin config — load/save ``mcp-plugin.json5``, path resolution, secrets.
 
-Path precedence (one loader, every consumer) — mirrors credstore:
-  1. ``$MCP_PLUGIN_FILE`` — explicit override (the host used to export this
-     with its config dir; now it is a test/dev escape hatch only)
-  2. slife project root (dev): CWD is the slife source root (``pyproject.toml``
-     ``project.name == "slife"``) — ``./mcp-plugin.json5`` (credstore's
-     ``is_slife_dev`` pattern)
-  3. ``~/.mcp-plugin/mcp-plugin.json5`` (standalone default, credstore-style)
+Path precedence (one loader, every consumer):
+  1. ``$MCP_PLUGIN_FILE`` — explicit override (a test/dev escape hatch only)
+  2. slife data dir — ``<data_dir>/mcp-plugin.json5`` via
+     :func:`slife.paths.get_data_dir` (production ``~/.slife/mcp-plugin.json5``,
+     the checkout root in dev).  mcp-plugin is a built-in slife plugin — its
+     config lives next to ``slife.json5``, like memdb/memfiles/wechat.
 
 Server entries hold: ``command/args/env/url/headers/auth/description/enabled/source``
 plus ``os_paths``.
@@ -29,7 +28,6 @@ import os
 import re
 import tempfile
 import threading
-import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,35 +37,27 @@ logger = logging.getLogger(__name__)
 
 
 def default_config_path() -> Path:
-    """Standalone default: ``~/.mcp-plugin/mcp-plugin.json5``."""
-    return Path.home() / ".mcp-plugin" / "mcp-plugin.json5"
+    """Default config path: ``<slife data dir>/mcp-plugin.json5``.
+
+    mcp-plugin is a built-in slife plugin — its config sits next to
+    ``slife.json5`` in the slife data dir (``~/.slife`` in production, the
+    checkout root in dev).  ``get_data_dir()`` honours ``$SLIFE_DATA_DIR``,
+    which the host exports so plugin children resolve the same directory.
+    """
+    from slife.paths import get_data_dir
+
+    return get_data_dir() / "mcp-plugin.json5"
 
 
 def resolve_config_path() -> Path:
     """Return the mcp-plugin.json5 path for this process.
 
-    Precedence (mirrors credstore's ``get_cryptfile_path``):
-    ``$MCP_PLUGIN_FILE`` > slife project root (dev) > standalone default.
+    ``$MCP_PLUGIN_FILE`` (test/dev override) > slife data dir default.
     """
     env = os.environ.get("MCP_PLUGIN_FILE")
     if env:
         return Path(env).expanduser()
-    if is_slife_dev():
-        return Path("mcp-plugin.json5")
     return default_config_path()
-
-
-def is_slife_dev() -> bool:
-    """Whether we're running from the slife source root (credstore-style).
-
-    Returns True when the CWD contains a ``pyproject.toml`` with
-    ``project.name == "slife"``.
-    """
-    try:
-        data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    return data.get("project", {}).get("name") == "slife"
 
 
 # ── Reader / writer (atomic; parse failures surface) ───────────────────
@@ -213,8 +203,8 @@ _CURRENT_PATH: Path | None = None
 def set_config_path(path: Path | str | None = None) -> Path:
     """Pin the config path in use (e.g. from ``load_config(path)``).
 
-    With no *path*, re-resolves from ``$MCP_PLUGIN_FILE`` / slife project /
-    standalone default.
+    With no *path*, re-resolves from ``$MCP_PLUGIN_FILE`` / the slife
+    data-dir default.
     """
     global _CURRENT_PATH
     if path is not None:
@@ -348,11 +338,9 @@ def resolve_server_config(name: str, raw_entry: dict):
         auth=auth,
         source=_dict_copy(raw_entry.get("source")),
         os_paths=bool(raw_entry.get("os_paths", False)),
-        # The json5 key is "auto-load" — it MUST be quoted in mcp-plugin.json5:
-        # a dash is not a valid json5 identifier, so an unquoted `auto-load:`
-        # parses as a syntax error and takes down the whole config (an empty
-        # pool).
-        auto_load=raw_entry.get("auto-load") is True,
+        # Config key is `autoload` — a valid json5 identifier, so it needs no
+        # quotes in mcp-plugin.json5 (a dash would require quoting).
+        auto_load=raw_entry.get("autoload") is True,
     )
 
 

@@ -43,6 +43,52 @@ def _pin_ui_language():
     set_language("en")
 
 
+# ── mcp-plugin config isolation ────────────────────────────────────────
+
+
+#: Test modules that exercise ``slife.plugins.mcp`` config persistence
+#: (they lived under ``tests/mcp/`` before the folders were flattened).
+#: They must never read/write a real ``mcp-plugin.json5`` — the dev data
+#: dir (repo root) holds the git-tracked file — so every access is pointed
+#: at a throwaway file.
+_MCP_ISOLATED_MODULES = frozenset({
+    "test_mcp_config",
+    "test_embeddings",
+    "test_logging",
+    "test_mcp_client",
+    "test_mcp_connection",
+    "test_mcp_oauth",
+    "test_mcp_process",
+    "test_mcp_server",
+    "test_schema_flatten",
+    "test_store",
+    "test_tool_catalog",
+})
+
+
+@pytest.fixture(autouse=True)
+def _isolate_mcp_config_path(request, tmp_path, monkeypatch):
+    """Point mcp-plugin config reads/writes at a throwaway file per test.
+
+    Scoped to the mcp-plugin test modules (previously ``tests/mcp/*``) so
+    the rest of the suite keeps resolving the real data-dir config.
+    """
+    if request.node.fspath.purebasename not in _MCP_ISOLATED_MODULES:
+        return
+
+    monkeypatch.setenv("MCP_PLUGIN_FILE", str(tmp_path / "mcp-plugin.json5"))
+
+    def _reset():
+        # Import lazily so it never runs against a half-built package.
+        try:
+            import slife.plugins.mcp.config as _cfg
+            _cfg._CURRENT_PATH = None
+        except ImportError:
+            pass
+
+    request.addfinalizer(_reset)
+
+
 # ── Model config fixtures ─────────────────────────────────────────────
 
 

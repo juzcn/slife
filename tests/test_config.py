@@ -869,15 +869,17 @@ class TestSeedFirstRunConfig:
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         return home
 
-    def test_seeds_all_three_into_fresh_data_dir(self, tmp_path, monkeypatch):
+    def test_seeds_all_configs_into_data_dir(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
         home = self._home(tmp_path, monkeypatch)
         data = tmp_path / "data"
         Config.from_json5(str(data / "slife.json5"))
+        # slife.json5 + mcp-plugin.json5 seed into the data dir; local_embed
+        # keeps its own ~/.local-embed (separate standalone app).
         assert (data / "slife.json5").exists()
+        assert (data / "mcp-plugin.json5").exists()
         assert (home / ".local-embed" / "local_embed.json5").exists()
-        assert (home / ".mcp-plugin" / "mcp-plugin.json5").exists()
 
     def test_existing_slife_config_not_overwritten_siblings_seeded(
             self, tmp_path, monkeypatch):
@@ -895,9 +897,9 @@ class TestSeedFirstRunConfig:
         raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
         assert raw["models"]["providers"]["d"]["models"][0]["model"] == "keepme"
         assert (home / ".local-embed" / "local_embed.json5").exists()
-        assert (home / ".mcp-plugin" / "mcp-plugin.json5").exists()
+        assert (data / "mcp-plugin.json5").exists()
 
-    def test_existing_sibling_not_overwritten(self, tmp_path, monkeypatch):
+    def test_existing_data_dir_config_not_overwritten(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
         home = self._home(tmp_path, monkeypatch)
@@ -908,13 +910,12 @@ class TestSeedFirstRunConfig:
             "api_key": "${KEY}", "base_url": "https://example.com",
             "models": [{"model": "m", "name": "M"}],
         }}}}))
-        sibling = home / ".mcp-plugin" / "mcp-plugin.json5"
-        sibling.parent.mkdir(parents=True)
-        sibling.write_text('{ servers: {"mine": {}} }')
+        mcp = data / "mcp-plugin.json5"
+        mcp.write_text('{ servers: {"mine": {}} }')
         Config.from_json5(str(cfg_path))
-        assert json5.loads(sibling.read_text()) == {"servers": {"mine": {}}}
+        assert json5.loads(mcp.read_text()) == {"servers": {"mine": {}}}
 
-    def test_missing_sibling_in_package_skipped(self, tmp_path, monkeypatch):
+    def test_missing_data_dir_config_in_package_skipped(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         pkg = self._pkg_dir(tmp_path)
         (pkg / "mcp-plugin.json5").unlink()
@@ -923,5 +924,5 @@ class TestSeedFirstRunConfig:
         data = tmp_path / "data"
         Config.from_json5(str(data / "slife.json5"))
         assert (data / "slife.json5").exists()
+        assert not (data / "mcp-plugin.json5").exists()
         assert (home / ".local-embed" / "local_embed.json5").exists()
-        assert not (home / ".mcp-plugin" / "mcp-plugin.json5").exists()

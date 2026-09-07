@@ -1,16 +1,16 @@
-"""Structured logging for mcp_plugin (slife-free subset of ``slife.logfmt``).
+"""Structured logging for mcp_plugin.
 
 Provides session/request correlation (``SessionFormatter``), subprocess
 stderr relay helpers, secret sanitization, JSON response envelopes, and
-root-logging configuration — everything the standalone MCP server needs
-without importing slife.
+root-logging configuration.  mcp-plugin is a built-in slife plugin, so its
+log *directory* resolves like every built-in plugin's — see
+:func:`resolve_log_dir`.
 """
 
 import asyncio
 import contextvars
 import json
 import logging
-import os
 import re
 import secrets
 from datetime import datetime
@@ -234,20 +234,17 @@ async def read_stderr_lines(process, running_check=None):
 
 
 def resolve_log_dir() -> Path:
-    """Return the log directory for mcp_plugin.
+    """Return the log directory for mcp_plugin — the slife data-dir logs.
 
-    ``SLIFE_LOG_DIR`` when the host (slife) exported it — the plugin's
-    per-session log then lands next to the main session log.  Otherwise
-    ``MCP_PLUGIN_LOG_DIR`` env override, else ``~/.mcp-plugin/logs``
-    (standalone default).
+    Same resolution as every built-in plugin server: ``SLIFE_LOG_DIR`` when
+    the host (slife) exported it (the per-session log then lands next to the
+    main session log), else ``<data_dir>/logs`` (``~/.slife/logs`` in
+    production).  File naming is unchanged (``{ts}_{agent}_{service}.log``) —
+    mcp_plugin keeps its own plugin-named log file.
     """
-    for key in ("SLIFE_LOG_DIR", "MCP_PLUGIN_LOG_DIR"):
-        override = os.getenv(key)
-        if override:
-            candidate = Path(override)
-            if candidate.is_absolute():
-                return candidate
-    return Path.home() / ".mcp-plugin" / "logs"
+    from slife.logfmt import resolve_log_dir as _resolve_slife_log_dir
+
+    return _resolve_slife_log_dir()
 
 
 # ── JSON response helpers ─────────────────────────────────────────────

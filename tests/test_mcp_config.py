@@ -163,61 +163,32 @@ class TestRestAPI:
         assert "Authorization: Bearer ${KEY}" in entry["args"]
 
 
-class TestIsSlifeDev:
-    """CWD-based slife detection — mirrors credstore's ``is_slife_dev``."""
-
-    def test_slife_project_returns_true(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "slife"\n', encoding="utf-8"
-        )
-        assert cfg.is_slife_dev() is True
-
-    def test_other_project_returns_false(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "other"\n', encoding="utf-8"
-        )
-        assert cfg.is_slife_dev() is False
-
-    def test_missing_pyproject_returns_false(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        assert cfg.is_slife_dev() is False
-
-    def test_malformed_pyproject_returns_false(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "pyproject.toml").write_text(
-            "[project\nname = 'slife'", encoding="utf-8"
-        )
-        assert cfg.is_slife_dev() is False
-
-
 class TestResolveConfigPath:
-    """resolve_config_path — env > dev default > home default (credstore-style)."""
+    """resolve_config_path — $MCP_PLUGIN_FILE > slife data-dir default.
 
-    def test_dev_default_is_cwd_relative(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MCP_PLUGIN_FILE", raising=False)
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "slife"\n', encoding="utf-8"
-        )
-        # Dev default is CWD-relative, exactly like credstore's
-        # ``./credentials.crypt``.
-        assert cfg.resolve_config_path() == Path("mcp-plugin.json5")
+    mcp-plugin is a built-in slife plugin: the default config path is
+    ``<slife data dir>/mcp-plugin.json5`` (``slife.paths.get_data_dir``), not
+    a ``~/.mcp-plugin/`` standalone location.
+    """
 
-    def test_production_default_uses_home(self, tmp_path, monkeypatch):
+    def test_data_dir_default(self, tmp_path, monkeypatch):
         monkeypatch.delenv("MCP_PLUGIN_FILE", raising=False)
-        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path / "data"))
         assert cfg.resolve_config_path() == (
-            Path.home() / ".mcp-plugin" / "mcp-plugin.json5"
+            tmp_path / "data" / "mcp-plugin.json5"
         )
 
-    def test_env_wins_over_dev(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("MCP_PLUGIN_FILE", str(tmp_path / "mcp-plugin.json5"))
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "slife"\n', encoding="utf-8"
+    def test_production_default_under_home(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MCP_PLUGIN_FILE", raising=False)
+        monkeypatch.delenv("SLIFE_DATA_DIR", raising=False)
+        monkeypatch.chdir(tmp_path)  # not the slife checkout → ~/.slife
+        assert cfg.resolve_config_path() == (
+            Path.home() / ".slife" / "mcp-plugin.json5"
         )
+
+    def test_env_wins_over_data_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MCP_PLUGIN_FILE", str(tmp_path / "mcp-plugin.json5"))
+        monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path / "other"))
         assert cfg.resolve_config_path() == tmp_path / "mcp-plugin.json5"
 
 

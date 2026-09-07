@@ -37,7 +37,7 @@ The installer is best-effort: it uses standard paths, tries several install rout
 | Mosquitto | package manager (winget / apt / brew / dnf / pacman) | A2A MQTT mesh — best-effort auto-install; A2A stays disabled until a broker runs |
 | `unzip` (Linux) | package manager | bun installer dependency |
 
-**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto (always attempted), the three configs (`slife.json5` → `~/.slife/`, `local_embed.json5` → `~/.local-embed/`, `mcp-plugin.json5` → `~/.mcp-plugin/`) seeded from bundled defaults, and the bundled skills (`~/.slife/skills/`).
+**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto (always attempted), the three configs (`slife.json5` and `mcp-plugin.json5` → `~/.slife/`, `local_embed.json5` → `~/.local-embed/`) seeded from bundled defaults, and the bundled skills (`~/.slife/skills/`).
 
 If a runtime can't be installed, the installer **warns and continues** — slife itself still installs; only the features needing that runtime are unavailable. For example, on a Linux box older than **glibc 2.28 / libstdc++ 3.4.29**, the Node rootless tarball fallback won't run (the installer reports the missing `GLIBC_2.28` / `GLIBCXX_3.4.xx` symbols). The supported route is **not** an older Node — it's a Node built for your distro (e.g. `module load nodejs` on HPC clusters, or your distro's package). Install that, then re-run this installer — it detects an existing `npx` and skips its own Node install.
 

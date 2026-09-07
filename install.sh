@@ -661,19 +661,21 @@ fi
 
 # ── Configs: seed the git-tracked defaults out-of-the-box ───────────────
 # slife.json5 / local_embed.json5 / mcp-plugin.json5 come from the downloaded
-# source tree (now git-tracked).  Each module hosts its own config in its own
-# data dir (~/.slife, ~/.local-embed, ~/.mcp-plugin).  Missing ones are copied
-# silently; an existing one is only replaced (after a per-file "yes") when its
-# content differs from the bundled default.
+# source tree (now git-tracked).  slife.json5 and mcp-plugin.json5 (mcp-plugin
+# is a built-in plugin) live in ~/.slife; local_embed.json5 is local-embed's
+# own (~/.local-embed).  Missing ones are copied silently; an existing one is
+# only replaced (after a per-file "yes") when its content differs from the
+# bundled default.
 echo -e "${YELLOW}[4c] Setting up configs (out-of-the-box defaults)…${NC}"
 SEED_DIR="$TMP_DIR/slife-main"
 for _name in slife.json5 local_embed.json5 mcp-plugin.json5; do
     _src="$SEED_DIR/$_name"
     [ -f "$_src" ] || continue   # older main snapshots may lack the seeds
-    # Each module's config lives in its own folder.
+    # slife.json5 and mcp-plugin.json5 sit in ~/.slife; local_embed.json5 in
+    # local-embed's own folder.
     case "$_name" in
         local_embed.json5) _target="$HOME/.local-embed/local_embed.json5" ;;
-        mcp-plugin.json5)  _target="$HOME/.mcp-plugin/mcp-plugin.json5" ;;
+        mcp-plugin.json5)  _target="$HOME/.slife/mcp-plugin.json5" ;;
         *)                 _target="$HOME/.slife/slife.json5" ;;
     esac
     mkdir -p "$(dirname "$_target")" 2>/dev/null || true
@@ -863,7 +865,7 @@ fi
 echo -e "${CYAN}Get started:${NC}"
 echo "  1. Semantic search (optional) — set up per README → Semantic Memory Search"
 echo "  2. Configure secrets with credstore — credstore set-password, then credstore set <API_KEY> <value>"
-echo "  3. Configure external MCP servers — edit ~/.mcp-plugin/mcp-plugin.json5 (they apply at the next slife start)"
+echo "  3. Configure external MCP servers — edit ~/.slife/mcp-plugin.json5 (they apply at the next slife start)"
 echo ""
 if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
     if [ "${PRESERVE_OK:-0}" = "1" ]; then
