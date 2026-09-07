@@ -7,7 +7,6 @@ name: Publish to PyPI
 #   slife-v0.9.6      -> slife
 #   credstore-v0.9.6  -> credstore
 #   cc-switch-v0.9.6  -> cc-switch
-#   mcp-plugin-v0.1.1 -> mcp-plugin
 #   local-embed-v0.1.0 -> local-embed
 #
 # Only the package whose tag prefix matches is built and uploaded.  The
@@ -20,7 +19,6 @@ on:
       - 'slife-v*'      # slife
       - 'credstore-v*'
       - 'cc-switch-v*'
-      - 'mcp-plugin-v*'
       - 'local-embed-v*'
 
 jobs:
@@ -50,9 +48,6 @@ jobs:
           elif [[ "$TAG" == cc-switch-v* ]]; then
             PKG="cc-switch"
             VERSION="${TAG#cc-switch-v}"
-          elif [[ "$TAG" == mcp-plugin-v* ]]; then
-            PKG="mcp-plugin"
-            VERSION="${TAG#mcp-plugin-v}"
           elif [[ "$TAG" == local-embed-v* ]]; then
             PKG="local-embed"
             VERSION="${TAG#local-embed-v}"
@@ -74,7 +69,6 @@ jobs:
             slife)      PYPROJECT="pyproject.toml" ;;
             credstore)  PYPROJECT="credstore/pyproject.toml" ;;
             cc-switch)  PYPROJECT="cc-switch/pyproject.toml" ;;
-            mcp-plugin) PYPROJECT="mcp-plugin/pyproject.toml" ;;
             local-embed) PYPROJECT="local-embed/pyproject.toml" ;;
           esac
 
@@ -103,7 +97,6 @@ jobs:
             slife)     python -m build ;;
             credstore) (cd credstore && python -m build) ;;
             cc-switch) (cd cc-switch && python -m build) ;;
-            mcp-plugin) (cd mcp-plugin && python -m build) ;;
             local-embed) (cd local-embed && python -m build) ;;
           esac
 
@@ -120,6 +113,5 @@ jobs:
               slife)     twine upload --verbose dist/* ;;
               credstore) twine upload --verbose credstore/dist/* ;;
               cc-switch) twine upload --verbose cc-switch/dist/* ;;
-              mcp-plugin) twine upload --verbose mcp-plugin/dist/* ;;
               local-embed) twine upload --verbose local-embed/dist/* ;;
             esac
