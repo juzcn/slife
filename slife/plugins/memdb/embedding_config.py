@@ -1,12 +1,13 @@
 """Embedding configuration helpers — read, write, report.
 
 Manages the top-level ``embeddings`` section of ``slife.json5`` — the
-first-class, shared config for memdb + memfiles semantic search.  Two
-levels mirror the LLM ``models.providers`` shape: each provider is an
-OpenAI-compatible endpoint (``base_url`` + ``api_key``) with an optional
-``models`` list; ``active_model`` (``"provider/model"`` or ``"provider"``)
-is configuration-authoritative.  The embedder itself is owned by
-``SemanticManager`` (semantic.py); this module never mutates it.
+first-class, shared config for memdb + memfiles semantic search.  Each
+provider is **one OpenAI-compatible endpoint**: ``base_url`` + ``api_key``
+and a single ``model`` (the id sent on ``/v1/embeddings``).
+``active_model`` names the active provider.  The vector dimension is never
+configured — it is discovered from the endpoint at runtime.  The embedder
+itself is owned by ``SemanticManager`` (semantic.py); this module never
+mutates it.
 """
 
 import logging
@@ -60,47 +61,36 @@ def write_embedding_config(cfg: dict) -> None:
 
 
 def _active_endpoint(cfg: dict) -> dict:
-    """Resolve the active provider + model ref from an embeddings section.
+    """Resolve the active provider from an embeddings section.
 
     Returns ``{"provider": str, "base_url": str, "api_key": str,
-    "model": str, "dim": int}`` — ``model``/``dim`` empty when not
-    configured.  ``active_model`` is ``"provider/model"`` or bare
-    ``"provider"``; a bare provider defers the model to the endpoint's
-    /v1/models active model (or first entry).
+    "model": str}``.  Each provider is one OpenAI-compatible endpoint with a
+    single ``model`` (the id sent on ``/v1/embeddings``); ``active_model``
+    selects the provider.  A model may be empty when the provider omits it —
+    the client then discovers one from ``/v1/models``.
+
+    The vector dimension is deliberately NOT configured or resolved here —
+    it is discovered at runtime from the OpenAI-compatible endpoint: known
+    model families are guessed, anything else is probed before the vec0
+    tables are built (see :class:`~slife.plugins.memdb.embeddings.EmbeddingClient`).
     """
     providers = cfg.get("providers", {})
     if not isinstance(providers, dict) or not providers:
-        return {"provider": "", "base_url": "", "api_key": "",
-                "model": "", "dim": 0}
-    active_ref = cfg.get("active_model", "")
-    pid = active_ref.split("/", 1)[0] if active_ref else next(iter(providers))
+        return {"provider": "", "base_url": "", "api_key": "", "model": ""}
+    active = cfg.get("active_model", "")
+    pid = active if active in providers else next(iter(providers))
     pcfg = providers.get(pid)
     if not isinstance(pcfg, dict):
         pcfg = {}
         pid = next(iter(providers))
         pcfg = providers.get(pid)
     if not isinstance(pcfg, dict):
-        return {"provider": "", "base_url": "", "api_key": "",
-                "model": "", "dim": 0}
-    mid = active_ref.split("/", 1)[1] if "/" in active_ref else ""
-    dim = 0
-    if mid:
-        for m in (pcfg.get("models") or []):
-            if isinstance(m, dict) and m.get("model") == mid:
-                dim = int(m.get("dim", 0) or 0)
-                break
-    elif pcfg.get("models"):
-        # No explicit model — the endpoint's active model wins, but a
-        # configured first-entry dim is a useful provisional width.
-        first = next((m for m in pcfg["models"] if isinstance(m, dict)), None)
-        if first:
-            dim = int(first.get("dim", 0) or 0)
+        return {"provider": "", "base_url": "", "api_key": "", "model": ""}
     return {
         "provider": pid,
         "base_url": pcfg.get("base_url", ""),
         "api_key": pcfg.get("api_key", ""),
-        "model": mid,
-        "dim": dim,
+        "model": pcfg.get("model", ""),
     }
 
 
@@ -111,8 +101,7 @@ def get_active_endpoint() -> dict:
     """
     cfg = read_embedding_config()
     if cfg is None:
-        return {"provider": "", "base_url": "", "api_key": "",
-                "model": "", "dim": 0}
+        return {"provider": "", "base_url": "", "api_key": "", "model": ""}
     return _active_endpoint(cfg)
 
 
@@ -145,7 +134,7 @@ def make_check_report() -> dict:
             "configured": True,
             "provider": ep["provider"],
             "model": ep["model"],
-            "dimension": ep["dim"],
+            "dimension": 0,
             "available": False,
             "hint": (
                 f"Provider '{ep['provider']}' has no base_url configured. "
@@ -162,7 +151,7 @@ def make_check_report() -> dict:
         "configured": True,
         "provider": ep["provider"],
         "model": ep["model"],
-        "dimension": client.dimension if client.available else ep["dim"],
+        "dimension": client.dimension if client.available else 0,
         "available": client.available,
         "base_url": ep["base_url"],
         "enabled": bool(cfg.get("enabled", True)),

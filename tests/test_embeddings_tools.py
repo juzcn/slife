@@ -1,11 +1,15 @@
-"""Tests for embeddings native tools — list / set / switch / remove / enable."""
+"""Tests for embeddings native tools — list / set / switch / remove / enable.
+
+Each provider is one OpenAI-compatible endpoint (base_url + api_key + single
+model); tools manage providers, not a per-provider model registry.
+"""
 
 import pytest; pytestmark = pytest.mark.unit
 
 import json5
 import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from slife.tools.embeddings import (
     ListEmbeddingsTool,
@@ -37,9 +41,7 @@ def _make_path(tmp_path: Path) -> Path:
                 "openai": {
                     "base_url": "https://api.openai.com/v1",
                     "api_key": "${OPENAI_API_KEY}",
-                    "models": [
-                        {"model": "text-embedding-3-small", "dim": 1536},
-                    ],
+                    "model": "text-embedding-3-small",
                 },
             },
             "active_model": "local-embed",
@@ -62,13 +64,14 @@ def _no_reload(tool) -> None:
 
 class TestListEmbeddingsTool:
     @pytest.mark.asyncio
-    async def test_lists_providers_and_models(self, tmp_path):
+    async def test_lists_providers(self, tmp_path):
         p = _make_path(tmp_path)
         tool = ListEmbeddingsTool(config_path=p)
         result = await tool.execute()
         assert "local-embed" in result
         assert "openai" in result
         assert "http://127.0.0.1:8000/v1" in result
+        assert "text-embedding-3-small" in result
         assert "★" in result            # active marker
         assert "local-embed" in result
 
@@ -86,7 +89,7 @@ class TestListEmbeddingsTool:
 
 class TestSetEmbeddingsTool:
     @pytest.mark.asyncio
-    async def test_adds_new_provider(self, tmp_path):
+    async def test_creates_new_provider(self, tmp_path):
         p = _make_path(tmp_path)
         tool = SetEmbeddingsTool(config_path=p)
         _no_reload(tool)
@@ -94,26 +97,26 @@ class TestSetEmbeddingsTool:
             provider="bedrock", model="cohere.embed",
             base_url="https://bedrock.example/v1", api_key="sk-b",
         )
-        assert "Added" in result
+        assert "Created" in result
         raw = _read_config(p)
         emb = raw["embeddings"]
         assert "bedrock" in emb["providers"]
         assert emb["providers"]["bedrock"]["base_url"] == "https://bedrock.example/v1"
-        assert emb["providers"]["bedrock"]["models"][0]["model"] == "cohere.embed"
+        assert emb["providers"]["bedrock"]["model"] == "cohere.embed"
 
     @pytest.mark.asyncio
-    async def test_updates_existing_model(self, tmp_path):
+    async def test_updates_existing_provider_model(self, tmp_path):
         p = _make_path(tmp_path)
         tool = SetEmbeddingsTool(config_path=p)
         _no_reload(tool)
         result = await tool.execute(
-            provider="openai", model="text-embedding-3-small", dim=2048,
+            provider="openai", model="text-embedding-3-large",
         )
         assert "Updated" in result
         raw = _read_config(p)
-        models = raw["embeddings"]["providers"]["openai"]["models"]
-        assert any(m["model"] == "text-embedding-3-small" and m["dim"] == 2048
-                   for m in models)
+        pcfg = raw["embeddings"]["providers"]["openai"]
+        assert pcfg["model"] == "text-embedding-3-large"
+        assert "dim" not in pcfg
 
     @pytest.mark.asyncio
     async def test_provider_missing_requires_base_url(self, tmp_path):
@@ -131,7 +134,7 @@ class TestSetEmbeddingsTool:
         await tool.execute(provider="p1", model="m1",
                            base_url="http://x/v1", api_key="k")
         raw = _read_config(p)
-        assert raw["embeddings"]["active_model"] == "p1/m1"
+        assert raw["embeddings"]["active_model"] == "p1"
 
     @pytest.mark.asyncio
     async def test_hot_reload_calls_plugins(self, tmp_path):
@@ -166,37 +169,20 @@ class TestSetEmbeddingsTool:
 
 class TestSwitchEmbeddingsTool:
     @pytest.mark.asyncio
-    async def test_switches_to_provider(self, tmp_path):
+    async def test_switches_provider(self, tmp_path):
         p = _make_path(tmp_path)
         tool = SwitchEmbeddingsTool(config_path=p)
         _no_reload(tool)
-        result = await tool.execute(ref="openai")
+        result = await tool.execute(provider="openai")
         assert "Switched" in result
         raw = _read_config(p)
         assert raw["embeddings"]["active_model"] == "openai"
 
     @pytest.mark.asyncio
-    async def test_switches_to_model(self, tmp_path):
-        p = _make_path(tmp_path)
-        tool = SwitchEmbeddingsTool(config_path=p)
-        _no_reload(tool)
-        result = await tool.execute(ref="openai/text-embedding-3-small")
-        assert "Switched" in result
-        raw = _read_config(p)
-        assert raw["embeddings"]["active_model"] == "openai/text-embedding-3-small"
-
-    @pytest.mark.asyncio
     async def test_provider_not_found(self, tmp_path):
         p = _make_path(tmp_path)
         tool = SwitchEmbeddingsTool(config_path=p)
-        result = await tool.execute(ref="nope")
-        assert "not found" in result
-
-    @pytest.mark.asyncio
-    async def test_model_not_in_provider(self, tmp_path):
-        p = _make_path(tmp_path)
-        tool = SwitchEmbeddingsTool(config_path=p)
-        result = await tool.execute(ref="openai/not-a-model")
+        result = await tool.execute(provider="nope")
         assert "not found" in result
 
 
@@ -205,20 +191,20 @@ class TestSwitchEmbeddingsTool:
 
 class TestRemoveEmbeddingsTool:
     @pytest.mark.asyncio
-    async def test_removes_model(self, tmp_path):
+    async def test_removes_provider(self, tmp_path):
         p = _make_path(tmp_path)
         tool = RemoveEmbeddingsTool(config_path=p)
         _no_reload(tool)
-        result = await tool.execute(ref="openai/text-embedding-3-small")
+        result = await tool.execute(provider="openai")
         assert "Removed" in result
         raw = _read_config(p)
-        assert "text-embedding-3-small" not in str(raw["embeddings"])
+        assert "openai" not in raw["embeddings"]["providers"]
 
     @pytest.mark.asyncio
     async def test_cannot_remove_active(self, tmp_path):
         p = _make_path(tmp_path)
         tool = RemoveEmbeddingsTool(config_path=p)
-        result = await tool.execute(ref="local-embed")
+        result = await tool.execute(provider="local-embed")
         assert "cannot remove the active" in result
 
     @pytest.mark.asyncio
@@ -232,7 +218,7 @@ class TestRemoveEmbeddingsTool:
         })
         tool = RemoveEmbeddingsTool(config_path=p)
         _no_reload(tool)
-        await tool.execute(ref="p1")
+        await tool.execute(provider="p1")
         raw = _read_config(p)
         assert "embeddings" not in raw
 

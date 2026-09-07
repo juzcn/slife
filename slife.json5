@@ -375,19 +375,13 @@
   },
   embeddings: {
     providers: {
-      local: {
-        base_url: "http://127.0.0.1:17347/v1",
+      local_embed: {
+        base_url: "http://127.0.0.1:17347/v1",   // OpenAI 兼容端点;每个 provider 一个 model
         model: "bge-m3",
-        api_key: "local",
-        models: [
-          {
-            model: "bge-m3",
-            dim: 1024
-          }
-        ]
+        api_key: "local"
       }
     },
-    active_model: "local",
+    active_model: "local_embed",
     enabled: true
   }
 }

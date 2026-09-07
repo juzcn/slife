@@ -224,15 +224,19 @@ class EmbeddingClient:
         """Create an EmbeddingClient from slife.json5 config.
 
         Reads the first-class top-level ``embeddings`` section — the shared
-        memdb + memfiles config.  Two levels mirror the LLM
-        ``models.providers`` shape:
+        memdb + memfiles config.  Each provider is one OpenAI-compatible
+        endpoint:
 
-          - ``embeddings.providers.<pid>.base_url/api_key`` — OpenAI-compatible
-            endpoint (local-embed is one such endpoint)
-          - ``embeddings.active_model`` = ``"provider/model"`` or bare
-            ``"provider"`` — configuration-authoritative.  A bare provider
-            (or a configured model the endpoint doesn't list) defers the
-            model to the endpoint's /v1/models active model on ``load()``.
+          - ``embeddings.providers.<pid>.base_url/api_key`` — the endpoint
+            (local-embed is one such endpoint)
+          - ``embeddings.providers.<pid>.model`` — the model id POSTed on
+            ``/v1/embeddings``
+          - ``embeddings.active_model`` — the active provider id.
+
+        The vector dimension is NOT configured — it is auto-detected: known
+        model families are guessed (``_KNOWN_MODELS``); anything else is
+        probed from the endpoint (``_probe_api_dim`` / ``_discover_model``)
+        before the vec0 tables are built.
 
         When *quiet* is True, unavailability messages are logged at DEBUG
         instead of WARNING — useful for health checks that probe status
@@ -274,7 +278,6 @@ class EmbeddingClient:
         api_key = ep["api_key"]
         base_url = ep["base_url"]
         model = ep["model"]
-        dim = ep["dim"]
 
         # Skip unresolved ${VAR} placeholders — they are NOT real API keys.
         # The install template ships with api_key: "${DEEPSEEK_API_KEY}" and
@@ -287,12 +290,11 @@ class EmbeddingClient:
                 "embeddings_unavailable backend=none reason=no_base_url"
             )
 
-        # A configured ``dim`` is authoritative; a recognised model family
-        # is a good guess.  Otherwise the width is provisional (1024) until
-        # the backend reports it (probe / /v1/models) before vec0 is built.
-        _dim_known = bool(dim) or _known_model(model) is not None
-        if not dim:
-            dim = _guess_dim(model)
+        # The width is never configured.  A recognised model family is a
+        # good guess; otherwise it is provisional until the OpenAI endpoint
+        # reports it (probe / /v1/models) before vec0 is built.
+        _dim_known = _known_model(model) is not None
+        dim = _guess_dim(model)
         return cls(model=model, api_key=api_key, base_url=base_url, dim=dim,
                    dim_known=_dim_known, quiet=quiet, enabled=enabled)
 
@@ -509,13 +511,13 @@ class EmbeddingClient:
     async def _discover_model(self) -> bool:
         """Query ``GET {base_url}/models`` to pin the model + dimension.
 
-        Model selection is CONFIGURATION-AUTHORITATIVE: when the config
-        names a model (``active_model = "provider/model"``), that id is
-        used verbatim and only its ``dimension`` (if reported) is picked
-        up.  When the config names no model (bare ``"provider"``), the
-        endpoint's ``active`` model wins (local-embed sets ``active:
-        true`` on /v1/models); otherwise the first entry.  On success this
-        pins ``self._model`` / ``self._dim``.  Returns True on success.
+        Model selection is CONFIGURATION-AUTHORITATIVE: when the active
+        provider configures a ``model``, that id is used verbatim and only
+        its ``dimension`` (if reported) is picked up.  When the provider
+        configures no model, the endpoint's ``active`` model wins
+        (local-embed sets ``active: true`` on /v1/models); otherwise the
+        first entry.  On success this pins ``self._model`` / ``self._dim``.
+        Returns True on success.
 
         Defensive about attributes — tests construct clients via
         ``__new__`` without running ``__init__``.

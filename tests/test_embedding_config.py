@@ -131,7 +131,7 @@ class TestActiveEndpoint:
         assert ep["base_url"] == ""
         assert ep["model"] == ""
 
-    def test_bare_provider(self, mock_config_file):
+    def test_provider_without_model(self, mock_config_file):
         cfg = _emb_config(
             providers={"p1": {"base_url": "http://x/v1", "api_key": "k"}},
             active="p1",
@@ -143,30 +143,16 @@ class TestActiveEndpoint:
         assert ep["api_key"] == "k"
         assert ep["model"] == ""
 
-    def test_provider_with_model(self, mock_config_file):
+    def test_provider_model_resolved(self, mock_config_file):
         cfg = _emb_config(
-            providers={"p1": {
-                "base_url": "http://x/v1", "api_key": "k",
-                "models": [{"model": "m1", "dim": 768}, {"model": "m2"}],
-            }},
-            active="p1/m1",
+            providers={"p1": {"base_url": "http://x/v1", "api_key": "k",
+                              "model": "m1"}},
+            active="p1",
         )
         mock_config_file["content"] = json5.dumps({"embeddings": cfg})
         ep = get_active_endpoint()
         assert ep["provider"] == "p1"
         assert ep["model"] == "m1"
-        assert ep["dim"] == 768
-
-    def test_provider_model_without_dim(self, mock_config_file):
-        cfg = _emb_config(
-            providers={"p1": {"base_url": "http://x/v1",
-                              "models": [{"model": "m1"}]}},
-            active="p1/m1",
-        )
-        mock_config_file["content"] = json5.dumps({"embeddings": cfg})
-        ep = get_active_endpoint()
-        assert ep["model"] == "m1"
-        assert ep["dim"] == 0
 
     def test_active_provider_missing_falls_back_first(self, mock_config_file):
         cfg = _emb_config(

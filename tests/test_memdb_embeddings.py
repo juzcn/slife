@@ -147,7 +147,7 @@ class TestEmbeddingClientFromConfig:
     @patch("pathlib.Path.read_text")
     @patch("pathlib.Path.exists")
     def test_config_model_picked_up(self, mock_exists, mock_read_text):
-        """A configured active model is picked up verbatim."""
+        """The provider's configured model is picked up verbatim."""
         mock_exists.return_value = True
         mock_read_text.return_value = '{}'
 
@@ -157,10 +157,10 @@ class TestEmbeddingClientFromConfig:
                     "p1": {
                         "base_url": "http://127.0.0.1:8000/v1",
                         "api_key": "local",
-                        "models": [{"model": "bge-m3", "dim": 1024}],
+                        "model": "bge-m3",
                     },
                 },
-                "active_model": "p1/bge-m3",
+                "active_model": "p1",
                 "enabled": True,
             },
         }
@@ -211,10 +211,10 @@ class TestEmbeddingClientFromConfig:
                     "p1": {
                         "base_url": "http://127.0.0.1:8000/v1",
                         "api_key": "k",
-                        "models": [{"model": "my-custom-embedder"}],
+                        "model": "my-custom-embedder",
                     },
                 },
-                "active_model": "p1/my-custom-embedder",
+                "active_model": "p1",
                 "enabled": True,
             },
         }
@@ -239,10 +239,10 @@ class TestEmbeddingClientFromConfig:
                     "p1": {
                         "base_url": "http://127.0.0.1:8000/v1",
                         "api_key": "k",
-                        "models": [{"model": "text-embedding-3-small"}],
+                        "model": "text-embedding-3-small",
                     },
                 },
-                "active_model": "p1/text-embedding-3-small",
+                "active_model": "p1",
                 "enabled": True,
             },
         }

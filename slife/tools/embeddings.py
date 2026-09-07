@@ -1,16 +1,18 @@
 """Embedding (semantic-search) configuration tools.
 
-embeddings_model_list     — list configured providers + models (active ★)
-embeddings_model_set      — upsert a model on a provider (creates provider if new)
-embeddings_model_switch   — switch the active embedding model/endpoint
-embeddings_model_remove   — remove a model (or provider) from the config
+embeddings_model_list     — list configured embedding providers (active ★)
+embeddings_model_set      — upsert a provider endpoint (creates provider if new)
+embeddings_model_switch   — switch the active embedding provider
+embeddings_model_remove   — remove a provider from the config
 embeddings_enable         — global on/off for semantic (hybrid) search
 
 The managed section is the top-level ``embeddings`` of slife.json5 — the
-first-class, shared config for memdb + memfiles.  It mirrors the LLM
-``models.providers`` shape: each provider is an OpenAI-compatible endpoint
-(``base_url`` + ``api_key``) with an optional ``models`` list; ``active_model``
-(``"provider/model"`` or bare ``"provider"``) is configuration-authoritative.
+first-class, shared config for memdb + memfiles.  Each provider is **one
+OpenAI-compatible endpoint**: ``base_url`` + ``api_key`` and a single
+``model`` (the id sent on ``/v1/embeddings``); ``active_model`` names the
+active provider.  The vector dimension is never configured — it is
+discovered from the endpoint at runtime (known model families guessed,
+anything else probed before the vec0 tables are built).
 
 After a persist, the running memdb + memfiles plugins are asked to reload
 their semantic index via their internal ``__memory_reload_semantic`` /
@@ -33,7 +35,7 @@ _EMBEDDINGS_KEY = "embeddings"
 
 
 def _embeddings_section(raw: dict) -> dict:
-    """Get or create the top-level embeddings.providers: section."""
+    """Get or create the top-level embeddings section."""
     emb = raw.setdefault(_EMBEDDINGS_KEY, {})
     if not isinstance(emb, dict):
         emb = {}
@@ -46,17 +48,8 @@ def _embeddings_section(raw: dict) -> dict:
 
 
 def _active_ref(cfg: dict) -> str:
-    """Return the active_model ref (``"pid"`` or ``"pid/model"``)."""
+    """Return the active_model ref (a provider id)."""
     return cfg.get("active_model", "")
-
-
-def _provider_models(pcfg: dict) -> list:
-    """Get or create a provider's models list."""
-    models = pcfg.setdefault("models", [])
-    if not isinstance(models, list):
-        models = []
-        pcfg["models"] = models
-    return models
 
 
 async def _hot_reload(ctx, enabled: bool = True) -> str:
@@ -112,12 +105,12 @@ class _EmbeddingsConfigTool(_ConfigPathMixin, Tool):
 
 
 class ListEmbeddingsTool(_ConfigPathMixin, Tool):
-    """List configured embedding providers + models."""
+    """List configured embedding providers."""
 
     name: ClassVar[str] = "embeddings_model_list"
     category: ClassVar[str] = "embeddings"
     description: ClassVar[str] = (
-        "List configured embedding providers and models (active model marked ★)."
+        "List configured embedding providers (active provider marked ★)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -145,41 +138,30 @@ class ListEmbeddingsTool(_ConfigPathMixin, Tool):
             base = pcfg.get("base_url", "")
             key = pcfg.get("api_key", "")
             key_disp = "set" if key else "not set"
-            models = pcfg.get("models", [])
-            if not isinstance(models, list):
-                models = []
-            lines.append(f"\n## {pid}  (base: {base}, api_key: {key_disp})")
-            if not models:
-                ref = pid
-                star = "★" if ref == active else " "
-                lines.append(f"  {star} `{ref}` — (model auto-discovered from endpoint)")
-                total += 1
-            else:
-                for m in models:
-                    if not isinstance(m, dict):
-                        continue
-                    model_id = m.get("model", "?")
-                    ref = f"{pid}/{model_id}"
-                    star = "★" if ref == active else " "
-                    dim = m.get("dim", "?")
-                    lines.append(f"  {star} `{ref}`  dim={dim}")
-                    total += 1
-        lines.insert(0, f"**{total} embedding model(s)** configured. "
+            model = pcfg.get("model", "")
+            model_disp = f"`{model}`" if model else "(endpoint default)"
+            star = "★" if pid == active else " "
+            lines.append(
+                f"  {star} `{pid}`  model={model_disp}  "
+                f"(base: {base}, api_key: {key_disp})"
+            )
+            total += 1
+        lines.insert(0, f"**{total} embedding provider(s)** configured. "
                         f"Active: `{active}`  enabled={enabled}")
         return "\n".join(lines)
 
 
-# ── Set embedding model ──────────────────────────────────────────────
+# ── Set embedding provider ───────────────────────────────────────────
 
 
 class SetEmbeddingsTool(_EmbeddingsConfigTool):
-    """Add or update an embedding model on a provider."""
+    """Add or update an embedding provider endpoint."""
 
     name: ClassVar[str] = "embeddings_model_set"
     category: ClassVar[str] = "embeddings"
     description: ClassVar[str] = (
-        "Add/update an embedding model (upsert; creates provider if new; "
-        "hot-reloads the semantic index)."
+        "Add/update an embedding provider (an OpenAI-compatible endpoint; "
+        "upsert, creates provider if new; hot-reloads the semantic index)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -187,10 +169,6 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
             "provider": {
                 "type": "string",
                 "description": "Provider ID, created if new.",
-            },
-            "model": {
-                "type": "string",
-                "description": "Embedding model id (e.g. bge-m3).",
             },
             "base_url": {
                 "type": "string",
@@ -200,12 +178,13 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
                 "type": "string",
                 "description": "API key (${VAR} ref or plaintext); required for new providers.",
             },
-            "dim": {
-                "type": "integer",
-                "description": "Embedding dimension (auto-discovered when omitted).",
+            "model": {
+                "type": "string",
+                "description": "Embedding model id on this endpoint (e.g. bge-m3); "
+                               "omitted → the endpoint default is used.",
             },
         },
-        "required": ["provider", "model"],
+        "required": ["provider"],
     }
 
     async def execute(self, **kwargs) -> str:
@@ -217,9 +196,7 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
         providers = emb["providers"]
 
         pid = kwargs["provider"]
-        model_id = kwargs["model"]
-
-        # Provider: get or create
+        created = False
         if pid not in providers or not isinstance(providers[pid], dict):
             if "base_url" not in kwargs:
                 return (
@@ -227,6 +204,7 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
                     f"Provide base_url and api_key to create it."
                 )
             providers[pid] = {}
+            created = True
         pcfg = providers[pid]
         if not isinstance(pcfg, dict):
             pcfg = {}
@@ -236,121 +214,90 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
             pcfg["base_url"] = kwargs["base_url"]
         if "api_key" in kwargs:
             pcfg["api_key"] = kwargs["api_key"]
+        if "model" in kwargs:
+            pcfg["model"] = kwargs["model"]
 
-        models = _provider_models(pcfg)
-        replaced = False
-        for i, m in enumerate(models):
-            if isinstance(m, dict) and m.get("model") == model_id:
-                entry = {**m, "model": model_id}
-                if "dim" in kwargs:
-                    entry["dim"] = kwargs["dim"]
-                models[i] = entry
-                replaced = True
-                break
-        if not replaced:
-            entry = {"model": model_id}
-            if "dim" in kwargs:
-                entry["dim"] = kwargs["dim"]
-            models.append(entry)
-
-        # If no active_model yet, this becomes the active one.
+        # If no active provider yet, this becomes the active one.
         if not _active_ref(emb):
-            emb["active_model"] = f"{pid}/{model_id}"
+            emb["active_model"] = pid
 
         write_config(self._config_path, raw)
-        action = "Updated" if replaced else "Added"
-        ref = f"{pid}/{model_id}"
+        action = "Created" if created else "Updated"
         reload_note = await _hot_reload(getattr(self, "_ctx", None), enabled=True)
-        logger.info("embeddings_model_%s ref=%s", action.lower(), ref)
-        return f"[OK] {action} embedding model `{ref}`. {reload_note}"
+        logger.info("embeddings_model_%s provider=%s", action.lower(), pid)
+        return f"[OK] {action} embedding provider `{pid}`. {reload_note}"
 
 
-# ── Switch embedding model ───────────────────────────────────────────
+# ── Switch embedding provider ────────────────────────────────────────
 
 
 class SwitchEmbeddingsTool(_EmbeddingsConfigTool):
-    """Switch the active embedding model/endpoint."""
+    """Switch the active embedding provider."""
 
     name: ClassVar[str] = "embeddings_model_switch"
     category: ClassVar[str] = "embeddings"
     description: ClassVar[str] = (
-        "Switch the active embedding model/endpoint; ref from "
-        "embeddings_model_list."
+        "Switch the active embedding provider; ref from embeddings_model_list."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "ref": {
+            "provider": {
                 "type": "string",
-                "description": "Ref to activate ('provider/model' or bare 'provider').",
+                "description": "Provider id to activate.",
             },
         },
-        "required": ["ref"],
+        "required": ["provider"],
     }
 
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
             return "Error: config path not available."
 
-        ref = kwargs["ref"]
+        pid = kwargs["provider"]
         raw = read_config(self._config_path)
         emb = raw.get(_EMBEDDINGS_KEY, {})
         if not isinstance(emb, dict):
             return "Error: no embeddings configured."
-
-        pid = ref.split("/", 1)[0]
         providers = emb.get("providers", {})
         if not isinstance(providers, dict) or pid not in providers:
             return f"Error: provider '{pid}' not found. Use embeddings_model_list."
 
-        if "/" in ref:
-            mid = ref.split("/", 1)[1]
-            pcfg = providers[pid]
-            models = pcfg.get("models", []) if isinstance(pcfg, dict) else []
-            found = any(
-                isinstance(m, dict) and m.get("model") == mid
-                for m in models
-            )
-            if not found:
-                return f"Error: model '{mid}' not found in provider '{pid}'. Use embeddings_model_list."
-
         old = _active_ref(emb) or "(none)"
-        emb["active_model"] = ref
+        emb["active_model"] = pid
         write_config(self._config_path, raw)
         reload_note = await _hot_reload(getattr(self, "_ctx", None), enabled=True)
-        logger.info("embeddings_model_switched from=%s to=%s", old, ref)
-        return f"[OK] Switched active embedding model from `{old}` to `{ref}`. {reload_note}"
+        logger.info("embeddings_model_switched from=%s to=%s", old, pid)
+        return f"[OK] Switched active embedding provider from `{old}` to `{pid}`. {reload_note}"
 
 
-# ── Remove embedding model ───────────────────────────────────────────
+# ── Remove embedding provider ────────────────────────────────────────
 
 
 class RemoveEmbeddingsTool(_EmbeddingsConfigTool):
-    """Remove an embedding model (or a whole provider)."""
+    """Remove an embedding provider."""
 
     name: ClassVar[str] = "embeddings_model_remove"
     category: ClassVar[str] = "embeddings"
     description: ClassVar[str] = (
-        "Remove an embedding model by ref ('provider/model', or bare "
-        "'provider' for the whole provider); cannot remove the active model."
+        "Remove an embedding provider by id; cannot remove the active provider."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "ref": {
+            "provider": {
                 "type": "string",
-                "description": "Ref to remove ('provider/model' or bare 'provider').",
+                "description": "Provider id to remove.",
             },
         },
-        "required": ["ref"],
+        "required": ["provider"],
     }
 
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
             return "Error: config path not available."
 
-        ref = kwargs["ref"]
-        pid = ref.split("/", 1)[0]
+        pid = kwargs["provider"]
         raw = read_config(self._config_path)
         emb = raw.get(_EMBEDDINGS_KEY, {})
         if not isinstance(emb, dict):
@@ -359,36 +306,20 @@ class RemoveEmbeddingsTool(_EmbeddingsConfigTool):
         if not isinstance(providers, dict) or pid not in providers:
             return f"Error: provider '{pid}' not found."
 
-        if _active_ref(emb) == ref:
+        if _active_ref(emb) == pid:
             return (
-                f"Error: cannot remove the active model `{ref}`. "
-                f"Switch to another model first with embeddings_model_switch."
+                f"Error: cannot remove the active provider `{pid}`. "
+                f"Switch to another provider first with embeddings_model_switch."
             )
 
-        if "/" in ref:
-            mid = ref.split("/", 1)[1]
-            pcfg = providers[pid]
-            models = pcfg.get("models", []) if isinstance(pcfg, dict) else []
-            removed = False
-            for i, m in enumerate(models):
-                if isinstance(m, dict) and m.get("model") == mid:
-                    del models[i]
-                    removed = True
-                    break
-            if not removed:
-                return f"Error: model '{mid}' not found in provider '{pid}'."
-            if not models:
-                del providers[pid]
-        else:
-            del providers[pid]
-
+        del providers[pid]
         if not providers:
             raw.pop(_EMBEDDINGS_KEY, None)
 
         write_config(self._config_path, raw)
         reload_note = await _hot_reload(getattr(self, "_ctx", None), enabled=True)
-        logger.info("embeddings_model_removed ref=%s", ref)
-        return f"[OK] Removed `{ref}`. {reload_note}"
+        logger.info("embeddings_model_removed provider=%s", pid)
+        return f"[OK] Removed `{pid}`. {reload_note}"
 
 
 # ── Enable/disable embeddings ────────────────────────────────────────
