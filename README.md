@@ -1,8 +1,10 @@
 # Slife
 
-> **Terminology.** The authoritative definitions of the project's terms —
-> model-facing and developer-facing alike — live in **[Glossary.md](Glossary.md)**.
-> This README uses those terms without restating them.
+> **Tool tiers, in one line.** Slife presents three kinds of tools to the LLM,
+> indistinguishable at the call site: **native** tools (shipped in
+> `slife/tools/`, auto-discovered), **built-in plugin** tools (first-class,
+> bare names — e.g. `turn_search`, `mcp_gateway_set`), and **external MCP
+> server** tools (`{server}__{tool}`, loaded on demand).
 
 **Terminal-based AI agent** — a function-calling loop with minimum harness. Chat with an LLM that calls tools, remembers every turn forever, and orchestrates other agents.
 
@@ -13,7 +15,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: 65 native tools across 12 categories (including a reserved harness tool, `_sys_note`), eight internal plugin services (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, and the MCP gateway), the `local-embed` embedding daemon (started manually), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: 65 native tools across 12 categories (including a reserved harness tool, `_sys_note`), eight internal plugin services (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, and the MCP gateway, `mcp-gateway`), the `local-embed` embedding daemon (started manually), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -353,7 +355,7 @@ Every tool additionally accepts three tool meta-parameters: `_timeout` (per-call
 
 | Server | LLM-visible tools |
 |--------|-------------------|
-| `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`, `mcp_tool_search` |
+| `mcp-gateway` | `mcp_gateway_set`, `mcp_gateway_set_enabled`, `mcp_gateway_remove`, `mcp_gateway_list`, `mcp_gateway_list_tools`, `mcp_gateway_tool_search` |
 | `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read` |
@@ -362,7 +364,7 @@ Every tool additionally accepts three tool meta-parameters: `_timeout` (per-call
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + one tool per registered job (e.g. `translate`) |
 
-Built-in plugin tools are registered under their bare names (e.g. `turn_search`, `wechat_login`, `mcp_set`); each schema carries a `[<server>] ` description prefix. External MCP servers appear as `{server}__{tool}` (e.g. `filesystem__read_file`) and are **loaded on demand**: the LLM discovers them with `mcp_tool_search` — a hybrid keyword/semantic search over the gateway's in-memory tool catalog — and loads a chosen one with `mcp_tool_load`. The catalog is rebuilt live from connections at load and on every (re)connect, so it always reflects exactly what the runtime can use — no offline rebuild step exists. A server with `auto_load: true` keeps the older wholesale registration; enable/disable is server-granular (`mcp_set_enabled`).
+Built-in plugin tools are registered under their bare names (e.g. `turn_search`, `wechat_login`, `mcp_gateway_set`); each schema carries a `[<server>] ` description prefix. External MCP servers appear as `{server}__{tool}` (e.g. `filesystem__read_file`) and are **loaded on demand**: the LLM discovers them with `mcp_gateway_tool_search` — a hybrid keyword/semantic search over the gateway's in-memory tool catalog — and loads a chosen one with `mcp_tool_load`. The catalog is rebuilt live from connections at load and on every (re)connect, so it always reflects exactly what the runtime can use — no offline rebuild step exists. A server with `auto_load: true` keeps the older wholesale registration; enable/disable is server-granular (`mcp_gateway_set_enabled`).
 
 **Windows execution.** `execute_shell` runs in the detected shell — PowerShell or cmd (the same value the system prompt reports, so the LLM's syntax actually executes) — and its output is decoded with the system code page (GBK/cp936 on Chinese Windows). `run_python_script` forces the child Python to UTF-8 (`-X utf8`) so non-ASCII output can't crash the child.
 
@@ -417,22 +419,25 @@ Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs a
 
 ### Plugins
 
-Eight internal plugins as independent child processes (the MCP gateway is a
-built-in plugin too — third-party capability enters only as a standard MCP
-server in `mcp-plugin.json5`, never as a Python plugin):
+Eight internal plugins run as independent child processes, each declared by
+one row in the central plugin spec and driven by the same uniform lifecycle
+(spawn → MCP-handshake readiness → watchdog → health). One of them —
+**mcp-gateway** — is the gateway to external MCP servers: third-party
+capability enters only as a standard MCP server in `mcp-plugin.json5`, never
+as a Python plugin:
 
 | Plugin | Role |
 |--------|------|
-| **slife-mcp** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp_gateway`). Maintains an in-memory tool catalog (rebuilt live from connections, complete tool schemas included) searched by a schema-aware hybrid `mcp_tool_search`; external tools load on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration) |
-| **slife-memdb** | Turns database with hybrid search |
-| **slife-wechat** | Bidirectional WeChat messaging |
-| **slife-memfiles** | Notes / diary / files cabinet (private). Notes & diary dual-written to markdown + a SQLite hybrid index. All save tools return local paths — never auto-publish |
-| **slife-sharefile** | Public file sharing — sole tool `share_file` publishes a local file as a public HTTPS URL (`/share` route on the same port; ngrok tunnel owned by the plugin) |
-| **slife-a2a** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
-| **slife-media** | Non-chat AI generation (image, video, TTS, ASR) from any provider — owns the `media:` config section and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
-| **slife-job-coding** | Deterministic **Jobs** as MCP tools — code-defined functions in `~/.slife/jobs/` run with exactly their declared args; one-shot LLM calls via `llm.chat` on `job_coding_model`. Tools: `job-list`, `job-write`, `job-remove`, `job-run` + one tool per job |
+| **mcp-gateway** | The **MCP gateway** — proxies external MCP servers (stdio / SSE / Streamable HTTP; package `slife.plugins.mcp_gateway`). Management tools: `mcp_gateway_set`, `mcp_gateway_set_enabled`, `mcp_gateway_remove`, `mcp_gateway_list`, `mcp_gateway_list_tools`, `mcp_gateway_tool_search`. Maintains an in-memory tool catalog (rebuilt live from connections, complete schemas included); external tools load on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration) |
+| **memdb** | Turns database with hybrid search |
+| **wechat** | Bidirectional WeChat messaging |
+| **memfiles** | Notes / diary / files cabinet (private). Notes & diary dual-written to markdown + a SQLite hybrid index. All save tools return local paths — never auto-publish |
+| **sharefile** | Public file sharing — sole tool `share_file` publishes a local file as a public HTTPS URL (`/share` route on the same port; ngrok tunnel owned by the plugin) |
+| **a2a** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
+| **media** | Non-chat AI generation (image, video, TTS, ASR) from any provider — owns the `media:` config section and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
+| **job-coding** | Deterministic **Jobs** as MCP tools — code-defined functions in `~/.slife/jobs/` run with exactly their declared args; one-shot LLM calls via `llm.chat` on `job_coding_model`. Tools: `job-list`, `job-write`, `job-remove`, `job-run` + one tool per job |
 
-External MCP servers configured in `mcp-plugin.json5` → `servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled). They are **loaded on demand** by default (discover with `mcp_tool_search`, load with `mcp_tool_load`); set `auto_load: true` on a server to bulk-register its tools on connect.
+External MCP servers configured in `mcp-plugin.json5` → `servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled). They are **loaded on demand** by default (discover with `mcp_gateway_tool_search`, load with `mcp_tool_load`); set `auto_load: true` on a server to bulk-register its tools on connect.
 
 All internal plugins run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP gateway watchdog also reconnects external servers after restart. Runtime health — `system_health` = the main-process `check_*` functions + each plugin's internal `__check` tool: `__check` reports only the plugin's raw technical state (facts and measurements, like a physical-examination report), and the harness interprets those facts into health levels and remediation; the watchdog is purely process-level.
 
@@ -490,8 +495,12 @@ uv pip install --python "$(uv tool dir)/slife" sentence-transformers        # sl
 
 ## Development
 
-For the canonical terminology, see [Glossary.md](Glossary.md); for the design
-and architecture, see [DESIGN.md](DESIGN.md).
+Developer docs are split by audience: **[DESIGN.md](DESIGN.md)** covers the
+design principles, agent loop, tool system, plugin lifecycle, MCP gateway,
+memory database, A2A mesh, credentials and project structure; the
+**[Plugin Contract](PLUGIN_CONTRACT.md)** is the authoritative spec of the
+plugin system (central `PluginSpec` table, the registry, the uniform
+lifecycle).
 
 ```bash
 git clone https://github.com/juzcn/slife.git

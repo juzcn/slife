@@ -1,7 +1,9 @@
 # Slife
 
-> **术语。** 项目术语的权威定义（面向模型与面向开发者的术语一致）见
-> **[Glossary.md](Glossary.md)**。本 README 直接使用这些术语，不再重复定义。
+> **工具分层，一句话。** Slife 向 LLM 呈现三类工具，调用侧无差别：**原生**
+> 工具（`slife/tools/` 自带、自动发现）、**内置插件**工具（一等公民、裸名——
+> 如 `turn_search`、`mcp_gateway_set`）、**外部 MCP server** 工具（`{server}__{tool}`，
+> 按需加载）。下文直接用这些词，不再重复定义。
 
 **终端 AI 智能体** — 基于函数调用循环的最小化框架。与 LLM 对话，它能调用工具、永久记忆每一轮对话、协调其他智能体。
 
@@ -12,7 +14,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：12 个类别共 65 个原生工具（含 1 个保留的 harness 工具 `_sys_note`）、六个内置插件服务外加独立的 `mcp-plugin` MCP 网关、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：12 个类别共 65 个原生工具（含 1 个保留的 harness 工具 `_sys_note`）、八个内部插件服务（memdb、wechat、memfiles、sharefile、a2a、media、job-coding，以及 MCP 网关 `mcp-gateway`）、手动启动的 `local-embed` 嵌入守护进程、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -102,24 +104,25 @@ powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/r
 
 ### 相关工具
 
-本仓库还发布四个独立的 PyPI 包，各自可独立安装：
+本仓库还附带三个独立可安装的 PyPI 包：
 
 | 包 | 安装 | 用途 |
-|---------|-------------------|---------|
+|---------|---------|---------|
 | `slife` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh \| bash` | 智能体（本 README） |
 | `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh \| bash` | 跨平台凭据存储 |
 | `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | 生成 `~/.claude/settings.json` |
-| `mcp-plugin` | 随 slife 安装，或 `uv tool install mcp-plugin` | 外部 MCP 服务器网关 |
+| `local-embed` | 随 slife 安装（独立守护进程） | 本地嵌入端点服务 |
 
-安装 slife 依赖 [credstore](credstore/README.md) 与
-[mcp-plugin](mcp-plugin/README.md)——**不会**安装 cc-switch。详见
-[cc-switch](cc-switch/README.md)、[credstore](credstore/README.md) 与
-[mcp-plugin](mcp-plugin/README.md) 各自的 README。
+MCP 网关作为 slife 的**内部插件**随 slife 发布（`slife.plugins.mcp_gateway`）；
+`local-embed` 是需要手动启动的独立守护进程（类似 Mosquitto）——slife 不会去
+spawn 它。安装 slife 依赖 [credstore](credstore/README.md)，但**不会**安装
+cc-switch。详见 [cc-switch](cc-switch/README.md)、
+[credstore](credstore/README.md)、[local-embed](local-embed/README.md) 各自的
+README。
 
-`slife`、`credstore`、`cc-switch` 各自有独立的一键安装脚本
-（macOS/Linux/WSL 用 `install.sh`，Windows 用 `install.ps1`）与卸载脚本，位于
-各自的包目录；`mcp-plugin` 没有自带安装脚本——随 slife 安装，或从 PyPI
-`uv tool install mcp-plugin`。
+`slife`、`credstore`、`cc-switch` 各自带一键安装/卸载脚本
+（macOS/Linux/WSL 用 `install.sh`，Windows 用 `install.ps1`），位于各自的包目录；
+`local-embed` 作为 slife 依赖提供 `local-embed` CLI（手动启动）。
 
 ## 快速开始
 
@@ -233,7 +236,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 | 类别 | 工具 |
 |------|------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_media`, `check_job_coding`, `check_mcp`, `check_a2a`, `check_watchdog`, `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user` |
+| System | `system_health`, `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
@@ -256,7 +259,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 
 | 服务器 | LLM 可见工具 |
 |--------|-------------|
-| `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
+| `mcp-gateway` | `mcp_gateway_set`, `mcp_gateway_set_enabled`, `mcp_gateway_remove`, `mcp_gateway_list`, `mcp_gateway_list_tools`, `mcp_gateway_tool_search` |
 | `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read` |
@@ -265,7 +268,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `translate`） |
 
-内置插件工具若已自带服务器名前缀（`mcp_set`、`wechat_login`）则原样注册，其余按 `{server}__{tool}` 命名。外部 MCP 服务器（`slife.json5` → `mcp.servers`）一律以 `{server}__{tool}` 出现（如 `filesystem__read_file`）。
+内置插件工具以其**裸名**注册为一等公民（如 `turn_search`、`wechat_login`、`mcp_gateway_set`）。外部 MCP 服务器以 `{server}__{tool}`（如 `filesystem__read_file`）出现并**按需加载**：LLM 用 `mcp_gateway_tool_search`（对网关内存工具目录做混合关键词/语义搜索）发现、用 `mcp_tool_load` 载入；`auto_load: true` 的服务器在连接时批量注册。目录由连接实时重建，不存在离线重建步骤。
 
 **Windows 下的命令执行。** `execute_shell` 在检测到的 shell 中运行——PowerShell 或 cmd（与系统提示报告的值一致，保证 LLM 写的语法真的能执行）——并用系统代码页解码输出（简体中文 Windows 为 GBK/cp936）。`run_python_script` 强制子 Python 以 UTF-8 运行（`-X utf8`），非 ASCII 输出不会导致子进程崩溃。
 
@@ -282,7 +285,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 | `hybrid` | 语义召回（FTS5 + 向量 → RRF 融合） |
 | `time` | 按日期浏览 |
 
-Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + memfiles 共享），由 native tools 管理：`embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` / `embeddings_model_remove` / `embeddings_enable`（分类 `embeddings`）。每个 provider 是一个 **OpenAI 兼容端点**（`base_url` + `api_key`），`active_model`（`"provider/model"` 或裸 `"provider"`）以配置为准；本地 GGUF/transformer 模型经 **local-embed** 插件在 `http://127.0.0.1:17347/v1` 提供，加载一次、memdb 与 memfiles 共享。无嵌入端点时关键词搜索照常工作。语义（hybrid）结果只在**当前模型的索引完整构建后**才返回——全量重建期间（新/换模型、重启中断续跑）hybrid 退回关键词搜索，索引完成后自动恢复。
+Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + memfiles 共享），由 native tools 管理：`embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` / `embeddings_model_remove` / `embeddings_enable`（分类 `embeddings`）。每个 provider 是一个 **OpenAI 兼容端点**（`base_url` + `api_key`），`active_model`（`"provider/model"` 或裸 `"provider"`）以配置为准；本地 GGUF/transformer 模型经 **local-embed 守护进程**（手动启动，类似 Mosquitto；不是 slife 插件）在 `http://127.0.0.1:17347/v1` 提供，加载一次、memdb 与 memfiles 共享。无嵌入端点时关键词搜索照常工作。语义（hybrid）结果只在**当前模型的索引完整构建后**才返回——全量重建期间（新/换模型、重启中断续跑）hybrid 退回关键词搜索，索引完成后自动恢复。
 
 每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。用户消息会带一条紧凑的 **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** 脚注（turn id 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 turn id 引用（`turn_read` / `turn_summarize`），用户在 TUI 里也能读到同一行。
 
@@ -320,22 +323,22 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 
 ### 插件
 
-八个内置插件（MCP 网关也是内置插件——第三方能力只能作为 `mcp-plugin.json5` 里的标准 MCP 服务器接入，不再有 Python 外部插件），独立进程运行：
+八个内部插件各自独立进程运行，每个都在中央插件 spec 中声明一行、由同一套统一生命周期驱动（spawn → MCP 握手就绪 → watchdog → health）。其中之一——**mcp-gateway**——是外部 MCP 服务器的网关：第三方能力只能作为 `mcp-plugin.json5` 里的标准 MCP 服务器接入，不再有 Python 外部插件：
 
 | 插件 | 角色 |
 |------|------|
-| **slife-mcp** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP）——内置插件（`slife.plugins.mcp_gateway`）。内存工具目录（按连接实时重建、含完整 tool schema），schema 感知的混合搜索 `mcp_tool_search`；外部工具按需 `mcp_tool_load` 载入（`auto_load: true` 批量注册） |
-| **slife-memdb** | 对话记录数据库 + 混合搜索 |
-| **slife-wechat** | 双向微信消息 |
-| **slife-memfiles** | 笔记 / 日记 / 文件柜（私有）。所有保存工具返回本地路径——绝不自动发布。笔记与日记双写为 markdown + SQLite 混合索引 |
-| **slife-sharefile** | 公开文件分享——唯一工具 `share_file` 把本地文件发布为公开 HTTPS URL（同端口的 `/share` 路由；ngrok 隧道由插件自持） |
-| **slife-a2a** | A2A 网格通道（MQTT binding；仅在 broker 可达时启动） |
-| **slife-media** | 非聊天类 AI 生成（图片 / 视频 / TTS / ASR），对接任意提供商——自持 `media:` 配置段与提供商无关的适配层（`dashscope-aigc`、`openai-images`）。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio` |
-| **slife-job-coding** | 确定性 **Job** 系统（MCP 工具形态）——`~/.slife/jobs/` 里的代码函数按声明的参数精确执行；一次性 LLM 调用走 `llm.chat`、用 `job_coding_model`。工具：`job-list`、`job-write`、`job-remove`、`job-run` + 每个 job 一个工具 |
+| **mcp-gateway** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP）——内置插件（`slife.plugins.mcp_gateway`）。管理工具：`mcp_gateway_set`、`mcp_gateway_set_enabled`、`mcp_gateway_remove`、`mcp_gateway_list`、`mcp_gateway_list_tools`、`mcp_gateway_tool_search`。内存工具目录（按连接实时重建、含完整 tool schema）；外部工具按需 `mcp_tool_load` 载入（`auto_load: true` 批量注册） |
+| **memdb** | 对话记录数据库 + 混合搜索 |
+| **wechat** | 双向微信消息 |
+| **memfiles** | 笔记 / 日记 / 文件柜（私有）。所有保存工具返回本地路径——绝不自动发布。笔记与日记双写为 markdown + SQLite 混合索引 |
+| **sharefile** | 公开文件分享——唯一工具 `share_file` 把本地文件发布为公开 HTTPS URL（同端口的 `/share` 路由；ngrok 隧道由插件自持） |
+| **a2a** | A2A 网格通道（MQTT binding；仅在 broker 可达时启动） |
+| **media** | 非聊天类 AI 生成（图片 / 视频 / TTS / ASR），对接任意提供商——自持 `media:` 配置段与提供商无关的适配层（`dashscope-aigc`、`openai-images`）。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio` |
+| **job-coding** | 确定性 **Job** 系统（MCP 工具形态）——`~/.slife/jobs/` 里的代码函数按声明的参数精确执行；一次性 LLM 调用走 `llm.chat`、用 `job_coding_model`。工具：`job-list`、`job-write`、`job-remove`、`job-run` + 每个 job 一个工具 |
 
 外部 MCP 服务器在 `mcp-plugin.json5` → `servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。
 
-所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_local_embed`、`check_sharefile`、`check_media`、`check_job_coding`、`check_mcp`、`check_a2a`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
+所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_local_embed`、`check_sharefile`、`check_media`、`check_job_coding`、`check_mcp_gateway`、`check_a2a`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
 
 就绪遵循 MCP 标准：插件在其 `initialize` 握手完成时即视为就绪——服务器只有在自己初始化（FastMCP lifespan）成功后才会应答握手，而插件会在初始化期间建立自身的服务能力（memdb 与 memfiles 要求 store 可用；其余插件无本地要求，能应答即就绪）。不再有 `__ready` 探测工具。外部/从属依赖——外部 MCP 服务器、ngrok 隧道、微信登录、媒体供应商、A2A broker、嵌入后端——从不阻塞就绪：它们不可控、运行时会自愈，并通过各自的状态工具单独上报。只有在每个插件进程都收敛（ready / skipped / failed——lifespan 无法满足要求会以启动失败上报并由看门狗重试）后，服务才对用户输入开放，因此输入绝不会跑在插件启动之前。
 
@@ -391,7 +394,7 @@ uv pip install --python "$(uv tool dir)/slife" sentence-transformers        # sl
 
 ## 开发
 
-权威术语见 [Glossary.md](Glossary.md)；设计与架构见 [DESIGN.md](DESIGN.md)。
+开发文档按读者拆分：**[DESIGN.md](DESIGN.md)** 覆盖设计原则、Agent Loop、工具系统、插件生命周期、MCP 网关、记忆数据库、A2A 网格与项目结构；**插件契约**见 [PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md)（中央 `PluginSpec` 表、registry、统一生命周期）。
 
 ```bash
 git clone https://github.com/juzcn/slife.git

@@ -1,10 +1,10 @@
 # Slife Design
 
-> Developer documentation for the slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md). For the authoritative definitions of the project's terminology — model-facing and developer-facing alike — see **[Glossary.md](Glossary.md)**. This document covers the design principles, the agent loop, the tool system, the plugin contract, the MCP gateway, the memory database, the A2A mesh, the credential security model, and the full project structure. It is written for people who work on the code, and it assumes you have read the README.
+> Developer documentation for the slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md).  Terminology is defined where it first matters in this document. This document covers the design principles, the agent loop, the tool system, the plugin contract, the MCP gateway, the memory database, the A2A mesh, the credential security model, and the full project structure. It is written for people who work on the code, and it assumes you have read the README.
 
 ## Contents
 
-1. [Language policy](#language-policy) — also in [Glossary.md](Glossary.md) §Part III
+1. [Language policy](#language-policy)
 2. [Architecture](#architecture)
 3. [Agent Loop](#agent-loop) — context management, harness vs internal tools, system prompt, autonomous heartbeat
 4. [LLM Backends](#llm-backends) — wire formats, thinking, prompt caching
@@ -85,9 +85,9 @@ the human-facing TUI follows the OS locale.
 │  Native · MemDB · MCP Proxy · Skills · CLI · REST API · A2A          │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins (independent child processes, Streamable HTTP)              │
-│  slife-mcp (gateway) · slife-memdb (turns DB) · slife-wechat         │
-│  slife-a2a (MQTT) · slife-memfiles (files) · slife-sharefile         │
-│  slife-media (generation) · local-embed (embeddings)                 │
+│  mcp-gateway (gateway) · memdb (turns DB) · wechat         │
+│  a2a (MQTT) · memfiles (files) · sharefile         │
+│  media (generation) · local-embed (embeddings)                 │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
@@ -171,7 +171,7 @@ tiers of the same thing:
 2. **`__` (double underscore) = plugin internal tool, LLM-invisible.** This is
    a **plugin-spec marker**, not a harness concept. Plugin internal tools
    (`__memory_save_turn`, `__a2a_drain_incoming`, `__wechat_drain_incoming`,
-   `__mcp_call_tool`, …) are ordinary MCP tools that happen to serve the main
+   `__mcp_gateway_call_tool`, …) are ordinary MCP tools that happen to serve the main
    process (agent service / TUI) rather than the LLM. They are filtered out of
    the schema before registration — they never reach `to_openai_functions()`
    — and are called programmatically via `client.call_tool("__…")`.
@@ -182,7 +182,7 @@ tiers of the same thing:
 | `__memory_save_turn` / `__memory_get_recent_turns` | memdb plugin | Internal — invisible |
 | `__wechat_drain_incoming` | wechat plugin | Internal — invisible |
 | `__a2a_drain_incoming` / `__a2a_dispatch_result` | a2a plugin | Internal — invisible |
-| `__mcp_connection_status` / `__mcp_call_tool` | mcp plugin | Internal — invisible |
+| `__mcp_connection_status` / `__mcp_gateway_call_tool` | mcp plugin | Internal — invisible |
 | `__tunnel_status` / `__register_file` | sharefile plugin | Internal — invisible |
 
 Both registration paths share one `__` predicate — `is_internal_tool()`
@@ -279,7 +279,7 @@ Model switches fire callbacks that rebuild the LLM client, update loop parameter
 
 `execute_shell` runs commands in the **detected shell** — `detect_current_shell()`: PowerShell / cmd on native Windows, `$SHELL` on POSIX incl. WSL — the **same value the system prompt reports**, so the LLM's shell syntax actually executes (previously it ran `COMSPEC`=cmd.exe regardless). Output is decoded with the system code page (GBK/cp936 on zh-CN Windows); `run_python_script` forces the child Python to UTF-8 via `-X utf8`.
 
-The tool categories and the naming rules (native vs. built-in plugin vs. external-server tools) are defined in [Glossary.md](Glossary.md) — see **Tool naming** and **Appendix B**.
+Three tool tiers exist, indistinguishable to the LLM: **native** tools (own names), **built-in plugin** tools (bare names), and **external MCP server** tools (`{server}__{tool}`).  The naming rule is fixed; the developer-facing mechanism is described below under [Tool Categories](#tool-categories).
 
 ### Schema Authoring
 
@@ -296,7 +296,7 @@ The schema is the model's only view of a tool — write it for the model, not th
 
 ### Tool Categories
 
-All tools are unified under `Tool` and registered in a single `ToolRegistry`; the LLM sees only function names and schemas. The full inventory — native tools by category, built-in plugin tools by plugin, and the naming rule for external-server tools — is maintained in the authoritative [Glossary.md](Glossary.md) (see **Appendix B — Tool Families by Name** and **Tool naming**). The developer-facing mechanism lives here: auto-discovery, the registry, timeouts, and the approval gate.
+All tools are unified under `Tool` and registered in a single `ToolRegistry`; the LLM sees only function names and schemas. The full inventory — native tools by category, built-in plugin tools by plugin, and the naming rule for external-server tools — is enumerated in the [README](README.md#tools) tool tables. The developer-facing mechanism lives here: auto-discovery, the registry, timeouts, and the approval gate.
 
 **Managed categories** (Skills / CLI / REST API / Models / MCP) support a standard **`X_list` / `X_set` / `X_remove`** surface (plus `X_set_enabled` where an enable/disable toggle applies). `X_set` is an idempotent upsert — add + update in one call. Config uses the `config_env_*` prefix (no `config_list`); Models substitutes `model_switch` for `X_set_enabled`. `model_set`'s upsert **merges** into the existing entry (a partial update preserves `reasoning` / `input` / `compat`), so a field-focused change can't strip a model's capabilities; it also accepts a `compat` dict for per-model overrides (see Model Management).
 
@@ -351,10 +351,14 @@ Picker rules (hard-won):
 ## Plugin Architecture
 
 Eight internal plugins run as independent child processes: memdb, wechat,
-memfiles, sharefile, a2a, media, job-coding, and the **MCP gateway** (mcp).
-There is no `plugins.external` mechanism — third-party capability enters only
-as a standard MCP server in `mcp-plugin.json5`, connected by the internal
-gateway. `local-embed` is **not** a plugin: it is a standalone daemon (started
+memfiles, sharefile, a2a, media, job-coding, and the MCP gateway
+**mcp-gateway**.  Every plugin is declared by one row in the central plugin
+spec (`slife/plugins/spec.py`) and driven by the same uniform lifecycle
+(spawn → MCP-handshake readiness → watchdog → health); the authoritative
+contract is [PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md).  There is no
+`plugins.external` mechanism — third-party capability enters only as a
+standard MCP server in `mcp-plugin.json5`, connected by the internal
+**mcp-gateway** plugin. `local-embed` is **not** a plugin: it is a standalone daemon (started
 manually, like Mosquitto) serving OpenAI-compatible `/v1/embeddings`.
 Communication is via **Streamable HTTP** (MCP protocol) for all plugins — the
 sharefile plugin additionally serves plain-HTTP file bytes on the same port
@@ -398,7 +402,7 @@ on the user's proxy config being correct.
 
 **Scope — external MCP servers are unaffected.** Outbound traffic to the
 configured external MCP servers (`mcp-plugin.json5` → `servers`) goes through the *mcp-plugin*
-gateway's own client (`slife/plugins/mcp/connection.py`), which keeps
+gateway's own client (`slife/plugins/mcp_gateway/connection.py`), which keeps
 `trust_env=True` — a remote server that genuinely needs the proxy still gets
 it. Only the local
 plugin client is proxy-free. Regression test:
@@ -411,13 +415,13 @@ Each plugin runs with a **watchdog** background task that monitors the child pro
 | Feature | Detail |
 |---------|--------|
 | Detection | `await subprocess.wait()` — blocks until the child exits |
-| On crash | Unregisters the plugin's proxy tools (`unregister_by_prefix("{name}__")`), then restarts the process |
+| On crash | Unregisters the plugin's exact registered bare-name tools, disconnects the dead client, then re-runs the uniform start (spawn + glue) |
 | Backoff | Exponential: 1 s → 2 s → 4 s → … → 30 s max |
 | Max restarts | 5 consecutive failures → watchdog gives up and logs an error |
 | Success reset | A successful restart resets the backoff and retry counter |
-| Scope | **mcp** (respawns wrapper + reconnects external servers), **local-embed**, **memdb**, **wechat** (restores poll loop), **memfiles**, **a2a**, **media** |
+| Scope | Every plugin — built-in, the **mcp-gateway**, or an auto-discovered one. A restart re-runs the uniform start and tells subagents sharing the plugin its new port |
 
-Auto-discovered third-party plugins get the same watchdog: `_spawn_plugin_generic` creates a `PluginLifecycle` for any plugin not in the built-in set, so a crash restarts it with the same backoff as the built-ins.
+Auto-discovered third-party plugins get the same watchdog: `PluginRegistry.ensure` gives any undeclared plugin a generic `PluginLifecycle`, so a crash restarts it with the same backoff as the spec-declared built-ins.
 
 Subagents do **not** have their own watchdog — they connect to the main agent's plugin processes via HTTP, so a subagent crash only kills the subagent, not the shared infrastructure.
 
@@ -427,31 +431,31 @@ Processes communicate through environment variables:
 |----------|---------|
 | `SLIFE_SESSION_ID` / `SLIFE_AGENT_NAME` | Log correlation, agent identity |
 | `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` | Directory overrides |
-| `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES / A2A / MEDIA / JOB-CODING / SHAREFILE). Key is the uppercased plugin name with dashes normalised to underscores (`job-coding` → `SLIFE_JOB_CODING_PORT`) — via `slife.agent.plugins.plugin_port_env`. Subagents read this env to share the parent's plugins. `local-embed` is a daemon, not a plugin, so it publishes no port. |
+| `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP_GATEWAY / MEMDB / WECHAT / MEMFILES / A2A / MEDIA / JOB_CODING / SHAREFILE). Key is the uppercased plugin name with dashes normalised to underscores (`job-coding` → `SLIFE_JOB_CODING_PORT`) — via `slife.agent.plugins.plugin_port_env`. Subagents read this env to share the parent's plugins. `local-embed` is a daemon, not a plugin, so it publishes no port. |
 | `SLIFE_SHAREFILE_URL` | Public ngrok URL (set inside the sharefile plugin process) |
 
 ### Plugins (internal only)
 
 | Plugin | Transport | Role |
 |--------|-----------|------|
-| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp_gateway`). Manages connection lifecycle — spawn/connect, route tool calls, persist config — and keeps an in-memory **tool catalog** of every loaded tool (name, description, full schema, enabled), rebuilt live from connections, searched via a schema-aware hybrid `mcp_tool_search` and loaded on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration). |
-| **slife-memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
-| **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages (a failed poll — signalled by `client.last_error`, which `poll_updates()` sets on a swallowed network error — backs off the next poll exponentially to 30 s and resets on the next clean poll), typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[WECHAT]` (model-facing; the TUI strips the marker from display since the `Wechat>` bubble prefix already shows the channel); the model replies itself by calling the LLM-visible `wechat_send_message` — no harness auto-dispatch — addressing the peer by `peer_wechat_id` (from `wechat_check_status.last_contact`). |
-| **slife-memfiles** | Streamable HTTP | Private notes/diary/reports/files cabinet — tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, report tools `report_save` / `report_list` / `report_read`), internal `__check` + `__scheduled_*` registry ops. Notes, diary &amp; reports dual-written to markdown + a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. The scheduled-task tools (`scheduled_task_*` / `scheduled_run_*` / `run_schedule_now`) are native, in the "Schedule" category (`slife/tools/schedule.py`); this plugin only holds the schedule/run data they call. |
-| **slife-sharefile** | Streamable HTTP + `/share` route | Public file sharing — sole LLM-visible tool `share_file`; internal tools `__tunnel_status`, `__register_file`; `GET /share/{token}` serves file bytes on the same port (one port, two protocols). Owns the ngrok tunnel (eager start, non-blocking) and the in-process token registry. |
-| **slife-a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools; only the drain/dispatch internal tools (`__a2a_*`) stay `__`-prefixed. |
-| **slife-media** | Streamable HTTP | Non-chat AI generation (image, video, TTS, ASR) from any provider. Owns the `media:` config section (plugin-read, ignored by the main `Config` parser) and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` . Long renders use the harness's universal `_async: true` + `check_async`. Artifacts are saved to the working directory (or a `folder` passed to the tool) — work products, never memfiles cabinet files. |
-| **slife-job-coding** | Streamable HTTP | Deterministic Jobs as MCP tools — code-defined functions in `<data_dir>/jobs/`, registered dynamically (`job-list`, `job-write`, `job-remove`, `job-run` + one tool per job). LLM access only via explicit `llm.chat` one-shot calls on `job_coding_model`. |
+| **mcp-gateway** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp_gateway`). Manages connection lifecycle — spawn/connect, route tool calls, persist config — and keeps an in-memory **tool catalog** of every loaded tool (name, description, full schema, enabled), rebuilt live from connections, searched via a schema-aware hybrid `mcp_gateway_tool_search` and loaded on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration). |
+| **memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
+| **wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages (a failed poll — signalled by `client.last_error`, which `poll_updates()` sets on a swallowed network error — backs off the next poll exponentially to 30 s and resets on the next clean poll), typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[WECHAT]` (model-facing; the TUI strips the marker from display since the `Wechat>` bubble prefix already shows the channel); the model replies itself by calling the LLM-visible `wechat_send_message` — no harness auto-dispatch — addressing the peer by `peer_wechat_id` (from `wechat_check_status.last_contact`). |
+| **memfiles** | Streamable HTTP | Private notes/diary/reports/files cabinet — tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, report tools `report_save` / `report_list` / `report_read`), internal `__check` + `__scheduled_*` registry ops. Notes, diary &amp; reports dual-written to markdown + a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. The scheduled-task tools (`scheduled_task_*` / `scheduled_run_*` / `run_schedule_now`) are native, in the "Schedule" category (`slife/tools/schedule.py`); this plugin only holds the schedule/run data they call. |
+| **sharefile** | Streamable HTTP + `/share` route | Public file sharing — sole LLM-visible tool `share_file`; internal tools `__tunnel_status`, `__register_file`; `GET /share/{token}` serves file bytes on the same port (one port, two protocols). Owns the ngrok tunnel (eager start, non-blocking) and the in-process token registry. |
+| **a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools; only the drain/dispatch internal tools (`__a2a_*`) stay `__`-prefixed. |
+| **media** | Streamable HTTP | Non-chat AI generation (image, video, TTS, ASR) from any provider. Owns the `media:` config section (plugin-read, ignored by the main `Config` parser) and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` . Long renders use the harness's universal `_async: true` + `check_async`. Artifacts are saved to the working directory (or a `folder` passed to the tool) — work products, never memfiles cabinet files. |
+| **job-coding** | Streamable HTTP | Deterministic Jobs as MCP tools — code-defined functions in `<data_dir>/jobs/`, registered dynamically (`job-list`, `job-write`, `job-remove`, `job-run` + one tool per job). LLM access only via explicit `llm.chat` one-shot calls on `job_coding_model`. |
 
-### Job System (slife-job-coding)
+### Job System (job-coding)
 
 DESIGNER_NOTES §6.7 — *"大模型越聪明，越需要一个 Job System"* · Coding Agent. A **Job** is a plain public function in `<data_dir>/jobs/*.py` (dev: `<project>/jobs/` — the repo's committed `jobs/` holds the bundled `translate`/`summarize` samples; prod: `~/.slife/jobs/`, seeded from those by the installers). Following standard MCP tool norms, the function's `__name__`, docstring, and typed signature become the job tool's name, description, and parameters schema. **The files are the source of truth — there is no job-config file**: a restart (or the generic watchdog) re-scans the directory and re-registers the tools. Creating/editing a job is *coding*: the `job-coding` skill (a standard repo skill in `skills/`) teaches the conventions and is the authoring guide the agent loads before `job-write`.
 
 Execution is deterministic: the tool calls the job function with exactly its declared arguments; the only LLM access is an explicit `llm.chat(system=…, user=…, model=…)` one-shot on the job model — `job_coding_model`, a **top-level** `"provider/model"` ref in slife.json5 that reuses `models.providers` and is independent of `active_model`. It should name a *different* (usually smaller/faster) model: a nested one-shot job call on another provider/model neither churns the agent loop's prompt-cache prefix on the active model nor competes for its quota. Jobs that call `llm` are `async def`; pure-computation jobs stay plain `def` (the runner runs sync jobs on a **daemon thread** via `slife.threads.run_daemon` — never `asyncio.to_thread`, whose default-executor workers are joined at exit and would wedge plugin shutdown on a hung blocking job; the runner captures `contextvars.copy_context()` so a sync job's `llm` client stays visible). No system prompt, no conversation history, no agent loop ever reaches a job's model — messages are built solely from the job's arguments, a structural guarantee.
 
-**Management tools** (bare names, `ProxyRoute.DIRECT`): `job-list`, `job-write` (writes `<name>.py` — creates or replaces; (re)registers the tool immediately, persists across restart, and rolls back to the previous code on a broken write), `job-remove` (delete file + unregister), `job-run` (generic executor by name — also the execution path before the harness resync picks up a brand-new per-job tool). After any tool-set mutation the plugin pushes the standard MCP `notifications/tools/list_changed`; AgentService's generic `_rescan_plugin_tools(name)` re-lists the plugin and diffs the registry — the same dynamic-tool mechanism the mcp wrapper uses, so per-job tools appear/disappear live on the agent. Watched by the generic built-in watchdog (`_start_generic_watchdog`) and covered by `system_health` via `check_job_coding` (probes the plugin's internal `__check` through `ToolContext.job_coding_client`).
+**Management tools** (bare names, `ProxyRoute.DIRECT`): `job-list`, `job-write` (writes `<name>.py` — creates or replaces; (re)registers the tool immediately, persists across restart, and rolls back to the previous code on a broken write), `job-remove` (delete file + unregister), `job-run` (generic executor by name — also the execution path before the harness resync picks up a brand-new per-job tool). After any tool-set mutation the plugin pushes the standard MCP `notifications/tools/list_changed`; AgentService's generic `_rescan_plugin_tools(name)` re-lists the plugin and diffs the registry — the same dynamic-tool mechanism the mcp wrapper uses, so per-job tools appear/disappear live on the agent. Watched by the uniform watchdog (`_arm_watchdog`) and covered by `system_health` via `check_job_coding` (probes the plugin's internal `__check` through `ToolContext.job_coding_client`).
 
-### slife-mcp — External MCP Gateway
+### mcp-gateway — External MCP Gateway
 
 Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` — deliberately no `ClientSession`/anyio TaskGroups to avoid event-loop conflicts with FastMCP):
 
@@ -463,9 +467,9 @@ Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` 
 
 For `url`-configured servers the gateway probes with `GET + Accept: text/event-stream`: a `text/event-stream` reply switches to **SSE** mode (the `endpoint` event yields the POST message URL); otherwise the same client falls through to **Streamable HTTP**. A Streamable response may be a single JSON body or an SSE stream — both are parsed (the first matching JSON-RPC message; later events are server-initiated notifications and are dropped).
 
-Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`), plus the tool-catalog search tool described below (`mcp_tool_search`). Live status is reported by `check_mcp` via the internal `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is an internal tool — LLM-invisible, invoked only by the `server__tool` proxies.
+Exposed management tools (LLM-visible as `mcp_gateway_set`, `mcp_gateway_set_enabled`, `mcp_gateway_remove`, `mcp_gateway_list`, `mcp_gateway_list_tools`), plus the tool-catalog search tool described below (`mcp_gateway_tool_search`). Live status is reported by `check_mcp_gateway` via the internal `__mcp_connection_status`. The tool-call bridge `__mcp_gateway_call_tool` is an internal tool — LLM-invisible, invoked only by the `server__tool` proxies.
 
-`mcp_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, `auto_load`, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp` (a standalone tool, also run by `system_health`) calls the internal `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
+`mcp_gateway_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, `auto_load`, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp_gateway` (a standalone tool, also run by `system_health`) calls the internal `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
 
 **Tool catalog & on-demand loading.** The gateway keeps every loaded
 external tool in an **in-memory** catalog (SQLite `:memory:`): one row per
@@ -482,23 +486,23 @@ passed via the `initialize` handshake — the gateway has no `embeddings`
 section of its own). The
 semantic vector is sourced from the **schema text alone** (flattened at embed
 time: name, description, each parameter, return description), making
-`mcp_tool_search` **schema-aware** — a tool is findable by what its parameters
+`mcp_gateway_tool_search` **schema-aware** — a tool is findable by what its parameters
 do, not just its top-line description. It runs hybrid/keyword/grep retrieval
 over the catalog, degrading to keyword-only when no embedding endpoint is
 configured or the semantic index is still building.
 
 External tools are **loaded on demand**: the host registers none of them by
-default. The model discovers a tool with `mcp_tool_search` and loads it into
+default. The model discovers a tool with `mcp_gateway_tool_search` and loads it into
 its toolset with the native `mcp_tool_load(full_name)`, which fetches the live
-schema + enabled state via the internal `__mcp_get_tool` and refuses a
+schema + enabled state via the internal `__mcp_gateway_get_tool` and refuses a
 disabled tool. A server with `auto_load: true` keeps the older wholesale
 registration — its tools are registered whenever it connects. Enable/disable
-is always **server-granular** (`mcp_set_enabled`): disabling a server
+is always **server-granular** (`mcp_gateway_set_enabled`): disabling a server
 disconnects it, marks its catalog tools disabled (refused at call time), and
 drops its loaded proxies; there is no per-tool toggle. Every
 `tools/list_changed` notification runs a host-side reconcile
 (`_sync_mcp_proxies`) that validates each loaded on-demand proxy via
-`__mcp_get_tool` and unregisters any whose tool vanished, server disconnected,
+`__mcp_gateway_get_tool` and unregisters any whose tool vanished, server disconnected,
 or was disabled.
 
 There is deliberately no offline rebuild command — the catalog syncs itself
@@ -509,9 +513,9 @@ keyword while indexing).
 Server lifecycle:
 
 ```
-disabled ──[mcp_set_enabled(name, enabled=true)]──→ enabled (connected, catalog tools enabled)
-enabled  ──[mcp_set_enabled(name, enabled=false)]─→ disabled (disconnected, catalog tools disabled)
-enabled  ──[mcp_set(changed config)]───────────────→ restarted with new settings
+disabled ──[mcp_gateway_set_enabled(name, enabled=true)]──→ enabled (connected, catalog tools enabled)
+enabled  ──[mcp_gateway_set_enabled(name, enabled=false)]─→ disabled (disconnected, catalog tools disabled)
+enabled  ──[mcp_gateway_set(changed config)]───────────────→ restarted with new settings
 ```
 
 All state changes persist to `mcp-plugin.json5` (self-hosted by the gateway).
@@ -524,10 +528,10 @@ Subagents inherit `SLIFE_MCP_PORT` from the parent environment, connect to the e
 
 ## Memory (MemDB)
 
-> **Terminology.** This store is the **Turns DB** (Glossary § Part II): the memdb
+> **Terminology.** This store is the **Turns DB**: the memdb
 > plugin is its implementation, whose backing SQLite table is named `diary` — a
 > codebase alias. It is distinct from the File Cabinet's **Diary** records
-> (Glossary § Part II), which the memfiles plugin writes. In this document
+> which the memfiles plugin writes. In this document
 > "diary" always means that table unless it names a cabinet file.
 
 Every turn permanently recorded as an independent row — no session concept, a continuous time-ordered log in `~/.slife/<agent>.db`.
@@ -813,7 +817,7 @@ Not all tools are in every request. Several categories use lightweight summaries
 |----------|--------|------|
 | MemDB | `turn_search` | `turn_read` |
 | Skills | `skill_list` | `skill_use` |
-| MCP | `mcp_tool_search` | `mcp_tool_load(full_name)` |
+| MCP | `mcp_gateway_tool_search` | `mcp_tool_load(full_name)` |
 
 ### i18n
 
@@ -903,7 +907,7 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 
 ## Health Checks
 
-Health checks fall into two categories. `system_health` runs all of them together, and every dynamic check is also exposed as a standalone native tool (`check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog`) so the LLM can probe a single subsystem directly without the full report. `check_mcp` additionally takes an optional `server` argument (default: all) to diagnose just one external server.
+Health checks fall into two categories. `system_health` runs all of them together, and every dynamic check is also exposed as a standalone native tool (`check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_mcp_gateway`, `check_a2a`, `check_watchdog`) so the LLM can probe a single subsystem directly without the full report. `check_mcp_gateway` additionally takes an optional `server` argument (default: all) to diagnose just one external server.
 
 Because the standalone checks are subsets of `system_health`, their tool schemas state that relationship explicitly ("one subsystem of system_health", and `system_health` states it includes every `check_*` result). This keeps the LLM from calling `system_health` and then re-calling each `check_*` for the same data — each schema describes what it returns and how it relates to the aggregate.
 
@@ -925,7 +929,7 @@ Because the standalone checks are subsets of `system_health`, their tool schemas
 | `check_memfiles` | File cabinet (notes / diary / files) connected? semantic index ready? (via the memfiles plugin's internal `__check` tool) | Application state (memfiles plugin) |
 | `check_local_embed` | Local embedding daemon online? active model, loaded models? (probes the daemon's HTTP `GET /v1/models` — local-embed is not a plugin) | Application state (local-embed daemon) |
 | `check_sharefile` | File-sharing tunnel online? ngrok URL? | Application state (sharefile plugin) |
-| `check_mcp` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, hints) | Application state (MCP wrapper + external servers) |
+| `check_mcp_gateway` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, hints) | Application state (MCP wrapper + external servers) |
 | `check_a2a` | A2A mesh connection + peer status (via the a2a plugin's `__a2a_status` internal tool) | Application state (a2a plugin) |
 | `check_watchdog` | Auto-restart status per plugin, deduplicated from health records (latest record per plugin) | Process layer |
 
@@ -1082,7 +1086,7 @@ credstore/
     _config.py         # Config file loading
     _tty.py            # Masked terminal input
 
-slife/plugins/mcp/      # The MCP gateway — a built-in plugin (no standalone package)
+slife/plugins/mcp_gateway/      # The MCP gateway — a built-in plugin (no standalone package)
     server.py           #   FastMCP gateway server + tool-catalog/search/embeddings tools
     connection.py       #   ConnectionPool / MCPServerConnection
     client.py           #   Streamable HTTP client (used by the harness to connect ALL plugins)
