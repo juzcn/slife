@@ -551,14 +551,14 @@ try {
     }
 
     # Build local wheels for the whole workspace (slife + credstore + cc-switch +
-    # mcp-plugin + local-embed) and install slife from them.
+    # local-embed) and install slife from them.
     #
     # Why wheels and not `--from $extractedDir`: `uv tool install --from`
-    # materialises the workspace members (mcp-plugin / local-embed / credstore)
-    # as EDITABLE installs pointing at the extracted source dir — which the
-    # installer deletes at the end — so `import mcp_plugin` breaks after a
-    # fresh install.  Local wheels install them as non-editable copies:
-    # self-contained, survives cleanup, still 100 % from source, no PyPI.
+    # materialises the workspace members (local-embed / credstore) as EDITABLE
+    # installs pointing at the extracted source dir — which the installer
+    # deletes at the end — so the packages break after a fresh install.
+    # Local wheels install them as non-editable copies: self-contained,
+    # survives cleanup, still 100 % from source, no PyPI.
     $toolInstallLog  = Join-Path $tmpDir "tool-install.log"
     $wheelhouse      = Join-Path $tmpDir "wheelhouse"
     New-Item -ItemType Directory -Force $wheelhouse | Out-Null
@@ -839,14 +839,14 @@ try {
 
     $localBin    = "$env:USERPROFILE\.local\bin"
     $bunBin      = "$env:USERPROFILE\.bun\bin"
-    $toolScripts = Join-Path (uv tool dir) "slife\Scripts"   # mcp-plugin / local-embed live here
+    $toolScripts = Join-Path (uv tool dir) "slife\Scripts"   # local-embed lives here
     $scriptsDir  = "$env:USERPROFILE\.slife\Scripts"
 
     # Ensure ~/.local/bin, the slife tool venv Scripts (local-embed),
     # and ~/.bun/bin are on PATH; remove stale venv entries.  The tool venv
     # Scripts entry is what makes the documented `local-embed set-gguf`
-    # command work out-of-the-box.  mcp-plugin is an MCP server with no CLI —
-    # the host spawns `python -m mcp_plugin.server` itself.
+    # command work out-of-the-box.  The mcp gateway ships inside slife (the
+    # host spawns `python -m slife.plugins.mcp.server` itself).
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $newPath  = ($userPath -split ';' | Where-Object { $_ -and $_ -ne $scriptsDir }) -join ';'
     if ($newPath -notlike "*$localBin*") {

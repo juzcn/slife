@@ -990,77 +990,100 @@ class TestCheckA2aTool:
             assert parsed[0]["value"] == "connected"
 
 
-class _FakeLocalEmbedClient:
-    """Minimal stand-in for the local-embed plugin MCP client."""
+class _FakeLocalEmbedResponse:
+    """Minimal stand-in for the local-embed daemon's ``/v1/models`` response."""
 
-    def __init__(self, payload):
-        self._payload = payload
+    def __init__(self, models=None, ok=True):
+        self._payload = {"object": "list", "data": models or []}
+        self._ok = ok
 
-    async def call_tool(self, name, arguments=None):
-        assert name == "__check"
-        return json.dumps(self._payload)
+    def raise_for_status(self):
+        if not self._ok:
+            raise RuntimeError("boom")
+
+    def json(self):
+        return self._payload
+
+
+class _FakeLocalEmbedHttp:
+    """Async context manager stubbing httpx2.AsyncClient for the daemon probe."""
+
+    def __init__(self, resp):
+        self._resp = resp
+        self.get_calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url):
+        self.get_calls.append(url)
+        return self._resp
 
 
 class TestCheckLocalEmbedFunction:
-    """Tests for check_local_embed()."""
+    """Tests for check_local_embed() — probes the daemon's /v1/models."""
 
     @staticmethod
     def _status(**overrides):
         data = {
-            "active_model": "bge-m3",
-            "models": [
-                {"name": "bge-m3", "backend": "gguf", "model": "bge-m3",
-                 "dimension": 1024, "dimension_known": True, "loaded": True,
-                 "available": True, "max_tokens": 8192},
-            ],
+            "id": "bge-m3", "backend": "gguf", "model": "bge-m3",
+            "dimension": 1024, "dimension_known": True, "loaded": True,
+            "available": True, "max_tokens": 8192,
         }
         data.update(overrides)
         return data
 
     @pytest.mark.asyncio
-    async def test_client_unavailable(self):
+    async def test_no_base_url_offline(self):
         entries = await check_local_embed()
         assert entries[0]["component"] == "local_embed"
         assert entries[0]["level"] == "warning"
         assert entries[0]["value"] == "offline"
-        assert "not connected" in entries[0]["hint"]
+        assert "not configured" in entries[0]["hint"]
 
     @pytest.mark.asyncio
     async def test_active_model_loaded(self):
-        client = _FakeLocalEmbedClient(self._status())
-        entries = await check_local_embed(client=client)
+        http = _FakeLocalEmbedHttp(_FakeLocalEmbedResponse([
+            {"id": "bge-m3", "active": True, "loaded": True,
+             "available": True, "backend": "gguf"},
+        ]))
+        with patch("slife.tools.system.httpx2.AsyncClient", return_value=http):
+            entries = await check_local_embed(base_url="http://127.0.0.1:17347/v1")
         assert len(entries) == 1
         assert entries[0]["level"] == "ok"
         assert entries[0]["value"] == "bge-m3"
         assert "bge-m3 loaded" in entries[0]["hint"]
         assert "1/1 model(s) loaded" in entries[0]["hint"]
+        assert http.get_calls == ["http://127.0.0.1:17347/v1/models"]
 
     @pytest.mark.asyncio
     async def test_active_model_not_loaded(self):
-        client = _FakeLocalEmbedClient(self._status(
-            models=[
-                {"name": "bge-m3", "backend": "gguf", "model": "bge-m3",
-                 "dimension": 1024, "dimension_known": True, "loaded": False,
-                 "available": True, "max_tokens": 8192},
-            ],
-        ))
-        entries = await check_local_embed(client=client)
+        http = _FakeLocalEmbedHttp(_FakeLocalEmbedResponse([
+            {"id": "bge-m3", "active": True, "loaded": False,
+             "available": True, "backend": "gguf"},
+        ]))
+        with patch("slife.tools.system.httpx2.AsyncClient", return_value=http):
+            entries = await check_local_embed(base_url="http://127.0.0.1:17347/v1")
         assert len(entries) == 1
         assert entries[0]["level"] == "warning"
         assert "NOT loaded" in entries[0]["hint"]
 
     @pytest.mark.asyncio
     async def test_no_models_reports_warning(self):
-        client = _FakeLocalEmbedClient(self._status(models=[]))
-        entries = await check_local_embed(client=client)
+        http = _FakeLocalEmbedHttp(_FakeLocalEmbedResponse(models=[]))
+        with patch("slife.tools.system.httpx2.AsyncClient", return_value=http):
+            entries = await check_local_embed(base_url="http://127.0.0.1:17347/v1")
         assert entries[0]["level"] == "warning"
         assert "NOT loaded" in entries[0]["hint"]
 
     @pytest.mark.asyncio
     async def test_check_failure_reports_warning(self):
-        client = MagicMock()
-        client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
-        entries = await check_local_embed(client=client)
+        with patch("slife.tools.system.httpx2.AsyncClient",
+                   side_effect=RuntimeError("boom")):
+            entries = await check_local_embed(base_url="http://127.0.0.1:17347/v1")
         assert entries[0]["level"] == "warning"
         assert "boom" in entries[0]["hint"]
 
@@ -1089,19 +1112,17 @@ class TestCheckLocalEmbedTool:
             assert parsed[0]["value"] == "bge-m3"
 
     @pytest.mark.asyncio
-    async def test_execute_uses_ctx_local_embed_client(self):
-        """execute() reaches the plugin through ToolContext.local_embed_client."""
+    async def test_execute_uses_active_endpoint(self):
+        """execute() probes the daemon at slife.json5's active embedding endpoint."""
         tool = CheckLocalEmbedTool()
-        fake_client = _FakeLocalEmbedClient({
-            "active_model": "bge-m3",
-            "models": [
-                {"name": "bge-m3", "backend": "gguf", "model": "bge-m3",
-                 "dimension": 1024, "dimension_known": True, "loaded": True,
-                 "available": True, "max_tokens": 8192},
-            ],
-        })
-        tool._ctx = MagicMock(local_embed_client=fake_client)
-        result = await tool.execute()
+        http = _FakeLocalEmbedHttp(_FakeLocalEmbedResponse([
+            {"id": "bge-m3", "active": True, "loaded": True,
+             "available": True, "backend": "gguf"},
+        ]))
+        with patch("slife.tools.system.httpx2.AsyncClient", return_value=http), \
+             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value={"base_url": "http://127.0.0.1:17347/v1"}):
+            result = await tool.execute()
         parsed = json.loads(result)
         assert parsed[0]["component"] == "local_embed"
         assert parsed[0]["value"] == "bge-m3"

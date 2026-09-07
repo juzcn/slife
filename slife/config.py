@@ -352,13 +352,15 @@ class Config:
     wechat_config: WechatConfig | None = None
     a2a_config: A2AConfig | None = None
     subagent_config: dict | None = None
-    plugins_external: list[dict] = field(default_factory=list)
     # Plugins declared REQUIRED (core) via ``plugins.required`` in
     # slife.json5 — a required plugin that fails to become ready aborts
     # startup instead of limping on.  Defaults to empty = every plugin is
     # optional (failure warns and the session continues).
     plugins_required: frozenset[str] = field(default_factory=frozenset)
     cli_tools: dict = field(default_factory=dict)
+    # slife-as-plugin: the in-process MCP server exposing the live ToolRegistry.
+    # ``plugin_server.port`` in slife.json5 (default ``DEFAULT_HOST_PORT``).
+    plugin_server_port: int = 17878
     _path: Path | None = None
 
     def __post_init__(self):
@@ -401,9 +403,9 @@ class Config:
             "wechat_config": asdict(self.wechat_config) if self.wechat_config else None,
             "a2a_config": asdict(self.a2a_config) if self.a2a_config else None,
             "subagent_config": self.subagent_config,
-            "plugins_external": self.plugins_external,
             "plugins_required": sorted(self.plugins_required),
             "cli_tools": self.cli_tools,
+            "plugin_server_port": self.plugin_server_port,
         }
 
     @classmethod
@@ -442,9 +444,9 @@ class Config:
             wechat_config=wc_cfg,
             a2a_config=a2a_cfg,
             subagent_config=data.get("subagent_config"),
-            plugins_external=data.get("plugins_external", []),
             plugins_required=_as_name_set(data.get("plugins_required")),
             cli_tools=data.get("cli_tools", {}),
+            plugin_server_port=int(data.get("plugin_server_port", 17878)),
         )
 
     # ── Config file I/O helpers ─────────────────────────────────────
@@ -893,13 +895,13 @@ class Config:
         # CLI tools — managed section, no config class
         cli_tools = _parse_section(raw, "cli_tools", dict, {})
 
-        # External plugins — registered via config (e.g. [{name, module}]).
-        # These merge into the built-in source-scan result at discovery time,
-        # and route through the same generic plugin lifecycle.
+        # slife-as-plugin — the in-process MCP server exposing the live
+        # ToolRegistry (DESIGNER_NOTES §8).  ``plugin_server.port`` overrides
+        # the fixed default port.
+        plugin_server = _parse_section(raw, "plugin_server", dict, {})
+        plugin_server_port = int(plugin_server.get("port", 17878))
+
         plugins_section = _parse_section(raw, "plugins", dict, {})
-        plugins_external = plugins_section.get("external")
-        if not isinstance(plugins_external, list):
-            plugins_external = []
         # Required (core) plugins — named in ``plugins.required``.  A
         # required plugin that fails to become ready aborts startup; the
         # contract marker defaults to false (absent = all optional).
@@ -934,9 +936,9 @@ class Config:
             wechat_config=wechat_config,
             a2a_config=a2a_config,
             subagent_config=subagent_config,
-            plugins_external=plugins_external,
             plugins_required=plugins_required,
             cli_tools=cli_tools,
+            plugin_server_port=plugin_server_port,
         )
         config._path = path
         # Each module hosts its own config in its own data dir — we do NOT set

@@ -12,7 +12,7 @@ def _isolate_config_path(tmp_path, monkeypatch):
     yield
     # Import lazily so it never runs against a half-built package.
     try:
-        import mcp_plugin.config as _cfg
+        import slife.plugins.mcp.config as _cfg
         _cfg._CURRENT_PATH = None
     except ImportError:
         pass

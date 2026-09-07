@@ -113,7 +113,10 @@ def _is_valid(cls) -> bool:
 
     CPython registers the class in __subclasses__() *before* calling
     __init_subclass__, so subclasses that fail validation (like test
-    stubs) still appear here.  We re-check the required attributes.
+    stubs) still appear here.  We re-check the same required attributes as
+    ``Tool.__init_subclass__`` (name, description, parameters) — a leaked
+    invalid subclass must never reach the registry, where a missing
+    attribute would blow up schema generation.
 
     Classes with ``_skip_auto_register = True`` (e.g. MCPProxyTool,
     whose real name/description/parameters are set per-instance) are
@@ -127,5 +130,8 @@ def _is_valid(cls) -> bool:
     """
     if cls.__dict__.get("_skip_auto_register", False):
         return False
-    name = getattr(cls, "name", "")
-    return bool(name)
+    for attr in ("name", "description", "parameters"):
+        value = getattr(cls, attr, "")
+        if value in (None, ""):
+            return False
+    return True

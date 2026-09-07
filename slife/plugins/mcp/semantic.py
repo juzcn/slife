@@ -18,7 +18,7 @@ each other into a stuck-off gate.
 import asyncio
 import logging
 
-from mcp_plugin.embeddings import EmbeddingClient
+from slife.plugins.mcp.embeddings import EmbeddingClient
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +39,12 @@ def _backend_unavailable_reason(embedder: EmbeddingClient) -> str:
     """Human reason why the configured embedding backend is unavailable."""
     if not embedder.base_url:
         return (
-            "embeddings not configured — add an 'embeddings' section to "
-            "mcp-plugin.json5 to enable semantic search"
+            "host passed no embedding endpoint — configure the top-level "
+            "'embeddings' section of slife.json5 to enable semantic search"
         )
     return (
         "api backend unavailable — base_url is a placeholder or unreachable. "
-        "Check the 'embeddings' section in mcp-plugin.json5."
+        "Check the 'embeddings' section in slife.json5."
     )
 
 
@@ -74,7 +74,7 @@ class SemanticManager:
     async def start(self) -> None:
         """Startup: enable when the embeddings config is present, else disable."""
         try:
-            from mcp_plugin.embeddings import EmbeddingClient
+            from slife.plugins.mcp.embeddings import EmbeddingClient
 
             probe = EmbeddingClient.from_plugin_config(
                 config_path=self._config_path,

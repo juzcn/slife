@@ -325,7 +325,7 @@ def resolve_server_config(name: str, raw_entry: dict):
     Args/url/headers keep their embedded refs — the connection layer
     resolves them at connect time (unchanged behaviour).
     """
-    from mcp_plugin.connection import ServerConfig
+    from slife.plugins.mcp.connection import ServerConfig
 
     env = raw_entry.get("env")
     if isinstance(env, dict):

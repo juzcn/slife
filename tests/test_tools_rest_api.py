@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mcp_plugin import config as mcp_plugin_config
+from slife.plugins.mcp import config as mcp_plugin_config
 from slife.tools.rest_api import (
     RestApiSetTool,
     RestApiRemoveTool,

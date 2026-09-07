@@ -190,19 +190,24 @@ class TestConfigFromJSON5:
         assert config.models[1].ref == "anthropic/claude-3"
 
     def test_plugins_required_parsed(self, tmp_path, monkeypatch):
-        """plugins.required names become the required-plugin contract set."""
+        """plugins.required names become the required-plugin contract set.
+
+        The plugins.external mechanism was removed — only required is read
+        (externals enter via the internal mcp gateway's mcp-plugin.json5).
+        """
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({
             "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
             "plugins": {
                 "required": ["memdb", "memfiles"],
-                "external": [{"name": "mcp", "module": "mcp_plugin.server"}],
+                "external": [{"name": "mcp", "module": "slife.plugins.mcp.server"}],
             },
         }))
         config = Config.from_json5(str(cfg_path))
         assert config.plugins_required == frozenset({"memdb", "memfiles"})
-        assert config.plugins_external == [{"name": "mcp", "module": "mcp_plugin.server"}]
+        # external is no longer parsed onto the Config.
+        assert not hasattr(config, "plugins_external")
 
     def test_plugins_required_default_empty(self, tmp_path, monkeypatch):
         """Absent plugins.required means every plugin is optional (default false)."""

@@ -541,15 +541,15 @@ fi
 TOOL_INSTALL_LOG="$TMP_DIR/tool-install.log"
 
 # Build local wheels for the whole workspace (slife + credstore + cc-switch +
-# mcp-plugin + local-embed) and install slife from them.
+# local-embed) and install slife from them.
 #
 # Why wheels and not `--from "$TMP_DIR/slife-main"`: `uv tool install --from`
-# materialises the workspace members (mcp-plugin / local-embed / credstore) as
-# EDITABLE installs pointing at the extracted source dir — which the installer
-# deletes at the end — so `import mcp_plugin` breaks after a fresh install
-# (the members are declared deps; they belong inside slife's venv, as real
-# copies).  Local wheels install them as non-editable copies: self-contained,
-# survives the temp-dir cleanup, still 100 % from source, no PyPI.
+# materialises the workspace members (local-embed / credstore) as EDITABLE
+# installs pointing at the extracted source dir — which the installer deletes
+# at the end — so those packages break after a fresh install (they are
+# declared deps; they belong inside slife's venv, as real copies).  Local
+# wheels install them as non-editable copies: self-contained, survives the
+# temp-dir cleanup, still 100 % from source, no PyPI.
 WHEELHOUSE="$TMP_DIR/wheelhouse"
 mkdir -p "$WHEELHOUSE"
 set +eo pipefail
@@ -800,8 +800,8 @@ echo -e "${YELLOW}[5/5] Cleaning up previous installation artifacts…${NC}"
 # Ensure ~/.local/bin and the slife tool venv bin (local-embed) are on PATH
 # (uv puts tool executables here, and Step 1 only added the former to the
 # current session).  The tool bin entry is what makes the documented
-# `local-embed set-gguf` command work out-of-the-box.  mcp-plugin is an MCP
-# server with no CLI — the host spawns `python -m mcp_plugin.server` itself.
+# `local-embed set-gguf` command work out-of-the-box.  The mcp gateway ships
+# inside slife — the host spawns `python -m slife.plugins.mcp.server`.
 SLIFE_TOOL_BIN="$(uv tool dir)/slife/bin"
 for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.config/fish/config.fish"; do
     if [ -f "$rc" ]; then

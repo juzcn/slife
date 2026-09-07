@@ -1,4 +1,4 @@
-"""Tests for mcp_plugin.logging — log-dir resolution contract.
+"""Tests for slife.plugins.mcp.logging — log-dir resolution contract.
 
 The external-plugin log contract: when slife spawns mcp_plugin it exports
 ``SLIFE_LOG_DIR`` / ``SLIFE_PLUGIN_NAME``, so the per-session log follows
@@ -14,7 +14,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from mcp_plugin.logging import resolve_log_dir
+from slife.plugins.mcp.logging import resolve_log_dir
 
 
 class TestResolveLogDir:

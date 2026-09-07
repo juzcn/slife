@@ -350,13 +350,15 @@ Picker rules (hard-won):
 
 ## Plugin Architecture
 
-Six built-in plugins run as independent child processes, plus two standalone
-external plugins registered via `plugins.external`: the `mcp-plugin` MCP
-gateway and the `local-embed` embedding service. Communication is via
-**Streamable HTTP** (MCP protocol) for all of them — the sharefile plugin
-additionally serves plain-HTTP file bytes on the same port via a custom route
-(`GET /share/{token}`), and local-embed serves OpenAI-compatible `/v1/embeddings`
-on the same port; their control surfaces are pure MCP.
+Eight internal plugins run as independent child processes: memdb, wechat,
+memfiles, sharefile, a2a, media, job-coding, and the **MCP gateway** (mcp).
+There is no `plugins.external` mechanism — third-party capability enters only
+as a standard MCP server in `mcp-plugin.json5`, connected by the internal
+gateway. `local-embed` is **not** a plugin: it is a standalone daemon (started
+manually, like Mosquitto) serving OpenAI-compatible `/v1/embeddings`.
+Communication is via **Streamable HTTP** (MCP protocol) for all plugins — the
+sharefile plugin additionally serves plain-HTTP file bytes on the same port
+via a custom route (`GET /share/{token}`); their control surfaces are pure MCP.
 
 **WSL note:** Custom env vars set via `create_subprocess_exec(env=…)` are NOT forwarded to Windows `.exe` processes through WSL interop. `WSLENV` is only read by the WSL `/init` at session start, not by child processes. Therefore, **all MCP server runtimes on WSL must be Linux-native binaries** — the install script enforces this by detecting `/mnt/*` paths and installing native versions.
 
@@ -432,7 +434,7 @@ on the first unsavable turn) instead of aborting startup. Required plugins
 are declared per instance in the config, so which components are
 non-negotiable is a deployment decision, not a hardcoded set.
 
-No base class, no import hook, no SDK. Built-in plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`; standalone distributions (e.g. `mcp-plugin`, the external MCP gateway) register instead via `plugins.external` in `slife.json5` and are spawned through the same generic lifecycle. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. sharefile's ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal. In practice uvicorn finishes mounting the Streamable HTTP endpoint ~1 s *after* the lifespan signals, so a session established in that window can get a bad SSE transport on Windows/Proactor that hangs `tools/list`; the harness runs that call through `asyncio.timeout` (which, unlike `asyncio.wait_for`, breaks the hang reliably) and, on a timeout, reconnects a fresh session and retries once — by then the plugin is serving, so the race self-heals instead of failing the load.
+No base class, no import hook, no SDK. Every plugin is auto-discovered by scanning `slife.plugins.*` for packages with a `server.py` — including the MCP gateway (`slife.plugins.mcp.server`). Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. sharefile's ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal. In practice uvicorn finishes mounting the Streamable HTTP endpoint ~1 s *after* the lifespan signals, so a session established in that window can get a bad SSE transport on Windows/Proactor that hangs `tools/list`; the harness runs that call through `asyncio.timeout` (which, unlike `asyncio.wait_for`, breaks the hang reliably) and, on a timeout, reconnects a fresh session and retries once — by then the plugin is serving, so the race self-heals instead of failing the load. `python -m slife.plugins.mcp.server` is the only way the gateway runs; slife itself also hosts an in-process FastMCP server (`slife/mcp/host_server.py`) that exposes the live ToolRegistry to external MCP consumers (DESIGNER_NOTES §8).
 
 The MCP client keeps bounded retry (6 attempts, 0.5 s apart, each attempt time-boxed at 10 s including transport setup) as **defense-in-depth**: a plugin that signals early (violating the contract) still loads instead of hanging.
 
@@ -467,7 +469,7 @@ on the user's proxy config being correct.
 
 **Scope — external MCP servers are unaffected.** Outbound traffic to the
 configured external MCP servers (`mcp-plugin.json5` → `servers`) goes through the *mcp-plugin*
-gateway's own client (`mcp-plugin/mcp_plugin/connection.py`), which keeps
+gateway's own client (`slife/plugins/mcp/connection.py`), which keeps
 `trust_env=True` — a remote server that genuinely needs the proxy still gets
 it. Only the local
 plugin client is proxy-free. Regression test:
@@ -496,15 +498,14 @@ Processes communicate through environment variables:
 |----------|---------|
 | `SLIFE_SESSION_ID` / `SLIFE_AGENT_NAME` | Log correlation, agent identity |
 | `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` | Directory overrides |
-| `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES / MQTT / MEDIA). Key is the uppercased plugin name with dashes normalised to underscores (`local-embed` → `SLIFE_LOCAL_EMBED_PORT`) — via `slife.agent.plugins.plugin_port_env`. |
+| `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES / A2A / MEDIA / JOB-CODING / SHAREFILE). Key is the uppercased plugin name with dashes normalised to underscores (`job-coding` → `SLIFE_JOB_CODING_PORT`) — via `slife.agent.plugins.plugin_port_env`. Subagents read this env to share the parent's plugins. `local-embed` is a daemon, not a plugin, so it publishes no port. |
 | `SLIFE_SHAREFILE_URL` | Public ngrok URL (set inside the sharefile plugin process) |
 
-### Plugins (built-in + external)
+### Plugins (internal only)
 
 | Plugin | Transport | Role |
 |--------|-----------|------|
-| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config — and keeps an in-memory **tool catalog** of every loaded tool (name, description, full schema, enabled), rebuilt live from connections, searched via a schema-aware hybrid `mcp_tool_search` and loaded on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration). |
-| **local-embed** | Streamable HTTP + `/v1/embeddings` | External embedding service provider — OpenAI-compatible `POST /v1/embeddings` + `GET /v1/models` (+ `/v1/models/{id}`) on the same port, from one local GGUF/transformer model loaded once and shared by memdb, memfiles, and the mcp tool catalog. Sole MCP tool is the internal `__check`. `POST /v1/embeddings` with an explicitly-named unknown `model` returns **404** (`invalid_request_error`), never a silent fallback to the active model's vectors labelled with the requested name. |
+| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp`). Manages connection lifecycle — spawn/connect, route tool calls, persist config — and keeps an in-memory **tool catalog** of every loaded tool (name, description, full schema, enabled), rebuilt live from connections, searched via a schema-aware hybrid `mcp_tool_search` and loaded on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration). |
 | **slife-memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages (a failed poll — signalled by `client.last_error`, which `poll_updates()` sets on a swallowed network error — backs off the next poll exponentially to 30 s and resets on the next clean poll), typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[WECHAT]` (model-facing; the TUI strips the marker from display since the `Wechat>` bubble prefix already shows the channel); the model replies itself by calling the LLM-visible `wechat_send_message` — no harness auto-dispatch — addressing the peer by `peer_wechat_id` (from `wechat_check_status.last_contact`). |
 | **slife-memfiles** | Streamable HTTP | Private notes/diary/reports/files cabinet — tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, report tools `report_save` / `report_list` / `report_read`), internal `__check` + `__scheduled_*` registry ops. Notes, diary &amp; reports dual-written to markdown + a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. The scheduled-task tools (`scheduled_task_*` / `scheduled_run_*` / `run_schedule_now`) are native, in the "Schedule" category (`slife/tools/schedule.py`); this plugin only holds the schedule/run data they call. |
@@ -547,7 +548,9 @@ re-synced from the live connection pool on every (re)connect, so it is by
 construction identical to what the runtime can use — nothing persists, so it
 can never drift or go stale. It is indexed twice — FTS5 (keyword, over
 name/server/description/schema text) and f32-BLOB vectors (semantic) produced
-against the gateway's own `embeddings` section of `mcp-plugin.json5`. The
+against the host-provided endpoint (slife.json5's top-level `embeddings`,
+passed via the `initialize` handshake — the gateway has no `embeddings`
+section of its own). The
 semantic vector is sourced from the **schema text alone** (flattened at embed
 time: name, description, each parameter, return description), making
 `mcp_tool_search` **schema-aware** — a tool is findable by what its parameters
@@ -646,8 +649,9 @@ Search hardening: `search_grep` escapes `%`/`_` with `ESCAPE '\'`; `turn_count` 
 ### Embedding
 
 Embeddings are a **first-class top-level `embeddings` section** in `slife.json5`,
-shared by memdb + memfiles (the mcp gateway's tool catalog reads its *own*
-`embeddings` section of `mcp-plugin.json5`) and managed by the native tools
+shared by memdb + memfiles + the mcp gateway's tool catalog (the host passes
+its active endpoint to the gateway via the `initialize` handshake — the single
+source of truth) and managed by the native tools
 `embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` /
 `embeddings_model_remove` / `embeddings_enable` (category `embeddings`).
 The shape mirrors the LLM
@@ -665,7 +669,7 @@ The shape mirrors the LLM
   `embeddings.py`) exposes `available` / `loaded` / `dimension` /
   `max_tokens`; every embed is serialised on a per-client `threading.Lock`
   (`_embed_lock`), and local-model backends (gguf/transformer, served via
-  the local-embed plugin) run on daemon threads (`slife.threads.run_daemon`).
+  the local-embed daemon) run on daemon threads (`slife.threads.run_daemon`).
 
 **Vector store.** `diary_semantic` is a sqlite-vec `vec0` table (`turn_embedding float[dim]`, `+diary_rowid`, `+chunk_index`, `+summary`, `+tags`, `+created_at`). One turn → multiple chunks: text is split at paragraph boundaries (~2000 chars ≈ 500 tokens, 1-paragraph overlap), and the embedded text is the user message plus all assistant/tool contents. Semantic search dedupes by `diary_rowid`, keeping only the best (lowest-distance) chunk per turn.
 
@@ -959,7 +963,8 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 | `agent` | `max_iterations`, `tool_timeout`, `context_floor`, `context_ceiling`, `tool_result_ceiling`, `heartbeat_interval` |
 | `tools` | Per-tool overrides (timeout, enabled) |
 | `mcp-plugin.json5: servers` | External MCP server configs (self-hosted by the gateway) |
-| `embeddings` | First-class embeddings config: `providers` (OpenAI-compatible endpoints), `active_model`, `enabled` — shared by memdb + memfiles (the mcp gateway's tool catalog reads its own `embeddings` section of `mcp-plugin.json5`) |
+| `embeddings` | First-class embeddings config: `providers` (OpenAI-compatible endpoints), `active_model`, `enabled` — shared by memdb/memfiles + the gateway's tool catalog (host passes the active endpoint via handshake) |
+| `plugin_server` | slife-as-plugin: the in-process MCP server port exposing the live ToolRegistry |
 | `wechat` | `enabled` toggle |
 | `media` | Non-chat generation config (defaults, providers → api adapter + models) — plugin-read, ignored by the main `Config` parser |
 | `a2a` | A2A config (transport binding, broker host/port, heartbeat, task_timeout) |
@@ -989,7 +994,7 @@ Because the standalone checks are subsets of `system_health`, their tool schemas
 | `check_memdb` | Database file + embedding backend (model, dimension, availability) | Application state (memdb plugin) |
 | `check_wechat` | Login status, session age, QR expiry | Application state (wechat plugin) |
 | `check_memfiles` | File cabinet (notes / diary / files) connected? semantic index ready? (via the memfiles plugin's internal `__check` tool) | Application state (memfiles plugin) |
-| `check_local_embed` | Local embedding service online? active model, loaded models? (via the local-embed plugin's internal `__check` tool) | Application state (local-embed plugin) |
+| `check_local_embed` | Local embedding daemon online? active model, loaded models? (probes the daemon's HTTP `GET /v1/models` — local-embed is not a plugin) | Application state (local-embed daemon) |
 | `check_sharefile` | File-sharing tunnel online? ngrok URL? | Application state (sharefile plugin) |
 | `check_mcp` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, hints) | Application state (MCP wrapper + external servers) |
 | `check_a2a` | A2A mesh connection + peer status (via the a2a plugin's `__a2a_status` internal tool) | Application state (a2a plugin) |
@@ -1148,17 +1153,18 @@ credstore/
     _config.py         # Config file loading
     _tty.py            # Masked terminal input
 
-mcp-plugin/             # Standalone workspace member — the external MCP gateway
-  mcp_plugin/           #   (raw JSON-RPC: stdio/SSE/streamable), registered via plugins.external
+slife/plugins/mcp/      # The MCP gateway — a built-in plugin (no standalone package)
     server.py           #   FastMCP gateway server + tool-catalog/search/embeddings tools
     connection.py       #   ConnectionPool / MCPServerConnection
-    client.py           #   Streamable HTTP client (used by the harness)
-    config.py           #   mcp-plugin.json5 (servers, embeddings), auto_load
+    client.py           #   Streamable HTTP client (used by the harness to connect ALL plugins)
+    config.py           #   mcp-plugin.json5 (servers), auto_load — no embeddings section (host-provided)
     store.py            #   ToolStore — in-memory tool catalog (FTS5 + BLOB vectors, full-schema column + flatten)
-    embeddings.py       #   EmbeddingClient (httpx, OpenAI-compatible)
+    embeddings.py       #   EmbeddingClient (httpx, OpenAI-compatible) — host override only
     semantic.py         #   SemanticManager — gate + background embed drainer
     search.py           #   merge_hybrid (RRF)
     schema.sql          #   catalog DDL
+
+slife/mcp/host_server.py  # slife-as-plugin — in-process FastMCP exposing the live ToolRegistry
 
 skills/                # On-demand SKILL.md skills (seeded to ~/.slife/skills/)
 ```

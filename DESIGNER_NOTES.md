@@ -130,6 +130,18 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 7.3 Agent选择web search工作比较随意，需要明确让它用baidu search skill，它才会用。
 
+8. All plugins design
+
+- turn slife to a plugin, cli+plugin
+- local-embed as an independent app, like mosquitto, need to be started manually 
+- turn mcp-plugin as internal plugin, just like other internal plugins
+- remove embeddings setting in mcp-plugin.json5， mcp-plugin as internal plugin, use embeddings setting of slife.json5.
+- remove slife external plugin's design, no external plugin
+- slife expose internal tools to crud ToolRegistry, keep  ToolRegistry live and real time.
+
+
+
+
 
 
 

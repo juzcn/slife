@@ -59,7 +59,7 @@ class TestPluginLifecycleInit:
 
 class TestPluginPortEnv:
     """The canonical SLIFE_{NAME}_PORT env key — dashes normalised to
-    underscores so dash-named plugins (local-embed) match how subagents
+    underscores so dash-named plugins (job-coding) match how subagents
     read plugin ports."""
 
     def test_underscore_name_unchanged(self):
@@ -67,10 +67,10 @@ class TestPluginPortEnv:
         assert plugin_port_env("memdb") == "SLIFE_MEMDB_PORT"
 
     def test_dash_name_normalised(self):
-        assert plugin_port_env("local-embed") == "SLIFE_LOCAL_EMBED_PORT"
+        assert plugin_port_env("job-coding") == "SLIFE_JOB_CODING_PORT"
 
     def test_case_normalised(self):
-        assert plugin_port_env("Local-Embed") == "SLIFE_LOCAL_EMBED_PORT"
+        assert plugin_port_env("Job-Coding") == "SLIFE_JOB_CODING_PORT"
 
 
 # ── spawn ─────────────────────────────────────────────────────────────────
@@ -89,7 +89,7 @@ class TestPluginLifecycleSpawn:
             {"name": "my_tool", "description": "A tool."},
         ])
 
-        with patch("mcp_plugin.process.MCPWrapperProcess") as MockProc:
+        with patch("slife.plugins.mcp.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
             mock_process.start = AsyncMock()
             mock_process.create_client = AsyncMock(return_value=mock_client)
@@ -99,7 +99,7 @@ class TestPluginLifecycleSpawn:
                 mock_create.return_value = [mock_tool]
 
                 await lifecycle.spawn(
-                    module="mcp_plugin.server",
+                    module="slife.plugins.mcp.server",
                 )
 
         import os
@@ -114,17 +114,17 @@ class TestPluginLifecycleSpawn:
 
     @pytest.mark.asyncio
     async def test_spawn_dash_name_writes_normalised_env_key(self, mock_service):
-        """A dash-named plugin (local-embed) publishes its port under the
-        canonical underscore key — no ``SLIFE_LOCAL-EMBED_PORT``."""
-        lc = PluginLifecycle("local-embed", mock_service)
+        """A dash-named plugin (job-coding) publishes its port under the
+        canonical underscore key — no ``SLIFE_JOB-CODING_PORT``."""
+        lc = PluginLifecycle("job-coding", mock_service)
         mock_process = MagicMock()
         mock_process.port = 8000
         mock_client = MagicMock()
         mock_client.list_tools = AsyncMock(return_value=[
-            {"name": "embed_status", "description": "Status."},
+            {"name": "job-list", "description": "List jobs."},
         ])
 
-        with patch("mcp_plugin.process.MCPWrapperProcess") as MockProc:
+        with patch("slife.plugins.mcp.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
             mock_process.start = AsyncMock()
             mock_process.create_client = AsyncMock(return_value=mock_client)
@@ -133,13 +133,13 @@ class TestPluginLifecycleSpawn:
                 mock_tool = MagicMock()
                 mock_create.return_value = [mock_tool]
 
-                await lc.spawn(module="local_embed.server")
+                await lc.spawn(module="slife.plugins.job_coding.server")
 
         import os
-        assert os.environ.get("SLIFE_LOCAL_EMBED_PORT") == "8000"
-        assert os.environ.get("SLIFE_LOCAL-EMBED_PORT") is None
+        assert os.environ.get("SLIFE_JOB_CODING_PORT") == "8000"
+        assert os.environ.get("SLIFE_JOB-CODING_PORT") is None
         # Clean up
-        os.environ.pop("SLIFE_LOCAL_EMBED_PORT", None)
+        os.environ.pop("SLIFE_JOB_CODING_PORT", None)
 
     @pytest.mark.asyncio
     async def test_spawn_registers_tools(self, lifecycle, mock_service):
@@ -152,7 +152,7 @@ class TestPluginLifecycleSpawn:
             {"name": "__internal_tool", "description": "Internal (__ prefix)."},
         ])
 
-        with patch("mcp_plugin.process.MCPWrapperProcess") as MockProc:
+        with patch("slife.plugins.mcp.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
             mock_process.start = AsyncMock()
             mock_process.create_client = AsyncMock(return_value=mock_client)
@@ -162,7 +162,7 @@ class TestPluginLifecycleSpawn:
                 mock_create.return_value = [mock_tool]
 
                 await lifecycle.spawn(
-                    module="mcp_plugin.server",
+                    module="slife.plugins.mcp.server",
                 )
 
         assert mock_service.tool_registry.register.called
@@ -189,10 +189,10 @@ class TestPluginLifecycleSpawn:
         )
         mock_process.stop = AsyncMock()
 
-        with patch("mcp_plugin.process.MCPWrapperProcess") as MockProc:
+        with patch("slife.plugins.mcp.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
             with pytest.raises(ConnectionError):
-                await lifecycle.spawn(module="mcp_plugin.server")
+                await lifecycle.spawn(module="slife.plugins.mcp.server")
 
         assert lifecycle.process is None
         assert lifecycle.client is None

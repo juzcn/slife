@@ -1,29 +1,26 @@
 """Embedding client — OpenAI-compatible HTTP backend only (httpx2, no openai).
 
-The plugin stays standalone (no ``slife`` / ``openai`` deps), so embeddings
-go straight over ``httpx2`` to any OpenAI-compatible ``/v1/embeddings``
-endpoint — the deployment uses the ``local-embed`` plugin at
-``http://127.0.0.1:17347/v1``.
+Embeddings go straight over ``httpx2`` to any OpenAI-compatible
+``/v1/embeddings`` endpoint — the deployment uses a local embedding daemon
+(e.g. ``local-embed`` at ``http://127.0.0.1:17347/v1``).
 
-Config precedence: a **host-provided override** (a connecting client sending
-its own embedding endpoint via the MCP ``initialize`` handshake's
-``clientInfo`` — mcp-plugin is a standard Streamable HTTP server, so any
-client can pass its own params) wins when usable; otherwise the single
-top-level ``embeddings`` section of ``mcp-plugin.json5`` is used:
-``{ base_url, model?, api_key? }``.  Present with a real ``base_url`` ⇒ the
-client is available (semantic search runs); absent / placeholder ``base_url``
-⇒ unavailable (keyword/grep fallback).  ``api_key`` may be empty (no auth
-header), plaintext, or a ``${VAR}`` placeholder resolved at construction via
-shell env → credstore (an unresolvable placeholder degrades to empty).
+Config comes from the **host only**: the connecting client passes its active
+embedding endpoint via the MCP ``initialize`` handshake's ``clientInfo``
+(slife sends slife.json5's top-level ``embeddings`` — there is no
+``embeddings`` section in mcp-plugin.json5 anymore).  A usable ``base_url``
+(non-empty, not a placeholder) ⇒ the client is available (semantic search
+runs); absent / placeholder ``base_url`` ⇒ unavailable (keyword/grep
+fallback).  ``api_key`` may be empty (no auth header), plaintext, or a
+``${VAR}`` placeholder resolved at construction via shell env → credstore
+(an unresolvable placeholder degrades to empty).
 """
 
 import asyncio
 import logging
-from pathlib import Path
 
 import httpx2
 
-from mcp_plugin.config import _resolve_secret, load_config, read_config
+from slife.plugins.mcp.config import _resolve_secret
 
 logger = logging.getLogger(__name__)
 
@@ -67,15 +64,15 @@ class EmbeddingClient:
         cls, config_path: str | None = None, quiet: bool = True,
         override: dict | None = None,
     ) -> "EmbeddingClient":
-        """Build a client from the embeddings config.
+        """Build a client from the host-provided embedding endpoint.
 
-        ``override`` — the host's active embedding endpoint passed via the
-        MCP ``initialize`` handshake's ``clientInfo`` — wins when it carries
-        a usable ``base_url`` (non-empty, not a placeholder).  Otherwise the
-        top-level ``embeddings`` section of ``mcp-plugin.json5`` is used.
+        *override* — the host's active embedding endpoint passed via the MCP
+        ``initialize`` handshake's ``clientInfo`` — is the sole config source
+        (mcp-plugin.json5 carries no ``embeddings`` section).  A usable
+        ``base_url`` (non-empty, not a placeholder) ⇒ enabled; absent or a
+        ``${VAR}`` placeholder ``base_url`` ⇒ ``enabled=False`` (semantic
+        search off, keyword/grep fallback).
 
-        No usable config, or a ``base_url`` that is a ``${VAR}`` placeholder ⇒
-        ``enabled=False`` (semantic search off, keyword/grep fallback).
         An ``api_key`` that is a ``${VAR}`` placeholder is resolved through
         shell env → credstore; unresolvable placeholders degrade to empty
         (no ``Authorization`` header).
@@ -89,15 +86,6 @@ class EmbeddingClient:
                     "model": str(override.get("model", "")),
                     "api_key": str(override.get("api_key", "")),
                 }
-        if emb is None:
-            try:
-                if config_path is None:
-                    raw = load_config()
-                else:
-                    raw = read_config(Path(config_path))
-            except Exception:
-                raw = {}
-            emb = raw.get("embeddings")
         if not isinstance(emb, dict):
             return cls(enabled=False)
         base_url = str(emb.get("base_url", ""))

@@ -21,7 +21,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from mcp_plugin.client import MCPClient
+from slife.plugins.mcp.client import MCPClient
 
 
 def _normalize_path(p: str) -> str:
@@ -41,10 +41,10 @@ async def main(allowed_dir: str | None = None):
 
     # ── 1. Connect to slife-mcp wrapper via MCPWrapperProcess ────
     print("1. Starting slife-mcp wrapper...")
-    from mcp_plugin.process import MCPWrapperProcess
+    from slife.plugins.mcp.process import MCPWrapperProcess
     wrapper = MCPWrapperProcess(
         command="uv",
-        args=["run", "python", "-m", "mcp_plugin.server"],
+        args=["run", "python", "-m", "slife.plugins.mcp.server"],
     )
     await wrapper.start()
     client = await wrapper.create_client()

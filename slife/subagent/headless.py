@@ -30,10 +30,6 @@ from slife.logfmt import elapsed
 logger = logging.getLogger("slife_subagent")
 
 
-def _external_plugin_configured(config, name: str) -> bool:
-    """True when *name* is registered via the ``plugins.external`` config."""
-    return any(p.get("name") == name for p in config.plugins_external)
-
 #: Set by ``run_headless`` — log path so callers can find it.
 _log_path: Path | None = None
 
@@ -108,73 +104,35 @@ async def run_headless() -> None:
             config = Config.from_json5(_config_path)
 
     logger.info(
-        "config_loaded model=%s tools=%d memory=%s mcp=%s a2a=%s",
+        "config_loaded model=%s tools=%d memory=%s a2a=%s",
         config.active_model.ref,
         len(config.tools),
         "on" if config.memdb_config else "off",
-        "on" if _external_plugin_configured(config, "mcp") else "off",
         "on" if config.a2a_config else "off",
     )
 
     service = AgentService(config, is_subagent=True)
 
-    # Connect to the main agent's plugin servers via Streamable HTTP when
-    # ports are provided.  Subagents share the main agent's plugins instead
-    # of spawning their own — avoids duplicate processes and shared state.
-    _mcp_port = os.environ.get("SLIFE_MCP_PORT", "")
+    # Connect to EVERY plugin the main agent started — a manifest loop, not a
+    # hardcoded subset.  The parent publishes ``SLIFE_<NAME>_PORT`` for each
+    # plugin it spawned (``plugin_port_env``); a plugin that was skipped (e.g.
+    # a2a with no broker) has no port env and is skipped here too.  Subagents
+    # share the main agent's plugin servers instead of spawning their own —
+    # avoids duplicate processes and shared state.  The a2a plugin connects
+    # as a thin client (register the ``a2a_*`` tools so we can send as the
+    # parent, but never drain the inbound queue — that stays with the parent).
+    from slife.plugins import discover_plugins
+    from slife.agent.plugins import plugin_port_env
 
-    if _mcp_port and _external_plugin_configured(config, "mcp"):
+    for _name, _module in discover_plugins():
+        _port = os.environ.get(plugin_port_env(_name), "")
+        if not _port:
+            continue
         try:
-            with elapsed("mcp_startup", logger, level=logging.INFO, port=_mcp_port):
-                await service.connect_mcp_http(int(_mcp_port))
+            with elapsed(f"{_name}_connect", logger, level=logging.INFO, port=_port):
+                await service.connect_plugin_http(_name, int(_port))
         except Exception as e:
-            logger.warning("mcp_http_failed port=%s err=%s", _mcp_port, e)
-
-    # Subagents share the main agent's memory and wechat servers too.
-    _memdb_port = os.environ.get("SLIFE_MEMDB_PORT", "")
-    if _memdb_port and config.memdb_config:
-        try:
-            with elapsed("memdb_connect", logger, level=logging.INFO, port=_memdb_port):
-                await service.connect_memdb_http(int(_memdb_port))
-        except Exception as e:
-            logger.warning("memdb_http_failed port=%s err=%s", _memdb_port, e)
-
-    _wechat_port = os.environ.get("SLIFE_WECHAT_PORT", "")
-    if _wechat_port and config.wechat_config:
-        try:
-            with elapsed("wechat_connect", logger, level=logging.INFO, port=_wechat_port):
-                await service.connect_wechat_http(int(_wechat_port))
-        except Exception as e:
-            logger.warning("wechat_http_failed port=%s err=%s", _wechat_port, e)
-
-    # Reuse the parent agent's a2a plugin (thin client): register the a2a_*
-    # tools so we can send as the parent, but never drain the inbound queue
-    # (all replies and management belong to the parent agent).
-    _a2a_port = os.environ.get("SLIFE_A2A_PORT", "")
-    if _a2a_port:
-        try:
-            await service.connect_a2a_http(int(_a2a_port))
-        except Exception as e:
-            logger.warning("a2a_http_failed port=%s err=%s", _a2a_port, e)
-
-    # Share the main agent's memfiles plugin (file cabinet) instead of
-    # spawning a second instance.
-    _memfiles_port = os.environ.get("SLIFE_MEMFILES_PORT", "")
-    if _memfiles_port:
-        try:
-            await service.connect_memfiles_http(int(_memfiles_port))
-        except Exception as e:
-            logger.warning("memfiles_http_failed port=%s err=%s", _memfiles_port, e)
-
-    # Share the main agent's sharefile plugin (public file sharing) instead
-    # of spawning a second instance that would fight over the single
-    # free-tier ngrok tunnel.
-    _sharefile_port = os.environ.get("SLIFE_SHAREFILE_PORT", "")
-    if _sharefile_port:
-        try:
-            await service.connect_sharefile_http(int(_sharefile_port))
-        except Exception as e:
-            logger.warning("sharefile_http_failed port=%s err=%s", _sharefile_port, e)
+            logger.warning("%s_http_failed port=%s err=%s", _name, _port, e)
 
     # Subagents can spawn their own descendants (recursion enabled).
     await service.start_subagent()
@@ -277,21 +235,25 @@ async def run_headless() -> None:
                     logger.info("subagent_cancel_received task=%s", task_id)
                     service.inbox.cancel_correlation(task_id)
             elif method == "worker/plugin_restart":
-                # The parent restarted a shared plugin (currently the MCP
-                # wrapper) on a new auto-assigned port.  Our client still
-                # points at the dead one — reconnect so the plugin's tools
-                # keep working instead of erroring until the worker exits.
+                # The parent restarted a shared plugin on a new auto-assigned port.
+                # Our client still points at the dead one — reconnect so the
+                # plugin's tools keep working instead of erroring until the
+                # worker exits.  Any shared plugin may restart (not just the
+                # mcp wrapper), so the handler is generic.
                 plugin = params.get("plugin", "")
                 port = params.get("port", 0)
-                if plugin == "mcp" and port:
-                    logger.info("subagent_mcp_restart port=%s", port)
+                if plugin and port:
+                    logger.info("subagent_plugin_restart plugin=%s port=%s", plugin, port)
                     try:
-                        await service.connect_mcp_http(int(port))
-                        logger.info("subagent_mcp_reconnect_done port=%s", port)
+                        await service.connect_plugin_http(str(plugin), int(port))
+                        logger.info(
+                            "subagent_plugin_reconnect_done plugin=%s port=%s",
+                            plugin, port,
+                        )
                     except Exception as e:
                         logger.warning(
-                            "subagent_mcp_reconnect_failed port=%s err=%s",
-                            port, e, exc_info=True,
+                            "subagent_plugin_reconnect_failed plugin=%s port=%s err=%s",
+                            plugin, port, e, exc_info=True,
                         )
                 else:
                     logger.warning(

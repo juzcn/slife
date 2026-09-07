@@ -5,7 +5,7 @@ import json
 import pytest
 import pytest_asyncio
 
-from mcp_plugin.store import ToolStore, _cosine_distance, _deserialize_f32, _serialize_f32
+from slife.plugins.mcp.store import ToolStore, _cosine_distance, _deserialize_f32, _serialize_f32
 
 
 @pytest_asyncio.fixture

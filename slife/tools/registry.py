@@ -2,6 +2,7 @@
 
 import logging
 import time as _time
+from typing import Callable
 
 from slife.tools.base import Tool
 
@@ -17,6 +18,22 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
+        #: Observers notified after any register/unregister mutation.  The
+        #: slife-as-plugin host server subscribes here to push the standard
+        #: MCP ``notifications/tools/list_changed`` to connected consumers —
+        #: the registry stays the single live source of the tool list.
+        self._on_change: list[Callable[[], None]] = []
+
+    def add_change_listener(self, listener: Callable[[], None]) -> None:
+        """Register *listener*, called after every tool-set mutation."""
+        self._on_change.append(listener)
+
+    def _notify_changed(self) -> None:
+        for cb in list(self._on_change):
+            try:
+                cb()
+            except Exception:
+                logger.debug("tool_change_listener_error", exc_info=True)
 
     def register(self, tool: Tool) -> None:
         """Register a tool instance."""
@@ -25,12 +42,14 @@ class ToolRegistry:
                 "tool_register_duplicate name=%s — replacing existing tool", tool.name,
             )
         self._tools[tool.name] = tool
+        self._notify_changed()
 
     def unregister(self, name: str) -> bool:
         """Remove a tool by name. Returns True if it existed."""
         if name in self._tools:
             del self._tools[name]
             logger.debug("tool_unregistered name=%s", name)
+            self._notify_changed()
             return True
         return False
 

@@ -26,7 +26,6 @@ dependencies = [
     "paho-mqtt>=2.0.0",
     "requests>=2.31.0",
     "credstore",
-    "mcp-plugin",
     "local-embed",
     "ngrok",
     "croniter>=6.2.4",
@@ -97,12 +96,11 @@ dev = [
 ]
 
 [tool.uv.workspace]
-members = ["credstore", "cc-switch", "mcp-plugin", "local-embed"]
+members = ["credstore", "cc-switch", "local-embed"]
 
 [tool.uv.sources]
 credstore = { workspace = true }
 cc-switch = { workspace = true }
-mcp-plugin = { workspace = true }
 local-embed = { workspace = true }
 
 [tool.pytest.ini_options]
@@ -127,9 +125,9 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["slife", "credstore", "cc_switch", "mcp_plugin", "local_embed"]
+source = ["slife", "credstore", "cc_switch", "local_embed"]
 branch = true
-omit = ["tests/*", "credstore/tests/*", "cc-switch/tests/*", "mcp-plugin/tests/*", "local-embed/tests/*"]
+omit = ["tests/*", "credstore/tests/*", "cc-switch/tests/*", "local-embed/tests/*"]
 
 [tool.coverage.report]
 exclude_also = [
@@ -144,9 +142,9 @@ skip_covered = false
 [tool.pyright]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
-include = ["slife", "credstore", "cc_switch", "mcp-plugin", "local-embed"]
-exclude = ["**/__pycache__/**", "**/.venv/**", ".venv/**", "tests/**", "credstore/tests/**", "cc-switch/tests/**", "mcp-plugin/tests/**", "local-embed/tests/**", "**/node_modules", "**/.*"]
-extraPaths = ["credstore", "cc-switch", "mcp-plugin", "local-embed"]
+include = ["slife", "credstore", "cc_switch", "local-embed"]
+exclude = ["**/__pycache__/**", "**/.venv/**", ".venv/**", "tests/**", "credstore/tests/**", "cc-switch/tests/**", "local-embed/tests/**", "**/node_modules", "**/.*"]
+extraPaths = ["credstore", "cc-switch", "local-embed"]
 reportMissingImports = true
 reportMissingTypeStubs = false
 reportOptionalSubscript = true

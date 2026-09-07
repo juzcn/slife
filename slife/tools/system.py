@@ -37,6 +37,8 @@ import uuid
 from collections import defaultdict
 from typing import ClassVar
 
+import httpx2
+
 from slife.health import get_report as get_startup_records
 from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 from slife.paths import get_data_dir
@@ -380,28 +382,39 @@ class CheckMemfilesTool(Tool):
 # check_local_embed
 # ═══════════════════════════════════════════════════════════════════════
 
-async def check_local_embed(client=None) -> list[dict]:
-    """Return local-embed (local embedding service) status as health entries.
+_PROBE_TIMEOUT = 5.0
 
-    The service runs in its own plugin process (``local-embed``, an external
-    plugin serving OpenAI-compatible ``/v1/embeddings`` + MCP tools), so this
-    check asks its internal ``__check`` tool through its MCP client
-    (from ``ToolContext.local_embed_client``).  When the plugin is not
-    connected, a warning is reported.
+
+async def check_local_embed(base_url: str = "") -> list[dict]:
+    """Return the local-embed daemon status as health entries.
+
+    local-embed runs as a standalone daemon (like mosquitto — the user starts
+    it; slife never spawns it).  The probe reads its OpenAI-compatible
+    ``GET {base_url}/models`` endpoint (each entry carries ``active`` /
+    ``loaded`` / ``available``).  The endpoint comes from slife.json5's
+    top-level ``embeddings`` section (``get_active_endpoint``); no endpoint
+    configured, or an unreachable daemon, reports offline/degraded — semantic
+    search falls back to keyword.
     """
     try:
-        if client is None:
+        if not base_url:
             return [{"component": "local_embed", "level": "warning", "key": "plugin",
                      "value": "offline",
-                     "hint": "local-embed plugin not connected — local embedding unavailable."}]
-        raw = await client.call_tool("__check")
-        data = json.loads(raw)
-        active = data.get("active_model") or "?"
-        models = data.get("models") or []
-        active_entry = next(
-            (m for m in models if m.get("name") == active),
-            None,
+                     "hint": "local-embed daemon not configured — no embeddings base_url in slife.json5. "
+                             "Start local-embed manually and set the embeddings endpoint."}]
+        base_url = base_url.rstrip("/")
+        async with httpx2.AsyncClient(
+            timeout=httpx2.Timeout(_PROBE_TIMEOUT),
+        ) as http:
+            resp = await http.get(f"{base_url}/models")
+            resp.raise_for_status()
+            payload = resp.json()
+        models = payload.get("data") or []
+        active = next(
+            (m.get("id") or "?" for m in models if m.get("active")),
+            next((m.get("id") or "?" for m in models), "?"),
         )
+        active_entry = next((m for m in models if m.get("id") == active), None)
         active_loaded = active_entry.get("loaded") if active_entry else None
         active_available = active_entry.get("available") if active_entry else None
         loaded_count = sum(1 for m in models if m.get("loaded"))
@@ -428,7 +441,7 @@ async def check_local_embed(client=None) -> list[dict]:
         logger.warning("local_embed_check_failed err=%s", e)
         return [{"component": "local_embed", "level": "warning", "key": "status",
                  "value": "unavailable",
-                 "hint": f"local-embed status unavailable: {e}"}]
+                 "hint": f"local-embed daemon unavailable (start it manually): {e}"}]
 
 
 class CheckLocalEmbedTool(Tool):
@@ -442,9 +455,12 @@ class CheckLocalEmbedTool(Tool):
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
-        ctx = getattr(self, "_ctx", None)
-        client = getattr(ctx, "local_embed_client", None) if ctx is not None else None
-        return json.dumps(await check_local_embed(client=client), ensure_ascii=False, indent=2)
+        from slife.plugins.memdb.embedding_config import get_active_endpoint
+        ep = get_active_endpoint()
+        return json.dumps(
+            await check_local_embed(base_url=ep.get("base_url", "")),
+            ensure_ascii=False, indent=2,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -936,7 +952,6 @@ _CLIENT_FIELD: dict[str, str] = {
     "check_wechat": "wechat_client",
     "check_mcp": "mcp_client",
     "check_memfiles": "memfiles_client",
-    "check_local_embed": "local_embed_client",
     "check_sharefile": "sharefile_client",
     "check_media": "media_client",
     "check_job_coding": "job_coding_client",

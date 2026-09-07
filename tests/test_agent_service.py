@@ -428,6 +428,69 @@ class TestAgentServicePluginRescan:
         assert "keep" in names
 
 
+# ── Subagent HTTP connect (manifest sharing) ───────────────────────────────
+
+
+class TestAgentServiceConnectPluginHttp:
+    """The generic subagent connect path — connect + register + per-plugin
+    glue + tools/list_changed wiring, for ANY plugin (no hardcoded subset)."""
+
+    @staticmethod
+    def _service_with(config, plugin_name):
+        from slife.agent.plugins import PluginLifecycle
+
+        service = AgentService(config)
+        lifecycle = PluginLifecycle(plugin_name, service)
+        client = AsyncMock()
+        client.is_connected = True
+        client.list_tools = AsyncMock(return_value=[
+            {"server": plugin_name, "name": "my_tool",
+             "description": "", "inputSchema": {"type": "object", "properties": {}}},
+        ])
+        lifecycle.client = client
+        service._plugins[plugin_name] = lifecycle
+        return service, client
+
+    @pytest.mark.asyncio
+    async def test_generic_connect_registers_tools_and_glue(self, sample_config):
+        """A shared plugin's tools land in the registry and the glue re-points
+        its health-check client — media has no bespoke wrapper anymore."""
+        service, _ = self._service_with(sample_config, "media")
+        with patch.object(
+            service._plugins["media"].__class__, "connect_http", AsyncMock(),
+        ):
+            await service.connect_plugin_http("media", 12345)
+        assert any(t.name == "my_tool" for t in service.tool_registry.list_tools())
+        assert service._tool_ctx.media_client is service._plugins["media"].client
+
+    @pytest.mark.asyncio
+    async def test_mcp_uses_reconcile_handler(self, sample_config):
+        """mcp shares the wrapper: on_notification → _on_mcp_tools_changed;
+        initial connect also re-syncs external proxies."""
+        service, client = self._service_with(sample_config, "mcp")
+        with patch.object(
+            service._plugins["mcp"].__class__, "connect_http", AsyncMock(),
+        ), patch.object(service, "_sync_mcp_proxies", AsyncMock()) as mock_sync:
+            await service.connect_plugin_http("mcp", 12345)
+        assert client.on_notification.__self__ is service
+        assert client.on_notification.__func__ is AgentService._on_mcp_tools_changed
+        mock_sync.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_generic_connect_wires_list_changed_handler(self, sample_config):
+        """Non-mcp plugins wire the generic rescan handler (job-coding's
+        dynamic tools stay live under a subagent)."""
+        service, client = self._service_with(sample_config, "job-coding")
+        with patch.object(
+            service._plugins["job-coding"].__class__, "connect_http", AsyncMock(),
+        ):
+            await service.connect_plugin_http("job-coding", 12345)
+        assert client.on_notification is not None
+        # The generic handler is the _handler closure (async func) — wiring
+        # is present when set; the rescan itself is covered by _rescan_plugin_tools.
+        assert callable(client.on_notification)
+
+
 # ── AgentService memory ─────────────────────────────────────────────────────
 
 
@@ -1885,7 +1948,7 @@ class TestSpawnPluginCancellationCleanup:
         client.list_tools.side_effect = asyncio.CancelledError()
 
         with patch(
-            "mcp_plugin.process.MCPWrapperProcess", return_value=fake_process,
+            "slife.plugins.mcp.process.MCPWrapperProcess", return_value=fake_process,
         ):
             with pytest.raises(asyncio.CancelledError):
                 await service._spawn_plugin_generic(
@@ -1923,7 +1986,7 @@ class TestSpawnPluginListToolsRetry:
         fake_process.create_client.side_effect = [first_client, second_client]
 
         with patch(
-            "mcp_plugin.process.MCPWrapperProcess", return_value=fake_process,
+            "slife.plugins.mcp.process.MCPWrapperProcess", return_value=fake_process,
         ):
             started = await service._spawn_plugin_generic(
                 "memdb", "slife.plugins.memdb.server",
@@ -1948,7 +2011,7 @@ class TestSpawnPluginListToolsRetry:
         fake_process.create_client.side_effect = [first_client, second_client]
 
         with patch(
-            "mcp_plugin.process.MCPWrapperProcess", return_value=fake_process,
+            "slife.plugins.mcp.process.MCPWrapperProcess", return_value=fake_process,
         ):
             with pytest.raises(TimeoutError):
                 await service._spawn_plugin_generic(

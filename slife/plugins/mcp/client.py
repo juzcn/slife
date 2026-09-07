@@ -20,7 +20,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Implementation
 
-from mcp_plugin import __version__
+from slife.plugins.mcp import __version__
 
 logger = logging.getLogger(__name__)
 

@@ -31,7 +31,7 @@ import sys
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from mcp_plugin.client import MCPClient
+from slife.plugins.mcp.client import MCPClient
 from slife.platform import terminate_process_sync
 from slife.server_utils import is_internal_tool
 
@@ -178,7 +178,7 @@ class PluginLifecycle:
         Tools whose name starts with ``__`` are internal (plugin contract)
         and are never exposed to the LLM.
         """
-        from mcp_plugin.process import MCPWrapperProcess
+        from slife.plugins.mcp.process import MCPWrapperProcess
         from slife.mcp.tool_adapter import create_proxy_tools
 
         # Save params for watchdog restart

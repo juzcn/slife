@@ -1,30 +1,17 @@
-"""Slife plugin auto-discovery — like native tools, but as child processes.
+"""Slife plugin auto-discovery — internal plugins as child processes.
 
-Each plugin is a Python package with a ``server.py`` entry point exposing a
-``main()`` that host its own FastMCP server.  There is ONE framework for every
-plugin; "built-in" vs "external" is only a *registration source* — where the
-``(name, module)`` tuple comes from:
+Every plugin is a Python package under ``slife.plugins.*`` with a
+``server.py`` entry point exposing a ``main()`` that hosts its own FastMCP
+server.  This is the ONE framework for every plugin: discovery is a source
+scan of ``slife.plugins.*`` (``memdb``, ``memfiles``, ``wechat``,
+``sharefile``, ``a2a``, ``media``, ``job-coding``, ``mcp``).  There is no
+config-driven "external plugin" registration — third-party capability
+enters only as a standard MCP server in ``mcp-plugin.json5``, connected by
+the internal ``mcp`` gateway.
 
-Built-in plugins
-  Discovered by a source scan of ``slife.plugins.*`` packages containing a
-  ``server.py`` (``memdb``, ``wechat``, ``memfiles``, ``sharefile``, ``a2a``).
-  They ship inside the slife wheel, so the scan is the right registration —
-  no config entry needed.
-
-External plugins
-  Standalone distributions (e.g. ``mcp_plugin``) registered via the
-  ``plugins.external`` section of ``slife.json5`` — a list of
-  ``{"name": ..., "module": ...}`` entries.  Integrating one requires
-  ``pip install`` + one config line, zero slife code changes.
-
-Once discovered, both feed the identical generic lifecycle (spawn via
+Once discovered, everything feeds the identical generic lifecycle (spawn via
 ``sys.executable -m <module>``, connect over Streamable HTTP, register tools,
-watchdog) — runtime never distinguishes them.
-
-External (non‑Python) MCP servers
-  npm‑/uvx‑based servers (filesystem, fetch, serper, etc.) are NOT Python
-  plugins — they live inside ``mcp-plugin.json5`` and are connected by the
-  ``mcp-plugin`` gateway, not by the harness.
+watchdog) — the runtime never distinguishes plugins.
 """
 
 import pkgutil
@@ -34,9 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 #: Public-name override for built-in packages whose canonical plugin name
-#: uses a hyphen (Python package names cannot).  Mirrors how `local-embed`
-#: is named in ``plugins.external`` — plugin names are hyphenated in the
-#: UI/health/tool prefixes, while module paths stay snake_case.
+#: uses a hyphen (Python package names cannot).  Plugin names are hyphenated
+#: in the UI/health/tool prefixes, while module paths stay snake_case.
 _PUBLIC_NAME_OVERRIDE: dict[str, str] = {"job_coding": "job-coding"}
 
 
@@ -77,56 +63,15 @@ def _scan_builtins() -> list[tuple[str, str]]:
     return plugins
 
 
-def discover_plugins(
-    external: list[dict] | None = None,
-) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """Merge built-in source-scan plugins with config-declared external ones.
+def discover_plugins() -> list[tuple[str, str]]:
+    """Return every discovered plugin as ``(name, module_path)`` pairs.
 
-    Args:
-        external: The ``plugins.external`` list parsed from slife.json5 —
-            ``[{"name": ..., "module": ...}, ...]``.  An entry whose module
-            cannot be imported is skipped (logged and returned as missing so
-            the caller can surface it); on a name collision with a built-in
-            the external entry wins (a standalone distribution that replaces
-            a built-in, e.g. ``mcp``).
-
-    Returns a ``(plugins, missing)`` pair of ``(name, module_path)`` tuples:
-    the discovered plugins (e.g. ``[("memdb", "slife.plugins.memdb.server"),
-    …]``) plus the external entries declared in config whose module could not
-    be imported — typically an uninstalled package.  The missing set is the
-    caller's cue to report a plugin load failure in the UI.
+    Pure source-scan of the internal ``slife.plugins.*`` packages — there is
+    no external registration (the ``plugins.external`` mechanism was
+    removed; third-party capability enters via standard MCP servers in
+    ``mcp-plugin.json5`` through the internal ``mcp`` gateway).
     """
     plugins = _scan_builtins()
-    seen = {name for name, _ in plugins}
-    missing: list[tuple[str, str]] = []
-
-    for entry in external or []:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        module = entry.get("module")
-        if not name or not module:
-            logger.warning("plugins_external_skip entry=%s", entry)
-            continue
-        try:
-            import importlib.util as _util
-            if _util.find_spec(str(module)) is None:
-                logger.warning(
-                    "plugins_external_missing name=%s module=%s", name, module,
-                )
-                missing.append((name, str(module)))
-                continue
-        except Exception:
-            logger.warning(
-                "plugins_external_missing name=%s module=%s", name, module,
-            )
-            missing.append((name, str(module)))
-            continue
-        if name in seen:
-            plugins = [(n, m) for n, m in plugins if n != name]
-        plugins.append((name, str(module)))
-        seen.add(name)
-
     logger.debug("plugins_discovered count=%d names=%s",
                  len(plugins), [n for n, _ in plugins])
-    return plugins, missing
+    return plugins

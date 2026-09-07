@@ -20,13 +20,13 @@ from typing import Any
 from fastmcp.server.context import Context
 from fastmcp.server.middleware import Middleware
 
-from mcp_plugin import config as plugin_config
-from mcp_plugin.connection import ConnectionPool, ServerConfig, ServerStatus
-from mcp_plugin.logging import error_json, ok_json
-from mcp_plugin.search import SCORE_BAND_HINT, annotate_scores, merge_hybrid
-from mcp_plugin.semantic import SemanticManager
-from mcp_plugin.server_runtime import create_plugin_server
-from mcp_plugin.store import ToolStore
+from slife.plugins.mcp import config as plugin_config
+from slife.plugins.mcp.connection import ConnectionPool, ServerConfig, ServerStatus
+from slife.plugins.mcp.logging import error_json, ok_json
+from slife.plugins.mcp.search import SCORE_BAND_HINT, annotate_scores, merge_hybrid
+from slife.plugins.mcp.semantic import SemanticManager
+from slife.plugins.mcp.server_runtime import create_plugin_server
+from slife.plugins.mcp.store import ToolStore
 
 
 @asynccontextmanager
@@ -107,7 +107,8 @@ async def _auto_connect_configured() -> None:
 # ``initialize`` request's ``capabilities.extensions`` (mcp ≥2.0 — the
 # ``clientInfo.other`` smuggling slot was dropped from the wire models).
 # The first handshake that carries ``extensions["embeddings"]`` wins; absent
-# ⇒ the wrapper falls back to its own ``mcp-plugin.json5`` embeddings section.
+# ⇒ no embedding backend (semantic search off, keyword/grep fallback) — the
+# wrapper has no ``embeddings`` section of its own anymore.
 _client_embeddings: dict | None = None
 
 
@@ -288,15 +289,16 @@ async def _semantic_check_report() -> dict:
     """Semantic-index status for the harness ``__check`` health probe.
 
     Config-side facts from the embedding client (the connecting client's
-    endpoint when one was passed, else the plugin's own section) overlaid
-    with live SemanticManager state — the analogue of the memdb/memfiles
-    ``__check`` semantic block.  ``state`` ``not_started`` means the
+    endpoint — the only embedding source, since the wrapper has no
+    ``embeddings`` section of its own) overlaid with live SemanticManager
+    state — the analogue of the memdb/memfiles ``__check`` semantic block.
+    ``state`` ``not_started`` means the
     post-handshake warm-up has not run (or failed); such a report is still a
     health signal, distinct from a live "building".  Never throws — a bad
     config must not break ``__check``.
     """
     try:
-        from mcp_plugin.embeddings import EmbeddingClient
+        from slife.plugins.mcp.embeddings import EmbeddingClient
         probe = EmbeddingClient.from_plugin_config(override=_client_embeddings)
         manager = _manager
         if manager is None:
@@ -918,7 +920,7 @@ def main():
     """Run the mcp-plugin wrapper server on Streamable HTTP transport."""
     import argparse
 
-    from mcp_plugin.server_runtime import run_plugin_server, shutdown_server_logging
+    from slife.plugins.mcp.server_runtime import run_plugin_server, shutdown_server_logging
 
     parser = argparse.ArgumentParser(prog="mcp-plugin-server")
     parser.add_argument(

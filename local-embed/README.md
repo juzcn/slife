@@ -352,79 +352,41 @@ a *service-provider* MCP server, not a tool provider. To embed text, point
 your consumer at the OpenAI-compatible `/v1/*` API instead. A client that only
 speaks stdio can reach it through a stdio→HTTP bridge (e.g. `mcp-remote`).
 
-## Loading as a slife plugin
+## Running as a slife embedding backend
 
-local-embed is a standalone app, but it also conforms to the **slife plugin
-contract** (defined in slife's `slife/server_utils.py`), so slife can load and
-manage it as an external plugin — spawn the process, discover the port, and
-monitor status — without any slife code changes. Conformance is additive:
-none of it constrains standalone use, and local-embed never imports slife. The
-few pieces of the contract it needs are carried as minimal, self-contained
-copies (`local_embed.server_utils`, `local_embed.threads`,
-`local_embed.logging`).
+local-embed is a **standalone daemon** — slife does not spawn it, manage it,
+or mount it as a plugin. Start it yourself (`local-embed` on PATH, or
+`python -m local_embed.server`), like Mosquitto; slife consumes it purely as
+an OpenAI-compatible HTTP endpoint, never through slife's plugin lifecycle or
+MCP tools.
 
-The MCP endpoint's single tool is the internal **`__check`**, which returns
-engine status (active model, model list, dimensions, load state) as JSON. It
-is a **service-provider** surface — slife probes `__check` programmatically and
-consumes embeddings over the HTTP API, never through MCP tools.
-
-How it conforms:
-
-- **Spawn target** — `local_embed/server.py` exposes `main()`, spawnable via
-  `python -m local_embed.server` (the contract's `sys.executable -m <module>`
-  shape).
-- **Port signal** — emits `{"port": N}` on stdout (then closes stdout) only
-  after the FastMCP app is ready to serve (its lifespan completed), so the
-  host's first `initialize` always lands on a ready server.
-- **Readiness = MCP `initialize` handshake** — startup is handshake-fast:
-  backend imports are resolved lazily and the model warms up *after* the first
-  `tools/list` (`warm_after_handshake`), never in the lifespan.
-- **Internal `__check` tool** — `__`-prefixed, so the host's tool registration
-  filters it out of the LLM registry and `system_health` probes it
-  programmatically.
-- **Non-MCP routes on the same port** — the OpenAI endpoints are
-  `@mcp.custom_route` handlers on the same uvicorn app (the "one port, two
-  protocols" pattern).
-- **Logging adoption** — when spawned by slife it adopts `SLIFE_LOG_DIR` /
-  `SLIFE_AGENT_NAME` / `SLIFE_SESSION_ID` / `SLIFE_PLUGIN_NAME`, so the session
-  log lands next to the main log; an uncaught startup exception prints one
-  clean stderr line (the host relays it) with the full traceback in the file.
-  Standalone falls back to `~/.local-embed/logs`.
-- **Config path** — honors `$LOCAL_EMBED_FILE` (slife exports it as
-  `<dir of slife.json5>/local_embed.json5`), else the standalone default.
-- **Stable port** — binds the configured `17347` rather than an OS-assigned
-  port, so slife's `base_url` is fixed; a taken port is a hard error, not a
-  silent fallback.
-
-### Registering with slife
-
-Register local-embed as an external plugin and point slife's embedding config
-at it (the unified OpenAI-compatible format slife uses for every embedding
-model):
+Point slife's embedding config at the daemon's stable port:
 
 ```json5
-plugins: {
-  external: [
-    { name: "local-embed", module: "local_embed.server" }
-  ]
-},
 embeddings: {
   providers: {
-    "local-embed": {
+    local: {
       base_url: "http://127.0.0.1:17347/v1",  // stable port from local_embed.json5
       api_key: "local",
     }
   },
-  active_model: "local-embed",   // provider-id only, or "local-embed/<model>"
+  active_model: "local",      // provider-id only, or "local/<model>"
   enabled: true
 }
 ```
 
 slife treats every embedding model as a remote OpenAI-compatible endpoint —
-local-embed is one such endpoint. The model is **determined by the plugin's
+local-embed is one such endpoint. The model is **determined by the daemon's
 active model**: slife discovers it from `GET /v1/models` (the entry flagged
-`active: true`) on load. When the service is unreachable, slife degrades
-gracefully to keyword search.
+`active: true`) on load. When the daemon is unreachable, slife degrades
+gracefully to keyword search (`check_local_embed` in `system_health` probes the
+daemon's HTTP endpoint and reports it down).
+
+The MCP surface it still serves is the internal **`__check`** (engine status:
+active model, model list, dimensions, load state) — a service-provider facade
+for direct probing, not a slife plugin contract. It also serves plain OpenAPI
+routes (`/v1/embeddings`, `/v1/models`, `/health`) on the same port via
+`@mcp.custom_route` — one port, two protocols, no slife involvement.
 
 ## License
 

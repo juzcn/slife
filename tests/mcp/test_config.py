@@ -1,4 +1,4 @@
-"""Tests for ``mcp_plugin.config`` — server-entry persistence and loading.
+"""Tests for ``slife.plugins.mcp.config`` — server-entry persistence and loading.
 
 MCP config moved out of slife into this package (slife.config lost
 ``MCPConfig`` / ``Config.mcp_config`` / ``save_mcp_server`` etc. during the
@@ -15,8 +15,8 @@ from __future__ import annotations
 import json5
 from pathlib import Path
 
-import mcp_plugin
-import mcp_plugin.config as cfg
+import slife.plugins.mcp
+import slife.plugins.mcp.config as cfg
 
 
 def _raw_config() -> dict:
@@ -26,7 +26,7 @@ def _raw_config() -> dict:
 
 def test_import_config():
     """The config module imports and exposes the version."""
-    assert mcp_plugin.__version__
+    assert slife.plugins.mcp.__version__
 
 
 class TestAddServerEntry:

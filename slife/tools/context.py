@@ -52,11 +52,6 @@ class ToolContext:
     query the cabinet status (store, index, semantic search) via the
     plugin's internal ``__check`` tool."""
 
-    local_embed_client: object | None = None
-    """The local-embed plugin's MCP client — used by ``check_local_embed``
-    to query the local embedding service (active model, models, loaded)
-    via its internal ``__check`` tool."""
-
     memdb_client: object | None = None
     """The memdb plugin's MCP client — used by the ``embeddings_*`` native
     tools to hot-reload the semantic index (``__memory_reload_semantic``)

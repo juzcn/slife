@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from mcp_plugin.logging import (
+from slife.plugins.mcp.logging import (
     FILE_LOG_FORMAT,
     SessionFormatter,
     configure_root_logging,

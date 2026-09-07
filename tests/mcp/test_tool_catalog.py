@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
-from mcp_plugin.connection import ServerStatus
-from mcp_plugin.store import ToolStore
+from slife.plugins.mcp.connection import ServerStatus
+from slife.plugins.mcp.store import ToolStore
 
 
 @pytest.fixture
@@ -27,12 +27,12 @@ def restore_root_logger():
 
 
 def _import_mcp_server():
-    sys.modules.pop("mcp_plugin.server", None)
+    sys.modules.pop("slife.plugins.mcp.server", None)
     with patch(
-        "mcp_plugin.server_runtime.setup_server_logging",
+        "slife.plugins.mcp.server_runtime.setup_server_logging",
         return_value=Path("unused.log"),
     ):
-        return importlib.import_module("mcp_plugin.server")
+        return importlib.import_module("slife.plugins.mcp.server")
 
 
 class _FakeConn:
@@ -231,13 +231,13 @@ class TestAnnotateScores:
     cosine similarity)."""
 
     def test_cosine_maps_to_cosine_similarity(self):
-        from mcp_plugin.search import annotate_scores
+        from slife.plugins.mcp.search import annotate_scores
         assert annotate_scores([{"distance": 0.0}])[0]["similarity"] == 1.0
         assert annotate_scores([{"distance": 0.3}])[0]["similarity"] == 0.7
         # Opposite vectors (cosine distance > 1) clip to 0.
         assert annotate_scores([{"distance": 1.3}])[0]["similarity"] == 0.0
 
     def test_keyword_only_results_untouched(self):
-        from mcp_plugin.search import annotate_scores
+        from slife.plugins.mcp.search import annotate_scores
         results = annotate_scores([{"full_name": "a", "distance": None}])
         assert "similarity" not in results[0]

@@ -614,9 +614,10 @@ loading.
 **Built-in plugin**
 One of the plugins shipped inside the slife wheel, discovered by scanning
 `slife.plugins.*` and started like any other plugin: the turns database,
-messaging, the file cabinet, file sharing, media generation, and the mesh.
-The MCP gateway is no longer a built-in — it is the standalone `mcp-plugin`
-package, registered via `plugins.external`. *See also* Plugin (Part II);
+messaging, the file cabinet, file sharing, media generation, the mesh, and
+the MCP gateway (`slife.plugins.mcp`). There is no `plugins.external`
+mechanism — every plugin is internal; third-party capability enters only as
+a standard MCP server in `mcp-plugin.json5`. *See also* Plugin (Part II);
 mcp-plugin; Plugin contract.
 
 ### C
@@ -647,12 +648,12 @@ Context injection (Part II).
 The named sections of the configuration file that control subsystems:
 environment variables (``env``), the agent loop (``agent``), tool overrides
 (``tools``), the active model and model registry (``active_model`` +
-``models``), media providers (``media``), plugins (``plugins.external`` /
-``plugins.required``), the A2A mesh (``a2a``), subagents (``subagent``),
+``models``), media providers (``media``), required plugins
+(``plugins.required``), the slife-as-plugin in-process server
+(``plugin_server``), the A2A mesh (``a2a``), subagents (``subagent``),
 CLI-tool registry (``cli_tools``), and the first-class embeddings config
-(``embeddings``). External MCP servers and the gateway's own embeddings config
-live in ``mcp-plugin.json5``, not in ``slife.json5``. *See also* Configuration
-(Part II).
+(``embeddings``). External MCP server configs live in ``mcp-plugin.json5``,
+not in ``slife.json5``. *See also* Configuration (Part II).
 
 **Context engineering**
 The design discipline of *setting and dynamically changing the content of
@@ -684,21 +685,21 @@ start). *See also* Shutdown.
 
 **Embeddings section**
 The first-class top-level ``embeddings`` configuration of ``slife.json5``,
-shared by the memory plugins (memdb, memfiles): a set of OpenAI-compatible
-endpoints (``base_url`` + ``api_key``) and an ``active_model`` ref that is
-configuration-authoritative over the endpoint's own active-model flag. The
-local-embed plugin serves a local model behind it. The MCP gateway keeps its
-*own* ``embeddings`` section in ``mcp-plugin.json5`` — a single flat config
-(base_url + optional model/api_key), edited by hand; the index drains
-automatically at the next wrapper start. *See also* local-embed; Semantic
-index (Part II); mcp-plugin.
+shared by the memory plugins (memdb, memfiles) and the MCP gateway's tool
+catalog: a set of OpenAI-compatible endpoints (``base_url`` + ``api_key``)
+and an ``active_model`` ref that is configuration-authoritative over the
+endpoint's own active-model flag. The local-embed daemon serves a local
+model behind it. It is the single source of truth — the gateway receives its
+endpoint via the ``initialize`` handshake and has no ``embeddings`` section
+of its own. *See also* local-embed; Semantic index (Part II); mcp-plugin.
 
 **External plugin**
-A plugin package that is not part of the Slife source tree: registered via
-``plugins.external`` in ``slife.json5`` and spawned through the same generic
-lifecycle as the built-ins. The MCP gateway (mcp-plugin) and local-embed are
-external plugins. *See also* Plugin contract; Built-in plugin; mcp-plugin;
-local-embed.
+A plugin package outside the Slife source tree, registered via the (now
+removed) ``plugins.external`` mechanism. The mechanism was deleted in the
+"all plugins are internal" design: third-party capability enters only as a
+standard MCP server in ``mcp-plugin.json5``, connected by the internal
+gateway; local-embed is a manually-started daemon, not a plugin. *See also*
+Plugin contract; Built-in plugin; mcp-plugin; local-embed.
 
 ### H
 
@@ -746,11 +747,12 @@ operator-facing and written in the operator's own language. *See also*
 Model-visible (Part II).
 
 **local-embed**
-The external plugin that serves an OpenAI-compatible embedding endpoint —
+The standalone daemon that serves an OpenAI-compatible embedding endpoint —
 ``POST /v1/embeddings``, ``GET /v1/models``, and ``GET /v1/models/{id}`` — from a local GGUF
 (llama-cpp) or HF transformer model, loaded once and shared by memdb, memfiles,
-and the MCP gateway's tool catalog. Registered via ``plugins.external``; binds
-the configured port (default 17347) and reads its model configuration from
+and the MCP gateway's tool catalog. It is **not** a slife plugin: the user
+starts it manually (like Mosquitto) via the ``local-embed`` CLI. It binds the
+configured port (default 17347) and reads its model configuration from
 ``local_embed.json5``. *See also* Embeddings section; mcp-plugin.
 
 ### M
@@ -771,12 +773,12 @@ injection (Part II); Annotation (Part II); Turn footnote (Part II); Trim
 note (Part II).
 
 **mcp-plugin**
-The standalone PyPI package that implements the MCP gateway — the plugin that
-connects Slife to external MCP servers (stdio / SSE / Streamable HTTP). It
-lives in the `mcp-plugin/` workspace member (module `mcp_plugin.server`), is
-registered via `plugins.external` in `slife.json5`, and exposes the `mcp_set` /
-`mcp_list` / … management tools, and the tool-catalog tool (`mcp_tool_search`,
-…). Everything — including configuration — is an MCP tool or a hand-edited
+The built-in MCP gateway — the plugin that connects Slife to external MCP
+servers (stdio / SSE / Streamable HTTP). It ships inside the slife wheel as
+`slife.plugins.mcp` (module `slife.plugins.mcp.server`), auto-discovered like
+every other internal plugin, and exposes the `mcp_set` / `mcp_list` / …
+management tools, and the tool-catalog tool (`mcp_tool_search`, …).
+Everything — including configuration — is an MCP tool or a hand-edited
 `mcp-plugin.json5`; there is no CLI. It keeps an in-memory **tool catalog**
 (rebuilt live from the connection pool at load and on every reconnect) of
 every loaded external tool — name, description, and
@@ -784,10 +786,10 @@ enabled state — indexed for keyword and semantic search. External tools are
 **loaded on demand**: the host registers none of them by default; the model
 discovers one with `mcp_tool_search` and loads it with `mcp_tool_load`.
 Enable/disable is server-granular (`mcp_set_enabled`); the catalog syncs
-itself from the live connections, so there is no offline rebuild. It
-self-hosts an ``embeddings`` section in
-``mcp-plugin.json5`` (edited by hand; the drainer runs at startup) that
-feeds the catalog's semantic index. *See also*
+itself from the live connections, so there is no offline rebuild. Its
+embedding endpoint comes from the host's `embeddings` section of
+`slife.json5` (passed via the ``initialize`` handshake) — `mcp-plugin.json5`
+carries no `embeddings` section of its own. *See also*
 Plugin (Part II); Built-in plugin; Plugin contract; Tool catalog; Tool
 loading; local-embed.
 

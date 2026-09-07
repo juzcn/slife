@@ -320,11 +320,11 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 
 ### 插件
 
-七个内置插件（外加独立的 `mcp-plugin` MCP 网关），独立进程运行：
+八个内置插件（MCP 网关也是内置插件——第三方能力只能作为 `mcp-plugin.json5` 里的标准 MCP 服务器接入，不再有 Python 外部插件），独立进程运行：
 
 | 插件 | 角色 |
 |------|------|
-| **slife-mcp** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP）——独立包 `mcp-plugin`，经 `plugins.external` 注册。内存工具目录（按连接实时重建、含完整 tool schema），schema 感知的混合搜索 `mcp_tool_search`；外部工具按需 `mcp_tool_load` 载入（`auto_load: true` 批量注册） |
+| **slife-mcp** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP）——内置插件（`slife.plugins.mcp`）。内存工具目录（按连接实时重建、含完整 tool schema），schema 感知的混合搜索 `mcp_tool_search`；外部工具按需 `mcp_tool_load` 载入（`auto_load: true` 批量注册） |
 | **slife-memdb** | 对话记录数据库 + 混合搜索 |
 | **slife-wechat** | 双向微信消息 |
 | **slife-memfiles** | 笔记 / 日记 / 文件柜（私有）。所有保存工具返回本地路径——绝不自动发布。笔记与日记双写为 markdown + SQLite 混合索引 |
@@ -333,7 +333,7 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 | **slife-media** | 非聊天类 AI 生成（图片 / 视频 / TTS / ASR），对接任意提供商——自持 `media:` 配置段与提供商无关的适配层（`dashscope-aigc`、`openai-images`）。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio` |
 | **slife-job-coding** | 确定性 **Job** 系统（MCP 工具形态）——`~/.slife/jobs/` 里的代码函数按声明的参数精确执行；一次性 LLM 调用走 `llm.chat`、用 `job_coding_model`。工具：`job-list`、`job-write`、`job-remove`、`job-run` + 每个 job 一个工具 |
 
-外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。
+外部 MCP 服务器在 `mcp-plugin.json5` → `servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。
 
 所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_local_embed`、`check_sharefile`、`check_media`、`check_job_coding`、`check_mcp`、`check_a2a`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
 

@@ -66,6 +66,17 @@ _TUNNEL_SETTLE_TIMEOUT = 20.0  # seconds — max wait for the eager attempt
 _TUNNEL_PROBE_INTERVAL = 1.0   # seconds — between __check probes
 
 
+#: ToolContext attribute to point at a shared plugin's client after a
+#: subagent HTTP connect — the harness health checks read these per plugin.
+_HTTP_CONNECT_GLUE: dict[str, str] = {
+    "memfiles": "memfiles_client",
+    "sharefile": "sharefile_client",
+    "a2a": "a2a_mcp_client",
+    "media": "media_client",
+    "job-coding": "job_coding_client",
+}
+
+
 # ── Tool result compaction for permanent memory ─────────────────────────
 #
 # The live context keeps oversized tool results whole — the model
@@ -313,6 +324,9 @@ class AgentService:
             ),
         )
         self._inbox_task: asyncio.Task | None = None
+        # slife-as-plugin in-process MCP server (server, task, stop) — started
+        # lazily in start_inbox for the main agent only; None for subagents.
+        self._host_server: tuple | None = None
 
         # ── Memory health ──────────────────────────────────────────
         # Memory is core.  A fatal turn-save failure (broken schema,
@@ -573,17 +587,6 @@ class AgentService:
         if name == "a2a":
             return await self.start_a2a()
 
-        # ── Local-embed: fully generic spawn; expose the client for
-        # check_local_embed (active model / loaded state health probe).
-        if name == "local-embed":
-            started = await self._spawn_plugin_generic(name, module)
-            if started:
-                self._tool_ctx.local_embed_client = self._plugins["local-embed"].client
-                self._start_generic_watchdog(name, module)
-            return (
-                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
-            )
-
         # ── Media: optional generation-capability plugin; expose the client
         # for check_media (config / capability status health probe).
         if name == "media":
@@ -625,39 +628,25 @@ class AgentService:
                 # Same re-point for the turns DB — otherwise the embeddings_*
                 # native tools hot-reload the semantic index against a dead client.
                 self._tool_ctx.memdb_client = self._plugins[name].client
-            if name == "memfiles":
-                # _spawn_plugin_generic replaced self._plugins["memfiles"].client,
-                # but the harness's ToolContext still points at the dead client —
-                # re-point it or check_memfiles reports the restarted plugin offline.
-                self._tool_ctx.memfiles_client = self._plugins[name].client
-            if name == "local-embed":
-                # Same re-point for the local embedding service — otherwise
-                # check_local_embed reports the restarted plugin offline.
-                self._tool_ctx.local_embed_client = self._plugins[name].client
-            if name == "sharefile":
-                # _spawn_plugin_generic replaced self._plugins["sharefile"].client,
-                # but the harness's ToolContext still points at the dead client —
-                # re-point it or check_sharefile reports the restarted plugin offline.
-                self._tool_ctx.sharefile_client = self._plugins[name].client
-            if name == "media":
-                # Same re-point for the media plugin — otherwise check_media
-                # reports the restarted plugin offline.
-                self._tool_ctx.media_client = self._plugins[name].client
-            if name == "job-coding":
-                # Same re-point for the job-coding plugin — otherwise
-                # check_job_coding reports the restarted plugin offline.
-                self._tool_ctx.job_coding_client = self._plugins[name].client
             if name == "mcp":
-                # The wrapper restarted on a NEW port — subagents that share it
-                # still point at the dead one; tell them to reconnect.  Re-arming
-                # the mcp enrichment also re-points the ToolContext and
-                # re-registers the external servers' tools.
+                # The wrapper restarted on a NEW port.  Re-arming the mcp
+                # enrichment re-points the ToolContext and re-registers the
+                # external servers' tools.
                 await self._wire_mcp_glue()
-                await self._notify_subagents_plugin_restart("mcp", self._plugins[name].port)
+            else:
+                field = _HTTP_CONNECT_GLUE.get(name)
+                if field is not None:
+                    # _spawn_plugin_generic replaced the lifecycle's client, but
+                    # the harness's ToolContext still points at the dead one —
+                    # re-point it or the health check reports it offline.
+                    setattr(self._tool_ctx, field, self._plugins[name].client)
+            # Any shared plugin landing on a new port must tell the subagents
+            # that share it — otherwise their clients point at the dead port.
+            await self._notify_subagents_plugin_restart(name, self._plugins[name].port)
 
         self._plugins[name].start_watchdog(restart_cb=_restart)
 
-    # ── Runtime tool-set resync ────────────────────────────────────────
+    # ══ Runtime tool-set resync ══════════════════════════════════════
     # Unified mechanism for plugins that mutate their own tool set at
     # runtime (job-coding registers/removes job tools on the fly): the
     # plugin pushes the standard MCP ``notifications/tools/list_changed``
@@ -776,7 +765,7 @@ class AgentService:
 
     async def _spawn_plugin_generic(self, name: str, module: str) -> bool:
         """Spawn a plugin child, connect, and register its ``<name>__*`` tools."""
-        from mcp_plugin.process import MCPWrapperProcess
+        from slife.plugins.mcp.process import MCPWrapperProcess
 
         logger.info("plugin_spawn name=%s module=%s", name, module)
 
@@ -1031,74 +1020,46 @@ class AgentService:
     async def _connect_plugin_http(self, name: str, port: int) -> None:
         """Connect to an already-running plugin via Streamable HTTP.
 
-        Shared by :meth:`connect_mcp_http`, :meth:`connect_memdb_http`,
-        and :meth:`connect_wechat_http`.
+        Shared by :meth:`connect_plugin_http` (the single subagent connect
+        path).  Wires the plugin's ``notifications/tools/list_changed`` into
+        the runtime rescan, so a shared plugin's dynamic tool set (e.g.
+        job-coding's per-job tools) stays live under a subagent — the same
+        handler the spawn path uses.
         """
         logger.info("%s_http_connect port=%s", name, port)
         await self._plugins[name].connect_http(port)
+        client = self._plugins[name].client
+        if client is not None:
+            # The mcp wrapper's list_changed reconciles external {server}__{tool}
+            # proxies; every other plugin's re-lists and diff-registers its
+            # bare-name tools (the same split as the spawn path).
+            if name == "mcp":
+                client.on_notification = self._on_mcp_tools_changed
+            else:
+                client.on_notification = self._plugin_tools_changed_handler(name)
 
-    async def connect_mcp_http(self, port: int) -> None:
-        """Connect to an already-running MCP wrapper via Streamable HTTP.
+    async def connect_plugin_http(self, name: str, port: int) -> None:
+        """Connect to an already-running plugin via Streamable HTTP.
 
-        Used by subagents to share the main agent's mcp plugin instead of
-        spawning their own.  Registers the wrapper's management tools (bare
-        names) and the external servers' ``{server}__{tool}`` proxies.
+        The single generic path a subagent uses to share the main agent's
+        plugins instead of spawning its own.  Registers the plugin's
+        LLM-visible tools as bare-name proxy tools, applies the per-plugin
+        glue (health-check client re-pointing), and for the mcp wrapper also
+        reconciles external-server proxies.  Media / job-coding / any
+        internal plugin connect through here too — no per-plugin wrappers.
         """
-        await self._connect_plugin_http("mcp", port)
-        await self._register_plugin_tools("mcp")
-        await self._sync_mcp_proxies()
-        logger.info("mcp_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
-
-    async def connect_memdb_http(self, port: int) -> None:
-        """Connect to an already-running memdb server via Streamable HTTP."""
-        await self._connect_plugin_http("memdb", port)
-        await self._register_plugin_tools("memdb")
-        logger.info("memdb_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
-
-    async def connect_wechat_http(self, port: int) -> None:
-        """Connect to an already-running wechat server via Streamable HTTP."""
-        await self._connect_plugin_http("wechat", port)
-        await self._register_plugin_tools("wechat")
-        logger.info("wechat_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
-
-    async def connect_memfiles_http(self, port: int) -> None:
-        """Connect to the main agent's memfiles plugin via Streamable HTTP.
-
-        Used by subagents to reuse the main agent's file-cabinet plugin
-        instead of spawning their own.  Registers the memfiles tools and
-        exposes the client for the memfiles health check.
-        """
-        await self._connect_plugin_http("memfiles", port)
-        await self._register_plugin_tools("memfiles")
-        self._tool_ctx.memfiles_client = self._plugins["memfiles"].client
-        logger.info("memfiles_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
-
-    async def connect_sharefile_http(self, port: int) -> None:
-        """Connect to the main agent's sharefile plugin via Streamable HTTP.
-
-        Used by subagents to reuse the main agent's sharefile plugin instead
-        of spawning their own (which would also fight over the single
-        free-tier ngrok tunnel).  Registers the sharefile tools and
-        exposes the client for health checks.
-        """
-        await self._connect_plugin_http("sharefile", port)
-        await self._register_plugin_tools("sharefile")
-        self._tool_ctx.sharefile_client = self._plugins["sharefile"].client
-        logger.info("sharefile_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
-
-    async def connect_a2a_http(self, port: int) -> None:
-        """Connect to the main agent's a2a plugin via Streamable HTTP.
-
-        Used by subagents to reuse the main agent's mesh channel.  Subagents
-        register the plugin's ``a2a_*`` tools (so they can send as the main
-        agent) but never drain the inbound queue (that stays with the main
-        agent).
-        """
-        await self._connect_plugin_http("a2a", port)
-        await self._register_plugin_tools("a2a")
-        # Expose the mesh client for harness drain/dispatch plumbing.
-        self._tool_ctx.a2a_mcp_client = self._plugins["a2a"].client
-        logger.info("a2a_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
+        await self._connect_plugin_http(name, port)
+        await self._register_plugin_tools(name)
+        if name == "mcp":
+            # Reconcile external {server}__{tool} proxies (auto_load + on-demand
+            # validation) — the same network the main agent's _wire_mcp_glue
+            # uses, mirrored for a worker sharing the wrapper.
+            await self._sync_mcp_proxies()
+        else:
+            field = _HTTP_CONNECT_GLUE.get(name)
+            if field is not None:
+                setattr(self._tool_ctx, field, self._plugins[name].client)
+        logger.info("%s_http_connect_done tools=%d", name, len(self.tool_registry.list_tools()))
 
     async def _register_plugin_tools(self, name: str) -> None:
         """Discover and register a connected plugin's tools as proxy tools.
@@ -2049,6 +2010,26 @@ class AgentService:
         self._inbox_task = asyncio.create_task(self.inbox.run())
         logger.info("inbox_started")
 
+        # slife-as-plugin — the in-process MCP server exposing the live
+        # ToolRegistry to external MCP consumers (DESIGNER_NOTES §8).  Main
+        # agent only; subagents are workers and never serve their own face.
+        if not self.is_subagent:
+            from slife.mcp.host_server import start_host_server
+            try:
+                server, task, _stop = start_host_server(
+                    self.tool_registry,
+                    port=self.config.plugin_server_port,
+                )
+                self._host_server = (server, task, _stop)
+                logger.info(
+                    "host_server_started port=%s tools=%d",
+                    self.config.plugin_server_port,
+                    len(self.tool_registry.list_tools()),
+                )
+            except Exception:
+                logger.exception("host_server_start_failed")
+                self._host_server = None
+
         # Autonomous heartbeat — main agent only (period configurable via
         # agent.heartbeat_interval).  Subagents are workers and never
         # receive a heartbeat trigger.
@@ -2081,6 +2062,13 @@ class AgentService:
 
     async def stop_inbox(self) -> None:
         """Stop the inbox background processor (and the heartbeat)."""
+        if self._host_server is not None:
+            _server, _task, _stop = self._host_server
+            try:
+                await _stop()
+            except Exception as e:
+                logger.debug("host_server_stop_error err=%s", e)
+            self._host_server = None
         if self._heartbeat_task is not None:
             self._heartbeat_task.cancel()
             try:
