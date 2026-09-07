@@ -628,7 +628,7 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
     The status report is authoritative: an enabled server whose state is
     ``running`` reports ok.  Note: external tools are on-demand by default
     (loaded via ``mcp_tool_load``) — ``running`` means the server is reachable
-    and its tools are discoverable via ``mcp_gateway_tool_search``, not that they are
+    and its tools are discoverable via ``mcp_tool_search``, not that they are
     all registered; loaded proxies are validated on every ``tools/list_changed``
     (see :meth:`slife.agent.service.AgentService._sync_mcp_proxies`).
 
@@ -646,7 +646,7 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
             "component": "mcp_servers", "level": "warning",
             "key": target, "value": "not_found",
             "hint": f"MCP server '{target}' is not configured. "
-                    "Use mcp_gateway_list to see configured servers.",
+                    "Use mcp_list to see configured servers.",
         }]
 
     try:

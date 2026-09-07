@@ -167,7 +167,7 @@ class MCPServerConnection:
             return
 
         # Serialize connects — the health monitor, call_tool's lazy reconnect,
-        # and mcp_gateway_set_enabled can otherwise each spawn their own transport,
+        # and mcp_set_enabled can otherwise each spawn their own transport,
         # orphaning the loser (and starting duplicate monitors).
         async with self._connect_lock:
             # A disconnect() that raced an in-flight connect must not be

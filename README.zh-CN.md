@@ -2,7 +2,7 @@
 
 > **工具分层，一句话。** Slife 向 LLM 呈现三类工具，调用侧无差别：**原生**
 > 工具（`slife/tools/` 自带、自动发现）、**内置插件**工具（一等公民、裸名——
-> 如 `turn_search`、`mcp_gateway_set`）、**外部 MCP server** 工具（`{server}__{tool}`，
+> 如 `turn_search`、`mcp_set`）、**外部 MCP server** 工具（`{server}__{tool}`，
 > 按需加载）。下文直接用这些词，不再重复定义。
 
 **终端 AI 智能体** — 基于函数调用循环的最小化框架。与 LLM 对话，它能调用工具、永久记忆每一轮对话、协调其他智能体。
@@ -259,7 +259,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 
 | 服务器 | LLM 可见工具 |
 |--------|-------------|
-| `mcp-gateway` | `mcp_gateway_set`, `mcp_gateway_set_enabled`, `mcp_gateway_remove`, `mcp_gateway_list`, `mcp_gateway_list_tools`, `mcp_gateway_tool_search` |
+| `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`, `mcp_tool_search` |
 | `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read` |
@@ -268,7 +268,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `translate`） |
 
-内置插件工具以其**裸名**注册为一等公民（如 `turn_search`、`wechat_login`、`mcp_gateway_set`）。外部 MCP 服务器以 `{server}__{tool}`（如 `filesystem__read_file`）出现并**按需加载**：LLM 用 `mcp_gateway_tool_search`（对网关内存工具目录做混合关键词/语义搜索）发现、用 `mcp_tool_load` 载入；`auto_load: true` 的服务器在连接时批量注册。目录由连接实时重建，不存在离线重建步骤。
+内置插件工具以其**裸名**注册为一等公民（如 `turn_search`、`wechat_login`、`mcp_set`）。外部 MCP 服务器以 `{server}__{tool}`（如 `filesystem__read_file`）出现并**按需加载**：LLM 用 `mcp_tool_search`（对网关内存工具目录做混合关键词/语义搜索）发现、用 `mcp_tool_load` 载入；`auto_load: true` 的服务器在连接时批量注册。目录由连接实时重建，不存在离线重建步骤。
 
 **Windows 下的命令执行。** `execute_shell` 在检测到的 shell 中运行——PowerShell 或 cmd（与系统提示报告的值一致，保证 LLM 写的语法真的能执行）——并用系统代码页解码输出（简体中文 Windows 为 GBK/cp936）。`run_python_script` 强制子 Python 以 UTF-8 运行（`-X utf8`），非 ASCII 输出不会导致子进程崩溃。
 
@@ -327,7 +327,7 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 
 | 插件 | 角色 |
 |------|------|
-| **mcp-gateway** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP）——内置插件（`slife.plugins.mcp_gateway`）。管理工具：`mcp_gateway_set`、`mcp_gateway_set_enabled`、`mcp_gateway_remove`、`mcp_gateway_list`、`mcp_gateway_list_tools`、`mcp_gateway_tool_search`。内存工具目录（按连接实时重建、含完整 tool schema）；外部工具按需 `mcp_tool_load` 载入（`auto_load: true` 批量注册） |
+| **mcp-gateway** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP）——内置插件（`slife.plugins.mcp_gateway`）。管理工具：`mcp_set`、`mcp_set_enabled`、`mcp_remove`、`mcp_list`、`mcp_list_tools`、`mcp_tool_search`。内存工具目录（按连接实时重建、含完整 tool schema）；外部工具按需 `mcp_tool_load` 载入（`auto_load: true` 批量注册） |
 | **memdb** | 对话记录数据库 + 混合搜索 |
 | **wechat** | 双向微信消息 |
 | **memfiles** | 笔记 / 日记 / 文件柜（私有）。所有保存工具返回本地路径——绝不自动发布。笔记与日记双写为 markdown + SQLite 混合索引 |

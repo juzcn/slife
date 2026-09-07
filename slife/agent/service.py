@@ -347,7 +347,7 @@ class AgentService:
         # programming error — _resolve_plugin_behaviors asserts at startup.
         self._plugin_behaviors: dict[str, PluginBehavior] = self._resolve_plugin_behaviors()
         # MCP enrichment guard: coalesces per-server tool discovery between
-        # startup glue and mcp_gateway_set callbacks.
+        # startup glue and mcp_set callbacks.
         self._mcp_syncing: set[str] = set()
         # On-demand reconcile guard: prevents concurrent mcp_tool_load /
         # tools/list_changed reconciliation from racing.
@@ -1006,13 +1006,13 @@ class AgentService:
     async def _sync_mcp_proxies(self) -> None:
         """Reconcile external MCP tool proxies (on-demand model).
 
-        Reads the configured server list LIVE from the wrapper (``mcp_gateway_list``),
+        Reads the configured server list LIVE from the wrapper (``mcp_list``),
         so neither slife nor subagents need mcp-plugin.json5.  Two jobs:
 
         1. Servers with ``auto_load: true`` get their tools bulk-registered
            (full-diff, unchanged — ``_discover_and_register_external_tools``).
         2. Every OTHER loaded EXTERNAL proxy (an on-demand ``mcp_tool_load``)
-           is validated via ``__mcp_gateway_get_tool`` — if the tool vanished, its
+           is validated via ``__mcp_get_tool`` — if the tool vanished, its
            server disconnected, or it was disabled, the proxy is unregistered.
 
         This is the ONLY tool-maintenance path for non-auto_load servers:
@@ -1030,7 +1030,7 @@ class AgentService:
         self._mcp_reconciling = True
         try:
             try:
-                raw = await client.call_tool("mcp_gateway_list")
+                raw = await client.call_tool("mcp_list")
                 servers = json.loads(raw)
             except Exception as e:
                 logger.debug("mcp_reconcile_list_failed err=%s", e)
@@ -1060,7 +1060,7 @@ class AgentService:
                 if getattr(tool, "_server", "") in auto_servers:
                     continue
                 try:
-                    raw = await client.call_tool("__mcp_gateway_get_tool", {"full_name": tool.name})
+                    raw = await client.call_tool("__mcp_get_tool", {"full_name": tool.name})
                     data = json.loads(raw)
                 except Exception:
                     data = {"status": "error"}
@@ -1071,7 +1071,7 @@ class AgentService:
             self._mcp_reconciling = False
 
     async def _register_external_server_tools(self, name: str = "", **kwargs) -> None:
-        """mcp_gateway_set / mcp_gateway_set_enabled connected a server — reconcile proxies.
+        """mcp_set / mcp_set_enabled connected a server — reconcile proxies.
 
         (Persistence happens inside mcp-plugin; this only touches the registry.)
         """
@@ -1079,7 +1079,7 @@ class AgentService:
             await self._sync_mcp_proxies()
 
     async def _unregister_external_server_tools(self, name: str = "", **kwargs) -> None:
-        """mcp_gateway_remove / mcp_gateway_set_enabled disabled a server — drop its tools."""
+        """mcp_remove / mcp_set_enabled disabled a server — drop its tools."""
         if not name:
             return
         removed = self.tool_registry.unregister_by_prefix(f"{name}__")
@@ -1196,7 +1196,7 @@ class AgentService:
         Idempotent full diff: registers tools the server offers that aren't
         registered yet, and unregisters tools it no longer offers.  Safe to
         call concurrently from several triggers (startup glue, reconnect
-        notification, mcp_gateway_set callbacks) — a per-server in-flight guard
+        notification, mcp_set callbacks) — a per-server in-flight guard
         coalesces races, and an empty tool list leaves the registry untouched
         so a half-connected server can't flicker its tools out.
         """
@@ -1209,7 +1209,7 @@ class AgentService:
         self._mcp_syncing.add(server_name)
         try:
             tools_json = await client.call_tool(
-                "mcp_gateway_list_tools", {"server": server_name}
+                "mcp_list_tools", {"server": server_name}
             )
             tools_data = json.loads(tools_json)
             external = tools_data.get("tools", [])

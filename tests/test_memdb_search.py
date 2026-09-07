@@ -125,7 +125,7 @@ class TestMergeHybrid:
 
 class TestAnnotateScores:
     """annotate_scores 0–1 normalizes the semantic distance presented to
-    the LLM — one contract shared with cabinet_search / mcp_gateway_tool_search
+    the LLM — one contract shared with cabinet_search / mcp_tool_search
     (the MCP plugin mirrors this function)."""
 
     def test_l2_maps_via_1_over_1_plus_d(self):

@@ -159,7 +159,7 @@ class TestAgentServiceMCPEnrichment:
         with patch.object(service, "_discover_and_register_external_tools", AsyncMock()) as mock_reg:
             await service._sync_mcp_proxies()
 
-        client.call_tool.assert_awaited_once_with("mcp_gateway_list")
+        client.call_tool.assert_awaited_once_with("mcp_list")
         mock_reg.assert_awaited_once_with(server_name="autol")
 
     @pytest.mark.asyncio
@@ -183,9 +183,9 @@ class TestAgentServiceMCPEnrichment:
         client.is_connected = True
 
         async def fake_call_tool(name, arguments=None):
-            if name == "mcp_gateway_list":
+            if name == "mcp_list":
                 return _json.dumps([{"name": "foo", "enabled": True, "auto_load": False}])
-            if name == "__mcp_gateway_get_tool":
+            if name == "__mcp_get_tool":
                 return _json.dumps({"status": "ok", "enabled": False})
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
@@ -212,9 +212,9 @@ class TestAgentServiceMCPEnrichment:
         client.is_connected = True
 
         async def fake_call_tool(name, arguments=None):
-            if name == "mcp_gateway_list":
+            if name == "mcp_list":
                 return _json.dumps([{"name": "foo", "enabled": True, "auto_load": False}])
-            if name == "__mcp_gateway_get_tool":
+            if name == "__mcp_get_tool":
                 return _json.dumps({"status": "ok", "enabled": True})
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
@@ -251,7 +251,7 @@ class TestAgentServiceMCPDiscovery:
         async def fake_call_tool(name, arguments=None):
             if name == "__check":
                 return _json.dumps(status_servers, ensure_ascii=False)
-            if name == "mcp_gateway_list_tools":
+            if name == "mcp_list_tools":
                 return _json.dumps(
                     {"tools": tools_by_server.get(arguments.get("server"), [])},
                     ensure_ascii=False,

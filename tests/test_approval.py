@@ -65,7 +65,7 @@ class TestMCPProxyToolNoApprovalParam:
         client.call_tool.return_value = "result"
         tool = MCPProxyTool(
             client,
-            {**make_tool_info(server="mcp"), "name": "mcp_gateway_list"},
+            {**make_tool_info(server="mcp"), "name": "mcp_list"},
         )
         result = await tool.execute()
         assert result == "result"

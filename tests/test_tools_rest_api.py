@@ -262,7 +262,7 @@ class TestRestApiRemoveTool:
 
     @pytest.mark.asyncio
     async def test_remove_with_mcp_client(self, mcp_config_path):
-        """When MCP client is available, calls mcp_gateway_remove."""
+        """When MCP client is available, calls mcp_remove."""
         _write_config(mcp_config_path, {
             "github": _entry("https://u.example.com/spec", "https://u.example.com"),
         })
@@ -359,7 +359,7 @@ class TestRestApiSetEnabledTool:
 
     @pytest.mark.asyncio
     async def test_set_with_mcp_client(self, mcp_config_path):
-        """When MCP client is available, calls mcp_gateway_set."""
+        """When MCP client is available, calls mcp_set."""
         _write_config(mcp_config_path, {
             "github": _entry("https://u.example.com/spec", "https://u.example.com"),
         })

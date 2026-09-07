@@ -179,19 +179,19 @@ class TestMCPProxyToolExecute:
     @pytest.mark.asyncio
     async def test_wrapper_tool_calls_directly(self):
         """Server='mcp' tools call the MCP client directly."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_list_tools")
+        info = make_tool_info(server="mcp", name="mcp_list_tools")
         client = make_mock_mcp_client()
         client.call_tool.return_value = '{"tools":[]}'
 
         tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER)
         result = await tool.execute(server="filesystem")
 
-        client.call_tool.assert_called_once_with("mcp_gateway_list_tools", {"server": "filesystem"})
+        client.call_tool.assert_called_once_with("mcp_list_tools", {"server": "filesystem"})
         assert result == '{"tools":[]}'
 
     @pytest.mark.asyncio
     async def test_external_tool_routes_via_harness_call_tool(self):
-        """Non-mcp servers route through the harness __mcp_gateway_call_tool tool."""
+        """Non-mcp servers route through the harness __mcp_call_tool tool."""
         info = make_tool_info(server="filesystem", name="read_file")
         client = make_mock_mcp_client()
         client.call_tool.return_value = "file contents"
@@ -200,14 +200,14 @@ class TestMCPProxyToolExecute:
         result = await tool.execute(path="/tmp/test.txt")
 
         args = client.call_tool.call_args[0]
-        assert args[0] == "__mcp_gateway_call_tool"
+        assert args[0] == "__mcp_call_tool"
         assert args[1]["server"] == "filesystem"
         assert args[1]["tool_name"] == "read_file"
 
     @pytest.mark.asyncio
-    async def test_mcp_gateway_set_persists_on_success(self):
-        """mcp_gateway_set triggers persistence callback on success."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_set")
+    async def test_mcp_set_persists_on_success(self):
+        """mcp_set triggers persistence callback on success."""
+        info = make_tool_info(server="mcp", name="mcp_set")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "connected"})
         on_add = AsyncMock()
@@ -228,9 +228,9 @@ class TestMCPProxyToolExecute:
         assert call_args.kwargs["source"] == {"url": "http://example.com"}
 
     @pytest.mark.asyncio
-    async def test_mcp_gateway_set_skips_persist_on_failure(self):
+    async def test_mcp_set_skips_persist_on_failure(self):
         """Failed connection does not trigger persist."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_set")
+        info = make_tool_info(server="mcp", name="mcp_set")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "error", "error": "boom"})
         on_add = AsyncMock()
@@ -241,9 +241,9 @@ class TestMCPProxyToolExecute:
         on_add.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_mcp_gateway_set_handles_parse_error(self):
+    async def test_mcp_set_handles_parse_error(self):
         """Handles JSON parse errors gracefully."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_set")
+        info = make_tool_info(server="mcp", name="mcp_set")
         client = make_mock_mcp_client()
         client.call_tool.return_value = "not json"
         on_add = AsyncMock()
@@ -255,9 +255,9 @@ class TestMCPProxyToolExecute:
         on_add.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_mcp_gateway_set_disabled_triggers_update(self):
-        """mcp_gateway_set disabled status triggers on_server_updated(False)."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_set")
+    async def test_mcp_set_disabled_triggers_update(self):
+        """mcp_set disabled status triggers on_server_updated(False)."""
+        info = make_tool_info(server="mcp", name="mcp_set")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "disabled"})
         on_upd = AsyncMock()
@@ -268,9 +268,9 @@ class TestMCPProxyToolExecute:
         on_upd.assert_called_once_with(name="myserver", enabled=False)
 
     @pytest.mark.asyncio
-    async def test_mcp_gateway_set_enabled_connected_triggers_update(self):
-        """mcp_gateway_set_enabled connected triggers on_server_updated(True)."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_set_enabled")
+    async def test_mcp_set_enabled_connected_triggers_update(self):
+        """mcp_set_enabled connected triggers on_server_updated(True)."""
+        info = make_tool_info(server="mcp", name="mcp_set_enabled")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "connected"})
         on_upd = AsyncMock()
@@ -281,9 +281,9 @@ class TestMCPProxyToolExecute:
         on_upd.assert_called_once_with(name="myserver", enabled=True)
 
     @pytest.mark.asyncio
-    async def test_mcp_gateway_set_enabled_disabled_triggers_update(self):
-        """mcp_gateway_set_enabled disabled triggers on_server_updated(False)."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_set_enabled")
+    async def test_mcp_set_enabled_disabled_triggers_update(self):
+        """mcp_set_enabled disabled triggers on_server_updated(False)."""
+        info = make_tool_info(server="mcp", name="mcp_set_enabled")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "disabled"})
         on_upd = AsyncMock()
@@ -294,9 +294,9 @@ class TestMCPProxyToolExecute:
         on_upd.assert_called_once_with(name="myserver", enabled=False)
 
     @pytest.mark.asyncio
-    async def test_mcp_gateway_remove_triggers_callback(self):
-        """mcp_gateway_remove triggers removal callback."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_remove")
+    async def test_mcp_remove_triggers_callback(self):
+        """mcp_remove triggers removal callback."""
+        info = make_tool_info(server="mcp", name="mcp_remove")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "removed"})
         on_remove = AsyncMock()
@@ -307,9 +307,9 @@ class TestMCPProxyToolExecute:
         on_remove.assert_called_once_with(name="oldserver")
 
     @pytest.mark.asyncio
-    async def test_mcp_gateway_remove_skips_on_failure(self):
+    async def test_mcp_remove_skips_on_failure(self):
         """Non-removed status skips callback."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_remove")
+        info = make_tool_info(server="mcp", name="mcp_remove")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "not_found"})
         on_remove = AsyncMock()
@@ -322,7 +322,7 @@ class TestMCPProxyToolExecute:
     @pytest.mark.asyncio
     async def test_execute_source_stripped_for_wrapper(self):
         """Source dict is stripped from kwargs for wrapper tools."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_set")
+        info = make_tool_info(server="mcp", name="mcp_set")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "connected"})
 
@@ -336,7 +336,7 @@ class TestMCPProxyToolExecute:
     @pytest.mark.asyncio
     async def test_source_not_a_dict_stripped_from_mcp_call(self):
         """source that isn't a dict is still stripped from kwargs — callback gets None."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_set")
+        info = make_tool_info(server="mcp", name="mcp_set")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "connected"})
 
@@ -363,7 +363,7 @@ class TestMCPProxyToolExecute:
     @pytest.mark.asyncio
     async def test_handle_add_server_callback_exception_swallowed(self):
         """Exceptions in on_server_added callback are swallowed."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_set")
+        info = make_tool_info(server="mcp", name="mcp_set")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "connected"})
         on_add = AsyncMock(side_effect=RuntimeError("callback exploded"))
@@ -376,7 +376,7 @@ class TestMCPProxyToolExecute:
     @pytest.mark.asyncio
     async def test_handle_remove_server_callback_exception_swallowed(self):
         """Exceptions in on_server_removed callback are swallowed."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_remove")
+        info = make_tool_info(server="mcp", name="mcp_remove")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "removed"})
         on_remove = AsyncMock(side_effect=RuntimeError("callback error"))
@@ -389,7 +389,7 @@ class TestMCPProxyToolExecute:
     @pytest.mark.asyncio
     async def test_handle_remove_server_parse_error(self):
         """Parse error in remove_server result is handled gracefully."""
-        info = make_tool_info(server="mcp", name="mcp_gateway_remove")
+        info = make_tool_info(server="mcp", name="mcp_remove")
         client = make_mock_mcp_client()
         client.call_tool.return_value = "not valid json"
         on_remove = AsyncMock()

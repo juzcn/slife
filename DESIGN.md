@@ -171,7 +171,7 @@ tiers of the same thing:
 2. **`__` (double underscore) = plugin internal tool, LLM-invisible.** This is
    a **plugin-spec marker**, not a harness concept. Plugin internal tools
    (`__memory_save_turn`, `__a2a_drain_incoming`, `__wechat_drain_incoming`,
-   `__mcp_gateway_call_tool`, …) are ordinary MCP tools that happen to serve the main
+   `__mcp_call_tool`, …) are ordinary MCP tools that happen to serve the main
    process (agent service / TUI) rather than the LLM. They are filtered out of
    the schema before registration — they never reach `to_openai_functions()`
    — and are called programmatically via `client.call_tool("__…")`.
@@ -182,7 +182,7 @@ tiers of the same thing:
 | `__memory_save_turn` / `__memory_get_recent_turns` | memdb plugin | Internal — invisible |
 | `__wechat_drain_incoming` | wechat plugin | Internal — invisible |
 | `__a2a_drain_incoming` / `__a2a_dispatch_result` | a2a plugin | Internal — invisible |
-| `__mcp_connection_status` / `__mcp_gateway_call_tool` | mcp plugin | Internal — invisible |
+| `__mcp_connection_status` / `__mcp_call_tool` | mcp plugin | Internal — invisible |
 | `__tunnel_status` / `__register_file` | sharefile plugin | Internal — invisible |
 
 Both registration paths share one `__` predicate — `is_internal_tool()`
@@ -438,7 +438,7 @@ Processes communicate through environment variables:
 
 | Plugin | Transport | Role |
 |--------|-----------|------|
-| **mcp-gateway** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp_gateway`). Manages connection lifecycle — spawn/connect, route tool calls, persist config — and keeps an in-memory **tool catalog** of every loaded tool (name, description, full schema, enabled), rebuilt live from connections, searched via a schema-aware hybrid `mcp_gateway_tool_search` and loaded on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration). |
+| **mcp-gateway** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp_gateway`). Manages connection lifecycle — spawn/connect, route tool calls, persist config — and keeps an in-memory **tool catalog** of every loaded tool (name, description, full schema, enabled), rebuilt live from connections, searched via a schema-aware hybrid `mcp_tool_search` and loaded on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration). |
 | **memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages (a failed poll — signalled by `client.last_error`, which `poll_updates()` sets on a swallowed network error — backs off the next poll exponentially to 30 s and resets on the next clean poll), typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[WECHAT]` (model-facing; the TUI strips the marker from display since the `Wechat>` bubble prefix already shows the channel); the model replies itself by calling the LLM-visible `wechat_send_message` — no harness auto-dispatch — addressing the peer by `peer_wechat_id` (from `wechat_check_status.last_contact`). |
 | **memfiles** | Streamable HTTP | Private notes/diary/reports/files cabinet — tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, report tools `report_save` / `report_list` / `report_read`), internal `__check` + `__scheduled_*` registry ops. Notes, diary &amp; reports dual-written to markdown + a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. The scheduled-task tools (`scheduled_task_*` / `scheduled_run_*` / `run_schedule_now`) are native, in the "Schedule" category (`slife/tools/schedule.py`); this plugin only holds the schedule/run data they call. |
@@ -467,9 +467,9 @@ Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` 
 
 For `url`-configured servers the gateway probes with `GET + Accept: text/event-stream`: a `text/event-stream` reply switches to **SSE** mode (the `endpoint` event yields the POST message URL); otherwise the same client falls through to **Streamable HTTP**. A Streamable response may be a single JSON body or an SSE stream — both are parsed (the first matching JSON-RPC message; later events are server-initiated notifications and are dropped).
 
-Exposed management tools (LLM-visible as `mcp_gateway_set`, `mcp_gateway_set_enabled`, `mcp_gateway_remove`, `mcp_gateway_list`, `mcp_gateway_list_tools`), plus the tool-catalog search tool described below (`mcp_gateway_tool_search`). Live status is reported by `check_mcp_gateway` via the internal `__mcp_connection_status`. The tool-call bridge `__mcp_gateway_call_tool` is an internal tool — LLM-invisible, invoked only by the `server__tool` proxies.
+Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`), plus the tool-catalog search tool described below (`mcp_tool_search`). Live status is reported by `check_mcp_gateway` via the internal `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is an internal tool — LLM-invisible, invoked only by the `server__tool` proxies.
 
-`mcp_gateway_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, `auto_load`, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp_gateway` (a standalone tool, also run by `system_health`) calls the internal `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
+`mcp_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, `auto_load`, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp_gateway` (a standalone tool, also run by `system_health`) calls the internal `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
 
 **Tool catalog & on-demand loading.** The gateway keeps every loaded
 external tool in an **in-memory** catalog (SQLite `:memory:`): one row per
@@ -486,23 +486,23 @@ passed via the `initialize` handshake — the gateway has no `embeddings`
 section of its own). The
 semantic vector is sourced from the **schema text alone** (flattened at embed
 time: name, description, each parameter, return description), making
-`mcp_gateway_tool_search` **schema-aware** — a tool is findable by what its parameters
+`mcp_tool_search` **schema-aware** — a tool is findable by what its parameters
 do, not just its top-line description. It runs hybrid/keyword/grep retrieval
 over the catalog, degrading to keyword-only when no embedding endpoint is
 configured or the semantic index is still building.
 
 External tools are **loaded on demand**: the host registers none of them by
-default. The model discovers a tool with `mcp_gateway_tool_search` and loads it into
+default. The model discovers a tool with `mcp_tool_search` and loads it into
 its toolset with the native `mcp_tool_load(full_name)`, which fetches the live
-schema + enabled state via the internal `__mcp_gateway_get_tool` and refuses a
+schema + enabled state via the internal `__mcp_get_tool` and refuses a
 disabled tool. A server with `auto_load: true` keeps the older wholesale
 registration — its tools are registered whenever it connects. Enable/disable
-is always **server-granular** (`mcp_gateway_set_enabled`): disabling a server
+is always **server-granular** (`mcp_set_enabled`): disabling a server
 disconnects it, marks its catalog tools disabled (refused at call time), and
 drops its loaded proxies; there is no per-tool toggle. Every
 `tools/list_changed` notification runs a host-side reconcile
 (`_sync_mcp_proxies`) that validates each loaded on-demand proxy via
-`__mcp_gateway_get_tool` and unregisters any whose tool vanished, server disconnected,
+`__mcp_get_tool` and unregisters any whose tool vanished, server disconnected,
 or was disabled.
 
 There is deliberately no offline rebuild command — the catalog syncs itself
@@ -513,9 +513,9 @@ keyword while indexing).
 Server lifecycle:
 
 ```
-disabled ──[mcp_gateway_set_enabled(name, enabled=true)]──→ enabled (connected, catalog tools enabled)
-enabled  ──[mcp_gateway_set_enabled(name, enabled=false)]─→ disabled (disconnected, catalog tools disabled)
-enabled  ──[mcp_gateway_set(changed config)]───────────────→ restarted with new settings
+disabled ──[mcp_set_enabled(name, enabled=true)]──→ enabled (connected, catalog tools enabled)
+enabled  ──[mcp_set_enabled(name, enabled=false)]─→ disabled (disconnected, catalog tools disabled)
+enabled  ──[mcp_set(changed config)]───────────────→ restarted with new settings
 ```
 
 All state changes persist to `mcp-plugin.json5` (self-hosted by the gateway).
@@ -817,7 +817,7 @@ Not all tools are in every request. Several categories use lightweight summaries
 |----------|--------|------|
 | MemDB | `turn_search` | `turn_read` |
 | Skills | `skill_list` | `skill_use` |
-| MCP | `mcp_gateway_tool_search` | `mcp_tool_load(full_name)` |
+| MCP | `mcp_tool_search` | `mcp_tool_load(full_name)` |
 
 ### i18n
 
