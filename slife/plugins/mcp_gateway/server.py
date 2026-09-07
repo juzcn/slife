@@ -5,7 +5,7 @@ This is the entry point for the mcp-plugin child process. It:
   2. Exposes management tools (bare names) to manage external MCP connections
   3. Maintains persistent connections to external MCP servers
   4. Self-hosts its config: loads ``mcp-plugin.json5`` on startup and
-     persists ``mcp_set`` / ``mcp_remove`` / ``mcp_set_enabled`` through
+     persists ``mcp_gateway_set`` / ``mcp_gateway_remove`` / ``mcp_gateway_set_enabled`` through
      ``mcp_plugin.config`` — no host involvement.
 
 Spawned by Slife (or any host) via ``python -m mcp_plugin.server``.
@@ -20,13 +20,14 @@ from typing import Any
 from fastmcp.server.context import Context
 from fastmcp.server.middleware import Middleware
 
-from slife.plugins.mcp import config as plugin_config
-from slife.plugins.mcp.connection import ConnectionPool, ServerConfig, ServerStatus
-from slife.plugins.mcp.logging import error_json, ok_json
-from slife.plugins.mcp.search import SCORE_BAND_HINT, annotate_scores, merge_hybrid
-from slife.plugins.mcp.semantic import SemanticManager
-from slife.plugins.mcp.server_runtime import create_plugin_server
-from slife.plugins.mcp.store import ToolStore
+from slife.plugins.mcp_gateway import config as plugin_config
+from slife.plugins.spec import mcp_child_reserved_names
+from slife.plugins.mcp_gateway.connection import ConnectionPool, ServerConfig, ServerStatus
+from slife.plugins.mcp_gateway.logging import error_json, ok_json
+from slife.plugins.mcp_gateway.search import SCORE_BAND_HINT, annotate_scores, merge_hybrid
+from slife.plugins.mcp_gateway.semantic import SemanticManager
+from slife.plugins.mcp_gateway.server_runtime import create_plugin_server
+from slife.plugins.mcp_gateway.store import ToolStore
 
 
 @asynccontextmanager
@@ -72,11 +73,11 @@ async def _auto_connect_configured() -> None:
 
     Best-effort and fire-and-forget from the lifespan — a slow server must
     never delay the ready port signal.  Failures are logged per server; the
-    agent discovers whichever tools actually connected (via mcp_list_tools
+    agent discovers whichever tools actually connected (via mcp_gateway_list_tools
     or the tools/list_changed notifications fired on connect).
 
     Disabled servers (``enabled: false``) are registered but NOT connected,
-    so ``mcp_list`` (a config view) reports the same set as the config —
+    so ``mcp_gateway_list`` (a config view) reports the same set as the config —
     including the disabled server the user can re-enable.
     """
     try:
@@ -298,7 +299,7 @@ async def _semantic_check_report() -> dict:
     config must not break ``__check``.
     """
     try:
-        from slife.plugins.mcp.embeddings import EmbeddingClient
+        from slife.plugins.mcp_gateway.embeddings import EmbeddingClient
         probe = EmbeddingClient.from_plugin_config(override=_client_embeddings)
         manager = _manager
         if manager is None:
@@ -357,10 +358,9 @@ _pool = ConnectionPool(on_connected=_on_connected)
 
 # Built-in Slife plugin server names — reserved: an external MCP server must
 # not take one of these, or its tools would collide / misroute in the host's
-# namespace.
-_RESERVED_SERVER_NAMES = frozenset(
-    {"mcp", "memdb", "wechat", "memfiles", "sharefile", "a2a", "media"}
-)
+# namespace.  Derived from the central plugin contract so every built-in
+# plugin (job-coding included) is always covered.
+_RESERVED_SERVER_NAMES = mcp_child_reserved_names()
 
 # ═══════════════════════════════════════════════════════════════════════
 # Management tools
@@ -404,7 +404,7 @@ def _persist_entry(
     """Persist a server entry to mcp-plugin.json5 (merge semantics).
 
     ``enabled=True`` (the default) leaves the flag untouched — only
-    ``mcp_set_enabled`` flips enable/disable; ``enabled=False`` is written
+    ``mcp_gateway_set_enabled`` flips enable/disable; ``enabled=False`` is written
     so the server stays disconnected on the next wrapper start.
     """
     entry: dict = {
@@ -423,13 +423,13 @@ def _persist_entry(
 
 
 @mcp.tool(
-    name="mcp_set",
+    name="mcp_gateway_set",
     description=(
         "Add or update an external MCP server connection (upsert; stdio via "
         "`command`/`args`, or http via `url`)."
     ),
 )
-async def mcp_set(
+async def mcp_gateway_set(
     name: str,
     command: str = "",
     args: list[str] | None = None,
@@ -445,7 +445,7 @@ async def mcp_set(
     """Add or update an MCP server (upsert — idempotent).
 
     Identical config → ``already_connected``, no restart.  Changed config →
-    restart.  ``enabled`` sets the initial state; use ``mcp_set_enabled`` to
+    restart.  ``enabled`` sets the initial state; use ``mcp_gateway_set_enabled`` to
     toggle enable/disable at runtime.  Persisted to mcp-plugin.json5.
 
     Args:
@@ -477,7 +477,7 @@ async def mcp_set(
             server=name,
         )
 
-    # os_paths / auto_load / source are config-file fields (not mcp_set
+    # os_paths / auto_load / source are config-file fields (not mcp_gateway_set
     # params) — preserve them across an upsert so a hand-edited flag isn't
     # silently reset on the running connection.
     existing = _pool.get_server(name)
@@ -538,29 +538,29 @@ async def mcp_set(
                 server=name,
             )
     except Exception as e:
-        logger.exception("mcp_set_failed server=%s", name)
+        logger.exception("mcp_gateway_set_failed server=%s", name)
         return error_json(str(e), server=name)
 
 
 @mcp.tool(
-    name="mcp_set_enabled",
+    name="mcp_gateway_set_enabled",
     description=(
         "Enable or disable an MCP server (true reconnects + loads tools; "
         "false disconnects + unloads)."
     ),
 )
-async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) -> str:
+async def mcp_gateway_set_enabled(name: str, enabled: bool, ctx: Context | None = None) -> str:
     """Toggle enable/disable on an existing MCP server.
 
     Args:
-        name: Server name (from mcp_list).
+        name: Server name (from mcp_gateway_list).
         enabled: true = reconnect and load tools; false = disconnect and unload.
     """
     _capture_session(ctx)
     existing = _pool.get_server(name)
     if existing is None:
         return error_json(
-            f"Server '{name}' not found. Use mcp_set to add it first.",
+            f"Server '{name}' not found. Use mcp_gateway_set to add it first.",
             server=name,
         )
     existing.config.enabled = enabled
@@ -601,17 +601,17 @@ async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) 
     return ok_json(
         status="disabled",
         server=name,
-        note="Server disabled. Re-enable with mcp_set_enabled(name=..., enabled=true).",
+        note="Server disabled. Re-enable with mcp_gateway_set_enabled(name=..., enabled=true).",
     )
 
 
 @mcp.tool(
-    name="mcp_remove",
+    name="mcp_gateway_remove",
     description=(
         "Remove an MCP server: stop process, unregister tools, persist removal to config."
     ),
 )
-async def mcp_remove(name: str, ctx: Context | None = None) -> str:
+async def mcp_gateway_remove(name: str, ctx: Context | None = None) -> str:
     """Stop and remove an MCP server.
 
     Args:
@@ -627,17 +627,17 @@ async def mcp_remove(name: str, ctx: Context | None = None) -> str:
         await _notify_tools_changed()
         return ok_json(status="removed", server=name)
     except Exception as e:
-        logger.exception("mcp_remove_failed server=%s", name)
+        logger.exception("mcp_gateway_remove_failed server=%s", name)
         return error_json(str(e), server=name)
 
 
 @mcp.tool(
-    name="mcp_list",
+    name="mcp_gateway_list",
     description=(
         "List configured MCP servers (transport, command/url, enabled)."
     ),
 )
-async def mcp_list(ctx: Context | None = None) -> str:
+async def mcp_gateway_list(ctx: Context | None = None) -> str:
     """List configured external MCP servers (static config view)."""
     _capture_session(ctx)
     servers = _pool.list_configured()
@@ -671,13 +671,13 @@ async def __check(ctx: Context | None = None) -> str:
 
 
 @mcp.tool(
-    name="mcp_list_tools",
+    name="mcp_gateway_list_tools",
     description=(
         "List a connected server's tools (full_name server__tool). Use "
-        "mcp_list to discover server names."
+        "mcp_gateway_list to discover server names."
     ),
 )
-async def mcp_list_tools(server: str, ctx: Context | None = None) -> str:
+async def mcp_gateway_list_tools(server: str, ctx: Context | None = None) -> str:
     """List a server's tools (single read).
 
     For on-demand servers (``auto_load=false``) the live MCP ``tools/list``
@@ -686,7 +686,7 @@ async def mcp_list_tools(server: str, ctx: Context | None = None) -> str:
     catalog rows are returned instead of a live round-trip.
 
     Args:
-        server: Server name (from mcp_list).
+        server: Server name (from mcp_gateway_list).
     """
     _capture_session(ctx)
     conn = _pool.get_server(server)
@@ -698,7 +698,7 @@ async def mcp_list_tools(server: str, ctx: Context | None = None) -> str:
             tool_count=0,
             note=(
                 f"Server '{server}' is not connected — its tools load when it "
-                "connects. Use mcp_list to see configured servers."
+                "connects. Use mcp_gateway_list to see configured servers."
             ),
         )
 
@@ -738,7 +738,7 @@ async def mcp_list_tools(server: str, ctx: Context | None = None) -> str:
     try:
         live = _pool.list_all_tools(server_name=server)
     except Exception as e:
-        logger.warning("mcp_list_tools_live_failed server=%s err=%s", server, e)
+        logger.warning("mcp_gateway_list_tools_live_failed server=%s err=%s", server, e)
         return error_json(
             f"MCP unavailable for server '{server}' — live tool read failed: {e}",
             server=server,
@@ -755,14 +755,14 @@ async def mcp_list_tools(server: str, ctx: Context | None = None) -> str:
 
 
 @mcp.tool(
-    name="__mcp_call_tool",
+    name="__mcp_gateway_call_tool",
     description=(
         "Call a tool on a connected MCP server (internal — invoked by the "
         "server__tool proxies, not directly by the agent). "
         "arguments = JSON object string."
     ),
 )
-async def __mcp_call_tool(
+async def __mcp_gateway_call_tool(
     server: str,
     tool_name: str,
     arguments: str = "{}",
@@ -789,7 +789,7 @@ async def __mcp_call_tool(
         srv = await store.get_server(server)
         if srv is not None and not srv["enabled"]:
             return error_json(
-                f"Server '{server}' is disabled — enable it with mcp_set_enabled.",
+                f"Server '{server}' is disabled — enable it with mcp_gateway_set_enabled.",
                 server=server, tool=tool_name,
             )
 
@@ -803,13 +803,13 @@ async def __mcp_call_tool(
 
 
 @mcp.tool(
-    name="__mcp_get_tool",
+    name="__mcp_gateway_get_tool",
     description=(
         "Fetch a tool's live schema + its server's enabled state by full_name "
         "'{server}__{tool}'. Internal — invoked by the host's mcp_tool_load."
     ),
 )
-async def __mcp_get_tool(full_name: str, ctx: Context | None = None) -> str:
+async def __mcp_gateway_get_tool(full_name: str, ctx: Context | None = None) -> str:
     """Return a tool's schema + server enabled state for host-side loading."""
     _capture_session(ctx)
     server, tool = _split_full_name(full_name)
@@ -835,13 +835,13 @@ async def __mcp_get_tool(full_name: str, ctx: Context | None = None) -> str:
 
 
 @mcp.tool(
-    name="mcp_tool_search",
+    name="mcp_gateway_tool_search",
     description=(
         "Search the MCP tool catalog: mode hybrid (default)/fts5/grep; "
         "returns full_name '{server}__{tool}' for mcp_tool_load."
     ),
 )
-async def mcp_tool_search(
+async def mcp_gateway_tool_search(
     query: str = "",
     mode: str = "hybrid",
     limit: int = 10,
@@ -920,7 +920,7 @@ def main():
     """Run the mcp-plugin wrapper server on Streamable HTTP transport."""
     import argparse
 
-    from slife.plugins.mcp.server_runtime import run_plugin_server, shutdown_server_logging
+    from slife.plugins.mcp_gateway.server_runtime import run_plugin_server, shutdown_server_logging
 
     parser = argparse.ArgumentParser(prog="mcp-plugin-server")
     parser.add_argument(

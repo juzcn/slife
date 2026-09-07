@@ -615,7 +615,7 @@ loading.
 One of the plugins shipped inside the slife wheel, discovered by scanning
 `slife.plugins.*` and started like any other plugin: the turns database,
 messaging, the file cabinet, file sharing, media generation, the mesh, and
-the MCP gateway (`slife.plugins.mcp`). There is no `plugins.external`
+the MCP gateway (`slife.plugins.mcp_gateway`). There is no `plugins.external`
 mechanism — every plugin is internal; third-party capability enters only as
 a standard MCP server in `mcp-plugin.json5`. *See also* Plugin (Part II);
 mcp-plugin; Plugin contract.
@@ -775,7 +775,7 @@ note (Part II).
 **mcp-plugin**
 The built-in MCP gateway — the plugin that connects Slife to external MCP
 servers (stdio / SSE / Streamable HTTP). It ships inside the slife wheel as
-`slife.plugins.mcp` (module `slife.plugins.mcp.server`), auto-discovered like
+`slife.plugins.mcp_gateway` (module `slife.plugins.mcp_gateway.server`), auto-discovered like
 every other internal plugin, and exposes the `mcp_set` / `mcp_list` / …
 management tools, and the tool-catalog tool (`mcp_tool_search`, …).
 Everything — including configuration — is an MCP tool or a hand-edited

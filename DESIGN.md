@@ -362,81 +362,10 @@ via a custom route (`GET /share/{token}`); their control surfaces are pure MCP.
 
 **WSL note:** Custom env vars set via `create_subprocess_exec(env=…)` are NOT forwarded to Windows `.exe` processes through WSL interop. `WSLENV` is only read by the WSL `/init` at session start, not by child processes. Therefore, **all MCP server runtimes on WSL must be Linux-native binaries** — the install script enforces this by detecting `/mnt/*` paths and installing native versions.
 
+
 ### The Plugin Contract
 
-1. Bind a free port: `bind_free_port()` pre-binds `127.0.0.1:0` and keeps the socket — no race between port discovery and server start
-2. Signal the parent **once ready**: `run_plugin_server` wraps the server's lifespan and emits `signal_port(port)` (`{"port": N}` on stdout, then closes stdout) only **after** the app is ready to serve MCP — i.e. after the plugin's lifespan (if any) completes. The signal means *"ready to serve MCP on this port"*, aligning with the MCP startup handshake: the parent's first `initialize` always lands on a ready server. The lifespan stays handshake-fast (see Readiness), so the signal is never held up by heavyweight startup — which is deferred to `warm_after_handshake`. Plugins must **not** signal early themselves
-3. Start FastMCP on Streamable HTTP with the pre-bound socket
-4. Define `@mcp.tool` functions; optionally serve plain-HTTP endpoints on the same port via `@mcp.custom_route(path, methods=[...])` (e.g. memfiles `GET /share/{token}`)
-5. Be importable: `python -m <module>.server`
-
-**Public vs internal tools.** Every `@mcp.tool` is a normal MCP tool. Most are
-**public** — registered as proxy tools under their **bare names** and exposed
-to the LLM (first-class, like native tools). A tool is **internal** when its
-name is prefixed `__` (double underscore): it is *not* exposed to the LLM, and
-is called programmatically by the main process (agent service / TUI) via
-`client.call_tool("__…")`. The `__` marker is the plugin-spec convention — a
-single shared predicate, `is_internal_tool()` (`slife/server_utils.py`),
-filters these out on both registration paths, so an internal tool never leaks
-into the schema. This is
-distinct from the harness concept (single `_`, e.g. the native `_sys_note`),
-which is LLM-visible-but-reserved and auto-invoked by the loop — see [Harness
-vs Internal Tools](#harness-vs-internal-tools--a-naming-distinction).
-
-**Readiness (MCP initialize handshake).** Readiness is defined by MCP
-itself: a plugin is ready when the harness's `initialize` handshake
-completes — the client sends `initialize`, the server answers, the client
-sends `initialized`, and the session enters READY. A plugin server only
-answers `initialize` after its own FastMCP lifespan has completed, and each
-plugin encodes its *own* serving requirement in that lifespan — memdb and
-memfiles require their store to be usable (connection open, schema in
-place, a query succeeds); the other plugins have no local requirement, so
-serving is their readiness. A lifespan that cannot meet the requirement
-fails, the port signal never fires, and the spawn fails — the plugin is
-reported FAILED (its watchdog backs off and retries). Subordinate or
-external dependencies (mcp's external servers, sharefile's tunnel, wechat's
-login, media's providers, a2a's broker, a store's embedding backend) are
-NOT readiness conditions: they are uncontrollable and self-heal at runtime,
-and are surfaced separately via their own status tools (`__mcp_connection_status`,
-`__tunnel_status`, `__a2a_status`, `system_health`, …) — they never gate
-readiness. The lifespan is therefore **handshake-fast by contract**: it
-establishes only the minimum needed to serve and never holds the event loop
-while the wrapper is connecting. Work that can stall or temporarily freeze
-the loop — a GIL-holding embedding-model load, slow I/O, long connects — is
-deferred until after the first `tools/list` by
-`warm_after_handshake(factory)` (`slife/server_utils.py`), which runs it in
-the background once the handshake completes (a failure logs and shows on the
-status surfaces, never blocks readiness). A plugin with no startup work
-still declares a lifespan (media) so every built-in shares the same
-complete-MCP-lifecycle shape.
-
-**Startup convergence gate.** The service opens for user input only after
-every attempted plugin spawn has converged — each reached ready, skipped, or
-failed. Readiness is binary: the initialize handshake either completed
-(ready) or the spawn failed; there is no start-time "degraded" — runtime
-degradation of subordinates lives in the status surfaces. The inbox consumer
-and the TUI input both await the single event (`_startup_settled`), so no
-turn runs and nothing can be typed while plugin startup is still settling —
-this is what keeps user input from racing ahead of core services. The gate
-is event-driven: set by the last spawn's completion, never polled, never
-time-bounded; the only timeout is a 30 s hang-guard on a stuck spawn so
-convergence still fires.
-
-**Required plugins (`plugins.required`).** A plugin named in the
-`plugins.required` list of `slife.json5` is a **core component**: failing to
-become ready — a FAILED spawn, a raised spawn, or the 30 s hang-guard —
-**aborts startup** with a red message, stops all plugins, and exits non-zero
-(never limps on without a core component). `memdb` and `memfiles` are
-required in the standard configuration because memory is core. Every other
-plugin defaults to non-required: a broken memory backend that is *not*
-required fails loudly where it is used (the inbox freezes with a red banner
-on the first unsavable turn) instead of aborting startup. Required plugins
-are declared per instance in the config, so which components are
-non-negotiable is a deployment decision, not a hardcoded set.
-
-No base class, no import hook, no SDK. Every plugin is auto-discovered by scanning `slife.plugins.*` for packages with a `server.py` — including the MCP gateway (`slife.plugins.mcp.server`). Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. sharefile's ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal. In practice uvicorn finishes mounting the Streamable HTTP endpoint ~1 s *after* the lifespan signals, so a session established in that window can get a bad SSE transport on Windows/Proactor that hangs `tools/list`; the harness runs that call through `asyncio.timeout` (which, unlike `asyncio.wait_for`, breaks the hang reliably) and, on a timeout, reconnects a fresh session and retries once — by then the plugin is serving, so the race self-heals instead of failing the load. `python -m slife.plugins.mcp.server` is the only way the gateway runs; slife itself also hosts an in-process FastMCP server (`slife/mcp/host_server.py`) that exposes the live ToolRegistry to external MCP consumers (DESIGNER_NOTES §8).
-
-The MCP client keeps bounded retry (6 attempts, 0.5 s apart, each attempt time-boxed at 10 s including transport setup) as **defense-in-depth**: a plugin that signals early (violating the contract) still loads instead of hanging.
+The full, authoritative plugin contract now lives in [`PLUGIN_CONTRACT.md`](PLUGIN_CONTRACT.md) — the central `PluginSpec` table (`slife/plugins/spec.py`) as the single source of truth, the `PluginRegistry` it derives (`AgentService._plugins`), the uniform start/stop/watchdog/restart engine, subagent plugin sharing, health enumeration, tool routing, and the child-process `server.py` contract.  The plugin model is **spec-driven**: adding a plugin is one `PluginSpec` row plus its `server.py` package — no name-keyed harness tables.
 
 ### Localhost Never Goes Through a Proxy
 
@@ -505,7 +434,7 @@ Processes communicate through environment variables:
 
 | Plugin | Transport | Role |
 |--------|-----------|------|
-| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp`). Manages connection lifecycle — spawn/connect, route tool calls, persist config — and keeps an in-memory **tool catalog** of every loaded tool (name, description, full schema, enabled), rebuilt live from connections, searched via a schema-aware hybrid `mcp_tool_search` and loaded on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration). |
+| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp_gateway`). Manages connection lifecycle — spawn/connect, route tool calls, persist config — and keeps an in-memory **tool catalog** of every loaded tool (name, description, full schema, enabled), rebuilt live from connections, searched via a schema-aware hybrid `mcp_tool_search` and loaded on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration). |
 | **slife-memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages (a failed poll — signalled by `client.last_error`, which `poll_updates()` sets on a swallowed network error — backs off the next poll exponentially to 30 s and resets on the next clean poll), typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[WECHAT]` (model-facing; the TUI strips the marker from display since the `Wechat>` bubble prefix already shows the channel); the model replies itself by calling the LLM-visible `wechat_send_message` — no harness auto-dispatch — addressing the peer by `peer_wechat_id` (from `wechat_check_status.last_contact`). |
 | **slife-memfiles** | Streamable HTTP | Private notes/diary/reports/files cabinet — tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, report tools `report_save` / `report_list` / `report_read`), internal `__check` + `__scheduled_*` registry ops. Notes, diary &amp; reports dual-written to markdown + a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. The scheduled-task tools (`scheduled_task_*` / `scheduled_run_*` / `run_schedule_now`) are native, in the "Schedule" category (`slife/tools/schedule.py`); this plugin only holds the schedule/run data they call. |

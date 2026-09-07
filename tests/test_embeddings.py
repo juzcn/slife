@@ -6,8 +6,8 @@ import httpx2
 import pytest
 import pytest_asyncio
 
-from slife.plugins.mcp import config as plugin_config
-from slife.plugins.mcp.embeddings import EmbeddingClient
+from slife.plugins.mcp_gateway import config as plugin_config
+from slife.plugins.mcp_gateway.embeddings import EmbeddingClient
 
 
 def _make_transport(models=None, embeddings_dim=3):

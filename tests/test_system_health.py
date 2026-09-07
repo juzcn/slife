@@ -13,7 +13,7 @@ from slife.tools.system import (
     check_wechat,
     check_memfiles,
     check_local_embed,
-    check_mcp,
+    check_mcp_gateway,
     check_a2a,
     check_media,
     check_job_coding,
@@ -71,11 +71,11 @@ class TestGroupByComponent:
 
 
 class TestDedupeMcpRecords:
-    """MCP startup records vs live check_mcp entries must not double-report.
+    """MCP startup records vs live check_mcp_gateway entries must not double-report.
 
     The contradiction scenario: a slow cold start records
     ``(mcp_server, warning)`` in the startup store; the background reconnect
-    later succeeds and the live ``check_mcp`` says the server is connected.
+    later succeeds and the live ``check_mcp_gateway`` says the server is connected.
     system_health merges both, so without dedup the stale warning survives
     and the report contradicts itself.
     """
@@ -464,7 +464,7 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_memfiles", return_value=[]), \
              patch("slife.tools.system.check_local_embed", return_value=[]), \
              patch("slife.tools.system.check_sharefile", return_value=[]), \
-             patch("slife.tools.system.check_mcp", return_value=[]), \
+             patch("slife.tools.system.check_mcp_gateway", return_value=[]), \
              patch("slife.tools.system.check_a2a", return_value=[]), \
              patch("slife.tools.system.check_media", return_value=[]):
             result = await tool.execute()
@@ -486,7 +486,7 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_memfiles", return_value=[]), \
              patch("slife.tools.system.check_local_embed", return_value=[]), \
              patch("slife.tools.system.check_sharefile", return_value=[]), \
-             patch("slife.tools.system.check_mcp", return_value=[]), \
+             patch("slife.tools.system.check_mcp_gateway", return_value=[]), \
              patch("slife.tools.system.check_a2a", return_value=[]), \
              patch("slife.tools.system.check_media", return_value=[]):
             result = await tool.execute()
@@ -506,7 +506,7 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_memfiles", return_value=[]), \
              patch("slife.tools.system.check_local_embed", return_value=[]), \
              patch("slife.tools.system.check_sharefile", return_value=[]), \
-             patch("slife.tools.system.check_mcp", return_value=[]), \
+             patch("slife.tools.system.check_mcp_gateway", return_value=[]), \
              patch("slife.tools.system.check_a2a", return_value=[]), \
              patch("slife.tools.system.check_media", return_value=[]), \
              patch("slife.tools.system.check_job_coding", return_value=[]):
@@ -536,7 +536,7 @@ class TestSystemHealthToolExecute:
         ), patch(
             "slife.tools.system.check_sharefile", return_value=[],
         ), patch(
-            "slife.tools.system.check_mcp", return_value=[],
+            "slife.tools.system.check_mcp_gateway", return_value=[],
         ), patch(
             "slife.tools.system.check_a2a", return_value=[],
         ), patch(
@@ -579,7 +579,7 @@ class TestSystemHealthToolExecute:
         ), patch(
             "slife.tools.system.check_sharefile", return_value=[],
         ), patch(
-            "slife.tools.system.check_mcp", return_value=live_entries,
+            "slife.tools.system.check_mcp_gateway", return_value=live_entries,
         ), patch(
             "slife.tools.system.check_a2a", return_value=[],
         ), patch(
@@ -619,7 +619,7 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_memfiles", return_value=[]), \
              patch("slife.tools.system.check_local_embed", return_value=[]), \
              patch("slife.tools.system.check_sharefile", return_value=[]), \
-             patch("slife.tools.system.check_mcp", return_value=[]), \
+             patch("slife.tools.system.check_mcp_gateway", return_value=[]), \
              patch("slife.tools.system.check_a2a", return_value=[]), \
              patch("slife.tools.system.check_media", return_value=[]), \
              patch("slife.tools.system.check_job_coding", return_value=[]), \
@@ -669,7 +669,7 @@ class _FakeMcpClient:
 
 
 class TestCheckMcpFunction:
-    """Tests for check_mcp() server filtering."""
+    """Tests for check_mcp_gateway() server filtering."""
 
     @staticmethod
     def _client(payload):
@@ -690,13 +690,13 @@ class TestCheckMcpFunction:
     @pytest.mark.asyncio
     async def test_checks_all_by_default(self):
         payload = [self._server("fs"), self._server("github", state="stopped")]
-        entries = await check_mcp(client=self._client(payload))
+        entries = await check_mcp_gateway(client=self._client(payload))
         assert [e["key"] for e in entries] == ["fs", "github"]
 
     @pytest.mark.asyncio
     async def test_checks_single_server(self):
         payload = [self._server("fs"), self._server("github", state="stopped")]
-        entries = await check_mcp(server="github", client=self._client(payload))
+        entries = await check_mcp_gateway(server="github", client=self._client(payload))
         assert len(entries) == 1
         assert entries[0]["key"] == "github"
         assert entries[0]["level"] == "warning"
@@ -706,7 +706,7 @@ class TestCheckMcpFunction:
         """A stopped-but-enabled server reports 'disconnected' with an
         auto-reconnect hint — there is no build-owned healthy verdict anymore."""
         payload = [self._server("broken", state="stopped")]
-        entries = await check_mcp(client=self._client(payload))
+        entries = await check_mcp_gateway(client=self._client(payload))
         entry = entries[0]
         assert entry["level"] == "warning"
         assert entry["value"].startswith("disconnected")
@@ -717,7 +717,7 @@ class TestCheckMcpFunction:
     @pytest.mark.asyncio
     async def test_server_not_found(self):
         payload = [self._server("fs")]
-        entries = await check_mcp(server="nope", client=self._client(payload))
+        entries = await check_mcp_gateway(server="nope", client=self._client(payload))
         assert len(entries) == 1
         assert entries[0]["key"] == "nope"
         assert entries[0]["value"] == "not_found"
@@ -725,13 +725,13 @@ class TestCheckMcpFunction:
 
     @pytest.mark.asyncio
     async def test_server_not_found_when_no_servers(self):
-        entries = await check_mcp(server="nope", client=self._client([]))
+        entries = await check_mcp_gateway(server="nope", client=self._client([]))
         assert len(entries) == 1
         assert entries[0]["value"] == "not_found"
 
     @pytest.mark.asyncio
     async def test_client_unavailable(self):
-        entries = await check_mcp()
+        entries = await check_mcp_gateway()
         assert entries[0]["value"] == "client_unavailable"
         assert entries[0]["level"] == "warning"
 
@@ -746,7 +746,7 @@ class TestCheckMcpFunction:
                          "model": "bge-m3", "dimension": 1024,
                          "reason": "embeddings endpoint unreachable"},
         }
-        entries = await check_mcp(client=self._client(payload))
+        entries = await check_mcp_gateway(client=self._client(payload))
         assert [e["key"] for e in entries] == ["fs", "semantic"]
         sem = entries[-1]
         assert sem["level"] == "warning"
@@ -761,7 +761,7 @@ class TestCheckMcpFunction:
                          "semantic_ready": True, "state": "ready",
                          "model": "bge-m3", "dimension": 1024},
         }
-        entries = await check_mcp(client=self._client(payload))
+        entries = await check_mcp_gateway(client=self._client(payload))
         sem = next(e for e in entries if e["key"] == "semantic")
         assert sem["level"] == "ok"
         assert sem["value"] == "ready"
@@ -772,7 +772,7 @@ class TestCheckMcpFunction:
         """A wrapper that returns a bare server list (no semantic block)
         keeps the old per-server-only behavior."""
         payload = [self._server("fs")]
-        entries = await check_mcp(client=self._client(payload))
+        entries = await check_mcp_gateway(client=self._client(payload))
         assert [e["key"] for e in entries] == ["fs"]
 
 

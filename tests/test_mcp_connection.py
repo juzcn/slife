@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from slife.plugins.mcp.connection import (
+from slife.plugins.mcp_gateway.connection import (
     ServerConfig,
     ServerStatus,
     MCPServerConnection,
@@ -215,7 +215,7 @@ class TestConnectionPoolAddServerGate:
     async def test_disabled_server_registered_but_not_connected(self):
         pool = ConnectionPool()
         with patch(
-            "slife.plugins.mcp.connection.MCPServerConnection.connect",
+            "slife.plugins.mcp_gateway.connection.MCPServerConnection.connect",
             new=AsyncMock(),
         ) as mock_connect:
             conn = await pool.add_server(
@@ -229,7 +229,7 @@ class TestConnectionPoolAddServerGate:
     async def test_enabled_server_connects(self):
         pool = ConnectionPool()
         with patch(
-            "slife.plugins.mcp.connection.MCPServerConnection.connect",
+            "slife.plugins.mcp_gateway.connection.MCPServerConnection.connect",
             new=AsyncMock(),
         ) as mock_connect:
             await pool.add_server(
@@ -824,7 +824,7 @@ class TestMCPServerConnectionHealthMonitor:
     @pytest.mark.asyncio
     async def test_reconnects_a_dead_server(self):
         """CONNECTED + unresponsive → marked DISCONNECTED, then reconnected."""
-        from slife.plugins.mcp import connection as conn_mod
+        from slife.plugins.mcp_gateway import connection as conn_mod
 
         cfg = ServerConfig(name="test", command="echo")
         conn = MCPServerConnection(cfg)
@@ -859,7 +859,7 @@ class TestMCPServerConnectionHealthMonitor:
     @pytest.mark.asyncio
     async def test_exits_when_server_disabled(self):
         """A deliberately-disabled server stops the monitor, no reconnect."""
-        from slife.plugins.mcp import connection as conn_mod
+        from slife.plugins.mcp_gateway import connection as conn_mod
 
         cfg = ServerConfig(name="test", command="echo", enabled=False)
         conn = MCPServerConnection(cfg)
@@ -875,7 +875,7 @@ class TestMCPServerConnectionHealthMonitor:
     @pytest.mark.asyncio
     async def test_retries_a_failed_initial_connect(self):
         """A server in FAILED state is retried (with backoff) until it recovers."""
-        from slife.plugins.mcp import connection as conn_mod
+        from slife.plugins.mcp_gateway import connection as conn_mod
 
         cfg = ServerConfig(name="test", command="echo")
         conn = MCPServerConnection(cfg)
@@ -1022,8 +1022,8 @@ class TestMCPServerConnectionTreeKill:
         proc.stdin = None
         conn._process = proc
 
-        with patch("slife.plugins.mcp.connection.terminate_process") as mock_term, \
-                patch("slife.plugins.mcp.connection.kill_process_tree") as mock_tree:
+        with patch("slife.plugins.mcp_gateway.connection.terminate_process") as mock_term, \
+                patch("slife.plugins.mcp_gateway.connection.kill_process_tree") as mock_tree:
             await conn._cleanup_resources()
 
         mock_tree.assert_awaited_once_with(proc)

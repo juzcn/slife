@@ -7,7 +7,7 @@ Tools:
     check_local_embed        — local embedding service (local-embed) status
     check_sharefile          — file-sharing tunnel (ngrok) status
     check_watchdog           — plugin watchdog (auto-restart) status
-    check_mcp                — external MCP server connection status
+    check_mcp_gateway                — external MCP server connection status
     check_a2a                — A2A mesh (MQTT) connection + peer status
     system_health            — orchestrate checks + startup records
     list_native_tools        — native tool inventory (grouped, harness markers)
@@ -40,6 +40,7 @@ from typing import ClassVar
 import httpx2
 
 from slife.health import get_report as get_startup_records
+from slife.plugins.spec import PLUGIN_SPECS, health_check_name
 from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 from slife.paths import get_data_dir
 from slife.tools.base import Tool, make_params
@@ -516,7 +517,7 @@ class CheckWatchdogTool(Tool):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# check_mcp
+# check_mcp_gateway
 # ═══════════════════════════════════════════════════════════════════════
 
 def _diagnose_mcp_server(server: dict) -> dict:
@@ -567,7 +568,7 @@ def _diagnose_mcp_server(server: dict) -> dict:
             "transport": transport,
             "hint": (
                 f"MCP server '{name}' is enabled but NOT connected.{detail} "
-                f"The wrapper auto-reconnects in the background; use check_mcp "
+                f"The wrapper auto-reconnects in the background; use check_mcp_gateway "
                 f"to see current status and error details."
             ),
         }
@@ -617,7 +618,7 @@ def _diagnose_mcp_semantic(sem: dict) -> dict:
     }
 
 
-async def check_mcp(server: str = "", client=None) -> list[dict]:
+async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
     """Check MCP wrapper health + diagnose external MCP server(s).
 
     Calls the wrapper's harness ``__check`` for the raw live
@@ -627,7 +628,7 @@ async def check_mcp(server: str = "", client=None) -> list[dict]:
     The status report is authoritative: an enabled server whose state is
     ``running`` reports ok.  Note: external tools are on-demand by default
     (loaded via ``mcp_tool_load``) — ``running`` means the server is reachable
-    and its tools are discoverable via ``mcp_tool_search``, not that they are
+    and its tools are discoverable via ``mcp_gateway_tool_search``, not that they are
     all registered; loaded proxies are validated on every ``tools/list_changed``
     (see :meth:`slife.agent.service.AgentService._sync_mcp_proxies`).
 
@@ -645,7 +646,7 @@ async def check_mcp(server: str = "", client=None) -> list[dict]:
             "component": "mcp_servers", "level": "warning",
             "key": target, "value": "not_found",
             "hint": f"MCP server '{target}' is not configured. "
-                    "Use mcp_list to see configured servers.",
+                    "Use mcp_gateway_list to see configured servers.",
         }]
 
     try:
@@ -686,7 +687,7 @@ async def check_mcp(server: str = "", client=None) -> list[dict]:
         return records
 
     except Exception as e:
-        logger.warning("check_mcp_failed err=%s", e)
+        logger.warning("check_mcp_gateway_failed err=%s", e)
         return [{"component": "mcp_servers", "level": "error",
                  "key": "check_failed", "value": str(e),
                  "hint": f"Failed to check MCP servers: {e}"}]
@@ -930,32 +931,24 @@ class CheckJobCodingTool(Tool):
         return json.dumps(await check_job_coding(client=client), ensure_ascii=False, indent=2)
 
 
-_CHECK_FUNCTIONS: list[str] = [
-    "check_memdb",
-    "check_wechat",
-    "check_memfiles",
+#: Plugin-backed health checks — derived from the central plugin contract so
+#: ``system_health`` always enumerates exactly the declared plugins (no hand
+#: list to drift from the registry).  ``check_local_embed`` and
+#: ``check_watchdog`` are not plugins and are appended by hand.
+_SPEC_CHECKS: list[tuple[str, str | None]] = [
+    (health_check_name(spec.name), spec.ctx_field)
+    for spec in PLUGIN_SPECS.values()
+    if spec.health
+]
+_CHECK_FUNCTIONS: list[str] = [name for name, _ in _SPEC_CHECKS] + [
     "check_local_embed",
-    "check_sharefile",
-    "check_media",
-    "check_job_coding",
-    "check_mcp",
-    "check_a2a",
     "check_watchdog",
 ]
 
-#: check_* functions that reach live plugin state via a ToolContext client.
-#: ``check_mcp`` uses the slife-mcp wrapper client; ``check_memfiles``,
-#: ``check_local_embed``, ``check_sharefile`` and ``check_a2a`` use their
-#: respective plugin clients.
+#: check_* function → ToolContext client field it reaches live plugin state
+#: through (also derived from the spec).
 _CLIENT_FIELD: dict[str, str] = {
-    "check_memdb": "memdb_client",
-    "check_wechat": "wechat_client",
-    "check_mcp": "mcp_client",
-    "check_memfiles": "memfiles_client",
-    "check_sharefile": "sharefile_client",
-    "check_media": "media_client",
-    "check_job_coding": "job_coding_client",
-    "check_a2a": "a2a_mcp_client",
+    name: ctx for name, ctx in _SPEC_CHECKS if ctx
 }
 
 
@@ -1005,7 +998,7 @@ async def _run_checks(ctx=None) -> list[dict]:
 #: deduplicated, latest-per-key view of the same health store, so the startup
 #: records it covers are dropped when the two are merged.
 _LIVE_REPORTS: dict[str, str] = {
-    "mcp_server": "mcp_servers",  # startup auto-connect record vs check_mcp
+    "mcp_server": "mcp_servers",  # startup auto-connect record vs check_mcp_gateway
     "watchdog": "watchdog",        # startup watchdog record vs check_watchdog
 }
 
@@ -1015,7 +1008,7 @@ def _dedupe_records(startup: list[dict], live: list[dict]) -> list[dict]:
 
     Some startup records are re-reported by a live ``check_*`` inside
     ``system_health``: ``mcp_server`` records (recorded by the main process
-    during auto-connect / reconnect) are re-reported by ``check_mcp`` as
+    during auto-connect / reconnect) are re-reported by ``check_mcp_gateway`` as
     ``mcp_servers``; ``watchdog`` records are re-reported (deduplicated to
     one entry per plugin) by ``check_watchdog``.  Merging both without dedup
     would double-report each plugin — and for watchdogs, surface every

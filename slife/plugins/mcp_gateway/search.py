@@ -97,7 +97,7 @@ def merge_hybrid(
 
 #: Shared 0–1 score guidance appended to hybrid-search hints.  Mirrors the
 #: slife-side contract (slife.plugins.memdb.search) so the normalized score
-#: reads identically on mcp_tool_search / turn_search / cabinet_search.
+#: reads identically on mcp_gateway_tool_search / turn_search / cabinet_search.
 SCORE_BAND_HINT = (
     "similarity is a normalized 0–1 readout (higher = more relevant; "
     "≈1 identical, ≥0.5 close, 0.1–0.5 weak, <0.1 mostly unrelated) — "

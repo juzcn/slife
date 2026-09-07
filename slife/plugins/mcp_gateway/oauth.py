@@ -7,7 +7,7 @@ transparently before each connection.
 
 Usage::
 
-    from slife.plugins.mcp.oauth import get_valid_token, run_device_code_flow, OAuthTokens
+    from slife.plugins.mcp_gateway.oauth import get_valid_token, run_device_code_flow, OAuthTokens
 
     tokens = get_valid_token("my-server")
     if tokens is None:

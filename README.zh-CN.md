@@ -324,7 +324,7 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 
 | 插件 | 角色 |
 |------|------|
-| **slife-mcp** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP）——内置插件（`slife.plugins.mcp`）。内存工具目录（按连接实时重建、含完整 tool schema），schema 感知的混合搜索 `mcp_tool_search`；外部工具按需 `mcp_tool_load` 载入（`auto_load: true` 批量注册） |
+| **slife-mcp** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP）——内置插件（`slife.plugins.mcp_gateway`）。内存工具目录（按连接实时重建、含完整 tool schema），schema 感知的混合搜索 `mcp_tool_search`；外部工具按需 `mcp_tool_load` 载入（`auto_load: true` 批量注册） |
 | **slife-memdb** | 对话记录数据库 + 混合搜索 |
 | **slife-wechat** | 双向微信消息 |
 | **slife-memfiles** | 笔记 / 日记 / 文件柜（私有）。所有保存工具返回本地路径——绝不自动发布。笔记与日记双写为 markdown + SQLite 混合索引 |

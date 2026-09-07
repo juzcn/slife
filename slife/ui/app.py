@@ -520,7 +520,11 @@ class SlifeApp(App):
 
         Shared by ``action_quit`` (normal exit) and the fatal
         required-component path (memdb load failure) so child processes
-        are never orphaned when the app goes down.
+        are never orphaned when the app goes down.  Iterates the plugin
+        registry — no per-plugin stop methods; a plugin that owns poll/drain
+        tasks declares them on its lifecycle, so a uniform stop is enough.
+        The main() finally still hard-kills everything as the crash-path
+        safety net.
         """
 
         async def _stop_one(name: str, coro) -> None:
@@ -533,26 +537,12 @@ class SlifeApp(App):
 
         # Stop inbox first — completes any in-flight message.
         await _stop_one("inbox", self.service.stop_inbox())
-        # Then stop the known services in parallel.
-        # The named set covers the plugin services with bespoke stop
-        # methods (a2a also detaches inbox activity). Any OTHER plugin with
-        # a lifecycle — local-embed, media, job-coding, and auto-discovered
-        # third-party plugins — is stopped here too: a hard-coded list that
-        # misses a plugin would orphan its child process, and its fixed port
-        # (local-embed) would stay held after exit.  The main() finally still
-        # hard-kills everything as the crash-path safety net.
+        # Then stop subagents and every registered plugin in parallel.
         await asyncio.gather(
             _stop_one("subagent", self.service.stop_subagent()),
-            _stop_one("a2a", self.service.stop_a2a()),
-            _stop_one("mcp", self.service.stop_plugin("mcp")),
-            _stop_one("memdb", self.service.stop_memdb()),
-            _stop_one("wechat", self.service.stop_wechat()),
-            _stop_one("memfiles", self.service.stop_memfiles()),
-            _stop_one("sharefile", self.service.stop_sharefile()),
             *(
-                _stop_one(name, lifecycle.stop(has_poll_task=True))
-                for name, lifecycle in list(self.service._plugins.items())
-                if name not in {"mcp", "memdb", "wechat", "memfiles", "sharefile", "a2a"}
+                _stop_one(lc.name, lc.stop())
+                for lc in list(self.service._plugins.values())
             ),
             return_exceptions=True,
         )

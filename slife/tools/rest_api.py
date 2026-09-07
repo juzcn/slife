@@ -5,15 +5,15 @@ rest_api_set / rest_api_remove / rest_api_list / rest_api_set_enabled.
 Server definitions live in ``mcp-plugin.json5`` (owned by the mcp plugin,
 resolved via ``$MCP_PLUGIN_FILE``); REST APIs are ordinary ``command: npx``
 server entries tagged ``source.type == "rest_api"``.  This module is the
-sLife-side face: it re-points persistence to :mod:`slife.plugins.mcp.config`
-and keeps a live ``mcp_set``-style warm-up through the mcp plugin so an API
+sLife-side face: it re-points persistence to :mod:`slife.plugins.mcp_gateway.config`
+and keeps a live ``mcp_gateway_set``-style warm-up through the mcp plugin so an API
 connects immediately.
 """
 
 import logging
 from urllib.parse import urlparse
 
-from slife.plugins.mcp import config as mcp_plugin_config
+from slife.plugins.mcp_gateway import config as mcp_plugin_config
 
 from slife.tools._config_io import _ConfigPathMixin, format_source_info
 from slife.tools.base import Tool
@@ -152,7 +152,7 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         if mcp is not None:
             try:
                 mcp_result = await mcp.call_tool(  # type: ignore[union-attr]
-                    "mcp_set",
+                    "mcp_gateway_set",
                     {
                         "name": name,
                         "command": "npx",
@@ -198,7 +198,7 @@ class RestApiRemoveTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompati
         mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is not None:
             try:
-                await mcp.call_tool("mcp_remove", {"name": name})  # type: ignore[union-attr]
+                await mcp.call_tool("mcp_gateway_remove", {"name": name})  # type: ignore[union-attr]
             except Exception as e:
                 logger.warning("rest_api_remove_mcp_failed name=%s err=%s", name, e)
 
@@ -249,7 +249,7 @@ class RestApiSetEnabledTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIn
         mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is not None:
             try:
-                await mcp.call_tool("mcp_set_enabled", {"name": name, "enabled": enabled})  # type: ignore[union-attr]
+                await mcp.call_tool("mcp_gateway_set_enabled", {"name": name, "enabled": enabled})  # type: ignore[union-attr]
             except Exception as e:
                 logger.warning("rest_api_set_mcp_failed name=%s err=%s", name, e)
 

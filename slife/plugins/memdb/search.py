@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 RRF_K = 60
 
 #: Shared 0–1 score guidance, appended to hybrid-search hints.  Same
-#: wording on turn_search / cabinet_search / mcp_tool_search (the MCP
+#: wording on turn_search / cabinet_search / mcp_gateway_tool_search (the MCP
 #: plugin mirrors this contract in its own search.py) so the normalized
 #: score reads identically across every hybrid retrieval path.
 SCORE_BAND_HINT = (
@@ -30,7 +30,7 @@ def annotate_scores(results: list[dict], metric: str = "l2") -> list[dict]:
 
     One contract across all hybrid searches — vec0/L2 distances
     (turn_search, cabinet_search) map via ``1/(1+d)``; cosine distances
-    (mcp_tool_search) map as the true cosine similarity ``max(0, 1-d)``.
+    (mcp_gateway_tool_search) map as the true cosine similarity ``max(0, 1-d)``.
     Keyword-only results (``distance`` None) get no ``similarity`` key.
     The mapping is strictly monotonic, so ranking is preserved; it only
     rescales the raw distance onto a readable 0–1 axis.

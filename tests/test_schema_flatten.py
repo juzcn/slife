@@ -2,7 +2,7 @@
 
 import json
 
-from slife.plugins.mcp.store import _flatten_schema
+from slife.plugins.mcp_gateway.store import _flatten_schema
 
 
 def _to_json(schema: dict) -> str:

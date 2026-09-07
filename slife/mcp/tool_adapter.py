@@ -9,6 +9,7 @@ import logging
 from enum import Enum, auto
 from typing import ClassVar
 
+from slife.plugins.spec import PLUGIN_SPECS
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -26,23 +27,17 @@ class ProxyRoute(Enum):
     """Built-in plugin tools (memdb, wechat) — direct call on own client."""
 
     EXTERNAL = auto()
-    """External MCP server tools — route through ``__mcp_call_tool``."""
+    """External MCP server tools — route through ``__mcp_gateway_call_tool``."""
 
 
-# ── Built-in server / tool name constants ─────────────────────────────
+# ── Wrapper tool name constants ───────────────────────────────────────
+# (The wrapper's own management tools.  Plugin/server routing is spec-driven —
+# see _route_for_server.)
 
-_MCP_SERVER = "mcp"           # built-in MCP management server
-_MEMDB_SERVER = "memdb"       # built-in memdb service
-_WECHAT_SERVER = "wechat"     # built-in WeChat messaging plugin
-_MEMFILES_SERVER = "memfiles"   # built-in file cabinet plugin (private)
-_SHAREFILE_SERVER = "sharefile"  # built-in public file sharing plugin
-_A2A_SERVER = "a2a"           # built-in A2A mesh plugin (MQTT binding)
-_MEDIA_SERVER = "media"       # built-in media generation plugin (image/video/TTS/ASR)
-_JOB_CODING_SERVER = "job-coding"  # built-in job-coding plugin (deterministic Jobs)
-_MCP_SET = "mcp_set"
-_MCP_SET_ENABLED = "mcp_set_enabled"
-_MCP_REMOVE = "mcp_remove"
-_MCP_CALL_TOOL = "__mcp_call_tool"
+_MCP_SET = "mcp_gateway_set"
+_MCP_SET_ENABLED = "mcp_gateway_set_enabled"
+_MCP_REMOVE = "mcp_gateway_remove"
+_MCP_CALL_TOOL = "__mcp_gateway_call_tool"
 
 
 class MCPProxyTool(Tool):
@@ -78,11 +73,11 @@ class MCPProxyTool(Tool):
                 :attr:`ProxyRoute.DIRECT` for built-in plugins,
                 :attr:`ProxyRoute.EXTERNAL` for external MCP servers.
             on_server_added: Optional async callback(name, command, args, env, description, source)
-                invoked when mcp_set succeeds, for config persistence.
+                invoked when mcp_gateway_set succeeds, for config persistence.
             on_server_removed: Optional async callback(name)
-                invoked when mcp_remove succeeds, for config persistence.
+                invoked when mcp_gateway_remove succeeds, for config persistence.
             on_server_updated: Optional async callback(name, enabled)
-                invoked when mcp_set_enabled toggles a server, to persist the
+                invoked when mcp_gateway_set_enabled toggles a server, to persist the
                 change and update tool registration.
         """
         self._mcp_client = mcp_client
@@ -95,7 +90,7 @@ class MCPProxyTool(Tool):
 
         # Tool name: built-in plugin tools (DIRECT/WRAPPER) register under
         # their bare name (semantic, self-describing — e.g. "turn_search",
-        # "note_save", "mcp_set", "wechat_login"); they are first-class like
+        # "note_save", "mcp_gateway_set", "wechat_login"); they are first-class like
         # native tools and the `{server}_` prefix inside the name is preserved
         # as-is where the plugin chose it.  External MCP server tools ALWAYS
         # keep the full "{server}__{tool}" namespace: applying a bare-name
@@ -151,7 +146,7 @@ class MCPProxyTool(Tool):
             result = await self._mcp_client.call_tool(self._tool_name, kwargs)
         else:
             # ProxyRoute.EXTERNAL — route through the MCP wrapper's
-            # __mcp_call_tool to reach the external server.
+            # __mcp_gateway_call_tool to reach the external server.
             result = await self._mcp_client.call_tool(
                 _MCP_CALL_TOOL,
                 {
@@ -165,7 +160,7 @@ class MCPProxyTool(Tool):
     # ── Callback helpers ────────────────────────────────────────────
 
     async def _handle_set(self, result: str, source: dict | None, **kwargs) -> None:
-        """Register tools for a server that mcp_set / mcp_set_enabled connected.
+        """Register tools for a server that mcp_gateway_set / mcp_gateway_set_enabled connected.
 
         Config persistence happens inside mcp-plugin (its own mcp-plugin.json5);
         the slife-side callbacks only refresh the tool registry."""
@@ -176,7 +171,7 @@ class MCPProxyTool(Tool):
             status = parsed.get("status", "")
             server_name = kwargs.get("name", "")
             if status == "connected" and self._tool_name == _MCP_SET and self._on_server_added:
-                # mcp_set defined a server — persist full config + register tools.
+                # mcp_gateway_set defined a server — persist full config + register tools.
                 await self._on_server_added(
                     name=server_name,
                     command=kwargs.get("command", ""),
@@ -189,7 +184,7 @@ class MCPProxyTool(Tool):
                 )
                 logger.debug("mcp_persisted server=%s", server_name)
             elif status == "connected" and self._on_server_updated:
-                # mcp_set_enabled re-enabled — persist + register tools.
+                # mcp_gateway_set_enabled re-enabled — persist + register tools.
                 await self._on_server_updated(name=server_name, enabled=True)
             elif status == "disabled" and self._on_server_updated:
                 # enabled=False — persist disabled and unregister tools.
@@ -221,7 +216,7 @@ class MCPProxyTool(Tool):
             parsed = json.loads(result)
             if parsed.get("status") == "removed":
                 await self._on_server_removed(name=kwargs.get("name", ""))
-                logger.debug("mcp_removed server=%s", kwargs.get("name", "?"))
+                logger.debug("mcp_gateway_removed server=%s", kwargs.get("name", "?"))
             else:
                 logger.info(
                     "mcp_not_unpersisted server=%s status=%s",
@@ -242,18 +237,15 @@ class MCPProxyTool(Tool):
 def _route_for_server(server: str) -> ProxyRoute:
     """Return the execution route for *server*.
 
-    Single place to decide how a plugin's tools are dispatched —
-    no more magic-string matching scattered across the codebase.
+    Derived from the central plugin contract (:data:`PLUGIN_SPECS`) — a
+    spec-declared child plugin is DIRECT (own MCP client), the gateway
+    (``mcp``) is WRAPPER (extra config persistence hooks), anything else is
+    an EXTERNAL MCP server.  local-embed is NOT routed here — it is a
+    manually-started daemon, no longer a plugin.
     """
-    # Built-in plugins that have their own standalone MCP client.  (local-embed
-    # is NOT routed here — it is a manually-started daemon, no longer a plugin.)
-    if server in (_MEMDB_SERVER, _WECHAT_SERVER, _MEMFILES_SERVER,
-                  _SHAREFILE_SERVER, _A2A_SERVER, _MEDIA_SERVER,
-                  _JOB_CODING_SERVER):
-        return ProxyRoute.DIRECT
-    # MCP wrapper — has extra config persistence hooks
-    if server == _MCP_SERVER:
-        return ProxyRoute.WRAPPER
+    spec = PLUGIN_SPECS.get(server)
+    if spec is not None:
+        return ProxyRoute.WRAPPER if spec.gateway else ProxyRoute.DIRECT
     return ProxyRoute.EXTERNAL
 
 
@@ -267,11 +259,11 @@ def create_proxy_tools(
         tools: List of tool info dicts, each with:
             server, name, description, inputSchema.
         on_server_added: Optional async callback(name, command, args, env, description, source)
-            invoked when mcp_set succeeds.
+            invoked when mcp_gateway_set succeeds.
         on_server_removed: Optional async callback(name)
-            invoked when mcp_remove succeeds.
+            invoked when mcp_gateway_remove succeeds.
         on_server_updated: Optional async callback(name, enabled)
-            invoked when mcp_set_enabled toggles a server.
+            invoked when mcp_gateway_set_enabled toggles a server.
 
     Returns:
         List of MCPProxyTool instances ready for ToolRegistry registration.

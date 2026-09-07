@@ -18,7 +18,7 @@ each other into a stuck-off gate.
 import asyncio
 import logging
 
-from slife.plugins.mcp.embeddings import EmbeddingClient
+from slife.plugins.mcp_gateway.embeddings import EmbeddingClient
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ class SemanticManager:
     async def start(self) -> None:
         """Startup: enable when the embeddings config is present, else disable."""
         try:
-            from slife.plugins.mcp.embeddings import EmbeddingClient
+            from slife.plugins.mcp_gateway.embeddings import EmbeddingClient
 
             probe = EmbeddingClient.from_plugin_config(
                 config_path=self._config_path,

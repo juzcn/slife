@@ -1,6 +1,6 @@
 """A2A configuration — parsed from the ``a2a`` section of slife.json5.
 
-Follows the same pattern as slife.plugins.mcp.config (the mcp-plugin config that
+Follows the same pattern as slife.plugins.mcp_gateway.config (the mcp-plugin config that
 now owns the ``mcp`` section).
 """
 

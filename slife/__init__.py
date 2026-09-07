@@ -98,7 +98,7 @@ def main(config_path: str | None = None):
     from slife.health import record
     _mcp_servers = 0
     try:
-        from slife.plugins.mcp import config as _mcp_cfg
+        from slife.plugins.mcp_gateway import config as _mcp_cfg
         _mcp_servers = _mcp_cfg.count_servers()
     except Exception:
         pass

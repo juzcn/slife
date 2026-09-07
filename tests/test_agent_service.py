@@ -41,8 +41,8 @@ class TestAgentServiceInit:
         config = sample_config
         service = AgentService(config)
 
-        assert service._plugins["mcp"].client is None
-        assert service._plugins["mcp"].process is None
+        assert service._plugins["mcp-gateway"].client is None
+        assert service._plugins["mcp-gateway"].process is None
         assert service.mcp_enabled is False
 
     def test_initial_a2a_state(self, sample_config):
@@ -111,7 +111,7 @@ class TestAgentServiceMCPEnrichment:
         service = AgentService(sample_config)
         client = AsyncMock()
         client.is_connected = True
-        service._plugins["mcp"].client = client
+        service._plugins["mcp-gateway"].client = client
 
         with patch.object(service, "_sync_mcp_proxies", AsyncMock()) as mock_sync:
             await service._wire_mcp_glue()
@@ -127,7 +127,7 @@ class TestAgentServiceMCPEnrichment:
     async def test_on_tools_changed_triggers_reharvest(self, sample_config):
         """A tools/list_changed notification from the wrapper re-syncs proxies."""
         service = AgentService(sample_config)
-        service._plugins["mcp"].client = AsyncMock()
+        service._plugins["mcp-gateway"].client = AsyncMock()
         with patch.object(service, "_sync_mcp_proxies", AsyncMock()) as mock_sync:
             await service._on_mcp_tools_changed("notifications/tools/list_changed", {})
         mock_sync.assert_awaited_once()
@@ -136,7 +136,7 @@ class TestAgentServiceMCPEnrichment:
     async def test_on_tools_changed_ignores_other_methods(self, sample_config):
         """Only tools/list_changed triggers a reconcile."""
         service = AgentService(sample_config)
-        service._plugins["mcp"].client = AsyncMock()
+        service._plugins["mcp-gateway"].client = AsyncMock()
         with patch.object(service, "_sync_mcp_proxies", AsyncMock()) as mock_sync:
             await service._on_mcp_tools_changed("notifications/initialized", {})
         mock_sync.assert_not_awaited()
@@ -154,12 +154,12 @@ class TestAgentServiceMCPEnrichment:
             {"auto_load": True, "enabled": True},          # no name at all
             {"name": "disabled", "enabled": False, "auto_load": True},
         ]))
-        service._plugins["mcp"].client = client
+        service._plugins["mcp-gateway"].client = client
 
         with patch.object(service, "_discover_and_register_external_tools", AsyncMock()) as mock_reg:
             await service._sync_mcp_proxies()
 
-        client.call_tool.assert_awaited_once_with("mcp_list")
+        client.call_tool.assert_awaited_once_with("mcp_gateway_list")
         mock_reg.assert_awaited_once_with(server_name="autol")
 
     @pytest.mark.asyncio
@@ -168,7 +168,7 @@ class TestAgentServiceMCPEnrichment:
         service = AgentService(sample_config)
         client = AsyncMock()
         client.is_connected = False
-        service._plugins["mcp"].client = client
+        service._plugins["mcp-gateway"].client = client
         with patch.object(service, "_discover_and_register_external_tools", AsyncMock()) as mock_reg:
             await service._sync_mcp_proxies()
         mock_reg.assert_not_awaited()
@@ -183,14 +183,14 @@ class TestAgentServiceMCPEnrichment:
         client.is_connected = True
 
         async def fake_call_tool(name, arguments=None):
-            if name == "mcp_list":
+            if name == "mcp_gateway_list":
                 return _json.dumps([{"name": "foo", "enabled": True, "auto_load": False}])
-            if name == "__mcp_get_tool":
+            if name == "__mcp_gateway_get_tool":
                 return _json.dumps({"status": "ok", "enabled": False})
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
         client.call_tool = fake_call_tool
-        service._plugins["mcp"].client = client
+        service._plugins["mcp-gateway"].client = client
         proxy = create_proxy_tools(client, [
             {"server": "foo", "name": "t1", "description": "",
              "inputSchema": {"type": "object", "properties": {}}},
@@ -212,14 +212,14 @@ class TestAgentServiceMCPEnrichment:
         client.is_connected = True
 
         async def fake_call_tool(name, arguments=None):
-            if name == "mcp_list":
+            if name == "mcp_gateway_list":
                 return _json.dumps([{"name": "foo", "enabled": True, "auto_load": False}])
-            if name == "__mcp_get_tool":
+            if name == "__mcp_gateway_get_tool":
                 return _json.dumps({"status": "ok", "enabled": True})
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
         client.call_tool = fake_call_tool
-        service._plugins["mcp"].client = client
+        service._plugins["mcp-gateway"].client = client
         proxy = create_proxy_tools(client, [
             {"server": "foo", "name": "t1", "description": "",
              "inputSchema": {"type": "object", "properties": {}}},
@@ -251,7 +251,7 @@ class TestAgentServiceMCPDiscovery:
         async def fake_call_tool(name, arguments=None):
             if name == "__check":
                 return _json.dumps(status_servers, ensure_ascii=False)
-            if name == "mcp_list_tools":
+            if name == "mcp_gateway_list_tools":
                 return _json.dumps(
                     {"tools": tools_by_server.get(arguments.get("server"), [])},
                     ensure_ascii=False,
@@ -273,7 +273,7 @@ class TestAgentServiceMCPDiscovery:
     @pytest.mark.asyncio
     async def test_discover_empty_tools_leaves_registry_untouched(self, sample_config):
         service = AgentService(sample_config)
-        service._plugins["mcp"].client = self._client_with(
+        service._plugins["mcp-gateway"].client = self._client_with(
             status_servers=[], tools_by_server={},
         )
         service.tool_registry.register(SimpleNamespace(name="foo__keep"))
@@ -286,7 +286,7 @@ class TestAgentServiceMCPDiscovery:
     @pytest.mark.asyncio
     async def test_discover_diff_unregisters_dropped_tools(self, sample_config):
         service = AgentService(sample_config)
-        service._plugins["mcp"].client = self._client_with(
+        service._plugins["mcp-gateway"].client = self._client_with(
             status_servers=[],
             tools_by_server={"foo": [self._tool("foo", "t1")]},
         )
@@ -310,7 +310,7 @@ class TestAgentServiceMCPDiscovery:
             hint="enabled but not yet connected; retrying in background.",
         )
         service = AgentService(sample_config)
-        service._plugins["mcp"].client = self._client_with(
+        service._plugins["mcp-gateway"].client = self._client_with(
             status_servers=[],
             tools_by_server={"foo": [self._tool("foo", "t1")]},
         )
@@ -334,7 +334,7 @@ class TestAgentServiceMCPDiscovery:
             hint="enabled but not yet connected; retrying in background.",
         )
         service = AgentService(sample_config)
-        service._plugins["mcp"].client = self._client_with(
+        service._plugins["mcp-gateway"].client = self._client_with(
             status_servers=[], tools_by_server={},
         )
         service.tool_registry.register(SimpleNamespace(name="foo__keep"))
@@ -465,13 +465,14 @@ class TestAgentServiceConnectPluginHttp:
 
     @pytest.mark.asyncio
     async def test_mcp_uses_reconcile_handler(self, sample_config):
-        """mcp shares the wrapper: on_notification → _on_mcp_tools_changed;
-        initial connect also re-syncs external proxies."""
-        service, client = self._service_with(sample_config, "mcp")
+        """The gateway shares the wrapper: on_notification →
+        _on_mcp_tools_changed; initial connect also re-syncs external proxies
+        (chosen by spec.gateway, not a name branch)."""
+        service, client = self._service_with(sample_config, "mcp-gateway")
         with patch.object(
-            service._plugins["mcp"].__class__, "connect_http", AsyncMock(),
+            service._plugins["mcp-gateway"].__class__, "connect_http", AsyncMock(),
         ), patch.object(service, "_sync_mcp_proxies", AsyncMock()) as mock_sync:
-            await service.connect_plugin_http("mcp", 12345)
+            await service.connect_plugin_http("mcp-gateway", 12345)
         assert client.on_notification.__self__ is service
         assert client.on_notification.__func__ is AgentService._on_mcp_tools_changed
         mock_sync.assert_awaited_once()
@@ -503,8 +504,9 @@ class TestAgentServiceMemory:
 
     @pytest.mark.asyncio
     async def test_start_memdb_branch_wires_client(self, sample_config):
-        """The memdb branch of _start_plugin_server_impl spawns via the generic
-        path and exposes the client for the embeddings_* hot-reload tools."""
+        """The uniform start path spawns memdb via the generic engine and
+        exposes the client (its spec's ctx_field) for the embeddings_*
+        hot-reload tools — no per-plugin branch."""
         config = sample_config
         service = AgentService(config)
         service.config.memdb_config = MagicMock()
@@ -513,7 +515,7 @@ class TestAgentServiceMemory:
         with patch.object(
             service, "_spawn_plugin_generic", AsyncMock(return_value=True)
         ) as mock_spawn, \
-             patch.object(service, "_start_generic_watchdog", MagicMock()):
+             patch.object(service, "_arm_watchdog", MagicMock()):
             service._plugins["memdb"].client = mock_client
             result = await service._start_plugin_server_impl(
                 "memdb", "slife.plugins.memdb.server",
@@ -952,7 +954,7 @@ class TestAgentServiceMemory:
     @pytest.mark.asyncio
     async def test_stop_memdb_noop_when_disabled(self, sample_config):
         service = AgentService(sample_config)
-        await service.stop_memdb()  # Should not raise
+        await service.stop_plugin("memdb")  # Should not raise
 
 
 class TestCompactToolResults:
@@ -1059,7 +1061,7 @@ class TestAgentServiceA2A:
     @pytest.mark.asyncio
     async def test_start_a2a_disabled_noop(self, sample_config):
         service = AgentService(sample_config)
-        result = await service.start_a2a()
+        result = await service.start_plugin_server("a2a", "slife.plugins.a2a.server")
         assert result is PluginStartStatus.SKIPPED
         assert service._plugins["a2a"].process is None
 
@@ -1078,7 +1080,9 @@ class TestAgentServiceA2A:
         with patch(
             "slife.a2a.broker.probe_broker", AsyncMock(return_value=False),
         ):
-            result = await service.start_a2a()
+            result = await service.start_plugin_server(
+                "a2a", "slife.plugins.a2a.server",
+            )
         assert result is PluginStartStatus.SKIPPED
         assert service._plugins["a2a"].process is None
         assert service.config.a2a_config.enabled is False  # downgraded
@@ -1086,7 +1090,7 @@ class TestAgentServiceA2A:
     @pytest.mark.asyncio
     async def test_stop_a2a_noop_when_disabled(self, sample_config):
         service = AgentService(sample_config)
-        await service.stop_a2a()  # Should not raise
+        await service.stop_plugin("a2a")  # Should not raise
 
     @pytest.mark.asyncio
     async def test_a2a_poll_prepends_task_id(self, sample_config):
@@ -1304,7 +1308,7 @@ class TestAgentServiceProcessMessage:
 
 
 class TestAgentServiceStopMemory:
-    """Tests for stop_memdb."""
+    """Tests for the uniform stop_plugin('memdb')."""
 
     @pytest.mark.asyncio
     async def test_stop_memdb_with_active_client(self, sample_config):
@@ -1314,7 +1318,7 @@ class TestAgentServiceStopMemory:
         mock_client.disconnect = AsyncMock()
         service._plugins["memdb"].client = mock_client
 
-        await service.stop_memdb()
+        await service.stop_plugin("memdb")
 
         mock_client.disconnect.assert_called_once()
         assert service._plugins["memdb"].client is None
@@ -1326,7 +1330,7 @@ class TestAgentServiceStopMemory:
         mock_process.stop = AsyncMock()
         service._plugins["memdb"].process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
 
-        await service.stop_memdb()
+        await service.stop_plugin("memdb")
 
         mock_process.stop.assert_called_once()
         assert service._plugins["memdb"].process is None
@@ -1341,7 +1345,7 @@ class TestAgentServiceStopMemory:
         mock_client.disconnect = AsyncMock()
         service._plugins["memdb"].client = mock_client
 
-        await service.stop_memdb()
+        await service.stop_plugin("memdb")
 
         mock_client.disconnect.assert_called_once()
 
@@ -1436,23 +1440,24 @@ class TestAgentServiceWeChat:
     """Tests for WeChat plugin lifecycle and message processing."""
 
     def test_wechat_not_enabled_initially(self, sample_config):
-        """WeChat client is None until start_wechat is called."""
+        """WeChat client is None until the plugin is started."""
         service = AgentService(sample_config)
         assert service.wechat_enabled is False
         assert service._plugins["wechat"].client is None
 
     @pytest.mark.asyncio
     async def test_stop_wechat_noop_when_disabled(self, sample_config):
-        """stop_wechat is safe when WeChat was never started."""
+        """stop_plugin('wechat') is safe when WeChat was never started."""
         service = AgentService(sample_config)
-        await service.stop_wechat()  # Should not raise
+        await service.stop_plugin("wechat")  # Should not raise
 
     @pytest.mark.asyncio
     async def test_start_wechat_with_mocked_internals(self, sample_config):
-        """start_wechat spawns via the generic path, registers tools, and polls."""
+        """The uniform engine starts wechat through the generic path (its spec
+        gate + after-ready glue), registers tools, and schedules the poll."""
         service = AgentService(sample_config)
 
-        # WeChat must be enabled in config for start_wechat to proceed
+        # WeChat must be enabled in config for the gate to pass.
         mock_wechat_cfg = MagicMock()
         mock_wechat_cfg.enabled = True
         service.config.wechat_config = mock_wechat_cfg
@@ -1466,20 +1471,24 @@ class TestAgentServiceWeChat:
         with patch.object(
             service, "_spawn_plugin_generic", AsyncMock(return_value=True)
         ) as mock_spawn, \
+             patch.object(service, "_arm_watchdog", MagicMock()), \
+             patch.object(service, "_wechat_restore_session", AsyncMock()), \
              patch.object(service, "_wechat_poll_loop", AsyncMock()):
-            result = await service.start_wechat()
+            result = await service.start_plugin_server(
+                "wechat", "slife.plugins.wechat.server",
+            )
 
             mock_spawn.assert_called_once_with(
                 "wechat", "slife.plugins.wechat.server",
             )
             assert result is PluginStartStatus.STARTED
-            # Poll loop scheduled as a background task
+            # Poll loop scheduled as a background task by the after-ready glue.
             poll_task = service._plugins["wechat"].poll_task
             assert poll_task is not None and not poll_task.done()
 
     @pytest.mark.asyncio
     async def test_stop_wechat_cancels_poll_and_disconnects(self, sample_config):
-        """stop_wechat stops the poll loop and disconnects the client."""
+        """stop_plugin('wechat') stops the poll loop and disconnects the client."""
         service = AgentService(sample_config)
 
         # Set up a fake poll task
@@ -1501,7 +1510,7 @@ class TestAgentServiceWeChat:
         mock_process.stop = AsyncMock()
         service._plugins["wechat"].process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
 
-        await service.stop_wechat()
+        await service.stop_plugin("wechat")
 
         # Poll task cancelled and cleaned up
         assert service._plugins["wechat"].poll_task is None
@@ -1948,7 +1957,7 @@ class TestSpawnPluginCancellationCleanup:
         client.list_tools.side_effect = asyncio.CancelledError()
 
         with patch(
-            "slife.plugins.mcp.process.MCPWrapperProcess", return_value=fake_process,
+            "slife.plugins.mcp_gateway.process.MCPWrapperProcess", return_value=fake_process,
         ):
             with pytest.raises(asyncio.CancelledError):
                 await service._spawn_plugin_generic(
@@ -1986,7 +1995,7 @@ class TestSpawnPluginListToolsRetry:
         fake_process.create_client.side_effect = [first_client, second_client]
 
         with patch(
-            "slife.plugins.mcp.process.MCPWrapperProcess", return_value=fake_process,
+            "slife.plugins.mcp_gateway.process.MCPWrapperProcess", return_value=fake_process,
         ):
             started = await service._spawn_plugin_generic(
                 "memdb", "slife.plugins.memdb.server",
@@ -2011,7 +2020,7 @@ class TestSpawnPluginListToolsRetry:
         fake_process.create_client.side_effect = [first_client, second_client]
 
         with patch(
-            "slife.plugins.mcp.process.MCPWrapperProcess", return_value=fake_process,
+            "slife.plugins.mcp_gateway.process.MCPWrapperProcess", return_value=fake_process,
         ):
             with pytest.raises(TimeoutError):
                 await service._spawn_plugin_generic(

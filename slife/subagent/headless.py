@@ -305,9 +305,11 @@ async def run_headless() -> None:
             service.session_usage.completion_tokens,
             service.session_usage.total_tokens,
         )
-        await service.stop_plugin("mcp")
-        await service.stop_memdb()
-        await service.stop_wechat()
+        # Worker teardown: disconnect every shared plugin client the worker
+        # connected to above (the manifest loop) — a worker never owns a
+        # child process, so this is a uniform client-disconnect over the
+        # registry, mirroring the connect loop instead of a hard-coded three.
+        await service.stop_all_plugins()
         shutdown_server_logging()
 
 

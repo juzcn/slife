@@ -46,7 +46,7 @@ def _pin_ui_language():
 # ── mcp-plugin config isolation ────────────────────────────────────────
 
 
-#: Test modules that exercise ``slife.plugins.mcp`` config persistence
+#: Test modules that exercise ``slife.plugins.mcp_gateway`` config persistence
 #: (they lived under ``tests/mcp/`` before the folders were flattened).
 #: They must never read/write a real ``mcp-plugin.json5`` — the dev data
 #: dir (repo root) holds the git-tracked file — so every access is pointed
@@ -81,7 +81,7 @@ def _isolate_mcp_config_path(request, tmp_path, monkeypatch):
     def _reset():
         # Import lazily so it never runs against a half-built package.
         try:
-            import slife.plugins.mcp.config as _cfg
+            import slife.plugins.mcp_gateway.config as _cfg
             _cfg._CURRENT_PATH = None
         except ImportError:
             pass

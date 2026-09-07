@@ -201,7 +201,7 @@ class TestConfigFromJSON5:
             "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
             "plugins": {
                 "required": ["memdb", "memfiles"],
-                "external": [{"name": "mcp", "module": "slife.plugins.mcp.server"}],
+                "external": [{"name": "mcp", "module": "slife.plugins.mcp_gateway.server"}],
             },
         }))
         config = Config.from_json5(str(cfg_path))

@@ -33,8 +33,8 @@ class TestAgentService:
         """MCP is not enabled until start_mcp is called."""
         service = AgentService(sample_config)
         assert service.mcp_enabled is False
-        assert service._plugins["mcp"].client is None
-        assert service._plugins["mcp"].process is None
+        assert service._plugins["mcp-gateway"].client is None
+        assert service._plugins["mcp-gateway"].process is None
 
     def test_model_display_name(self, sample_config):
         service = AgentService(sample_config)

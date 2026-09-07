@@ -20,7 +20,7 @@ import logging
 
 import httpx2
 
-from slife.plugins.mcp.config import _resolve_secret
+from slife.plugins.mcp_gateway.config import _resolve_secret
 
 logger = logging.getLogger(__name__)
 

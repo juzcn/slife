@@ -19,8 +19,9 @@ import sys
 import time as _time
 from collections import deque
 from datetime import datetime
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import cast
 
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
@@ -29,10 +30,13 @@ from slife.agent.message_history import MessageHistory, turn_header
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
 from slife.agent.inbox import Inbox, MessageHistoryStore
 from slife.agent.plugins import (
+    PluginBehavior,
     PluginLifecycle,
+    PluginRegistry,
     PluginStartStatus,
     plugin_port_env,
 )
+from slife.plugins.spec import PLUGIN_SPECS
 from slife.a2a.identity import HUMAN
 from slife.tools.factory import create_tools_from_config
 from slife.mcp.tool_adapter import create_proxy_tools
@@ -64,17 +68,6 @@ _on_model_switched: list[Callable[[str], None]] = []
 # state, bounded by these constants, and surfaces "tunnel down" only once.
 _TUNNEL_SETTLE_TIMEOUT = 20.0  # seconds — max wait for the eager attempt
 _TUNNEL_PROBE_INTERVAL = 1.0   # seconds — between __check probes
-
-
-#: ToolContext attribute to point at a shared plugin's client after a
-#: subagent HTTP connect — the harness health checks read these per plugin.
-_HTTP_CONNECT_GLUE: dict[str, str] = {
-    "memfiles": "memfiles_client",
-    "sharefile": "sharefile_client",
-    "a2a": "a2a_mcp_client",
-    "media": "media_client",
-    "job-coding": "job_coding_client",
-}
 
 
 # ── Tool result compaction for permanent memory ─────────────────────────
@@ -342,17 +335,19 @@ class AgentService:
         # plugin is ready and reports a terminal failure here.
         self._on_tunnel_down: "Callable[[str], None] | None" = None
 
-        # ── Plugin lifecycle containers (replace dynamic setattr/getattr) ─
-        self._plugins: dict[str, PluginLifecycle] = {
-            "mcp": PluginLifecycle("mcp", self),
-            "memdb": PluginLifecycle("memdb", self),
-            "wechat": PluginLifecycle("wechat", self),
-            "memfiles": PluginLifecycle("memfiles", self),
-            "sharefile": PluginLifecycle("sharefile", self),
-            "a2a": PluginLifecycle("a2a", self),
-        }
+        # ── Plugin registry — the single source of truth ────────────
+        # Built once from the central plugin contract (PLUGIN_SPECS): every
+        # declared plugin has a PluginLifecycle before any start/connect.
+        # self._plugins aliases registry.lifecycles — never rebind it after
+        # here; a new (auto-discovered) plugin registers via self._registry.
+        self._registry = PluginRegistry(self)
+        self._plugins: dict[str, PluginLifecycle] = self._registry.lifecycles
+        # Per-plugin behavior (enable gate / after-ready glue), bound from the
+        # spec's declared method-names.  A spec naming a missing method is a
+        # programming error — _resolve_plugin_behaviors asserts at startup.
+        self._plugin_behaviors: dict[str, PluginBehavior] = self._resolve_plugin_behaviors()
         # MCP enrichment guard: coalesces per-server tool discovery between
-        # startup glue and mcp_set callbacks.
+        # startup glue and mcp_gateway_set callbacks.
         self._mcp_syncing: set[str] = set()
         # On-demand reconcile guard: prevents concurrent mcp_tool_load /
         # tools/list_changed reconciliation from racing.
@@ -365,6 +360,51 @@ class AgentService:
         # Register for runtime model-switch notifications so the
         # LLM client and agent loop stay in sync with the active model.
         _on_model_switched.append(self.reload_active_model)
+
+    # ── Plugin contract binding ─────────────────────────────────────────
+
+    def _resolve_plugin_behaviors(self) -> dict[str, PluginBehavior]:
+        """Bind each spec's declared enable/after-ready method-name onto this
+        service instance.
+
+        Behavior lives here (not in the spec) because gates and after-ready
+        glue touch service internals; the spec stays import-safe for
+        tool_adapter / system.py / the mcp child.  A spec that names a method
+        this class does not define is a programming error — surface it at
+        construction, not mid-startup.
+        """
+        behaviors: dict[str, PluginBehavior] = {}
+        for spec in PLUGIN_SPECS.values():
+            enable: Callable[[], Awaitable[bool]] | None = None
+            after_ready: Callable[[PluginLifecycle], Awaitable[None]] | None = None
+            if spec.enable_method:
+                bound = getattr(self, spec.enable_method, None)
+                assert callable(bound), (
+                    f"AgentService.{spec.enable_method} (spec {spec.name}) missing"
+                )
+                enable = cast(Callable[[], Awaitable[bool]], bound)
+            if spec.after_ready_method:
+                bound = getattr(self, spec.after_ready_method, None)
+                assert callable(bound), (
+                    f"AgentService.{spec.after_ready_method} (spec {spec.name}) missing"
+                )
+                after_ready = cast(
+                    Callable[[PluginLifecycle], Awaitable[None]], bound,
+                )
+            if enable is not None or after_ready is not None:
+                behaviors[spec.name] = PluginBehavior(
+                    enable=enable, after_ready=after_ready,
+                )
+        return behaviors
+
+    def _gateway_lifecycle(self) -> PluginLifecycle | None:
+        """The gateway plugin's lifecycle (the spec with ``gateway=True``),
+        or None — used by the mcp enrichment glue, name-free."""
+        for lc in self._plugins.values():
+            spec = self._registry.specs.get(lc.name)
+            if spec is not None and spec.gateway:
+                return lc
+        return None
 
     @property
     def model_display_name(self) -> str:
@@ -461,9 +501,9 @@ class AgentService:
 
     @property
     def mcp_enabled(self) -> bool:
-        """Whether MCP wrapper integration is active."""
-        c = self._plugins["mcp"].client
-        return c is not None and c.is_connected
+        """Whether the MCP gateway plugin is connected (its tools active)."""
+        lc = self._gateway_lifecycle()
+        return lc is not None and lc.client is not None and lc.client.is_connected
 
     @property
     def a2a_enabled(self) -> bool:
@@ -520,131 +560,178 @@ class AgentService:
                 self._startup_settled.set()
 
     async def _start_plugin_server_impl(
-        self, name: str, module: str,
+        self, name: str, module: str | None = None, *, allow_gate: bool = True,
     ) -> PluginStartStatus:
-        """Dispatch the plugin spawn without the startup-tracking wrapper."""
-        # ── MCP: fully generic spawn + watchdog; enrichment glue on top —
-        # exposes the wrapper client and registers {server}__{tool} proxies.
-        # (mcp-plugin is an external standalone distribution that self-hosts
-        # its config; this branch is the only mcp-aware integration in the
-        # harness, and it runs through the SAME generic lifecycle as every
-        # other plugin.)
-        if name == "mcp":
-            started = await self._spawn_plugin_generic(name, module)
-            if started:
-                await self._wire_mcp_glue()
-                self._start_generic_watchdog(name, module)
-            return (
-                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
+        """Uniformly start a child plugin by registry name.
+
+        The per-plugin contract — module, enable gate, ToolContext client
+        re-point, after-ready glue — lives in the spec and is resolved through
+        the registry.  There is no per-plugin name branch here: every plugin
+        (gateway, wechat, a2a, memdb, an auto-discovered package) runs the
+        same path.  ``allow_gate=False`` is the watchdog restart path — a
+        plugin that already passed its gate once is respawned without
+        re-probing its gate.
+        """
+        spec = self._registry.spec(name, module)
+        lc = self._registry.ensure(name, module)
+        if lc.process is not None:
+            return PluginStartStatus.STARTED  # idempotent — already running
+
+        bhv = self._plugin_behaviors.get(name)
+        if allow_gate and bhv is not None and bhv.enable is not None:
+            if not await bhv.enable():
+                logger.info("plugin_skipped name=%s", name)
+                return PluginStartStatus.SKIPPED
+
+        try:
+            return await self._start_plugin_uniform(spec, lc)
+        except Exception as e:
+            logger.warning("plugin_start_failed name=%s err=%s", name, e)
+            return PluginStartStatus.FAILED
+
+    async def _start_plugin_uniform(
+        self, spec, lc,
+    ) -> PluginStartStatus:
+        """Spawn *spec*'s child, register its tools, apply the ctx re-point,
+        run the after-ready glue and arm the watchdog — the single path every
+        plugin's initial start and watchdog restart go through."""
+        lc.cancel_tasks()  # a restart never stacks a stale poll/drain loop
+        started = await self._spawn_plugin_generic(spec.name, spec.module)
+        if not started:
+            return PluginStartStatus.FAILED
+        if spec.ctx_field is not None:
+            # Expose the plugin's live client where its native tools/health
+            # checks read it.
+            setattr(self._tool_ctx, spec.ctx_field, lc.client)
+        bhv = self._plugin_behaviors.get(spec.name)
+        if bhv is not None and bhv.after_ready is not None:
+            await bhv.after_ready(lc)
+        self._arm_watchdog(spec, lc)
+        return PluginStartStatus.STARTED
+
+    def _arm_watchdog(self, spec, lc) -> None:
+        """Attach the uniform crash watchdog to *lc* (replaces the old
+        name-keyed ``_start_generic_watchdog``).
+
+        Restart re-runs the whole uniform start — spawn, ctx re-point,
+        after-ready glue — then tells every subagent sharing this plugin its
+        new port.  ``_arm_watchdog`` itself is only called from the owning
+        (main-agent) start path; subagents connect over HTTP and never own a
+        child process.
+        """
+        async def _restart() -> None:
+            await self._start_plugin_server_impl(
+                spec.name, spec.module, allow_gate=False,
             )
+            await self._notify_subagents_plugin_restart(spec.name, lc.port)
 
-        # ── WeChat: needs poll loop after registration ──────────────────
-        if name == "wechat":
-            return await self.start_wechat()
+        lc.start_watchdog(restart_cb=_restart)
 
-        # ── Memdb: fully generic turns DB — spawn, connect, register.
-        # The client is exposed on ToolContext so the embeddings_* native
-        # tools can hot-reload the semantic index after a config change.
-        if name == "memdb":
-            started = await self._spawn_plugin_generic(name, module)
-            if started:
-                self._tool_ctx.memdb_client = self._plugins["memdb"].client
-                self._start_generic_watchdog(name, module)
-            return (
-                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
-            )
+    # ── Plugin behavior methods (bound from the spec) ──────────────────
+    # Enable gates and after-ready glue for plugins whose start needs more
+    # than spawn+register.  Each is named by its plugin's PluginSpec and bound
+    # in __init__ — the engine above never switches on a plugin name.
 
-        # ── Memfiles: fully generic private cabinet — spawn, connect, register.
-        if name == "memfiles":
-            started = await self._spawn_plugin_generic(name, module)
-            if started:
-                self._tool_ctx.memfiles_client = self._plugins["memfiles"].client
-                self._start_generic_watchdog(name, module)
-            return (
-                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
-            )
+    async def _gate_wechat(self) -> bool:
+        """WeChat starts only when enabled in config (else SKIPPED)."""
+        wcfg = self.config.wechat_config
+        if wcfg is None or not wcfg.enabled:
+            logger.debug("wechat_not_enabled")
+            return False
+        return True
 
-        # ── Sharefile: fully generic plugin — spawn, connect, register.
-        # The plugin owns the ngrok tunnel and file serving; the harness
-        # only exposes the plugin's MCP client for health checks.
-        if name == "sharefile":
-            started = await self._spawn_plugin_generic(name, module)
-            if started:
-                self._tool_ctx.sharefile_client = self._plugins["sharefile"].client
-                # Publish the port so subagents can inherit it and reuse
-                # the main agent's sharefile plugin (no second ngrok tunnel).
-                os.environ["SLIFE_SHAREFILE_PORT"] = str(self._plugins["sharefile"].port)
-                self._start_generic_watchdog(name, module)
-                # Harness-owned tunnel readiness: probe __check once
-                # the eager ngrok attempt settles, surface "tunnel down" only
-                # on a terminal failure.  The plugin never talks to the TUI.
-                self._watch_sharefile_tunnel()
-            return (
-                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
-            )
-
-        # ── A2A: mesh channel plugin — probe + config env + poll loop ──
-        if name == "a2a":
-            return await self.start_a2a()
-
-        # ── Media: optional generation-capability plugin; expose the client
-        # for check_media (config / capability status health probe).
-        if name == "media":
-            started = await self._spawn_plugin_generic(name, module)
-            if started:
-                self._tool_ctx.media_client = self._plugins["media"].client
-                self._start_generic_watchdog(name, module)
-            return (
-                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
-            )
-
-        # ── Generic: spawn python -m <module>, connect, register tools ──
-        started = await self._spawn_plugin_generic(name, module)
-        if started:
-            self._start_generic_watchdog(name, module)
-            if name == "job-coding":
-                # Re-point the harness's health client at the live plugin.
-                self._tool_ctx.job_coding_client = self._plugins[name].client
-        return (
-            PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
+    async def _after_ready_wechat(self, lc) -> None:
+        """After a wechat child is ready: run its best-effort session restore
+        and start the inbound-message poll loop."""
+        lc.restore_task = asyncio.create_task(self._wechat_restore_session())
+        lc.poll_task = asyncio.create_task(self._wechat_poll_loop())
+        from slife.health import record
+        record(
+            "wechat_service", "ok",
+            key="status", value="connected",
+            hint="WeChat plugin started and tools registered.",
         )
 
-    def _start_generic_watchdog(self, name: str, module: str) -> None:
-        """Attach a crash watchdog to a generically-spawned plugin.
+    async def _wechat_restore_session(self) -> None:
+        """Best-effort session restore (triggers the server-side poll loop).
 
-        Covers both the built-ins and auto-discovered third-party plugins —
-        ``_spawn_plugin_generic`` creates a ``PluginLifecycle`` for the latter,
-        so every plugin is managed via ``self._plugins``. The
-        restart callback re-invokes the generic spawn; ``_spawn_plugin_generic``
-        itself never starts a watchdog, so a restart never stacks a second
-        monitor.
+        Runs as a supervised background task — never awaited in the startup
+        path — so a slow or hung iLink endpoint degrades (the restore is
+        re-triggerable any time via the wechat_check_status tool) instead of
+        stalling startup.  Reads the client at call time so the same helper
+        serves both startup and watchdog-restart paths.
         """
-        if name not in self._plugins:
+        client = self._plugins["wechat"].client
+        if client is None:
             return
+        try:
+            await client.call_tool("wechat_check_status", {})
+            logger.debug("wechat_auto_restore_triggered")
+        except Exception as e:
+            logger.debug("wechat_restore_failed err=%r", e)
 
-        async def _restart() -> None:
-            await self._spawn_plugin_generic(name, module)
-            if name == "memdb":
-                # Same re-point for the turns DB — otherwise the embeddings_*
-                # native tools hot-reload the semantic index against a dead client.
-                self._tool_ctx.memdb_client = self._plugins[name].client
-            if name == "mcp":
-                # The wrapper restarted on a NEW port.  Re-arming the mcp
-                # enrichment re-points the ToolContext and re-registers the
-                # external servers' tools.
-                await self._wire_mcp_glue()
-            else:
-                field = _HTTP_CONNECT_GLUE.get(name)
-                if field is not None:
-                    # _spawn_plugin_generic replaced the lifecycle's client, but
-                    # the harness's ToolContext still points at the dead one —
-                    # re-point it or the health check reports it offline.
-                    setattr(self._tool_ctx, field, self._plugins[name].client)
-            # Any shared plugin landing on a new port must tell the subagents
-            # that share it — otherwise their clients point at the dead port.
-            await self._notify_subagents_plugin_restart(name, self._plugins[name].port)
+    async def _gate_a2a(self) -> bool:
+        """A2A starts only when configured AND the Mosquitto broker answers a
+        TCP probe (else SKIPPED — expected when the broker isn't running).
 
-        self._plugins[name].start_watchdog(restart_cb=_restart)
+        On success the a2a config is serialized into the env for the child.
+        Runs only on the initial start (allow_gate=False on restarts).
+        """
+        a2a_cfg = self.config.a2a_config
+        if a2a_cfg is None or not a2a_cfg.enabled:
+            logger.debug("a2a_disabled")
+            return False
+
+        # Only the MQTT transport binding is implemented.  A config that
+        # somehow carries a different transport must not silently run MQTT.
+        if a2a_cfg.transport != "mqtt":
+            logger.warning(
+                "a2a_transport_unsupported transport=%s action=a2a_disabled "
+                "supported=('mqtt',)",
+                a2a_cfg.transport,
+            )
+            return False
+
+        from slife.a2a.broker import probe_broker
+        if not await probe_broker(a2a_cfg.broker_host, a2a_cfg.broker_port):
+            logger.info(
+                "a2a_broker_not_found host=%s port=%d action=a2a_disabled",
+                a2a_cfg.broker_host, a2a_cfg.broker_port,
+            )
+            a2a_cfg.enabled = False
+            return False
+        a2a_cfg.enabled = True
+
+        # Pass the a2a config to the plugin process via env.
+        from dataclasses import asdict
+        os.environ["SLIFE_A2A_CONFIG"] = json.dumps(
+            asdict(a2a_cfg), ensure_ascii=False,
+        )
+        return True
+
+    async def _after_ready_a2a(self, lc) -> None:
+        """After an a2a child is ready: start the drain loop that feeds
+        inbound tasks/presence into the inbox."""
+        lc.poll_task = asyncio.create_task(self._a2a_poll_loop())
+        from slife.health import record
+        record(
+            "a2a", "ok",
+            key="status", value="connected",
+            hint="A2A P2P mesh connected (plugin).",
+        )
+        logger.info("a2a_plugin_started")
+
+    async def _after_ready_sharefile(self, lc) -> None:
+        """After a sharefile child is ready: watch its eager ngrok tunnel
+        attempt and surface "tunnel down" on a terminal failure.  (The child's
+        port env is published by the generic spawn on start AND every restart,
+        so subagents always inherit the live port — nothing to do here.)"""
+        self._watch_sharefile_tunnel()
+
+    async def _after_ready_mcp(self, lc) -> None:
+        """After the gateway child is ready: wire the mcp enrichment (expose
+        the wrapper client, register external-server tool proxies)."""
+        await self._wire_mcp_glue()
 
     # ══ Runtime tool-set resync ══════════════════════════════════════
     # Unified mechanism for plugins that mutate their own tool set at
@@ -765,7 +852,7 @@ class AgentService:
 
     async def _spawn_plugin_generic(self, name: str, module: str) -> bool:
         """Spawn a plugin child, connect, and register its ``<name>__*`` tools."""
-        from slife.plugins.mcp.process import MCPWrapperProcess
+        from slife.plugins.mcp_gateway.process import MCPWrapperProcess
 
         logger.info("plugin_spawn name=%s module=%s", name, module)
 
@@ -888,12 +975,15 @@ class AgentService:
     # itself (spawn / connect / watchdog) is the generic one all plugins use.
 
     async def _wire_mcp_glue(self) -> None:
-        """Wire the mcp enrichment after (re)connect: client + tool proxies.
+        """Wire the gateway enrichment after (re)connect: client + tool proxies.
 
         Idempotent — re-arming after a watchdog respawn re-points the tool
         context and re-registers the external servers' tools.
         """
-        client = self._plugins["mcp"].client
+        lc = self._gateway_lifecycle()
+        if lc is None:
+            return
+        client = lc.client
         self._tool_ctx.mcp_client = client
         if client is not None:
             client.on_notification = self._on_mcp_tools_changed
@@ -916,13 +1006,13 @@ class AgentService:
     async def _sync_mcp_proxies(self) -> None:
         """Reconcile external MCP tool proxies (on-demand model).
 
-        Reads the configured server list LIVE from the wrapper (``mcp_list``),
+        Reads the configured server list LIVE from the wrapper (``mcp_gateway_list``),
         so neither slife nor subagents need mcp-plugin.json5.  Two jobs:
 
         1. Servers with ``auto_load: true`` get their tools bulk-registered
            (full-diff, unchanged — ``_discover_and_register_external_tools``).
         2. Every OTHER loaded EXTERNAL proxy (an on-demand ``mcp_tool_load``)
-           is validated via ``__mcp_get_tool`` — if the tool vanished, its
+           is validated via ``__mcp_gateway_get_tool`` — if the tool vanished, its
            server disconnected, or it was disabled, the proxy is unregistered.
 
         This is the ONLY tool-maintenance path for non-auto_load servers:
@@ -931,7 +1021,8 @@ class AgentService:
         """
         from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 
-        client = self._plugins["mcp"].client
+        lc = self._gateway_lifecycle()
+        client = lc.client if lc is not None else None
         if client is None or not client.is_connected:
             return
         if self._mcp_reconciling:
@@ -939,7 +1030,7 @@ class AgentService:
         self._mcp_reconciling = True
         try:
             try:
-                raw = await client.call_tool("mcp_list")
+                raw = await client.call_tool("mcp_gateway_list")
                 servers = json.loads(raw)
             except Exception as e:
                 logger.debug("mcp_reconcile_list_failed err=%s", e)
@@ -969,7 +1060,7 @@ class AgentService:
                 if getattr(tool, "_server", "") in auto_servers:
                     continue
                 try:
-                    raw = await client.call_tool("__mcp_get_tool", {"full_name": tool.name})
+                    raw = await client.call_tool("__mcp_gateway_get_tool", {"full_name": tool.name})
                     data = json.loads(raw)
                 except Exception:
                     data = {"status": "error"}
@@ -980,7 +1071,7 @@ class AgentService:
             self._mcp_reconciling = False
 
     async def _register_external_server_tools(self, name: str = "", **kwargs) -> None:
-        """mcp_set / mcp_set_enabled connected a server — reconcile proxies.
+        """mcp_gateway_set / mcp_gateway_set_enabled connected a server — reconcile proxies.
 
         (Persistence happens inside mcp-plugin; this only touches the registry.)
         """
@@ -988,7 +1079,7 @@ class AgentService:
             await self._sync_mcp_proxies()
 
     async def _unregister_external_server_tools(self, name: str = "", **kwargs) -> None:
-        """mcp_remove / mcp_set_enabled disabled a server — drop its tools."""
+        """mcp_gateway_remove / mcp_gateway_set_enabled disabled a server — drop its tools."""
         if not name:
             return
         removed = self.tool_registry.unregister_by_prefix(f"{name}__")
@@ -1024,16 +1115,17 @@ class AgentService:
         path).  Wires the plugin's ``notifications/tools/list_changed`` into
         the runtime rescan, so a shared plugin's dynamic tool set (e.g.
         job-coding's per-job tools) stays live under a subagent — the same
-        handler the spawn path uses.
+        handler the spawn path uses.  The gateway's handler reconciles
+        external ``{server}__{tool}`` proxies instead; every other plugin uses
+        the generic rescan (the split is spec.gateway, not a name branch).
         """
         logger.info("%s_http_connect port=%s", name, port)
-        await self._plugins[name].connect_http(port)
-        client = self._plugins[name].client
+        spec = self._registry.spec(name)
+        lc = self._plugins[name]
+        await lc.connect_http(port)
+        client = lc.client
         if client is not None:
-            # The mcp wrapper's list_changed reconciles external {server}__{tool}
-            # proxies; every other plugin's re-lists and diff-registers its
-            # bare-name tools (the same split as the spawn path).
-            if name == "mcp":
+            if spec.gateway:
                 client.on_notification = self._on_mcp_tools_changed
             else:
                 client.on_notification = self._plugin_tools_changed_handler(name)
@@ -1043,22 +1135,20 @@ class AgentService:
 
         The single generic path a subagent uses to share the main agent's
         plugins instead of spawning its own.  Registers the plugin's
-        LLM-visible tools as bare-name proxy tools, applies the per-plugin
-        glue (health-check client re-pointing), and for the mcp wrapper also
-        reconciles external-server proxies.  Media / job-coding / any
-        internal plugin connect through here too — no per-plugin wrappers.
+        LLM-visible tools as bare-name proxy tools and re-points the
+        ToolContext client the plugin's spec declares; a gateway worker also
+        reconciles the external-server proxies.
         """
+        spec = self._registry.spec(name)
         await self._connect_plugin_http(name, port)
         await self._register_plugin_tools(name)
-        if name == "mcp":
+        if spec.gateway:
             # Reconcile external {server}__{tool} proxies (auto_load + on-demand
             # validation) — the same network the main agent's _wire_mcp_glue
-            # uses, mirrored for a worker sharing the wrapper.
+            # uses, mirrored for a worker sharing the gateway.
             await self._sync_mcp_proxies()
-        else:
-            field = _HTTP_CONNECT_GLUE.get(name)
-            if field is not None:
-                setattr(self._tool_ctx, field, self._plugins[name].client)
+        elif spec.ctx_field is not None:
+            setattr(self._tool_ctx, spec.ctx_field, self._plugins[name].client)
         logger.info("%s_http_connect_done tools=%d", name, len(self.tool_registry.list_tools()))
 
     async def _register_plugin_tools(self, name: str) -> None:
@@ -1067,12 +1157,12 @@ class AgentService:
         Filters out internal tools (names starting with ``__``), creates
         proxy tools, and registers them under their bare semantic names
         (built-in plugin tools are first-class, like native tools — no
-        ``server__tool`` prefix; only external MCP server tools keep it).
+        ``server__tool`` prefix; only external MCP server tools keep it).  The
+        ToolContext client re-point is the caller's job (via spec.ctx_field),
+        not this function's.
 
         Args:
-            name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``,
-                ``"memfiles"``, ``"a2a"`` — internal tools are ``__``-prefixed
-                and filtered; the ``a2a_*`` mesh tools register as proxy tools).
+            name: Plugin short name (``"memdb"``, ``"wechat"``, …).
         """
         client = self._plugins[name].client
         assert client is not None
@@ -1098,10 +1188,6 @@ class AgentService:
             self.tool_registry.register(tool)
         logger.debug("%s_tools_registered count=%d", name, len(proxy_tools))
 
-        # MCP-specific: let REST API tools call mcp_set / mcp_remove
-        if name == "mcp":
-            self._tool_ctx.mcp_client = self._plugins["mcp"].client
-
     # ── MCP tool discovery & registration ────────────────────────────
 
     async def _discover_and_register_external_tools(self, server_name: str) -> None:
@@ -1110,11 +1196,12 @@ class AgentService:
         Idempotent full diff: registers tools the server offers that aren't
         registered yet, and unregisters tools it no longer offers.  Safe to
         call concurrently from several triggers (startup glue, reconnect
-        notification, mcp_set callbacks) — a per-server in-flight guard
+        notification, mcp_gateway_set callbacks) — a per-server in-flight guard
         coalesces races, and an empty tool list leaves the registry untouched
         so a half-connected server can't flicker its tools out.
         """
-        client = self._plugins["mcp"].client
+        lc = self._gateway_lifecycle()
+        client = lc.client if lc is not None else None
         assert client is not None
 
         if server_name in self._mcp_syncing:
@@ -1122,7 +1209,7 @@ class AgentService:
         self._mcp_syncing.add(server_name)
         try:
             tools_json = await client.call_tool(
-                "mcp_list_tools", {"server": server_name}
+                "mcp_gateway_list_tools", {"server": server_name}
             )
             tools_data = json.loads(tools_json)
             external = tools_data.get("tools", [])
@@ -1181,38 +1268,27 @@ class AgentService:
 
     # ── Stop helpers ────────────────────────────────────────────────────
 
-    async def _stop_plugin(self, name: str, *, has_poll_task: bool = False) -> None:
-        """Disconnect client and stop process for plugin *name*.
+    async def stop_plugin(self, name: str) -> None:
+        """Shut down a plugin by name.
 
-        Args:
-            name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``).
-            has_poll_task: If True, cancel the plugin's poll task first.
+        Disconnects its client, cancels its supervised background tasks
+        (poll / restore), and stops its child process when this agent owns
+        one.  A plugin that was never started is a no-op.
         """
-        await self._plugins[name].stop(has_poll_task=has_poll_task)
+        lc = self._registry.ensure(name)
+        await lc.stop()
 
-    async def stop_plugin(self, name: str, *, has_poll_task: bool = False) -> None:
-        """Shut down a plugin by name (external or built-in)."""
-        await self._stop_plugin(name, has_poll_task=has_poll_task)
+    async def stop_all_plugins(self) -> None:
+        """Stop every registered plugin.
 
-    async def stop_memdb(self) -> None:
-        """Disconnect and shut down the memdb service."""
-        await self._stop_plugin("memdb")
-
-    async def stop_wechat(self) -> None:
-        """Shut down the WeChat plugin and clean up."""
-        await self._stop_plugin("wechat", has_poll_task=True)
-
-    async def stop_memfiles(self) -> None:
-        """Stop the memfiles plugin (the private file cabinet)."""
-        await self._stop_plugin("memfiles")
-
-    async def stop_sharefile(self) -> None:
-        """Stop the sharefile plugin.
-
-        The plugin's own lifespan disconnects the ngrok tunnel on shutdown,
-        so the harness only stops the child process.
+        Used by the app's shutdown path and by subagents tearing down their
+        shared HTTP clients (a worker never owns a child process, so this
+        only disconnects its clients).
         """
-        await self._stop_plugin("sharefile")
+        await asyncio.gather(
+            *(lc.stop() for lc in list(self._plugins.values())),
+            return_exceptions=True,
+        )
 
     def kill_child_processes(self) -> None:
         """Synchronous best-effort child process cleanup.
@@ -1262,90 +1338,9 @@ class AgentService:
 
     # ── WeChat lifecycle ───────────────────────────────────────────────
 
-    async def start_wechat(self) -> PluginStartStatus:
-        """Start the WeChat plugin if enabled in config.
-
-        Returns ``STARTED`` on success, ``SKIPPED`` when WeChat is not
-        enabled (expected), ``FAILED`` on start error.
-        """
-        wechat_cfg = self.config.wechat_config
-        if wechat_cfg is None or not wechat_cfg.enabled:
-            logger.debug("wechat_not_enabled")
-            return PluginStartStatus.SKIPPED
-
-        logger.info("wechat_init_start")
-        try:
-            started = await self._spawn_plugin_generic(
-                "wechat", "slife.plugins.wechat.server",
-            )
-            if not started:
-                raise RuntimeError("wechat plugin spawn failed")
-
-            wechat_client = self._plugins["wechat"].client
-            assert wechat_client is not None
-            self._tool_ctx.wechat_client = wechat_client
-
-            # Best-effort session restore (triggers the server-side poll loop).
-            # Runs as a supervised background task — never awaited in the
-            # startup path — so a slow or hung iLink endpoint degrades (the
-            # restore is re-triggerable any time via the wechat_check_status
-            # tool) instead of stalling the watchdog install and the rest of
-            # startup.  Bounded by the shared config ``tool_timeout``.  Reads
-            # the client at call time so the same helper serves both startup
-            # and watchdog-restart paths.
-            async def _restore_session() -> None:
-                client = self._plugins["wechat"].client
-                if client is None:
-                    return
-                try:
-                    await client.call_tool("wechat_check_status", {})
-                    logger.debug("wechat_auto_restore_triggered")
-                except Exception as e:
-                    logger.debug("wechat_restore_failed err=%r", e)
-
-            # Watchdog first — the normal spawn flow: a crash is supervised
-            # regardless of network state.  On restart it re-spawns and
-            # re-fires the same best-effort glue (restore + poll loop).
-            async def _restart_wechat():
-                self._cancel_plugin_task("wechat")
-                self._cancel_plugin_task("wechat", "restore_task")
-                await self._spawn_plugin_generic(
-                    "wechat", "slife.plugins.wechat.server",
-                )
-                wc = self._plugins["wechat"].client
-                if wc is not None:
-                    self._tool_ctx.wechat_client = wc
-                    self._plugins["wechat"].restore_task = asyncio.create_task(
-                        _restore_session(),
-                    )
-                self._plugins["wechat"].poll_task = asyncio.create_task(
-                    self._wechat_poll_loop(),
-                )
-
-            self._plugins["wechat"].start_watchdog(restart_cb=_restart_wechat)
-
-            # Background work: receive messages (poll) + auto-restore session.
-            self._plugins["wechat"].poll_task = asyncio.create_task(self._wechat_poll_loop())
-            self._plugins["wechat"].restore_task = asyncio.create_task(_restore_session())
-
-            logger.info("wechat_init_done tools=%d", len(self.tool_registry.list_tools()))
-            from slife.health import record
-            record(
-                "wechat_service", "ok",
-                key="status", value="connected",
-                hint="WeChat plugin started and tools registered.",
-            )
-            return PluginStartStatus.STARTED
-        except Exception as e:
-            logger.warning("wechat_init_failed err=%s fallback=continue_without_wechat", e)
-            from slife.health import record
-            record(
-                "wechat_service", "error",
-                key="status", value="failed",
-                hint=f"WeChat plugin failed to start: {e}. "
-                     "WeChat messaging is unavailable.",
-            )
-            return PluginStartStatus.FAILED
+    # WeChat lifecycle: enable gate + poll/restore glue live in the plugin
+    # behavior methods (_gate_wechat / _after_ready_wechat / the wechat poll
+    # loop below) — the uniform engine drives them, there is no start_wechat.
 
     async def _wechat_poll_loop(self, interval: float = 5.0) -> None:
         """Poll the wechat plugin for new messages and inject them into the inbox.
@@ -2107,92 +2102,10 @@ class AgentService:
 
     # ── A2A lifecycle ──────────────────────────────────────────────────
 
-    async def start_a2a(self) -> PluginStartStatus:
-        """Start the A2A mesh as a plugin (thin client: connect + drain).
-
-        All A2A logic lives in the a2a plugin process (MQTT binding) — the
-        harness only spawns it, registers the ``a2a_*`` tools, and polls
-        ``__a2a_drain_incoming`` for inbound tasks/presence.  Probes
-        Mosquitto first; returns ``SKIPPED`` when the broker is
-        unreachable or A2A is not configured (expected, not an error).
-        Idempotent.
-        """
-        if self._plugins["a2a"].process is not None:
-            return PluginStartStatus.STARTED  # already started
-
-        a2a_cfg = self.config.a2a_config
-        if a2a_cfg is None or not a2a_cfg.enabled:
-            logger.debug("a2a_disabled")
-            return PluginStartStatus.SKIPPED
-
-        # Only the MQTT transport binding is implemented.  A config that
-        # somehow carries a different transport (e.g. a future gRPC/HTTP
-        # binding) must not silently run MQTT — skip with a warning.
-        if a2a_cfg.transport != "mqtt":
-            logger.warning(
-                "a2a_transport_unsupported transport=%s action=a2a_disabled "
-                "supported=('mqtt',)",
-                a2a_cfg.transport,
-            )
-            return PluginStartStatus.SKIPPED
-
-        from slife.a2a.broker import probe_broker
-        if not await probe_broker(a2a_cfg.broker_host, a2a_cfg.broker_port):
-            logger.info(
-                "a2a_broker_not_found host=%s port=%d action=a2a_disabled",
-                a2a_cfg.broker_host, a2a_cfg.broker_port,
-            )
-            a2a_cfg.enabled = False
-            return PluginStartStatus.SKIPPED
-        a2a_cfg.enabled = True
-
-        # Pass the a2a config to the plugin process via env.
-        from dataclasses import asdict
-        os.environ["SLIFE_A2A_CONFIG"] = json.dumps(
-            asdict(a2a_cfg), ensure_ascii=False,
-        )
-
-        started = await self._spawn_plugin_generic(
-            "a2a", "slife.plugins.a2a.server",
-        )
-        if not started:
-            return PluginStartStatus.FAILED
-
-        # Expose the mesh client for harness drain/dispatch plumbing (when the
-        # plugin is down this stays None).
-        self._tool_ctx.a2a_mcp_client = self._plugins["a2a"].client
-        self._plugins["a2a"].poll_task = asyncio.create_task(self._a2a_poll_loop())
-
-        # Crash watchdog — respawn the plugin and restart the drain loop.
-        async def _restart_a2a() -> None:
-            self._cancel_plugin_task("a2a")
-            await self._spawn_plugin_generic("a2a", "slife.plugins.a2a.server")
-            self._tool_ctx.a2a_mcp_client = self._plugins["a2a"].client
-            self._plugins["a2a"].poll_task = asyncio.create_task(self._a2a_poll_loop())
-
-        self._plugins["a2a"].start_watchdog(restart_cb=_restart_a2a)
-
-        from slife.health import record
-        record(
-            "a2a", "ok",
-            key="status", value="connected",
-            hint="A2A P2P mesh connected (plugin).",
-        )
-        logger.info("a2a_plugin_started")
-        return PluginStartStatus.STARTED
-
-    def _cancel_plugin_task(self, name: str, attr: str = "poll_task") -> None:
-        """Cancel and clear a plugin's background task (e.g. the WeChat/A2A
-        poll loop) so a watchdog restart never stacks a second concurrent
-        loop. Cancellation is safe: both poll loops catch ``CancelledError``
-        and exit."""
-        plugin = self._plugins.get(name)
-        if plugin is None:
-            return
-        task = getattr(plugin, attr, None)
-        if task is not None and not task.done():
-            task.cancel()
-        setattr(plugin, attr, None)
+    # A2A lifecycle: enable gate (config + Mosquitto probe, downgrades
+    # a2a_config.enabled) and the drain glue live in the plugin behavior
+    # methods (_gate_a2a / _after_ready_a2a / the a2a poll loop below) — the
+    # uniform engine drives them, there is no start_a2a.
 
     async def _a2a_poll_loop(self, interval: float = 1.0) -> None:
         """Drain inbound a2a tasks/presence from the plugin into the inbox.
@@ -2319,22 +2232,6 @@ class AgentService:
             self.inbox._histories.set_default_handler_factory(factory)
 
         logger.info("a2a_init_done tools=%d", len(self.tool_registry.list_tools()))
-
-    async def stop_a2a(self) -> None:
-        """Leave the P2P mesh — stop the drain loop and the a2a plugin.
-
-        Does NOT stop the inbox — the queue is independent of A2A
-        and may still be used by human input / WeChat.
-        """
-        # PluginLifecycle.stop() sets _stopping first so the watchdog does
-        # not spuriously restart the plugin on a graceful shutdown.
-        await self._stop_plugin("a2a", has_poll_task=True)
-
-        # Decouple activity notifications tied to A2A.
-        if self.inbox is not None:
-            self.inbox._on_activity = None
-
-        logger.info("a2a_shutdown")
 
     # ── Subagent lifecycle ─────────────────────────────────────────────
 

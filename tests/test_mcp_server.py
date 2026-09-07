@@ -1,8 +1,8 @@
-"""Tests for slife.plugins.mcp.server — wrapper-server tool registration.
+"""Tests for slife.plugins.mcp_gateway.server — wrapper-server tool registration.
 
 Regression test for a decorator-detachment bug: the
-``@mcp.tool(name="mcp_set")`` decorator must bind to the
-``mcp_set`` function.  When a helper (``_server_config_equal``)
+``@mcp.tool(name="mcp_gateway_set")`` decorator must bind to the
+``mcp_gateway_set`` function.  When a helper (``_server_config_equal``)
 was accidentally placed between the decorator and the function, the tool
 was registered with the helper's ``(a, b)`` signature, so every startup
 auto-connect call failed pydantic validation ("Missing required argument
@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from slife.plugins.mcp.connection import ServerConfig, ServerStatus
+from slife.plugins.mcp_gateway.connection import ServerConfig, ServerStatus
 
 
 @pytest.fixture
@@ -37,17 +37,17 @@ def restore_root_logger():
 
 def _import_mcp_server():
     """Import the wrapper server fresh, stubbing the logging side-effect."""
-    sys.modules.pop("slife.plugins.mcp.server", None)
+    sys.modules.pop("slife.plugins.mcp_gateway.server", None)
     with patch(
-        "slife.plugins.mcp.server_runtime.setup_server_logging",
+        "slife.plugins.mcp_gateway.server_runtime.setup_server_logging",
         return_value=Path("unused.log"),
     ):
-        return importlib.import_module("slife.plugins.mcp.server")
+        return importlib.import_module("slife.plugins.mcp_gateway.server")
 
 
 class TestAutoConnectConfigured:
     """_auto_connect_configured must register EVERY configured server in the
-    pool — disabled ones registered but NOT connected — so mcp_list matches
+    pool — disabled ones registered but NOT connected — so mcp_gateway_list matches
     the config count.  A disabled server must not silently vanish from the
     listing (BUGS.md #5)."""
 
@@ -94,7 +94,7 @@ class TestPersistEntry:
 
 
 class TestMcpSetEnabled:
-    """mcp_set_enabled toggles connect state — the connect attempt itself is
+    """mcp_gateway_set_enabled toggles connect state — the connect attempt itself is
     the probe (no persisted healthy verdict gates enable anymore)."""
 
     @pytest.mark.asyncio
@@ -112,7 +112,7 @@ class TestMcpSetEnabled:
             patch.object(srv, "_pool", pool),
             patch.object(srv, "_ensure_store", AsyncMock(return_value=None)),
         ):
-            result = await srv.mcp_set_enabled(name="live", enabled=True)
+            result = await srv.mcp_gateway_set_enabled(name="live", enabled=True)
         parsed = _json.loads(result)
         assert parsed["status"] == "connected"
 
@@ -131,7 +131,7 @@ class TestMcpSetEnabled:
             patch.object(srv, "_ensure_store", AsyncMock(return_value=None)),
             patch.object(srv.plugin_config, "set_server_enabled", return_value=True) as persist,
         ):
-            result = await srv.mcp_set_enabled(name="live", enabled=False)
+            result = await srv.mcp_gateway_set_enabled(name="live", enabled=False)
         parsed = _json.loads(result)
         assert parsed["status"] == "disabled"
         pool.disconnect_server.assert_called_once()
@@ -156,14 +156,14 @@ class TestMcpSetEnabled:
             patch.object(srv, "_ensure_store", AsyncMock(return_value=None)),
             patch.object(srv.plugin_config, "set_server_enabled", return_value=True) as persist,
         ):
-            result = await srv.mcp_set_enabled(name="live", enabled=True)
+            result = await srv.mcp_gateway_set_enabled(name="live", enabled=True)
         parsed = _json.loads(result)
         assert parsed["status"] == "connected"
         persist.assert_called_once_with("live", True)
 
 
 class TestAddServerToolRegistration:
-    """mcp_set must be registered with its real signature."""
+    """mcp_gateway_set must be registered with its real signature."""
 
     @pytest.mark.asyncio
     async def test_add_server_has_real_parameters(self, restore_root_logger):
@@ -171,8 +171,8 @@ class TestAddServerToolRegistration:
         tools = await srv.mcp.list_tools()
         by_name = {t.name: t for t in tools}
 
-        assert "mcp_set" in by_name
-        props = by_name["mcp_set"].parameters.get("properties", {})
+        assert "mcp_gateway_set" in by_name
+        props = by_name["mcp_gateway_set"].parameters.get("properties", {})
         # The real function's parameters.  The helper had only (a, b) —
         # if the decorator is mis-bound these are all absent.
         for expected in (
@@ -180,7 +180,7 @@ class TestAddServerToolRegistration:
             "headers", "description", "enabled",
         ):
             assert expected in props, f"missing param: {expected}"
-        assert by_name["mcp_set"].parameters.get("required") == ["name"]
+        assert by_name["mcp_gateway_set"].parameters.get("required") == ["name"]
 
     @pytest.mark.asyncio
     async def test_helper_not_exposed_as_tool(self, restore_root_logger):
@@ -195,29 +195,37 @@ class TestAddServerToolRegistration:
         tools = await srv.mcp.list_tools()
         names = {t.name for t in tools}
         assert names == {
-            "mcp_set",
-            "mcp_set_enabled",
-            "mcp_remove",
-            "mcp_list",
-            "mcp_list_tools",
-            "mcp_tool_search",
-            "__mcp_call_tool",
+            "mcp_gateway_set",
+            "mcp_gateway_set_enabled",
+            "mcp_gateway_remove",
+            "mcp_gateway_list",
+            "mcp_gateway_list_tools",
+            "mcp_gateway_tool_search",
+            "__mcp_gateway_call_tool",
             "__check",
-            "__mcp_get_tool",
+            "__mcp_gateway_get_tool",
         }
 
     @pytest.mark.asyncio
-    async def test_mcp_set_rejects_reserved_builtin_names(self, restore_root_logger):
+    async def test_mcp_gateway_set_rejects_reserved_builtin_names(self, restore_root_logger):
         """REVIEW C8 — an external server cannot take a built-in plugin name,
-        or its tools would collide/misroute in the harness namespace."""
+        or its tools would collide/misroute in the harness namespace.
+
+        The reserved set is derived from the central plugin contract, so it
+        covers every built-in — including sharefile and job-coding, which a
+        hand-written list used to miss."""
         import json as _json
 
+        from slife.plugins.spec import mcp_child_reserved_names
+
         srv = _import_mcp_server()
-        for reserved in ("mcp", "memdb", "wechat", "memfiles", "a2a", "media"):
-            result = await getattr(srv, "mcp_set")(name=reserved, command="echo")
+        reserved = mcp_child_reserved_names()
+        assert {"sharefile", "job-coding"} <= reserved
+        for name in sorted(reserved):
+            result = await getattr(srv, "mcp_gateway_set")(name=name, command="echo")
             parsed = _json.loads(result)
-            assert parsed.get("status") == "error", reserved
-            assert "reserved" in parsed.get("error", ""), reserved
+            assert parsed.get("status") == "error", name
+            assert "reserved" in parsed.get("error", ""), name
 
     @pytest.mark.asyncio
     async def test_lifespan_shuts_down_pool(self, restore_root_logger):
@@ -287,7 +295,7 @@ class TestWrapperNotifyToolsChanged:
 
 
 class TestMCPListToolsSingleRead:
-    """mcp_list_tools — per-mcp source branching.
+    """mcp_gateway_list_tools — per-mcp source branching.
 
     ``auto_load=false`` (on-demand) servers list via the built-in MCP
     ``tools/list`` (live ``list_all_tools``); ``auto_load`` servers list the
@@ -296,7 +304,7 @@ class TestMCPListToolsSingleRead:
 
     @staticmethod
     async def _list(srv, *, connected=True, live=None, live_raise="", autoload=False):
-        """Call mcp_list_tools with a patched pool (no real catalog store)."""
+        """Call mcp_gateway_list_tools with a patched pool (no real catalog store)."""
         import contextlib
         import json as _json
 
@@ -320,7 +328,7 @@ class TestMCPListToolsSingleRead:
         with contextlib.ExitStack() as stack:
             for t in targets:
                 stack.enter_context(t)
-            raw = await srv.mcp_list_tools(server="fs")
+            raw = await srv.mcp_gateway_list_tools(server="fs")
         return _json.loads(raw)
 
     @staticmethod
@@ -388,7 +396,7 @@ class TestMCPListToolsSingleRead:
             stack.enter_context(
                 patch.object(srv, "_ensure_store", AsyncMock(return_value=fake_store))
             )
-            raw = await srv.mcp_list_tools(server="fs")
+            raw = await srv.mcp_gateway_list_tools(server="fs")
         out = _json.loads(raw)
 
         assert out["source"] == "catalog"
@@ -502,8 +510,8 @@ class TestSessionCapture:
         ctx = MagicMock()
         ctx.session = object()
 
-        await srv.mcp_list(ctx=ctx)
+        await srv.mcp_gateway_list(ctx=ctx)
         assert ctx.session in srv._active_sessions
 
-        await srv.mcp_list_tools(server="fs", ctx=ctx)
+        await srv.mcp_gateway_list_tools(server="fs", ctx=ctx)
         assert ctx.session in srv._active_sessions

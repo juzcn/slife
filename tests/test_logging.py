@@ -1,4 +1,4 @@
-"""Tests for slife.plugins.mcp.logging — log-dir resolution contract.
+"""Tests for slife.plugins.mcp_gateway.logging — log-dir resolution contract.
 
 mcp-plugin is a built-in slife plugin, so its log directory resolves like
 every other built-in plugin's: ``SLIFE_LOG_DIR`` when the host exported it
@@ -13,7 +13,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from slife.plugins.mcp.logging import resolve_log_dir
+from slife.plugins.mcp_gateway.logging import resolve_log_dir
 
 
 class TestResolveLogDir:

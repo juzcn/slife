@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 
-from slife.agent.plugins import PluginLifecycle, plugin_port_env
+from slife.agent.plugins import PluginLifecycle, PluginRegistry, plugin_port_env
+from slife.plugins.spec import PLUGIN_SPECS, SPEC_ORDER
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -89,7 +90,7 @@ class TestPluginLifecycleSpawn:
             {"name": "my_tool", "description": "A tool."},
         ])
 
-        with patch("slife.plugins.mcp.process.MCPWrapperProcess") as MockProc:
+        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
             mock_process.start = AsyncMock()
             mock_process.create_client = AsyncMock(return_value=mock_client)
@@ -99,7 +100,7 @@ class TestPluginLifecycleSpawn:
                 mock_create.return_value = [mock_tool]
 
                 await lifecycle.spawn(
-                    module="slife.plugins.mcp.server",
+                    module="slife.plugins.mcp_gateway.server",
                 )
 
         import os
@@ -124,7 +125,7 @@ class TestPluginLifecycleSpawn:
             {"name": "job-list", "description": "List jobs."},
         ])
 
-        with patch("slife.plugins.mcp.process.MCPWrapperProcess") as MockProc:
+        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
             mock_process.start = AsyncMock()
             mock_process.create_client = AsyncMock(return_value=mock_client)
@@ -152,7 +153,7 @@ class TestPluginLifecycleSpawn:
             {"name": "__internal_tool", "description": "Internal (__ prefix)."},
         ])
 
-        with patch("slife.plugins.mcp.process.MCPWrapperProcess") as MockProc:
+        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
             mock_process.start = AsyncMock()
             mock_process.create_client = AsyncMock(return_value=mock_client)
@@ -162,7 +163,7 @@ class TestPluginLifecycleSpawn:
                 mock_create.return_value = [mock_tool]
 
                 await lifecycle.spawn(
-                    module="slife.plugins.mcp.server",
+                    module="slife.plugins.mcp_gateway.server",
                 )
 
         assert mock_service.tool_registry.register.called
@@ -189,10 +190,10 @@ class TestPluginLifecycleSpawn:
         )
         mock_process.stop = AsyncMock()
 
-        with patch("slife.plugins.mcp.process.MCPWrapperProcess") as MockProc:
+        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
             with pytest.raises(ConnectionError):
-                await lifecycle.spawn(module="slife.plugins.mcp.server")
+                await lifecycle.spawn(module="slife.plugins.mcp_gateway.server")
 
         assert lifecycle.process is None
         assert lifecycle.client is None
@@ -309,16 +310,19 @@ class TestPluginLifecycleStop:
         await lifecycle.stop()
 
     @pytest.mark.asyncio
-    async def test_stop_with_poll_task(self, lifecycle):
-        """stop() with has_poll_task=True cancels the poll task."""
-        async def poll_loop():
+    async def test_stop_cancels_poll_and_restore_tasks(self, lifecycle):
+        """stop() always cancels the supervised poll and restore tasks —
+        the caller never passes a flag (the lifecycle owns its tasks)."""
+        async def loop():
             while True:
                 await asyncio.sleep(0.1)
 
-        lifecycle.poll_task = asyncio.create_task(poll_loop())
+        lifecycle.poll_task = asyncio.create_task(loop())
+        lifecycle.restore_task = asyncio.create_task(loop())
 
-        await lifecycle.stop(has_poll_task=True)
+        await lifecycle.stop()
         assert lifecycle.poll_task is None
+        assert lifecycle.restore_task is None
 
     @pytest.mark.asyncio
     async def test_stop_clears_client_and_process(self, lifecycle):
@@ -476,3 +480,80 @@ class TestWatchdogRestart:
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await task
+
+
+# ── cancel_tasks ─────────────────────────────────────────────────────────
+
+
+class TestCancelTasks:
+    """PluginLifecycle.cancel_tasks() — reaps poll/restore before a respawn."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_tasks_reaps_both(self, lifecycle):
+        async def loop():
+            while True:
+                await asyncio.sleep(0.1)
+
+        lifecycle.poll_task = asyncio.create_task(loop())
+        lifecycle.restore_task = asyncio.create_task(loop())
+
+        await lifecycle.cancel_tasks()
+        assert lifecycle.poll_task is None
+        assert lifecycle.restore_task is None
+
+    @pytest.mark.asyncio
+    async def test_cancel_tasks_leaves_process_and_client(self, lifecycle):
+        mock_client = MagicMock()
+        mock_client.is_connected = True
+        lifecycle.client = mock_client
+        mock_process = MagicMock()
+        lifecycle.process = mock_process
+
+        await lifecycle.cancel_tasks()
+        assert lifecycle.client is mock_client
+        assert lifecycle.process is mock_process
+        mock_process.stop.assert_not_called()
+
+
+# ── PluginRegistry ───────────────────────────────────────────────────────
+
+
+class TestPluginRegistry:
+    """The registry is built once from the central spec and is complete
+    before any start/connect — the single source of truth."""
+
+    def test_eagerly_registers_every_declared_plugin(self, mock_service):
+        reg = PluginRegistry(mock_service)
+        assert set(reg.lifecycles) == set(PLUGIN_SPECS)
+        assert list(reg.lifecycles) == list(SPEC_ORDER)
+        # distinct lifecycle per plugin
+        assert len({id(v) for v in reg.lifecycles.values()}) == len(PLUGIN_SPECS)
+
+    def test_items_in_spec_order(self, mock_service):
+        reg = PluginRegistry(mock_service)
+        assert [spec.name for spec, _ in reg.items()] == list(SPEC_ORDER)
+        for spec, lc in reg.items():
+            assert reg.lifecycles[spec.name] is lc
+
+    def test_spec_known_returns_declared(self, mock_service):
+        reg = PluginRegistry(mock_service)
+        assert reg.spec("memdb").module == "slife.plugins.memdb.server"
+        assert reg.spec("memdb") is PLUGIN_SPECS["memdb"]
+
+    def test_ensure_known_returns_eager_lifecycle(self, mock_service):
+        reg = PluginRegistry(mock_service)
+        assert reg.ensure("job-coding") is reg.lifecycles["job-coding"]
+
+    def test_ensure_unknown_adds_generic_spec_and_lifecycle(self, mock_service):
+        reg = PluginRegistry(mock_service)
+        lc = reg.ensure("future-plug", "slife.plugins.future_plug.server")
+        assert lc is reg.lifecycles["future-plug"]
+        spec = reg.spec("future-plug")
+        assert spec.module == "slife.plugins.future_plug.server"
+        assert spec.gateway is False
+        assert spec.ctx_field is None
+        assert "future-plug" in [s.name for s, _ in reg.items()]
+
+    def test_spec_for_unknown_without_module_defaults(self, mock_service):
+        reg = PluginRegistry(mock_service)
+        assert reg.spec("unknown").module == "slife.plugins.unknown.server"

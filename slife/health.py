@@ -36,7 +36,7 @@ def record(
 ) -> None:
     """Push a status entry.
 
-    *component*: subsystem name ("embeddings", "memdb", "mcp", …).
+    *component*: subsystem name ("embeddings", "memdb", "mcp-gateway", …).
     *level*: "ok", "warning", "error".
     *key* / *value*: structured k=v for programmatic consumption.
     *hint*: human-readable remediation or context.

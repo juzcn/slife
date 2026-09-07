@@ -29,10 +29,12 @@ import logging
 import os
 import sys
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from slife.plugins.mcp.client import MCPClient
+from slife.plugins.mcp_gateway.client import MCPClient
 from slife.platform import terminate_process_sync
+from slife.plugins.spec import PLUGIN_SPECS, PluginSpec, spec_for
 from slife.server_utils import is_internal_tool
 
 if TYPE_CHECKING:
@@ -92,6 +94,21 @@ READY_READY = "ready"
 READY_FAILED = "failed"
 
 
+@dataclass
+class PluginBehavior:
+    """Optional per-plugin harness behavior, bound once by
+    ``AgentService._resolve_plugin_behaviors`` from the spec's declared
+    method-names onto the live service.
+
+    Kept on the *service*, not in the spec, because enable gates and
+    after-ready glue touch service internals (config, inbox, tool_ctx); the
+    spec stays import-safe for tool_adapter / system.py / the mcp child.
+    """
+
+    enable: Callable[[], Awaitable[bool]] | None = None
+    after_ready: Callable[["PluginLifecycle"], Awaitable[None]] | None = None
+
+
 def client_info_extra_for(name: str) -> dict | None:
     """Initialize host extras passed to a plugin connection.
 
@@ -105,18 +122,20 @@ def client_info_extra_for(name: str) -> dict | None:
     embedding endpoint, so its tool catalog embeds against the agent's
     endpoint), a future plugin adds its own entry.
     """
-    if name == "mcp":
-        try:
-            from slife.plugins.memdb.embedding_config import get_active_endpoint
-            ep = get_active_endpoint()
-            if ep.get("base_url"):
-                return {"embeddings": {
-                    "base_url": ep["base_url"],
-                    "api_key": ep.get("api_key", ""),
-                    "model": ep.get("model", ""),
-                }}
-        except Exception:
-            logger.debug("mcp_client_info_extra_failed", exc_info=True)
+    spec = PLUGIN_SPECS.get(name)
+    if spec is None or not spec.host_params:
+        return None
+    try:
+        from slife.plugins.memdb.embedding_config import get_active_endpoint
+        ep = get_active_endpoint()
+        if ep.get("base_url"):
+            return {"embeddings": {
+                "base_url": ep["base_url"],
+                "api_key": ep.get("api_key", ""),
+                "model": ep.get("model", ""),
+            }}
+    except Exception:
+        logger.debug("mcp_client_info_extra_failed", exc_info=True)
     return None
 
 
@@ -178,7 +197,7 @@ class PluginLifecycle:
         Tools whose name starts with ``__`` are internal (plugin contract)
         and are never exposed to the LLM.
         """
-        from slife.plugins.mcp.process import MCPWrapperProcess
+        from slife.plugins.mcp_gateway.process import MCPWrapperProcess
         from slife.mcp.tool_adapter import create_proxy_tools
 
         # Save params for watchdog restart
@@ -495,11 +514,33 @@ class PluginLifecycle:
 
     # ── stop ─────────────────────────────────────────────────────────────
 
-    async def stop(self, *, has_poll_task: bool = False) -> None:
+    async def cancel_tasks(self) -> None:
+        """Cancel and reap this lifecycle's supervised background tasks
+        (``poll_task`` / ``restore_task``).
+
+        Called before every respawn so a watchdog restart never stacks a
+        second poll / drain / restore loop against a fresh client, and by
+        :meth:`stop`.  Never touches the child process or client.
+        """
+        for attr in ("poll_task", "restore_task"):
+            task = getattr(self, attr, None)
+            if task is None:
+                continue
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            setattr(self, attr, None)
+
+    async def stop(self) -> None:
         """Disconnect client and stop process.
 
-        Args:
-            has_poll_task: If True, cancel ``self.poll_task`` first.
+        Always cancels this lifecycle's supervised background tasks
+        (``poll_task`` / ``restore_task``) first — a plugin that owns a
+        poll/drain loop declares it on the lifecycle, so the caller never
+        needs a flag.
         """
         # Signal watchdog to stop *before* touching the process —
         # otherwise the watchdog's ``await subprocess.wait()`` races
@@ -513,24 +554,7 @@ class PluginLifecycle:
                 pass
             self._watchdog_task = None
 
-        if has_poll_task and self.poll_task is not None:
-            self.poll_task.cancel()
-            try:
-                await self.poll_task
-            except asyncio.CancelledError:
-                pass
-            self.poll_task = None
-
-        # Same supervision for the optional plugin-side restore task — cancel
-        # any pending best-effort restore (e.g. wechat's session trigger) so
-        # it can't drain against a client we are about to disconnect.
-        if self.restore_task is not None:
-            self.restore_task.cancel()
-            try:
-                await self.restore_task
-            except asyncio.CancelledError:
-                pass
-            self.restore_task = None
+        await self.cancel_tasks()
 
         if self.client is not None and self.client.is_connected:
             try:
@@ -561,3 +585,51 @@ class PluginLifecycle:
         if p is None:
             return
         terminate_process_sync(p, label=self.name)
+
+
+class PluginRegistry:
+    """The single runtime registry of child plugins.
+
+    Built **once** from the central contract (:data:`PLUGIN_SPECS`): every
+    declared plugin gets a :class:`PluginLifecycle` eagerly, so the registry
+    is complete before any start / connect and no lifecycle is ever created
+    by a name-branch.  An auto-discovered package without a spec row is added
+    lazily (via :meth:`ensure`) with a generic spec.
+
+    ``AgentService._plugins`` aliases :attr:`lifecycles` — the same dict
+    object, so existing readers/writers keep working — but the dict must
+    never be rebound after construction (register new plugins through
+    :meth:`ensure`).
+    """
+
+    def __init__(self, service: "AgentService") -> None:
+        self._service = service
+        self.specs: dict[str, PluginSpec] = dict(PLUGIN_SPECS)
+        self.lifecycles: dict[str, PluginLifecycle] = {
+            spec.name: PluginLifecycle(spec.name, service)
+            for spec in PLUGIN_SPECS.values()
+        }
+
+    def spec(self, name: str, module: str | None = None) -> PluginSpec:
+        """Return the spec for *name*, registering a generic default for an
+        undeclared plugin the first time it is seen."""
+        if name not in self.specs:
+            self.specs[name] = spec_for(name, module)
+        return self.specs[name]
+
+    def ensure(self, name: str, module: str | None = None) -> PluginLifecycle:
+        """Return the lifecycle for *name*, creating it (with a generic spec)
+        if this is an undeclared/auto-discovered plugin."""
+        self.spec(name, module)
+        if name not in self.lifecycles:
+            self.lifecycles[name] = PluginLifecycle(name, self._service)
+        return self.lifecycles[name]
+
+    def items(self) -> list[tuple[PluginSpec, PluginLifecycle]]:
+        """Every registered plugin as ``(spec, lifecycle)`` pairs, in spec
+        (deterministic start) order."""
+        return [
+            (spec, self.lifecycles[spec.name])
+            for spec in self.specs.values()
+            if spec.name in self.lifecycles
+        ]

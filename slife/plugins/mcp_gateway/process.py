@@ -16,18 +16,18 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from slife.plugins.mcp.client import MCPClient
+    from slife.plugins.mcp_gateway.client import MCPClient
 
-from slife.plugins.mcp.logging import get_session_id, sanitize_secrets
-from slife.plugins.mcp.platform import terminate_process
+from slife.plugins.mcp_gateway.logging import get_session_id, sanitize_secrets
+from slife.plugins.mcp_gateway.platform import terminate_process
 
 logger = logging.getLogger(__name__)
 
 # Default wrapper module path
-_DEFAULT_SERVER_MODULE = "slife.plugins.mcp.server"
+_DEFAULT_SERVER_MODULE = "slife.plugins.mcp_gateway.server"
 
 # stderr markers emitted by the OAuth device flow inside the gateway child
-# (slife.plugins.mcp.oauth) — the gateway's stdout is closed after the port
+# (slife.plugins.mcp_gateway.oauth) — the gateway's stdout is closed after the port
 # signal, so user instructions come over stderr.
 _OAUTH_MARKER = "[OAUTH]"
 _OAUTH_ACTION_MARKER = "[OAUTH-ACTION]"
@@ -35,8 +35,8 @@ _OAUTH_ACTION_MARKER = "[OAUTH-ACTION]"
 
 def _notify_user(title: str, message: str) -> None:
     """Best-effort desktop notification via the project's daemon convention."""
-    from slife.plugins.mcp.platform import desktop_notify
-    from slife.plugins.mcp.threads import run_daemon
+    from slife.plugins.mcp_gateway.platform import desktop_notify
+    from slife.plugins.mcp_gateway.threads import run_daemon
     run_daemon(desktop_notify, title, message, name="desktop-notify")
 
 
@@ -211,7 +211,7 @@ class MCPWrapperProcess:
         Disconnecting the client does NOT stop the process — call stop()
         separately to terminate the plugin.
         """
-        from slife.plugins.mcp.client import MCPClient
+        from slife.plugins.mcp_gateway.client import MCPClient
 
         if not self._process or not self._running:
             raise RuntimeError(
@@ -314,7 +314,7 @@ class MCPWrapperProcess:
         WARNING and muted during the TUI).
         """
         import re
-        from slife.plugins.mcp.logging import read_stderr_lines
+        from slife.plugins.mcp_gateway.logging import read_stderr_lines
 
         # Matches the child's structured logger output:
         # "HH:MM:SS [LEVEL] logger_name ..."
@@ -347,7 +347,7 @@ class MCPWrapperProcess:
             # notification, which is the user-facing channel.
             if stripped.startswith(_OAUTH_ACTION_MARKER):
                 body = stripped[len(_OAUTH_ACTION_MARKER):].strip()
-                from slife.plugins.mcp.i18n import t
+                from slife.plugins.mcp_gateway.i18n import t
                 _notify_user(t("notify_oauth_title"), body)
                 continue
             if stripped.startswith(_OAUTH_MARKER):

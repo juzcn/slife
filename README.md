@@ -102,7 +102,7 @@ The repo also ships three standalone PyPI packages — install each independentl
 | `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | Generate `~/.claude/settings.json` |
 | `local-embed` | installed with slife (standalone daemon) | Local embedding endpoint service |
 
-The MCP gateway ships **inside** slife as an internal plugin (`slife.plugins.mcp`);
+The MCP gateway ships **inside** slife as an internal plugin (`slife.plugins.mcp_gateway`);
 `local-embed` is a standalone daemon you start manually (like Mosquitto) — slife
 never spawns it. Installing slife depends on
 [credstore](credstore/README.md) — it does **not** install cc-switch. See the
@@ -423,7 +423,7 @@ server in `mcp-plugin.json5`, never as a Python plugin):
 
 | Plugin | Role |
 |--------|------|
-| **slife-mcp** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp`). Maintains an in-memory tool catalog (rebuilt live from connections, complete tool schemas included) searched by a schema-aware hybrid `mcp_tool_search`; external tools load on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration) |
+| **slife-mcp** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp_gateway`). Maintains an in-memory tool catalog (rebuilt live from connections, complete tool schemas included) searched by a schema-aware hybrid `mcp_tool_search`; external tools load on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration) |
 | **slife-memdb** | Turns database with hybrid search |
 | **slife-wechat** | Bidirectional WeChat messaging |
 | **slife-memfiles** | Notes / diary / files cabinet (private). Notes & diary dual-written to markdown + a SQLite hybrid index. All save tools return local paths — never auto-publish |

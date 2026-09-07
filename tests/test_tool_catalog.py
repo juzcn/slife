@@ -1,5 +1,5 @@
-"""Tool catalog tools — mcp_tool_search / __mcp_get_tool and the
-__mcp_call_tool disabled guard."""
+"""Tool catalog tools — mcp_gateway_tool_search / __mcp_gateway_get_tool and the
+__mcp_gateway_call_tool disabled guard."""
 
 import importlib
 import json
@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
-from slife.plugins.mcp.connection import ServerStatus
-from slife.plugins.mcp.store import ToolStore
+from slife.plugins.mcp_gateway.connection import ServerStatus
+from slife.plugins.mcp_gateway.store import ToolStore
 
 
 @pytest.fixture
@@ -27,12 +27,12 @@ def restore_root_logger():
 
 
 def _import_mcp_server():
-    sys.modules.pop("slife.plugins.mcp.server", None)
+    sys.modules.pop("slife.plugins.mcp_gateway.server", None)
     with patch(
-        "slife.plugins.mcp.server_runtime.setup_server_logging",
+        "slife.plugins.mcp_gateway.server_runtime.setup_server_logging",
         return_value=Path("unused.log"),
     ):
-        return importlib.import_module("slife.plugins.mcp.server")
+        return importlib.import_module("slife.plugins.mcp_gateway.server")
 
 
 class _FakeConn:
@@ -66,7 +66,7 @@ async def srv(restore_root_logger):
     """Server module with a real in-memory store + fake pool of two servers.
 
     ``svcC`` is an auto_load server — its tools synced but never discoverable
-    via ``mcp_tool_search`` (only present to exercise the visibility filter).
+    via ``mcp_gateway_tool_search`` (only present to exercise the visibility filter).
     """
     s = _import_mcp_server()
     store = ToolStore()
@@ -109,7 +109,7 @@ async def srv(restore_root_logger):
 @pytest.mark.asyncio
 async def test_tool_search_hybrid_returns_distinct_full_names(srv):
     s, _store = srv
-    raw = await s.mcp_tool_search("search", mode="hybrid")
+    raw = await s.mcp_gateway_tool_search("search", mode="hybrid")
     data = json.loads(raw)
     assert data["status"] == "ok"
     names = {r["full_name"] for r in data["results"]}
@@ -139,7 +139,7 @@ async def test_tool_search_finds_tool_by_schema_content(restore_root_logger):
     ])
     s._store = store
     with patch.object(s, "_pool", _FakePool()):
-        raw = await s.mcp_tool_search("time window", mode="hybrid")
+        raw = await s.mcp_gateway_tool_search("time window", mode="hybrid")
     data = json.loads(raw)
     assert data["status"] == "ok"
     names = {r["full_name"] for r in data["results"]}
@@ -150,7 +150,7 @@ async def test_tool_search_finds_tool_by_schema_content(restore_root_logger):
 @pytest.mark.asyncio
 async def test_tool_search_server_filter(srv):
     s, _store = srv
-    raw = await s.mcp_tool_search("search", server="svcB")
+    raw = await s.mcp_gateway_tool_search("search", server="svcB")
     data = json.loads(raw)
     assert [r["full_name"] for r in data["results"]] == ["svcB__search"]
 
@@ -160,7 +160,7 @@ async def test_tool_search_hides_auto_load_servers(srv):
     """Per-mcp: auto_load servers' tools (already in the toolset) never
     surface in tool_search — only enabled, on-demand servers' tools do."""
     s, _store = srv
-    raw = await s.mcp_tool_search("search", mode="hybrid")
+    raw = await s.mcp_gateway_tool_search("search", mode="hybrid")
     data = json.loads(raw)
     names = {r["full_name"] for r in data["results"]}
     assert "svcA__search" in names and "svcB__search" in names
@@ -171,7 +171,7 @@ async def test_tool_search_hides_auto_load_servers(srv):
 async def test_call_tool_refuses_disabled_server(srv):
     s, store = srv
     await store.set_server_enabled("svcA", False)
-    raw = await s.__mcp_call_tool("svcA", "search", "{}")
+    raw = await s.__mcp_gateway_call_tool("svcA", "search", "{}")
     data = json.loads(raw)
     assert data["status"] == "error"
     assert "disabled" in data["error"]
@@ -180,7 +180,7 @@ async def test_call_tool_refuses_disabled_server(srv):
 @pytest.mark.asyncio
 async def test_call_tool_allows_enabled(srv):
     s, _store = srv
-    raw = await s.__mcp_call_tool("svcA", "list", "{}")
+    raw = await s.__mcp_gateway_call_tool("svcA", "list", "{}")
     assert raw == "[fake] svcA__list ok"
 
 
@@ -194,14 +194,14 @@ async def test_call_tool_passes_when_no_store(restore_root_logger):
         patch.object(s, "_ensure_store", AsyncMock(return_value=None)),  # DB failed to open
     ):
         # No store → default-enabled, call proceeds.
-        raw = await s.__mcp_call_tool("svcA", "list", "{}")
+        raw = await s.__mcp_gateway_call_tool("svcA", "list", "{}")
     assert raw == "[fake] svcA__list ok"
 
 
 @pytest.mark.asyncio
 async def test_get_tool_returns_schema_and_server_state(srv):
     s, store = srv
-    raw = await s.__mcp_get_tool("svcA__search")
+    raw = await s.__mcp_gateway_get_tool("svcA__search")
     data = json.loads(raw)
     assert data["status"] == "ok"
     assert data["server"] == "svcA"
@@ -212,16 +212,16 @@ async def test_get_tool_returns_schema_and_server_state(srv):
 
     # Per-mcp: the enabled flag is the SERVER's, not the tool's.
     await store.set_server_enabled("svcA", False)
-    data = json.loads(await s.__mcp_get_tool("svcA__search"))
+    data = json.loads(await s.__mcp_gateway_get_tool("svcA__search"))
     assert data["enabled"] is False
 
 
 @pytest.mark.asyncio
 async def test_get_tool_unknown(srv):
     s, _store = srv
-    raw = await s.__mcp_get_tool("svcA__nonexistent")
+    raw = await s.__mcp_gateway_get_tool("svcA__nonexistent")
     assert json.loads(raw)["status"] == "error"
-    raw = await s.__mcp_get_tool("svcZ__search")  # server not connected
+    raw = await s.__mcp_gateway_get_tool("svcZ__search")  # server not connected
     assert json.loads(raw)["status"] == "error"
 
 
@@ -231,13 +231,13 @@ class TestAnnotateScores:
     cosine similarity)."""
 
     def test_cosine_maps_to_cosine_similarity(self):
-        from slife.plugins.mcp.search import annotate_scores
+        from slife.plugins.mcp_gateway.search import annotate_scores
         assert annotate_scores([{"distance": 0.0}])[0]["similarity"] == 1.0
         assert annotate_scores([{"distance": 0.3}])[0]["similarity"] == 0.7
         # Opposite vectors (cosine distance > 1) clip to 0.
         assert annotate_scores([{"distance": 1.3}])[0]["similarity"] == 0.0
 
     def test_keyword_only_results_untouched(self):
-        from slife.plugins.mcp.search import annotate_scores
+        from slife.plugins.mcp_gateway.search import annotate_scores
         results = annotate_scores([{"full_name": "a", "distance": None}])
         assert "similarity" not in results[0]

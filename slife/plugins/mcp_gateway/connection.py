@@ -24,9 +24,9 @@ from enum import Enum
 
 import httpx2
 
-from slife.plugins.mcp import __version__
-from slife.plugins.mcp.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
-from slife.plugins.mcp.platform import kill_process_tree, resolve_command, terminate_process
+from slife.plugins.mcp_gateway import __version__
+from slife.plugins.mcp_gateway.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
+from slife.plugins.mcp_gateway.platform import kill_process_tree, resolve_command, terminate_process
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ class MCPServerConnection:
         Mutates ``self.config.headers`` in place — the transport layer
         picks up the token automatically.
         """
-        from slife.plugins.mcp.oauth import (
+        from slife.plugins.mcp_gateway.oauth import (
             get_valid_token,
             run_device_code_flow,
             refresh_access_token,
@@ -167,7 +167,7 @@ class MCPServerConnection:
             return
 
         # Serialize connects — the health monitor, call_tool's lazy reconnect,
-        # and mcp_set_enabled can otherwise each spawn their own transport,
+        # and mcp_gateway_set_enabled can otherwise each spawn their own transport,
         # orphaning the loser (and starting duplicate monitors).
         async with self._connect_lock:
             # A disconnect() that raced an in-flight connect must not be
@@ -340,7 +340,7 @@ class MCPServerConnection:
             for arg in self.config.args
         ]
         if self.config.os_paths:
-            from slife.plugins.mcp.os_detect import get_os_accessible_paths
+            from slife.plugins.mcp_gateway.os_detect import get_os_accessible_paths
             for p in get_os_accessible_paths():
                 resolved_args += ["--allow-path", p]
 
@@ -821,7 +821,7 @@ class MCPServerConnection:
 
     async def _drain_stderr(self) -> None:
         assert self._process and self._process.stderr
-        from slife.plugins.mcp.logging import read_stderr_lines, sanitize_secrets
+        from slife.plugins.mcp_gateway.logging import read_stderr_lines, sanitize_secrets
         try:
             # Shared hardened reader — an over-long stderr line must not
             # kill this relay (a dead relay wedges the server's stderr
