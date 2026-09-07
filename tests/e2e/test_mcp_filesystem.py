@@ -124,6 +124,12 @@ async def main(allowed_dir: str | None = None):
     # ── 9. Clean shutdown ─────────────────────────────────────────
     print("9. Shutting down...")
     await client.disconnect()
+    # Stop the wrapper child too — otherwise its stdio pipe transports are
+    # left open when asyncio.run() returns and the Windows ProactorEventLoop
+    # GC's them at interpreter shutdown ("ValueError: I/O operation on
+    # closed pipe").  wrapper.stop() cancels the stderr drain and waits the
+    # child out first.
+    await wrapper.stop()
     print("   Done.")
     print()
 
