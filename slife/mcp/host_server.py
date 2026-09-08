@@ -82,24 +82,45 @@ def is_exposed(tool) -> bool:
 #: Connected client sessions to notify on tool-set change.  Captured from the
 #: handler's injected ``Context`` — the same pattern job-coding / mcp use.
 _active_sessions: set = set()
+#: Bound on tracked sessions.  A client that connects and disconnects cleanly
+#: (send never raising) would otherwise leak a session entry forever; the
+#: bound makes the set bounded and forces a sweep of dead sessions via a
+#: failed send.  Real deployments see a handful of consumers.
+_MAX_TRACKED_SESSIONS = 64
+#: Per-session deadline for tools/list_changed notifications — a stuck client
+#: must not stall the whole fan-out.
+_NOTIFY_TIMEOUT = 5.0
 
 
 def _capture_session(ctx: Context | None) -> None:
     """Remember the caller's session so a registry change can notify it."""
     if ctx is not None and ctx.session is not None:
         _active_sessions.add(ctx.session)
+        if len(_active_sessions) > _MAX_TRACKED_SESSIONS:
+            # Past the bound, drop arbitrary entries that are already dead
+            # (attempting to send detects it); dropping a live one just means
+            # it re-registers on its next __check call.
+            _active_sessions.discard(next(iter(_active_sessions)))
 
 
 async def _notify_tools_changed() -> None:
     """Push ``notifications/tools/list_changed`` to every known client.
 
     Best-effort: a dead/stale session is dropped, the rest are served.
+    Sends run CONCURRENTLY, each bounded by :data:`_NOTIFY_TIMEOUT`, so one
+    slow/backpressured client degrades only itself.
     """
-    for sess in list(_active_sessions):
+    sessions = list(_active_sessions)
+
+    async def _send_one(sess) -> None:
         try:
-            await sess.send_tool_list_changed()
+            await asyncio.wait_for(
+                sess.send_tool_list_changed(), timeout=_NOTIFY_TIMEOUT,
+            )
         except Exception:
             _active_sessions.discard(sess)
+
+    await asyncio.gather(*(_send_one(s) for s in sessions))
 
 
 def build_registry_mcp(registry: "ToolRegistry", instructions: str = "") -> FastMCP:

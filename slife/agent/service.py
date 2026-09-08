@@ -726,7 +726,7 @@ class AgentService:
         attempt and surface "tunnel down" on a terminal failure.  (The child's
         port env is published by the generic spawn on start AND every restart,
         so subagents always inherit the live port — nothing to do here.)"""
-        self._watch_sharefile_tunnel()
+        self._watch_sharefile_tunnel(lc)
 
     async def _after_ready_mcp(self, lc) -> None:
         """After the gateway child is ready: wire the mcp enrichment (expose
@@ -791,7 +791,7 @@ class AgentService:
             len(new_names),
         )
 
-    def _watch_sharefile_tunnel(self) -> None:
+    def _watch_sharefile_tunnel(self, lc) -> None:
         """After sharefile loads, watch its eager ngrok attempt to settle and
         surface a TUI message when the tunnel is down.
 
@@ -802,7 +802,12 @@ class AgentService:
         client = self._plugins["sharefile"].client
         if client is None:
             return
-        asyncio.create_task(self._check_sharefile_tunnel(client))
+        # Supervise the probe on the lifecycle's extra_task slot so a stop /
+        # watchdog restart reaps it with the other background tasks — a
+        # fire-and-forget create_task would keep sleeping past shutdown.
+        if lc.extra_task is not None and not lc.extra_task.done():
+            lc.extra_task.cancel()
+        lc.extra_task = asyncio.create_task(self._check_sharefile_tunnel(client))
 
     async def _check_sharefile_tunnel(self, client) -> None:
         """Probe ``__check`` until the eager attempt concludes, then

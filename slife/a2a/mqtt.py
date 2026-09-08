@@ -212,7 +212,13 @@ class MQTTAdapter(TransportAdapter):
         qos: int = 1,
         retain: bool = False,
     ) -> None:
-        """Publish a message to a topic."""
+        """Publish a message to a topic.
+
+        For ``qos > 0`` the publish is acknowledged with a bounded wait
+        (off the event loop) so a mid-flight disconnect that drops the
+        message surfaces here instead of silently vanishing until a
+        ``task_timeout`` much later.
+        """
         if self._client is None:
             raise RuntimeError("MQTT not connected")
         info = self._client.publish(topic, payload, qos=qos, retain=retain)
@@ -220,6 +226,21 @@ class MQTTAdapter(TransportAdapter):
             logger.info(
                 "a2a_mqtt_publish_fail topic=%s rc=%d", topic, info.rc,
             )
+            return
+        if qos and hasattr(info, "wait_for_publish"):
+            # paho's wait_for_publish blocks the calling thread — run it on
+            # a thread (bounded by a timeout) so the event loop never parks.
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(info.wait_for_publish, 5.0), timeout=6.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "a2a_mqtt_publish_unacked topic=%s — message may have "
+                    "been dropped on a mid-flight disconnect", topic,
+                )
+            except Exception as e:
+                logger.warning("a2a_mqtt_publish_ack_error topic=%s err=%s", topic, e)
 
     async def subscribe(self, topic: str, qos: int = 1) -> None:
         """Subscribe to a topic (supports MQTT wildcards like ``Slife/+/presence``)."""

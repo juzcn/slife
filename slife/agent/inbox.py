@@ -96,7 +96,13 @@ class Inbox:
         #: converged, so user input can never race ahead of core services.
         #: ``None`` (no gate) preserves the old behaviour for standalone use.
         self._ready = ready
-        self._queue: asyncio.Queue[AgentMessage] = asyncio.Queue()
+        #: Bounded inbox: a message burst (WeChat/A2A flood while a long turn
+        #: runs, or while frozen) must not grow memory without limit.  Beyond
+        #: the cap new messages are dropped and logged; the presence deque
+        #: already has an analogous 1000-entry bound.
+        self._queue: asyncio.Queue[AgentMessage] = asyncio.Queue(
+            maxsize=1000,
+        )
         self._runner_task: asyncio.Task | None = None
         self._processing: bool = False
         #: correlation_id of the message currently being processed (remote
@@ -168,8 +174,20 @@ class Inbox:
         return self._queue.qsize()
 
     async def post(self, msg: AgentMessage) -> None:
-        """Drop a message into the inbox.  Non-blocking, never raises."""
-        await self._queue.put(msg)
+        """Drop a message into the inbox.  Non-blocking, never raises.
+
+        Never waits on a full queue: a flood while the inbox is otherwise
+        saturated drops the oldest-aggressor messages with a warning rather
+        than wedging the caller (a WeChat poll loop must never block on the
+        inbox).
+        """
+        try:
+            self._queue.put_nowait(msg)
+        except asyncio.QueueFull:
+            logger.warning(
+                "inbox_overflow_dropped source=%s pending=%d content=%.80s",
+                msg.source, self._queue.qsize(), msg.content,
+            )
         logger.debug(
             "inbox_post source=%s content=%.80s", msg.source, msg.content,
         )
@@ -199,6 +217,15 @@ class Inbox:
             await self._ready()
         logger.info("inbox_start")
         while True:
+            # Notify TUI that processing completed so the status bar
+            # can clear the "⏳ processing" indicator.  Emitted before the
+            # frozen check so a dropped message can't leave the status bar
+            # stuck "processing" (a busy event for a task that never ran).
+            if self._on_activity:
+                try:
+                    await self._on_activity("idle")
+                except Exception:
+                    pass
             msg = await self._queue.get()
             if self._frozen:
                 # Memory is broken — drop rather than run (the turn couldn't
@@ -209,18 +236,18 @@ class Inbox:
                 )
                 continue
             await self._process_one(msg)
-            # Notify TUI that processing completed so the status bar
-            # can clear the "⏳ processing" indicator.
-            if self._on_activity:
-                try:
-                    await self._on_activity("idle")
-                except Exception:
-                    pass
 
     async def _process_one(self, msg: AgentMessage) -> None:
         """Process a single message through the agent loop."""
         from slife.a2a.identity import HEARTBEAT, HUMAN, SYSTEM, WECHAT
         from slife.subagent.identity import SUBAGENT
+
+        # Announce the correlation id BEFORE the first await so a cancel
+        # that races the notification window is not lost: cancel_correlation
+        # re-checks _current_corr, which would otherwise still be the previous
+        # message's (or None) while this one is being announced.
+        self._current_corr = msg.correlation_id or None
+        self._processing = True
 
         # Heartbeat / system (schedule triggers) are internal (not peer
         # terminals) — no A2A busy status or task_received/completed TUI noise
@@ -267,10 +294,6 @@ class Inbox:
                 )
             except Exception:
                 pass
-
-        # Mark busy while processing
-        self._processing = True
-        self._current_corr = msg.correlation_id or None
 
         # Notify the TUI so the status bar shows "⏳ processing" for ANY turn
         # (including autonomous heartbeat turns, whose silent handler never

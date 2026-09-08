@@ -17,12 +17,17 @@ Usage::
 from __future__ import annotations
 
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
 #: Ordered list of status entries recorded during startup / runtime.
 _entries: list[dict] = []
 _MAX_ENTRIES = 200  # bound — a long session must not grow the list forever
+#: ``check_external_deps`` runs on a daemon thread while the event loop reads
+#: ``get_report`` — serialize the slice-assignment/append/evict window so a
+#: reader never interleaves with a ``replace`` mutation.
+_lock = threading.Lock()
 
 
 def record(
@@ -45,34 +50,37 @@ def record(
         (e.g. an MCP server reconnecting in the background) supersede a
         stale startup warning instead of leaving both in the report.
     """
-    if replace and key:
-        _entries[:] = [
-            e for e in _entries
-            if not (e.get("component") == component and e.get("key") == key)
-        ]
-    entry: dict = {
-        "component": component,
-        "level": level,
-    }
-    if key:
-        entry["key"] = key
-    if value:
-        entry["value"] = value
-    if hint:
-        entry["hint"] = hint
-    _entries.append(entry)
-    if len(_entries) > _MAX_ENTRIES:
-        del _entries[:-_MAX_ENTRIES]
+    with _lock:
+        if replace and key:
+            _entries[:] = [
+                e for e in _entries
+                if not (e.get("component") == component and e.get("key") == key)
+            ]
+        entry: dict = {
+            "component": component,
+            "level": level,
+        }
+        if key:
+            entry["key"] = key
+        if value:
+            entry["value"] = value
+        if hint:
+            entry["hint"] = hint
+        _entries.append(entry)
+        if len(_entries) > _MAX_ENTRIES:
+            del _entries[:-_MAX_ENTRIES]
 
 
 def get_report() -> list[dict]:
     """Return all recorded status entries, newest last."""
-    return list(_entries)
+    with _lock:
+        return list(_entries)
 
 
 def clear() -> None:
     """Clear all entries (e.g. on re-init)."""
-    _entries.clear()
+    with _lock:
+        _entries.clear()
 
 
 # ── External tooling availability check ─────────────────────────────────

@@ -347,6 +347,7 @@ class AgentLoop:
         self._context_time_start: str = ""  # earliest turn date in context; set by restore, advanced by trim
         self._last_context_time_start: str = ""  # for change-detection in the footer
         self._context_turn_dates: list[str] = []  # dates of restored turns, oldest-first; consumed by trim
+        self._current_turn_start: str = ""  # start date of the turn currently running (seeds the trim-exhausted footer anchor)
         #: ``id(history)`` whose restore must not be immediately
         #: shredded by the ceiling trim.  Restore primes the history
         #: up to the ceiling; the first replacement turn would otherwise
@@ -587,9 +588,13 @@ class AgentLoop:
             # context now starts at the current turn (the one this save
             # just finished, which extract_oldest_turns always keeps);
             # don't leave a stale "covers since …" that points at a turn
-            # that is no longer in context.
-            now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-            self._context_time_start = now
+            # that is no longer in context.  Seed from the current turn's
+            # actual start (recorded at run() time), not from wall-clock
+            # now — the footer's "covers since HH:MM" must track the turn.
+            self._context_time_start = getattr(
+                self, "_current_turn_start", "") or (
+                    datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                )
         logger.info(
             "context_trimmed_after_save turns=%d tokens_freed=%d time_start=%s",
             removed, tokens_freed, self._context_time_start,
@@ -1165,6 +1170,10 @@ class AgentLoop:
                         "tool_error name=%s err=%s", tc.name, e,
                     )
 
+            # Judge failure BEFORE the args-truncation marker prepends its ⚠
+            # text — otherwise a failed call whose result began with "Error:"
+            # would read as success (is_error false) in every downstream sink.
+            is_error = result.startswith("Error")
             # Surface provider-truncated arguments before secrets handling —
             # the marker is plain text and must not be sanitized away.
             result = self._flag_truncated_args(tc, result)
@@ -1181,7 +1190,6 @@ class AgentLoop:
                     f"re-run the tool to see the full output)"
                 )
                 logger.debug("tool_result_truncated name=%s original=%d truncated=%d", tc.name, original_len, max_chars)
-            is_error = result.startswith("Error")
 
             if handler:
                 await handler.on_tool_result(tc.id, result, is_error)
@@ -1261,6 +1269,9 @@ class AgentLoop:
                 # Same 'YYYY-MM-DD HH:MM:SS' wall-clock format restore seeds
                 # (_context_time_start), so "Context covers" never flips format.
                 turn_start = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                # Remember the current turn's start for the trim-exhausted
+                # branch (seed _context_time_start from it, not from now).
+                self._current_turn_start = turn_start
                 if not self._context_time_start:
                     self._context_time_start = turn_start
                 else:

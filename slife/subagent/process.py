@@ -177,6 +177,20 @@ class SubagentProcess:
         self._process = await asyncio.create_subprocess_exec(
             *cmd, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
+        self._running = True
+        # Start the stdout/stderr readers BEFORE writing the (potentially
+        # large) cloned context to stdin: the child only reads stdin after
+        # finishing its own boot (plugin connects etc.), meanwhile stderr is
+        # at DEBUG.  With no reader yet, a build-up of >~64 KB of stderr
+        # blocks the child, which then never reads stdin, which blocks our
+        # drain() below — both stuck until the 30s _ready timeout kills it.
+        # (Same class as the prior stderr relay pipe-wedge.)  Do NOT call
+        # _read_one() concurrently: two readline() calls on the same
+        # StreamReader cause "readuntil() called while another coroutine
+        # is already waiting for incoming data".
+        self._stdout_task = asyncio.create_task(self._read_stdout())
+        self._stderr_task = asyncio.create_task(self._read_stderr())
+
         # Cloned context rides the stdin JSON-RPC channel (env is limited to
         # ~32 KB on Windows — too small for a conversation).
         proc = self._process
@@ -188,14 +202,6 @@ class SubagentProcess:
             ) + "\n"
             proc.stdin.write(ctx_msg.encode())
             await proc.stdin.drain()
-        self._running = True
-        # Start _read_stdout as the sole stdout reader — it will set
-        # self._ready when it receives the "ready" signal.  Do NOT call
-        # _read_one() concurrently: two readline() calls on the same
-        # StreamReader cause "readuntil() called while another coroutine
-        # is already waiting for incoming data".
-        self._stdout_task = asyncio.create_task(self._read_stdout())
-        self._stderr_task = asyncio.create_task(self._read_stderr())
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=30.0)
             logger.info("ready name=%s", self._name)
@@ -562,7 +568,19 @@ class SubagentProcess:
                 f.set_result(result_text)
                 self._record_update(rpc_id, "completed", result_text)
         elif rpc_id:
-            # No synchronous waiter — store for async retrieval
+            # No synchronous waiter — store for async retrieval IF the task
+            # is one we sent and have not resolved yet.  A response for an
+            # unknown id (a buggy/duplicate worker line) must not mutate
+            # counters, records, or the auto-push channel: it would resurrect
+            # a cancelled/completed record and double-push into the inbox.
+            rec = self._task_records.get(rpc_id)
+            if rec is None or rec.get("status") != "pending":
+                logger.warning(
+                    "subagent_unknown_or_stale_response task=%s status=%s "
+                    "name=%s — ignored",
+                    rpc_id, (rec or {}).get("status", "unknown"), self._name,
+                )
+                return
             if self._inflight > 0: self._inflight -= 1
             if "error" in msg:
                 err = msg["error"].get("message", "Unknown")
@@ -575,7 +593,7 @@ class SubagentProcess:
             # Notify the manager so it can auto-push the result to the user,
             # unless the task was sent in "poll" mode — the caller retrieves
             # it via get_task_result instead (no redundant push).
-            if self._task_records.get(rpc_id, {}).get("mode") != "async-poll":
+            if rec.get("mode") != "async-poll":
                 self._notify_manager_task_done(rpc_id)
         elif rpc_id is None:
             # JSON-RPC notification or ready signal (no id)

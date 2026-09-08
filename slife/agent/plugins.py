@@ -170,6 +170,10 @@ class PluginLifecycle:
         # like poll_task, so a pending network call can't linger against a
         # dead or replaced client.
         self.restore_task: asyncio.Task | None = None
+        # Extra supervised background task slot (e.g. sharefile's tunnel
+        # settle-watch) — reaped by cancel_tasks() with the rest, so nothing
+        # fire-and-forget lingers past a stop/restart.
+        self.extra_task: asyncio.Task | None = None
 
         # Exact tool names this plugin registered (bare names — no {name}__
         # prefix), so dead-process cleanup and stop can unregister them by
@@ -511,7 +515,7 @@ class PluginLifecycle:
         second poll / drain / restore loop against a fresh client, and by
         :meth:`stop`.  Never touches the child process or client.
         """
-        for attr in ("poll_task", "restore_task"):
+        for attr in ("poll_task", "restore_task", "extra_task"):
             task = getattr(self, attr, None)
             if task is None:
                 continue
