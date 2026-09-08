@@ -15,6 +15,18 @@ pays for paho.
 """
 
 from importlib import import_module
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type-only view of the lazy exports below: pyright (and editors) resolve
+    # ``from slife.a2a import A2AClient`` etc. against these without importing
+    # paho at runtime.  The runtime path stays ``__getattr__`` + ``_LAZY_EXPORTS``.
+    from slife.a2a.card import AgentCard
+    from slife.a2a.client import A2AClient
+    from slife.a2a.config import A2AConfig
+    from slife.a2a.identity import AgentMessage, AgentName, HUMAN
+    from slife.a2a.mqtt import MQTTAdapter
+    from slife.a2a.transport import TransportAdapter, TransportMessage
 
 __all__ = [
     "A2AClient",

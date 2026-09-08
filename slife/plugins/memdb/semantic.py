@@ -144,7 +144,7 @@ class SemanticManager:
             await self._store.replace_embedding_chunks(doc, embeddings)
         return True
 
-    def _unavailable_reason(self, embedder: EmbeddingClient) -> str:
+    def _unavailable_reason(self, embedder: Any) -> str:
         return _backend_unavailable_reason(embedder)
 
     # ── public entry points ──────────────────────────────────────────
@@ -240,7 +240,10 @@ class SemanticManager:
         return self._semantic_ready
 
     @property
-    def embedder(self) -> EmbeddingClient | None:
+    def embedder(self) -> Any:
+        """The active embedder.  ``Any`` like the hooks above — memdb and the
+        gateway each carry their own structurally identical EmbeddingClient,
+        so status readers must not trip on either."""
         return self._embedder
 
     @property

@@ -279,7 +279,12 @@ def error_json(message: str, **extra: object) -> str:
 # hanging the other); re-export the shared implementation so every
 # sanitizing caller — logfmt (tool results) and the gateway stderr relay —
 # redacts identically.  ``re`` stays imported for the other uses below.
-from slife.logfmt import sanitize_secrets  # noqa: F401  (re-exported)
+# Private-alias + redefinition marks this as a deliberate re-export to both
+# ruff (F401) and pyright (reportUnusedImport) — ``# noqa`` alone only wins
+# against ruff.
+from slife.logfmt import sanitize_secrets as _sanitize_secrets
+
+sanitize_secrets = _sanitize_secrets
 
 
 # ── Shared root-logging setup ──────────────────────────────────────────
