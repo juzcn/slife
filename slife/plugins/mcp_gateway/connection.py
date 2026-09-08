@@ -37,7 +37,6 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import (
-    InitializedNotification,
     TextContent,
     ImageContent,
 )
@@ -69,10 +68,6 @@ _CLEANUP_TIMEOUT = 2.0
 # many lines of the tail connect()'s error path may read back.
 _STDERR_POLL_INTERVAL = 0.05
 _STDERR_BUFFER_LIMIT = 500
-
-#: Per-session deadline for tools/list_changed notifications (matches the
-#: gateway server's notify-bound; kept together here for the connection side).
-NOTIFY_TIMEOUT = 5.0
 
 
 class NeedsUserAuthError(RuntimeError):
@@ -346,6 +341,13 @@ class MCPServerConnection:
             )
             self._sse_mode = True
             logger.info("mcp_sse_connected server=%s url=%s", self.config.name, url)
+        except asyncio.TimeoutError:
+            # The OUTER connect() asyncio.timeout has already fired — every
+            # subsequent await inside that context re-raises immediately, so
+            # the Streamable-HTTP fallback below could never succeed.  Re-raise
+            # so connect() handles a genuinely slow/hung SSE endpoint as a
+            # failure, not as "SSE unsupported, try the other transport".
+            raise
         except Exception:
             # SSE not supported — release anything the failed enter opened and
             # retry as Streamable HTTP.  The SDK reuses a pre-built httpx2
@@ -455,9 +457,10 @@ class MCPServerConnection:
 
                     assert self._session is not None
                     # MCP initialize handshake (SDK-managed, official params).
+                    # The SDK's initialize() already sends the standardized
+                    # InitializedNotification itself — do not send it again
+                    # here (a duplicate handshake message every connect).
                     await self._session.initialize()
-                    # Send the initialized notification (typed SDK notification).
-                    await self._session.send_notification(InitializedNotification())
 
                     # Discover tools
                     tools_result = await self._session.list_tools()

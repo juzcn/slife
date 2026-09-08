@@ -502,16 +502,31 @@ async def mcp_set(
     # params) — preserve them across an upsert so a hand-edited flag isn't
     # silently reset on the running connection.
     existing = _pool.get_server(name)
+    # Resolve ${VAR} refs in env/auth the SAME way resolve_server_config
+    # does, so _server_config_equal compares resolved-vs-resolved.  The tool
+    # takes raw refs (secrets must not come back through tool args); without
+    # resolution every re-run of mcp_set with identical args compared
+    # {"FOO": "${FOO}"} against the pool's resolved {"FOO": "secret"} and
+    # never matched — tearing down + reconnecting (and re-running OAuth).
+    resolved_env = None
+    if env:
+        resolved_env = {k: plugin_config._resolve_secret(str(v)) for k, v in env.items()}
+    resolved_auth = None
+    if auth:
+        resolved_auth = dict(auth)
+        for auth_key in ("client_id", "client_secret"):
+            if auth_key in resolved_auth and isinstance(resolved_auth[auth_key], str):
+                resolved_auth[auth_key] = plugin_config._resolve_secret(resolved_auth[auth_key])
     config = ServerConfig(
         name=name,
         command=command,
         args=args or [],
-        env=env,
+        env=resolved_env,
         url=url,
         headers=headers,
         description=description,
         enabled=enabled,
-        auth=auth,
+        auth=resolved_auth,
         os_paths=existing.config.os_paths if existing else False,
         auto_load=existing.config.auto_load if existing else False,
         source=(source if source is not None

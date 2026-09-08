@@ -160,10 +160,20 @@ def _register_file(file_path: str) -> str:
     the generic ``[A-Za-z0-9]{32,}`` secret-sanitization pattern in
     ``logfmt.py``.  Hex (not base64url) so no underscores break the
     Textual/Rich markdown URL detection.
+
+    When the file already has a token but its stat pin no longer matches
+    (the file changed since the link was created), a NEW token is issued —
+    otherwise ``share_file`` would return the same URL that now serves 403
+    "changed" to every holder (D4).
     """
     existing = _path_to_token.get(file_path)
     if existing:
-        return existing
+        pin = _registry.get(existing)
+        if pin is not None and pin == _stat_pin(file_path):
+            return existing
+        # Stale share — revoke it and issue a fresh token so re-sharing
+        # actually re-shares the current content.
+        _unregister_file(existing)
     tok = secrets.token_hex(15)
     _registry[tok] = _stat_pin(file_path)
     _path_to_token[file_path] = tok
