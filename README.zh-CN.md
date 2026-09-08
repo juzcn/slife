@@ -14,7 +14,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：12 个类别共 65 个原生工具（含 1 个保留的 harness 工具 `_sys_note`）、八个内部插件服务（memdb、wechat、memfiles、sharefile、a2a、media、job-coding，以及 MCP 网关 `mcp-gateway`）、手动启动的 `local-embed` 嵌入守护进程、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：12 个类别约 60 个原生工具（含 2 个保留的 harness 工具 `_sys_note` 与 `_model_config_tool`）、八个内部插件服务（memdb、wechat、memfiles、sharefile、a2a、media、job-coding，以及 MCP 网关 `mcp-gateway`）、手动启动的 `local-embed` 嵌入守护进程、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -232,11 +232,11 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 统一为 OpenAI 函数定义。LLM 看不出原生、插件与外部 MCP 工具的区别。
 
-**12 个类别共 65 个原生工具** — 从 `slife/tools/` 自动发现（64 个 LLM 可见 + 1 个 harness `_sys_note`；`attach_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
+**12 个类别约 60 个原生工具** — 从 `slife/tools/` 自动发现（默认 58 个 LLM 可见；`_sys_note`/`_model_config_tool` 是保留的 harness 工具，`attach_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
 
 | 类别 | 工具 |
 |------|------|
-| System | `system_health`, `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user` |
+| System | `system_health`, `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user`, `wait_minutes`（暂停本轮，稍后自动继续） |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
@@ -319,7 +319,7 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 看看这张截图 @D:\Downloads\error.png
 ```
 
-支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 直接透传；`attach_image` 工具允许智能体在对话中途附加图片。所有文件均不在终端内渲染——用系统默认程序打开，`share_file` 则通过 ngrok 隧道把任意本地文件发布为公开 HTTPS 链接（隧道离线时返回优雅错误）。
+支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 直接透传；`attach_image` 工具允许智能体在对话中途附加图片（本地文件上限 20 MB，防止误把超大文件 base64 进上下文）。所有文件均不在终端内渲染——用系统默认程序打开，`share_file` 则通过 ngrok 隧道把任意本地文件发布为公开 HTTPS 链接（隧道离线时返回优雅错误）。
 
 ### 插件
 
