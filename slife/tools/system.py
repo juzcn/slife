@@ -1119,6 +1119,11 @@ async def _runner(coro, task_id: str) -> str:
         result = await coro
     except Exception as e:
         result = f"Error: {type(e).__name__}: {e}"
+    # Sanitize at storage time, not at check_async time: while a task runs
+    # its raw output sits in memory (up to the stream caps), and a save-side
+    # re-sanitize would leave secrets visible to anyone between run and poll.
+    from slife.logfmt import sanitize_secrets
+    result = sanitize_secrets(result)
     logger.info("async_task_done id=%s len=%d", task_id, len(result))
     return result
 
@@ -1155,6 +1160,12 @@ class CheckAsyncTool(Tool):
             result = task.result()
         except Exception as e:
             result = f"Error: Async task failed: {type(e).__name__}: {e}"
+        # A failed async task must keep the "Error" prefix so the loop's
+        # is_error detection (result.startswith("Error")) and the TUI's
+        # red render both work — wrapping it in the success banner would
+        # hide the failure.
+        if result.startswith("Error"):
+            return f"Error: Async task failed (task_id: {task_id})\n\n{result}"
         return f"✓ Task completed (task_id: {task_id})\n\n{result}"
 
 
@@ -1308,6 +1319,13 @@ class NotifyUserTool(Tool):
         from slife.threads import run_daemon
         run_daemon(desktop_notify, title, message, name="desktop-notify")
 
-        return t("notify_sent", title=title, message=message)
+        # t() applies str.format, and an LLM-authored {message} must never
+        # raise KeyError inside the tool — escape braces so a message like
+        # "Deploy failed — see {output}" renders literally.
+        return t(
+            "notify_sent",
+            title=title.replace("{", "{{").replace("}", "}}"),
+            message=message.replace("{", "{{").replace("}", "}}"),
+        )
 
 

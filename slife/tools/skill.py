@@ -8,6 +8,8 @@ skill_remove: delete a skill directory and its contents
 
 import json
 import logging
+import os
+import time
 import zipfile
 from pathlib import Path
 from typing import ClassVar
@@ -22,6 +24,11 @@ from slife.tools._config_io import (
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
+
+
+def _pid_suffix() -> str:
+    """Short process-unique suffix for swap backups (same-process races)."""
+    return f"{os.getpid()}.{time.monotonic_ns()}"
 
 
 def _parse_frontmatter(content: str) -> tuple[dict, str]:
@@ -408,11 +415,29 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             return f"Error: installing skill '{name}': {e}"
 
         # Swap: the live dir is replaced by the fully-installed temp dir.
-        # (os.replace over an existing non-empty dir fails on Windows, so the
-        # old version is removed first — the skill dir is not hot-served.)
+        # os.replace over an existing non-empty dir fails on Windows, so the
+        # old version is first renamed aside (os.rename of a directory is
+        # atomic and works everywhere) rather than deleted: if the final
+        # replace then fails (AV lock, transient I/O), the previous skill is
+        # restored instead of being lost.  rmtree comes only after the swap.
+        backup = None
         if skill_dir.exists():
-            _shutil.rmtree(skill_dir)
-        _os.replace(tmp_dir, skill_dir)
+            backup = skill_dir.with_name(f"{skill_dir.name}.old.{_pid_suffix()}")
+            _shutil.rmtree(backup, ignore_errors=True)
+            _os.rename(skill_dir, backup)
+        try:
+            _os.replace(tmp_dir, skill_dir)
+        except BaseException:
+            # Restore the previous version; leave tmp_dir for the caller to
+            # clean up in its except handler.
+            if backup is not None and backup.exists() and not skill_dir.exists():
+                try:
+                    _os.rename(backup, skill_dir)
+                except OSError:
+                    _shutil.rmtree(backup, ignore_errors=True)
+            raise
+        if backup is not None:
+            _shutil.rmtree(backup, ignore_errors=True)
         # Cosmetic: report the real install path, not the temp one.
         return result.replace(str(tmp_dir), str(skill_dir))
 

@@ -420,7 +420,8 @@ class TestCheckAsyncTool:
 
     @pytest.mark.asyncio
     async def test_task_completed_with_error(self):
-        """A failed task returns the error in the result."""
+        """A failed task surfaces as an error (not a success banner) so the
+        loop's is_error detection and the TUI's red render both work."""
         tool = CheckAsyncTool()
 
         async def failing():
@@ -430,8 +431,7 @@ class TestCheckAsyncTool:
         await asyncio.sleep(0.1)
 
         result = await tool.execute(task_id=tid)
-        assert "Task completed" in result
-        assert "RuntimeError" in result
+        assert result.startswith("Error")
         assert "boom" in result
         assert tid not in _tasks
 

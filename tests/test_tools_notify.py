@@ -30,3 +30,15 @@ class TestNotifyUserTool:
         assert "Notification sent" in result
         assert "Test" in result
         assert "Hello world" in result
+
+    @pytest.mark.asyncio
+    async def test_braces_in_message_do_not_crash(self):
+        """An LLM-authored message containing {} must render literally, not
+        raise KeyError inside the tool (t() always applies str.format)."""
+        tool = NotifyUserTool()
+        with patch("slife.platform.desktop_notify"):
+            result = await tool.execute(
+                title="Deploy", message="Failed — see {output}",
+            )
+        assert "Notification sent" in result
+        assert "{output}" in result

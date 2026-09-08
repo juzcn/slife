@@ -15,6 +15,11 @@ from slife.tools.base import Tool, make_params
 
 logger = logging.getLogger(__name__)
 
+#: Upper bound on ``wait_minutes`` — 1 day.  Anything larger is almost
+#: certainly a misplaced argument (``minutes`` vs ``hours``), and an unbounded
+#: value schedules a bogus multi-year timer the agent can't easily revoke.
+MAX_WAIT_MINUTES = 24 * 60
+
 
 class WaitMinutesTool(Tool):
     """Pause the current work and resume automatically after N minutes."""
@@ -45,6 +50,11 @@ class WaitMinutesTool(Tool):
             return "Error: minutes must be a whole number of minutes."
         if minutes < 1:
             return "Error: minutes must be at least 1."
+        if minutes > MAX_WAIT_MINUTES:
+            return (
+                f"Error: minutes cannot exceed {MAX_WAIT_MINUTES} (24h). "
+                "Did you mean hours?"
+            )
         ctx = getattr(self, "_ctx", None)
         schedule_wakeup = (
             getattr(ctx, "schedule_wakeup", None) if ctx is not None else None

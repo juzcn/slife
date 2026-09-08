@@ -642,6 +642,12 @@ class SubagentManager:
     @property
     def count(self) -> int: return sum(1 for p in self._subagents.values() if p.is_running)
 
+    def spawned_running(self, name: str) -> bool:
+        """True if a worker with *name* is currently running (spawn() would
+        reuse it rather than create a new one).  Lets tools report reuse."""
+        proc = self._subagents.get(name)
+        return proc is not None and proc.is_running
+
     async def spawn(
         self, name: str | None = None,
         context_source: str = "clean", context_messages: list[dict] | None = None,

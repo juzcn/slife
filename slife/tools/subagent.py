@@ -160,13 +160,17 @@ class SpawnSubagentTool(Tool):
         )
 
         try:
+            # spawn() is idempotent for a running worker — check up-front so
+            # the caller is told the worker was reused, not "spawned".
+            existed = manager.spawned_running(worker_name)
             spawned = await manager.spawn(
                 name=worker_name,
                 context_source=context_source,
                 context_messages=context_messages,
             )
+            action = "already running — reused" if existed else "spawned"
             return (
-                f"Subagent spawned successfully.\n"
+                f"Subagent {action}.\n"
                 f"  Subagent Name: {spawned}\n"
                 f"  Context: {context_source}\n"
                 f"  Use list_subagents to see all local workers.\n"

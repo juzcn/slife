@@ -10,6 +10,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: Cap on a local image file handed to a vision API.  A tool result must
+#: never buffer a huge file whole — base64 expands it ~33% and it all goes
+#: into the message.  Sources over the cap are refused with a pointer to
+#: their size, not silently coerced.
+_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+
 
 def _ensure_mimetypes() -> None:
     if not mimetypes.inited:
@@ -54,6 +60,18 @@ def include_image_url(source: str | Path) -> dict[str, Any] | None:
     mime_type = mimetypes.guess_type(str(p))[0] or "image/png"
     if not mime_type.startswith("image/"):
         mime_type = "image/png"
+
+    try:
+        size = p.stat().st_size
+    except OSError:
+        logger.debug("attach_image_stat_error path=%s", p)
+        return None
+    if size > _IMAGE_MAX_BYTES:
+        logger.warning(
+            "attach_image_too_large path=%s bytes=%d cap=%d",
+            p, size, _IMAGE_MAX_BYTES,
+        )
+        return None
 
     try:
         data = base64.b64encode(p.read_bytes()).decode("ascii")

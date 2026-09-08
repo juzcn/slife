@@ -104,7 +104,17 @@ def _shell_argv(command: str) -> list[str]:
             # PowerShell's "preparing module for first use" progress record is
             # not serialized as CLIXML noise on stderr when stdout/stderr are
             # pipes (no console) — it pollutes every command's stderr.
-            script = "$ProgressPreference = 'SilentlyContinue'; " + command
+            #
+            # Force redirected output to UTF-8 regardless of the console code
+            # page: Windows PowerShell 5.1 echoes the OEM page (cp936 on a
+            # zh-CN box) to a pipe, PowerShell 7 writes UTF-8 — making the
+            # decode side locale-dependent.  Pin OutputEncoding here so the
+            # caller can always decode UTF-8.
+            script = (
+                "$ProgressPreference = 'SilentlyContinue'; "
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+                "$OutputEncoding = [System.Text.Encoding]::UTF8; " + command
+            )
             encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
             return [
                 "powershell", "-NoProfile", "-NonInteractive",
@@ -118,10 +128,12 @@ def _shell_argv(command: str) -> list[str]:
 def _shell_output_codec() -> str:
     """Codec for decoding shell output bytes.
 
-    On Windows, Windows PowerShell 5.1 writes the console/OEM code page to a
-    pipe (GBK/cp936 on a zh-CN locale) — decoding as UTF-8 produces mojibake.
-    ``locale.getpreferredencoding(False)`` returns the right codec.  POSIX
-    shells emit UTF-8.
+    On Windows, cmd.exe writes the console/OEM code page to a pipe (GBK/cp936
+    on a zh-CN locale) — decoding as UTF-8 produces mojibake.
+    ``locale.getpreferredencoding(False)`` returns the right codec for that
+    path.  The PowerShell invocation in :func:`_shell_argv` pins its child to
+    UTF-8 output, so the shell that launches here is never a PowerShell;
+    POSIX shells emit UTF-8.
     """
     if os.name == "nt":
         return locale.getpreferredencoding(False) or "utf-8"

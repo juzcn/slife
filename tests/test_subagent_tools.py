@@ -130,12 +130,26 @@ class TestSpawnSubagentTool:
     async def test_spawn_success(self):
         mock_mgr = MagicMock()
         mock_mgr.spawn = AsyncMock(return_value="sub-1")
+        mock_mgr.spawned_running = MagicMock(return_value=False)
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SpawnSubagentTool()
             result = await tool.execute(subagent_name="worker")
             assert "sub-1" in result
             assert "spawned" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_spawn_reuses_running_worker(self):
+        """A running worker is reported as reused, not spawned."""
+        mock_mgr = MagicMock()
+        mock_mgr.spawn = AsyncMock(return_value="worker")
+        mock_mgr.spawned_running = MagicMock(return_value=True)
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = SpawnSubagentTool()
+            result = await tool.execute(subagent_name="worker")
+            assert "worker" in result
+            assert "reused" in result.lower()
 
     @pytest.mark.asyncio
     async def test_spawn_requires_name(self):
