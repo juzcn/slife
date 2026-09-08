@@ -244,8 +244,12 @@ class TestToOpenAIMessages:
         roles = [m["role"] for m in msgs]
         assert roles == ["user", "assistant", "tool", "assistant"]
 
-    def test_is_error_stripped_from_wire(self):
-        """is_error is an internal field — never sent to the API."""
+    def test_is_error_rides_to_backend_mappers_not_openai_wire(self):
+        """is_error is internal — it rides through to_openai_messages so the
+        Anthropic backend can map it to the native tool_result.is_error, but
+        the OpenAI HTTP builder strips it (never sent to the API)."""
+        from slife.agent.llm_backends.openai import OpenAIBackend
+
         conv = MessageHistory()
         conv.add_user_message("run it")
         conv.add_assistant_message(
@@ -257,8 +261,15 @@ class TestToOpenAIMessages:
 
         msgs = conv.to_openai_messages()
         tool_msg = next(m for m in msgs if m["role"] == "tool")
-        assert "is_error" not in tool_msg
+        # The flag rides to the per-backend mappers…
+        assert tool_msg["is_error"] is True
         assert tool_msg["content"] == "Error: failed."
+
+        # …but the OpenAI builder strips it before the request is sent.
+        wire = OpenAIBackend._normalize_messages(msgs)
+        wire_tool = next(m for m in wire if m["role"] == "tool")
+        assert "is_error" not in wire_tool
+        assert wire_tool["content"] == "Error: failed."
 
 
 # ── clear ─────────────────────────────────────────────────────────────
@@ -618,5 +629,45 @@ class TestCountTokens:
         )
         count = conv.count_tokens()
         assert count > 5  # tool call arguments contribute
+
+
+class TestTokenEstimatePerScript:
+    """A11 regression: wide (CJK) text is ~1 token per char, never chars//3 —
+    the old blanket estimate undercounted Chinese-heavy sessions ~2-3x and
+    let the trim stop-condition / restore budget sit genuinely over the
+    window."""
+
+    def test_wide_chars_one_token_each(self):
+        from slife.agent.message_history import estimate_text_tokens
+        assert estimate_text_tokens("汉" * 100) == 100          # not ≈ 33
+        assert estimate_text_tokens("漢字全角ＡＢＣ") >= 7        # CJK + full-width
+
+    def test_narrow_chars_three_per_token(self):
+        from slife.agent.message_history import estimate_text_tokens
+        assert estimate_text_tokens("abc") == 1
+        assert estimate_text_tokens("a" * 100) == 33
+
+    def test_mixed_text_counts_both(self):
+        from slife.agent.message_history import estimate_text_tokens
+        # 6 narrow (→2) + 6 wide (→6) = 8
+        assert estimate_text_tokens("abcdef" + "汉" * 6) == 8
+
+    def test_count_tokens_cjk_not_undercounted(self):
+        conv = MessageHistory()
+        conv.add_user_message("汉" * 90)
+        conv.add_assistant_message("中" * 90)
+        # The old chars//3 heuristic would report ~60 for 180 Han chars.
+        assert conv.count_tokens() >= 180
+
+    def test_tokens_freed_uses_same_estimator(self):
+        from slife.agent.message_history import estimate_text_tokens
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("汉" * 90)
+        conv.add_assistant_message("中" * 90)
+        conv.add_user_message("keep")
+        conv.add_assistant_message("this")
+        _, freed = conv.extract_oldest_turns(target=estimate_text_tokens("keep"))
+        # Removing the 180-char CJK turn freed ~180, matching count_tokens.
+        assert freed >= 180
 
 

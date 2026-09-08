@@ -140,8 +140,26 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
                 "or digit and contain only A-Za-z0-9_.- (max 64 chars).  Use an "
                 'ASCII slug like "daily_report".'
             )
-        if schedule and schedule != "manual" and not is_valid(schedule):
-            return f"Error: invalid cron expression {schedule!r}."
+        if schedule and schedule != "manual":
+            # strict=True matches the consuming path (the scheduler's next_run
+            # validates strict=True): an expression like "0 9 31 2 *" passes
+            # croniter.is_valid() non-strict but can never fire — validate up
+            # front so the task is rejected here, never stored-enabled-and-
+            # silently-never-fired.
+            if not is_valid(schedule, strict=True):
+                return f"Error: invalid cron expression {schedule!r}."
+        if timezone:
+            # The scheduler constructs ZoneInfo(tz) per tick — a bad IANA name
+            # must be rejected now with a clear error, not surface later as an
+            # uncaught ZoneInfoNotFoundError in the trigger loop.
+            from zoneinfo import ZoneInfo
+            try:
+                ZoneInfo(timezone)
+            except Exception as e:
+                return (
+                    f"Error: invalid timezone {timezone!r} "
+                    f"({e}). Use an IANA name like \"Asia/Shanghai\"."
+                )
         return self._format(await self._call("__scheduled_task_upsert", {
             "name": name, "description": description, "schedule": schedule,
             "timezone": timezone, "enabled": enabled,

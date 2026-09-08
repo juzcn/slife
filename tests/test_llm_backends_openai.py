@@ -415,6 +415,30 @@ class TestOpenAIResponsesBackend:
             type="function_call", id=item_id, name=name, call_id=call_id, arguments="",
         )
 
+    def test_compat_thinking_escape_honoured(self):
+        """C1: the compat.thinking escape (used to work around gateways that
+        400 on a reasoning block) must be honoured by the Responses backend
+        too — 'disabled'/'omit' suppress reasoning even when thinking_enabled,
+        matching the openai/anthropic backends."""
+        from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
+
+        cfg = self._responses_cfg()
+
+        # Enabled (unset compat) → reasoning sent.
+        cfg.thinking_enabled = True
+        kw = OpenAIResponsesBackend(cfg)._build_kwargs([], None)
+        assert "reasoning" in kw
+
+        # 'disabled' → no reasoning field even though thinking_enabled.
+        cfg.compat = {"thinking": "disabled"}
+        kw = OpenAIResponsesBackend(cfg)._build_kwargs([], None)
+        assert "reasoning" not in kw
+
+        # 'omit' → no reasoning field.
+        cfg.compat = {"thinking": "omit"}
+        kw = OpenAIResponsesBackend(cfg)._build_kwargs([], None)
+        assert "reasoning" not in kw
+
     def test_keeps_meta_params(self):
         """Harness meta-params are visible on the Responses API too
         (three-backend consistency, matching Anthropic + OpenAI)."""

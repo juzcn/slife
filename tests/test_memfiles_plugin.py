@@ -17,6 +17,7 @@ a real temp DB in ``TestMemfilesStore``.
 import pytest; pytestmark = pytest.mark.unit
 
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -520,6 +521,76 @@ class TestMemfilesStore:
             md = (tmp_path / "notes" / "python.md").read_text(encoding="utf-8")
             assert "asyncio basics" in md and "more on await" in md
             assert "##" in md  # appended section header
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_same_subject_upserts_serialized(self, tmp_path):
+        """D1 regression: concurrent upsert_note for the SAME subject (main
+        agent + subagent sharing the plugin) must not race — both seeing
+        'no row' would hit notes.subject UNIQUE, and the md read-append-
+        rewrite would drop one writer's section.  The write lock serializes."""
+        store = await _real_store(tmp_path)
+        try:
+            n = 8
+            results = await asyncio.gather(*[
+                store.upsert_note("same", f"payload {i}", "t")
+                for i in range(n)
+            ])
+            assert len({r["doc_id"] for r in results}) == 1  # one row
+            md = (tmp_path / "notes" / "same.md").read_text(encoding="utf-8")
+            for i in range(n):
+                assert f"payload {i}" in md
+            cur = await store._c.execute(
+                "SELECT COUNT(*) FROM notes WHERE subject='same'",
+            )
+            row = await cur.fetchone()
+            assert row[0] == 1
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_slug_collisions_do_not_bleed_notes(self, tmp_path):
+        """D2 regression: distinct subjects whose slugs collide ("API Design"
+        vs "API-Design" → both "api-design") must own DISTINCT files/rows —
+        the second upsert must not store the merged first file, and updating
+        the first must not re-read the second's content."""
+        store = await _real_store(tmp_path)
+        try:
+            a = await store.upsert_note("API Design", "first", "t")
+            b = await store.upsert_note("API-Design", "second", "t")
+            assert a["doc_id"] != b["doc_id"]
+            assert a["file_path"] != b["file_path"]
+
+            fa = (tmp_path / a["file_path"]).read_text(encoding="utf-8")
+            fb = (tmp_path / b["file_path"]).read_text(encoding="utf-8")
+            assert "first" in fa and "second" not in fa
+            assert "second" in fb and "first" not in fb
+
+            # Updating A re-reads only A's own file.
+            a2 = await store.upsert_note("API Design", "third", "t")
+            assert a2["file_path"] == a["file_path"]
+            fa2 = (tmp_path / a2["file_path"]).read_text(encoding="utf-8")
+            assert "third" in fa2 and "second" not in fa2
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_slug_collision_reports_stay_separate_rows(self, tmp_path):
+        """D2: report rows whose titles slug-collide ("Daily Report" vs
+        "Daily-Report") must not collapse into one row/file (which would
+        mislink scheduled_runs.report_id across tasks)."""
+        store = await _real_store(tmp_path)
+        try:
+            task = await store.upsert_scheduled_task("t1", schedule="0 0 * * *")
+            r1 = await store.upsert_report(task["task_id"], "Daily Report", "one")
+            r2 = await store.upsert_report(task["task_id"], "Daily-Report", "two")
+            assert r1["doc_id"] != r2["doc_id"]
+            assert r1["file_path"] != r2["file_path"]
+            f1 = (tmp_path / r1["file_path"]).read_text(encoding="utf-8")
+            f2 = (tmp_path / r2["file_path"]).read_text(encoding="utf-8")
+            assert "one" in f1 and "two" not in f1
+            assert "two" in f2 and "one" not in f2
         finally:
             await store.close()
 

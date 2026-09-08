@@ -68,6 +68,14 @@ from slife.server_utils import (
 # plugin process by buffering the whole body.
 _MAX_SAVE_BYTES = 50 * 1024 * 1024  # 50 MB
 
+#: Serializes the save path-claim + file write + DB insert (file_save /
+#: url_save).  ``_unique_path`` is an exists-then-write claim — without a lock,
+#: two concurrent saves of the same name both pick the same free path and the
+#: second overwrites the first's bytes while two DB rows point at the file
+#: (D1).  Subagents share this plugin over HTTP, so the lock covers the main
+#: agent + subagent writers.
+_save_lock = asyncio.Lock()
+
 
 @asynccontextmanager
 async def _memfiles_lifespan(_app):
@@ -353,30 +361,31 @@ async def file_save(
     files_dir.mkdir(parents=True, exist_ok=True)
     results = []
     embedded = False
-    for p in paths:
-        src = Path(p)
-        if not src.exists():
-            results.append(f"Error: file not found — {p}")
-            continue
-        if not src.is_file():
-            results.append(f"Error: not a file — {p}")
-            continue
-        stem = _slugify(title) if title else src.stem
-        display_title = title or src.name
-        cat_dir = files_dir / _detect_category(src.name, category)
-        cat_dir.mkdir(parents=True, exist_ok=True)
-        saved = _unique_path(cat_dir, stem, src.suffix)
-        shutil.copy2(src, saved)
-        rel = saved.relative_to(mem_dir).as_posix()
-        mime = mimetypes.guess_type(str(src))[0] or ""
-        await store.add_file(
-            title=display_title, original_path=str(src), saved_path=rel,
-            mime=mime, size=src.stat().st_size, tags=tags or "",
-            summary=summary,
-        )
-        if summary:
-            embedded = True
-        results.append(_saved_result(saved))
+    async with _save_lock:
+        for p in paths:
+            src = Path(p)
+            if not src.exists():
+                results.append(f"Error: file not found — {p}")
+                continue
+            if not src.is_file():
+                results.append(f"Error: not a file — {p}")
+                continue
+            stem = _slugify(title) if title else src.stem
+            display_title = title or src.name
+            cat_dir = files_dir / _detect_category(src.name, category)
+            cat_dir.mkdir(parents=True, exist_ok=True)
+            saved = _unique_path(cat_dir, stem, src.suffix)
+            shutil.copy2(src, saved)
+            rel = saved.relative_to(mem_dir).as_posix()
+            mime = mimetypes.guess_type(str(src))[0] or ""
+            await store.add_file(
+                title=display_title, original_path=str(src), saved_path=rel,
+                mime=mime, size=src.stat().st_size, tags=tags or "",
+                summary=summary,
+            )
+            if summary:
+                embedded = True
+            results.append(_saved_result(saved))
     if _manager is not None and embedded:
         _manager.on_saved()
     return "\n".join(results)
@@ -473,16 +482,17 @@ async def url_save(
             ext = ""
     else:
         ext = ""
-    cat_dir = files_dir / _detect_category(url_name or display_title, category)
-    cat_dir.mkdir(parents=True, exist_ok=True)
-    saved = _unique_path(cat_dir, stem, ext or "")
-    saved.write_bytes(raw)
-    rel = saved.relative_to(mem_dir).as_posix()
-    mime = mimetypes.guess_type(url_name)[0] or ""
-    await store.add_file(
-        title=display_title, original_path=url, saved_path=rel,
-        mime=mime, size=len(raw), tags=tags or "", summary=summary,
-    )
+    async with _save_lock:
+        cat_dir = files_dir / _detect_category(url_name or display_title, category)
+        cat_dir.mkdir(parents=True, exist_ok=True)
+        saved = _unique_path(cat_dir, stem, ext or "")
+        saved.write_bytes(raw)
+        rel = saved.relative_to(mem_dir).as_posix()
+        mime = mimetypes.guess_type(url_name)[0] or ""
+        await store.add_file(
+            title=display_title, original_path=url, saved_path=rel,
+            mime=mime, size=len(raw), tags=tags or "", summary=summary,
+        )
     if _manager is not None and summary:
         _manager.on_saved()
     return _saved_result(saved)
@@ -1080,8 +1090,17 @@ def _reject_non_public_url(url: str) -> str | None:
     let the LLM read addresses the user's browser can't reach — and with the
     ngrok tunnel up, the response would be published as a public file. The
     host is validated as an IP literal or via DNS resolution; **every**
-    resolved address must be globally routable. (Redirect chains are not
-    re-checked per hop.)
+    resolved address must be globally routable.
+
+    ``url_save`` re-runs this guard on EVERY redirect hop immediately before
+    that hop's fetch (an earlier comment claiming redirect chains are not
+    re-checked was stale).  Residual DNS-rebinding TOCTOU: the guard resolves
+    via ``socket.getaddrinfo``, then aiohttp performs its own fresh resolution
+    at connect time — a public name whose DNS flips to a link-local address
+    in that window could pass the check and reach metadata.  Fully closing it
+    means pinning the validated IP for the connection (with TLS SNI / Host
+    preserved), which is not done here; the per-hop re-check narrows the
+    window to a single connect.
     """
     import ipaddress
     import socket

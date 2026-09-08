@@ -172,9 +172,16 @@ def _sync_registry(server: FastMCP, registry: "ToolRegistry") -> None:
         if name in current:
             continue
 
-        async def _run(ctx: Context | None = None, **kwargs):
+        # Bind the name as a default argument so each _run closes over ITS OWN
+        # value of `name` — a bare `async def` here would close over the shared
+        # loop variable, making every tool execute the last-registered one.
+        # `_name` never appears in the tool's inputSchema (parameters are set
+        # explicitly below), so it is not client-injectable.
+        async def _run(
+            _name=name, ctx: Context | None = None, **kwargs
+        ):
             _capture_session(ctx)
-            return await registry.execute(name, **kwargs)
+            return await registry.execute(_name, **kwargs)
 
         _run.__name__ = name
         _run.__doc__ = slife_tool.description

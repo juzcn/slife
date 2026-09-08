@@ -294,6 +294,46 @@ class TestSubagentProcessReadStdout:
             fut.result()
         assert proc._pending == {}
 
+    @pytest.mark.asyncio
+    async def test_read_stdout_survives_overlong_line(self):
+        """A2 regression: one over-long stdout line must be discarded, not
+        fatal.  Before the fix the ValueError (LimitOverrunError) fell into the
+        generic handler, killed the reader, and every later task on this worker
+        hung until send_task's own timeout."""
+        proc = self._proc()
+        proc._running = True
+        proc._record_send("rpc-1", "do X", mode="sync")
+        fut = asyncio.get_event_loop().create_future()
+        proc._pending["rpc-1"] = fut
+        proc._inflight = 1
+        proc._process = MagicMock()
+
+        # readline sequence: [overlong-line head -> ValueError, its tail, a
+        # valid JSON-RPC response, EOF].
+        seq = [
+            ValueError("LimitOverrunError"),
+            b"T" * 200 + b"\n",
+            b'{"jsonrpc":"2.0","id":"rpc-1","result":"after-overlong"}\n',
+            b"",
+        ]
+
+        async def _readline():
+            item = seq.pop(0) if seq else b""
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        proc._process.stdout = MagicMock()
+        proc._process.stdout._limit = 1024
+        proc._process.stdout.readline = _readline
+
+        await proc._read_stdout()
+
+        assert fut.done()
+        assert fut.result() == "after-overlong"
+        assert proc._pending == {}
+        assert proc._task_records["rpc-1"]["status"] == "completed"
+
 
 # ── SubagentManager ─────────────────────────────────────────────────────────
 

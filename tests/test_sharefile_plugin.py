@@ -266,3 +266,52 @@ class TestShareRoute:
         cd = plugin._content_disposition("报告.pdf")
         assert 'filename="' in cd
         assert "filename*=UTF-8''" in cd
+
+
+class TestShareSecurity:
+    """D4: a share is pinned to the exact file registered — a replaced path is
+    refused, credentials are never published, and links can be revoked."""
+
+    @pytest.mark.asyncio
+    async def test_replaced_file_refused(self, tmp_path):
+        """A path replaced after registration (different bytes/size) must not
+        serve the new content to holders of the old token."""
+        f = tmp_path / "data.txt"
+        f.write_bytes(b"original-content")
+        tok = plugin._register_file(str(f))
+        f.write_bytes(b"replaced with different content !!!")
+        resp = await plugin.handle_share(_request(tok))
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_refuses_private_credential(self, tmp_path):
+        f = tmp_path / "id_ed25519"
+        f.write_bytes(b"private key material")
+        result = await plugin.share_file(path=str(f))
+        assert result.startswith("Error")
+        assert "credential" in result
+
+    @pytest.mark.asyncio
+    async def test_refuses_dotenv(self, tmp_path):
+        f = tmp_path / ".env"
+        f.write_bytes(b"SECRET=abc")
+        result = await plugin.share_file(path=str(f))
+        assert result.startswith("Error")
+        assert "credential" in result
+
+    @pytest.mark.asyncio
+    async def test_unshare_revokes_link(self, tmp_path):
+        f = tmp_path / "ok.txt"
+        f.write_bytes(b"hi")
+        tok = plugin._register_file(str(f))
+        assert (await plugin.handle_share(_request(tok))).status_code == 200
+
+        out = await plugin.sharefile_unshare(file_id=tok)
+        assert "[OK]" in out
+        assert plugin._lookup_entry(tok) is None
+        assert (await plugin.handle_share(_request(tok))).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_unshare_unknown_is_error(self):
+        out = await plugin.sharefile_unshare(file_id="deadbeef")
+        assert out.startswith("Error")

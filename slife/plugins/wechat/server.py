@@ -25,6 +25,9 @@ from slife.plugins.wechat.config import (
     load_wechat_config,
     save_wechat_config,
     clear_wechat_config,
+    load_wechat_sync,
+    save_wechat_sync,
+    clear_wechat_sync,
 )
 from slife.server_utils import create_plugin_server
 from slife.logfmt import error_json
@@ -114,6 +117,21 @@ _pending: deque[dict] = deque()
 _seen_keys: dict[str, float] = {}
 _DEDUP_WINDOW = 30.0  # seconds — re-deliveries arrive well within this
 _MAX_QUEUED = 200  # keep at most 200 pending messages
+
+# Last get_updates_buf written to the sidecar — persist only on change.
+_persisted_sync_buf: str = ""
+
+
+def _persist_updates_buf(buf: str) -> None:
+    """Persist the getupdates ack token so a restart can resume ack'ing."""
+    global _persisted_sync_buf
+    if not isinstance(buf, str) or not buf or buf == _persisted_sync_buf:
+        return
+    try:
+        save_wechat_sync(_agent_name, buf, _work_dir)
+        _persisted_sync_buf = buf
+    except Exception:
+        logger.debug("wechat_sync_persist_failed", exc_info=True)
 
 # Typing indicator keep-alive — per-conversation tasks managed by the server
 _typing_tasks: dict[str, asyncio.Task] = {}
@@ -229,6 +247,9 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
                 backoff = min(backoff * 1.5, 30.0)
             else:
                 backoff = poll_interval
+            # Persist the ack token after every successful poll so a post-
+            # restart session resumes ack'ing (no replay re-ingest) (D6).
+            _persist_updates_buf(_client.updates_buf)
         except Exception as e:
             logger.debug("poll_error err=%s", e)
             # Surface to the LLM: status reports degraded until the link
@@ -530,6 +551,15 @@ async def wechat_send_message(
 
     try:
         result = await _client.send_message(peer_wechat_id, context_token or "", text)
+        # D7: iLink signals a rejected/revoked token with a 200 error envelope
+        # (errno/error/retcode) — the getupdates path checks it; the send path
+        # must too, or a rejected send is reported as "sent".
+        from slife.plugins.wechat.client import _envelope_error, _error_envelope
+        if isinstance(result, dict) and _error_envelope(result):
+            _client.auth_failed = True
+            _client.last_error = _envelope_error(result) or "send rejected"
+            logger.warning("send_rejected to=%s err=%s", peer_wechat_id, _client.last_error)
+            return error_json(f"Send rejected by server: {_client.last_error}")
         # Hide typing indicator after reply
         try:
             await _client.send_typing(peer_wechat_id, context_token or "", status=2)
@@ -668,6 +698,14 @@ async def wechat_check_status() -> str:
                     }, ensure_ascii=False, indent=2)
                 if restored:
                     _client.clear_session_faults()
+                    # Seed the persisted getupdates ack so the first poll after
+                    # a restart resumes ack'ing instead of re-receiving the
+                    # unacked window (D6).
+                    seed = load_wechat_sync(
+                        _agent_name, _work_dir,
+                    ).get("get_updates_buf", "")
+                    if seed:
+                        _client.updates_buf = seed
                     # Restore last contact so the LLM knows who to message
                     ilink_uid = saved.get("ilink_user_id", "")
                     if ilink_uid:
@@ -763,6 +801,8 @@ async def wechat_logout() -> str:
 
     _client = WechatClawbotClient()
     clear_wechat_config(_agent_name, _work_dir)
+    # Drop the persisted getupdates ack — it belongs to the ended session.
+    clear_wechat_sync(_agent_name, _work_dir)
 
     return json.dumps({
         "status": "logged_out",

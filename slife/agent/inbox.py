@@ -26,6 +26,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class MemorySaveError(RuntimeError):
+    """Raised when a completed turn could not be persisted to memory.
+
+    Memory writes are mandatory: a turn that cannot be saved is surfaced to
+    the user exactly like an LLM API error — reported, and the turn is not
+    treated as a clean completion — instead of being silently dropped or
+    warn-and-continued.  ``Inbox._process_one`` catches it and reports it.
+    """
+
+
 def _channel_persist(msg: AgentMessage) -> tuple[str, str]:
     """(``diary.channel`` identity, payload JSON) for the turn save.
 
@@ -396,6 +406,34 @@ class Inbox:
                         # live assistant message matches completed_at.
                         handler=msg.handler,
                     )
+                except MemorySaveError as e:
+                    # Memory writes are mandatory: a save failure is surfaced
+                    # exactly like an LLM API error — a red error line — and
+                    # the turn is NOT treated as a clean completion.  The
+                    # inbox is not frozen here (transient — memdb may be mid
+                    # watchdog-restart; a later turn saves once the channel
+                    # returns).  The history stays intact: the turn content is
+                    # valid, only its persistence failed.
+                    #
+                    # The channel is NOT re-replied: the run itself succeeded
+                    # and its result was already routed to the channel above —
+                    # a second on_reply(error) would confuse a remote peer
+                    # whose task already resolved.
+                    logger.warning(
+                        "turn_save_failed source=%s err=%s", msg.source, e,
+                    )
+                    if handler is not None:
+                        try:
+                            handler.finalize_current()
+                        except Exception:
+                            pass
+                    if self._on_activity:
+                        try:
+                            await self._on_activity(
+                                "loop_error", source=msg.source, error=str(e),
+                            )
+                        except Exception:
+                            pass
                 except Exception:
                     logger.warning("on_turn_complete_error", exc_info=True)
 

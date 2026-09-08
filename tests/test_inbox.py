@@ -423,6 +423,50 @@ class TestInboxProcessOne:
         await inbox._process_one(msg)
 
     @pytest.mark.asyncio
+    async def test_memory_save_error_reported_like_loop_error(self, mock_loop,
+                                                              mock_store):
+        """A4 regression: a MemorySaveError from on_turn_complete is surfaced
+        like an LLM API error (loop_error activity + channel error reply), not
+        swallowed silently.  The inbox is not frozen (transient) and returns
+        to idle."""
+        from slife.agent.inbox import Inbox, MemorySaveError
+        on_activity = AsyncMock()
+        on_reply = AsyncMock()
+        on_turn_complete = AsyncMock(
+            side_effect=MemorySaveError("记忆服务未连接：本轮未能写入记忆"),
+        )
+        inbox = Inbox(
+            mock_loop, mock_store,
+            on_activity=on_activity, on_turn_complete=on_turn_complete,
+        )
+
+        mock_result = MagicMock()
+        mock_result.text = "ok"
+        mock_result.usage.total_tokens = 1
+        mock_loop.run = AsyncMock(return_value=mock_result)
+        mock_store.get_or_create.return_value = MagicMock()
+
+        msg = self._make_msg(
+            source=AgentName("remote-1"), content="go",
+            reply_to="r", corr_id="c1", on_reply=on_reply,
+        )
+        await inbox._process_one(msg)
+
+        kinds = [c.args[0] for c in on_activity.call_args_list]
+        assert "loop_error" in kinds
+        err_call = next(
+            c for c in on_activity.call_args_list if c.args[0] == "loop_error"
+        )
+        assert "记忆服务未连接" in err_call.kwargs["error"]
+        # The run itself succeeded — its result WAS routed to the channel; a
+        # save failure must NOT send a second (error) reply to a peer whose
+        # task already resolved.
+        on_reply.assert_awaited_once()
+        assert "Error:" not in on_reply.call_args.args[0]
+        assert inbox._frozen is False
+        assert inbox.busy is False
+
+    @pytest.mark.asyncio
     async def test_process_with_on_reply_callback(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
         on_reply = AsyncMock()

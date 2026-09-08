@@ -150,6 +150,60 @@ class TestSetSkillToolExecute:
             files=[{"path": "SKILL.md", "content": "new"}],
         )
         assert "Updated" in result
+        assert (skill_dir / "SKILL.md").read_text(encoding="utf-8") == "new"
+
+    @pytest.mark.asyncio
+    async def test_failed_update_leaves_live_skill_intact(self, tmp_path):
+        """A12 regression: an update whose file batch fails mid-way (a later
+        file is invalid) must NOT partially overwrite the live skill.  Before
+        the temp-dir swap, the first file had already overwritten SKILL.md
+        when the second raised."""
+        skills_dir = tmp_path / "skills"
+        d = skills_dir / "existing"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: existing\n---\nORIGINAL", encoding="utf-8",
+        )
+
+        tool = SetSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(
+            name="existing",
+            files=[
+                {"path": "SKILL.md", "content": "NEW OVERWRITE"},
+                {"path": "../../evil.txt", "content": "pwned"},  # invalid, late
+            ],
+        )
+        assert result.startswith("Error")
+        # The live skill is untouched — the write went to a temp dir.
+        assert (d / "SKILL.md").read_text(encoding="utf-8") == (
+            "---\nname: existing\n---\nORIGINAL"
+        )
+        assert not (tmp_path / "evil.txt").exists()
+
+    @pytest.mark.asyncio
+    async def test_update_preserves_external_meta_fields(self, tmp_path):
+        """A successful update keeps external _meta.json fields (ownerId etc.)
+        that _write_meta_json merges in — the temp-dir swap must seed the
+        temp install with the live skill's existing meta."""
+        skills_dir = tmp_path / "skills"
+        d = skills_dir / "existing"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("---\nname: existing\n---\nold", encoding="utf-8")
+        (d / "_meta.json").write_text(
+            json.dumps({"ownerId": "abc", "slug": "keep-me"}), encoding="utf-8",
+        )
+
+        tool = SetSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(
+            name="existing",
+            files=[{"path": "SKILL.md", "content": "---\nname: existing\n---\nnew"}],
+            source={"type": "github", "url": "https://example.com/x", "version": "v2"},
+        )
+        assert "Updated" in result
+        meta = json.loads((d / "_meta.json").read_text(encoding="utf-8"))
+        assert meta["ownerId"] == "abc"
+        assert meta["slug"] == "keep-me"
+        assert meta["source"]["url"] == "https://example.com/x"
 
     @pytest.mark.asyncio
     async def test_skill_set_missing_files_and_archive(self, tmp_path):

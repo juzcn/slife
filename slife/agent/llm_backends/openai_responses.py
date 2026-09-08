@@ -143,6 +143,16 @@ class OpenAIResponsesBackend:
             kwargs["instructions"] = instructions
         if tools:
             kwargs["tools"] = self._oa_tools_to_responses(tools)
+        # Per-model compat escape hatch: ``compat.thinking`` explicitly
+        # controls reasoning, matching the openai + anthropic backends.
+        # Some Responses-compatible gateways 400 on a sent reasoning block
+        # (or on reasoning combined with sampling params) while the model
+        # still reasons natively — "disabled" / "omit" (or any non-"enabled"
+        # value) suppress it; unset follows thinking_enabled.
+        compat = self.model_config.compat or {}
+        thinking_override = compat.get("thinking")
+        if thinking_override is not None and thinking_override != "enabled":
+            return kwargs  # no reasoning field
         if self.model_config.thinking_enabled:
             kwargs["reasoning"] = {
                 "effort": self.model_config.reasoning_effort or "medium",

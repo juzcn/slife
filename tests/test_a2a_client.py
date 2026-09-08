@@ -19,6 +19,16 @@ from slife.a2a.card import AgentCard
 from slife.a2a.transport import TransportMessage
 
 
+@pytest.fixture(autouse=True)
+def _fresh_task_store():
+    """The a2a task store is a module-level singleton — isolate it per test so
+    one test's records never leak into another (collection order dependent)."""
+    from slife.a2a.task_store import clear_store
+    clear_store()
+    yield
+    clear_store()
+
+
 class _RecordingAdapter:
     """Adapter stub that records published (topic, payload) pairs."""
 
@@ -210,7 +220,29 @@ class TestIncomingCancel:
         assert client.get_task_result("cid-1") == "stopped by peer"
 
     @pytest.mark.asyncio
-    async def test_async_result_fires_on_task_result(self):
+    async def test_sync_waiter_surfaces_spontaneous_cancel(self):
+        """D9 regression: a peer that cancels WITHOUT a local cancel_task call
+        must not make sync send_task resolve as a successful "" — the waiter
+        gets a cancellation error (async mode already surfaced "cancelled")."""
+        from slife.a2a import wire
+        from slife.a2a.task_store import get_store
+
+        client = self._client()
+        get_store().record_send("cid-1", "peer-1", "do X", "mqtt")
+        fut = asyncio.get_running_loop().create_future()
+        client._pending_tasks["cid-1"] = fut
+
+        task = wire.Task.cancelled("cid-1", "stopped by peer")
+        payload = json.dumps(wire.task_result_envelope("cid-1", task))
+        await client._handle_result(
+            TransportMessage(topic="Slife/jack/tasks/result", payload=payload),
+        )
+
+        assert "cid-1" not in client._pending_tasks
+        assert get_store().get("cid-1").status == "cancelled"
+        with pytest.raises(RuntimeError, match="cancelled by the peer"):
+            fut.result()
+
         """An outbound async result fires on_task_result (auto-push)."""
         from slife.a2a import wire
 
@@ -235,8 +267,9 @@ class TestIncomingCancel:
 class _EchoThenBlockAdapter:
     """Adapter that yields our own presence echo once, then blocks."""
 
-    def __init__(self, agent_name: str):
+    def __init__(self, agent_name: str, instance: str = ""):
         self._agent_name = agent_name
+        self._instance = instance
         self.is_connected = True
 
     def messages(self, topic_filter):
@@ -244,7 +277,8 @@ class _EchoThenBlockAdapter:
             yield TransportMessage(
                 topic=f"Slife/{self._agent_name}/presence",
                 payload=json.dumps(
-                    {"agent_name": self._agent_name, "status": "online"},
+                    {"agent_name": self._agent_name, "status": "online",
+                     "instance": self._instance},
                 ),
             )
             await asyncio.Event().wait()  # block after the echo
@@ -272,7 +306,9 @@ class TestPresenceWatchdog:
         events: list[tuple[str, str]] = []
         client.on_agent_change(lambda card, ev: events.append((str(card.agent_name), ev)))
 
-        client._adapter = _EchoThenBlockAdapter("jack")
+        # The echo carries our own instance marker — under the new wire a
+        # same-name presence WITHOUT our marker is a duplicate, not ourselves.
+        client._adapter = _EchoThenBlockAdapter("jack", instance=client._instance)
 
         task = asyncio.create_task(client._peer_watchdog_loop())
         try:
@@ -375,3 +411,124 @@ class TestPresenceWatchdog:
                 await task
             except asyncio.CancelledError:
                 pass
+
+
+class _PresenceFeedAdapter:
+    """Yields the given presence payloads once, then blocks.
+
+    ``consumed`` flips True the moment the consumer has *processed* a
+    message (it only resumes the generator — after the ``yield`` — when it
+    asks for the next one), so tests can exit as soon as the watchdog acted.
+    """
+
+    def __init__(self, payloads):
+        self._payloads = list(payloads)
+        self.is_connected = True
+        self.consumed = False
+
+    def messages(self, topic_filter):
+        async def gen():
+            for p in self._payloads:
+                yield TransportMessage(
+                    topic="Slife/jack/presence", payload=json.dumps(p),
+                )
+                self.consumed = True  # consumer processed the yielded message
+            await asyncio.Event().wait()
+        return gen()
+
+
+class TestDuplicateDetection:
+    """A7: continuous duplicate agent-name detection via the instance marker.
+
+    Our presence echoes back on Slife/+/presence (we subscribe to it) carrying
+    OUR instance — skipped.  A same-name presence from another instance must
+    converge to exactly one survivor (the lower instance id keeps running, the
+    higher stops its heartbeat + inbox loops so tasks aren't fanned to both).
+    """
+
+    def _client(self):
+        cfg = A2AConfig(
+            enabled=True, agent_name="jack",
+            heartbeat_interval=1, heartbeat_timeout=1,
+        )
+        c = A2AClient(cfg)
+
+        async def _park():
+            await asyncio.Event().wait()
+
+        c._heartbeat_task = asyncio.create_task(_park())
+        c._inbox_listener_task = asyncio.create_task(_park())
+        return c
+
+    async def _run_once(self, client, payloads):
+        adapter = _PresenceFeedAdapter(payloads)
+        client._adapter = adapter
+        task = asyncio.create_task(client._peer_watchdog_loop())
+        try:
+            for _ in range(200):
+                if adapter.consumed or task.done():
+                    break
+                await asyncio.sleep(0.005)
+            assert adapter.consumed, "watchdog never processed the presence"
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_own_presence_echo_skipped(self):
+        c = self._client()
+        c._instance = "i" * 32
+        await self._run_once(
+            c, [{"agent_name": "jack", "status": "online",
+                 "instance": c._instance}],
+        )
+        assert c._stopped_for_duplicate is False
+        assert not c._heartbeat_task.done()
+        assert not c._inbox_listener_task.done()
+        c._heartbeat_task.cancel()
+        c._inbox_listener_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_lower_instance_stops_us(self):
+        """We hold the HIGHER instance id → the lower duplicate keeps the name;
+        we stop heartbeat + inbox so tasks are not fanned to both."""
+        c = self._client()
+        c._instance = "b" * 32  # higher than the duplicate's "a…"
+        await self._run_once(
+            c, [{"agent_name": "jack", "status": "online",
+                 "instance": "a" * 32}],
+        )
+        assert c._stopped_for_duplicate is True
+        assert c._heartbeat_task.cancelled()
+        assert c._inbox_listener_task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_higher_instance_keeps_us(self):
+        """We hold the LOWER instance id → we are the survivor; a duplicate
+        with a higher id must not stop us."""
+        c = self._client()
+        c._instance = "a" * 32  # lower than the duplicate's "b…"
+        await self._run_once(
+            c, [{"agent_name": "jack", "status": "online",
+                 "instance": "b" * 32}],
+        )
+        assert c._stopped_for_duplicate is False
+        assert not c._heartbeat_task.done()
+        assert not c._inbox_listener_task.done()
+        c._heartbeat_task.cancel()
+        c._inbox_listener_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_instance_less_old_peer_is_a_duplicate(self):
+        """An instance-less presence (an old-version same-name peer) is a
+        genuine duplicate, not our own echo."""
+        c = self._client()
+        c._instance = "b" * 32
+        await self._run_once(
+            c, [{"agent_name": "jack", "status": "online"}],  # no instance
+        )
+        assert c._stopped_for_duplicate is True
+        assert c._heartbeat_task.cancelled()

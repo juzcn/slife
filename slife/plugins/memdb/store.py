@@ -546,14 +546,23 @@ class SessionStore:
                     until = _normalize_time_param(until, role="until")
                     time_clauses += " AND d.created_at <= ?"
                     time_params.append(until)
-                row2 = await self._c.execute(
-                    f"""SELECT COUNT(*) FROM diary_fts fts
-                        JOIN diary d ON fts.rowid = d.rowid
-                        WHERE diary_fts MATCH ?{time_clauses}""",
-                    (fts_query, *time_params),
-                )
-                count_row = await row2.fetchone()
-                filtered = count_row[0] if count_row else 0
+                try:
+                    row2 = await self._c.execute(
+                        f"""SELECT COUNT(*) FROM diary_fts fts
+                            JOIN diary d ON fts.rowid = d.rowid
+                            WHERE diary_fts MATCH ?{time_clauses}""",
+                        (fts_query, *time_params),
+                    )
+                    count_row = await row2.fetchone()
+                    filtered = count_row[0] if count_row else 0
+                except aiosqlite.OperationalError as e:
+                    # Mirror search_keyword's guard (D3): a MATCH syntax error
+                    # must not make count and search disagree — treat it as no
+                    # matches, never surface {"error": ...}.
+                    logger.debug(
+                        "turn_count_fts_parse_error query=%s err=%s", query, e,
+                    )
+                    filtered = 0
                 return {"total": total, "filtered": filtered,
                         "query": query, "mode": mode,
                         "since": since, "until": until}
@@ -1412,15 +1421,36 @@ def _contains_cjk(text: str) -> bool:
     )
 
 
+#: Characters FTS5 treats as query operators/grouping when unquoted (parens,
+#: NOT/leading +/-/colon, column filters …).  A bare `(urgent)` or trailing
+#: `foo -` would otherwise be a syntax error inside ``MATCH``.
+_FTS_SPECIALS = set("()[]{}:^~+-.,!?")
+
+
 def _to_fts5_query(query: str) -> str:
     cleaned = query.replace('"', '').replace("'", "").replace("*", "")
     words = cleaned.split()
     if not words:
         return '""'
-    # Quote FTS5 reserved operators so a literal "and"/"or"/"not"/"near"
-    # doesn't become a syntax error (e.g. "foo AND bar" → "foo AND AND bar").
-    quoted = [
-        f'"{w}"' if w.lower() in ("and", "or", "not", "near") else w
-        for w in words
-    ]
+    quoted: list[str] = []
+    for w in words:
+        low = w.lower()
+        # Quote a word when it is an FTS5 reserved operator (so a literal
+        # "and"/"or"/"not"/"near" isn't parsed as an operator) or carries FTS
+        # special characters (which would otherwise raise a MATCH syntax
+        # error, e.g. a lone '(').  Inside double quotes those characters are
+        # literal phrase content, never operators.
+        if low in ("and", "or", "not", "near") or any(
+            c in _FTS_SPECIALS for c in w
+        ):
+            # A token that is PURELY operators (e.g. "-" or "(") has no search
+            # content — drop it rather than emit an empty phrase.
+            inner = w.strip("()[]{}:^~+-,.")
+            if not inner:
+                continue
+            quoted.append(f'"{inner}"')
+        else:
+            quoted.append(w)
+    if not quoted:
+        return '""'
     return " AND ".join(quoted)

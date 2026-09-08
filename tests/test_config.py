@@ -112,7 +112,9 @@ class TestModelConfigFromDict:
             "model": "test-model",
             "api_key": "test-key",
         })
-        assert mc.base_url == "https://api.deepseek.com"
+        # A10: no implicit DeepSeek host — an entry that omits base_url gets
+        # "" (unconfigured), never silently sent to api.deepseek.com.
+        assert mc.base_url == ""
         assert mc.api == "openai-completions"
         assert mc.supports_vision is False
         assert mc.max_tokens == 4096
@@ -121,6 +123,17 @@ class TestModelConfigFromDict:
         assert mc.top_p == 1.0
         assert mc.thinking_enabled is False
         assert mc.reasoning_effort is None
+
+    def test_non_deepseek_without_base_url_is_not_deepseek(self):
+        """A10 regression: a non-DeepSeek model that omits base_url must NOT
+        silently default to api.deepseek.com — its key would be sent to the
+        wrong host.  It stays unconfigured ("") instead."""
+        mc = ModelConfig.from_dict({
+            "model": "gpt-4o-mini",  # e.g. an OpenAI-compatible gateway
+            "provider": "openai",
+            "api_key": "sk-mine",
+        })
+        assert mc.base_url == ""  # never "https://api.deepseek.com"
 
     def test_reasoning_truthy_values(self):
         """Non-boolean truthy reasoning values become True."""
@@ -802,7 +815,7 @@ class TestModelConfigStrictKeys:
         assert mc.api_key == ""
         assert mc.context_window == 131072
         assert mc.max_tokens == 4096
-        assert mc.base_url == "https://api.deepseek.com"
+        assert mc.base_url == ""  # camelCase baseUrl ignored → unconfigured
 
     def test_snake_case_keys_read(self):
         mc = ModelConfig.from_dict({

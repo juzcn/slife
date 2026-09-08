@@ -15,6 +15,7 @@ from slife.agent.service import (
     _extract_turn_annotation,
     compact_tool_results,
 )
+from slife.agent.inbox import MemorySaveError
 from slife.agent.plugins import PluginStartStatus
 from slife.agent.llm_client import TokenUsage
 from slife.a2a.identity import HUMAN, WECHAT
@@ -491,6 +492,46 @@ class TestAgentServiceConnectPluginHttp:
         # is present when set; the rescan itself is covered by _rescan_plugin_tools.
         assert callable(client.on_notification)
 
+    @pytest.mark.asyncio
+    async def test_reconnect_unregisters_dropped_tools(self, sample_config):
+        """B4 regression: reconnecting to a plugin that no longer advertises a
+        tool must unregister the vanished tool — otherwise it lingers bound to
+        the old, disconnected client (the main-agent watchdog does this diff;
+        the subagent HTTP path must too)."""
+        from slife.agent.plugins import PluginLifecycle
+
+        service = AgentService(sample_config)
+        lifecycle = PluginLifecycle("media", service)
+        client = AsyncMock()
+        client.is_connected = True
+        client.list_tools = AsyncMock(return_value=[
+            {"server": "media", "name": "keep",
+             "description": "", "inputSchema": {"type": "object", "properties": {}}},
+            {"server": "media", "name": "drop",
+             "description": "", "inputSchema": {"type": "object", "properties": {}}},
+        ])
+        lifecycle.client = client
+        service._plugins["media"] = lifecycle
+
+        with patch.object(lifecycle.__class__, "connect_http", AsyncMock()):
+            await service.connect_plugin_http("media", 12345)
+        assert {t.name for t in service.tool_registry.list_tools()} >= {"keep", "drop"}
+
+        # The plugin restarted and dropped "drop".
+        client2 = AsyncMock()
+        client2.is_connected = True
+        client2.list_tools = AsyncMock(return_value=[
+            {"server": "media", "name": "keep",
+             "description": "", "inputSchema": {"type": "object", "properties": {}}},
+        ])
+        lifecycle.client = client2
+        with patch.object(lifecycle.__class__, "connect_http", AsyncMock()):
+            await service.connect_plugin_http("media", 12346)
+
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "keep" in names
+        assert "drop" not in names
+
 
 # ── AgentService memory ─────────────────────────────────────────────────────
 
@@ -526,10 +567,30 @@ class TestAgentServiceMemory:
         assert service._tool_ctx.memdb_client is mock_client
 
     @pytest.mark.asyncio
-    async def test_save_to_memory_disabled_noop(self, sample_config):
-        service = AgentService(sample_config)
-        # Should not raise — memdb_enabled is False, so it returns early
+    async def test_save_to_memory_no_turn_content_noop(self, sample_config):
+        """No turn content in the history → nothing to persist → no raise,
+        even with memdb disconnected (the extraction returns None first)."""
+        service = AgentService(sample_config)  # memdb not connected
         await service.save_to_memory(user_message="test", token_count=100)
+
+    @pytest.mark.asyncio
+    async def test_save_to_memory_memdb_down_raises(self, sample_config):
+        """A4 regression: a completed turn whose memdb write cannot happen
+        (client not connected) must raise MemorySaveError — never a silent
+        drop.  The inbox surfaces it like an LLM API error."""
+        service = AgentService(sample_config)  # memdb not connected
+        conv = service.message_history
+        conv.add_user_message("hi")
+        conv.add_assistant_message("hello back")
+
+        with pytest.raises(MemorySaveError):
+            await service.save_to_memory(
+                user_message="hi", token_count=10, history=conv,
+            )
+
+        # Not the DB-hard-stop path: no frozen inbox / memory-broken flag.
+        assert service.inbox._frozen is False
+        assert service._memory_broken is False
 
     @pytest.mark.asyncio
     async def test_save_to_memory_no_user_message(self, sample_config):
@@ -662,12 +723,12 @@ class TestAgentServiceMemory:
         assert "记忆保存失败" in service.inbox._frozen_reason
 
     @pytest.mark.asyncio
-    async def test_save_to_memory_unparsable_response_warns(self, sample_config):
+    async def test_save_to_memory_unparsable_response_raises(self, sample_config):
         """A channel response that is neither a save ack nor an error object
         (non-JSON text, or JSON that isn't an object) must NOT be silently
-        swallowed — the user gets a visible warning via on_memory_save_warning
-        (same style as the max-iterations notice), and it is not treated as a
-        hard DB failure (no freeze)."""
+        swallowed — memory writes are mandatory, so the save raises
+        MemorySaveError (the inbox reports it like an LLM API error).  Not the
+        DB-hard-stop path: no freeze, no memory-broken flag."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
@@ -680,31 +741,22 @@ class TestAgentServiceMemory:
         conv.add_user_message("hi")
         conv.add_assistant_message("hello back")
 
-        seen: list[str] = []
+        with pytest.raises(MemorySaveError):
+            await service.save_to_memory(
+                user_message="hi", token_count=10, history=conv,
+            )
 
-        class FakeHandler:
-            async def on_memory_save_warning(self, message: str) -> None:
-                seen.append(message)
-
-        await service.save_to_memory(
-            user_message="hi", token_count=10, history=conv,
-            handler=FakeHandler(),
-        )
-
-        assert seen == ["记忆保存未能确认：返回了无法解析的响应，本轮可能未写入记忆"]
-        # Soft failure — not the DB-hard-stop path: inbox stays open, no
-        # memory-broken flag, and no turn footnote (no rowid was known).
         assert service.inbox._frozen is False
         assert service._memory_broken is False
         user_msg = next(m for m in conv.messages if m.get("role") == "user")
         assert user_msg["content"] == "hi"
 
     @pytest.mark.asyncio
-    async def test_save_to_memory_timeout_warns(self, sample_config):
-        """A 10s timeout on the save call surfaces the same TUI warning as the
-        other soft save failures — the row may or may not be written
-        server-side, so the user is told it's unconfirmed, not silently
-        skipped.  Soft failure: no freeze, no memory-broken flag."""
+    async def test_save_to_memory_timeout_raises(self, sample_config):
+        """A 10s timeout on the save call raises MemorySaveError — the row may
+        or may not be written server-side, so the user is told it's
+        unconfirmed, not silently skipped.  Not the DB-hard-stop: no freeze,
+        no memory-broken flag."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
@@ -715,26 +767,19 @@ class TestAgentServiceMemory:
         conv.add_user_message("hi")
         conv.add_assistant_message("hello back")
 
-        seen: list[str] = []
+        with pytest.raises(MemorySaveError):
+            await service.save_to_memory(
+                user_message="hi", token_count=10, history=conv,
+            )
 
-        class FakeHandler:
-            async def on_memory_save_warning(self, message: str) -> None:
-                seen.append(message)
-
-        await service.save_to_memory(
-            user_message="hi", token_count=10, history=conv,
-            handler=FakeHandler(),
-        )
-
-        assert seen == ["记忆保存超时：未能确认本轮已写入记忆"]
         assert service.inbox._frozen is False
         assert service._memory_broken is False
 
     @pytest.mark.asyncio
-    async def test_save_to_memory_channel_error_warns(self, sample_config):
-        """A raised call_tool (transient MCP/channel failure) surfaces the same
-        TUI warning instead of being silently logged.  Soft failure: no
-        freeze, no memory-broken flag."""
+    async def test_save_to_memory_channel_error_raises(self, sample_config):
+        """A raised call_tool (transient MCP/channel failure) raises
+        MemorySaveError instead of being silently logged or warn-only.  Not
+        the DB-hard-stop: no freeze, no memory-broken flag."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
@@ -747,18 +792,11 @@ class TestAgentServiceMemory:
         conv.add_user_message("hi")
         conv.add_assistant_message("hello back")
 
-        seen: list[str] = []
+        with pytest.raises(MemorySaveError):
+            await service.save_to_memory(
+                user_message="hi", token_count=10, history=conv,
+            )
 
-        class FakeHandler:
-            async def on_memory_save_warning(self, message: str) -> None:
-                seen.append(message)
-
-        await service.save_to_memory(
-            user_message="hi", token_count=10, history=conv,
-            handler=FakeHandler(),
-        )
-
-        assert seen == ["记忆保存失败（通道错误）：未能确认本轮已写入记忆"]
         assert service.inbox._frozen is False
         assert service._memory_broken is False
 

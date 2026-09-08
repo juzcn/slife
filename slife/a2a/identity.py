@@ -110,7 +110,12 @@ class Channel:
         """
         if self.kind == "a2a":
             peer = self.data.get("agent_name") or ""
-            return (peer or "a2a"), {"agent_name": peer}
+            # The peer name stays the identity so full-text search / channel
+            # filters on the peer still match.  The explicit ``a2a`` marker
+            # disambiguates a peer whose name collides with a reserved kind
+            # string ("human", "wechat", …) so it round-trips as a2a, never as
+            # that operator/terminal channel.
+            return (peer or "a2a"), {"agent_name": peer, "a2a": True}
         return self.kind, dict(self.data)
 
     @classmethod
@@ -135,6 +140,14 @@ class Channel:
             parsed = data
         if not identity:
             return cls("human")
+        if parsed.get("a2a"):
+            # An A2A peer whose name collides with a reserved kind string
+            # ("human", "wechat", …) — restore it as a2a, not as that kind
+            # (D8).  Strip the marker; keep any real payload fields.
+            return cls("a2a", {
+                "agent_name": identity,
+                **{k: v for k, v in parsed.items() if k != "a2a"},
+            })
         if identity in ("human", "wechat", "subagent", "heartbeat", "a2a", "system"):
             return cls(identity, parsed)
         return cls("a2a", {"agent_name": identity, **parsed})

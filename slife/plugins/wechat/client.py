@@ -337,6 +337,21 @@ class WechatClawbotClient:
         """Whether the client has valid credentials."""
         return bool(self._bot_token)
 
+    @property
+    def updates_buf(self) -> str:
+        """The current getupdates ack token (persisted across restarts).
+
+        The server returns this opaque token on each poll; passing it back on
+        the next poll acks everything seen so far.  Persisting it across a
+        watchdog restart lets a restored session resume ack'ing instead of
+        re-receiving the unacked replay window (D6).
+        """
+        return self._get_updates_buf
+
+    @updates_buf.setter
+    def updates_buf(self, value: str) -> None:
+        self._get_updates_buf = value or ""
+
     def reject_session(self) -> None:
         """Drop credentials after the stored session failed validation.
 

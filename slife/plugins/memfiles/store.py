@@ -17,6 +17,7 @@ Code reuse is via memdb helpers: ``_chunk_text``, ``_split_chunks_to_token_limit
 ``_serialize_f32``, ``_to_fts5_query``, ``_contains_cjk``, ``merge_hybrid``.
 """
 
+import asyncio
 import logging
 import re
 from datetime import datetime
@@ -130,6 +131,14 @@ class MemfilesStore:
         self._embedding_dim = DEFAULT_EMBEDDING_DIM
         self._embedding_model = ""
         self._vec_available = False             # sqlite-vec loaded? embeddings optional
+        # Serializes multi-statement read-modify-write writes (upsert_note /
+        # upsert_diary / upsert_report): aiosqlite lets coroutines interleave
+        # between awaited statements, so two concurrent upserts of the same
+        # subject/date/title could both see "no row" (UNIQUE IntegrityError)
+        # or drop one writer's appended section.  Same reason memdb carries
+        # one — subagents share this plugin over HTTP, so the lock covers the
+        # main agent + subagent writers in this one process.
+        self._write_lock = asyncio.Lock()
 
     # ── lifecycle ─────────────────────────────────────────────────
 
@@ -293,85 +302,110 @@ class MemfilesStore:
     # ── document writes (md mirrored) ──────────────────────────────
 
     async def upsert_note(self, subject: str, content: str, tags: str) -> dict:
-        """Append a timestamped section to the subject's note (md + DB row)."""
+        """Append a timestamped section to the subject's note (md + DB row).
+
+        The whole read-modify-write (existing md + SELECT + UPDATE/INSERT +
+        commit) runs under the store write lock: without it, two concurrent
+        upserts (main agent + a subagent sharing this plugin) can both see
+        "no row" and hit ``notes.subject UNIQUE``, or the md read-append-
+        rewrite drops one writer's section.
+        """
         if not subject.strip() or not content.strip():
             raise ValueError("subject and content are required")
-        slug = _slugify(subject) or "note"
-        rel = f"notes/{slug}.md"
-        abs_path = self._mem_dir / rel
-        abs_path.parent.mkdir(parents=True, exist_ok=True)
-        now = _now()
-        body = content.strip()
-        if abs_path.exists():
-            existing = abs_path.read_text(encoding="utf-8").rstrip()
-            new_md = f"{existing}\n\n## {now}\n\n{body}\n"
-        else:
-            new_md = f"# {subject}\n\n{body}\n"
-        abs_path.write_text(new_md, encoding="utf-8")
+        async with self._write_lock:
+            slug = _slugify(subject) or "note"
+            now = _now()
+            body = content.strip()
 
-        cursor = await self._c.execute(
-            "SELECT id FROM notes WHERE subject = ?", (subject,),
-        )
-        row = await cursor.fetchone()
-        if row:
-            await self._c.execute(
-                "UPDATE notes SET content=?, tags=?, file_path=?, updated_at=? "
-                "WHERE subject=?",
-                (new_md, tags, rel, now, subject),
-            )
-            await self._clear_kind_chunks("note", row["id"])
-            doc_id = row["id"]
-        else:
+            # The row's OWN file path is authoritative: re-appending to the
+            # same subject reuses it.  A NEW subject whose slug collides with
+            # an existing note (e.g. "API Design" vs "API-Design" → both
+            # "api-design") must get a DISTINCT file — otherwise the two rows
+            # would share one md, and updating either re-reads the merged
+            # content (content bleeds across notes) (D2).
             cursor = await self._c.execute(
-                "INSERT INTO notes (subject, content, tags, file_path, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (subject, new_md, tags, rel, now, now),
+                "SELECT id, file_path FROM notes WHERE subject = ?", (subject,),
             )
-            doc_id = cursor.lastrowid
-        await self._c.commit()
-        return {"kind": "note", "doc_id": doc_id, "key": subject,
-                "file_path": rel, "content": new_md}
+            row = await cursor.fetchone()
+            if row:
+                doc_id = row["id"]
+                rel = row["file_path"]
+            else:
+                notes_dir = self._mem_dir / "notes"
+                rel = "notes/" + _unique_path(notes_dir, slug, ".md").name
+                doc_id = None
+
+            abs_path = self._mem_dir / rel
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            if abs_path.exists():
+                existing = abs_path.read_text(encoding="utf-8").rstrip()
+                new_md = f"{existing}\n\n## {now}\n\n{body}\n"
+            else:
+                new_md = f"# {subject}\n\n{body}\n"
+            abs_path.write_text(new_md, encoding="utf-8")
+
+            if doc_id is not None:
+                await self._c.execute(
+                    "UPDATE notes SET content=?, tags=?, updated_at=? "
+                    "WHERE id=?",
+                    (new_md, tags, now, doc_id),
+                )
+                await self._clear_kind_chunks("note", doc_id)
+            else:
+                cursor = await self._c.execute(
+                    "INSERT INTO notes (subject, content, tags, file_path, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (subject, new_md, tags, rel, now, now),
+                )
+                doc_id = cursor.lastrowid
+            await self._c.commit()
+            return {"kind": "note", "doc_id": doc_id, "key": subject,
+                    "file_path": rel, "content": new_md}
 
     async def upsert_diary(self, date: str, content: str, tags: str) -> dict:
-        """Append a timestamped section to a day's diary (md + DB row)."""
+        """Append a timestamped section to a day's diary (md + DB row).
+
+        Serialized under the store write lock — see :meth:`upsert_note`.
+        """
         if not content.strip():
             raise ValueError("content is required")
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             raise ValueError(f"date must be YYYY-MM-DD, got {date!r}")
-        rel = f"diary/{date}.md"
-        abs_path = self._mem_dir / rel
-        abs_path.parent.mkdir(parents=True, exist_ok=True)
-        now = _now()
-        body = content.strip()
-        if abs_path.exists():
-            existing = abs_path.read_text(encoding="utf-8").rstrip()
-            new_md = f"{existing}\n\n## {now}\n\n{body}\n"
-        else:
-            new_md = f"# {date}\n\n{body}\n"
-        abs_path.write_text(new_md, encoding="utf-8")
+        async with self._write_lock:
+            rel = f"diary/{date}.md"
+            abs_path = self._mem_dir / rel
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            now = _now()
+            body = content.strip()
+            if abs_path.exists():
+                existing = abs_path.read_text(encoding="utf-8").rstrip()
+                new_md = f"{existing}\n\n## {now}\n\n{body}\n"
+            else:
+                new_md = f"# {date}\n\n{body}\n"
+            abs_path.write_text(new_md, encoding="utf-8")
 
-        cursor = await self._c.execute(
-            "SELECT id FROM diary WHERE date = ?", (date,),
-        )
-        row = await cursor.fetchone()
-        if row:
-            await self._c.execute(
-                "UPDATE diary SET content=?, tags=?, file_path=?, updated_at=? "
-                "WHERE date=?",
-                (new_md, tags, rel, now, date),
-            )
-            await self._clear_kind_chunks("diary", row["id"])
-            doc_id = row["id"]
-        else:
             cursor = await self._c.execute(
-                "INSERT INTO diary (date, content, tags, file_path, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (date, new_md, tags, rel, now, now),
+                "SELECT id FROM diary WHERE date = ?", (date,),
             )
-            doc_id = cursor.lastrowid
-        await self._c.commit()
-        return {"kind": "diary", "doc_id": doc_id, "key": date,
-                "file_path": rel, "content": new_md}
+            row = await cursor.fetchone()
+            if row:
+                await self._c.execute(
+                    "UPDATE diary SET content=?, tags=?, file_path=?, updated_at=? "
+                    "WHERE date=?",
+                    (new_md, tags, rel, now, date),
+                )
+                await self._clear_kind_chunks("diary", row["id"])
+                doc_id = row["id"]
+            else:
+                cursor = await self._c.execute(
+                    "INSERT INTO diary (date, content, tags, file_path, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (date, new_md, tags, rel, now, now),
+                )
+                doc_id = cursor.lastrowid
+            await self._c.commit()
+            return {"kind": "diary", "doc_id": doc_id, "key": date,
+                    "file_path": rel, "content": new_md}
 
     async def add_file(
         self, *, title: str, original_path: str, saved_path: str,
@@ -406,64 +440,88 @@ class MemfilesStore:
             raise ValueError("content is required")
         if not title.strip():
             raise ValueError("title is required")
-        slug = _slugify(title) or ("report" if task_id is None else f"report-{task_id}")
-        rel = f"reports/{slug}.md"
-        abs_path = self._mem_dir / rel
-        abs_path.parent.mkdir(parents=True, exist_ok=True)
-        now = _now()
-        body = content.strip()
-        if abs_path.exists():
-            # Same title → append a timestamped section (like diary).
-            existing = abs_path.read_text(encoding="utf-8").rstrip()
-            new_md = f"{existing}\n\n## {now}\n\n{body}\n"
-        else:
-            new_md = f"# {title}\n\n{body}\n"
-        abs_path.write_text(new_md, encoding="utf-8")
+        async with self._write_lock:
+            slug = _slugify(title) or ("report" if task_id is None else f"report-{task_id}")
+            now = _now()
+            body = content.strip()
 
-        cursor = await self._c.execute(
-            "SELECT id FROM reports WHERE file_path = ?", (rel,),
-        )
-        row = await cursor.fetchone()
-        if row:
-            await self._c.execute(
-                "UPDATE reports SET content=?, tags=?, file_path=?, "
-                "period_start=?, period_end=?, updated_at=? WHERE id=?",
-                (new_md, tags, rel, period_start, period_end, now, row["id"]),
-            )
-            await self._clear_kind_chunks("report", row["id"])
-            doc_id = row["id"]
-        else:
-            cursor = await self._c.execute(
-                "INSERT INTO reports (task_id, title, content, tags, file_path, "
-                "period_start, period_end, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (task_id, title, new_md, tags, rel, period_start, period_end, now, now),
-            )
-            doc_id = cursor.lastrowid
-
-        # Store-layer backfill: confirm the run this report is *for*, pending →
-        # ran here (the ONLY 'ran' write).  Only a task-bound report does this;
-        # a standalone report (task_id None) has no run to confirm.  A due_at
-        # targets the exact run — the backfilled failed/missed run — so a newer
-        # stale run is never grabbed; without one it links the newest un-linked
-        # run (cron fire).
-        if task_id is not None:
-            if due_at is not None:
-                await self._c.execute(
-                    "UPDATE scheduled_runs SET report_id=?, status='ran' "
-                    "WHERE task_id=? AND due_at=? AND report_id IS NULL",
-                    (doc_id, task_id, due_at),
+            # The report's OWN row is authoritative; re-saving the same
+            # logical report (same task + same exact title) reuses its file,
+            # appending sections.  Two DISTINCT reports whose titles
+            # slug-collide ("API Design" vs "API-Design" → "api-design") must
+            # NOT collapse into one row/file — identity is (task, exact title),
+            # and a brand-new row claims its path via _unique_path (D2).
+            if task_id is not None:
+                cursor = await self._c.execute(
+                    "SELECT id, file_path FROM reports "
+                    "WHERE task_id = ? AND title = ? "
+                    "ORDER BY id DESC LIMIT 1", (task_id, title),
                 )
+                row = await cursor.fetchone()
             else:
-                await self._c.execute(
-                    "UPDATE scheduled_runs SET report_id=?, status='ran' WHERE id = ("
-                    "  SELECT id FROM scheduled_runs WHERE task_id=? AND report_id IS NULL "
-                    "  ORDER BY due_at DESC LIMIT 1)",
-                    (doc_id, task_id),
+                cursor = await self._c.execute(
+                    "SELECT id, file_path FROM reports "
+                    "WHERE task_id IS NULL AND title = ? "
+                    "ORDER BY id DESC LIMIT 1", (title,),
                 )
-        await self._c.commit()
-        return {"kind": "report", "doc_id": doc_id, "key": title,
-                "file_path": rel, "content": new_md}
+                row = await cursor.fetchone()
+            if row:
+                doc_id = row["id"]
+                rel = row["file_path"]
+            else:
+                reports_dir = self._mem_dir / "reports"
+                rel = "reports/" + _unique_path(reports_dir, slug, ".md").name
+                doc_id = None
+
+            abs_path = self._mem_dir / rel
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            if abs_path.exists():
+                # Same report → append a timestamped section (like diary).
+                existing = abs_path.read_text(encoding="utf-8").rstrip()
+                new_md = f"{existing}\n\n## {now}\n\n{body}\n"
+            else:
+                new_md = f"# {title}\n\n{body}\n"
+            abs_path.write_text(new_md, encoding="utf-8")
+
+            if doc_id is not None:
+                await self._c.execute(
+                    "UPDATE reports SET content=?, tags=?, "
+                    "period_start=?, period_end=?, updated_at=? WHERE id=?",
+                    (new_md, tags, period_start, period_end, now, doc_id),
+                )
+                await self._clear_kind_chunks("report", doc_id)
+            else:
+                cursor = await self._c.execute(
+                    "INSERT INTO reports (task_id, title, content, tags, file_path, "
+                    "period_start, period_end, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (task_id, title, new_md, tags, rel, period_start, period_end, now, now),
+                )
+                doc_id = cursor.lastrowid
+
+            # Store-layer backfill: confirm the run this report is *for*, pending →
+            # ran here (the ONLY 'ran' write).  Only a task-bound report does this;
+            # a standalone report (task_id None) has no run to confirm.  A due_at
+            # targets the exact run — the backfilled failed/missed run — so a newer
+            # stale run is never grabbed; without one it links the newest un-linked
+            # run (cron fire).
+            if task_id is not None:
+                if due_at is not None:
+                    await self._c.execute(
+                        "UPDATE scheduled_runs SET report_id=?, status='ran' "
+                        "WHERE task_id=? AND due_at=? AND report_id IS NULL",
+                        (doc_id, task_id, due_at),
+                    )
+                else:
+                    await self._c.execute(
+                        "UPDATE scheduled_runs SET report_id=?, status='ran' WHERE id = ("
+                        "  SELECT id FROM scheduled_runs WHERE task_id=? AND report_id IS NULL "
+                        "  ORDER BY due_at DESC LIMIT 1)",
+                        (doc_id, task_id),
+                    )
+            await self._c.commit()
+            return {"kind": "report", "doc_id": doc_id, "key": title,
+                    "file_path": rel, "content": new_md}
 
     # ── scheduled-task registry ─────────────────────────────────────
 

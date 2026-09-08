@@ -14,6 +14,10 @@ Config format::
     }
 """
 
+import json
+import os
+import tempfile
+
 import json5
 import logging
 from pathlib import Path
@@ -21,6 +25,67 @@ from pathlib import Path
 logger = logging.getLogger("slife_wechat")
 
 DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
+
+
+# ── Sync state (dedupe/replay ack), a small sidecar next to the session ──
+# The iLink getupdates endpoint returns an opaque ``get_updates_buf`` ack;
+# passing it back on the next poll tells the server we've seen up to there.
+# Persisting it across a restart lets a restored session resume ack'ing
+# instead of re-receiving the unacked window — which the poll loop would
+# re-ingest as genuine duplicates once its 30s in-memory dedup window has
+# passed (D6).
+
+
+def _sync_path(user: str, work_dir: Path | None = None) -> Path:
+    wd = work_dir or Path(".")
+    return wd / f"wechat_{user}_sync.json"
+
+
+def load_wechat_sync(user: str, work_dir: Path | None = None) -> dict:
+    """Load the persisted sync state (``get_updates_buf``) for *user*."""
+    path = _sync_path(user, work_dir)
+    if not path.exists():
+        return {"get_updates_buf": ""}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("wechat_sync_parse_failed path=%s", path)
+        return {"get_updates_buf": ""}
+    if not isinstance(raw, dict):
+        return {"get_updates_buf": ""}
+    return {"get_updates_buf": raw.get("get_updates_buf", "") or ""}
+
+
+def save_wechat_sync(
+    user: str, get_updates_buf: str, work_dir: Path | None = None,
+) -> Path:
+    """Persist the current ``get_updates_buf`` ack for *user* (atomic write)."""
+    path = _sync_path(user, work_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".wechat_sync_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"get_updates_buf": get_updates_buf}, f)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    logger.debug("wechat_sync_saved user=%s path=%s", user, path)
+    return path
+
+
+def clear_wechat_sync(user: str, work_dir: Path | None = None) -> None:
+    """Delete the persisted sync state (on logout / fresh login)."""
+    path = _sync_path(user, work_dir)
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        logger.info("wechat_sync_cleared user=%s", user)
 
 
 def _config_path(user: str, work_dir: Path | None = None) -> Path:

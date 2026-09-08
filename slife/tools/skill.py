@@ -362,26 +362,53 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             return f"Error: invalid skill name: {name!r}"
         is_update = skill_dir.exists()
 
-        skill_dir.mkdir(parents=True, exist_ok=True)
+        # Install into a fresh TEMP sibling directory and swap it into place
+        # only on full success.  Writing straight into the live skill_dir lets
+        # a mid-way failure (a later archive member, an escaping path, an IO
+        # error) leave the previous version partially overwritten — the
+        # "keep the previous version intact" guarantee only held for fresh
+        # installs otherwise.
+        import os as _os
+        import shutil as _shutil
+        import tempfile as _tempfile
+        tmp_dir = Path(_tempfile.mkdtemp(
+            prefix=f".{name}.install-", dir=str(skill_dir.parent),
+        ))
+
+        # Preserve the live skill's external _meta.json fields across an
+        # update: the temp dir starts empty and _write_meta_json merges into
+        # whatever _meta.json it finds there.
+        if is_update:
+            live_meta = skill_dir / "_meta.json"
+            if live_meta.exists():
+                try:
+                    (tmp_dir / "_meta.json").write_text(
+                        live_meta.read_text(encoding="utf-8"), encoding="utf-8",
+                    )
+                except OSError:
+                    pass
 
         try:
             if archive_b64:
-                result = self._install_from_archive(name, archive_b64, skill_dir, is_update)
+                result = self._install_from_archive(name, archive_b64, tmp_dir, is_update)
             else:
-                result = self._install_from_files(name, files, skill_dir, is_update)  # type: ignore[arg-type]
-            self._write_meta_json(skill_dir, source)
-            return result
+                result = self._install_from_files(name, files, tmp_dir, is_update)  # type: ignore[arg-type]
+            self._write_meta_json(tmp_dir, source)
         except Exception as e:
-            if not is_update:
-                # A fresh install failed — remove the partial directory.
-                import shutil
-                shutil.rmtree(skill_dir, ignore_errors=True)
-            else:
-                # Updating an existing skill failed — keep the previous
-                # version intact instead of destroying it.
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+            logger.exception("skill_install_failed name=%s is_update=%s", name, is_update)
+            if is_update:
                 logger.warning("skill_update_failed name=%s err=%s", name, e)
-            logger.exception("skill_install_failed name=%s", name)
             return f"Error: installing skill '{name}': {e}"
+
+        # Swap: the live dir is replaced by the fully-installed temp dir.
+        # (os.replace over an existing non-empty dir fails on Windows, so the
+        # old version is removed first — the skill dir is not hot-served.)
+        if skill_dir.exists():
+            _shutil.rmtree(skill_dir)
+        _os.replace(tmp_dir, skill_dir)
+        # Cosmetic: report the real install path, not the temp one.
+        return result.replace(str(tmp_dir), str(skill_dir))
 
     def _install_from_files(self, name: str, files: list[dict], skill_dir: Path, is_update: bool = False) -> str:
         """Write individual files to the skill directory."""

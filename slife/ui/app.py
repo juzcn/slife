@@ -916,6 +916,14 @@ class SlifeApp(App):
             # Agent loop finished — refresh status bar to clear
             # the "⏳ processing" indicator.
             self._update_status()
+            # Genuine turn-end hook: the inbox processes turns serially and
+            # emits "idle" only after the whole turn (tools included) has
+            # finished streaming, so this is the one safe place to drop the
+            # finished turn's tool widgets — NOT at enqueue time in
+            # _process_message (which returned before the turn even started,
+            # orphaning the in-flight widgets of a still-running turn when a
+            # second message was submitted).
+            self._tool_widgets.clear()
 
     # ── Recovery UI ───────────────────────────────────────────────
 
@@ -968,10 +976,11 @@ class SlifeApp(App):
         except Exception as e:
             handler.finalize_current()
             chat_view.add_system_message(t("turn_error", err=e), color="#f85149")
-        finally:
-            # Clear the tool-widget map only after this turn has finished —
-            # clearing at enqueue time (a follow-up worker can start while the
-            # previous turn is still streaming) orphaned the in-flight tool
-            # widgets, leaving their rows stuck on "◌ running" with the
-            # results silently dropped.
-            self._tool_widgets.clear()
+        # NOTE: _process_message only enqueues and returns immediately — the
+        # turn streams later, from the inbox.  Tool widgets must therefore be
+        # cleared at a genuine turn-end hook (the inbox's "idle" event, see
+        # _on_a2a_activity), never here: clearing in this finally ran at
+        # enqueue time, so submitting message B while turn A was still
+        # streaming wiped A's in-flight widgets — A's later on_tool_result
+        # found none and A's rows stayed stuck on "◌ running" with the
+        # results silently dropped.

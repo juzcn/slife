@@ -34,20 +34,30 @@ logger = logging.getLogger(__name__)
 def estimate_turn_tokens(turn: dict) -> int:
     """Estimate the *incremental* token cost of a single turn.
 
-    Counts the user message plus the stored assistant/tool messages
-    using the same chars/3 heuristic as ``MessageHistory.count_tokens``.
-    Returns at least 1 so that a zero-content turn still counts.
+    Counts the user message plus the stored assistant/tool messages using
+    the same per-script estimator as ``MessageHistory.count_tokens``
+    (narrow ~3 chars/token, CJK/wide ~1 token per char) — the restore
+    budget must not under-count a Chinese-heavy session or the next request
+    overflows the context window.  Returns at least 1 so a zero-content
+    turn still counts.
     """
+    from slife.agent.message_history import (
+        estimate_message_tokens,
+        estimate_text_tokens,
+    )
+
     user = turn.get("user_message", "") or ""
     messages = turn.get("messages", "[]")
     if isinstance(messages, str):
-        messages = json.loads(messages)
-    body = (
-        json.dumps(messages, ensure_ascii=False)
-        if isinstance(messages, list)
-        else str(messages)
-    )
-    return max(len(user) // 3 + len(body) // 3, 1)
+        try:
+            messages = json.loads(messages)
+        except Exception:
+            messages = "[]"
+    if isinstance(messages, list):
+        body = sum(estimate_message_tokens(m) for m in messages)
+    else:
+        body = estimate_text_tokens(str(messages))
+    return max(estimate_text_tokens(user) + body, 1)
 
 
 # ── Turn header (restore-time annotation) ────────────────────────────

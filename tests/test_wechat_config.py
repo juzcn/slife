@@ -15,6 +15,9 @@ from slife.plugins.wechat.config import (
     load_wechat_config,
     save_wechat_config,
     clear_wechat_config,
+    load_wechat_sync,
+    save_wechat_sync,
+    clear_wechat_sync,
     DEFAULT_BASE_URL,
 )
 
@@ -242,3 +245,27 @@ class TestIntegration:
         bob = load_wechat_config("bob", work_dir=tmp_path)
         assert alice["bot_token"] == "alice_token"
         assert bob["bot_token"] == "bob_token"
+
+
+class TestSyncSidecar:
+    """D6: the getupdates ack token is persisted across restarts so a restored
+    session resumes ack'ing instead of re-receiving the replay window."""
+
+    def test_save_load_roundtrip(self, tmp_path):
+        save_wechat_sync("alice", "buf-abc123", work_dir=tmp_path)
+        loaded = load_wechat_sync("alice", work_dir=tmp_path)
+        assert loaded["get_updates_buf"] == "buf-abc123"
+
+    def test_missing_returns_empty(self, tmp_path):
+        assert load_wechat_sync("ghost", work_dir=tmp_path) == {"get_updates_buf": ""}
+
+    def test_clear_removes(self, tmp_path):
+        save_wechat_sync("alice", "buf", work_dir=tmp_path)
+        clear_wechat_sync("alice", work_dir=tmp_path)
+        assert load_wechat_sync("alice", work_dir=tmp_path) == {"get_updates_buf": ""}
+
+    def test_per_user_isolation(self, tmp_path):
+        save_wechat_sync("alice", "buf-a", work_dir=tmp_path)
+        save_wechat_sync("bob", "buf-b", work_dir=tmp_path)
+        assert load_wechat_sync("alice", work_dir=tmp_path)["get_updates_buf"] == "buf-a"
+        assert load_wechat_sync("bob", work_dir=tmp_path)["get_updates_buf"] == "buf-b"

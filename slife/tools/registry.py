@@ -36,8 +36,26 @@ class ToolRegistry:
                 logger.debug("tool_change_listener_error", exc_info=True)
 
     def register(self, tool: Tool) -> None:
-        """Register a tool instance."""
-        if tool.name in self._tools and self._tools[tool.name] is not tool:
+        """Register a tool instance.
+
+        Same-owner re-registration replaces (a plugin reconnect, an idempotent
+        re-load).  A tool from a DIFFERENT origin is never silently replaced:
+        a bare-named plugin tool (e.g. a job function named ``mcp_set``) must
+        not displace a live native tool or another plugin's tool, or the LLM's
+        ``mcp_set`` would run the job.  ``server`` (the owning plugin / MCP
+        server) is the owner key; native tools carry no ``server``.
+        """
+        existing = self._tools.get(tool.name)
+        if existing is not None and existing is not tool:
+            if getattr(existing, "server", None) != getattr(tool, "server", None):
+                logger.error(
+                    "tool_register_collision name=%s existing_owner=%r new_owner=%r "
+                    "— refusing to replace a differently-owned tool",
+                    tool.name,
+                    getattr(existing, "server", None),
+                    getattr(tool, "server", None),
+                )
+                return
             logger.warning(
                 "tool_register_duplicate name=%s — replacing existing tool", tool.name,
             )

@@ -1010,6 +1010,48 @@ class TestMCPServerConnectionCancelCleanup:
         mock_cleanup.assert_awaited_once()
         assert conn.status == ServerStatus.DISCONNECTED
 
+    @pytest.mark.asyncio
+    async def test_cancel_after_connected_resets_to_disconnected(self):
+        """A6 regression: connect() marks CONNECTED *before* the post-connect
+        sync.  If that sync is cancelled (a host tool-timeout on mcp_set), the
+        status must drop back to DISCONNECTED — never stay CONNECTED over a
+        torn-down transport (a half-open wedge where __check reports running
+        and call_tool skips lazy reconnect) — and a health monitor must be
+        (re)armed so the DISCONNECTED state recovers in the background."""
+        cfg = ServerConfig(name="test", command="echo")
+        cfg.enabled = True
+        conn = MCPServerConnection(cfg)
+        conn._disconnecting = False
+        conn._health_task = None
+
+        async def _connect_ok():
+            pass
+
+        async def _request(method, params=None):
+            if method == "initialize":
+                return {"serverInfo": {"name": "test"}}
+            return {"tools": []}  # tools/list
+
+        async def _notify(*a, **k):
+            pass
+
+        async def _cancel_mid_sync():
+            raise asyncio.CancelledError
+
+        conn._connect_stdio = _connect_ok
+        conn._request = _request
+        conn._notify = _notify
+        conn._fire_on_reconnect = _cancel_mid_sync
+        with patch.object(conn, "_cleanup_resources", new=AsyncMock()):
+            with pytest.raises(asyncio.CancelledError):
+                await conn.connect()
+
+        assert conn.status == ServerStatus.DISCONNECTED
+        assert conn._health_task is not None and not conn._health_task.done()
+        conn._health_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await conn._health_task
+
 class TestMCPServerConnectionTreeKill:
     """REVIEW M4 — stdio teardown kills the whole process tree, not just the
     direct child (npx/uvx grandchildren survive on Windows)."""

@@ -450,11 +450,35 @@ class SubagentProcess:
 
     async def _read_stdout(self) -> None:
         if not self._process or not self._process.stdout: return
+        from slife.logfmt import PROTOCOL_LINE_LIMIT, discard_overlong_line
         reader = self._process.stdout
-        reader._limit = 10 * 1024 * 1024  # type: ignore[attr-defined]
+        # One stdout line can legitimately be a many-MB worker result — raise
+        # the StreamReader cap accordingly.  A line beyond even that is
+        # discarded (tail and all) rather than killing the reader: a dead
+        # reader strands every _pending sync future and the worker's task
+        # sits "pending" forever (the same class as the stderr pipe-wedge).
+        try:
+            # `_limit` is private on asyncio.StreamReader — read defensively
+            # via getattr (avoids the read-side attribute warning) and raise
+            # it on the write.
+            reader._limit = max(  # type: ignore[attr-defined]
+                int(getattr(reader, "_limit", 0)), PROTOCOL_LINE_LIMIT,
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
         try:
             while self._running:
-                line = await reader.readline()
+                try:
+                    line = await reader.readline()
+                except ValueError:
+                    # LimitOverrunError — a single over-long line.  Discard
+                    # its remainder and keep reading; never die here.
+                    dropped = await discard_overlong_line(reader)
+                    logger.warning(
+                        "subagent_stdout_line_overlong_discarded "
+                        "name=%s min_bytes=%d", self._name, dropped,
+                    )
+                    continue
                 if not line: break
                 try:
                     msg = json.loads(line.decode("utf-8", errors="replace"))

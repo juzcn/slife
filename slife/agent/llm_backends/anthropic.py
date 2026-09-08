@@ -130,7 +130,12 @@ class AnthropicBackend:
                     try:
                         inp = json.loads(fn.get("arguments", "{}"))
                     except (json.JSONDecodeError, TypeError):
-                        inp = {}
+                        # Non-strict-JSON arguments (a persisted truncated/raw
+                        # blob).  Anthropic's tool_use.input must be JSON, so
+                        # preserve the raw text the way restore does —
+                        # {"_raw": …} — instead of silently emptying the call.
+                        raw = str(fn.get("arguments", ""))
+                        inp = {"_raw": raw} if raw else {}
                     blocks.append({
                         "type": "tool_use",
                         "id": tc["id"],
@@ -146,10 +151,14 @@ class AnthropicBackend:
                     blocks.append({"type": "text", "text": ""})
                 converted.append({"role": "assistant", "content": blocks})
             elif role == "tool":
+                # The persisted ``is_error`` verdict maps to Anthropic's native
+                # ``tool_result.is_error`` (C3): the model reads a failed call
+                # as a failure, not as a success whose text starts "Error:".
                 pending_tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": msg.get("tool_call_id", ""),
                     "content": str(content),
+                    "is_error": bool(msg.get("is_error", False)),
                 })
         _flush_tool_results()
 

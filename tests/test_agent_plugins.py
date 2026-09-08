@@ -438,8 +438,12 @@ class TestWatchdogRestart:
                 # The watchdog respawned via the fallback path (no restart_cb).
                 assert lifecycle.process is new_proc
                 assert spawned == ["slife.plugins.memdb.server"]
-                # A successful restart resets the counters.
-                assert lifecycle._restart_count == 0
+                # B2: a restart only "succeeded" once the child proves stable
+                # (runs ≥ _WATCHDOG_STABLE_UPTIME).  Right after spawn the
+                # consecutive-failure counter is NOT reset — it keeps this
+                # restart attempt counted, so a ~1s boot-loop trips
+                # `_max_restarts` instead of restarting forever.
+                assert lifecycle._restart_count == 1
             finally:
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
@@ -475,11 +479,100 @@ class TestWatchdogRestart:
                 # First attempt failed, watchdog retried and succeeded.
                 assert lifecycle.process is new_proc
                 assert attempts == 2
-                assert lifecycle._restart_count == 0
+                # B2: two restart attempts were made and the child has not yet
+                # proven stable — the counter is NOT reset on success.
+                assert lifecycle._restart_count == 2
             finally:
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await task
+
+    @pytest.mark.asyncio
+    async def test_boot_loop_gives_up_instead_of_resetting(self, lifecycle):
+        """B2 regression: a child that comes up and dies before the stable
+        window must NOT reset the consecutive-failure counter on each
+        'successful' restart — the watchdog gives up at `_max_restarts`
+        instead of restarting forever (the old code reset the counter right
+        after every successful spawn)."""
+        import slife.agent.plugins as plugin_mod
+
+        lifecycle._max_restarts = 3
+        lifecycle._module = "slife.plugins.memdb.server"  # fallback spawn path
+        lifecycle.process = self._dead_process()
+
+        spawned = 0
+
+        async def dead_spawn(module):
+            nonlocal spawned
+            spawned += 1
+            lifecycle.process = self._dead_process()  # dies again instantly
+
+        with patch.object(lifecycle, "spawn", new=dead_spawn):
+            task = asyncio.create_task(lifecycle._watchdog_loop())
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except asyncio.TimeoutError:
+                pytest.fail("boot-loop watchdog never gave up (B2)")
+        assert lifecycle._restart_count == 3
+        assert spawned == 3
+
+    @pytest.mark.asyncio
+    async def test_watchdog_unregisters_client_bound_proxies(self, lifecycle,
+                                                             mock_service):
+        """B3 regression: when a plugin's child exits, the watchdog must also
+        unregister registry tools bound to the dead client that are NOT in
+        ``registered_tools`` — the external MCP proxies the gateway glue
+        registered (``{server}__{tool}``).  Otherwise they linger in the LLM
+        tool list bound to a dead client."""
+        from types import SimpleNamespace
+        from slife.tools.registry import ToolRegistry
+
+        reg = ToolRegistry()
+        mock_service.tool_registry = reg
+
+        lifecycle.process = self._dead_process()
+        client = MagicMock()
+        client.disconnect = AsyncMock()
+        lifecycle.client = client
+        # No restart info → the watchdog cleans up the dead process then exits.
+        lifecycle._module = None
+        lifecycle._restart_cb = None
+
+        # A proxy tool bound to the dead client, NOT tracked in registered_tools.
+        proxy = SimpleNamespace(name="ext__tool", _mcp_client=client)
+        reg.register(proxy)
+
+        task = asyncio.create_task(lifecycle._watchdog_loop())
+        await asyncio.wait_for(task, timeout=2.0)
+
+        assert reg.get("ext__tool") is None
+        client.disconnect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_hung_restart_bounded_by_spawn_timeout(self, lifecycle,
+                                                         monkeypatch):
+        """B1 regression: a restart_cb that never returns (child stuck before
+        its lifespan serves) must not block the watchdog forever.  Each
+        restart attempt is bounded by PLUGIN_SPAWN_TIMEOUT, treated as a
+        failed attempt (backoff), and the watchdog gives up at
+        `_max_restarts`."""
+        import slife.agent.plugins as plugin_mod
+
+        monkeypatch.setattr(plugin_mod, "PLUGIN_SPAWN_TIMEOUT", 0.02)
+        monkeypatch.setattr(plugin_mod, "_WATCHDOG_BACKOFF_INITIAL", 0.005)
+        monkeypatch.setattr(plugin_mod, "_WATCHDOG_BACKOFF_MULTIPLIER", 1.0)
+        lifecycle._max_restarts = 3
+        lifecycle.process = self._dead_process()
+        # A restart callback that never completes — the hang the timeout must
+        # bound.
+        lifecycle._restart_cb = lambda: asyncio.Event().wait()
+
+        task = asyncio.create_task(lifecycle._watchdog_loop())
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+        except asyncio.TimeoutError:
+            pytest.fail("watchdog blocked forever on a hung restart (B1)")
+        assert lifecycle._restart_count == 3
 
 
 # ── cancel_tasks ─────────────────────────────────────────────────────────

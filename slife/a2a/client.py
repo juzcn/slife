@@ -91,6 +91,18 @@ class A2AClient:
         # Status exposed via AgentCard
         self._status: str = "idle"
 
+        # Unique per-process instance marker carried in our presence payload.
+        # We are subscribed to Slife/+/presence, so our OWN publications echo
+        # back to us — the marker is how the watchdog tells that echo from a
+        # genuinely same-named agent on ANOTHER instance (connect-time
+        # duplicate detection alone is unreliable: presence is non-retained
+        # and peers announce at most every heartbeat).
+        self._instance = uuid.uuid4().hex
+        # Set when a same-named peer from another instance is detected live —
+        # this instance stops taking part (heartbeat + inbox) so tasks are no
+        # longer fanned to both instances (duplicated side effects).
+        self._stopped_for_duplicate = False
+
     # ── Properties ────────────────────────────────────────────────────
 
     @property
@@ -138,6 +150,10 @@ class A2AClient:
                         if (
                             isinstance(data, dict)
                             and data.get("agent_name") == self._agent_name
+                            # Our own echo (instance marker matches, e.g. on a
+                            # re-connect after a paho auto-reconnect) is not a
+                            # duplicate.
+                            and data.get("instance") != self._instance
                         ):
                             raise DuplicateAgentError(
                                 f"Agent '{self._agent_name}' is already running "
@@ -151,12 +167,15 @@ class A2AClient:
         except TimeoutError:
             pass  # No duplicates found — good
 
-        # Announce our presence
-        await self._publish_presence("online")
-
-        # Subscribe to own inbox + results
+        # Subscribe to our inbox + results BEFORE announcing online — a fast
+        # peer reacting to our `online` card publishes a task into our inbox
+        # topic, and if the SUBSCRIBE has not landed yet that first task is
+        # silently dropped on an unsubscribed topic.
         await self._adapter.subscribe(f"Slife/{self._agent_name}/tasks/inbox")
         await self._adapter.subscribe(f"Slife/{self._agent_name}/tasks/result")
+
+        # Announce our presence
+        await self._publish_presence("online")
 
         # Start background loops
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -441,6 +460,7 @@ class A2AClient:
         card = AgentCard(
             agent_name=self._agent_name,
             status=status_override if status_override in ("offline",) else self._status,
+            instance=self._instance,
         )
         payload = json.dumps(card.to_dict(), ensure_ascii=False)
         await self._adapter.publish(
@@ -492,6 +512,18 @@ class A2AClient:
                 if not isinstance(peer_id, str) or not peer_id:
                     continue
                 if peer_id == self._agent_name:
+                    # We subscribe to Slife/+/presence, so our OWN publications
+                    # echo back here — they carry our instance marker and are
+                    # skipped.  A same-name presence from a DIFFERENT instance
+                    # (or an instance-less old peer) is a genuine duplicate: a
+                    # second instance subscribed to the same inbox/result
+                    # topics fans every task to both.  Handle it continuously,
+                    # not just in connect()'s short listen window.
+                    if card.instance == self._instance:
+                        continue
+                    if card.status == "offline":
+                        continue  # a duplicate leaving — nothing to stop for
+                    await self._handle_duplicate_presence(card)
                     continue
 
                 status = card.status
@@ -517,6 +549,48 @@ class A2AClient:
                 # Never let one peer's presence message kill the watchdog that
                 # tracks every peer.
                 logger.exception("a2a_watchdog_message_error")
+
+    async def _handle_duplicate_presence(self, card: AgentCard) -> None:
+        """A same-named agent on another instance is online.
+
+        Keep exactly one survivor on the shared inbox/result topics so tasks
+        are never fanned to two instances (duplicated side effects, two
+        replies per task).  Instance ids are compared so the outcome is
+        deterministic and antisymmetric: the instance with the *larger* id
+        stops its heartbeat + inbox loops, the smaller keeps running (it will
+        observe the larger one's next presence and confirm the larger stopped
+        — and if it never arrives, the smaller keeps the mesh consistent).
+        """
+        if self._stopped_for_duplicate:
+            return
+        if self._instance < card.instance:
+            # We are the survivor — the other instance will observe our
+            # presence and stop itself.
+            logger.warning(
+                "a2a_duplicate_name_keep name=%s other_instance=%s — "
+                "a same-named agent is online; keeping this instance "
+                "(lower instance id). Rename this agent (--agent <id>) or "
+                "stop the other instance to avoid duplicated tasks.",
+                self._agent_name, card.instance,
+            )
+            return
+
+        # We are the loser — stop taking part so this instance stops
+        # duplicating the other's side effects.  Heartbeats stop (no more
+        # presence), and the inbox listener is cancelled (no more inbound
+        # task fan-out).  No offline presence is sent — the surviving
+        # instance must not read our leave as a duplicate-stop trigger.
+        self._stopped_for_duplicate = True
+        logger.error(
+            "a2a_duplicate_name_stop name=%s other_instance=%s — another "
+            "instance is online with a lower instance id; stopping this "
+            "instance's A2A loops. Rename this agent (--agent <id>) or stop "
+            "the other instance.",
+            self._agent_name, card.instance,
+        )
+        for task in (self._heartbeat_task, self._inbox_listener_task):
+            if task is not None and not task.done():
+                task.cancel()
 
     async def _prune_stale_peers(self, timeout: float) -> None:
         """Remove peers we haven't heard from within *timeout* seconds."""
@@ -676,11 +750,19 @@ class A2AClient:
         from slife.a2a.task_store import get_store
 
         if future and not future.done():
-            future.set_result(result_text)
             if cancelled:
+                # The peer cancelled spontaneously — WE never called
+                # cancel_task for this corr_id (that path already removed the
+                # waiter), so a sync send_task must surface a cancellation,
+                # not resolve it as a successful "" (D9).  The store is
+                # marked cancelled either way.
                 get_store().record_cancel(corr_id)
+                future.set_exception(RuntimeError(
+                    f"Task '{corr_id}' was cancelled by the peer",
+                ))
             else:
                 get_store().record_result(corr_id, result_text)
+                future.set_result(result_text)
             logger.debug("a2a_result_resolved corr_id=%s", corr_id)
         else:
             # No synchronous waiter.  Either this is an async task whose result

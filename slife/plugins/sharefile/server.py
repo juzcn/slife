@@ -103,8 +103,54 @@ mcp, _log_path, logger = create_plugin_server(
 # Token registry — in-process (server + tunnel live in one process)
 # ═══════════════════════════════════════════════════════════════════════
 
-_registry: dict[str, str] = {}       # token → absolute local path
+#: Credential file basenames / path fragments that share_file refuses to
+#: publish (a share URL is public while the tunnel is up — a leaked key would
+#: be world-readable).
+_CREDENTIAL_FRAGMENTS = frozenset({
+    ".env", "credentials", "known_hosts",
+    "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+    ".npmrc", ".pypirc", "netrc", ".netrc",
+})
+
+
+def _is_credential_path(path: Path) -> bool:
+    """Whether *path* looks like a private credential that must not be shared.
+
+    Matches the basename (and each path fragment) case-insensitively against
+    a small denylist — private-key names, dotenv, cloud/package credentials.
+    """
+    parts = {p.lower() for p in path.parts}
+    for frag in _CREDENTIAL_FRAGMENTS:
+        if frag in parts:
+            return True
+    name = path.name.lower()
+    return name in (".env", "credentials", "known_hosts") or name.startswith(".env.")
+
+
+#: token → pinned file facts captured at register time.
+_registry: dict[str, dict] = {}
 _path_to_token: dict[str, str] = {}  # absolute path → token (dedup)
+
+
+def _stat_pin(file_path: str) -> dict:
+    """Capture the file's identity at register time.
+
+    ``(dev, ino, size, mtime_ns)`` pins the exact file that was shared.  The
+    serve path re-checks it: a path that is later replaced, or swapped for a
+    symlink to something else, then has a different inode/mtime and is refused
+    — a share never silently starts serving new content (D4).
+    """
+    entry: dict = {"path": file_path, "dev": None, "ino": None,
+                   "size": None, "mtime_ns": None}
+    try:
+        st = Path(file_path).stat()
+        entry.update({
+            "dev": st.st_dev, "ino": st.st_ino,
+            "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+        })
+    except OSError:
+        pass  # not present yet — serve path will 404; nothing to pin
+    return entry
 
 
 def _register_file(file_path: str) -> str:
@@ -119,15 +165,30 @@ def _register_file(file_path: str) -> str:
     if existing:
         return existing
     tok = secrets.token_hex(15)
-    _registry[tok] = file_path
+    _registry[tok] = _stat_pin(file_path)
     _path_to_token[file_path] = tok
     logger.debug("register_file token=%s path=%s", tok, file_path)
     return tok
 
 
+def _lookup_entry(token: str) -> dict | None:
+    """Return the pinned file facts for *token*, or ``None`` if unknown."""
+    return _registry.get(token)
+
+
 def _lookup_file(token: str) -> str | None:
     """Return the local path for *token*, or ``None`` if unknown."""
-    return _registry.get(token)
+    entry = _registry.get(token)
+    return entry["path"] if entry else None
+
+
+def _unregister_file(file_id: str) -> bool:
+    """Drop *file_id* (and its reverse path mapping), revoking the share link."""
+    entry = _registry.pop(file_id, None)
+    if entry is None:
+        return False
+    _path_to_token.pop(entry["path"], None)
+    return True
 
 
 def _reset_registry() -> None:
@@ -186,19 +247,39 @@ async def handle_share(request: Request) -> Response:
     """
     file_id = request.path_params["file_id"]
 
-    file_path_str = _lookup_file(file_id)
-    if file_path_str is None:
+    entry = _lookup_entry(file_id)
+    if entry is None:
         return Response("Unknown share link or session expired", status_code=403)
 
-    file_path = Path(file_path_str)
-    if not file_path.is_file():
+    file_path = Path(entry["path"])
+    try:
+        if not file_path.is_file():
+            return Response("File no longer exists", status_code=404)
+        st = file_path.stat()
+    except OSError:
         return Response("File no longer exists", status_code=404)
+
+    # D4: the share is pinned to the EXACT file registered (dev/ino/size/mtime).
+    # A path that was later replaced — deleted, or a symlink put in its place —
+    # must NOT serve the new content to every holder of the old token.
+    if entry.get("ino") is not None and (
+        st.st_dev != entry["dev"] or st.st_ino != entry["ino"]
+        or st.st_size != entry["size"] or st.st_mtime_ns != entry["mtime_ns"]
+    ):
+        logger.warning(
+            "share_changed_since_registered file_id=%s path=%s — refusing",
+            file_id, file_path,
+        )
+        return Response(
+            "Shared file changed since the link was created; share it again.",
+            status_code=403,
+        )
+    file_size = st.st_size
 
     if not mimetypes.inited:
         mimetypes.init()
     mime_type, _ = mimetypes.guess_type(str(file_path))
     content_type = mime_type or "application/octet-stream"
-    file_size = file_path.stat().st_size
 
     logger.info("share_served path=%s mime=%s size=%s", file_path, content_type, file_size)
 
@@ -248,11 +329,26 @@ async def __check() -> str:
     )
 
 
+def _credential_error(path: Path) -> str | None:
+    """Refuse to publish a private credential file (a share URL is public)."""
+    if _is_credential_path(path):
+        return (
+            f"Refusing to share {path.name!r}: that looks like a private "
+            "credential (private key / .env / credentials). Sharing it would "
+            "publish it publicly."
+        )
+    return None
+
+
 @mcp.tool(name="__register_file", description="Register a file and return its share URL.")
 async def __register_file(path: str) -> str:
     """Register *path* and return ``{file_id, url}`` for the harness."""
+    p = Path(path).resolve()
+    err = _credential_error(p)
+    if err:
+        return json.dumps({"file_id": "", "url": "", "error": err}, ensure_ascii=False)
     await _ensure_tunnel()
-    file_id = _register_file(str(Path(path).resolve()))
+    file_id = _register_file(str(p))
     url = _tunnel.share_url_for(file_id) or ""
     return json.dumps({"file_id": file_id, "url": url}, ensure_ascii=False)
 
@@ -280,6 +376,10 @@ async def share_file(path: str) -> str:
     if not p.is_file():
         return f"Error: not a file — {path}"
 
+    err = _credential_error(p)
+    if err:
+        return f"Error: {err}"
+
     if not await _ensure_tunnel():
         return (
             "Error: file sharing service is not available. "
@@ -300,6 +400,28 @@ async def share_file(path: str) -> str:
         f"Use this URL in multimodal API calls to let the LLM fetch "
         f"the file directly."
     )
+
+
+@mcp.tool(
+    name="sharefile_unshare",
+    description=(
+        "Revoke a previously-shared file link — the share URL stops working "
+        "(the link was registered in this session)."
+    ),
+)
+async def sharefile_unshare(file_id: str = "") -> str:
+    """Revoke a share by its file id (from a share_file URL: ``/share/{id}``).
+
+    Args:
+        file_id: The share file id (the path segment after ``/share/``).
+    """
+    if not (file_id or "").strip():
+        return "Error: file_id is required (the path segment after /share/)."
+    file_id = file_id.strip()
+    if _unregister_file(file_id):
+        logger.info("unshare file_id=%s", file_id)
+        return f"[OK] Share link {file_id} revoked."
+    return f"Error: no active share with id {file_id!r}."
 
 
 # ── Entry point ──────────────────────────────────────────────────────

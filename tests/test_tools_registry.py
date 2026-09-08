@@ -76,6 +76,60 @@ class TestToolRegistry:
         result = await registry.execute("echo")
         assert "New!" in result
 
+    def test_register_refuses_cross_owner_replace(self):
+        """A8: a bare-named plugin tool (a job function, say) must NOT
+        silently shadow a live native tool — register refuses a tool whose
+        ``server`` owner differs from the name's current owner."""
+        registry = ToolRegistry()
+
+        class Native(Tool):
+            name = "mcp_set"  # no .server — a slife native tool
+            description = "native mcp_set"
+            parameters = {"type": "object", "properties": {}}
+            async def execute(self, **kwargs):
+                return "native"
+
+        class JobProxy:  # stands in for MCPProxyTool(server="job-coding")
+            name = "mcp_set"
+            server = "job-coding"
+            description = "a job named mcp_set"
+            parameters = {"type": "object", "properties": {}}
+            async def execute(self, **kwargs):
+                return "job"
+
+        native = Native()
+        registry.register(native)
+        registry.register(JobProxy())
+
+        # The native tool is untouched — the LLM's mcp_set still runs native.
+        assert registry.get("mcp_set") is native
+        assert registry.get("mcp_set").description == "native mcp_set"
+
+    def test_register_allows_same_owner_replace(self):
+        """A reconnect / idempotent re-load re-registers the SAME owner's tool
+        under the same name — that legitimately replaces (full-diff sync)."""
+        registry = ToolRegistry()
+
+        class JobProxy:
+            name = "my_job"
+            server = "job-coding"
+            description = "v1"
+            parameters = {"type": "object", "properties": {}}
+            async def execute(self, **kwargs):
+                return "1"
+
+        class JobProxy2:
+            name = "my_job"
+            server = "job-coding"
+            description = "v2"
+            parameters = {"type": "object", "properties": {}}
+            async def execute(self, **kwargs):
+                return "2"
+
+        registry.register(JobProxy())
+        registry.register(JobProxy2())
+        assert registry.get("my_job").description == "v2"
+
     def test_unregister_existing(self, tool_registry):
         """Unregister returns True and removes the tool."""
         # Clone since tool_registry is session-scoped

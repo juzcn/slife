@@ -463,25 +463,46 @@ class TestStatusBar:
         assert app._heartbeat_color != ""
 
     @pytest.mark.asyncio
-    async def test_on_a2a_activity_subagent_message(self):
-        """A subagent completion renders the `⚙️ subagent> ` user bubble —
-        the same prefix session restore uses."""
+    async def test_on_a2a_activity_idle_clears_tool_widgets(self):
+        """A3 regression: the tool-widget map is cleared at the genuine
+        turn-end ``"idle"`` event — not at enqueue time inside
+        ``_process_message`` (which returns before the turn streams, so an
+        enqueue-time clear wiped the in-flight widgets of a still-running
+        turn when a second message was submitted)."""
         from slife.ui.app import SlifeApp
-        from slife.ui.i18n import t
 
         app = object.__new__(SlifeApp)
+        app.query_one = MagicMock(return_value=MagicMock())  # #chat-view lookup
+        app._update_status = MagicMock()
+        app._tool_widgets = {"c1": MagicMock(), "c2": MagicMock()}
+
+        await app._on_a2a_activity("idle")
+
+        app._update_status.assert_called_once()
+        assert app._tool_widgets == {}
+
+    @pytest.mark.asyncio
+    async def test_process_message_enqueue_does_not_clear_tool_widgets(self):
+        """A3 regression: submitting a message must never clear the widget
+        map while a previous turn is still streaming.  _process_message only
+        enqueues; the clear lives at the turn-end idle event instead."""
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        app._tool_widgets = {"in_flight": MagicMock()}
+        app._assistant_prefix = None
         chat_view = MagicMock()
         app.query_one = MagicMock(return_value=chat_view)
+        # service.process_message is mocked to enqueue (post) and return
+        # immediately, exactly as the real one does — the turn is NOT run.
+        service = MagicMock()
+        service.process_message = AsyncMock()
+        app.service = service
 
-        await app._on_a2a_activity(
-            "subagent_message",
-            content="Subagent **researcher** completed",
-        )
+        await app._process_message("hi", None, chat_view)
 
-        chat_view.add_user_message.assert_called_once()
-        call = chat_view.add_user_message.call_args
-        assert call.args[0] == "Subagent **researcher** completed"
-        assert call.kwargs["prefix"] == t("subagent_prefix", name="subagent")
+        # The in-flight widgets of another turn must survive this enqueue.
+        assert "in_flight" in app._tool_widgets
 
     def test_update_info_no_model(self):
         with patch("slife.ui.app.Static.__init__", return_value=None):

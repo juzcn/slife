@@ -14,6 +14,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import slife.plugins.a2a.server as plugin
 
 
+@pytest.fixture(autouse=True)
+def _fresh_task_store():
+    """The a2a task store is a module-level singleton shared across test
+    files — isolate it per test so this module's peer-attribution assertions
+    never read a record leaked from an earlier module (e.g. test_a2a_client)."""
+    from slife.a2a.task_store import clear_store
+    clear_store()
+    yield
+    clear_store()
+
+
 def _fake_client():
     """A mocked A2AClient returning canned values."""
     client = MagicMock()

@@ -218,6 +218,15 @@ logger = logging.getLogger(__name__)
 #: relays even enormous tracebacks while capping in-memory buffering.
 _STDERR_LIMIT = 1024 * 1024
 
+#: Cap on a single line of the subagent JSON-RPC protocol channel (child
+#: stdin, parent stdout).  One line can legitimately be many MB — the whole
+#: cloned parent context (the "context" message) or a long worker result —
+#: so the cap is generous.  Its real job is to bound in-memory buffering
+#: against a pathological line while keeping the reader alive: an over-long
+#: line is discarded with a warning (see :func:`discard_overlong_line`),
+#: never fatal.
+PROTOCOL_LINE_LIMIT = 256 * 1024 * 1024
+
 #: Relayed lines are truncated to this many characters.  The relay is
 #: diagnostic — the child's own log file keeps the full line.  The cap
 #: bounds the per-line cost of ``sanitize_secrets`` on the parent's event
@@ -225,8 +234,8 @@ _STDERR_LIMIT = 1024 * 1024
 _MAX_RELAYED_CHARS = 16 * 1024
 
 
-async def _discard_overlong_line(stderr) -> int:
-    """Drop the remainder of a line that overran the reader limit.
+async def discard_overlong_line(reader) -> int:
+    """Drop the remainder of a line that overran *reader*'s limit.
 
     ``readline()`` raises ``ValueError`` (``LimitOverrunError``) after
     discarding the buffered head of the over-long line — but the tail is
@@ -234,13 +243,15 @@ async def _discard_overlong_line(stderr) -> int:
     otherwise the next ``readline()`` returns that tail as if it were a
     fresh line (and the consumer's line accounting silently corrupts).
 
-    Returns the number of discarded tail bytes (lower bound — the head
-    size is unknown once ``readline`` cleared its buffer).
+    *reader* is any asyncio ``StreamReader`` (a stderr relay, the subagent
+    parent's stdout pipe, or the worker's stdin).  Returns the number of
+    discarded tail bytes (lower bound — the head size is unknown once
+    ``readline`` cleared its buffer).
     """
     dropped = 0
     while True:
         try:
-            rest = await stderr.readline()
+            rest = await reader.readline()
         except ValueError:
             # The remainder alone still exceeds the limit — readline raised
             # again after discarding another head-sized chunk; keep going.
@@ -288,7 +299,7 @@ async def read_stderr_lines(process, running_check=None):
             except ValueError:
                 # LimitOverrunError — an over-long line.  Discard its
                 # remainder and keep relaying; never die here.
-                dropped = await _discard_overlong_line(stderr)
+                dropped = await discard_overlong_line(stderr)
                 logger.warning(
                     "stderr_line_overlong_discarded min_bytes=%d", dropped,
                 )

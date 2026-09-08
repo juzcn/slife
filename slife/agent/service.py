@@ -28,7 +28,7 @@ from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.message_history import MessageHistory, turn_header
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
-from slife.agent.inbox import Inbox, MessageHistoryStore
+from slife.agent.inbox import Inbox, MemorySaveError, MessageHistoryStore
 from slife.agent.plugins import (
     PluginBehavior,
     PluginLifecycle,
@@ -1166,6 +1166,10 @@ class AgentService:
         """
         client = self._plugins[name].client
         assert client is not None
+        # Names registered on the PREVIOUS connection — a plugin restart can
+        # drop tools, and unregistered ones must not linger in the registry
+        # bound to the old, disconnected client (B4).
+        old_names = set(self._plugins[name].registered_tools)
         tools = await client.list_tools()
         logger.debug(
             "%s_tools names=%s", name,
@@ -1181,12 +1185,18 @@ class AgentService:
         ]
 
         proxy_tools = create_proxy_tools(self._plugins[name].client, tagged)
+        new_names = {t.name for t in proxy_tools}
+        for stale in old_names - new_names:
+            self.tool_registry.unregister(stale)
         # Record the exact registered names so dead-process cleanup and stop
         # can unregister this plugin's bare-name tools without a prefix.
-        self._plugins[name].registered_tools = {t.name for t in proxy_tools}
+        self._plugins[name].registered_tools = new_names
         for tool in proxy_tools:
             self.tool_registry.register(tool)
-        logger.debug("%s_tools_registered count=%d", name, len(proxy_tools))
+        logger.debug(
+            "%s_tools_registered count=%d removed=%d", name, len(proxy_tools),
+            len(old_names - new_names),
+        )
 
     # ── MCP tool discovery & registration ────────────────────────────
 
@@ -1429,9 +1439,6 @@ class AgentService:
         if token_count:
             self.session_usage.total_tokens += token_count
 
-        if not self.memdb_enabled:
-            return
-
         conv = history if history is not None else self.message_history
 
         # Invariant: never persist an inconsistent turn.  Repair orphaned
@@ -1518,7 +1525,15 @@ class AgentService:
                 compacted, self.config.memory_tool_result_chars,
             )
 
-        assert self._plugins["memdb"].client is not None  # guarded by memdb_enabled
+        if not self.memdb_enabled:
+            # Memory writes are mandatory: the memdb channel is down (e.g. mid
+            # watchdog-restart).  Never drop the turn silently — raise so the
+            # inbox surfaces it like an LLM API error and the turn is not
+            # treated as a clean completion.
+            raise MemorySaveError(
+                "记忆服务未连接：本轮未能写入记忆"
+            )
+        assert self._plugins["memdb"].client is not None  # guarded above
         save_args = {
             "user_message": user_message,
             "messages": turn_messages,
@@ -1556,20 +1571,19 @@ class AgentService:
             # The save is a fast insert (embedding is deferred to the memdb
             # plugin's background reindex) — a timeout now means the MCP
             # channel itself is slow, not a first-save model load.  The row
-            # may still be written server-side.
+            # may still be written server-side — surface that uncertainty to
+            # the user rather than silently skipping.
             logger.warning("memdb_save_timeout reason=save_call_exceeded_timeout")
-            await self._warn_memory_save(
-                handler, "记忆保存超时：未能确认本轮已写入记忆",
-            )
-            return
+            raise MemorySaveError(
+                "记忆保存超时：未能确认本轮已写入记忆"
+            ) from None
         except Exception as e:
             # A raised call_tool is a transient MCP/channel failure (the
             # plugin returns {"error": ...} for DB-side failures instead).
             logger.warning("memdb_save_error err=%s", e)
-            await self._warn_memory_save(
-                handler, "记忆保存失败（通道错误）：未能确认本轮已写入记忆",
-            )
-            return
+            raise MemorySaveError(
+                f"记忆保存失败（通道错误）：{e}"
+            ) from e
 
         # The plugin returns {"error": ...} on a persistent DB failure
         # (broken schema, corruption, disk).  Memory is core — this is a
@@ -1622,31 +1636,11 @@ class AgentService:
                 # ack nor an error object (non-JSON text, or JSON that
                 # isn't an object) — the save may or may not have landed
                 # and there is no way to tell.  Don't swallow it silently:
-                # log it and surface a user-visible warning in the same
-                # style as the max-iterations notice.
+                # surface it to the user (memory writes are mandatory).
                 logger.warning("memdb_save_unparsable response=%.120r", result)
-                await self._warn_memory_save(
-                    handler, "记忆保存未能确认：返回了无法解析的响应，本轮可能未写入记忆",
+                raise MemorySaveError(
+                    "记忆保存未能确认：返回了无法解析的响应，本轮可能未写入记忆"
                 )
-
-    async def _warn_memory_save(
-        self, handler, message: str,
-    ) -> None:
-        """Best-effort TUI warning for a failed memory save.
-
-        Every soft save-failure path (timeout, channel raise, unparseable
-        response) funnels through here so the user gets the same ✗ red
-        system line as the max-iterations notice.  The persistent DB
-        failure is the one exception — it keeps its own freezing banner
-        (see ``on_memory_broken``).  Never raises: a failing handler must
-        not break the turn flow.
-        """
-        warn = getattr(handler, "on_memory_save_warning", None)
-        if warn is not None:
-            try:
-                await warn(message)
-            except Exception:
-                pass
 
     def _annotate_saved_turn(
         self,

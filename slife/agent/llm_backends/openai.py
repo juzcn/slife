@@ -59,12 +59,17 @@ class OpenAIBackend:
         """
         out: list[dict] = []
         for msg in messages:
+            msg = dict(msg)
+            # ``is_error`` is an internal tool flag (Anthropic maps it to the
+            # native tool_result.is_error); the OpenAI wire has no such field,
+            # so it is stripped at the HTTP boundary, never sent.
+            msg.pop("is_error", None)
             if (
                 msg.get("role") == "assistant"
                 and not msg.get("content")
                 and not msg.get("tool_calls")
             ):
-                msg = {**msg, "content": "…"}
+                msg["content"] = "…"
             out.append(msg)
         return out
 
@@ -132,7 +137,18 @@ class OpenAIBackend:
         usage = self._usage_from_response(
             response.usage if hasattr(response, "usage") else None
         )
-        return response, usage
+        # C2: batch chat() returns the same canonical content-only shape as
+        # the Anthropic/Responses backends (see _chat_response) — NOT the raw
+        # SDK object.  Tool-call handling lives on the streaming path, which
+        # is what the agent loop and job llm.chat use; the batch contract is
+        # text + usage only.
+        from slife.agent.llm_client import _chat_response
+        text = ""
+        try:
+            text = response.choices[0].message.content or ""
+        except (AttributeError, IndexError, TypeError):
+            text = ""
+        return _chat_response(text, usage)
 
     # ── Streaming ─────────────────────────────────────────────────────
 

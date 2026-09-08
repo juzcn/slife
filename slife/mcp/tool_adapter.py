@@ -119,6 +119,17 @@ class MCPProxyTool(Tool):
             }
         object.__setattr__(self, "parameters", schema)
 
+    @property
+    def server(self) -> str:
+        """The owning server/plugin (used as the tool's registration owner key).
+
+        The registry refuses to let a tool from one origin replace a
+        different-origin tool under the same name — a bare-named plugin tool
+        (e.g. a job defined as ``mcp_set``) must never silently shadow a live
+        native tool.
+        """
+        return self._server
+
     # to_openai_function() is inherited from Tool — it already resolves
     # self.name / self.description / self.parameters at instance level,
     # so the override is unnecessary even for instance-level attributes.

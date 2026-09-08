@@ -121,6 +121,21 @@ class TestToFts5Query:
     def test_empty_string(self):
         assert _to_fts5_query("") == '""'
 
+    def test_grouping_parens_quoted_not_syntax(self):
+        """D3 regression: a lone '(' / ')'(…) must be quoted into a literal
+        phrase — FTS5 would otherwise raise a MATCH syntax error."""
+        assert _to_fts5_query("(urgent)") == '"urgent"'
+        assert "(" not in _to_fts5_query("( urgent )")
+
+    def test_trailing_minus_dropped(self):
+        """D3 regression: a trailing bare '-' (FTS5 NOT) is dropped, not left
+        as a syntax error."""
+        assert _to_fts5_query("foo -") == "foo"
+
+    def test_pure_operator_token_skipped(self):
+        assert _to_fts5_query("(") == '""'
+        assert _to_fts5_query("-") == '""'
+
 
 class TestNormalizeTimeParam:
     """Tests for _normalize_time_param."""

@@ -171,7 +171,12 @@ class ModelConfig:
     api_model: str                 # "deepseek-v4-flash" (sent to API)
     display_name: str              # "DeepSeek V4 Flash"
     api_key: str
-    base_url: str = "https://api.deepseek.com"
+    #: Endpoint the API key is sent to.  Empty means "not configured" — the
+    #: DeepSeek host is NEVER an implicit fallback, or a non-DeepSeek model
+    #: that omits base_url would silently send its key to api.deepseek.com.
+    #: A concrete base_url is supplied by the config (seed + user).  An empty
+    #: value surfaces as a clear failure when the model is actually used.
+    base_url: str = ""
     api: str = "openai-completions"
     supports_vision: bool = False
     input_modalities: tuple[str, ...] = ("text",)
@@ -224,7 +229,7 @@ class ModelConfig:
         api_key_raw = data.get("api_key", "")
         context_window = data.get("context_window", 131072)
         max_tokens = data.get("max_tokens", 4096)
-        base_url = data.get("base_url", "https://api.deepseek.com")
+        base_url = data.get("base_url", "")
         compat = data.get("compat") if isinstance(data.get("compat"), dict) else None
         cost = data.get("cost") if isinstance(data.get("cost"), dict) else None
 

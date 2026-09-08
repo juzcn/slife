@@ -183,13 +183,27 @@ class TestChannel:
 
     def test_to_db_a2a_keeps_peer_as_identity(self):
         """A2A identity stays the peer name (FTS-searchable), name in data."""
-        assert Channel.a2a("Jack").to_db() == ("Jack", {"agent_name": "Jack"})
+        assert Channel.a2a("Jack").to_db() == (
+            "Jack", {"agent_name": "Jack", "a2a": True},
+        )
 
     def test_to_db_builtins(self):
         """Built-in kinds persist as kind + payload."""
         assert Channel.human().to_db() == ("human", {})
         ch = Channel.subagent("w1", task_id="t9", scheduled=False)
         assert ch.to_db() == ("subagent", {"name": "w1", "task_id": "t9", "scheduled": False})
+
+    def test_a2a_peer_named_reserved_kind_round_trips(self):
+        """D8: an A2A peer whose name collides with a reserved kind string
+        (operator-configurable) must restore as a2a — not as that kind (e.g. a
+        peer named 'human' would otherwise render as the operator 'You> ')."""
+        ch = Channel.a2a("human")
+        identity, data = ch.to_db()
+        restored = Channel.from_db(identity, data)
+        assert restored == ch
+        assert restored.kind == "a2a"
+        assert restored.data["agent_name"] == "human"
+        assert restored.display_prefix() == "A2A(human)"
 
     def test_from_db_round_trip(self):
         """to_db → from_db round-trips every kind unchanged."""

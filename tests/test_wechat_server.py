@@ -303,3 +303,85 @@ class TestCheckStatusLastContactShape:
             ws._client = original
         assert resp["status"] == "degraded"
         assert "unreachable" in resp["hint"]
+
+
+class TestWechatSendMessage:
+    """D7: a send must not report "sent" when iLink returns a 200 error
+    envelope (rejected/revoked token) — only the getupdates path checked
+    `_error_envelope` before."""
+
+    def _client(self):
+        client = MagicMock()
+        client.is_logged_in = True
+        client.auth_failed = False
+        client.last_error = None
+        client.send_message = AsyncMock()
+        client.send_typing = AsyncMock()
+        return client
+
+    @pytest.mark.asyncio
+    async def test_error_envelope_not_reported_as_sent(self):
+        client = self._client()
+        client.send_message.return_value = {"errno": 3000, "error": "token rejected"}
+        original = ws._client
+        ws._client = client
+        try:
+            resp = json.loads(
+                await ws.wechat_send_message(
+                    peer_wechat_id="u1", context_token="", text="hi",
+                ),
+            )
+        finally:
+            ws._client = original
+        assert resp.get("status") != "sent"
+        assert "rejected" in resp.get("error", "")
+        assert client.auth_failed is True
+
+    @pytest.mark.asyncio
+    async def test_success_reports_sent(self):
+        client = self._client()
+        client.send_message.return_value = {"message_id": "m-42"}
+        original = ws._client
+        ws._client = client
+        try:
+            resp = json.loads(
+                await ws.wechat_send_message(
+                    peer_wechat_id="u1", context_token="", text="hi",
+                ),
+            )
+        finally:
+            ws._client = original
+        assert resp["status"] == "sent"
+        assert resp["message_id"] == "m-42"
+
+
+class TestSyncBufPersist:
+    """D6: the getupdates ack is persisted (once per change) so a restart can
+    resume ack'ing — replayed messages aren't re-ingested as duplicates."""
+
+    def test_persists_on_change_and_dedups(self):
+        persisted = []
+        original = ws.save_wechat_sync
+        ws.save_wechat_sync = lambda _u, buf, _wd=None: persisted.append(buf)
+        try:
+            ws._persisted_sync_buf = ""
+            ws._persist_updates_buf("buf-1")
+            ws._persist_updates_buf("buf-1")  # unchanged → no second write
+            ws._persist_updates_buf("buf-2")
+        finally:
+            ws.save_wechat_sync = original
+            ws._persisted_sync_buf = ""
+        assert persisted == ["buf-1", "buf-2"]
+
+    def test_non_string_buf_skipped(self):
+        persisted = []
+        original = ws.save_wechat_sync
+        ws.save_wechat_sync = lambda _u, buf, _wd=None: persisted.append(buf)
+        try:
+            ws._persisted_sync_buf = ""
+            ws._persist_updates_buf(None)  # test fakes expose MagicMock attrs
+            ws._persist_updates_buf("")
+        finally:
+            ws.save_wechat_sync = original
+            ws._persisted_sync_buf = ""
+        assert persisted == []

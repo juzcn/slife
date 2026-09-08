@@ -1038,11 +1038,34 @@ class TestCheckLocalEmbedFunction:
 
     @pytest.mark.asyncio
     async def test_no_base_url_offline(self):
-        entries = await check_local_embed()
+        """No *configured* endpoint → the bare call reports "not configured"
+        (the internal endpoint resolution falls through to offline)."""
+        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value={"base_url": "", "api_key": "", "model": ""}):
+            entries = await check_local_embed()
         assert entries[0]["component"] == "local_embed"
         assert entries[0]["level"] == "warning"
         assert entries[0]["value"] == "offline"
         assert "not configured" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_bare_call_resolves_configured_endpoint(self):
+        """A5 regression: check_local_embed() called with NO base_url (as
+        system_health's _run_checks does — it has no _CLIENT_FIELD entry)
+        must resolve the configured endpoint itself and probe it, instead of
+        always reporting "offline / not configured"."""
+        http = _FakeLocalEmbedHttp(_FakeLocalEmbedResponse([
+            {"id": "bge-m3", "active": True, "loaded": True,
+             "available": True, "backend": "gguf"},
+        ]))
+        with patch("slife.tools.system.httpx2.AsyncClient", return_value=http), \
+             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value={"base_url": "http://127.0.0.1:17347/v1",
+                                 "api_key": "", "model": "bge-m3"}):
+            entries = await check_local_embed()
+        assert entries[0]["level"] == "ok"
+        assert entries[0]["value"] == "bge-m3"
+        assert http.get_calls == ["http://127.0.0.1:17347/v1/models"]
 
     @pytest.mark.asyncio
     async def test_active_model_loaded(self):

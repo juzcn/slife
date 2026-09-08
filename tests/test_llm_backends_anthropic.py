@@ -180,6 +180,42 @@ class TestOaMsgsToAnthropic:
         assert tool_msg["content"][0]["type"] == "tool_result"
         assert tool_msg["content"][0]["tool_use_id"] == "call_1"
         assert tool_msg["content"][0]["content"] == "Results found."
+        # No is_error flag on the message → not an error result.
+        assert tool_msg["content"][0].get("is_error") is False
+
+    def test_tool_result_error_flag_mapped(self):
+        """C3: the persisted is_error verdict becomes Anthropic's native
+        tool_result.is_error — a failed call reads as a failure, not a
+        success whose text happens to start with "Error:"."""
+        messages = [
+            {"role": "user", "content": "search"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "search", "arguments": '{"q":"x"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1",
+             "content": "Error: timeout", "is_error": True},
+        ]
+        _, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        result = converted[2]["content"][0]
+        assert result["type"] == "tool_result"
+        assert result["is_error"] is True
+
+    def test_non_strict_json_arguments_preserved_as_raw(self):
+        """C4: a persisted tool_use whose arguments are not strict JSON is
+        re-sent as {"_raw": …} (mirroring restore), not silently emptied to
+        {} — an emptied call would be executed with no arguments."""
+        messages = [
+            {"role": "user", "content": "do it"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "tc", "type": "function",
+                 "function": {"name": "run", "arguments": '{"query": "unterminated'}},
+            ]},
+        ]
+        _, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        block = converted[1]["content"][0]
+        assert block["type"] == "tool_use"
+        assert block["input"] == {"_raw": '{"query": "unterminated'}
 
     def test_full_conversation_flow(self):
         messages = [

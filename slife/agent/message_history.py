@@ -5,10 +5,70 @@ Supports multimodal messages (text + images) for vision-capable models.
 
 import json
 import logging
+import unicodedata
 
 from slife.logfmt import sanitize_secrets
 
 logger = logging.getLogger(__name__)
+
+
+# ── Token estimation ─────────────────────────────────────────────────────
+# A single per-script estimator shared by every place that turns stored text
+# into a token figure (count_tokens, extract_turns / extract_oldest_turns,
+# and the restore sizing heuristic).  One formula keeps the trim stop
+# condition, the ``tokens_freed`` figure and the restore budget from
+# disagreeing.
+
+#: Scripts whose glyphs are ~1 token each (a BytePair tokenizer spends
+#: roughly one token per Han character).  Determined by Unicode
+#: east-asian-width — covers CJK ideographs plus full-width forms.
+_WIDE_CHARS = ("W", "F")
+
+
+def estimate_text_tokens(text: str) -> int:
+    """Estimate the token cost of *text* by per-script char weights.
+
+    Narrow (Latin/digit) text runs ~3 chars/token; wide (CJK, full-width)
+    text runs closer to 1 token per char.  The old blanket ``chars // 3``
+    counted every char alike and undercounted a Chinese-heavy session by
+    ~2-3x — and because this estimate is the stop-condition for context
+    trimming and the restore budget, undercounting let the window sit
+    genuinely over the ceiling (trimmed to the floor yet still overflowing
+    the next request).  Weighing wide chars at 1 token errs high, which is
+    the safe direction for a ceiling/overflow guard.
+    """
+    wide = 0
+    narrow = 0
+    for ch in text:
+        if unicodedata.east_asian_width(ch) in _WIDE_CHARS:
+            wide += 1
+        else:
+            narrow += 1
+    return narrow // 3 + wide
+
+
+def estimate_message_tokens(msg: dict) -> int:
+    """Estimate the token cost of one stored message (content + tool calls).
+
+    Multimodal content sums its text parts (the base64 image data URI is
+    never counted — a flat per-image estimate is used instead) and adds a
+    flat per-image figure, mirroring :meth:`MessageHistory.count_tokens`.
+    """
+    content = msg.get("content") or ""
+    total = 0
+    if isinstance(content, list):
+        for part in content:
+            ptype = part.get("type")
+            if ptype == "text":
+                total += estimate_text_tokens(part.get("text", ""))
+            elif ptype == "image_url":
+                total += 200  # rough per-image token estimate
+    else:
+        total += estimate_text_tokens(str(content))
+    for tc in msg.get("tool_calls") or []:
+        args = tc.get("function", {}).get("arguments", "")
+        total += estimate_text_tokens(str(args))
+    return total
 
 # Machine-injected annotations appended to a message share one envelope,
 # ``[INFO: <payload>]``.  The payload is either a JSON object — the turn
@@ -385,7 +445,7 @@ class MessageHistory:
     def to_openai_messages(
         self, thinking_enabled: bool = False,
     ) -> list[dict]:
-        """Return messages for the API call.
+        """Return messages for the per-backend API mappers.
 
         Converts the internal ``thinking`` field to ``reasoning_content``
         which is the wire-format field DeepSeek / Qwen require when
@@ -393,6 +453,12 @@ class MessageHistory:
         reasoning_content is missing from *any* assistant message in the
         history — including synthetic harness messages that never
         carried reasoning.
+
+        The internal ``is_error`` tool flag is NOT stripped here — it rides
+        to the per-backend mappers so the Anthropic backend can emit the
+        native ``tool_result.is_error``.  The OpenAI/Responses backends build
+        their own wire dicts (the OpenAI builder strips ``is_error``), so the
+        flag never reaches an API as an unknown field.
         """
         cleaned = []
         for msg in self.messages:
@@ -409,7 +475,6 @@ class MessageHistory:
                 # reasoning.
                 m["reasoning_content"] = ""
             m.pop("images", None)  # internal attachment tracking
-            m.pop("is_error", None)  # internal error flag, not an OpenAI field
             cleaned.append(m)
 
         return cleaned
@@ -511,32 +576,13 @@ class MessageHistory:
     def count_tokens(self) -> int:
         """Estimate total tokens in the current message list.
 
-        Uses a simple character-based heuristic: ~4 chars per token
-        for mixed Chinese/English text. Accurate enough for window
-        management — the ceiling/floor mechanism has 20% margins
-        so small estimation errors are harmless.
+        Uses the per-script heuristic in :func:`estimate_text_tokens`
+        (narrow text ~3 chars/token, CJK/wide ~1 token per char).  This is a
+        trim stop-condition, so it must never *under*-estimate a
+        Chinese-heavy session — the ceiling/floor mechanism keeps 20%+ safety
+        margins on top.
         """
-        total = 0
-        for msg in self.messages:
-            content = msg.get("content") or ""
-            if isinstance(content, list):
-                # Multimodal message — sum text parts and give each image a
-                # flat per-image estimate.  The base64 data URI itself must not
-                # be counted as text, or a single image would dominate the
-                # whole window estimate.
-                for part in content:
-                    ptype = part.get("type")
-                    if ptype == "text":
-                        total += len(part.get("text", "")) // 3
-                    elif ptype == "image_url":
-                        total += 200  # rough per-image token estimate
-            else:
-                total += len(str(content)) // 3  # ~3 chars/token for CJK+code mix
-            # Tool calls add significant overhead
-            if msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    args = tc.get("function", {}).get("arguments", "")
-                    total += len(str(args)) // 3
+        total = sum(estimate_message_tokens(m) for m in self.messages)
         return max(total, 1)
 
     # ── Extract turns helpers ─────────────────────────────────────
@@ -564,8 +610,7 @@ class MessageHistory:
                     "user_message": current_user_msg,
                     "messages": list(current_turn),
                     "estimated_tokens": sum(
-                        len(str(m.get("content", ""))) // 3
-                        for m in current_turn
+                        estimate_message_tokens(m) for m in current_turn
                     ),
                 })
                 current_turn = []
@@ -589,8 +634,7 @@ class MessageHistory:
                 "user_message": current_user_msg,
                 "messages": list(current_turn),
                 "estimated_tokens": sum(
-                    len(str(m.get("content", ""))) // 3
-                    for m in current_turn
+                    estimate_message_tokens(m) for m in current_turn
                 ),
             })
 
@@ -651,20 +695,29 @@ class MessageHistory:
                     turn_end = i
                     break
 
-            removed_messages.extend(self.messages[turn_start:turn_end])
+            slice_msgs = self.messages[turn_start:turn_end]
+            removed_messages.extend(slice_msgs)
+            # Running total — subtract the removed slice's own estimate rather
+            # than re-counting the whole remaining history each iteration
+            # (the estimator is additive, so this stays exact).
+            slice_tokens = sum(
+                estimate_message_tokens(m) for m in slice_msgs
+            )
             del self.messages[turn_start:turn_end]
             # Adjust last_user_idx — the slice we just deleted shifted
             # everything after it down.
             removed_count = turn_end - turn_start
             last_user_idx -= removed_count
-            current = self.count_tokens()
+            current -= slice_tokens
 
         if not removed_messages:
             return [], 0
 
         turns = MessageHistory.extract_turns(removed_messages)
+        # Same estimator as count_tokens — the logged freed amount must match
+        # what the running total subtracted.
         tokens_freed = sum(
-            len(str(m.get("content", ""))) // 3 for m in removed_messages
+            estimate_message_tokens(m) for m in removed_messages
         )
         return turns, max(tokens_freed, 1)
 

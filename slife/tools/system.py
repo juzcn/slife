@@ -399,10 +399,18 @@ async def check_local_embed(base_url: str = "") -> list[dict]:
     """
     try:
         if not base_url:
-            return [{"component": "local_embed", "level": "warning", "key": "plugin",
-                     "value": "offline",
-                     "hint": "local-embed daemon not configured — no embeddings base_url in slife.json5. "
-                             "Start local-embed manually and set the embeddings endpoint."}]
+            # Resolve the configured endpoint here rather than returning
+            # "not configured": the probe is also reached from system_health's
+            # _run_checks with no base_url (check_local_embed has no
+            # _CLIENT_FIELD entry), so without this resolution a configured
+            # and running daemon was always reported offline.
+            from slife.plugins.memdb.embedding_config import get_active_endpoint
+            base_url = (get_active_endpoint().get("base_url") or "").strip()
+            if not base_url:
+                return [{"component": "local_embed", "level": "warning", "key": "plugin",
+                         "value": "offline",
+                         "hint": "local-embed daemon not configured — no embeddings base_url in slife.json5. "
+                                 "Start local-embed manually and set the embeddings endpoint."}]
         base_url = base_url.rstrip("/")
         async with httpx2.AsyncClient(
             timeout=httpx2.Timeout(_PROBE_TIMEOUT),
@@ -456,11 +464,11 @@ class CheckLocalEmbedTool(Tool):
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
-        from slife.plugins.memdb.embedding_config import get_active_endpoint
-        ep = get_active_endpoint()
+        # check_local_embed resolves the configured endpoint itself when no
+        # base_url is supplied — the same single resolution path system_health
+        # uses.
         return json.dumps(
-            await check_local_embed(base_url=ep.get("base_url", "")),
-            ensure_ascii=False, indent=2,
+            await check_local_embed(), ensure_ascii=False, indent=2,
         )
 
 

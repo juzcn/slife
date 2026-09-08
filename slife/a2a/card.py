@@ -52,6 +52,11 @@ class AgentCard:
         },
     )
     skills: list = field(default_factory=list)
+    # Unique per-process instance marker (slife extension).  Lets a client
+    # distinguish its OWN presence echoes — it subscribes Slife/+/presence —
+    # from a genuinely same-named agent on another instance.  Empty for peers
+    # running an older slife.
+    instance: str = ""
 
     @classmethod
     def create(cls, agent_name: AgentName, status: str = "idle") -> "AgentCard":
@@ -72,6 +77,7 @@ class AgentCard:
         # and duplicate-id detection.
         d["agent_name"] = str(self.agent_name)
         d["status"] = self.status
+        d["instance"] = self.instance
         return d
 
     @classmethod
@@ -87,6 +93,7 @@ class AgentCard:
             version=data.get("version", ""),
             capabilities=data.get("capabilities", {}),
             skills=data.get("skills", []),
+            instance=data.get("instance", ""),
         )
 
 

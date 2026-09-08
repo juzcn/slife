@@ -28,6 +28,7 @@ import enum
 import logging
 import os
 import sys
+import time as _time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -56,6 +57,15 @@ _WATCHDOG_MAX_RESTARTS: int = 5
 #: instead of a dead TUI.  On timeout the spawn coroutine keeps running in
 #: the background (matching the pre-existing memdb behaviour).
 PLUGIN_SPAWN_TIMEOUT: float = 30.0
+
+#: A restarted child is only considered *stable* once it has stayed up this
+#: long.  The watchdog resets its consecutive-failure counter / backoff only
+#: when the child that just exited ran for at least this window — otherwise a
+#: child that comes up, passes the handshake and dies a second later would
+#: reset the counter every cycle and restart forever (a ~1s boot-loop that
+#: `_max_restarts` never trips).  Equal to the spawn hang-guard: a child
+#: dying within the spawn window never "stabilised".
+_WATCHDOG_STABLE_UPTIME: float = PLUGIN_SPAWN_TIMEOUT
 
 
 def plugin_port_env(name: str) -> str:
@@ -299,8 +309,12 @@ class PluginLifecycle:
         saved *module*.
 
         Restarts use exponential backoff (1s → 2s → … → 30s) and stop
-        after *max_restarts* consecutive failures.  A successful spawn
-        resets the counter and backoff.
+        after *max_restarts* consecutive failures.  Each restart is bounded
+        by the spawn hang-guard (a child stuck before its lifespan serves is
+        a failed attempt, never a block).  The consecutive-failure counter is
+        reset only when a restarted child proves stable (runs ≥
+        ``_WATCHDOG_STABLE_UPTIME``) before its next exit — so a ~1s
+        boot-loop trips ``_max_restarts`` instead of restarting forever.
 
         Idempotent — if a watchdog is already running it returns
         immediately.
@@ -343,6 +357,11 @@ class PluginLifecycle:
 
         while not self._stopping:
             # ── Wait for a live child to exit ─────────────────────────
+            # Anchor the moment a watched child started (only set when a live
+            # process is actually waited on below) — the exit path uses it to
+            # tell a stable run (≥ _WATCHDOG_STABLE_UPTIME) from a ~1s boot-loop
+            # when deciding whether to reset the consecutive-failure counters.
+            wait_started = _time.monotonic()
             process = self.process
             if process is not None:
                 subprocess = getattr(process, "_process", None)
@@ -382,6 +401,32 @@ class PluginLifecycle:
                         "%s_watchdog_unregister_error", self.name, exc_info=True,
                     )
 
+                # External MCP proxies registered by this lifecycle's gateway
+                # glue (``{server}__{tool}`` proxies, on-demand mcp_tool_load
+                # proxies) are NOT in ``registered_tools`` — that set tracks
+                # only the wrapper's own bare-name tools.  Unregister every
+                # registry tool still bound to this (about-to-be-disconnected)
+                # client, so a dead gateway can't leave them lingering in the
+                # LLM tool list bound to a dead client — permanently if the
+                # watchdog exhausts restarts.  A successful restart re-adds
+                # them via the normal glue.
+                try:
+                    removed_proxies = 0
+                    for tool in list(self._service.tool_registry.list_tools()):
+                        if getattr(tool, "_mcp_client", None) is self.client:
+                            if self._service.tool_registry.unregister(tool.name):
+                                removed_proxies += 1
+                    if removed_proxies:
+                        logger.info(
+                            "%s_watchdog_unregistered_proxies count=%d",
+                            self.name, removed_proxies,
+                        )
+                except Exception:
+                    logger.debug(
+                        "%s_watchdog_proxy_unregister_error", self.name,
+                        exc_info=True,
+                    )
+
                 # ── Tear down the dead client, don't just drop it ─────
                 # Leaving it referenced (or merely clearing the attribute)
                 # strands its SDK post_writer / SSE-reader tasks against a
@@ -407,6 +452,16 @@ class PluginLifecycle:
             # A fresh process is running — go back to waiting on it.
             if self.process is not None:
                 continue
+
+            # A restart only "succeeded" once the child proved stable.  If the
+            # child that just exited ran for at least the stable window, this
+            # crash is a fresh incident — reset the consecutive-failure
+            # counters and backoff.  A child that died sooner (a boot-loop)
+            # keeps its failure counted, so `_max_restarts` eventually trips
+            # instead of being reset every cycle (B2).
+            if (_time.monotonic() - wait_started) >= _WATCHDOG_STABLE_UPTIME:
+                self._restart_count = 0
+                backoff = _WATCHDOG_BACKOFF_INITIAL
 
             # ── Give up after max consecutive failures ───────────────
             if self._restart_count >= self._max_restarts:
@@ -448,22 +503,29 @@ class PluginLifecycle:
                 ),
             )
             try:
-                # The guard above guarantees at least one of
-                # restart_cb / _module; when restart_cb is absent, _module
-                # is set (so the fallback spawn can restart the plugin).
-                if self._restart_cb is not None:
-                    await self._restart_cb()
-                else:
-                    # When restart_cb is absent, _module is guaranteed set
-                    # by the guard above (local copy lets Pylance narrow).
-                    module = self._module
-                    if module is None:
-                        logger.error("%s_watchdog_no_module", self.name)
-                        return
-                    await self.spawn(module)
-                # Success — reset counters and backoff
-                backoff = _WATCHDOG_BACKOFF_INITIAL
-                self._restart_count = 0
+                # The restart await is bounded by the same spawn hang-guard as
+                # the initial spawn: a child stuck before its lifespan serves
+                # must not block the watchdog forever — a timeout is a failed
+                # attempt (backoff), exactly like a raised restart.
+                async with asyncio.timeout(PLUGIN_SPAWN_TIMEOUT):
+                    # The guard above guarantees at least one of
+                    # restart_cb / _module; when restart_cb is absent, _module
+                    # is set (so the fallback spawn can restart the plugin).
+                    if self._restart_cb is not None:
+                        await self._restart_cb()
+                    else:
+                        # When restart_cb is absent, _module is guaranteed set
+                        # by the guard above (local copy lets Pylance narrow).
+                        module = self._module
+                        if module is None:
+                            logger.error("%s_watchdog_no_module", self.name)
+                            return
+                        await self.spawn(module)
+                # The restart call returned — but counters/backoff are NOT
+                # reset here.  A restart only "succeeded" once the child has
+                # stayed up for the stable window (see the give-up section);
+                # resetting right after spawn lets a ~1s boot-loop restart
+                # forever (B2).
                 from slife.health import record
                 record(
                     "watchdog", "ok",

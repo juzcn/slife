@@ -141,6 +141,63 @@ class TestBuildRegistryMcp:
         assert comp is not None
 
 
+# ── Multi-tool routing (A1 regression) ──────────────────────────────────
+
+
+class _IdentTool:  # returns its own name so routing mistakes are visible
+    def __init__(self, name):
+        self.name = name
+        self.description = f"Tool {name}"
+        self.parameters = {
+            "type": "object",
+            "properties": {},
+        }
+
+    async def execute(self, **kwargs) -> str:
+        return f"ran {self.name}"
+
+
+class TestMultiToolRouting:
+    @pytest.mark.asyncio
+    async def test_each_tool_routes_to_its_own_name(self):
+        """A1 regression: every tool registered in one _sync_registry pass must
+        execute itself, not the last tool in the batch (late-binding closure)."""
+        reg = ToolRegistry()
+        for nm in ("tool_a", "tool_b", "tool_c"):
+            reg.register(_IdentTool(nm))
+        mcp = build_registry_mcp(reg)
+
+        comps = {
+            c.name: c for c in mcp.local_provider._components.values()
+            if isinstance(c, FunctionTool) and c.name.startswith("tool_")
+        }
+        assert set(comps) == {"tool_a", "tool_b", "tool_c"}
+
+        for nm, comp in comps.items():
+            result = await comp.fn()
+            assert result == f"ran {nm}", f"{nm} routed to wrong tool: {result!r}"
+
+    @pytest.mark.asyncio
+    async def test_routing_survives_a_live_sync_pass(self):
+        """Adding a later tool must not rewire the earlier tools' target."""
+        reg = _registry()  # registers echo/clear_context/_sys_note together
+        mcp = build_registry_mcp(reg)
+        echo = next(c for c in mcp.local_provider._components.values()
+                    if isinstance(c, FunctionTool) and c.name == "echo")
+
+        class OtherTool:
+            name = "other"
+            description = "Other."
+            parameters = {"type": "object", "properties": {}}
+            async def execute(self, **kwargs) -> str:
+                return "other-result"
+
+        reg.register(OtherTool())  # triggers the change listener → another sync
+        await asyncio.sleep(0.05)
+        result = await echo.fn(m="hi")
+        assert result == "Echo: hi"
+
+
 # ── Live registry sync + list_changed ───────────────────────────────────
 
 

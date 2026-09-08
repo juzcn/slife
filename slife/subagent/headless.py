@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 
 from slife.server_utils import setup_server_logging, shutdown_server_logging
-from slife.logfmt import elapsed
+from slife.logfmt import PROTOCOL_LINE_LIMIT, discard_overlong_line, elapsed
 
 logger = logging.getLogger("slife_subagent")
 
@@ -147,7 +147,11 @@ async def run_headless() -> None:
     # thread calling os.read() instead, which bypasses IOCP and works
     # reliably on pipe handles across all platforms.
     loop = asyncio.get_running_loop()
-    reader = asyncio.StreamReader()
+    # One stdin protocol line can be the whole cloned parent history (the
+    # "context" message) — far beyond StreamReader's 64 KB default.  Raise
+    # the limit so an honest context is never misread as over-long; an
+    # over-long line beyond even the cap is discarded below, not fatal.
+    reader = asyncio.StreamReader(limit=PROTOCOL_LINE_LIMIT)
 
     def _feed_stdin() -> None:
         fd = sys.stdin.fileno()
@@ -198,7 +202,20 @@ async def run_headless() -> None:
     request_count = 0
     try:
         while True:
-            line = await reader.readline()
+            try:
+                line = await reader.readline()
+            except ValueError:
+                # LimitOverrunError — a single line beyond the reader limit.
+                # Discard its remainder and keep the worker alive; one
+                # pathological line must never tear down the whole worker
+                # (only JSONDecodeError was caught before — this path would
+                # otherwise kill the child on a long context).
+                dropped = await discard_overlong_line(reader)
+                logger.warning(
+                    "subagent_stdin_line_overlong_discarded min_bytes=%d",
+                    dropped,
+                )
+                continue
             if not line:
                 break
             try:

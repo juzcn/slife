@@ -275,9 +275,16 @@ class MCPServerConnection:
                 # A cancelled connect must not leave the status stuck in
                 # CONNECTING — the monitor would skip it forever and call_tool
                 # would raise "not connected (connecting)" with no recovery.
-                # Reset to DISCONNECTED so both paths retry.
-                if self._status == ServerStatus.CONNECTING:
-                    self._status = ServerStatus.DISCONNECTED
+                # Reset to DISCONNECTED *unconditionally*, not only from
+                # CONNECTING: the transport may already have been marked
+                # CONNECTED (line ~248) and then be torn down below while the
+                # post-connect sync (`_fire_on_reconnect`, `_post_connect_setup`)
+                # is still awaiting — a CONNECTED-with-dead-transport wedge
+                # makes __check report "running" while call_tool skips its lazy
+                # reconnect (status == CONNECTED) and fails on the cleaned
+                # transport.  DISCONNECTED makes call_tool and the monitor
+                # retry instead.
+                self._status = ServerStatus.DISCONNECTED
                 # An externally-timed-out connect (e.g. a tool-call wait_for)
                 # must not leak its transport: the spawned npx/uvx process,
                 # http client and stderr relay would
@@ -285,6 +292,16 @@ class MCPServerConnection:
                 # — after the caller gave up.  The Exception path already
                 # cleans up; cancellation now does too.
                 await self._cleanup_resources()
+                # A cancelled mid-sync connect (e.g. a host tool-timeout on
+                # mcp_set) must still recover without waiting for the next
+                # tool call: start a health monitor when none is running so the
+                # DISCONNECTED state is reconnected in the background.
+                if (
+                    not self._disconnecting
+                    and self.config.enabled
+                    and (self._health_task is None or self._health_task.done())
+                ):
+                    self._health_task = asyncio.create_task(self._health_monitor())
                 raise
 
             except Exception as e:
