@@ -4,6 +4,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import asyncio
+from contextlib import asynccontextmanager, AsyncExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -341,316 +342,130 @@ class TestServerConfigTransport:
 
 
 class TestMCPServerConnectionHTTP:
-    """Tests for HTTP transport connection lifecycle."""
+    """Tests for HTTP transport connection lifecycle (SDK-backed, E2).
+
+    The previous raw JSON-RPC ``_request_http``/SSE-detection implementation
+    was consolidated onto the mcp SDK transports (``sse_client`` /
+    ``streamable_http_client`` + ``ClientSession``).  These tests exercise the
+    SDK-wired path: connect() drives the session's initialize/list_tools, and
+    the transport fallback logic still resolves config.url/headers.
+    """
+
+    @staticmethod
+    def _mock_session(tools=None, initialize_result=None):
+        from mcp.types import Tool
+        session = AsyncMock()
+        session.initialize = AsyncMock(return_value=initialize_result)
+        session.send_notification = AsyncMock()
+        result = MagicMock()
+        result.tools = tools or []
+        session.list_tools = AsyncMock(return_value=result)
+        return session
 
     @pytest.mark.asyncio
-    async def test_connect_http_handshake(self):
-        """Verify HTTP initialize extracts session ID and result."""
-        import httpx2
+    async def test_connect_runs_handshake_and_discovers_tools(self):
+        """connect() drives the SDK session's initialize + list_tools."""
+        from mcp.types import Tool
+        from mcp.types import TextContent
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
-
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        resp = MagicMock()
-        resp.headers = {"mcp-session-id": "abc123"}
-        resp.raise_for_status = MagicMock()
-        resp.json = MagicMock(return_value={
-            "jsonrpc": "2.0", "id": 1,
-            "result": {"serverInfo": {"name": "TestSrv", "version": "1.0"}},
-        })
-        mock_client.post = AsyncMock(return_value=resp)
-        conn._http_client = mock_client
-
-        init_result = await conn._request_http({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {}},
-        })
-
-        assert init_result == {"serverInfo": {"name": "TestSrv", "version": "1.0"}}
-        assert conn._session_id == "abc123"
-
-    @pytest.mark.asyncio
-    async def test_tools_list_via_http(self):
-        """Verify tools/list via HTTP."""
-        import httpx2
-
-        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
-        conn = MCPServerConnection(cfg)
-
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        resp = MagicMock()
-        resp.headers = {}
-        resp.raise_for_status = MagicMock()
-        resp.json = MagicMock(return_value={
-            "jsonrpc": "2.0", "id": 2,
-            "result": {"tools": [{"name": "tool1", "description": "A tool"}]},
-        })
-        mock_client.post = AsyncMock(return_value=resp)
-        conn._http_client = mock_client
-
-        tools_result = await conn._request_http({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
-        })
-
-        assert tools_result == {"tools": [{"name": "tool1", "description": "A tool"}]}
-
-    @pytest.mark.asyncio
-    async def test_request_http_passes_session_id(self):
-        """Subsequent HTTP requests carry the mcp-session-id header."""
-        import httpx2
-
-        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
-        conn = MCPServerConnection(cfg)
-        conn._session_id = "existing-sid"
-
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        resp = MagicMock()
-        resp.headers = {}
-        resp.raise_for_status = MagicMock()
-        resp.json = MagicMock(return_value={"jsonrpc": "2.0", "id": 1, "result": "ok"})
-        mock_client.post = AsyncMock(return_value=resp)
-        conn._http_client = mock_client
-
-        result = await conn._request_http({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
-        })
-
-        assert result == "ok"
-        # Verify the session ID header was passed
-        call_kwargs = mock_client.post.call_args
-        assert call_kwargs.kwargs["headers"] == {"mcp-session-id": "existing-sid"}
-
-    @pytest.mark.asyncio
-    async def test_request_http_error_status(self):
-        """HTTP 4xx raises ConnectionError."""
-        import httpx2
-
-        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
-        conn = MCPServerConnection(cfg)
-
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        mock_client.post.side_effect = httpx2.HTTPStatusError(
-            "Not Found",
-            request=MagicMock(),
-            response=MagicMock(status_code=404),
+        session = self._mock_session(
+            tools=[Tool(name="tool1", description="A tool", inputSchema={"type": "object"})],
         )
-        conn._http_client = mock_client
+        conn._session = session
 
-        with pytest.raises(ConnectionError, match="HTTP error"):
-            await conn._request_http({
-                "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
-            })
+        # Short-circuit transport establishment; the handshake runs in connect().
+        async def _already_connected():
+            return
 
-    @pytest.mark.asyncio
-    async def test_request_http_jsonrpc_error(self):
-        """A 200 with JSON-RPC error raises Exception."""
-        import httpx2
+        conn._connect_http = _already_connected
+        with patch.object(conn, "_cleanup_resources", new=AsyncMock()):
+            with patch.object(conn, "_health_monitor", new=AsyncMock()):
+                await conn.connect()
 
-        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
-        conn = MCPServerConnection(cfg)
-
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        resp = MagicMock()
-        resp.headers = {}
-        resp.raise_for_status = MagicMock()
-        resp.json = MagicMock(return_value={
-            "jsonrpc": "2.0", "id": 1,
-            "error": {"code": -32601, "message": "Method not found"},
-        })
-        mock_client.post = AsyncMock(return_value=resp)
-        conn._http_client = mock_client
-
-        with pytest.raises(Exception, match="MCP error"):
-            await conn._request_http({
-                "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
-            })
+        session.initialize.assert_awaited_once()
+        session.list_tools.assert_awaited_once()
+        assert conn.status == ServerStatus.CONNECTED
+        assert conn.tool_count == 1
+        assert conn.list_tools()[0]["name"] == "tool1"
 
     @pytest.mark.asyncio
-    async def test_request_http_sse_stream_response(self):
-        """A streamable server streaming text/event-stream is parsed."""
-        import httpx2
+    async def test_call_tool_via_session(self):
+        """call_tool returns formatted text from the SDK CallToolResult."""
+        from mcp.types import CallToolResult, TextContent
 
-        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
-        conn = MCPServerConnection(cfg)
-
-        async def _sse_lines():
-            yield "event: message"
-            yield 'data: {"jsonrpc": "2.0", "id": 1, "result": "ok"}'
-            yield ""
-
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        resp = MagicMock()
-        resp.headers = {"content-type": "text/event-stream"}
-        resp.raise_for_status = MagicMock()
-        resp.aiter_lines = _sse_lines
-        resp.aclose = AsyncMock()
-        mock_client.post = AsyncMock(return_value=resp)
-        conn._http_client = mock_client
-
-        result = await conn._request_http({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
-        })
-
-        assert result == "ok"
-        # The stream is owned by the reader and closed once the response
-        # is consumed (same contract as _read_sse_stream, REVIEW H1).
-        resp.aclose.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_request_http_sse_stream_jsonrpc_error(self):
-        """An SSE-streamed response carrying a JSON-RPC error is raised."""
-        import httpx2
-
-        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
-        conn = MCPServerConnection(cfg)
-
-        async def _sse_lines():
-            yield (
-                'data: {"jsonrpc": "2.0", "id": 1, '
-                '"error": {"code": -32601, "message": "Method not found"}}'
-            )
-            yield ""
-
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        resp = MagicMock()
-        resp.headers = {"content-type": "text/event-stream"}
-        resp.raise_for_status = MagicMock()
-        resp.aiter_lines = _sse_lines
-        resp.aclose = AsyncMock()
-        mock_client.post = AsyncMock(return_value=resp)
-        conn._http_client = mock_client
-
-        with pytest.raises(Exception, match="MCP error"):
-            await conn._request_http({
-                "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
-            })
-
-    @pytest.mark.asyncio
-    async def test_request_http_sse_stream_no_matching_id(self):
-        """An SSE stream without a matching response id raises ConnectionError."""
-        import httpx2
-
-        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
-        conn = MCPServerConnection(cfg)
-
-        async def _sse_lines():
-            # Only a server-initiated notification arrives, then EOF.
-            yield 'data: {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}'
-            yield ""
-
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        resp = MagicMock()
-        resp.headers = {"content-type": "text/event-stream"}
-        resp.raise_for_status = MagicMock()
-        resp.aiter_lines = _sse_lines
-        resp.aclose = AsyncMock()
-        mock_client.post = AsyncMock(return_value=resp)
-        conn._http_client = mock_client
-
-        with pytest.raises(ConnectionError, match="no response"):
-            await conn._request_http({
-                "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
-            })
-
-    @pytest.mark.asyncio
-    async def test_notify_http_fire_and_forget(self):
-        """HTTP notify creates a background POST task."""
-        import httpx2
-
-        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
-        conn = MCPServerConnection(cfg)
-        conn._session_id = "sid123"
-
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        mock_client.post = AsyncMock(return_value=MagicMock())
-        conn._http_client = mock_client
-
-        await conn._notify("notifications/initialized", {})
-        # Let the background task run
-        await asyncio.sleep(0)
-
-        mock_client.post.assert_called_once()
-        call_kwargs = mock_client.post.call_args
-        assert call_kwargs.kwargs["json"]["method"] == "notifications/initialized"
-        assert call_kwargs.kwargs["headers"] == {"mcp-session-id": "sid123"}
-
-    @pytest.mark.asyncio
-    async def test_disconnect_http_closes_client(self):
-        """HTTP disconnect sends DELETE and closes the client."""
-        import httpx2
-
-        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
-        conn = MCPServerConnection(cfg)
-        conn._session_id = "sid-to-delete"
-
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        mock_client.delete = AsyncMock()
-        mock_client.aclose = AsyncMock()
-        conn._http_client = mock_client
-
-        await conn.disconnect()
-
-        mock_client.delete.assert_called_once_with(
-            "http://remote:8080/mcp",
-            headers={"mcp-session-id": "sid-to-delete"},
-        )
-        mock_client.aclose.assert_called_once()
-        assert conn._session_id is None
-        assert conn._http_client is None
-
-    @pytest.mark.asyncio
-    async def test_connect_resets_stale_session_id(self):
-        """A reconnect must start a fresh initialize — a stale mcp-session-id
-        from the previous transport must not be sent (REVIEW C2 re-opening).
-
-        The health monitor and call_tool reconnect through ``connect()`` after
-        ``_cleanup_resources()``, which never clears the session id; only a
-        fresh ``connect()`` can guarantee the initialize carries none.
-        """
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.DISCONNECTED
-        conn._session_id = "stale-from-previous-transport"
-
-        async def boom():
-            raise RuntimeError("transport failed")
-
-        conn._connect_stdio = boom
-        await conn.connect()  # connect() swallows transport errors → FAILED
-
-        assert conn._session_id is None
-        assert conn.status == ServerStatus.FAILED
-
-    @pytest.mark.asyncio
-    async def test_call_tool_allows_http_connection(self):
-        """call_tool works for HTTP transport (no _process needed)."""
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
         conn._status = ServerStatus.CONNECTED
-        conn._http_client = MagicMock()
-
-        resp = MagicMock()
-        resp.headers = {}
-        resp.raise_for_status = MagicMock()
-        resp.json = MagicMock(return_value={
-            "jsonrpc": "2.0", "id": 1,
-            "result": {"content": [{"type": "text", "text": "hello"}]},
-        })
-        conn._http_client.post = AsyncMock(return_value=resp)
+        session = AsyncMock()
+        session.call_tool = AsyncMock(return_value=CallToolResult(
+            content=[TextContent(type="text", text="hello")],
+        ))
+        conn._session = session
 
         result = await conn.call_tool("greet", {"name": "world"})
         assert result == "hello"
+        session.call_tool.assert_awaited_once_with("greet", {"name": "world"})
+
+    @pytest.mark.asyncio
+    async def test_call_tool_error_is_marked(self):
+        """A server isError result surfaces as 'Error: …'."""
+        from mcp.types import CallToolResult, TextContent
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.CONNECTED
+        session = AsyncMock()
+        session.call_tool = AsyncMock(return_value=CallToolResult(
+            content=[TextContent(type="text", text="nope")],
+            isError=True,
+        ))
+        conn._session = session
+
+        result = await conn.call_tool("do", {})
+        assert result.startswith("Error:")
+
+    @pytest.mark.asyncio
+    async def test_transport_error_reconnect(self):
+        """A transport failure in call_tool triggers one reconnect, then retry."""
+        from mcp.types import CallToolResult, TextContent
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.CONNECTED
+        session = AsyncMock()
+        session.call_tool = AsyncMock(
+            side_effect=[ConnectionError("died"), CallToolResult(
+                content=[TextContent(type="text", text="recovered")],
+            )],
+        )
+        conn._session = session
+        reconnected = {"n": 0}
+
+        async def fake_connect():
+            reconnected["n"] += 1
+            conn._session = session
+            conn._status = ServerStatus.CONNECTED
+
+        conn.connect = fake_connect
+        with patch.object(conn, "_cleanup_resources", new=AsyncMock()):
+            result = await conn.call_tool("g", {})
+
+        assert result == "recovered"
+        assert reconnected["n"] == 1
+        assert session.call_tool.await_count == 2
 
     @pytest.mark.asyncio
     async def test_http_headers_passed_to_client(self):
-        """Custom config.headers are used in Streamable HTTP requests.
+        """Custom config.headers reach the SDK streamable client (REVIEW M7).
 
-        _connect_http creates a single httpx2 client already carrying the
-        resolved headers, so the SSE detection GET and subsequent
-        Streamable HTTP POST requests all inherit them (REVIEW M7).
+        The SDK's ``streamable_http_client`` accepts a pre-built httpx2 client;
+        ``_connect_http`` must construct it WITH the resolved config.headers and
+        then fall through to that transport when SSE is unsupported.
         """
         import httpx2
+        from slife.plugins.mcp_gateway import connection as conn_mod
 
         cfg = ServerConfig(
             name="http_srv",
@@ -659,127 +474,94 @@ class TestMCPServerConnectionHTTP:
         )
         conn = MCPServerConnection(cfg)
 
-        # Mock the SSE detection send() to raise, falling through
-        # to Streamable HTTP where config.headers are already on the client.
-        mock_client1 = MagicMock(spec=httpx2.AsyncClient)
-        mock_client1.send = MagicMock(side_effect=ConnectionError("refused"))
-        mock_client1.aclose = AsyncMock()
+        @asynccontextmanager
+        async def _sse_fail(url, headers=None, **kw):
+            yield None
+            raise RuntimeError("not SSE")
 
-        with patch.object(httpx2, "AsyncClient") as mock_cls:
-            mock_cls.side_effect = [mock_client1]
+        # SSE unsupported → fall through to streamable with the header client.
+        entered = {}
 
+        @asynccontextmanager
+        async def _streamable_entry(url, http_client=None, **kw):
+            entered["url"] = url
+            entered["http_client"] = http_client
+            yield (AsyncMock(), AsyncMock())
+
+        mock_http = MagicMock(spec=httpx2.AsyncClient)
+        with patch.object(httpx2, "AsyncClient", return_value=mock_http) as mock_client_cls, \
+             patch.object(conn_mod, "streamable_http_client", new=_streamable_entry), \
+             patch.object(conn_mod, "sse_client", new=_sse_fail):
             await conn._connect_http()
 
-            # A single AsyncClient is created, carrying the resolved headers.
-            assert mock_cls.call_count == 1
-            first_kwargs = mock_cls.call_args_list[0].kwargs
-            assert first_kwargs["headers"]["Authorization"] == "Bearer mytoken"
-
-            # SSE detection GET carries custom headers + Accept
-            mock_client1.build_request.assert_called_once()
-            req_kwargs = mock_client1.build_request.call_args.kwargs
-            assert req_kwargs["headers"]["Authorization"] == "Bearer mytoken"
-            assert req_kwargs["headers"]["Accept"] == "text/event-stream"
-
-            # Sent as a streamed request
-            mock_client1.send.assert_called_once()
-            assert mock_client1.send.call_args.kwargs["stream"] is True
+        assert entered["http_client"] is conn._http_client
+        assert conn._http_client is not None
+        # The http client was constructed with the resolved config.headers.
+        build_call = mock_client_cls.call_args
+        assert build_call.kwargs["headers"]["Authorization"] == "Bearer mytoken"
 
     @pytest.mark.asyncio
-    async def test_sse_connect_stream_stays_open(self):
-        """SSE detection response stays open after _connect_http returns.
+    async def test_sse_transport_selected_when_supported(self):
+        """A server that answers SSE goes down the sse_client path."""
+        from slife.plugins.mcp_gateway import connection as conn_mod
 
-        Regression for REVIEW H1: the response must be owned by the
-        _read_sse_stream task (which closes it), not closed on function
-        return as the old ``async with stream(...)`` did.
-        """
-        import httpx2
-
-        cfg = ServerConfig(
-            name="sse_srv",
-            url="http://remote:8080/mcp",
-        )
+        cfg = ServerConfig(name="sse_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
 
-        # Simulated SSE event stream: JSON-object endpoint event, then stays open.
-        async def sse_lines():
-            yield "event: endpoint"
-            yield 'data: {"uri": "/mcp-message", "type": "endpoint"}'
-            yield ""
-            await asyncio.sleep(3600)  # keep the stream alive
-
-        mock_resp = MagicMock(spec=httpx2.Response)
-        mock_resp.status_code = 200
-        mock_resp.headers = {"content-type": "text/event-stream"}
-        mock_resp.aiter_lines = sse_lines
-        mock_resp.aclose = AsyncMock()
-
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        mock_client.build_request.return_value = MagicMock()
-        mock_client.send = AsyncMock(return_value=mock_resp)
-
-        with patch.object(httpx2, "AsyncClient", return_value=mock_client):
+        entered = {}
+        @asynccontextmanager
+        async def _sse_entry(url, headers=None, **kw):
+            entered["url"] = url
+            entered["headers"] = headers
+            yield (AsyncMock(), AsyncMock())
+        with patch.object(conn_mod, "sse_client", new=_sse_entry):
             await conn._connect_http()
 
+        assert entered["url"] == "http://remote:8080/mcp"
         assert conn._sse_mode is True
-        assert conn._sse_message_url == "http://remote:8080/mcp-message"
-        assert conn._sse_task is not None and not conn._sse_task.done()
-        # _connect_http must NOT have closed the response — the reader owns it.
-        mock_resp.aclose.assert_not_called()
-
-        # Cleanup: cancelling the reader task closes the response it owns.
-        conn._sse_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await conn._sse_task
-        mock_resp.aclose.assert_called_once()
+        assert conn._session is not None
 
     @pytest.mark.asyncio
-    async def test_sse_connect_bare_path_endpoint(self):
-        """SSE endpoint event sent as a bare path (non-JSON) is accepted.
-
-        The reader passes non-JSON payloads through raw, and _connect_http
-        resolves the path against the base URL.
-        """
+    async def test_disconnect_closes_transport_client(self):
+        """disconnect closes the SDK httpx2 client."""
         import httpx2
 
-        cfg = ServerConfig(
-            name="sse_srv",
-            url="http://remote:8080/mcp",
-        )
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+        mock_client = MagicMock(spec=httpx2.AsyncClient)
+        mock_client.aclose = AsyncMock()
+        conn._http_client = mock_client
+        stack = AsyncExitStack()
+        conn._exit_stack = stack
+
+        await conn.disconnect()
+
+        mock_client.aclose.assert_called_once()
+        assert conn._http_client is None
+        assert conn._exit_stack is None
+
+    @pytest.mark.asyncio
+    async def test_connect_failure_sets_failed_state(self):
+        """A transport establishment failure → FAILED (and cleanup ran)."""
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
 
-        async def sse_lines():
-            yield "event: endpoint"
-            yield "data: /mcp-message"
-            yield ""
-            await asyncio.sleep(3600)
+        async def boom():
+            raise ConnectionError("down")
 
-        mock_resp = MagicMock(spec=httpx2.Response)
-        mock_resp.status_code = 200
-        mock_resp.headers = {"content-type": "text/event-stream"}
-        mock_resp.aiter_lines = sse_lines
-        mock_resp.aclose = AsyncMock()
+        conn._connect_http = boom
+        with patch.object(conn, "_cleanup_resources", new=AsyncMock()):
+            await conn.connect()
 
-        mock_client = MagicMock(spec=httpx2.AsyncClient)
-        mock_client.build_request.return_value = MagicMock()
-        mock_client.send = AsyncMock(return_value=mock_resp)
-
-        with patch.object(httpx2, "AsyncClient", return_value=mock_client):
-            await conn._connect_http()
-
-        assert conn._sse_mode is True
-        assert conn._sse_message_url == "http://remote:8080/mcp-message"
-
-        conn._sse_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await conn._sse_task
+        assert conn.status == ServerStatus.FAILED
+        assert "down" in (conn.error or "")
 
 
 # ── Health check / reconnect (REVIEW C2) ──────────────────────────────────
 
 
 class TestMCPServerConnectionPing:
-    """Tests for ping()."""
+    """Tests for ping() — now via the SDK session's send_ping (E2)."""
 
     @pytest.mark.asyncio
     async def test_ping_false_when_not_connected(self):
@@ -792,16 +574,20 @@ class TestMCPServerConnectionPing:
         cfg = ServerConfig(name="test", command="echo")
         conn = MCPServerConnection(cfg)
         conn._status = ServerStatus.CONNECTED
-        conn._request = AsyncMock(return_value={})
+        session = AsyncMock()
+        session.send_ping = AsyncMock()
+        conn._session = session
         assert await conn.ping() is True
-        conn._request.assert_called_once_with("ping", {})
+        session.send_ping.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_ping_transport_error(self):
         cfg = ServerConfig(name="test", command="echo")
         conn = MCPServerConnection(cfg)
         conn._status = ServerStatus.CONNECTED
-        conn._request = AsyncMock(side_effect=ConnectionError("server died"))
+        session = AsyncMock()
+        session.send_ping = AsyncMock(side_effect=ConnectionError("server died"))
+        conn._session = session
         assert await conn.ping() is False
 
     @pytest.mark.asyncio
@@ -810,11 +596,13 @@ class TestMCPServerConnectionPing:
         cfg = ServerConfig(name="test", command="echo")
         conn = MCPServerConnection(cfg)
         conn._status = ServerStatus.CONNECTED
+        session = AsyncMock()
 
         async def _hang(*_args, **_kwargs):
             await asyncio.sleep(3600)
 
-        conn._request = _hang
+        session.send_ping = _hang
+        conn._session = session
         assert await conn.ping(timeout=0.01) is False
 
 
@@ -1041,11 +829,14 @@ class TestMCPServerConnectionLazyReconnect:
             reconnected["done"] = True
             conn._status = ServerStatus.CONNECTED
 
-        async def fake_request(_method, _params):
-            return {"content": [{"type": "text", "text": "ok"}]}
+        session = AsyncMock()
+        from mcp.types import CallToolResult, TextContent
+        session.call_tool = AsyncMock(return_value=CallToolResult(
+            content=[TextContent(type="text", text="ok")],
+        ))
+        conn._session = session
 
         conn.connect = fake_connect
-        conn._request = fake_request
 
         result = await conn.call_tool("echo", {"m": "x"})
         assert result == "ok"
@@ -1096,6 +887,8 @@ class TestMCPServerConnectionCancelCleanup:
         torn-down transport (a half-open wedge where __check reports running
         and call_tool skips lazy reconnect) — and a health monitor must be
         (re)armed so the DISCONNECTED state recovers in the background."""
+        from mcp.types import Tool
+
         cfg = ServerConfig(name="test", command="echo")
         cfg.enabled = True
         conn = MCPServerConnection(cfg)
@@ -1105,20 +898,18 @@ class TestMCPServerConnectionCancelCleanup:
         async def _connect_ok():
             pass
 
-        async def _request(method, params=None):
-            if method == "initialize":
-                return {"serverInfo": {"name": "test"}}
-            return {"tools": []}  # tools/list
-
-        async def _notify(*a, **k):
-            pass
+        session = AsyncMock()
+        session.initialize = AsyncMock()
+        session.send_notification = AsyncMock()
+        list_result = MagicMock()
+        list_result.tools = []
+        session.list_tools = AsyncMock(return_value=list_result)
+        conn._session = session
 
         async def _cancel_mid_sync():
             raise asyncio.CancelledError
 
         conn._connect_stdio = _connect_ok
-        conn._request = _request
-        conn._notify = _notify
         conn._fire_on_reconnect = _cancel_mid_sync
         with patch.object(conn, "_cleanup_resources", new=AsyncMock()):
             with pytest.raises(asyncio.CancelledError):
@@ -1130,53 +921,57 @@ class TestMCPServerConnectionCancelCleanup:
         with pytest.raises(asyncio.CancelledError):
             await conn._health_task
 
-class TestMCPServerConnectionTreeKill:
-    """REVIEW M4 — stdio teardown kills the whole process tree, not just the
-    direct child (npx/uvx grandchildren survive on Windows)."""
+class TestMCPServerConnectionStdio:
+    """stdio teardown + spawn semantics — now delegated to the SDK's
+    stdio_client (E2), which spawns the subprocess itself and manages the
+    process tree.  These verify our stdio wiring hands the SDK the right
+    command/args/env."""
 
     @pytest.mark.asyncio
-    async def test_cleanup_kills_process_tree(self):
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        proc = MagicMock()
-        proc.stdin = None
-        conn._process = proc
+    async def test_connect_stdio_builds_StdioServerParameters(self):
+        """_connect_stdio passes command/args/env to the SDK stdio client."""
+        from slife.plugins.mcp_gateway import connection as conn_mod
 
-        with patch("slife.plugins.mcp_gateway.connection.terminate_process") as mock_term, \
-                patch("slife.plugins.mcp_gateway.connection.kill_process_tree") as mock_tree:
-            await conn._cleanup_resources()
-
-        mock_tree.assert_awaited_once_with(proc)
-        mock_term.assert_awaited_once()
-        assert conn._process is None
-
-    @pytest.mark.asyncio
-    async def test_connect_stdio_spawns_own_process_group(self):
-        """stdio servers must lead their own process group on POSIX.
-
-        kill_process_tree relies on the child leading its own group to reach
-        the whole npx/uvx tree (killpg).  Without start_new_session=True the
-        child shares the plugin's group, teardown can only kill the direct
-        child, the server grandchild survives holding stdout/stderr open, and
-        process.wait() in teardown never resolves — the WSL build hang.
-        Mirrors slife.tools.exec, which always spawns with it.
-        """
-        cfg = ServerConfig(name="test", command="echo", args=["hi"])
+        cfg = ServerConfig(
+            name="test", command="npx", args=["-y", "srv"], env={"FOO": "bar"},
+        )
         conn = MCPServerConnection(cfg)
 
-        mock_proc = MagicMock()
-        mock_proc.pid = 1234
-        mock_proc.stderr = MagicMock()
-        mock_stderr_task = AsyncMock()
-        conn._stderr_task = mock_stderr_task
-
-        with patch(
-            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc),
-        ) as mock_create:
+        saw = {}
+        @asynccontextmanager
+        async def _stdio_entry(params, errlog=None, **kw):
+            saw["params"] = params
+            saw["errlog"] = errlog
+            yield (AsyncMock(), AsyncMock())
+        with patch.object(conn_mod, "stdio_client", new=_stdio_entry):
             await conn._connect_stdio()
 
-        _, kwargs = mock_create.call_args
-        assert kwargs.get("start_new_session") is True
+        # resolve_command may absolutize npx → npx.CMD on Windows.
+        assert saw["params"].command.replace("\\", "/").endswith(("npx", "npx.CMD"))
+        assert saw["params"].args == ["-y", "srv"]
+        assert saw["params"].env["FOO"] == "bar"
+        assert saw["errlog"] is conn._stderr_capture
+        assert conn._session is not None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_closes_exit_stack(self):
+        """_cleanup_resources tears down the SDK exit stack + http client."""
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        stack = AsyncExitStack()
+        stack.aclose = AsyncMock()
+        conn._exit_stack = stack
+        mock_client = MagicMock()
+        mock_client.aclose = AsyncMock()
+        conn._http_client = mock_client
+
+        await conn._cleanup_resources()
+
+        stack.aclose.assert_awaited_once()
+        mock_client.aclose.assert_called_once()
+        assert conn._exit_stack is None
+        assert conn._session is None
+        assert conn._http_client is None
 
 
 class TestMCPServerConnectionReconnectNotify:

@@ -1,15 +1,20 @@
 """MCP connection pool — persistent connections to external MCP servers.
 
-Supports three transports:
-  - stdio:           spawn server as subprocess, raw JSON-RPC over pipes
+Supports three transports via the **official ``mcp`` SDK** (the same
+mechanism ``client.MCPClient`` uses to reach slife's own plugin children):
+  - stdio:           spawn server as subprocess, JSON-RPC over pipes
   - http (SSE):      GET /sse for server→client events, POST /messages for requests
   - http (streamable): POST JSON-RPC with mcp-session-id header
 
-SSE is tried first when a URL is provided; falls back to streamable HTTP
-if the server doesn't respond with text/event-stream.
+Every transport enters an ``AsyncExitStack`` that yields ``(read, write)``
+streams for one ``mcp.ClientSession``.  This class supplies the connection
+lifecycle the SDK does not: OAuth device flow, health monitor (ping +
+reconnect with backoff), stderr relay, per-server connect locking, and the
+review-driven ``needs_user_auth`` pause (F5).
 
-Avoids anyio and ClientSession entirely to prevent TaskGroup conflicts
-with FastMCP.
+The raw-JSON-RPC client these methods replaced (a ~1200-line hand-rolled
+stack that duplicated ClientSession's protocol layer) was consolidated onto
+the SDK — E2.
 """
 
 import asyncio
@@ -19,14 +24,26 @@ import os
 import subprocess as _subprocess
 import time as _time
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from enum import Enum
+from io import TextIOBase
 
 import httpx2
 
+from mcp import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.types import (
+    InitializedNotification,
+    TextContent,
+    ImageContent,
+)
+
 from slife.plugins.mcp_gateway import __version__
 from slife.plugins.mcp_gateway.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
-from slife.platform import kill_process_tree, resolve_command, terminate_process
+from slife.platform import resolve_command
 
 logger = logging.getLogger(__name__)
 
@@ -36,19 +53,26 @@ _HEALTH_PING_TIMEOUT = 5.0         # a ping must answer within this window
 _RECONNECT_BACKOFF_INITIAL = 5.0   # first reconnect retry delay (s)
 _RECONNECT_BACKOFF_MAX = 60.0      # cap on exponential backoff (s)
 _RECONNECT_BACKOFF_MULTIPLIER = 2.0
-# The ONLY timer on connect(): bounds just the transport-establishment phase
-# (spawn + socket/SSE setup) — the one phase the external server can't answer
-# for.  The protocol period (initialize, tools/list, tool calls, SSE endpoint
-# event) deliberately carries no client timer per the timeout design: a slow
-# cold start gets the full budget, and a server that is established but stops
-# answering is the health monitor's concern, not a connect-timeout race.
+# The ONLY timer on connect(): bounds the whole transport-establishment +
+# handshake span (spawn / socket / SSE negotiation — the phases the server
+# cannot answer for while it is still coming up).  Once ``CONNECTED``, the
+# protocol period carries no client timer (per the timeout architecture);
+# a server that stops answering is the health monitor's concern.
 _CONNECT_STARTUP_TIMEOUT = 120.0
+# Max time to tear down the SDK transport (AsyncExitStack.aclose()) after a
+# failed/cancelled connect — a request hung against a not-yet-ready server
+# can keep aclose() from returning promptly; the retry must progress.
+_CLEANUP_TIMEOUT = 2.0
+
+#: Per-session deadline for tools/list_changed notifications (matches the
+#: gateway server's notify-bound; kept together here for the connection side).
+NOTIFY_TIMEOUT = 5.0
 
 
 class NeedsUserAuthError(RuntimeError):
     """OAuth needs a human (device flow) — not a retriable transport failure.
 
-    Carried out of ``_ensure_oauth_token`` so the health monitor can tell a
+    Carried out of the OAuth pre-check so the health monitor can tell a
     "give it 5 seconds and retry" failure from a "someone must approve this"
     failure.  The former backs off and retries; the latter stops
     auto-reconnect until the user re-adds the server (F5).
@@ -83,14 +107,45 @@ class ServerConfig:
         return "http" if self.url else "stdio"
 
 
+class _StderrCapture(TextIOBase):
+    """TextIO sink for the SDK's stdio transport — feeds the stderr tail.
+
+    Passed as ``errlog`` to :func:`mcp.client.stdio.stdio_client`, which
+    writes the child's stderr hered.  Keeps the last ``_MAX_STDERR_LINES``
+    lines (connect()'s error path reads the tail, like the relay it
+    replaces); a chatty server must not grow it without bound.
+    """
+
+    _MAX_STDERR_LINES = 500
+
+    def __init__(self, connection: "MCPServerConnection") -> None:
+        self._conn = connection
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        buf = self._conn._stderr_buffer
+        buf.append(text)
+        if len(buf) > self._MAX_STDERR_LINES:
+            del buf[: len(buf) - self._MAX_STDERR_LINES]
+        logger.debug(
+            "mcp_stderr server=%s line=%s",
+            self._conn.config.name, text.rstrip("\n"),
+        )
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
 class MCPServerConnection:
-    """Persistent MCP client connection using raw JSON-RPC.
+    """Persistent MCP client connection over the official SDK sessions.
 
-    Supports two transports:
-      - stdio: spawn server as subprocess, JSON-RPC over pipes
-      - http:  POST JSON-RPC to a Streamable HTTP MCP endpoint
-
-    No ClientSession, no anyio, no TaskGroup conflicts.
+    Owns one external MCP server's lifecycle: OAuth, transport selection,
+    tool catalog cache, health monitor (ping + reconnect with backoff), and
+    the review-driven ``needs_user_auth`` pause.  All protocol is the mcp
+    SDK's ``ClientSession`` — no hand-rolled JSON-RPC (E2).
     """
 
     def __init__(
@@ -101,34 +156,26 @@ class MCPServerConnection:
         self.config = config
         self._status = ServerStatus.DISCONNECTED
         self._on_connected = on_connected
-        self._process: asyncio.subprocess.Process | None = None
+        self._exit_stack: AsyncExitStack | None = None
+        self._session: ClientSession | None = None
         self._http_client: httpx2.AsyncClient | None = None
-        self._session_id: str | None = None
-        self._next_id: int = 0
-        self._lock = asyncio.Lock()
-        self._connect_lock = asyncio.Lock() # serializes connect()
+        self._sse_mode: bool = False
+        self._stderr_capture: _StderrCapture | None = None
+        self._stderr_buffer: list[str] = []
+        self._tools_cache: list[dict] = []
+        self._error: str | None = None
+        self._notify_tasks: "set[asyncio.Task]" = set()  # fire-and-forget _notify posts
+        self._connect_lock = asyncio.Lock()  # serializes connect()
         # Set by disconnect() so an in-flight connect aborts at its next check
         # point instead of resuming after cleanup and spawning an orphaned
         # transport + health monitor.
         self._disconnecting = False
-        self._notify_tasks: "set[asyncio.Task]" = set()  # fire-and-forget _notify posts
-        self._tools_cache: list[dict] = []
-        self._error: str | None = None
-        self._stderr_task: asyncio.Task | None = None
-        self._stderr_buffer: list[str] = []
-        # SSE transport state
-        self._sse_mode: bool = False
-        self._sse_message_url: str = ""
-        self._sse_queue: "asyncio.Queue[dict] | None" = None
-        self._sse_task: "asyncio.Task | None" = None
         # Background health monitor (ping + reconnect) — started on first
         # successful connect, cancelled by disconnect()/remove_server().
         self._health_task: "asyncio.Task | None" = None
         # OAuth: the refresh token was revoked / never granted and the device
         # flow needs a human.  While set, the health monitor STOPS auto-
-        # reconnecting (each cycle would otherwise re-run the device flow and
-        # pop another desktop prompt — F5).  Cleared by a fresh mcp_set /
-        # mcp_remove of the server.
+        # reconnecting (F5).  Cleared by a fresh mcp_set / mcp_remove.
         self._needs_user_auth: bool = False
 
     @property
@@ -146,6 +193,8 @@ class MCPServerConnection:
     @property
     def error(self) -> str | None:
         return self._error
+
+    # ── OAuth ──────────────────────────────────────────────────────────
 
     async def _ensure_oauth_token(self) -> None:
         """Obtain or refresh an OAuth token and inject it into connection headers.
@@ -208,189 +257,10 @@ class MCPServerConnection:
         )
         logger.info("oauth_token_injected server=%s", name)
 
-    async def connect(self) -> None:
-        if self._status == ServerStatus.CONNECTED:
-            logger.info("mcp_already_connected server=%s", self.config.name)
-            return
-
-        # Serialize connects — the health monitor, call_tool's lazy reconnect,
-        # and mcp_set_enabled can otherwise each spawn their own transport,
-        # orphaning the loser (and starting duplicate monitors).
-        async with self._connect_lock:
-            # A disconnect() that raced an in-flight connect must not be
-            # undone by this fresh connect.
-            if self._disconnecting:
-                return
-            self._status = ServerStatus.CONNECTING
-            self._error = None
-            self._stderr_buffer.clear()
-            # A fresh transport must initialize with no session id — a stale one
-            # from the previous connection (only cleared here; _cleanup_resources
-            # intentionally doesn't) would be sent on the new initialize and a
-            # session-enforcing server would reject every reconnect.
-            self._session_id = None
-
-            # ── OAuth pre-check ───────────────────────────────────────
-            if self.config.auth and self.config.auth.get("type") == "oauth":
-                await self._ensure_oauth_token()
-            if self._disconnecting:
-                return  # disconnect() ran mid-OAuth — don't spawn a transport
-
-            t0 = _time.monotonic()
-            transport = self.config.transport
-            logger.info(
-                "mcp_connect server=%s transport=%s",
-                self.config.name, transport,
-            )
-
-            try:
-                # Transport establishment is the one client-owned wait (spawn +
-                # socket/SSE setup — the server can't signal readiness during
-                # it).  asyncio.timeout, not wait_for: on Windows/Proactor a
-                # stuck transport op can defeat wait_for's cancellation and
-                # block past the deadline.  The initialize handshake below is
-                # protocol period — no client timer (timeout design).
-                async with asyncio.timeout(_CONNECT_STARTUP_TIMEOUT):
-                    if transport == "stdio":
-                        await self._connect_stdio()
-                    else:
-                        await self._connect_http()
-
-                # MCP initialize handshake (transport-agnostic).  Follows the
-                # official spec: standard params (protocolVersion,
-                # capabilities, clientInfo) all live in the request's
-                # ``params`` object; the client advertises the latest protocol
-                # version it understands and the server negotiates.  Protocol
-                # period — no client timer; the server's own response governs.
-                from mcp.types import LATEST_PROTOCOL_VERSION
-                init_result = await self._request("initialize", {
-                    "protocolVersion": LATEST_PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {"name": "mcp-plugin", "version": __version__},
-                })
-
-                server_info = init_result.get("serverInfo", {})
-                logger.debug(
-                    "mcp_initialized server=%s remote=%s ver=%s proto=%s",
-                    self.config.name,
-                    server_info.get("name", "unknown"),
-                    server_info.get("version", ""),
-                    init_result.get("protocolVersion", ""),
-                )
-
-                # Send initialized notification
-                await self._notify("notifications/initialized", {})
-
-                # Discover tools
-                tools_result = await self._request("tools/list", {})
-                self._tools_cache = [
-                    {
-                        "name": t.get("name", ""),
-                        "description": t.get("description", ""),
-                        "inputSchema": t.get("inputSchema", {"type": "object", "properties": {}}),
-                    }
-                    for t in tools_result.get("tools", [])
-                ]
-
-                self._status = ServerStatus.CONNECTED
-                elapsed = (_time.monotonic() - t0) * 1000
-                logger.info(
-                    "mcp_connected server=%s tools=%d took_ms=%.0f",
-                    self.config.name, len(self._tools_cache), elapsed,
-                )
-
-                # Start the health monitor once per connection object — a running
-                # monitor is reused across reconnects, so never spawn a second.
-                # A disconnect() that landed mid-connect must not leave an
-                # orphaned monitor pinging a transport that is being torn down.
-                if self._disconnecting:
-                    self._status = ServerStatus.DISCONNECTED
-                    return
-
-                # A connect (first or reconnect) can mean the server's tool surface
-                # appeared or changed — notify listeners so they re-discover
-                # and re-register (idempotent full-diff registration).
-                await self._fire_on_reconnect()
-
-                if self._health_task is None or self._health_task.done():
-                    self._health_task = asyncio.create_task(self._health_monitor())
-
-                # Run post-connect setup (best-effort, never blocks on failure)
-                await self._post_connect_setup()
-
-            except asyncio.CancelledError:
-                # A cancelled connect must not leave the status stuck in
-                # CONNECTING — the monitor would skip it forever and call_tool
-                # would raise "not connected (connecting)" with no recovery.
-                # Reset to DISCONNECTED *unconditionally*, not only from
-                # CONNECTING: the transport may already have been marked
-                # CONNECTED (line ~248) and then be torn down below while the
-                # post-connect sync (`_fire_on_reconnect`, `_post_connect_setup`)
-                # is still awaiting — a CONNECTED-with-dead-transport wedge
-                # makes __check report "running" while call_tool skips its lazy
-                # reconnect (status == CONNECTED) and fails on the cleaned
-                # transport.  DISCONNECTED makes call_tool and the monitor
-                # retry instead.
-                self._status = ServerStatus.DISCONNECTED
-                # An externally-timed-out connect (e.g. a tool-call wait_for)
-                # must not leak its transport: the spawned npx/uvx process,
-                # http client and stderr relay would
-                # otherwise keep running — and cold-starting on a slow machine
-                # — after the caller gave up.  The Exception path already
-                # cleans up; cancellation now does too.
-                await self._cleanup_resources()
-                # A cancelled mid-sync connect (e.g. a host tool-timeout on
-                # mcp_set) must still recover without waiting for the next
-                # tool call: start a health monitor when none is running so the
-                # DISCONNECTED state is reconnected in the background.
-                if (
-                    not self._disconnecting
-                    and self.config.enabled
-                    and (self._health_task is None or self._health_task.done())
-                ):
-                    self._health_task = asyncio.create_task(self._health_monitor())
-                raise
-
-            except Exception as e:
-                self._status = ServerStatus.FAILED
-                stderr_tail = "".join(self._stderr_buffer[-20:]).strip()
-                if stderr_tail:
-                    self._error = f"{e}\n\n[server stderr]\n{stderr_tail}"
-                else:
-                    self._error = str(e)
-                logger.exception("mcp_connect_failed server=%s err=%s", self.config.name, e)
-                await self._cleanup_resources()
-                # Start the health monitor even on a failed initial connect so a
-                # server that was down at startup is retried in the background
-                # (the monitor's DISCONNECTED/FAILED branch handles it).  When
-                # connect() was called by the monitor itself, this is a no-op —
-                # the running monitor is still current.
-                if self.config.enabled and (
-                    self._health_task is None or self._health_task.done()
-                ):
-                    self._health_task = asyncio.create_task(self._health_monitor())
-
-    async def _fire_on_reconnect(self) -> None:
-        """Notify listeners that the server is connected.
-
-        Fires on EVERY successful connect (first and reconnects).  A server
-        connecting asynchronously from mcp-plugin.json5 — the standalone
-        startup path — must also reach registered listeners; full-diff
-        registration on the listener side keeps this idempotent.  Best-effort:
-        a failing listener never breaks the connection.
-        """
-        logger.info("mcp_connected server=%s", self.config.name)
-        if self._on_connected is not None:
-            try:
-                await self._on_connected(self.config.name)
-            except Exception:
-                logger.exception(
-                    "mcp_on_connected_failed server=%s",
-                    self.config.name,
-                )
+    # ── Transport selection (SDK transports → one ClientSession) ─────────
 
     async def _connect_stdio(self) -> None:
-        """Spawn server as subprocess and set up pipe I/O."""
+        """Spawn server as subprocess and connect the SDK stdio client."""
         exe = resolve_command(self.config.command)
         env = dict(os.environ)
         if self.config.env:
@@ -408,145 +278,240 @@ class MCPServerConnection:
             for p in get_os_accessible_paths():
                 resolved_args += ["--allow-path", p]
 
-        self._process = await asyncio.create_subprocess_exec(
-            exe, *resolved_args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            # Own process group on POSIX so teardown can kill the whole
-            # tree (npx/uvx spawn the real server as a grandchild).  Without
-            # this, kill_process_tree's killpg check sees the shared group
-            # and can only kill the direct child — the grandchild survives,
-            # holds stdout/stderr open, and process.wait() in teardown never
-            # resolves (WSL hang).  Mirrors slife.tools.exec's spawns.
-            start_new_session=True,
-            env=env or None,
+        params = StdioServerParameters(
+            command=exe, args=resolved_args, env=env or None,
         )
-        self._stderr_task = asyncio.create_task(self._drain_stderr())
+        if self._exit_stack is None:
+            self._exit_stack = AsyncExitStack()
+        self._stderr_capture = _StderrCapture(self)
+        read_stream, write_stream = await self._exit_stack.enter_async_context(
+            # _StderrCapture subclasses io.TextIOBase (a typing.TextIO); Pylance
+            # treats the stdlib structural alias strictly, but it IS one.
+            stdio_client(params, errlog=self._stderr_capture),  # type: ignore[arg-type]
+        )
+        self._session = await self._exit_stack.enter_async_context(
+            self._new_session(read_stream, write_stream),
+        )
 
     async def _connect_http(self) -> None:
-        """Create HTTP client; detect SSE vs Streamable HTTP.
-
-        Tries SSE first (GET the URL with ``Accept: text/event-stream``).
-        If the server responds with SSE, enters SSE mode — otherwise
-        falls back to Streamable HTTP (POST JSON-RPC directly).
-        """
+        """Create HTTP client; detect SSE vs Streamable HTTP and connect the SDK transport."""
         # Resolve ${VAR} references in URL (e.g. SSE URL with API key)
-        self._resolved_url = _resolve_embedded_refs(self.config.url)
+        url = _resolve_embedded_refs(self.config.url).rstrip("/")
 
-        # Resolve ${VAR} references in headers
+        # Resolve ${VAR} references in headers; OAuth token rides here too.
         headers: dict[str, str] = {}
         if self.config.headers:
             headers.update(
                 {k: _resolve_embedded_refs(v) for k, v in self.config.headers.items()}
             )
 
-        # No read/write timeout of our own — enforcement lives in the agent
-        # loop's tool_timeout (per the timeout architecture).  A fixed 30s
-        # here would abort a legitimately slow external tool call and spuriously
-        # trigger the reconnect path.  Only connect/pool are bounded so a dead
-        # endpoint can't hang the handshake; ping carries its own
-        # 5s wait_for.
-        self._http_client = httpx2.AsyncClient(
-            headers=headers,
-            timeout=httpx2.Timeout(connect=10.0, read=None, write=None, pool=10.0),
-        )
-
-        # Detect SSE: send GET with Accept: text/event-stream
-        url = self._resolved_url.rstrip("/")
-        sse_detected = False
-
-        # The detection GET doubles as the persistent SSE stream.  Once
-        # handed to ``_read_sse_stream`` the response is owned by that task
-        # (it closes it), so it must stay open here — a context-managed
-        # ``stream()`` would ``aclose()`` it on exit and kill the reader
-        request = self._http_client.build_request(
-            "GET", url,
-            headers={"Accept": "text/event-stream", **headers},
-        )
-        resp: httpx2.Response | None = None
+        # Detect transport: try SSE first (the SDK's sse_client handles the
+        # endpoint-discovery handshake itself); fall back to Streamable HTTP.
+        # A server that answers a plain POST but not an SSE GET will make
+        # sse_client's enter fail (non-event-stream response) → fall through.
+        stack = self._exit_stack if self._exit_stack is not None else AsyncExitStack()
+        self._exit_stack = stack
         try:
-            resp = await self._http_client.send(request, stream=True)
-            if (
-                resp.status_code == 200
-                and "text/event-stream" in resp.headers.get("content-type", "")
-            ):
-                self._sse_mode = True
-                self._sse_queue = asyncio.Queue()
-                self._sse_task = asyncio.create_task(
-                    self._read_sse_stream(resp)
-                )
-                # Wait for the endpoint event to discover the POST URL.  Protocol period —
-                # no client timer: a dead SSE stream is the server's problem,
-                # and the health monitor treats the connection as unresponsive
-                # and reconnects rather than racing a fixed connect timeout.
-                endpoint = await self._sse_queue.get()
-                if endpoint.get("type") != "endpoint":
-                    raise ConnectionError(
-                        f"Expected endpoint event, got {endpoint.get('type')}"
-                    )
-                # Resolve the message endpoint.  Servers may send it as a
-                # bare URL/path or as a JSON object
-                # {"uri": ..., "type": "endpoint"}; prefer the parsed ``uri``
-                # when present.
-                ep = None
-                msg = endpoint.get("msg")
-                if isinstance(msg, dict):
-                    ep = msg.get("uri")
-                if not ep:
-                    ep = endpoint["data"]
-                if ep.startswith("/"):
-                    from urllib.parse import urlparse
-                    parsed = urlparse(url)
-                    ep = f"{parsed.scheme}://{parsed.netloc}{ep}"
-                self._sse_message_url = ep
-                logger.info(
-                    "mcp_sse_connected server=%s msg_url=%s",
-                    self.config.name, self._sse_message_url,
-                )
-                sse_detected = True
-                # ``resp`` stays open — owned by ``_read_sse_stream`` and
-                # closed there (or by its cancellation in cleanup).
-                return
-            else:
-                # Non-200 or wrong content-type — drain the response body
-                # (bounded) so the httpx2 connection is returned to the pool,
-                # then fall through to streamable HTTP.  aclose() without
-                # reading leaks the connection on every reconnect.
-                try:
-                    _n = 0
-                    async for _chunk in resp.aiter_bytes():
-                        _n += len(_chunk)
-                        if _n > 65536:
-                            break
-                except Exception:
-                    pass
-                logger.debug(
-                    "mcp_sse_not_detected server=%s status=%d content_type=%s",
-                    self.config.name, resp.status_code,
-                    resp.headers.get("content-type", ""),
-                )
+            read_stream, write_stream = await stack.enter_async_context(
+                sse_client(url, headers=headers),
+            )
+            self._sse_mode = True
+            logger.info("mcp_sse_connected server=%s url=%s", self.config.name, url)
         except Exception:
-            if self._sse_task:
-                self._sse_task.cancel()
+            # SSE not supported — release anything the failed enter opened and
+            # retry as Streamable HTTP.  The SDK reuses a pre-built httpx2
+            # client, so build one lazily here (with the OAuth/resolved
+            # headers riding along); the SSE-success path never allocates it.
+            if self._exit_stack is not None:
                 try:
-                    await self._sse_task
-                except asyncio.CancelledError:
+                    await asyncio.wait_for(
+                        self._exit_stack.aclose(), timeout=_CLEANUP_TIMEOUT,
+                    )
+                except (asyncio.TimeoutError, RuntimeError, BaseExceptionGroup):
                     pass
-                self._sse_task = None
-            self._sse_queue = None
+                self._exit_stack = AsyncExitStack()
+            if self._http_client is None:
+                # No read/write timeout of our own — enforcement lives in the
+                # agent loop's tool_timeout (per the timeout architecture).
+                # Only connect/pool are bounded so a dead endpoint can't hang
+                # the handshake; ping carries its own 5s wait_for.
+                self._http_client = httpx2.AsyncClient(
+                    headers=headers,
+                    timeout=httpx2.Timeout(
+                        connect=10.0, read=None, write=None, pool=10.0,
+                    ),
+                    trust_env=False,
+                )
+            read_stream, write_stream = await self._exit_stack.enter_async_context(
+                streamable_http_client(url, http_client=self._http_client),
+            )
             self._sse_mode = False
-        finally:
-            if not sse_detected and resp is not None:
-                # Streamable-HTTP fallthrough: release the detection
-                # response; the client (carrying user headers) is reused
-                # for subsequent POST requests.
-                await resp.aclose()
+            logger.debug("mcp_streamable_http server=%s url=%s", self.config.name, url)
 
-        logger.debug(
-            "mcp_streamable_http server=%s url=%s",
-            self.config.name, url,
+        self._session = await self._exit_stack.enter_async_context(
+            self._new_session(read_stream, write_stream),
         )
+
+    def _new_session(self, read_stream, write_stream) -> ClientSession:
+        """Build the SDK ClientSession wired to our notification handler."""
+        # The SDK's cancel-scope teardown bug surfaces as an unretrieved task
+        # exception on the running loop — install the demoting handler before
+        # any transport that could trigger it is created (client.py does the
+        # same for plugin connections).
+        from slife.plugins.mcp_gateway.client import _install_cancel_scope_exception_handler
+        _install_cancel_scope_exception_handler()
+
+        from mcp.types import Implementation as _Impl
+        return ClientSession(
+            read_stream, write_stream,
+            message_handler=self._handle_notification,
+            client_info=_Impl(name="mcp-plugin", version=__version__),
+        )
+
+    async def _handle_notification(self, message) -> None:
+        """Forward server notifications (tools/list_changed) to the host via
+        ``on_connected``.  Read-only path — never called from a tool call."""
+        method = getattr(message, "method", None)
+        if not isinstance(method, str):
+            return
+        if method == "notifications/tools/list_changed" and self._on_connected is not None:
+            try:
+                await self._on_connected(self.config.name)
+            except Exception as exc:
+                logger.warning(
+                    "mcp_notification_handler_failed server=%s err=%s",
+                    self.config.name, exc,
+                )
+
+    # ── Connection lifecycle ────────────────────────────────────────────
+
+    async def connect(self) -> None:
+        if self._status == ServerStatus.CONNECTED:
+            logger.info("mcp_already_connected server=%s", self.config.name)
+            return
+
+        # Serialize connects — the health monitor, call_tool's lazy reconnect,
+        # and mcp_set_enabled can otherwise each spawn their own transport,
+        # orphaning the loser (and starting duplicate monitors).
+        async with self._connect_lock:
+            # A disconnect() that raced an in-flight connect must not be
+            # undone by this fresh connect.
+            if self._disconnecting:
+                return
+            self._status = ServerStatus.CONNECTING
+            self._error = None
+            self._stderr_buffer.clear()
+
+            # ── OAuth pre-check ───────────────────────────────────────
+            if self.config.auth and self.config.auth.get("type") == "oauth":
+                await self._ensure_oauth_token()
+            if self._disconnecting:
+                return  # disconnect() ran mid-OAuth — don't spawn a transport
+
+            t0 = _time.monotonic()
+            transport = self.config.transport
+            logger.info("mcp_connect server=%s transport=%s", self.config.name, transport)
+
+            self._exit_stack = AsyncExitStack()
+            try:
+                # Transport establishment is the one client-owned wait (spawn
+                # + socket/SSE setup).  asyncio.timeout, not wait_for: on
+                # Windows/Proactor a stuck transport op can defeat wait_for's
+                # cancellation and block past the deadline.
+                async with asyncio.timeout(_CONNECT_STARTUP_TIMEOUT):
+                    if transport == "stdio":
+                        await self._connect_stdio()
+                    else:
+                        await self._connect_http()
+
+                    assert self._session is not None
+                    # MCP initialize handshake (SDK-managed, official params).
+                    await self._session.initialize()
+                    # Send the initialized notification (typed SDK notification).
+                    await self._session.send_notification(InitializedNotification())
+
+                    # Discover tools
+                    tools_result = await self._session.list_tools()
+                    self._tools_cache = [
+                        {
+                            "name": t.name,
+                            "description": t.description or "",
+                            # input_schema is the canonical attr in mcp-types ≥2.0;
+                            # the proxy contract is the wire name (camelCase).
+                            "inputSchema": t.input_schema,
+                        }
+                        for t in tools_result.tools
+                    ]
+
+                self._status = ServerStatus.CONNECTED
+                elapsed = (_time.monotonic() - t0) * 1000
+                logger.info(
+                    "mcp_connected server=%s tools=%d took_ms=%.0f",
+                    self.config.name, len(self._tools_cache), elapsed,
+                )
+
+                # Start the health monitor once per connection object — a
+                # running monitor is reused across reconnects, so never spawn
+                # a second.  A disconnect() that landed mid-connect must not
+                # leave an orphaned monitor pinging a torn-down transport.
+                if self._disconnecting:
+                    self._status = ServerStatus.DISCONNECTED
+                    return
+
+                # A connect (first or reconnect) can mean the server's tool
+                # surface appeared or changed — notify listeners so they
+                # re-discover and re-register (idempotent full-diff).
+                await self._fire_on_reconnect()
+
+                if self._health_task is None or self._health_task.done():
+                    self._health_task = asyncio.create_task(self._health_monitor())
+
+                # Run post-connect setup (best-effort, never blocks on failure)
+                await self._post_connect_setup()
+
+            except asyncio.CancelledError:
+                # A cancelled connect must not leave the status stuck in
+                # CONNECTING.  Reset to DISCONNECTED unconditionally — a
+                # CONNECTED-with-dead-transport wedge makes __check report
+                # "running" while call_tool skips its lazy reconnect (F5/A6).
+                self._status = ServerStatus.DISCONNECTED
+                await self._cleanup_resources()
+                # A cancelled mid-sync connect (e.g. a host tool-timeout on
+                # mcp_set) must still recover: start a health monitor when
+                # none is running so DISCONNECTED is reconnected in background.
+                if (
+                    not self._disconnecting
+                    and self.config.enabled
+                    and (self._health_task is None or self._health_task.done())
+                ):
+                    self._health_task = asyncio.create_task(self._health_monitor())
+                raise
+
+            except Exception as e:
+                self._status = ServerStatus.FAILED
+                stderr_tail = "".join(self._stderr_buffer[-20:]).strip()
+                self._error = f"{e}\n\n[server stderr]\n{stderr_tail}" if stderr_tail else str(e)
+                logger.exception("mcp_connect_failed server=%s err=%s", self.config.name, e)
+                await self._cleanup_resources()
+                # Start the health monitor even on a failed initial connect so
+                # a server that was down at startup is retried in background.
+                if self.config.enabled and (
+                    self._health_task is None or self._health_task.done()
+                ):
+                    self._health_task = asyncio.create_task(self._health_monitor())
+
+    async def _fire_on_reconnect(self) -> None:
+        """Notify listeners that the server is connected.
+
+        Fires on EVERY successful connect (first and reconnects).  Best-effort:
+        a failing listener never breaks the connection.
+        """
+        logger.info("mcp_connected server=%s", self.config.name)
+        if self._on_connected is not None:
+            try:
+                await self._on_connected(self.config.name)
+            except Exception:
+                logger.exception("mcp_on_connected_failed server=%s", self.config.name)
 
     async def _post_connect_setup(self) -> None:
         """Run server-specific post-connect setup (best-effort).
@@ -582,423 +547,37 @@ class MCPServerConnection:
             if not os.path.isdir(jsdir):
                 return
 
-            # Already installed — nothing to do
             if os.path.isdir(os.path.join(jsdir, "node_modules")):
                 logger.debug("fetch_npm_skip reason=node_modules_present")
                 return
 
-            logger.info(
-                "fetch_npm_install jsdir=%s", jsdir,
-            )
+            logger.info("fetch_npm_install jsdir=%s", jsdir)
             npm_cmd = ["cmd", "/c", "npm", "install"]
             install = _subprocess.run(
                 npm_cmd, cwd=jsdir,
                 capture_output=True, text=True, timeout=60,
             )
             if install.returncode == 0:
-                logger.info("fetch_npm_install_done jsdir=%s", jsdir)
+                logger.info("fetch_npm_installed jsdir=%s", jsdir)
             else:
-                logger.debug(
-                    "fetch_npm_install_fail rc=%d stderr=%s",
-                    install.returncode, install.stderr[:200],
+                logger.warning(
+                    "fetch_npm_install_failed jsdir=%s err=%s",
+                    jsdir, (install.stderr or "")[-500:],
                 )
         except Exception:
-            # Best-effort — never let setup failure block the connection
-            pass
+            logger.debug("fetch_npm_setup_error", exc_info=True)
 
-    async def _request(self, method: str, params: dict, timeout: float | None = None) -> dict:
-        """Send a JSON-RPC request and wait for the response.
-
-        *timeout* bounds the SSE response wait (``None`` = no inner bound —
-        enforcement lives in the agent loop's tool_timeout for tool calls, or
-        the caller's ``wait_for`` for the connect handshake).
-        """
-        async with self._lock:
-            self._next_id += 1
-            req_id = self._next_id
-
-            request = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "method": method,
-                "params": params,
-            }
-
-            if self.config.transport == "stdio":
-                return await self._request_stdio(request, req_id)
-            elif self._sse_mode:
-                return await self._request_sse(request, timeout=timeout)
-            else:
-                return await self._request_http(request)
-
-    async def _request_stdio(self, request: dict, req_id: int) -> dict:
-        """Send JSON-RPC over subprocess pipes and wait for matching response."""
-        assert self._process and self._process.stdin and self._process.stdout
-        line = json.dumps(request, ensure_ascii=False) + "\n"
-        self._process.stdin.write(line.encode("utf-8"))
-        await self._process.stdin.drain()
-
-        while True:
-            resp_line = await self._process.stdout.readline()
-            if not resp_line:
-                raise ConnectionError(f"Server '{self.config.name}' closed connection")
-
-            try:
-                response = json.loads(resp_line.decode("utf-8", errors="replace"))
-            except json.JSONDecodeError:
-                logger.debug("mcp_invalid_json server=%s line=%.100s", self.config.name, resp_line)
-                continue
-
-            if response.get("id") == req_id:
-                if "error" in response:
-                    raise Exception(
-                        f"MCP error from '{self.config.name}': {response['error']}"
-                    )
-                return response.get("result", {})
-
-    async def _read_sse_stream(self, response) -> None:
-        """Read SSE events from *response* and push JSON-RPC messages
-        into ``_sse_queue``.
-
-        Owns ``response`` — it is closed here when the stream ends or the
-        task is cancelled, never by the caller.
-        """
-        import json as _json
-        event_type = ""
-        data_buffer = ""
-        try:
-            async for line in response.aiter_lines():
-                if line == "":
-                    # Blank line ends the current event.
-                    if data_buffer:
-                        try:
-                            msg = _json.loads(data_buffer)
-                        except ValueError:
-                            # Non-JSON payload (e.g. a bare endpoint URL) —
-                            # pass through the raw text.
-                            msg = data_buffer
-                        entry = {"type": event_type, "data": data_buffer, "msg": msg}
-                        if self._sse_queue:
-                            await self._sse_queue.put(entry)
-                    event_type = ""
-                    data_buffer = ""
-                    continue
-                if line.startswith(":"):
-                    continue  # SSE comment
-                # Accept both "field: value" and "field:value" (the space after
-                # the colon is optional per the SSE spec); multi-line data
-                # joins with a newline.
-                if ":" in line:
-                    field, _, value = line.partition(":")
-                    value = value.lstrip()
-                else:
-                    field, value = line, ""
-                if field == "event":
-                    event_type = value
-                elif field == "data":
-                    data_buffer = f"{data_buffer}\n{value}" if data_buffer else value
-        except Exception as e:
-            logger.debug("sse_stream_closed server=%s err=%s", self.config.name, e)
-            if self._sse_queue:
-                await self._sse_queue.put(
-                    {"type": "error", "data": str(e), "msg": {}}
-                )
-        finally:
-            try:
-                await response.aclose()
-            except Exception:
-                pass
-
-    async def _request_sse(self, request: dict, timeout: float | None = None) -> dict:
-        """Send JSON-RPC via POST to SSE message endpoint, wait for
-        matching response on the SSE event stream.
-
-        *timeout* bounds the response wait; ``None`` waits indefinitely and the
-        caller (agent-loop tool_timeout / connect-handshake wait_for) governs —
-        a fixed 30s here failed legitimate SSE tool calls that ran longer.
-        """
-        assert self._http_client is not None
-        assert self._sse_queue is not None
-
-        # POST the request to the SSE message endpoint
-        post_resp = await self._http_client.post(
-            self._sse_message_url,
-            json=request,
-            headers={"Content-Type": "application/json"},
-        )
-        if post_resp.status_code not in (200, 202):
-            post_resp.raise_for_status()
-
-        req_id = request["id"]
-        # Wait for the matching JSON-RPC response on the SSE stream
-        while True:
-            if timeout is None:
-                entry = await self._sse_queue.get()
-            else:
-                entry = await asyncio.wait_for(self._sse_queue.get(), timeout=timeout)
-            if entry["type"] == "error":
-                raise ConnectionError(
-                    f"SSE stream closed for '{self.config.name}': {entry['data']}"
-                )
-            msg = entry.get("msg", {})
-            if isinstance(msg, dict) and msg.get("id") == req_id:
-                if "error" in msg:
-                    raise Exception(
-                        f"MCP error from '{self.config.name}': {msg['error']}"
-                    )
-                return msg.get("result", {})
-
-    async def _request_http(self, request: dict) -> dict:
-        """Send JSON-RPC via HTTP POST and parse the response.
-
-        Handles both response shapes the MCP Streamable HTTP spec allows:
-        a single ``application/json`` body, or an SSE stream
-        (``text/event-stream``) whose first message is the JSON-RPC
-        response and whose later messages are server-initiated
-        notifications (dropped — this connection is request/response).
-        """
-        assert self._http_client is not None
-
-        headers = {}
-        if self._session_id:
-            headers["mcp-session-id"] = self._session_id
-
-        url = getattr(self, '_resolved_url', self.config.url)
-        try:
-            resp = await self._http_client.post(
-                url, json=request, headers=headers,
-            )
-            resp.raise_for_status()
-        except httpx2.HTTPError as e:
-            raise ConnectionError(
-                f"HTTP error from '{self.config.name}': {e}"
-            ) from e
-
-        # Extract session ID from response header (first initialize response)
-        sid = resp.headers.get("mcp-session-id")
-        if sid and not self._session_id:
-            self._session_id = sid
-
-        if "text/event-stream" in resp.headers.get("content-type", ""):
-            response = await self._read_streamable_sse_response(
-                resp, request["id"],
-            )
-        else:
-            try:
-                response = resp.json()
-            except ValueError as e:
-                raise ConnectionError(
-                    f"Invalid JSON from '{self.config.name}': {e}"
-                ) from e
-
-        if "error" in response:
-            raise Exception(
-                f"MCP error from '{self.config.name}': {response['error']}"
-            )
-        return response.get("result", {})
-
-    async def _read_streamable_sse_response(
-        self, response, req_id: int,
-    ) -> dict:
-        """Extract the JSON-RPC response from a streamable SSE response.
-
-        A Streamable HTTP server may stream the POST response as
-        ``text/event-stream``.  The first ``data:`` event whose JSON-RPC
-        message carries ``req_id`` is the response; other events
-        (notifications, non-matching messages) are skipped.  Owns
-        ``response`` — closed here in all cases.
-        """
-        data_buffer = ""
-        try:
-            async for line in response.aiter_lines():
-                if line == "":
-                    # Blank line ends the current event.
-                    if data_buffer:
-                        try:
-                            msg = json.loads(data_buffer)
-                        except ValueError:
-                            data_buffer = ""  # non-JSON data event — skip
-                            continue
-                        if isinstance(msg, dict) and msg.get("id") == req_id:
-                            return msg
-                    data_buffer = ""  # notification / other event — drop
-                    continue
-                if line.startswith(":"):
-                    continue  # SSE comment
-                # Accept "data: value" and "data:value"; join multi-line data
-                # with a newline.
-                if ":" in line:
-                    field, _, value = line.partition(":")
-                    value = value.lstrip()
-                else:
-                    field, value = line, ""
-                if field == "data":
-                    data_buffer = f"{data_buffer}\n{value}" if data_buffer else value
-            raise ConnectionError(
-                f"Streamable SSE response from '{self.config.name}' "
-                f"carried no response for id={req_id}"
-            )
-        finally:
-            try:
-                await response.aclose()
-            except Exception:
-                pass
-
-    async def _notify(self, method: str, params: dict) -> None:
-        """Send a JSON-RPC notification (no response expected)."""
-        notification = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-        }
-        if self.config.transport == "stdio":
-            assert self._process and self._process.stdin
-            line = json.dumps(notification, ensure_ascii=False) + "\n"
-            self._process.stdin.write(line.encode("utf-8"))
-            await self._process.stdin.drain()
-        elif self._sse_mode:
-            assert self._http_client is not None
-            task = asyncio.create_task(
-                self._http_client.post(
-                    self._sse_message_url,
-                    json=notification,
-                    headers={"Content-Type": "application/json"},
-                )
-            )
-            # Track so teardown cancels them — a closed client would otherwise
-            # surface unretrieved task exceptions.
-            self._notify_tasks.add(task)
-            task.add_done_callback(self._notify_tasks.discard)
-        else:
-            assert self._http_client is not None
-            headers: dict[str, str] = {}
-            if self._session_id:
-                headers["mcp-session-id"] = self._session_id
-            url = getattr(self, '_resolved_url', self.config.url)
-            task = asyncio.create_task(
-                self._http_client.post(
-                    url, json=notification, headers=headers,
-                )
-            )
-            self._notify_tasks.add(task)
-            task.add_done_callback(self._notify_tasks.discard)
-
-    async def _drain_stderr(self) -> None:
-        assert self._process and self._process.stderr
-        from slife.plugins.mcp_gateway.logging import read_stderr_lines, sanitize_secrets
-        try:
-            # Shared hardened reader — an over-long stderr line must not
-            # kill this relay (a dead relay wedges the server's stderr
-            # pipe and the server blocks on its next log write).
-            async for text in read_stderr_lines(self._process):
-                self._stderr_buffer.append(text + "\n")
-                # Bound the buffer — only the tail is ever read (the last
-                # 20 lines in connect()'s error path); a chatty server must
-                # not grow it without bound.
-                if len(self._stderr_buffer) > 500:
-                    del self._stderr_buffer[:len(self._stderr_buffer) - 500]
-                logger.debug("mcp_stderr server=%s line=%s", self.config.name, sanitize_secrets(text))
-        except asyncio.CancelledError:
-            pass
-
-    async def disconnect(self) -> None:
-        logger.info("mcp_disconnect server=%s", self.config.name)
-        # Flag any in-flight connect to abort at its next check point, then
-        # serialize with it under the connect lock — otherwise a slow connect
-        # (OAuth, HTTP handshake) resumes after this cleanup and spawns an
-        # orphaned transport + health monitor that nothing references.
-        self._disconnecting = True
-        async with self._connect_lock:
-            self._status = ServerStatus.DISCONNECTED
-            # Stop the health monitor first — it must not keep pinging a
-            # deliberately-disconnected server.  The monitor is the only task
-            # that reconnects, so cancelling it here (and only here) prevents
-            # self-cancellation from ``_cleanup_resources``.
-            if self._health_task is not None and not self._health_task.done():
-                self._health_task.cancel()
-                try:
-                    await self._health_task
-                except asyncio.CancelledError:
-                    pass
-                self._health_task = None
-            await self._cleanup_resources()
-            self._tools_cache = []
-            self._session_id = None
-        self._disconnecting = False
-        logger.info("mcp_disconnected server=%s", self.config.name)
-
-    async def _cleanup_resources(self) -> None:
-        # -- stdio cleanup --
-        if self._stderr_task and not self._stderr_task.done():
-            self._stderr_task.cancel()
-            try:
-                await self._stderr_task
-            except asyncio.CancelledError:
-                pass
-        self._stderr_task = None
-
-        if self._process and self._process.stdin:
-            try:
-                self._process.stdin.write(b'')
-                await self._process.stdin.drain()
-            except Exception:
-                pass
-
-        if self._process is not None:
-            # terminate_process kills only the direct child — npx/uvx spawn
-            # grandchildren that outlive it on Windows.  Kill the whole tree
-            # first, then terminate_process cleans up the pipe transports
-            await kill_process_tree(self._process)
-            await terminate_process(self._process, label=f"mcp_conn:{self.config.name}")
-        self._process = None
-
-        # -- sse cleanup --
-        if self._sse_task and not self._sse_task.done():
-            self._sse_task.cancel()
-            try:
-                await self._sse_task
-            except asyncio.CancelledError:
-                pass
-        self._sse_task = None
-        self._sse_queue = None
-        self._sse_message_url = ""
-        self._sse_mode = False
-
-        # -- http cleanup --
-        # Cancel in-flight fire-and-forget notifications before closing the
-        # client — a closed client would surface unretrieved task exceptions.
-        for task in list(self._notify_tasks):
-            task.cancel()
-        self._notify_tasks.clear()
-        if self._http_client is not None:
-            # Best-effort session termination
-            if self._session_id:
-                try:
-                    url = getattr(self, '_resolved_url', self.config.url)
-                    await self._http_client.delete(
-                        url,
-                        headers={"mcp-session-id": self._session_id},
-                    )
-                except Exception:
-                    pass
-            await self._http_client.aclose()
-            self._http_client = None
+    # ── Tool operations (SDK session) ────────────────────────────────────
 
     def list_tools(self) -> list[dict]:
         return list(self._tools_cache)
 
     async def ping(self, timeout: float = _HEALTH_PING_TIMEOUT) -> bool:
-        """Return True if the server answers a JSON-RPC ping.
-
-        Used by the background health monitor.  A died or hung server (stdio
-        process that stopped answering, or an HTTP/SSE endpoint that times
-        out) makes this return False — the monitor then marks it DISCONNECTED
-        and reconnects.
-        """
-        if self._status != ServerStatus.CONNECTED:
+        """Return True if the server answers an MCP ping (SDK send_ping)."""
+        if self._status != ServerStatus.CONNECTED or self._session is None:
             return False
         try:
-            await asyncio.wait_for(self._request("ping", {}), timeout=timeout)
+            await asyncio.wait_for(self._session.send_ping(), timeout=timeout)
             return True
         except Exception:
             return False
@@ -1020,9 +599,6 @@ class MCPServerConnection:
         backoff = _RECONNECT_BACKOFF_INITIAL
 
         async def _try_reconnect() -> bool:
-            """Attempt a reconnect; returns True on success. On failure the
-            backoff is NOT advanced here — the caller advances it after
-            deciding the wait."""
             nonlocal backoff
             try:
                 await self.connect()
@@ -1052,18 +628,14 @@ class MCPServerConnection:
                     )
                     await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
                     continue
-                # Healthy paths wait the full check interval; a failed
-                # reconnect sleeps ONLY its backoff (5s→60s) instead of
-                # interval + backoff, so a down server isn't polled ~30s
-                # later than the documented backoff promises.
                 wait = _HEALTH_CHECK_INTERVAL
                 if not self.config.enabled:
                     return
                 if self._status == ServerStatus.CONNECTING:
                     pass  # a manual connect is already in progress — wait
                 elif self._status == ServerStatus.CONNECTED:
-                    if self._lock.locked():
-                        pass  # a request is in flight — don't interrupt it
+                    if self._connect_lock.locked():
+                        pass  # a connect is in flight — don't interrupt it
                     elif await self.ping():
                         backoff = _RECONNECT_BACKOFF_INITIAL
                     else:
@@ -1098,11 +670,9 @@ class MCPServerConnection:
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         if self._status != ServerStatus.CONNECTED:
             # The health monitor marks a dead/hung server DISCONNECTED.  If
-            # the server is enabled, try a lazy reconnect first — it may have
-            # recovered while the monitor's reconnect backoff was counting
-            # down.  Connecting IS the probe, so nothing gates this but the
-            # enabled flag — EXCEPT OAuth: a needs-auth server must not be
-            # lazily reconnected (that re-runs the device flow; F5).
+            # the server is enabled, try a lazy reconnect first.  Connecting IS
+            # the probe — EXCEPT OAuth: a needs-auth server must not be lazily
+            # reconnected (that re-runs the device flow; F5).
             if (
                 self.config.enabled
                 and not self._needs_user_auth
@@ -1126,14 +696,17 @@ class MCPServerConnection:
 
         logger.debug("mcp_tool_call server=%s tool=%s", self.config.name, tool_name)
 
+        session = self._session
+        if session is None:
+            raise ValueError(
+                f"Server '{self.config.name}' has no live session "
+                f"(status: {self._status.value})"
+            )
         try:
-            result = await self._request("tools/call", {
-                "name": tool_name,
-                "arguments": arguments,
-            })
+            result = await session.call_tool(tool_name, arguments or {})
         except (ConnectionError, OSError):
-            # Transport error — the server may have died.
-            # Attempt one reconnect before giving up.
+            # Transport error — the server may have died.  Attempt one reconnect
+            # before giving up.
             logger.warning(
                 "mcp_tool_call_transport_error server=%s tool=%s action=reconnect",
                 self.config.name, tool_name,
@@ -1147,11 +720,11 @@ class MCPServerConnection:
                         f"Reconnect to '{self.config.name}' failed: "
                         f"status is {self._status.value}"
                     )
-                # Retry
-                result = await self._request("tools/call", {
-                    "name": tool_name,
-                    "arguments": arguments,
-                })
+                if self._session is None:
+                    raise ConnectionError(
+                        f"Reconnect to '{self.config.name}' produced no session"
+                    )
+                result = await self._session.call_tool(tool_name, arguments or {})
                 logger.info(
                     "mcp_tool_call_reconnect_ok server=%s tool=%s",
                     self.config.name, tool_name,
@@ -1168,16 +741,83 @@ class MCPServerConnection:
                     f"reconnect failed: {reconnect_error}"
                 ) from reconnect_error
 
-        # Format content blocks
+        # Format content blocks (SDK typed blocks → strings).  The SDK's
+        # CallToolResult carries ``is_error`` (snake_case, mcp-types ≥2.1).
+        if getattr(result, "is_error", False):
+            parts = [b.text for b in result.content if isinstance(b, TextContent)]
+            return "Error: " + "\n".join(parts) or "Error"
+
         parts: list[str] = []
-        for block in result.get("content", []):
-            if block.get("type") == "text":
-                parts.append(block.get("text", ""))
-            elif block.get("type") == "resource":
-                parts.append(f"[resource: {block.get('resource', {})}]")
+        for block in result.content:
+            if isinstance(block, TextContent):
+                parts.append(block.text)
+            elif isinstance(block, ImageContent):
+                parts.append(f"[image: {getattr(block, 'mimeType', '')} {len(block.data)} bytes]")
             else:
-                parts.append(json.dumps(block))
-        return "\n".join(parts) if parts else json.dumps(result)
+                try:
+                    parts.append(block.model_dump_json())
+                except Exception:
+                    parts.append(str(block))
+        return "\n".join(parts) if parts else json.dumps(result.model_dump())
+
+    # ── Teardown ────────────────────────────────────────────────────────
+
+    async def disconnect(self) -> None:
+        logger.info("mcp_disconnect server=%s", self.config.name)
+        # Flag any in-flight connect to abort at its next check point, then
+        # serialize with it under the connect lock — otherwise a slow connect
+        # (OAuth, HTTP handshake) resumes after this cleanup and spawns an
+        # orphaned transport + health monitor that nothing references.
+        self._disconnecting = True
+        async with self._connect_lock:
+            self._status = ServerStatus.DISCONNECTED
+            # Stop the health monitor first — it must not keep pinging a
+            # deliberately-disconnected server.
+            if self._health_task is not None and not self._health_task.done():
+                self._health_task.cancel()
+                try:
+                    await self._health_task
+                except asyncio.CancelledError:
+                    pass
+                self._health_task = None
+            await self._cleanup_resources()
+            self._tools_cache = []
+        self._disconnecting = False
+        logger.info("mcp_disconnected server=%s", self.config.name)
+
+    async def _cleanup_resources(self) -> None:
+        # Cancel in-flight fire-and-forget notifications before closing the
+        # client — a closed client would surface unretrieved task exceptions.
+        for task in list(self._notify_tasks):
+            task.cancel()
+        self._notify_tasks.clear()
+
+        if self._exit_stack is not None:
+            try:
+                # Bounded teardown: a request hung against a not-yet-ready
+                # server can keep aclose() from returning promptly.
+                await asyncio.wait_for(
+                    self._exit_stack.aclose(), timeout=_CLEANUP_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.debug("cleanup_aclose_timeout abandoning stack")
+            except RuntimeError as e:
+                if "cancel scope" in str(e):
+                    logger.debug("cleanup_cancel_scope_suppressed err=%s", e)
+                else:
+                    raise
+            except (Exception, BaseExceptionGroup):
+                pass
+            self._exit_stack = None
+        self._session = None
+        self._stderr_capture = None
+        self._sse_mode = False
+        if self._http_client is not None:
+            try:
+                await self._http_client.aclose()
+            except Exception:
+                pass
+            self._http_client = None
 
 
 class ConnectionPool:
@@ -1257,10 +897,12 @@ class ConnectionPool:
                 "state": "running" if conn.status == ServerStatus.CONNECTED else "stopped",
                 "status": conn.status.value,
                 "enabled": conn.config.enabled,
-                "tool_count": conn.tool_count, "error": conn.error,
+                "tool_count": conn.tool_count,
+                "error": conn.error,
                 "needs_user_auth": conn.needs_user_auth,
                 "transport": conn.config.transport,
-                "command": conn.config.command, "args": conn.config.args,
+                "command": conn.config.command,
+                "args": conn.config.args,
                 "url": conn.config.url,
                 "description": conn.config.description,
             }
@@ -1288,7 +930,5 @@ class ConnectionPool:
             return f"Error calling '{tool_name}' on '{server_name}': {e}"
 
     async def shutdown(self) -> None:
-        logger.info("mcp_shutdown servers=%d", len(self._connections))
-        for name in list(self._connections.keys()):
+        for name in list(self._connections):
             await self.remove_server(name)
-        logger.info("mcp_shutdown_done servers=%d", len(self._connections))
