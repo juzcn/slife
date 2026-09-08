@@ -15,7 +15,6 @@ import asyncio
 import json
 import logging
 import threading
-import time as _time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
@@ -102,9 +101,6 @@ class MQTTAdapter(TransportAdapter):
         #: ``run_coroutine_threadsafe``).
         self.on_reconnect: "Callable[[], Coroutine[Any, Any, None]] | None" = None
 
-        # Keep-alive ping tracking
-        self._last_publish_time = 0.0
-
     # ── Connection lifecycle ──────────────────────────────────────────
 
     async def connect(self, host: str = "localhost", port: int = 1883) -> None:
@@ -173,7 +169,6 @@ class MQTTAdapter(TransportAdapter):
             raise RuntimeError(
                 f"MQTT broker refused connection for agent '{self._agent_name}'"
             )
-        self._last_publish_time = _time.monotonic()
         logger.info(
             "a2a_mqtt_connected id=%s host=%s port=%d",
             self._client_id, host, port,
@@ -225,7 +220,6 @@ class MQTTAdapter(TransportAdapter):
             logger.info(
                 "a2a_mqtt_publish_fail topic=%s rc=%d", topic, info.rc,
             )
-        self._last_publish_time = _time.monotonic()
 
     async def subscribe(self, topic: str, qos: int = 1) -> None:
         """Subscribe to a topic (supports MQTT wildcards like ``Slife/+/presence``)."""

@@ -12,7 +12,12 @@ import logging
 import os
 from typing import ClassVar
 
-from slife.tools._config_io import _ConfigPathMixin, read_config, write_config
+from slife.tools._config_io import (
+    _ConfigPathMixin,
+    config_read_modify_write,
+    read_config,
+    write_config,
+)
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -125,22 +130,23 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
     async def execute(self, **kwargs) -> str:
         key: str = kwargs.get("key", "")
         value: str | None = kwargs.get("value")
-        raw = read_config(self._config_path)
-        env = _env_section(raw)
-        if value:
-            env[key] = value
-            immediate = _immediate_env_value(value)
-            if immediate is not None:
-                os.environ[key] = immediate
-            write_config(self._config_path, raw)
-            logger.info("env_set key=%s", key)
-            return f"[OK] {key} = {value}"
-        else:
-            placeholder = f"<YOUR_{key.upper().strip('<>')}>"
-            env[key] = placeholder
-            write_config(self._config_path, raw)
-            logger.info("env_set_placeholder key=%s", key)
-            return f"[OK] {key} placeholder written.\nEdit slife.json5 → env: → {key} with the real value."
+        with config_read_modify_write(self._config_path):
+            raw = read_config(self._config_path)
+            env = _env_section(raw)
+            if value:
+                env[key] = value
+                immediate = _immediate_env_value(value)
+                if immediate is not None:
+                    os.environ[key] = immediate
+                write_config(self._config_path, raw)
+                logger.info("env_set key=%s", key)
+                return f"[OK] {key} = {value}"
+            else:
+                placeholder = f"<YOUR_{key.upper().strip('<>')}>"
+                env[key] = placeholder
+                write_config(self._config_path, raw)
+                logger.info("env_set_placeholder key=%s", key)
+                return f"[OK] {key} placeholder written.\nEdit slife.json5 → env: → {key} with the real value."
 
 
 # ── Config Env Get ───────────────────────────────────────────────────
@@ -196,12 +202,13 @@ class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportInco
 
     async def execute(self, **kwargs) -> str:
         key: str = kwargs["key"]
-        raw = read_config(self._config_path)
-        env = _env_section(raw)
-        if key not in env:
-            return f"'{key}' is not in slife.json5 — nothing to remove."
-        del env[key]
-        write_config(self._config_path, raw)
+        with config_read_modify_write(self._config_path):
+            raw = read_config(self._config_path)
+            env = _env_section(raw)
+            if key not in env:
+                return f"'{key}' is not in slife.json5 — nothing to remove."
+            del env[key]
+            write_config(self._config_path, raw)
         logger.info("env_removed key=%s", key)
         return f"[OK] Removed '{key}' from slife.json5."
 
@@ -225,9 +232,10 @@ class NativeToolSet(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatib
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         enabled: bool = kwargs["enabled"]
-        raw = read_config(self._config_path)
-        _toggle_native_enabled(raw, name, enabled)
-        write_config(self._config_path, raw)
+        with config_read_modify_write(self._config_path):
+            raw = read_config(self._config_path)
+            _toggle_native_enabled(raw, name, enabled)
+            write_config(self._config_path, raw)
         state = "enabled" if enabled else "disabled"
         logger.info("native_tool_set name=%s enabled=%s", name, enabled)
         return f"[OK] Native tool '{name}' {state}. Restart for the change to take effect."

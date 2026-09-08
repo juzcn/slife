@@ -11,9 +11,41 @@ from slife.tools.exec import (
     ShellTool,
     RunPythonScriptTool,
     InstallPythonPackageTool,
-    _kill_process_tree,
     _parse_input,
 )
+from slife.platform import kill_process_tree
+
+
+class _MockStream:
+    """A fake subprocess pipe: async-iterable yielding one pre-set chunk.
+
+    Replaces the old ``mock_process.communicate`` mock — the tools now drain
+    stdout/stderr streams directly (read-side bounded, F7), so a fake process
+    provides its pipes as ``__aiter__`` streams.
+    """
+
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._data is None:
+            raise StopAsyncIteration
+        chunk, self._data = self._data, None
+        return chunk
+
+
+class _HangingStream:
+    """A subprocess pipe that never delivers — for timeout tests."""
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(3600)  # pragma: no cover — interrupted by timeout
+        raise StopAsyncIteration
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -110,7 +142,8 @@ class TestShellToolExecute:
     async def test_successful_command(self):
         tool = ShellTool(timeout=10)
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"hello world", b""))
+        mock_process.stdout = _MockStream(b"hello world")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -123,7 +156,8 @@ class TestShellToolExecute:
         """Non-existent command returns stderr, no crash."""
         tool = ShellTool(timeout=10)
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b"notfound: command not found"))
+        mock_process.stdout = _MockStream(b"")
+        mock_process.stderr = _MockStream(b"notfound: command not found")
         mock_process.returncode = 127
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -136,7 +170,8 @@ class TestShellToolExecute:
     async def test_timeout_error(self):
         tool = ShellTool(timeout=5)
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_process.stdout = _HangingStream()
+        mock_process.stderr = _HangingStream()
         mock_process.returncode = None  # still running when the timeout fires
         mock_process.kill = MagicMock()
         mock_process.wait = AsyncMock()
@@ -155,7 +190,8 @@ class TestShellToolExecute:
         """Stderr output is appended after stdout with a [stderr] label."""
         tool = ShellTool(timeout=10)
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"stdout line", b"stderr line"))
+        mock_process.stdout = _MockStream(b"stdout line")
+        mock_process.stderr = _MockStream(b"stderr line")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -170,7 +206,8 @@ class TestShellToolExecute:
         """Environment variables set via shell syntax are visible to the command."""
         tool = ShellTool(timeout=10)
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"my_value", b""))
+        mock_process.stdout = _MockStream(b"my_value")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -220,12 +257,12 @@ class TestInstallPythonPackageToolExecute:
         """Successful install returns uv output."""
         tool = InstallPythonPackageTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"Successfully installed requests-2.31.0", b""))
+        mock_process.stdout = _MockStream(b"Successfully installed requests-2.31.0")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
-            with patch("asyncio.wait_for", AsyncMock(return_value=(b"Successfully installed requests-2.31.0", b""))):
-                result = await tool.execute(packages=["requests"])
+            result = await tool.execute(packages=["requests"])
 
         assert "Successfully installed" in result
 
@@ -234,12 +271,12 @@ class TestInstallPythonPackageToolExecute:
         """When uv produces no stdout, fallback success message is returned."""
         tool = InstallPythonPackageTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b""))
+        mock_process.stdout = _MockStream(b"")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
-            with patch("asyncio.wait_for", AsyncMock(return_value=(b"", b""))):
-                result = await tool.execute(packages=["requests"])
+            result = await tool.execute(packages=["requests"])
 
         assert "Installed:" in result
         assert "requests" in result
@@ -258,12 +295,12 @@ class TestInstallPythonPackageToolExecute:
         """Install failure returns error with stderr details."""
         tool = InstallPythonPackageTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b"ERROR: No matching distribution found"))
+        mock_process.stdout = _MockStream(b"")
+        mock_process.stderr = _MockStream(b"ERROR: No matching distribution found")
         mock_process.returncode = 1
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
-            with patch("asyncio.wait_for", AsyncMock(return_value=(b"", b"ERROR: No matching distribution found"))):
-                result = await tool.execute(packages=["nonexistent-pkg-xyz"])
+            result = await tool.execute(packages=["nonexistent-pkg-xyz"])
 
         assert "Error installing" in result
         assert "No matching distribution" in result
@@ -273,12 +310,12 @@ class TestInstallPythonPackageToolExecute:
         """Package specs with version pins and extras are passed correctly."""
         tool = InstallPythonPackageTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"Successfully installed", b""))
+        mock_process.stdout = _MockStream(b"Successfully installed")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as mock_exec:
-            with patch("asyncio.wait_for", AsyncMock(return_value=(b"Successfully installed", b""))):
-                await tool.execute(packages=["requests>=2.31,<3.0", "beautifulsoup4[html5lib]>=4.12"])
+            await tool.execute(packages=["requests>=2.31,<3.0", "beautifulsoup4[html5lib]>=4.12"])
 
         # Verify the special-char packages were passed through to uv
         call_args = mock_exec.call_args[0]
@@ -333,7 +370,8 @@ class TestRunPythonScriptToolExecute:
         """A valid script file runs and returns stdout."""
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"script output", b""))
+        mock_process.stdout = _MockStream(b"script output")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("slife.tools.exec._resolve_skill_script", return_value="/fake/script.py"):
@@ -348,7 +386,8 @@ class TestRunPythonScriptToolExecute:
         not the locale code page (GBK on zh-CN) — matching the UTF-8 decode."""
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
+        mock_process.stdout = _MockStream(b"ok")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("slife.tools.exec._resolve_skill_script", return_value="/fake/script.py"):
@@ -365,7 +404,8 @@ class TestRunPythonScriptToolExecute:
         """Inline code with -c flag runs and returns result."""
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"2", b""))
+        mock_process.stdout = _MockStream(b"2")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -378,7 +418,8 @@ class TestRunPythonScriptToolExecute:
         """Inline code with -c<code> (no space) also works."""
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"hello", b""))
+        mock_process.stdout = _MockStream(b"hello")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -396,7 +437,8 @@ class TestRunPythonScriptToolExecute:
         """
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"openpyxl 3.1.5", b""))
+        mock_process.stdout = _MockStream(b"openpyxl 3.1.5")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as mock_exec:
@@ -419,7 +461,8 @@ class TestRunPythonScriptToolExecute:
         contains double quotes."""
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
+        mock_process.stdout = _MockStream(b"ok")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as mock_exec:
@@ -434,7 +477,8 @@ class TestRunPythonScriptToolExecute:
         """Python syntax error returns error with exit code and stderr."""
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b"SyntaxError: invalid syntax"))
+        mock_process.stdout = _MockStream(b"")
+        mock_process.stderr = _MockStream(b"SyntaxError: invalid syntax")
         mock_process.returncode = 1
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -449,7 +493,8 @@ class TestRunPythonScriptToolExecute:
         """If there is stdout even on error, it's returned directly."""
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"partial output before crash", b"Traceback ..."))
+        mock_process.stdout = _MockStream(b"partial output before crash")
+        mock_process.stderr = _MockStream(b"Traceback ...")
         mock_process.returncode = 1
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -462,7 +507,8 @@ class TestRunPythonScriptToolExecute:
         """Import error returns error with exit code and stderr."""
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b"ModuleNotFoundError: No module named 'nonexistent'"))
+        mock_process.stdout = _MockStream(b"")
+        mock_process.stderr = _MockStream(b"ModuleNotFoundError: No module named 'nonexistent'")
         mock_process.returncode = 1
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -477,7 +523,8 @@ class TestRunPythonScriptToolExecute:
         """Script path with JSON arguments passes args correctly."""
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"done", b""))
+        mock_process.stdout = _MockStream(b"done")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("slife.tools.exec._resolve_skill_script", return_value="/fake/script.py"):
@@ -494,7 +541,8 @@ class TestRunPythonScriptToolExecute:
         """Script with no output returns a descriptive message."""
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b""))
+        mock_process.stdout = _MockStream(b"")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -507,7 +555,8 @@ class TestRunPythonScriptToolExecute:
         """Script with no stdout but stderr shows stderr in message."""
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b"deprecation warning"))
+        mock_process.stdout = _MockStream(b"")
+        mock_process.stderr = _MockStream(b"deprecation warning")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -530,7 +579,8 @@ class TestErrorFormat:
     async def test_timeout_error_starts_with_error(self):
         tool = ShellTool(timeout=1)
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_process.stdout = _HangingStream()
+        mock_process.stderr = _HangingStream()
         mock_process.returncode = None  # still running when the timeout fires
         mock_process.kill = MagicMock()
         mock_process.wait = AsyncMock()
@@ -549,12 +599,12 @@ class TestErrorFormat:
     async def test_install_failure_error_starts_with_error(self):
         tool = InstallPythonPackageTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b"some error"))
+        mock_process.stdout = _MockStream(b"")
+        mock_process.stderr = _MockStream(b"some error")
         mock_process.returncode = 1
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
-            with patch("asyncio.wait_for", AsyncMock(return_value=(b"", b"some error"))):
-                result = await tool.execute(packages=["bad-pkg"])
+            result = await tool.execute(packages=["bad-pkg"])
 
         assert result.startswith("Error installing")
 
@@ -562,7 +612,8 @@ class TestErrorFormat:
     async def test_python_script_error_starts_with_error(self):
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b"traceback"))
+        mock_process.stdout = _MockStream(b"")
+        mock_process.stderr = _MockStream(b"traceback")
         mock_process.returncode = 1
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -605,7 +656,8 @@ class TestRequiredParams:
 
 
 class TestKillProcessTree:
-    """_kill_process_tree must terminate the process AND its descendants.
+    """kill_process_tree (slife.platform / re-used by exec tools) must
+    terminate the process AND its descendants.
 
     A bare process.kill() only kills the shell (cmd.exe / sh); children
     like yt-dlp/ffmpeg survive as orphans, keep writing to the console,
@@ -626,7 +678,7 @@ class TestKillProcessTree:
             start_new_session=True,
         )
         assert proc.returncode is None
-        await _kill_process_tree(proc)
+        await kill_process_tree(proc)
         assert proc.returncode is not None
 
     @pytest.mark.asyncio
@@ -634,7 +686,7 @@ class TestKillProcessTree:
         """On Windows the tree is killed via taskkill /T, not just the shell."""
         import os as _os
         import sys as _sys
-        from slife.tools import exec as exec_mod
+        from unittest.mock import AsyncMock
 
         proc = await asyncio.create_subprocess_exec(
             _sys.executable, "-c", "import time; time.sleep(300)",
@@ -645,8 +697,19 @@ class TestKillProcessTree:
         )
 
         fake_run = MagicMock()
-        monkeypatch.setattr(exec_mod.subprocess, "run", fake_run)
-        await _kill_process_tree(proc)
+        # kill_process_tree runs taskkill via run_daemon (daemon thread, not
+        # the shared executor — the exit-hang invariant).  It builds a
+        # subprocess.run call inside the threaded wrapper; intercept the run
+        # the wrapper would invoke on the real subprocess module.
+        import subprocess as _subprocess
+        real_run = _subprocess.run
+
+        def _replacement(*args, **kwargs):
+            fake_run(*args, **kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr(_subprocess, "run", _replacement)
+        await kill_process_tree(proc)
 
         if _os.name == "nt":
             assert fake_run.called

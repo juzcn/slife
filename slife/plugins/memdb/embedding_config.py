@@ -13,7 +13,12 @@ mutates it.
 import logging
 
 from slife.paths import get_config_path
-from slife.tools._config_io import ConfigParseError, read_config, write_config
+from slife.tools._config_io import (
+    ConfigParseError,
+    config_read_modify_write,
+    read_config,
+    write_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +58,16 @@ def read_embedding_config() -> dict | None:
 
 
 def write_embedding_config(cfg: dict) -> None:
-    """Write (overwrite) the top-level *embeddings* section with *cfg*."""
-    raw = _read_raw()
-    raw["embeddings"] = cfg
-    _write_raw(raw)
+    """Write (overwrite) the top-level *embeddings* section with *cfg*.
+
+    Runs in the memdb CHILD process while host-side config tools RMW the same
+    slife.json5 — the read→mutate→write window is cross-process locked so a
+    concurrent host write can't be clobbered (F8).
+    """
+    with config_read_modify_write(_CONFIG_PATH):
+        raw = _read_raw()
+        raw["embeddings"] = cfg
+        _write_raw(raw)
     logger.info("embeddings_config_written keys=%s", list(cfg.keys()))
 
 

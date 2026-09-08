@@ -9,8 +9,11 @@ import logging
 import os
 import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+import filelock
 
 from slife.paths import get_config_path
 from typing import TYPE_CHECKING
@@ -20,22 +23,6 @@ if TYPE_CHECKING:
     from slife.tools.context import ToolContext
 
 logger = logging.getLogger(__name__)
-
-# ── Module-level Config reference ──────────────────────────────────────
-# Set by AgentService at startup so tool modules can access the parsed
-# Config instead of re-reading slife.json5 ad-hoc.
-_current_config: "Config | None" = None
-
-
-def get_config() -> "Config | None":
-    """Return the live :class:`Config` instance, or None before startup."""
-    return _current_config
-
-
-def set_config(config: "Config") -> None:
-    """Set the live Config (called by AgentService at startup)."""
-    global _current_config
-    _current_config = config
 
 
 def now_iso() -> str:
@@ -91,9 +78,12 @@ def write_config(path: Path, raw: dict) -> None:
     Writes to a temp file in the same directory then ``os.replace()`` — a
     reader never sees a truncated/interleaved file and a crash mid-write
     can't corrupt the config. The lock serializes writers in
-    this process; atomic replace is the cross-process guarantee.
+    this process; atomic replace is the cross-process guarantee.  Creates
+    the parent directory on first write (the mcp-plugin fork's behaviour —
+    both config paths sit in a data dir that may not exist yet).
     """
     text = json5.dumps(raw, indent=2, trailing_commas=False, ensure_ascii=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with _write_lock:
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
         try:
@@ -115,6 +105,24 @@ def write_config(path: Path, raw: dict) -> None:
             except OSError:
                 pass
             raise
+
+
+@contextmanager
+def config_read_modify_write(path: Path):
+    """Hold a CROSS-PROCESS lock covering one config read→mutate→write.
+
+    ``write_config`` alone is atomic (temp + os.replace), but the
+    read-modify-write window around it — read raw, apply a change, write back
+    — is a race between processes (the gateway config tools live in the child
+    AND tool modules can read/write the same file).  Two writers both read,
+    both mutate, both ``os.replace``: the second clobbers the first's change.
+    This wraps that window in a cross-process lock on ``<path>.lock`` so the
+    write that follows the read is the only one in flight (F8).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = filelock.FileLock(path.with_suffix(path.suffix + ".lock"))
+    with lock:
+        yield
 
 
 def format_source_info(source: object) -> str:

@@ -12,7 +12,61 @@ import platform as _platform
 
 IS_WINDOWS = sys.platform == "win32"
 
+from slife.threads import run_daemon
+
 logger = logging.getLogger(__name__)
+
+
+async def kill_process_tree(process: asyncio.subprocess.Process) -> None:
+    """Terminate a subprocess and its whole process tree.
+
+    ``process.kill()`` only kills the direct child (``cmd.exe`` / ``sh``).
+    Any grandchildren it spawned — e.g. yt-dlp started by a shell, or
+    ffmpeg spawned by yt-dlp — survive as orphans, keep writing to the
+    console and garble the UI, and hold their pipes open forever.  This
+    kills the tree: ``taskkill /T`` on Windows, the process group on POSIX
+    (children are spawned with ``start_new_session=True``).
+
+    Runs even when the direct child already exited — its grandchildren may
+    still be alive as orphans. ``taskkill``/``killpg`` on a dead
+    pid is harmless (errors are swallowed).
+
+    The ``taskkill`` call runs on a daemon thread (:func:`slife.threads.run_daemon`)
+    — never the default executor, whose non-daemon workers are joined at
+    interpreter exit and would hang it on a wedged child (the ``threads.py``
+    invariant).
+    """
+    if process is None:
+        return
+    if os.name == "nt":
+        await run_daemon(
+            lambda: _subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout=_subprocess.DEVNULL,
+                stderr=_subprocess.DEVNULL,
+            ),
+        )
+    else:
+        try:
+            pgid = os.getpgid(process.pid)
+            if pgid == process.pid:
+                # Child leads its own process group (start_new_session=True)
+                # — kill the whole group safely.
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                # Child shares our process group — killing the group would
+                # SIGKILL us too. Kill only the direct child.
+                os.kill(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+    try:
+        await process.wait()
+    except (ProcessLookupError, OSError):
+        pass
 
 
 def resolve_command(command: str) -> str:
@@ -41,20 +95,6 @@ def get_os_info() -> str:
     if system == "Linux":
         return "Linux"
     return system  # Fallback for other platforms (e.g. "FreeBSD")
-
-
-def get_platform_type() -> str:
-    """Detect the runtime platform category.
-
-    Returns one of: ``"native"``, ``"wsl"``, ``"headless"``.
-    """
-    # headless: subagent or no TTY attached
-    if os.environ.get("SLIFE_SUBAGENT_NAME") or not sys.stdin.isatty():
-        return "headless"
-    # wsl: Linux kernel with WSL interop marker
-    if sys.platform == "linux" and os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
-        return "wsl"
-    return "native"
 
 
 def detect_current_shell() -> str:
@@ -279,11 +319,24 @@ def terminate_process_sync(
         pass
 
 
+def _ps_quote(value: str) -> str:
+    """Escape a string for a PowerShell single-quoted literal (``'`` → ``''``)."""
+    return value.replace("'", "''")
+
+
+def _applescript_quote(value: str) -> str:
+    """Escape a string for an AppleScript double-quoted literal."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def desktop_notify(title: str, message: str) -> None:
     """Fire a best-effort desktop notification (cross-platform).
 
     Uses native platform facilities — never raises, never blocks the
-    caller on failure.
+    caller on failure.  Title/message are quoted for the shell fragment
+    they're interpolated into: PowerShell and AppleScript both break on
+    an embedded apostrophe/quote, which would silently drop the
+    notification.
     """
     system = _platform.system()
     try:
@@ -293,8 +346,8 @@ def desktop_notify(title: str, message: str) -> None:
                  f"Add-Type -AssemblyName System.Windows.Forms; "
                  f"$n = New-Object System.Windows.Forms.NotifyIcon; "
                  f"$n.Icon = [System.Drawing.SystemIcons]::Information; "
-                 f"$n.BalloonTipTitle = '{title}'; "
-                 f"$n.BalloonTipText = '{message}'; "
+                 f"$n.BalloonTipTitle = '{_ps_quote(title)}'; "
+                 f"$n.BalloonTipText = '{_ps_quote(message)}'; "
                  f"$n.Visible = $true; "
                  f"$n.ShowBalloonTip(5000);"],
                 capture_output=True, timeout=10,
@@ -302,7 +355,7 @@ def desktop_notify(title: str, message: str) -> None:
         elif system == "Darwin":
             _subprocess.run(
                 ["osascript", "-e",
-                 f'display notification "{message}" with title "{title}"'],
+                 f'display notification "{_applescript_quote(message)}" with title "{_applescript_quote(title)}"'],
                 capture_output=True, timeout=5,
             )
         else:

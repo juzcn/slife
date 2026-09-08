@@ -59,7 +59,7 @@ class _ScheduleMixin:
     A plain (non-``Tool``) mixin: every data-touching op delegates to the
     memfiles plugin's internal ``__scheduled_*`` tools over the MCP client on
     ``ToolContext`` (``memfiles_client``).  Pure validation / formatting stays
-    in-process.  Mirrors the ``CheckMemfilesTool`` helper split in
+    in-process.  Mirrors the ``check_memfiles`` split in
     ``slife/tools/system.py``.
     """
 

@@ -12,7 +12,6 @@ from slife.platform import (
     resolve_command,
     IS_WINDOWS,
     get_os_info,
-    get_platform_type,
     detect_current_shell,
 )
 
@@ -375,42 +374,6 @@ class TestDesktopNotify:
         from slife.platform import desktop_notify
         # Should not raise
         desktop_notify("Test", "Hello")
-
-
-# ── get_platform_type ──────────────────────────────────────────────────
-
-
-class TestGetPlatformType:
-    """Tests for get_platform_type()."""
-
-    def test_native_on_windows(self, monkeypatch):
-        monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        if sys.platform == "win32":
-            assert get_platform_type() == "native"
-
-    def test_headless_with_env_var(self, monkeypatch):
-        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "worker-1")
-        assert get_platform_type() == "headless"
-
-    def test_headless_without_tty(self, monkeypatch):
-        monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
-        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-        assert get_platform_type() == "headless"
-
-    def test_wsl_detected(self, monkeypatch):
-        monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr(sys, "platform", "linux")
-        with patch("os.path.exists", return_value=True):
-            assert get_platform_type() == "wsl"
-
-    def test_linux_native(self, monkeypatch):
-        monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setattr("os.path.exists", lambda _: False)
-        assert get_platform_type() == "native"
 
 
 # ── detect_current_shell ────────────────────────────────────────────────

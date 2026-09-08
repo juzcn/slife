@@ -27,6 +27,7 @@ from slife.a2a.card import AgentCard
 from slife.a2a.client import A2AClient
 from slife.a2a.config import A2AConfig
 from slife.a2a.identity import AgentName, AgentMessage
+from slife.fifoset import FifoSet
 from slife.server_utils import create_plugin_server, run_plugin_server
 
 
@@ -74,7 +75,7 @@ _inbound_tasks: list[dict] = []
 _presence_events: list[dict] = []
 _cancellations: list[dict] = []
 _task_completions: list[dict] = []  # outbound async results → auto-push to harness
-_poll_tasks: set[str] = set()  # outbound async task_ids sent in "poll" mode (no auto-push)
+_poll_tasks: "FifoSet" = FifoSet()  # outbound async task_ids sent in "poll" mode (no auto-push)
 _MAX_QUEUED = 500
 
 
@@ -254,12 +255,11 @@ async def a2a_send_task_async(agent_name: str, task: str, mode: str = "auto") ->
     client = await _ensure_connected()
     corr_id = await client.send_task_async(AgentName(agent_name), task)
     if mode == "poll":
-        if len(_poll_tasks) >= _MAX_QUEUED:
-            # Bound the poll-tracking set — a silent peer would otherwise
-            # accumulate ids forever (each id is only removed when its result
-            # arrives).
-            _poll_tasks.pop()
+        # Bound the poll-tracking set — a silent peer would otherwise
+        # accumulate ids forever (each id is only removed when its result
+        # arrives).  Eviction drops the OLDEST id, not an arbitrary one (F10).
         _poll_tasks.add(corr_id)
+        _poll_tasks.evict_to(_MAX_QUEUED)
         return (
             f"{corr_id}\n[auto-delivery disabled (mode=poll) — retrieve with "
             f"a2a_get_task_result]"

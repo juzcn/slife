@@ -26,7 +26,7 @@ import httpx2
 
 from slife.plugins.mcp_gateway import __version__
 from slife.plugins.mcp_gateway.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
-from slife.plugins.mcp_gateway.platform import kill_process_tree, resolve_command, terminate_process
+from slife.platform import kill_process_tree, resolve_command, terminate_process
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,16 @@ _RECONNECT_BACKOFF_MULTIPLIER = 2.0
 # cold start gets the full budget, and a server that is established but stops
 # answering is the health monitor's concern, not a connect-timeout race.
 _CONNECT_STARTUP_TIMEOUT = 120.0
+
+
+class NeedsUserAuthError(RuntimeError):
+    """OAuth needs a human (device flow) — not a retriable transport failure.
+
+    Carried out of ``_ensure_oauth_token`` so the health monitor can tell a
+    "give it 5 seconds and retry" failure from a "someone must approve this"
+    failure.  The former backs off and retries; the latter stops
+    auto-reconnect until the user re-adds the server (F5).
+    """
 
 
 class ServerStatus(Enum):
@@ -114,10 +124,20 @@ class MCPServerConnection:
         # Background health monitor (ping + reconnect) — started on first
         # successful connect, cancelled by disconnect()/remove_server().
         self._health_task: "asyncio.Task | None" = None
+        # OAuth: the refresh token was revoked / never granted and the device
+        # flow needs a human.  While set, the health monitor STOPS auto-
+        # reconnecting (each cycle would otherwise re-run the device flow and
+        # pop another desktop prompt — F5).  Cleared by a fresh mcp_set /
+        # mcp_remove of the server.
+        self._needs_user_auth: bool = False
 
     @property
     def status(self) -> ServerStatus:
         return self._status
+
+    @property
+    def needs_user_auth(self) -> bool:
+        return self._needs_user_auth
 
     @property
     def tool_count(self) -> int:
@@ -133,6 +153,13 @@ class MCPServerConnection:
         Called before transport connect when ``config.auth.type == "oauth"``.
         Mutates ``self.config.headers`` in place — the transport layer
         picks up the token automatically.
+
+        When the token is gone AND the refresh failed, the ONLY way forward is
+        the interactive device flow.  That needs a human at the desktop — it
+        must run once, on a real (re)connect attempt the user drives, never on
+        every health-monitor backoff cycle.  So after a failed device flow the
+        connection is marked :attr:`needs_user_auth` and the monitor stops
+        auto-reconnecting (F5).
         """
         from slife.plugins.mcp_gateway.oauth import (
             get_valid_token,
@@ -149,9 +176,29 @@ class MCPServerConnection:
             # Try refresh first (may have expired with valid refresh_token)
             try:
                 tokens = await refresh_access_token(auth, name)
+                self._needs_user_auth = False
             except Exception:
+                if self._needs_user_auth:
+                    # The user was already asked and the flow did not complete —
+                    # do NOT re-run it (a monitor reconnect would otherwise pop
+                    # a fresh desktop prompt every backoff cycle, F5).  Surface
+                    # the state for call_tool / mcp_set_enabled instead.
+                    raise NeedsUserAuthError(
+                        f"Server '{name}' needs OAuth re-authorization — "
+                        "use mcp_remove / mcp_set to re-add it and run the "
+                        "device flow again."
+                    ) from None
                 logger.info("oauth_refresh_failed server=%s action=device_flow", name)
-                tokens = await run_device_code_flow(auth, name)
+                self._needs_user_auth = True
+                try:
+                    tokens = await run_device_code_flow(auth, name)
+                except Exception as e:
+                    logger.warning("oauth_device_flow_failed server=%s err=%s", name, e)
+                    # Still needs the user — keep the flag so the monitor stops.
+                    raise NeedsUserAuthError(
+                        f"Server '{name}' OAuth device flow failed: {e}"
+                    ) from e
+                self._needs_user_auth = False
 
         # Inject token into headers
         if self.config.headers is None:
@@ -357,7 +404,7 @@ class MCPServerConnection:
             for arg in self.config.args
         ]
         if self.config.os_paths:
-            from slife.plugins.mcp_gateway.os_detect import get_os_accessible_paths
+            from slife.os_detect import get_os_accessible_paths
             for p in get_os_accessible_paths():
                 resolved_args += ["--allow-path", p]
 
@@ -994,6 +1041,17 @@ class MCPServerConnection:
 
         try:
             while True:
+                # OAuth needs a human (F5): do not keep re-running the device
+                # flow on every backoff cycle — that would pop a desktop
+                # prompt over and over.  The user re-adds the server after
+                # authorizing; the flag is cleared then.
+                if self._needs_user_auth:
+                    logger.warning(
+                        "mcp_needs_user_auth server=%s — auto-reconnect paused",
+                        self.config.name,
+                    )
+                    await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
+                    continue
                 # Healthy paths wait the full check interval; a failed
                 # reconnect sleeps ONLY its backoff (5s→60s) instead of
                 # interval + backoff, so a down server isn't polled ~30s
@@ -1043,13 +1101,24 @@ class MCPServerConnection:
             # the server is enabled, try a lazy reconnect first — it may have
             # recovered while the monitor's reconnect backoff was counting
             # down.  Connecting IS the probe, so nothing gates this but the
-            # enabled flag.
-            if self.config.enabled and self._status == ServerStatus.DISCONNECTED:
+            # enabled flag — EXCEPT OAuth: a needs-auth server must not be
+            # lazily reconnected (that re-runs the device flow; F5).
+            if (
+                self.config.enabled
+                and not self._needs_user_auth
+                and self._status == ServerStatus.DISCONNECTED
+            ):
                 try:
                     await self.connect()
                 except Exception:
                     pass
             if self._status != ServerStatus.CONNECTED:
+                if self._needs_user_auth:
+                    raise NeedsUserAuthError(
+                        f"Server '{self.config.name}' needs OAuth re-authorization — "
+                        "use mcp_remove / mcp_set to re-add it and run the "
+                        "device flow again."
+                    )
                 raise ValueError(
                     f"Server '{self.config.name}' is not connected "
                     f"(status: {self._status.value})"
@@ -1189,6 +1258,7 @@ class ConnectionPool:
                 "status": conn.status.value,
                 "enabled": conn.config.enabled,
                 "tool_count": conn.tool_count, "error": conn.error,
+                "needs_user_auth": conn.needs_user_auth,
                 "transport": conn.config.transport,
                 "command": conn.config.command, "args": conn.config.args,
                 "url": conn.config.url,

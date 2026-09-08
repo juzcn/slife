@@ -22,14 +22,17 @@ handshake's ``clientInfo``, which wins when present (see
 
 from __future__ import annotations
 
-import json5
 import logging
 import os
 import re
-import tempfile
-import threading
-from datetime import datetime, timezone
 from pathlib import Path
+
+from slife.tools._config_io import (
+    config_read_modify_write,
+    read_config,
+    with_fetched_at,
+    write_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,86 +63,11 @@ def resolve_config_path() -> Path:
     return default_config_path()
 
 
-# ── Reader / writer (atomic; parse failures surface) ───────────────────
-
-
-class ConfigParseError(ValueError):
-    """Raised when mcp-plugin.json5 exists but cannot be parsed.
-
-    Distinct from ``FileNotFoundError`` (treated as a normal first-run state).
-    A mutating caller that proceeded past a parse error would write back an
-    empty dict via ``os.replace`` and destroy the whole config — so the
-    parse failure must be surfaced, not swallowed.
-    """
-
-
-def now_iso() -> str:
-    """Return current UTC time as ISO 8601 string."""
-    return datetime.now(timezone.utc).isoformat()
-
-
-def with_fetched_at(source: dict | None) -> dict | None:
-    """Return a copy of *source* with a ``fetched_at`` timestamp added.
-
-    Returns None if *source* is None or an empty dict.
-    """
-    if not source:
-        return None
-    result = dict(source)
-    result.setdefault("fetched_at", now_iso())
-    return result
-
-
-def read_config(path: Path) -> dict:
-    """Read and parse an mcp-plugin.json5 config file.
-
-    Returns ``{}`` only when the file does not exist (first run).  A file
-    that exists but cannot be parsed raises :class:`ConfigParseError`.
-    """
-    try:
-        return json5.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        logger.info("mcp_config_not_found path=%s", path)
-        return {}
-    except (ValueError, OSError) as e:
-        logger.error("mcp_config_parse_error path=%s err=%s", path, e)
-        raise ConfigParseError(f"Cannot parse config {path}: {e}") from e
-
-
-_write_lock = threading.Lock()
-
-
-def write_config(path: Path, raw: dict) -> None:
-    """Atomically write *raw* to *path* (temp file + ``os.replace``).
-
-    Creates the parent directory on first write.  Atomic replace means a
-    reader never sees a truncated/interleaved file; the lock serializes
-    in-process writers.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json5.dumps(raw, indent=2, trailing_commas=False, ensure_ascii=False)
-    with _write_lock:
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(text)
-                f.flush()
-                os.fsync(f.fileno())
-            # Preserve the existing file's mode — mkstemp creates 0600, which
-            # would silently tighten a previously readable config.
-            if path.exists():
-                try:
-                    os.chmod(tmp, path.stat().st_mode & 0o7777)
-                except OSError:
-                    pass
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-
+# ── Reader / writer ──────────────────────────────────────────────────
+# read_config / write_config / ConfigParseError / now_iso / with_fetched_at
+# are the shared implementations in ``slife.tools._config_io`` (imported
+# above) — atomic temp-file + os.replace with a config-dir mkdir, used by
+# every slife config writer.  Secret resolution follows below.
 
 # ── Secret resolution (os.environ → credstore → literal) ───────────────
 
@@ -253,33 +181,37 @@ def add_server_entry(name: str, entry: dict) -> None:
 
     Existing fields not explicitly provided are preserved.  ``enabled: True``
     (the default) removes a stale ``enabled: false`` flag; ``None`` values
-    are skipped.
+    are skipped.  The read→mutate→write window holds a cross-process lock so
+    a second writer (e.g. the host's config tools) can't clobber the change
+    (F8).
     """
-    raw = _load_raw()
-    servers = _servers_dict(raw)
-    if not isinstance(raw.get("servers"), dict):
-        raw["servers"] = servers
-    existing = servers.get(name, {})
-    server_entry: dict = dict(existing) if isinstance(existing, dict) else {}
-    for key, value in entry.items():
-        if value is None:
-            continue
-        if key == "enabled" and value is True:
-            server_entry.pop("enabled", None)
-            continue
-        server_entry[key] = value
-    servers[name] = server_entry
-    write_config(current_path(), raw)
+    with config_read_modify_write(current_path()):
+        raw = _load_raw()
+        servers = _servers_dict(raw)
+        if not isinstance(raw.get("servers"), dict):
+            raw["servers"] = servers
+        existing = servers.get(name, {})
+        server_entry: dict = dict(existing) if isinstance(existing, dict) else {}
+        for key, value in entry.items():
+            if value is None:
+                continue
+            if key == "enabled" and value is True:
+                server_entry.pop("enabled", None)
+                continue
+            server_entry[key] = value
+        servers[name] = server_entry
+        write_config(current_path(), raw)
 
 
 def remove_server_entry(name: str) -> bool:
     """Remove *name* from the config; True if it existed."""
-    raw = _load_raw()
-    servers = _servers_dict(raw)
-    if name not in servers:
-        return False
-    del servers[name]
-    write_config(current_path(), raw)
+    with config_read_modify_write(current_path()):
+        raw = _load_raw()
+        servers = _servers_dict(raw)
+        if name not in servers:
+            return False
+        del servers[name]
+        write_config(current_path(), raw)
     return True
 
 
@@ -289,15 +221,16 @@ def set_server_enabled(name: str, enabled: bool) -> bool:
     enabled=True removes the flag (enabled is the default); enabled=False
     writes ``"enabled": false``.
     """
-    raw = _load_raw()
-    servers = _servers_dict(raw)
-    if name not in servers:
-        return False
-    if enabled:
-        servers[name].pop("enabled", None)
-    else:
-        servers[name]["enabled"] = False
-    write_config(current_path(), raw)
+    with config_read_modify_write(current_path()):
+        raw = _load_raw()
+        servers = _servers_dict(raw)
+        if name not in servers:
+            return False
+        if enabled:
+            servers[name].pop("enabled", None)
+        else:
+            servers[name]["enabled"] = False
+        write_config(current_path(), raw)
     return True
 
 

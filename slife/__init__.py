@@ -6,26 +6,41 @@ Config: ~/.slife/slife.json5 (JSON with comments).
 Usage:
     uv run python -m slife                # dev: CWD, prod: ~/.slife/
     uv run python -m slife myconf.json5   # uses a specific config
+
+This package ``__init__`` is deliberately **import-light**: nothing beyond
+the stdlib is imported here, so ``import slife.config`` (or any
+``slife.*``) does not drag in Textual, the agent loop, MQTT/paho, etc.
+The TUI entry point :func:`main` imports its heavy dependencies lazily
+when actually invoked (F1).
 """
 
 import logging
-import os
 import signal
 import sys
-from pathlib import Path
-
-from slife.bootstrap import (
-    restore_windows_console,
-    seed_skills,
-    setup_logging,
-)
-from slife.config import Config, parse_cli_agent, parse_cli_config_path, parse_cli_lang
-from slife.logfmt import init_session_id
-from slife.paths import get_config_path, get_data_dir, get_skills_dir
-from slife.ui.app import SlifeApp
-from slife.ui.i18n import set_language
+import threading
+from importlib import import_module
 
 logger = logging.getLogger("slife")
+
+
+def __getattr__(name: str):
+    """Lazily expose the heavy names the app/entry points and tests use.
+
+    ``main`` is a real function here; ``Config``/``SlifeApp`` are imported
+    on first access so ``import slife.config`` never pays for the TUI, and
+    ``test_main``'s ``patch("slife.Config…")`` / ``patch("slife.SlifeApp")``
+    keep resolving to the live classes.  Anything else falls through to a
+    submodule import (``slife.paths`` etc. from ``from slife import X``).
+    """
+    if name == "Config":
+        Config = import_module("slife.config").Config
+        globals()["Config"] = Config
+        return Config
+    if name == "SlifeApp":
+        SlifeApp = import_module("slife.ui.app").SlifeApp
+        globals()["SlifeApp"] = SlifeApp
+        return SlifeApp
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def main(config_path: str | None = None):
@@ -36,7 +51,25 @@ def main(config_path: str | None = None):
     (positional CLI arg or the *config_path* parameter) is honored — its
     parent directory becomes the data dir.  ``--lang en|zh`` overrides the
     TUI language; without it the OS locale is detected at import.
+
+    Everything is imported INSIDE the function — the package ``__init__``
+    is import-light, so invoking the app is the only act that pays for
+    Textual/agent/bootstrap (F1).
     """
+    import os as _os
+    from pathlib import Path as _Path
+
+    from slife.bootstrap import (
+        restore_windows_console,
+        seed_skills,
+        setup_logging,
+    )
+    from slife.config import parse_cli_agent, parse_cli_config_path, parse_cli_lang
+    from slife.logfmt import init_session_id
+    from slife import Config, SlifeApp  # lazy via __getattr__ — patchable by tests
+    from slife.paths import get_config_path, get_data_dir, get_skills_dir
+    from slife.ui.i18n import set_language
+
     agent_name = parse_cli_agent(sys.argv)
     explicit = config_path or parse_cli_config_path(sys.argv)
     lang = parse_cli_lang(sys.argv)
@@ -49,19 +82,19 @@ def main(config_path: str | None = None):
     #   2. Production: everything in ~/.slife/
     # Unless the user passes an explicit config path — then use its parent.
     if explicit:
-        _cp = Path(explicit).expanduser()
+        _cp = _Path(explicit).expanduser()
         if not _cp.is_absolute():
-            _cp = Path.cwd() / _cp
+            _cp = _Path.cwd() / _cp
         data_dir = str(_cp.parent.resolve())
     else:
         data_dir = str(get_data_dir())
         _cp = get_config_path()  # resolve to ~/.slife/slife.json5 or CWD/slife.json5
-    os.environ["SLIFE_DATA_DIR"] = data_dir
-    os.environ["SLIFE_CONFIG_DIR"] = data_dir
+    _os.environ["SLIFE_DATA_DIR"] = data_dir
+    _os.environ["SLIFE_CONFIG_DIR"] = data_dir
     # Log directory — inherited by plugin children so their per-session logs
     # land next to the main session log; the local-embed daemon reads it
     # instead of its standalone default.
-    os.environ["SLIFE_LOG_DIR"] = str(Path(data_dir) / "logs")
+    _os.environ["SLIFE_LOG_DIR"] = str(_Path(data_dir) / "logs")
 
     # Seed skills from the installed package to the data directory on
     # first run, so users can edit and add their own skills.
@@ -69,14 +102,14 @@ def main(config_path: str | None = None):
 
     # Generate session ID — shared with MCP subprocess via env var
     sid = init_session_id()
-    os.environ["SLIFE_SESSION_ID"] = sid
-    os.environ["SLIFE_AGENT_NAME"] = agent_name
+    _os.environ["SLIFE_SESSION_ID"] = sid
+    _os.environ["SLIFE_AGENT_NAME"] = agent_name
 
     # Force UTF-8 encoding for Python subprocesses on Windows.
     # Without this, Python defaults to the system code page (e.g. GBK / cp936)
     # and crashes when printing characters outside that encoding to stdout.
     if sys.platform == "win32":
-        os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+        _os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
     log_path, _ = setup_logging(agent_name=agent_name)
 
@@ -110,9 +143,16 @@ def main(config_path: str | None = None):
              f"embeddings={'enabled' if (config.embeddings_config and config.embeddings_config.enabled and config.embeddings_config.active_model) else 'disabled'}.",
     )
 
-    # Check external tooling availability (best-effort, reports via health system)
+    # Check external tooling availability (best-effort, reports via health
+    # system) — NOT on the startup critical path.  Each probe runs a 5s
+    # subprocess; on a host with broken shims that's up to ~20s of blocking
+    # startup.  A daemon thread finishes the probes while the TUI starts; the
+    # report is read lazily by system_health.  The health `record()` list
+    # append is atomic; at worst a concurrent read misses an entry (benign).
     from slife.health import check_external_deps
-    check_external_deps()
+    threading.Thread(
+        target=check_external_deps, name="ext-deps-check", daemon=True,
+    ).start()
 
     # Log env vars from config (already applied to os.environ by Config.from_json5).
     # Every value goes through the shared sanitizer first — this catches

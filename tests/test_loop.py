@@ -745,6 +745,53 @@ class TestExecuteTools:
         assert call_args[0][2] is False  # Not an error prefix
 
 
+class _HungTool:
+    """A Tool WITHOUT a native ``timeout`` parameter that never resolves —
+    the F3 shape: its only deadline is the loop's wait_for, so an
+    ``_async`` call must still be bounded."""
+    name = "hung"
+    description = "Never finishes."
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs) -> str:
+        await asyncio.sleep(3600)  # pragma: no cover — never returns
+        return "never"  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_async_tool_without_native_timeout_is_bounded(
+    sample_model_config, history,
+):
+    """F3 regression: an ``_async: true`` call to a tool without a native
+    timeout must be bounded by the agent-loop timeout.  Previously the async
+    path scheduled a bare task, so a hung tool (e.g. a looping
+    run_python_script) held its subprocess and a permanent ``_tasks`` entry
+    forever."""
+    from slife.tools.registry import ToolRegistry
+    from slife.tools.system import _tasks as async_tasks
+
+    registry = ToolRegistry()
+    registry.register(_HungTool())
+    llm = LLMClient(sample_model_config)
+    loop = AgentLoop(llm, registry, tool_timeout=0.2)
+
+    tcs = [ToolCallInfo(id="c1", name="hung", arguments={"_async": True})]
+    handler = AsyncMock(spec=AgentEventHandler)
+
+    await loop._execute_tools(tcs, history, handler)
+    assert handler.on_tool_call.await_count == 1
+
+    # The task is bounded by the 0.2s loop timeout — it must finish (as an
+    # error result), not linger forever.  Wait up to ~2s, asserting done.
+    for _ in range(40):
+        if all(t.done() for t in async_tasks.values()):
+            break
+        await asyncio.sleep(0.05)
+    assert all(t.done() for t in async_tasks.values()), (
+        "async tool without a native timeout ran past the loop bound (F3)"
+    )
+
+
 # ── AgentLoop.run ─────────────────────────────────────────────────────
 
 

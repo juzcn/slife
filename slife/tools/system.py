@@ -1,21 +1,20 @@
 """System introspection, health check & agent self-management tools.
 
-Tools:
-    check_memdb              — MemDB plugin: database + embedding backend
-    check_wechat             — WeChat plugin status
-    check_memfiles           — file cabinet (notes / diary / files) status
-    check_local_embed        — local embedding service (local-embed) status
-    check_sharefile          — file-sharing tunnel (ngrok) status
-    check_watchdog           — plugin watchdog (auto-restart) status
-    check_mcp_gateway                — external MCP server connection status
-    check_a2a                — A2A mesh (MQTT) connection + peer status
-    system_health            — orchestrate checks + startup records
+Registered LLM tools:
+    system_health            — one-call health report (every subsystem check
+                               plus startup records, grouped per component)
     list_native_tools        — native tool inventory (grouped, harness markers)
     check_async              — poll background task result
     cancel_async             — cancel a running background task
     clear_context            — reset the loaded turns
     set_max_iterations       — change the loop's iteration cap at runtime (0 = unlimited)
     notify_user              — push a desktop notification to the human operator
+
+The per-subsystem ``check_*`` functions (memdb, wechat, memfiles,
+local_embed, sharefile, watchdog, mcp_gateway, a2a, media, job-coding)
+are NOT registered as tools — ``system_health`` aggregates them, plus the
+startup records, into one report.  They exist as functions so the
+harness (and tests) can probe a single subsystem.
 
 (The agent self-management tools were a ``Meta`` category in ``tools/meta.py``;
 merged here — one category (System), one module per category.)
@@ -47,6 +46,39 @@ from slife.tools.base import Tool, make_params
 from slife.ui.i18n import t
 
 logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Shared plugin-probe prologue
+# ═══════════════════════════════════════════════════════════════════════
+
+async def _probe_plugin(client, component: str, *, offline_hint: str,
+                        unavailable_hint: str, key: str = "plugin",
+                        offline_value: str = "offline",
+                        unavailable_value: str = "unavailable",
+                        log_name: str | None = None) -> tuple[dict | None, list[dict]]:
+    """Probe a plugin's ``__check`` tool and parse its JSON payload.
+
+    The shared prologue of every plugin-backed check.  On success returns
+    ``(data, [])``; a missing client returns ``(None, [offline entry])``; a
+    ``__check`` that raises returns ``(None, [unavailable entry])``.  The
+    caller diverges with ``if entries: return entries`` and works from
+    *data*.  Entry wording stays per-check via the explicit parameters —
+    this helper centralises the *structure*, and the review noted the loose
+    copies had already drifted from each other.
+    """
+    try:
+        if client is None:
+            return None, [{"component": component, "level": "warning",
+                           "key": key, "value": offline_value,
+                           "hint": offline_hint}]
+        raw = await client.call_tool("__check")
+        return json.loads(raw), []
+    except Exception as e:
+        logger.warning("%s_check_failed err=%s", log_name or component, e)
+        return None, [{"component": component, "level": "warning",
+                       "key": key, "value": unavailable_value,
+                       "hint": f"{unavailable_hint}: {e}"}]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -88,20 +120,16 @@ async def check_memdb(client=None) -> list[dict]:
     and interprets them into health entries.  When the plugin is not
     connected, a warning is reported.
     """
-    try:
-        if client is None:
-            return [{"component": "memdb", "level": "warning", "key": "plugin",
-                     "value": "offline",
-                     "hint": "memdb plugin not connected — turns DB unavailable."}]
-        raw = await client.call_tool("__check")
-        data = json.loads(raw)
-    except Exception as e:
-        logger.warning("memdb_check_failed err=%s", e)
-        return [{"component": "memdb", "level": "warning", "key": "plugin",
-                 "value": "offline",
-                 "hint": f"memdb status unavailable: {e}"}]
-
-    entries: list[dict] = []
+    data, entries = await _probe_plugin(
+        client, "memdb",
+        offline_hint="memdb plugin not connected — turns DB unavailable.",
+        unavailable_hint="memdb status unavailable",
+        unavailable_value="offline",
+    )
+    if entries:
+        return entries
+    assert data is not None  # entries empty ⇒ probe succeeded
+    entries = []
 
     # ── Database file ────────────────────────────────────────────
     db = data.get("db") or {}
@@ -141,22 +169,6 @@ async def check_memdb(client=None) -> list[dict]:
             "hint": _semantic_index_hint(sem, pending_noun="turns"),
         })
     return entries
-
-
-class CheckMemdbTool(Tool):
-    """Check MemDB plugin status: database file and embedding status."""
-
-    name = "check_memdb"
-    category: ClassVar[str] = "System"
-    _skip_auto_register: ClassVar[bool] = True
-    description = ("MemDB status: SQLite database size + embedding status. "
-                   "One subsystem of system_health.")
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        ctx = getattr(self, "_ctx", None)
-        client = getattr(ctx, "memdb_client", None) if ctx is not None else None
-        return json.dumps(await check_memdb(client=client), ensure_ascii=False, indent=2)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -205,18 +217,14 @@ async def check_wechat(client=None, config=None) -> list[dict]:
                                 "Set wechat.enabled: true in slife.json5 to enable."})
         return results
 
-    try:
-        if client is None:
-            return [{"component": "wechat", "level": "warning", "key": "plugin",
-                     "value": "offline",
-                     "hint": "WeChat plugin not connected — login/session status unavailable."}]
-        raw = await client.call_tool("__check")
-        data = json.loads(raw)
-    except Exception as e:
-        logger.warning("wechat_check_failed err=%s", e)
-        return [{"component": "wechat", "level": "warning", "key": "plugin",
-                 "value": "unavailable",
-                 "hint": f"WeChat status unavailable: {e}"}]
+    data, entries = await _probe_plugin(
+        client, "wechat",
+        offline_hint="WeChat plugin not connected — login/session status unavailable.",
+        unavailable_hint="WeChat status unavailable",
+    )
+    if entries:
+        return entries
+    assert data is not None  # entries empty ⇒ probe succeeded
 
     session = data.get("session") or {}
     age_h = session.get("age_h", 0.0)
@@ -258,23 +266,6 @@ async def check_wechat(client=None, config=None) -> list[dict]:
              "hint": "WeChat not logged in. Call wechat_login to scan the QR code."}]
 
 
-class CheckWechatTool(Tool):
-    """Check WeChat plugin status: enabled, logged in, session expiry."""
-
-    name = "check_wechat"
-    category: ClassVar[str] = "System"
-    _skip_auto_register: ClassVar[bool] = True
-    description = ("WeChat plugin status: disabled, not_logged_in, logged_in, or "
-                   "session_expired. One subsystem of system_health.")
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        ctx = getattr(self, "_ctx", None)
-        client = getattr(ctx, "wechat_client", None) if ctx is not None else None
-        return json.dumps(await check_wechat(client=client), ensure_ascii=False, indent=2)
-
-
-# check_sharefile
 # ═══════════════════════════════════════════════════════════════════════
 
 async def check_sharefile(client=None) -> list[dict]:
@@ -285,48 +276,28 @@ async def check_sharefile(client=None) -> list[dict]:
     (from ``ToolContext.sharefile_client``).  When the plugin is not
     connected, a warning is reported.
     """
-    try:
-        if client is None:
-            return [{"component": "sharefile", "level": "warning", "key": "tunnel",
-                     "value": "plugin_offline",
-                     "hint": "sharefile plugin not connected — file sharing unavailable."}]
-        raw = await client.call_tool("__check")
-        data = json.loads(raw)
-        if data.get("active"):
-            return [{"component": "sharefile", "level": "ok", "key": "tunnel",
-                     "value": data.get("url", "?"),
-                     "hint": "File sharing tunnel is online."}]
-        reason = (data.get("reason") or "").strip()
-        detail = f" — {reason}" if reason else ""
-        return [{"component": "sharefile", "level": "warning", "key": "tunnel",
-                 "value": "offline",
-                 "hint": (f"File sharing tunnel unavailable.{detail} "
-                          "Check NGROK_AUTHTOKEN credential or ngrok account "
-                          "limits (free tier: 1 online agent — one tunnel per token).")}]
-    except Exception as e:
-        logger.warning("sharefile_check_failed err=%s", e)
-        return [{"component": "sharefile", "level": "warning", "key": "tunnel",
-                 "value": "offline",
-                 "hint": f"File sharing tunnel status unavailable: {e}"}]
+    data, entries = await _probe_plugin(
+        client, "sharefile",
+        key="tunnel", offline_value="plugin_offline", unavailable_value="offline",
+        offline_hint="sharefile plugin not connected — file sharing unavailable.",
+        unavailable_hint="File sharing tunnel status unavailable",
+    )
+    if entries:
+        return entries
+    assert data is not None
+    if data.get("active"):
+        return [{"component": "sharefile", "level": "ok", "key": "tunnel",
+                 "value": data.get("url", "?"),
+                 "hint": "File sharing tunnel is online."}]
+    reason = (data.get("reason") or "").strip()
+    detail = f" — {reason}" if reason else ""
+    return [{"component": "sharefile", "level": "warning", "key": "tunnel",
+             "value": "offline",
+             "hint": (f"File sharing tunnel unavailable.{detail} "
+                      "Check NGROK_AUTHTOKEN credential or ngrok account "
+                      "limits (free tier: 1 online agent — one tunnel per token).")}]
 
 
-class CheckSharefileTool(Tool):
-    """Check file-sharing tunnel (ngrok) status."""
-
-    name = "check_sharefile"
-    category: ClassVar[str] = "System"
-    _skip_auto_register: ClassVar[bool] = True
-    description = ("File sharing tunnel status (online/offline) for share_file. "
-                   "One subsystem of system_health.")
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        ctx = getattr(self, "_ctx", None)
-        client = getattr(ctx, "sharefile_client", None) if ctx is not None else None
-        return json.dumps(await check_sharefile(client=client), ensure_ascii=False, indent=2)
-
-
-# check_memfiles
 # ═══════════════════════════════════════════════════════════════════════
 
 async def check_memfiles(client=None) -> list[dict]:
@@ -337,50 +308,30 @@ async def check_memfiles(client=None) -> list[dict]:
     (from ``ToolContext.memfiles_client``).  When the plugin is not
     connected, a warning is reported.
     """
-    try:
-        if client is None:
-            return [{"component": "memfiles", "level": "warning", "key": "plugin",
-                     "value": "offline",
-                     "hint": "memfiles plugin not connected — file cabinet unavailable."}]
-        raw = await client.call_tool("__check")
-        data = json.loads(raw)
-        if data.get("ok"):
-            if data.get("semantic_ready"):
-                return [{"component": "memfiles", "level": "ok", "key": "plugin",
-                         "value": "connected",
-                         "hint": "Cabinet connected; semantic index ready."}]
+    data, entries = await _probe_plugin(
+        client, "memfiles",
+        offline_hint="memfiles plugin not connected — file cabinet unavailable.",
+        unavailable_hint="Cabinet status unavailable",
+        unavailable_value="offline",
+    )
+    if entries:
+        return entries
+    assert data is not None
+    if data.get("ok"):
+        if data.get("semantic_ready"):
             return [{"component": "memfiles", "level": "ok", "key": "plugin",
                      "value": "connected",
-                     "hint": (f"Cabinet connected — semantic index "
-                              f"{data.get('state')}, {data.get('unembedded', 0)} "
-                              "pending embedding; keyword search available.")}]
-        return [{"component": "memfiles", "level": "warning", "key": "plugin",
-                 "value": data.get("state", "degraded"),
-                 "hint": data.get("reason") or "Cabinet store unavailable."}]
-    except Exception as e:
-        logger.warning("memfiles_check_failed err=%s", e)
-        return [{"component": "memfiles", "level": "warning", "key": "plugin",
-                 "value": "offline",
-                 "hint": f"Cabinet status unavailable: {e}"}]
+                     "hint": "Cabinet connected; semantic index ready."}]
+        return [{"component": "memfiles", "level": "ok", "key": "plugin",
+                 "value": "connected",
+                 "hint": (f"Cabinet connected — semantic index "
+                          f"{data.get('state')}, {data.get('unembedded', 0)} "
+                          "pending embedding; keyword search available.")}]
+    return [{"component": "memfiles", "level": "warning", "key": "plugin",
+             "value": data.get("state", "degraded"),
+             "hint": data.get("reason") or "Cabinet store unavailable."}]
 
 
-class CheckMemfilesTool(Tool):
-    """Check file-cabinet (notes / diary / files) status."""
-
-    name = "check_memfiles"
-    category: ClassVar[str] = "System"
-    _skip_auto_register: ClassVar[bool] = True
-    description = ("File cabinet (memfiles) status: connected, store, semantic index "
-                   "(search). One subsystem of system_health.")
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        ctx = getattr(self, "_ctx", None)
-        client = getattr(ctx, "memfiles_client", None) if ctx is not None else None
-        return json.dumps(await check_memfiles(client=client), ensure_ascii=False, indent=2)
-
-
-# check_local_embed
 # ═══════════════════════════════════════════════════════════════════════
 
 _PROBE_TIMEOUT = 5.0
@@ -453,25 +404,6 @@ async def check_local_embed(base_url: str = "") -> list[dict]:
                  "hint": f"local-embed daemon unavailable (start it manually): {e}"}]
 
 
-class CheckLocalEmbedTool(Tool):
-    """Check the local-embed (local embedding service) status."""
-
-    name = "check_local_embed"
-    category: ClassVar[str] = "System"
-    _skip_auto_register: ClassVar[bool] = True
-    description = ("Local embedding service (local-embed) status: online/offline, "
-                   "active model, loaded models. One subsystem of system_health.")
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        # check_local_embed resolves the configured endpoint itself when no
-        # base_url is supplied — the same single resolution path system_health
-        # uses.
-        return json.dumps(
-            await check_local_embed(), ensure_ascii=False, indent=2,
-        )
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # check_watchdog
 # ═══════════════════════════════════════════════════════════════════════
@@ -510,20 +442,6 @@ def check_watchdog() -> list[dict]:
     return results
 
 
-class CheckWatchdogTool(Tool):
-    """Check plugin watchdog (auto-restart) status."""
-
-    name = "check_watchdog"
-    category: ClassVar[str] = "System"
-    _skip_auto_register: ClassVar[bool] = True
-    description = ("Plugin watchdog status: which plugins are auto-restarted, latest "
-                   "restart records. One subsystem of system_health.")
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        return json.dumps(check_watchdog(), ensure_ascii=False, indent=2)
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # check_mcp_gateway
 # ═══════════════════════════════════════════════════════════════════════
@@ -541,6 +459,23 @@ def _diagnose_mcp_server(server: dict) -> dict:
     tool_count = server.get("tool_count", 0)
     transport = server.get("transport", "")
     error_msg = server.get("error", "")
+    needs_user_auth = server.get("needs_user_auth", False)
+
+    if needs_user_auth:
+        # OAuth device flow needs a human — auto-reconnect is PAUSED (F5),
+        # so "wait for the background reconnect" is not the right advice.
+        return {
+            "component": "mcp_servers", "level": "warning",
+            "key": name, "value": "needs_user_auth",
+            "enabled": True, "state": "needs_user_auth",
+            "tool_count": 0, "transport": transport,
+            "hint": (
+                f"MCP server '{name}' needs OAuth re-authorization — "
+                f"{error_msg or 'the device flow was not completed.'} "
+                "Remove and re-add it with mcp_remove / mcp_set to run the "
+                "device flow again."
+            ),
+        }
 
     if not enabled:
         return {
@@ -714,59 +649,39 @@ async def check_a2a(client=None) -> list[dict]:
     mesh is unreachable — mosquitto not running (no active MQTT port), or
     the connection dropped — a warning is reported.
     """
-    try:
-        if client is None:
-            return [{"component": "a2a", "level": "warning", "key": "status",
-                     "value": "unavailable",
-                     "hint": "No active MQTT port — A2A unavailable. Start mosquitto, then restart slife to enable the A2A mesh."}]
+    data, entries = await _probe_plugin(
+        client, "a2a",
+        key="status", offline_value="unavailable",
+        offline_hint="No active MQTT port — A2A unavailable. Start mosquitto, then restart slife to enable the A2A mesh.",
+        unavailable_hint="A2A mesh status unavailable",
+    )
+    if entries:
+        return entries
+    assert data is not None
 
-        raw = await client.call_tool("__check")
-        data = json.loads(raw)
-
-        if not data.get("connected"):
-            broker = data.get("broker", "")
-            where = f" (broker {broker})" if broker else ""
-            return [{"component": "a2a", "level": "warning", "key": "status",
-                     "value": "unavailable",
-                     "hint": f"No active MQTT port — A2A unavailable{where}. Start mosquitto and the plugin will auto-reconnect."}]
-
-        peers = data.get("peers", [])
-        peer_names = ", ".join(p.get("agent_name") or "?" for p in peers)
-        n = len(peers)
-        if n == 0:
-            peer_clause = "You have no peers online."
-        elif n == 1:
-            peer_clause = f"You have 1 peer: {peer_names}."
-        else:
-            peer_clause = f"You have {n} peers: {peer_names}."
+    if not data.get("connected"):
         broker = data.get("broker", "")
-        return [{
-            "component": "a2a", "level": "ok", "key": "status",
-            "value": "connected",
-            "peers": peers,
-            "hint": f"A2A mesh online (broker {broker}). {peer_clause}",
-        }]
-    except Exception as e:
-        logger.warning("a2a_check_failed err=%s", e)
+        where = f" (broker {broker})" if broker else ""
         return [{"component": "a2a", "level": "warning", "key": "status",
                  "value": "unavailable",
-                 "hint": f"A2A mesh status unavailable: {e}"}]
+                 "hint": f"No active MQTT port — A2A unavailable{where}. Start mosquitto and the plugin will auto-reconnect."}]
 
-
-class CheckA2aTool(Tool):
-    """Check A2A mesh (MQTT) connection and peer status."""
-
-    name = "check_a2a"
-    category: ClassVar[str] = "System"
-    _skip_auto_register: ClassVar[bool] = True
-    description = ("A2A mesh status: connected / unavailable (no active MQTT port), "
-                   "agent id, status, online peers. One subsystem of system_health.")
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        ctx = getattr(self, "_ctx", None)
-        client = getattr(ctx, "a2a_mcp_client", None) if ctx is not None else None
-        return json.dumps(await check_a2a(client=client), ensure_ascii=False, indent=2)
+    peers = data.get("peers", [])
+    peer_names = ", ".join(p.get("agent_name") or "?" for p in peers)
+    n = len(peers)
+    if n == 0:
+        peer_clause = "You have no peers online."
+    elif n == 1:
+        peer_clause = f"You have 1 peer: {peer_names}."
+    else:
+        peer_clause = f"You have {n} peers: {peer_names}."
+    broker = data.get("broker", "")
+    return [{
+        "component": "a2a", "level": "ok", "key": "status",
+        "value": "connected",
+        "peers": peers,
+        "hint": f"A2A mesh online (broker {broker}). {peer_clause}",
+    }]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -796,18 +711,14 @@ async def check_media(client=None) -> list[dict]:
         return [{"component": "media", "level": "warning", "key": "config",
                  "value": "error",
                  "hint": f"Media config status unavailable: {e}"}]
-    try:
-        if client is None:
-            return [{"component": "media", "level": "warning", "key": "plugin",
-                     "value": "offline",
-                     "hint": "media plugin configured but not connected."}]
-        raw = await client.call_tool("__check")
-        data = json.loads(raw)
-    except Exception as e:
-        logger.warning("media_check_failed err=%s", e)
-        return [{"component": "media", "level": "warning", "key": "plugin",
-                 "value": "unavailable",
-                 "hint": f"media status unavailable: {e}"}]
+    data, entries = await _probe_plugin(
+        client, "media",
+        offline_hint="media plugin configured but not connected.",
+        unavailable_hint="media status unavailable",
+    )
+    if entries:
+        return entries
+    assert data is not None
 
     # The plugin reports facts; shape the health entries here.
     if data.get("error"):
@@ -846,22 +757,6 @@ async def check_media(client=None) -> list[dict]:
     return results
 
 
-class CheckMediaTool(Tool):
-    """Check media plugin status: configured capabilities + api_key."""
-
-    name = "check_media"
-    category: ClassVar[str] = "System"
-    _skip_auto_register: ClassVar[bool] = True
-    description = ("Media (image/video/TTS/ASR) config status: providers, "
-                   "capabilities, api_key. One subsystem of system_health.")
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        ctx = getattr(self, "_ctx", None)
-        client = getattr(ctx, "media_client", None) if ctx is not None else None
-        return json.dumps(await check_media(client=client), ensure_ascii=False, indent=2)
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # check_job_coding
 # ═══════════════════════════════════════════════════════════════════════
@@ -874,18 +769,15 @@ async def check_job_coding(client=None) -> list[dict]:
     MCP client (from ``ToolContext.job_coding_client``) and interprets
     them into health entries.
     """
-    try:
-        if client is None:
-            return [{"component": "job-coding", "level": "warning", "key": "plugin",
-                     "value": "offline",
-                     "hint": "job-coding plugin not connected — job tools unavailable."}]
-        raw = await client.call_tool("__check")
-        data = json.loads(raw)
-    except Exception as e:
-        logger.warning("job_coding_check_failed err=%s", e)
-        return [{"component": "job-coding", "level": "warning", "key": "plugin",
-                 "value": "unavailable",
-                 "hint": f"job-coding status unavailable: {e}"}]
+    data, entries = await _probe_plugin(
+        client, "job-coding",
+        offline_hint="job-coding plugin not connected — job tools unavailable.",
+        unavailable_hint="job-coding status unavailable",
+        log_name="job_coding",
+    )
+    if entries:
+        return entries
+    assert data is not None
 
     if data.get("error"):
         return [{"component": "job-coding", "level": "warning", "key": "config",
@@ -921,22 +813,6 @@ async def check_job_coding(client=None) -> list[dict]:
             "value": model, "hint": f"Job LLM model: {model}.",
         })
     return entries
-
-
-class CheckJobCodingTool(Tool):
-    """Check job-coding plugin status: registered jobs + job LLM model."""
-
-    name = "check_job_coding"
-    category: ClassVar[str] = "System"
-    _skip_auto_register: ClassVar[bool] = True
-    description = ("job-coding status: registered jobs, job LLM model. "
-                   "One subsystem of system_health.")
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        ctx = getattr(self, "_ctx", None)
-        client = getattr(ctx, "job_coding_client", None) if ctx is not None else None
-        return json.dumps(await check_job_coding(client=client), ensure_ascii=False, indent=2)
 
 
 #: Plugin-backed health checks — derived from the central plugin contract so

@@ -492,7 +492,11 @@ class SessionStore:
         return boundary
 
     async def has_turns(self) -> bool:
-        """Check if there are any turns."""
+        """Check if there are any turns.
+
+        Test-only helper — no production callers (recounted by
+        ``count_turns`` / the unembedded queries where it matters).
+        """
         cursor = await self._c.execute(
             "SELECT rowid FROM diary LIMIT 1",
         )
@@ -973,9 +977,11 @@ class SessionStore:
     ) -> None:
         """Insert one chunk embedding for a turn.
 
-        Each turn can produce multiple chunks — *chunk_index* is 0-based.
-        Always INSERTs; the caller clears old chunks (``replace_embedding_chunks``
-        does delete-then-insert atomically).
+        Test-only helper — production re-indexing goes through
+        ``replace_embedding_chunks`` (delete-then-insert in ONE transaction,
+        under the write lock).  Each turn can produce multiple chunks —
+        *chunk_index* is 0-based.  Always INSERTs; the caller clears old
+        chunks.
         """
         vec_blob = _serialize_f32(turn_embedding)
         await self._c.execute(
@@ -1029,15 +1035,6 @@ class SessionStore:
             "embedding_chunks_replaced diary_rowid=%s chunks=%d",
             diary_rowid, len(vec_blobs),
         )
-
-    async def _clear_chunks(self, diary_rowid: int) -> None:
-        """Delete all embedding chunks for a turn (prep for re-embed)."""
-        async with self._write_lock:
-            await self._c.execute(
-                "DELETE FROM diary_semantic WHERE diary_rowid = ?",
-                (diary_rowid,),
-            )
-            await self._c.commit()
 
     # A turn is "embeddable" when it has any text worth embedding.  Turns with
     # no user text AND no messages (or an empty message list) can never be
@@ -1099,7 +1096,11 @@ class SessionStore:
         return row[0] if row else 0
 
     async def count_embedded(self) -> int:
-        """Count distinct turns that have at least one embedding chunk."""
+        """Count distinct turns that have at least one embedding chunk.
+
+        Test-only helper — the live embedding counts come from
+        ``count_unembedded`` / the semantic facts in ``__check``.
+        """
         if self._embedding_dim <= 0:
             return 0
         cursor = await self._c.execute(
@@ -1109,7 +1110,10 @@ class SessionStore:
         return row[0] if row else 0
 
     async def clear_all_embeddings(self) -> int:
-        """Delete all rows from diary_semantic. Returns count deleted."""
+        """Delete all rows from diary_semantic. Returns count deleted.
+
+        Test-only helper — production never nukes the whole semantic table.
+        """
         async with self._write_lock:
             cursor = await self._c.execute("SELECT COUNT(*) FROM diary_semantic")
             row = await cursor.fetchone()
@@ -1120,6 +1124,8 @@ class SessionStore:
         return count
 
     async def has_embedding(self, diary_rowid: int) -> bool:
+        """Test-only helper — production checks the ``NOT IN diary_semantic``
+        unembedded query instead of per-row probes."""
         cursor = await self._c.execute(
             "SELECT rowid FROM diary_semantic WHERE diary_rowid = ? LIMIT 1",
             (diary_rowid,),

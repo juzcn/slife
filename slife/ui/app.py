@@ -588,8 +588,8 @@ class SlifeApp(App):
 
         Switching is config + runtime only (no API call), so this is the
         escape hatch when the current model is unavailable.  Rendered in
-        the chat stream, same style as the approval prompt: type a number
-        to pick, Esc to cancel.
+        the chat stream, same style as the approval prompt: ``↑/↓`` move the
+        cursor, ``Enter`` picks, ``Esc`` cancels.
 
         NOTE — must be SYNC: binding actions run inside the key-event
         handler (`App._on_key` → `_check_bindings`), so awaiting the

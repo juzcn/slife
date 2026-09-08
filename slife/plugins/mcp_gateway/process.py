@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from slife.plugins.mcp_gateway.client import MCPClient
 
 from slife.plugins.mcp_gateway.logging import get_session_id, sanitize_secrets
-from slife.plugins.mcp_gateway.platform import terminate_process
+from slife.platform import terminate_process
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +35,8 @@ _OAUTH_ACTION_MARKER = "[OAUTH-ACTION]"
 
 def _notify_user(title: str, message: str) -> None:
     """Best-effort desktop notification via the project's daemon convention."""
-    from slife.plugins.mcp_gateway.platform import desktop_notify
-    from slife.plugins.mcp_gateway.threads import run_daemon
+    from slife.platform import desktop_notify
+    from slife.threads import run_daemon
     run_daemon(desktop_notify, title, message, name="desktop-notify")
 
 

@@ -1086,6 +1086,25 @@ class AgentLoop:
                     coro = _run_with_conv()
                 else:
                     coro = self.tool_registry.execute(tc.name, **actual_args)
+
+                # A tool WITHOUT a native ``timeout`` parameter gets the
+                # agent-loop bound even in the background: _async previously
+                # scheduled a bare task, so e.g. run_python_script (whose
+                # only deadline is the sync wait_for) ran forever when
+                # invoked with _async: true, holding a subprocess and a
+                # permanent _tasks entry.  Native-timeout tools still enforce
+                # their own deadline — no double timer.
+                if not has_native_timeout:
+                    if inline_timeout is not None:
+                        effective_timeout = (
+                            float(inline_timeout)
+                            if float(inline_timeout) > 0 else 0.0
+                        )
+                    else:
+                        effective_timeout = self.tool_timeout
+                    if effective_timeout > 0:
+                        coro = asyncio.wait_for(coro, timeout=effective_timeout)
+
                 task_id = schedule_async(coro)
                 result = (
                     f"✓ Async task started.\n"

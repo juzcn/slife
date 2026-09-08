@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from slife.platform import terminate_process
+from slife.fifoset import FifoSet
 
 # A subagent_name is rendered into the child's system prompt identity line and
 # into its log filename — restrict it to a safe identifier so an injected
@@ -96,12 +97,13 @@ class SubagentProcess:
         # processes tasks serially, so this is both "busy" and "queued".
         self._inflight = 0
         # task_ids the parent has cancelled — the child skips them if still
-        # queued; any late response is ignored.
-        self._cancelled: set[str] = set()
+        # queued; any late response is ignored.  Over-cap eviction drops the
+        # OLDEST id (FIFO), not an arbitrary set member (F10).
+        self._cancelled: FifoSet = FifoSet()
         # Sync tasks that timed out but the child is still processing — their
         # late result is STORED for get_task_result, not discarded (the tool
         # promises the result remains retrievable).
-        self._late_results: set[str] = set()
+        self._late_results: FifoSet = FifoSet()
 
     @property
     def name(self) -> str: return self._name
@@ -316,8 +318,7 @@ class SubagentProcess:
             # than discarded (the tool promises the result stays retrievable)
             # or mis-routed as a fresh async completion.
             self._late_results.add(rpc_id)
-            if len(self._late_results) > _MAX_CANCELLED:
-                self._late_results.pop()
+            self._late_results.evict_to(_MAX_CANCELLED)
             if self._inflight > 0:
                 self._inflight -= 1
             self._record_update(rpc_id, "failed", "Error: timed out")
@@ -329,8 +330,7 @@ class SubagentProcess:
         except asyncio.CancelledError:
             self._pending.pop(rpc_id, None)
             self._cancelled.add(rpc_id)
-            if len(self._cancelled) > _MAX_CANCELLED:
-                self._cancelled.pop()
+            self._cancelled.evict_to(_MAX_CANCELLED)
             if self._inflight > 0:
                 self._inflight -= 1
             raise
@@ -393,8 +393,7 @@ class SubagentProcess:
         rec["status"] = "cancelled"
         rec["result"] = "Cancelled by parent"
         self._cancelled.add(task_id)
-        if len(self._cancelled) > _MAX_CANCELLED:
-            self._cancelled.pop()
+        self._cancelled.evict_to(_MAX_CANCELLED)
         if self._inflight > 0:
             self._inflight -= 1
 

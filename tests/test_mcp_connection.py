@@ -908,6 +908,84 @@ class TestMCPServerConnectionHealthMonitor:
         assert conn.status == ServerStatus.CONNECTED
 
     @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_needs_user_auth_pauses_auto_reconnect(self):
+        """F5 regression: once OAuth needs a human, the health monitor must
+        NOT keep re-running connect() (each reconnect would re-run the device
+        flow and pop another desktop prompt).  It sleeps through the interval
+        instead."""
+        from slife.plugins.mcp_gateway import connection as conn_mod
+
+        cfg = ServerConfig(name="test", command="echo", enabled=True)
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.FAILED
+        conn._needs_user_auth = True
+
+        connect_calls = {"n": 0}
+
+        async def fake_connect():
+            connect_calls["n"] += 1
+            conn._status = ServerStatus.CONNECTED
+
+        conn.connect = fake_connect
+
+        with patch.object(conn_mod, "_HEALTH_CHECK_INTERVAL", 0.01):
+            task = asyncio.create_task(conn._health_monitor())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # The monitor paused — connect() was never (re)called.
+        assert connect_calls["n"] == 0
+        assert conn.status == ServerStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_ensure_oauth_token_sets_needs_user_auth(self):
+        """F5: a refresh failure that requires the device flow marks the
+        connection needs_user_auth, and a SECOND attempt does not re-run the
+        device flow (it raises NeedsUserAuthError instead)."""
+        from slife.plugins.mcp_gateway.connection import NeedsUserAuthError
+        from slife.plugins.mcp_gateway import oauth as oauth_mod
+
+        cfg = ServerConfig(
+            name="test", command="echo",
+            auth={"type": "oauth", "client_id": "cid"},
+        )
+        conn = MCPServerConnection(cfg)
+
+        flow_ok = {"token": None}
+        fake_tokens = type("T", (), {"token_type": "Bearer", "access_token": "tok"})()
+
+        async def fake_flow(auth, server_name):
+            if flow_ok["token"] is None:
+                raise RuntimeError("user never authorized")
+            return fake_tokens
+
+        with patch.object(oauth_mod, "get_valid_token", return_value=None), \
+             patch.object(oauth_mod, "refresh_access_token",
+                          AsyncMock(side_effect=RuntimeError("refresh revoked"))), \
+             patch.object(oauth_mod, "run_device_code_flow", new=fake_flow):
+            # First attempt: flow runs, fails → needs_user_auth set.
+            with pytest.raises(NeedsUserAuthError):
+                await conn._ensure_oauth_token()
+            assert conn._needs_user_auth is True
+
+            # Second attempt: flag already set → device flow NOT re-run.
+            with pytest.raises(NeedsUserAuthError, match="needs OAuth re-authorization"):
+                await conn._ensure_oauth_token()
+            assert flow_ok["token"] is None  # fake never re-invoked with a token
+
+            # Manual recovery: re-adding the server clears the flag.
+            conn._needs_user_auth = False
+            flow_ok["token"] = object()
+            await conn._ensure_oauth_token()
+            assert conn._needs_user_auth is False
+            assert conn.config.headers["Authorization"] == "Bearer tok"
+
+    @pytest.mark.asyncio
     async def test_connect_failure_starts_monitor(self):
         """A failed initial connect still spawns the health monitor."""
         cfg = ServerConfig(name="test", command="echo")

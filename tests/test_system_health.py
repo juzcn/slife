@@ -17,21 +17,13 @@ from slife.tools.system import (
     check_a2a,
     check_media,
     check_job_coding,
-    CheckMemdbTool,
-    CheckWechatTool,
-    CheckSharefileTool,
-    CheckMemfilesTool,
-    CheckLocalEmbedTool,
-    CheckMediaTool,
-    CheckJobCodingTool,
+    check_watchdog,
     _group_by_component,
     _component_status,
     _build_summary,
     _overall_healthy,
     _dedupe_records,
     SystemHealthTool,
-    CheckWatchdogTool,
-    CheckA2aTool,
 )
 
 
@@ -631,30 +623,28 @@ class TestSystemHealthToolExecute:
         assert len(wd) == 2  # no duplicates
 
 
-# ── CheckWatchdogTool ──────────────────────────────────────────────────
+# ── check_watchdog ─────────────────────────────────────────────────────
 
 
-class TestCheckWatchdogTool:
-    """Tests for CheckWatchdogTool metadata and execute."""
+class TestCheckWatchdogFunction:
+    """Tests for check_watchdog() — dedup + source of records."""
 
-    def test_metadata(self):
-        tool = CheckWatchdogTool()
-        assert tool.name == "check_watchdog"
-        assert "watchdog" in tool.description.lower()
-        assert tool.parameters["type"] == "object"
-        assert tool.parameters["required"] == []
+    def test_no_records_reports_none(self):
+        with patch("slife.tools.system.get_startup_records", return_value=[]):
+            entries = check_watchdog()
+        assert entries == [{"component": "watchdog", "level": "ok",
+                            "key": "status", "value": "none",
+                            "hint": "No plugin watchdogs active (subagent, or plugins not started)."}]
 
-    @pytest.mark.asyncio
-    async def test_execute_returns_json(self):
-        tool = CheckWatchdogTool()
-        with patch("slife.tools.system.check_watchdog", return_value=[
-            {"component": "watchdog", "level": "ok", "key": "plugin_a",
-             "value": "running", "hint": "auto-restart active"},
-        ]):
-            result = await tool.execute()
-            parsed = json.loads(result)
-            assert parsed[0]["component"] == "watchdog"
-            assert parsed[0]["value"] == "running"
+    def test_keeps_latest_per_plugin(self):
+        records = [
+            {"component": "watchdog", "key": "plugin_a", "value": "warning", "level": "warning"},
+            {"component": "watchdog", "key": "plugin_a", "value": "ok", "level": "ok"},
+        ]
+        with patch("slife.tools.system.get_startup_records", return_value=records):
+            entries = check_watchdog()
+        assert len(entries) == 1
+        assert entries[0]["value"] == "ok"  # later record overwrites
 
 
 class _FakeMcpClient:
@@ -927,69 +917,6 @@ class TestCheckMemfilesFunction:
         assert "boom" in entries[0]["hint"]
 
 
-class TestCheckMemfilesTool:
-    """Tests for CheckMemfilesTool metadata and execute."""
-
-    def test_metadata(self):
-        tool = CheckMemfilesTool()
-        assert tool.name == "check_memfiles"
-        assert "cabinet" in tool.description.lower()
-        assert tool.parameters["type"] == "object"
-        assert tool.parameters["required"] == []
-
-    @pytest.mark.asyncio
-    async def test_execute_returns_json(self):
-        tool = CheckMemfilesTool()
-        with patch("slife.tools.system.check_memfiles",
-                   new=AsyncMock(return_value=[
-                       {"component": "memfiles", "level": "ok", "key": "plugin",
-                        "value": "connected", "hint": "all good"},
-                   ])):
-            result = await tool.execute()
-            parsed = json.loads(result)
-            assert parsed[0]["component"] == "memfiles"
-            assert parsed[0]["value"] == "connected"
-
-    @pytest.mark.asyncio
-    async def test_execute_uses_ctx_memfiles_client(self):
-        """execute() reaches the plugin through ToolContext.memfiles_client."""
-        tool = CheckMemfilesTool()
-        fake_client = _FakeMemfilesClient({
-            "ok": True, "connected": True, "state": "ready",
-            "semantic_ready": True, "unembedded": 0, "reason": "",
-            "hint": "Cabinet connected; semantic index ready.",
-        })
-        tool._ctx = MagicMock(memfiles_client=fake_client)
-        result = await tool.execute()
-        parsed = json.loads(result)
-        assert parsed[0]["component"] == "memfiles"
-        assert parsed[0]["value"] == "connected"
-
-
-class TestCheckA2aTool:
-    """Tests for CheckA2aTool metadata and execute."""
-
-    def test_metadata(self):
-        tool = CheckA2aTool()
-        assert tool.name == "check_a2a"
-        assert "a2a" in tool.description.lower()
-        assert tool.parameters["type"] == "object"
-        assert tool.parameters["required"] == []
-
-    @pytest.mark.asyncio
-    async def test_execute_returns_json(self):
-        tool = CheckA2aTool()
-        with patch("slife.tools.system.check_a2a",
-                   new=AsyncMock(return_value=[
-                       {"component": "a2a", "level": "ok", "key": "status",
-                        "value": "connected", "hint": "all good"},
-                   ])):
-            result = await tool.execute()
-            parsed = json.loads(result)
-            assert parsed[0]["component"] == "a2a"
-            assert parsed[0]["value"] == "connected"
-
-
 class _FakeLocalEmbedResponse:
     """Minimal stand-in for the local-embed daemon's ``/v1/models`` response."""
 
@@ -1111,72 +1038,27 @@ class TestCheckLocalEmbedFunction:
         assert "boom" in entries[0]["hint"]
 
 
-class TestCheckLocalEmbedTool:
-    """Tests for CheckLocalEmbedTool metadata and execute."""
-
-    def test_metadata(self):
-        tool = CheckLocalEmbedTool()
-        assert tool.name == "check_local_embed"
-        assert "local-embed" in tool.description.lower()
-        assert tool.parameters["type"] == "object"
-        assert tool.parameters["required"] == []
-
-    @pytest.mark.asyncio
-    async def test_execute_returns_json(self):
-        tool = CheckLocalEmbedTool()
-        with patch("slife.tools.system.check_local_embed",
-                   new=AsyncMock(return_value=[
-                       {"component": "local_embed", "level": "ok", "key": "status",
-                        "value": "bge-m3", "hint": "all good"},
-                   ])):
-            result = await tool.execute()
-            parsed = json.loads(result)
-            assert parsed[0]["component"] == "local_embed"
-            assert parsed[0]["value"] == "bge-m3"
-
-    @pytest.mark.asyncio
-    async def test_execute_uses_active_endpoint(self):
-        """execute() probes the daemon at slife.json5's active embedding endpoint."""
-        tool = CheckLocalEmbedTool()
-        http = _FakeLocalEmbedHttp(_FakeLocalEmbedResponse([
-            {"id": "bge-m3", "active": True, "loaded": True,
-             "available": True, "backend": "gguf"},
-        ]))
-        with patch("slife.tools.system.httpx2.AsyncClient", return_value=http), \
-             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value={"base_url": "http://127.0.0.1:17347/v1"}):
-            result = await tool.execute()
-        parsed = json.loads(result)
-        assert parsed[0]["component"] == "local_embed"
-        assert parsed[0]["value"] == "bge-m3"
-
-
 class TestCheckToolsInternal:
-    """Per-plugin check tools are internal — never auto-registered for the LLM.
-
-    The agent only sees the aggregated ``system_health``; the individual
-    ``check_*`` tools exist for the harness (probed by ``system_health``),
-    so every one must carry ``_skip_auto_register`` to stay out of the
-    factory's auto-discovery.
+    """Per-plugin check tools are not Tool classes at all — ``system_health``
+    is the ONE registered health tool and aggregates the ``check_*``
+    functions.  (E8: the nine unregistered ``Check*Tool`` wrapper classes
+    were dead code — the module header used to list them as live LLM tools;
+    they are gone, and the aggregated tool is the only LLM-facing surface.)
     """
-
-    _CHECK_TOOL_CLASSES = (
-        CheckMemdbTool,
-        CheckWechatTool,
-        CheckMemfilesTool,
-        CheckLocalEmbedTool,
-        CheckSharefileTool,
-        CheckMediaTool,
-        CheckA2aTool,
-        CheckWatchdogTool,
-    )
-
-    def test_all_check_tools_skip_auto_register(self):
-        for cls in self._CHECK_TOOL_CLASSES:
-            assert cls.__dict__.get("_skip_auto_register") is True, cls.__name__
 
     def test_system_health_stays_auto_registered(self):
         assert SystemHealthTool.__dict__.get("_skip_auto_register") is not True
+
+    def test_no_check_wrapper_classes_remain(self):
+        import slife.tools.system as system_mod
+
+        wrappers = {
+            name for name in vars(system_mod)
+            if name.startswith("Check") and name.endswith("Tool")
+        }
+        # CheckAsyncTool/CancelAsyncTool are real registered tools; the
+        # per-subsystem check wrappers are the deleted dead set.
+        assert not (wrappers - {"CheckAsyncTool", "CancelAsyncTool"})
 
 
 class TestCheckMedia:

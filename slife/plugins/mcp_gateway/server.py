@@ -202,18 +202,35 @@ def _capture_session(ctx: Context | None) -> None:
         _active_sessions.add(ctx.session)
 
 
+#: Per-session deadline for tools/list_changed notifications — a
+#: backpressured/stuck client session must not stall the whole pool.
+#: :func:`_notify_tools_changed` is invoked from inside ``connect()`` (while
+#: holding the per-server connect lock), so a slow send would otherwise block
+#: every concurrent ``mcp_remove`` / ``mcp_set_enabled`` / ``mcp_set``.
+_NOTIFY_TIMEOUT = 5.0
+
+
 async def _notify_tools_changed() -> None:
     """Push ``notifications/tools/list_changed`` to every known client.
 
     Invoked by the connection pool when an external MCP server (re)connects
     successfully — a listening host re-syncs its tool registry.  Best-effort:
-    a dead/stale session is dropped; the rest are still served.
+    a dead/stale session is dropped; the rest are still served.  Sends run
+    CONCURRENTLY (gather), each bounded by :data:`_NOTIFY_TIMEOUT`, so one
+    slow/backpressured client degrades only itself (F4).
     """
-    for sess in list(_active_sessions):
+    sessions = list(_active_sessions)
+
+    async def _send_one(sess) -> None:
         try:
-            await sess.send_tool_list_changed()
+            await asyncio.wait_for(
+                sess.send_tool_list_changed(), timeout=_NOTIFY_TIMEOUT,
+            )
         except Exception:
+            # Dead/stale session — drop it so a later notification skips it.
             _active_sessions.discard(sess)
+
+    await asyncio.gather(*(_send_one(s) for s in sessions))
 
 
 # ── Tool catalog (in-memory) ────────────────────────────────────────────

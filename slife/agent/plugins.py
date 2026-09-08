@@ -26,8 +26,6 @@ from __future__ import annotations
 import asyncio
 import enum
 import logging
-import os
-import sys
 import time as _time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -36,10 +34,10 @@ from typing import TYPE_CHECKING
 from slife.plugins.mcp_gateway.client import MCPClient
 from slife.platform import terminate_process_sync
 from slife.plugins.spec import PLUGIN_SPECS, PluginSpec, spec_for
-from slife.server_utils import is_internal_tool
 
 if TYPE_CHECKING:
     from slife.agent.service import AgentService
+    from slife.plugins.mcp_gateway.process import MCPWrapperProcess
 
 logger = logging.getLogger(__name__)
 
@@ -154,15 +152,17 @@ class PluginLifecycle:
 
     Each instance owns the client connection, subprocess wrapper, and port
     for one plugin backend.  Spawns go through ``AgentService._spawn_plugin_generic``
-    (the single unified path for every plugin); ``spawn`` here remains the
-    watchdog's internal restart fallback.
+    (the single unified path for every plugin) — the watchdog's restart fallback
+    calls the same method.
     """
+
+    _service: AgentService
 
     def __init__(self, name: str, service: AgentService) -> None:
         self.name = name
         self._service = service
         self.client: MCPClient | None = None
-        self.process = None     # MCPWrapperProcess
+        self.process: "MCPWrapperProcess | None" = None
         self.port: int = 0
         self.poll_task: asyncio.Task | None = None
         # Optional plugin-side background task, reseeded on watchdog restart
@@ -191,87 +191,6 @@ class PluginLifecycle:
         self.ready: bool = False
         self.ready_state: str = READY_PENDING
         self.ready_detail: str = ""
-
-    # ── spawn ────────────────────────────────────────────────────────────
-
-    async def spawn(
-        self,
-        module: str,
-    ) -> None:
-        """Spawn a plugin child process, connect, and register its LLM-visible tools.
-
-        Handles the common pattern: spawn MCPWrapperProcess → set env var →
-        create client → list tools → filter internal tools →
-        create_proxy_tools → register.
-
-        Tools whose name starts with ``__`` are internal (plugin contract)
-        and are never exposed to the LLM.
-        """
-        from slife.plugins.mcp_gateway.process import MCPWrapperProcess
-        from slife.mcp.tool_adapter import create_proxy_tools
-
-        # Save params for watchdog restart
-        self._module = module
-
-        logger.info("%s_spawn transport=streamable-http", self.name)
-        process = MCPWrapperProcess(
-            command=sys.executable,
-            args=["-m", module],
-        )
-        await process.start()
-        self.process = process
-        self.port = process.port
-
-        env_key = plugin_port_env(self.name)
-        os.environ[env_key] = str(self.port)
-
-        try:
-            client = await process.create_client(
-                client_info_extra=client_info_extra_for(self.name),
-            )
-            self.client = client
-
-            # Discover and register LLM-visible tools
-            plugin_tools = await client.list_tools()
-            logger.debug(
-                "%s_tools names=%s", self.name,
-                [t["name"] for t in plugin_tools],
-            )
-
-            # Internal tools are prefixed with __ (convention) — filtered
-            # out of the schema entirely.  (Single ``_`` = harness but
-            # LLM-visible, e.g. the native `_sys_note`.)  Same
-            # predicate as the generic spawn path in service.py, so a plugin's
-            # internal tools are hidden identically whichever registration
-            # path ran.
-            tagged = [
-                {**t, "server": self.name}
-                for t in plugin_tools
-                if not is_internal_tool(t["name"])
-            ]
-
-            proxy_tools = create_proxy_tools(client, tagged)
-            self.registered_tools = {t.name for t in proxy_tools}
-            for tool in proxy_tools:
-                self._service.tool_registry.register(tool)
-            logger.debug("%s_tools_registered count=%d", self.name, len(proxy_tools))
-
-            # Readiness (MCP plugin contract): connect() already ran the
-            # initialize handshake — completing it is the plugin's ready
-            # declaration; record it.
-            self.mark_initialized()
-        except Exception:
-            # A failed spawn must not leave the lifecycle pointing at a
-            # live-but-unconnected child — the watchdog would block on its
-            # wait() forever instead of backing off and retrying.
-            self.process = None
-            self.port = 0
-            self.client = None
-            try:
-                await process.stop()
-            except Exception:
-                logger.debug("%s_spawn_cleanup_error", self.name, exc_info=True)
-            raise
 
     # ── readiness (plugin contract) ─────────────────────────────────────
 
@@ -305,8 +224,8 @@ class PluginLifecycle:
 
         The watchdog waits on the subprocess, and on exit it unregisters
         the plugin's proxy tools (by ``{name}__`` prefix), then calls
-        *restart_cb* (if supplied) or falls back to :meth:`spawn` with the
-        saved *module*.
+        *restart_cb* (if supplied) or falls back to the service's generic
+        spawn (``_spawn_plugin_generic``) with the saved *module*.
 
         Restarts use exponential backoff (1s → 2s → … → 30s) and stop
         after *max_restarts* consecutive failures.  Each restart is bounded
@@ -510,7 +429,7 @@ class PluginLifecycle:
                 async with asyncio.timeout(PLUGIN_SPAWN_TIMEOUT):
                     # The guard above guarantees at least one of
                     # restart_cb / _module; when restart_cb is absent, _module
-                    # is set (so the fallback spawn can restart the plugin).
+                    # is set (so the fallback can restart the plugin).
                     if self._restart_cb is not None:
                         await self._restart_cb()
                     else:
@@ -520,7 +439,15 @@ class PluginLifecycle:
                         if module is None:
                             logger.error("%s_watchdog_no_module", self.name)
                             return
-                        await self.spawn(module)
+                        # Same fully-wired spawn as `_restart_cb` paths — NOT
+                        # a private half-spawn: tool timeout, list-tools retry,
+                        # `SLIFE_PLUGIN_NAME`, notifications/tools/list_changed
+                        # resub, readiness marking.  (The vestigial
+                        # `PluginLifecycle.spawn` copy was deleted for exactly
+                        # this divergence.)
+                        await self._service._spawn_plugin_generic(
+                            self.name, module,
+                        )
                 # The restart call returned — but counters/backoff are NOT
                 # reset here.  A restart only "succeeded" once the child has
                 # stayed up for the stable window (see the give-up section);

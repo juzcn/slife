@@ -11,61 +11,80 @@ import base64
 import locale
 import logging
 import os
-import signal
-import subprocess
 import sys
 
-from slife.platform import _resolve_skill_script
+from slife.platform import _resolve_skill_script, kill_process_tree
 from slife.logfmt import sanitize_secrets
 from slife.tools.base import Tool
 
-
-async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
-    """Terminate a subprocess and its whole process tree.
-
-    ``process.kill()`` only kills the direct child (``cmd.exe`` / ``sh``).
-    Any grandchildren it spawned — e.g. yt-dlp started by a shell, or
-    ffmpeg spawned by yt-dlp — survive as orphans, keep writing to the
-    console and garble the TUI, and hold their pipes open forever.  This
-    kills the tree: ``taskkill /T`` on Windows, the process group on POSIX
-    (children are spawned with ``start_new_session=True``).
-
-    Runs even when the direct child already exited — its grandchildren may
-    still be alive as orphans. ``taskkill``/``killpg`` on a dead
-    pid is harmless (errors are swallowed).
-    """
-    if process is None:
-        return
-    if os.name == "nt":
-        await asyncio.to_thread(
-            subprocess.run,
-            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    else:
-        try:
-            pgid = os.getpgid(process.pid)
-            if pgid == process.pid:
-                # Child leads its own process group (start_new_session=True)
-                # — kill the whole group safely.
-                os.killpg(pgid, signal.SIGKILL)
-            else:
-                # Child shares our process group — killing the group would
-                # SIGKILL us too. Kill only the direct child.
-                os.kill(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-    try:
-        process.kill()
-    except ProcessLookupError:
-        pass
-    try:
-        await process.wait()
-    except (ProcessLookupError, OSError):
-        pass
-
 logger = logging.getLogger(__name__)
+
+#: Read-side output budget for exec tools.  ``communicate()`` accumulated the
+#: ENTIRE stdout+stderr before the downstream truncation policy applied — the
+#: LLM can ask for a big file dump and the tool would buffer all of it in
+#: memory.  These cap how much is retained while streaming: head + tail with
+#: the dropped middle reported.  Chosen well above normal tool output but
+#: small enough that a runaway `yes`/log-flood can't grow the process
+#: unboundedly.  (F7)
+_STREAM_HEAD = 100 * 1024
+_STREAM_TAIL = 20 * 1024
+
+
+async def _read_bounded(stream, head: int = _STREAM_HEAD, tail: int = _STREAM_TAIL):
+    """Read *stream* to EOF keeping the first *head* and last *tail* bytes.
+
+    Returns ``(head_bytes, tail_bytes, dropped)`` — the middle beyond
+    ``head + tail`` is discarded and the byte count reported so the caller
+    can append a truncation marker inside the tool output (the downstream
+    truncation stays intact; this is purely a memory bound on the read side).
+    """
+    head_buf = bytearray()
+    tail_buf = bytearray()
+    total = 0
+    async for chunk in stream:
+        total += len(chunk)
+        # fill the head up to its cap, keeping leftover for the tail window
+        if len(head_buf) < head:
+            take = min(head - len(head_buf), len(chunk))
+            head_buf += chunk[:take]
+            chunk = chunk[take:]
+        tail_buf += chunk
+        if len(tail_buf) > tail:
+            del tail_buf[: len(tail_buf) - tail]
+    retained = len(head_buf) + min(len(tail_buf), tail)
+    return bytes(head_buf), bytes(tail_buf), total - retained
+
+
+def _merge_bounded(head: bytes, tail: bytes, dropped: int) -> str:
+    """Decode a bounded head+tail pair into one output string, marking the
+    dropped middle explicitly inside the tool result (the tool-result policy
+    requires truncation to be visible, not silent)."""
+    text = (head + tail).decode(_shell_output_codec(), errors="replace")
+    if dropped > 0:
+        text += f"\n… (truncated: {dropped} bytes of streamed output not retained)"
+    return text
+
+
+def _merge_utf8(head: bytes, tail: bytes, dropped: int) -> str:
+    """Decode a bounded head+tail pair as UTF-8 with the dropped-middle marker."""
+    text = (head + tail).decode("utf-8", errors="replace")
+    if dropped > 0:
+        text += f"\n… (truncated: {dropped} bytes of streamed output not retained)"
+    return text
+
+
+async def _read_stdout_stderr(process):
+    """Read both subprocess pipes bounded, returning their head/tail/dropped.
+
+    ``communicate()`` buffers everything; this drains both streams with the
+    read-side cap, concurrently, so a big-file dump can't OOM the host and a
+    full pipe can't deadlock the read.
+    """
+    (out_h, out_t, out_d), (err_h, err_t, err_d) = await asyncio.gather(
+        _read_bounded(process.stdout),
+        _read_bounded(process.stderr),
+    )
+    return out_h, out_t, out_d, err_h, err_t, err_d
 
 
 def _shell_argv(command: str) -> list[str]:
@@ -158,25 +177,33 @@ class ShellTool(Tool):
             start_new_session=True,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=timeout,
-            )
+            # Stream the pipes with a read-side memory bound instead of
+            # communicate()'s buffer-everything — a large dump must not grow
+            # the process unboundedly (F7).  Reading both streams concurrently
+            # (gather) so neither pipe fills while we wait on the other.
+            stdout_head, stdout_tail, stdout_dropped, \
+                stderr_head, stderr_tail, stderr_dropped = await asyncio.wait_for(
+                    _read_stdout_stderr(process), timeout=timeout,
+                )
+            output = _merge_bounded(stdout_head, stdout_tail, stdout_dropped)
+            err_output = _merge_bounded(stderr_head, stderr_tail, stderr_dropped)
         except asyncio.TimeoutError:
             # Kill the whole tree — a bare process.kill() only kills the
             # shell and orphans yt-dlp/ffmpeg, which keep writing to the
             # console and garble the TUI.
-            await _kill_process_tree(process)
+            await kill_process_tree(process)
             logger.warning("shell_timeout timeout=%ds cmd=%.200s", timeout, sanitize_secrets(command))
             return f"Error: Command timed out after {timeout}s"
 
-        codec = _shell_output_codec()
-        output = stdout.decode(codec, errors="replace")
-        err_output = stderr.decode(codec, errors="replace")
         result = output
         if err_output:
             result += f"\n[stderr]\n{err_output}"
         if not result.strip():
             result = f"Command completed with exit code {process.returncode} (no output)"
+        elif process.returncode:
+            # Non-zero exit WITH output — surface the code so the LLM can tell
+            # the difference (F7); the plain-output shape silently hid it.
+            result += f"\n[exit {process.returncode}]"
 
         logger.debug("shell_done exit=%d out_len=%d err_len=%d",
                      process.returncode or 0, len(output), len(err_output))
@@ -251,15 +278,17 @@ class RunPythonScriptTool(Tool):
             start_new_session=True,
         )
         try:
-            stdout, stderr = await proc.communicate()
+            out_h, out_t, out_d, err_h, err_t, err_d = await _read_stdout_stderr(proc)
         except asyncio.CancelledError:
-            # The loop's tool-timeout cancels communicate() — kill the
-            # child tree so the running script (e.g. a yt-dlp download)
-            # doesn't survive as an orphan writing to the console.
-            await _kill_process_tree(proc)
+            # The loop's tool-timeout cancels the read — kill the child tree
+            # so the running script (e.g. a yt-dlp download) doesn't survive
+            # as an orphan writing to the console.
+            await kill_process_tree(proc)
             raise
-        out = stdout.decode("utf-8", errors="replace").strip()
-        err = stderr.decode("utf-8", errors="replace").strip()
+        # UTF-8 decode for the script stream (the script codec, not the shell
+        # OEM codec) — head+tail with the dropped middle reported.
+        out = _merge_utf8(out_h, out_t, out_d).strip()
+        err = _merge_utf8(err_h, err_t, err_d).strip()
 
         if proc.returncode != 0:
             if out:
@@ -308,16 +337,18 @@ class InstallPythonPackageTool(Tool):
             start_new_session=True,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            out_h, out_t, out_d, err_h, err_t, err_d = await asyncio.wait_for(
+                _read_stdout_stderr(proc), timeout=120,
+            )
         except asyncio.TimeoutError:
-            await _kill_process_tree(proc)
+            await kill_process_tree(proc)
             logger.warning("pip_install_timeout packages=%s", packages)
             return f"Error: pip install timed out after 120s"
         except asyncio.CancelledError:
-            await _kill_process_tree(proc)
+            await kill_process_tree(proc)
             raise
-        out = stdout.decode("utf-8", errors="replace").strip()
-        err = stderr.decode("utf-8", errors="replace").strip()
+        out = _merge_utf8(out_h, out_t, out_d).strip()
+        err = _merge_utf8(err_h, err_t, err_d).strip()
 
         if proc.returncode == 0:
             logger.info("pip_install_done packages=%s", packages)

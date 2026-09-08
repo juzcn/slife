@@ -11,6 +11,35 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from slife.tools.exec import ShellTool, _shell_argv, _shell_output_codec
 
 
+class _MockStream:
+    """A fake subprocess pipe: async-iterable yielding one pre-set chunk."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._data is None:
+            raise StopAsyncIteration
+        chunk, self._data = self._data, None
+        return chunk
+
+
+class _HangingStream:
+    """A subprocess pipe that never delivers — for timeout tests."""
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(3600)  # pragma: no cover
+        raise StopAsyncIteration
+
+
+
+
 # ── Tool metadata ─────────────────────────────────────────────────────
 
 
@@ -57,7 +86,8 @@ class TestShellExecute:
         tool = ShellTool(timeout=10)
 
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"hello world", b""))
+        mock_process.stdout = _MockStream(b"hello world")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -73,7 +103,8 @@ class TestShellExecute:
         tool = ShellTool(timeout=10)
 
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
+        mock_process.stdout = _MockStream(b"ok")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as m:
@@ -88,7 +119,8 @@ class TestShellExecute:
         tool = ShellTool(timeout=10)
 
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"output", b"error output"))
+        mock_process.stdout = _MockStream(b"output")
+        mock_process.stderr = _MockStream(b"error output")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -104,7 +136,8 @@ class TestShellExecute:
         tool = ShellTool(timeout=1)
 
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_process.stdout = _HangingStream()
+        mock_process.stderr = _HangingStream()
         mock_process.returncode = None  # still running when the timeout fires
         mock_process.kill = MagicMock()
         mock_process.wait = AsyncMock()
@@ -123,7 +156,8 @@ class TestShellExecute:
         tool = ShellTool(timeout=10)
 
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b""))
+        mock_process.stdout = _MockStream(b"")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -138,7 +172,8 @@ class TestShellExecute:
         tool = ShellTool(timeout=10)
 
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"   \n  ", b""))
+        mock_process.stdout = _MockStream(b"   \n  ")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
@@ -152,7 +187,8 @@ class TestShellExecute:
         tool = ShellTool(timeout=10)
 
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"\xff\xfeinvalid", b""))
+        mock_process.stdout = _MockStream(b"\xff\xfeinvalid")
+        mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
