@@ -35,7 +35,11 @@ def _resolve_secret(value: str, *, accept_keyring_uri: bool = False) -> str:
 
     1. ``keyring:`` URI  → credstore (only when *accept_keyring_uri* is True)
     2. ``${VAR}``        → os.environ → credstore
-    3. plaintext         → as-is
+    3. ``${VAR:-default}`` → os.environ → credstore → literal default
+    4. plaintext         → as-is
+
+    Unresolvable references are left as-is (lenient) — never raise, so a
+    missing secret degrades to its literal form instead of breaking startup.
     """
     # keyring: URI
     if accept_keyring_uri:
@@ -43,15 +47,26 @@ def _resolve_secret(value: str, *, accept_keyring_uri: bool = False) -> str:
         if is_keyring_uri(value):
             return resolve_uri(value)
 
-    # ${VAR} reference
+    # ${VAR} reference (pure form).
     if value.startswith("${") and value.endswith("}"):
         var_name = value[2:-1]
-        env_val = os.environ.get(var_name)
-        if env_val:
-            return env_val
-        cred_val = _try_credstore_lookup(var_name)
-        if cred_val:
-            return cred_val
+        if ":-" not in var_name:
+            env_val = os.environ.get(var_name)
+            if env_val:
+                return env_val
+            cred_val = _try_credstore_lookup(var_name)
+            if cred_val:
+                return cred_val
+            return value
+        # ${VAR:-default} — env.resolve_env implements the shared chain
+        # (env → credstore → literal default); reuse it so the two
+        # resolvers can't drift.  resolve_env raises on an unresolvable ref
+        # without a default; lenient callers keep the literal instead.
+        from slife.env import resolve_env
+        try:
+            return resolve_env(value)
+        except KeyError:
+            return value
 
     return value
 

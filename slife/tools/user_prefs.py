@@ -16,40 +16,17 @@ import json
 import logging
 from typing import ClassVar
 
-from slife.tools.base import Tool, make_params
+from slife.tools.base import Tool, _MemfilesClientMixin, make_params
 
 logger = logging.getLogger(__name__)
 
-_OFFLINE = (
-    "Error: memfiles plugin not connected — user preferences are unavailable."
-)
 
-
-class _MemfilesCallMixin:
-    """Delegate a call to the memfiles plugin over its MCP client.
-
-    Mirrors the ``_ScheduleMixin`` split in ``slife/tools/schedule.py``: the
-    main process never touches the plugin's store — every data op reaches it
-    through ``ToolContext.memfiles_client``.
-    """
-
-    def _client(self):
-        ctx = getattr(self, "_ctx", None)
-        return getattr(ctx, "memfiles_client", None) if ctx is not None else None
-
-    async def _call(self, tool: str, arguments: dict | None = None):
-        client = self._client()
-        if client is None:
-            return _OFFLINE
-        try:
-            return await client.call_tool(tool, arguments)
-        except Exception as e:
-            logger.debug("memfiles_tool_error tool=%s err=%s", tool, e)
-            return f"Error: {tool} failed — {e}"
-
-
-class AddUserPrefTool(_MemfilesCallMixin, Tool):
+class AddUserPrefTool(_MemfilesClientMixin, Tool):
     """Record one standing user preference the user has stated."""
+
+    offline_message = (
+        "Error: memfiles plugin not connected — user preferences are unavailable."
+    )
 
     name = "add_user_pref"
     category: ClassVar[str] = "System"

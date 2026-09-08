@@ -29,6 +29,7 @@ from slife.plugins.memdb.search import merge_hybrid
 from slife.plugins.memdb.store import (
     _clamp_limit,
     _contains_cjk,
+    _like_escape,
     _serialize_f32,
     _split_sql,
     _to_fts5_query,
@@ -1022,10 +1023,7 @@ class MemfilesStore:
     ) -> list[dict]:
         """CJK substring search — FTS5's unicode61 can't segment Chinese."""
         spec = _KIND_SPECS[kind]
-        safe = (
-            query.replace("\\", r"\\").replace("%", r"\%").replace("_", r"\_")
-        )
-        pat = f"%{safe}%"
+        pat = f"%{_like_escape(query)}%"
         like_clauses = " OR ".join(f"t.{c} LIKE ? ESCAPE '\\'" for c in spec["like_cols"])
         params: list[str] = [pat] * len(spec["like_cols"])
         cursor = await self._c.execute(

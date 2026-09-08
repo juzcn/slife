@@ -20,26 +20,11 @@ from textual.content import Content
 from textual.widgets import Static
 
 from slife.config import ModelConfig
+from slife.ui.content import lit, mc
 from slife.ui.i18n import t
 
 # Inline picker navigation: ↑/↓ move a cursor, Enter picks, Esc cancels.
 # Every configured model is listed — no cap.
-
-
-def _mc(text: str) -> Content:
-    """Build Content from a **controlled** markup string (labels/sections only)."""
-    return Content.from_markup(text)
-
-
-def _lit(text: str, style: str = "") -> Content:
-    """Build Content from arbitrary text — NEVER parsed as markup.
-
-    Safe path for model names / refs, which may contain ``[``, ``&`` etc.
-    """
-    c = Content.from_text(text, markup=False)
-    if style:
-        c = c.stylize(style)
-    return c
 
 
 class ModelPicker(Static):
@@ -121,22 +106,22 @@ class ModelPicker(Static):
         if self._decided:
             return self._status_line()
 
-        content = _mc("[bold #d29922]⚠ [/]") + _mc(f"[bold]{t('picker_title')}[/bold]")
+        content = mc("[bold #d29922]⚠ [/]") + mc(f"[bold]{t('picker_title')}[/bold]")
 
         for i, m in enumerate(self._models, 1):
             row_idx = i - 1
             cursor = "▸ " if row_idx == self._cursor else "  "
             star = "★ " if m.ref == self._active_ref else "  "
-            content = content + _lit(
+            content = content + lit(
                 f"\n{cursor}{i}. {star}{m.ref}",
                 "bold" if m.ref == self._active_ref else "",
             )
             meta = self._meta_line(m)
             if meta:
-                content = content + _lit("  " + meta, "#8b949e")
+                content = content + lit("  " + meta, "#8b949e")
 
         # Key hints on the last line, same as ApprovalPrompt.
-        content = content + _mc(
+        content = content + mc(
             f"\n[#6e7681]↑/↓ [/][bold #3fb950]{t('picker_select')}[/]  "
             f"[#6e7681]Enter [/][bold #3fb950]{t('picker_pick')}[/]  "
             f"[#6e7681]Esc [/][bold #f85149]{t('picker_cancel')}[/]"
@@ -157,8 +142,8 @@ class ModelPicker(Static):
     def _status_line(self) -> Content:
         if self._choice is not None:
             return (
-                _mc(f"[bold #3fb950]{t('picker_switched')}[/bold #3fb950]")
-                + _mc(" — ")
-                + _lit(self._choice.ref, "bold")
+                mc(f"[bold #3fb950]{t('picker_switched')}[/bold #3fb950]")
+                + mc(" — ")
+                + lit(self._choice.ref, "bold")
             )
-        return _mc(f"[bold #f85149]{t('picker_canceled')}[/bold #f85149]")
+        return mc(f"[bold #f85149]{t('picker_canceled')}[/bold #f85149]")

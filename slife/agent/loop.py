@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import time as _time
-from datetime import datetime
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -17,7 +16,7 @@ from slife.logfmt import sanitize_secrets
 from slife.agent.message_history import MessageHistory
 from slife.platform import detect_current_shell
 from slife.tools.registry import ToolRegistry
-from slife.logfmt import request_scope, elapsed
+from slife.logfmt import format_turn_ts, request_scope, elapsed
 
 logger = logging.getLogger(__name__)
 
@@ -592,9 +591,7 @@ class AgentLoop:
             # actual start (recorded at run() time), not from wall-clock
             # now — the footer's "covers since HH:MM" must track the turn.
             self._context_time_start = getattr(
-                self, "_current_turn_start", "") or (
-                    datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-                )
+                self, "_current_turn_start", "") or format_turn_ts()
         logger.info(
             "context_trimmed_after_save turns=%d tokens_freed=%d time_start=%s",
             removed, tokens_freed, self._context_time_start,
@@ -1268,7 +1265,7 @@ class AgentLoop:
                 # _context_turn_dates holds the rest (restore seeds dates[1:]).
                 # Same 'YYYY-MM-DD HH:MM:SS' wall-clock format restore seeds
                 # (_context_time_start), so "Context covers" never flips format.
-                turn_start = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                turn_start = format_turn_ts()
                 # Remember the current turn's start for the trim-exhausted
                 # branch (seed _context_time_start from it, not from now).
                 self._current_turn_start = turn_start

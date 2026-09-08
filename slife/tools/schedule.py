@@ -29,7 +29,7 @@ import re
 from typing import ClassVar
 
 from slife.schedules import is_valid
-from slife.tools.base import Tool, make_params, require_params
+from slife.tools.base import Tool, _MemfilesClientMixin, make_params, require_params
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +38,6 @@ logger = logging.getLogger(__name__)
 #: rule — the same pattern as ``slife/subagent/process.py _SAFE_SUBAGENT_NAME``.
 _SAFE_TASK_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
-_OFFLINE = (
-    "Error: memfiles plugin not connected — scheduled-task tools are unavailable."
-)
 
 
 def _parse(raw: str | None):
@@ -53,36 +50,28 @@ def _parse(raw: str | None):
         return raw
 
 
-class _ScheduleMixin:
+class _ScheduleMixin(_MemfilesClientMixin):
     """Client plumbing shared by the schedule tools.
 
-    A plain (non-``Tool``) mixin: every data-touching op delegates to the
-    memfiles plugin's internal ``__scheduled_*`` tools over the MCP client on
-    ``ToolContext`` (``memfiles_client``).  Pure validation / formatting stays
-    in-process.  Mirrors the ``check_memfiles`` split in
-    ``slife/tools/system.py``.
+    Every data-touching op delegates to the memfiles plugin's internal
+    ``__scheduled_*`` tools over the MCP client on ``ToolContext``
+    (``memfiles_client``) — the shared :class:`_MemfilesClientMixin` provides
+    the client lookup + error-string contract; this adds schedule-specific
+    parse/format on top.
     """
 
-    def _client(self):
-        ctx = getattr(self, "_ctx", None)
-        return getattr(ctx, "memfiles_client", None) if ctx is not None else None
+    offline_message = (
+        "Error: memfiles plugin not connected — scheduled-task tools are unavailable."
+    )
 
     async def _call(self, tool: str, arguments: dict | None = None):
-        client = self._client()
-        if client is None:
-            return _OFFLINE
-        try:
-            raw = await client.call_tool(tool, arguments)
-        except Exception as e:
-            logger.debug("schedule_tool_error tool=%s err=%s", tool, e)
-            return f"Error: {tool} failed — {e}"
-        return _parse(raw)
+        return _parse(await super()._call(tool, arguments))
 
     def _format(self, data):
         """Pretty-print dict/list results; pass error strings straight back."""
         if isinstance(data, (dict, list)):
             return json.dumps(data, ensure_ascii=False, indent=2)
-        return data if data else _OFFLINE
+        return data if data else self.offline_message
 
 
 class ScheduledTaskSetTool(_ScheduleMixin, Tool):

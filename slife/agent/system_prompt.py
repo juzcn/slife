@@ -12,6 +12,8 @@ import os
 import platform
 import sys
 from datetime import datetime
+
+from slife.logfmt import format_turn_ts
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -160,9 +162,7 @@ def build_context_status(
     rendered_presence: list[dict[str, str]] = []
     if presence_events:
         for epoch, text in presence_events:
-            ev_time = datetime.fromtimestamp(epoch, tz=now.tzinfo).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
+            ev_time = format_turn_ts(datetime.fromtimestamp(epoch, tz=now.tzinfo))
             rendered_presence.append({"time": ev_time, "text": text})
     rendered_schedule: list[dict] = [
         {"name": r.get("name", ""), "due_at": r.get("due_at", ""),
@@ -170,7 +170,7 @@ def build_context_status(
         for r in (schedule_status or [])
     ]
     return _env.get_template("context_status.j2").render(
-        current_datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
+        current_datetime=format_turn_ts(now),
         utc_offset=now.strftime("%z"),
         last_context_tokens=f"{last_context_tokens:,}",
         last_usage_pct=last_usage_pct,

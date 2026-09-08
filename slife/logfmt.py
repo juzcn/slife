@@ -183,6 +183,17 @@ class SessionFormatter(logging.Formatter):
 # ── Timing helper ───────────────────────────────────────────────────────
 
 
+def format_turn_ts(dt: datetime | None = None) -> str:
+    """One wall-clock timestamp format for 'Context covers since …' footers,
+    turn dates and log/restore display: ``YYYY-MM-DD HH:MM:SS`` local.
+
+    Duplicated as a bare ``strftime`` in loop / system_prompt / restore /
+    message_history before this helper — one format, one place.
+    """
+    now = dt if dt is not None else datetime.now().astimezone()
+    return now.strftime("%Y-%m-%d %H:%M:%S")
+
+
 @contextmanager
 def elapsed(
     operation: str,

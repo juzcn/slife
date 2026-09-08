@@ -35,6 +35,7 @@ import aiosqlite
 from slife.plugins.memdb.store import (
     _clamp_limit,
     _contains_cjk,
+    _like_escape,
     _serialize_f32,
     _split_sql,
     _to_fts5_query,
@@ -49,15 +50,6 @@ def _now() -> str:
 
 def _deserialize_f32(blob: bytes) -> list[float]:
     return list(struct.unpack(f"{len(blob) // 4}f", blob))
-
-
-def _like_escape(pattern: str) -> str:
-    """Escape LIKE metacharacters so ``%``/``_`` match literally."""
-    return (
-        pattern.replace("\\", r"\\")
-        .replace("%", r"\%")
-        .replace("_", r"\_")
-    )
 
 
 def _cosine_distance(a: list[float], b: list[float]) -> float:

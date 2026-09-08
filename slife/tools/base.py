@@ -73,13 +73,47 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 if TYPE_CHECKING:
     from slife.config import Config
     from slife.tools.context import ToolContext
 
 logger = logging.getLogger(__name__)
+
+
+class _MemfilesClientMixin:
+    """Delegate data-mutating ops to the memfiles plugin's MCP client.
+
+    Shared by the schedule tools (``schedule.py``) and the user-preference
+    tool (``user_prefs.py``): the main process never touches the plugin's
+    store — every data op reaches it through ``ToolContext.memfiles_client``.
+    The offline message is a class attribute so each feature can name its
+    own gap ("scheduled-task tools are unavailable" vs "user preferences are
+    unavailable").
+    """
+
+    #: Returned when the plugin's client is not yet connected.
+    offline_message: ClassVar[str] = (
+        "Error: memfiles plugin not connected."
+    )
+
+    def _client(self):
+        ctx = getattr(self, "_ctx", None)
+        return getattr(ctx, "memfiles_client", None) if ctx is not None else None
+
+    async def _call(self, tool: str, arguments: dict | None = None) -> Any:
+        """Call an internal ``__*`` tool; never raises (mirrors every slife
+        tool's error-string contract).  Subclasses may post-process the raw
+        string (schedule tools parse JSON), hence the loose return type."""
+        client = self._client()
+        if client is None:
+            return self.offline_message
+        try:
+            return await client.call_tool(tool, arguments)
+        except Exception as e:
+            logger.debug("memfiles_tool_error tool=%s err=%s", tool, e)
+            return f"Error: {tool} failed — {e}"
 
 
 # ── JSON Schema helpers ────────────────────────────────────────────

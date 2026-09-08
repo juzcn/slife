@@ -10,7 +10,7 @@ from __future__ import annotations
 import time as _time
 from dataclasses import dataclass, field
 
-from slife.a2a.wire import Message, TaskState, iso_now
+from slife.a2a.wire import Message, TaskState, TaskStatus, iso_now
 
 # ── Task record ─────────────────────────────────────────────────────────
 
@@ -55,7 +55,16 @@ class TaskRecord:
             "cancelled": TaskState.CANCELLED.value,
         }.get(self.status, TaskState.SUBMITTED.value)
 
-        status = TaskStatus_dict(state, self.created_iso, self.result)
+        # Build the wire dataclass directly (its to_dict() is the canonical
+        # serialization) instead of a hand-rolled status dict.
+        status = TaskStatus(
+            state=state,
+            timestamp=self.created_iso,
+            message=(
+                Message.text_message(self.result, role="agent")
+                if self.result is not None else None
+            ),
+        ).to_dict()
         artifacts: list[dict] = []
         if self.result is not None:
             artifacts.append({
@@ -73,14 +82,6 @@ class TaskRecord:
                 "transport": self.transport,
             },
         }
-
-
-def TaskStatus_dict(state: str, timestamp: str, result: str | None) -> dict:
-    """Build an official ``TaskStatus`` dict."""
-    d: dict = {"state": state, "timestamp": timestamp}
-    if result is not None:
-        d["message"] = Message.text_message(result, role="agent").to_dict()
-    return d
 
 
 # ── Task store ──────────────────────────────────────────────────────────

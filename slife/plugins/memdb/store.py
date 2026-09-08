@@ -43,6 +43,15 @@ def _clamp_limit(limit: int) -> int:
     return min(limit, _MAX_SEARCH_LIMIT)
 
 
+def _like_escape(pattern: str) -> str:
+    """Escape LIKE metacharacters so ``%``/``_`` match literally.
+
+    Shared by every hybrid-search store (memdb / memfiles / mcp_gateway) —
+    the ESCAPE '\\' clause requires the backslash to be doubled first.
+    """
+    return pattern.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
 class SessionStore:
     """Manages the Slife memory database — turn-based, no sessions."""
 
@@ -528,12 +537,7 @@ class SessionStore:
                 # them literally; the ESCAPE '\' clause is required or the
                 # escapes are a no-op. Backslashes must be doubled first — the
                 # same rules as search_grep.
-                safe = (
-                    query.replace("\\", r"\\")
-                         .replace("%", r"\%")
-                         .replace("_", r"\_")
-                )
-                like_pattern = f"%{safe}%"
+                like_pattern = f"%{_like_escape(query)}%"
                 where = "(user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\')"
                 params: list = [like_pattern, like_pattern]
             else:
@@ -796,11 +800,7 @@ class SessionStore:
         for w in words:
             # Escape LIKE metacharacters so %/_ match literally —
             # same escaping as search_grep.
-            safe = (
-                w.replace("\\", r"\\")
-                 .replace("%", r"\%")
-                 .replace("_", r"\_")
-            )
+            safe = _like_escape(w)
             like = f"%{safe}%"
             and_clauses.append(
                 "(user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\'"
@@ -939,12 +939,7 @@ class SessionStore:
         # Escape LIKE metacharacters so a pattern containing %/_ matches them
         # literally.  The ESCAPE '\' clause is required or the escapes are a
         # no-op ; backslashes themselves must be doubled first.
-        safe = (
-            pattern.replace("\\", r"\\")
-                   .replace("%", r"\%")
-                   .replace("_", r"\_")
-        )
-        like_pattern = f"%{safe}%"
+        like_pattern = f"%{_like_escape(pattern)}%"
         time_clauses = ""
         time_params: list[str] = []
         if since:
