@@ -12,7 +12,13 @@ import zipfile
 from pathlib import Path
 from typing import ClassVar
 
-from slife.tools._config_io import format_source_info, read_config, with_fetched_at, write_config
+from slife.tools._config_io import (
+    config_write_locked,
+    format_source_info,
+    read_config,
+    with_fetched_at,
+    write_config,
+)
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -576,6 +582,7 @@ class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompati
         "required": ["name", "enabled"],
     }
 
+    @config_write_locked
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         enabled: bool = kwargs["enabled"]

@@ -26,7 +26,12 @@ import json
 import logging
 from typing import ClassVar
 
-from slife.tools._config_io import _ConfigPathMixin, read_config, write_config
+from slife.tools._config_io import (
+    _ConfigPathMixin,
+    config_write_locked,
+    read_config,
+    write_config,
+)
 from slife.tools.base import Tool, make_params
 
 logger = logging.getLogger(__name__)
@@ -187,6 +192,7 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
         "required": ["provider"],
     }
 
+    @config_write_locked
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
             return "Error: config path not available."
@@ -250,6 +256,7 @@ class SwitchEmbeddingsTool(_EmbeddingsConfigTool):
         "required": ["provider"],
     }
 
+    @config_write_locked
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
             return "Error: config path not available."
@@ -293,6 +300,7 @@ class RemoveEmbeddingsTool(_EmbeddingsConfigTool):
         "required": ["provider"],
     }
 
+    @config_write_locked
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
             return "Error: config path not available."
@@ -340,6 +348,7 @@ class EnableEmbeddingsTool(_EmbeddingsConfigTool):
         },
     )
 
+    @config_write_locked
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
             return "Error: config path not available."

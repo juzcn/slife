@@ -47,7 +47,8 @@ class TestWrite:
         assert output["error"]["code"] == -32000
         assert output["error"]["message"] == "Something broke"
 
-    def test_write_result_none_becomes_empty_dict(self):
+    def test_write_result_none_omits_result(self):
+        """An empty/silent turn must not corrupt into ``{"result": {}}``."""
         buf = BytesIO()
         mock_stdout = MagicMock()
         mock_stdout.buffer = buf
@@ -57,7 +58,21 @@ class TestWrite:
 
         output = json.loads(buf.getvalue().decode("utf-8"))
         assert output["jsonrpc"] == "2.0"
-        assert output["result"] == {}
+        assert "result" not in output
+
+    def test_write_result_empty_string_stays_empty(self):
+        """An explicitly-empty reply stays ``"",`` — the parent reads it as
+        str(msg.get("result", "")) without seeing the literal "{}"."""
+        buf = BytesIO()
+        mock_stdout = MagicMock()
+        mock_stdout.buffer = buf
+
+        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+            _write(result="", rpc_id="req-empty")
+
+        output = json.loads(buf.getvalue().decode("utf-8"))
+        assert output["id"] == "req-empty"
+        assert output["result"] == ""
 
     def test_write_error_default_code(self):
         buf = BytesIO()

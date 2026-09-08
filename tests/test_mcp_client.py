@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from mcp.types import CallToolResult, TextContent
+
 from slife.plugins.mcp_gateway.client import MCPClient
 
 
@@ -155,7 +157,8 @@ class TestMCPClientCallTool:
         mock_text_block.text = "Hello, World!"
 
         mock_result = MagicMock()
-        mock_result.isError = False
+        mock_result.is_error = False
+        del mock_result.isError  # a real CallToolResult has no isError attr
         mock_result.content = [mock_text_block]
         client._session = MagicMock()
         client._session.call_tool = AsyncMock(return_value=mock_result)
@@ -163,6 +166,22 @@ class TestMCPClientCallTool:
         result = await client.call_tool("echo", {"message": "Hello"})
         assert result == "Hello, World!"
         client._session.call_tool.assert_called_once_with("echo", {"message": "Hello"})
+
+    @pytest.mark.asyncio
+    async def test_call_tool_error_result_gets_error_prefix(self):
+        """A CallToolResult with is_error=True must surface as ``Error: …``
+        (the loop derives is_error from the "Error" prefix)."""
+        client = MCPClient()
+        client._connected = True
+
+        client._session = MagicMock()
+        client._session.call_tool = AsyncMock(return_value=CallToolResult(
+            content=[TextContent(text="boom")], is_error=True,
+        ))
+
+        result = await client.call_tool("echo", {"message": "Hello"})
+        assert result.startswith("Error")
+        assert "boom" in result
 
     @pytest.mark.asyncio
     async def test_call_tool_binary_data(self):
@@ -174,7 +193,8 @@ class TestMCPClientCallTool:
         mock_bin_block.data = b"binary stuff"
 
         mock_result = MagicMock()
-        mock_result.isError = False
+        mock_result.is_error = False
+        del mock_result.isError  # a real CallToolResult has no isError attr
         mock_result.content = [mock_bin_block]
         client._session = MagicMock()
         client._session.call_tool = AsyncMock(return_value=mock_result)

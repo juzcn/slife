@@ -14,6 +14,7 @@ from typing import ClassVar
 
 from slife.tools._config_io import (
     _ConfigPathMixin,
+    config_write_locked,
     format_source_info,
     read_config,
     with_fetched_at,
@@ -103,6 +104,7 @@ class CliSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
         "required": ["name", "command", "description"],
     }
 
+    @config_write_locked
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         command: str = kwargs["command"]
@@ -162,12 +164,13 @@ class CliRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatib
         "required": ["name"],
     }
 
+    @config_write_locked
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
 
 
         ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
-        
+
 
         if config is not None and config._path is not None:
             if name not in config.cli_tools:
@@ -225,6 +228,7 @@ class CliSetEnabledTool(_ConfigPathMixin, Tool):
         "required": ["name", "enabled"],
     }
 
+    @config_write_locked
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         enabled: bool = kwargs["enabled"]

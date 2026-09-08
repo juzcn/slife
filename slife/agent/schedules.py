@@ -465,10 +465,27 @@ async def schedule_loop(service) -> None:
             # only while open runs exist).
             await _refresh_schedule_status(service, client)
 
-            # Drop stale pending-fire guards (the agent never dispatched).
+            # Drop stale pending-fire guards (the agent never dispatched) —
+            # UNLESS the trigger is still sitting in the inbox queue behind a
+            # long turn.  Age alone is not proof of "never dispatched": a
+            # trigger queued past the grace window but not yet processed must
+            # not re-fire (a second trigger → a second worker → double run).
             stale = [n for n, t in _pending_fires.items()
                      if _time.monotonic() - t > MISS_GRACE]
+            inbox = getattr(service, "inbox", None)
             for n in stale:
+                still_queued = bool(
+                    inbox is not None and inbox.has_queued(
+                        lambda m, name=n: m.content.startswith(
+                            f"[Schedule {name}"
+                        )
+                    )
+                )
+                if still_queued:
+                    # Trigger still pending arrival — re-arm instead of
+                    # dropping, so the poll keeps skipping it.
+                    _pending_fires[n] = _time.monotonic()
+                    continue
                 _pending_fires.pop(n, None)
 
             for task in states:

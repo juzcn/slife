@@ -42,8 +42,11 @@ def _write(result=None, error=None, rpc_id=None) -> None:
     msg = {"jsonrpc": "2.0", "id": rpc_id}
     if error is not None:
         msg["error"] = {"code": error.get("code", -32000), "message": error.get("message", "")}
-    else:
-        msg["result"] = result or {}
+    elif result is not None:
+        # Only set result when it's not None.  Coercing ``""`` to ``{}``
+        # corrupted an empty (silent-success) turn into the literal string
+        # "{}" on the parent side — an empty reply must stay empty.
+        msg["result"] = result
     # Write UTF-8 bytes directly to stdout buffer.  On Windows, sys.stdout
     # defaults to GBK (or the system locale encoding) which cannot encode
     # emoji and many Unicode characters — json.dumps(ensure_ascii=False)

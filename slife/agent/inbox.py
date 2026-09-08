@@ -13,8 +13,6 @@ import json as _json
 import logging
 from typing import TYPE_CHECKING
 
-from openai import BadRequestError, ContentFilterFinishReasonError
-
 from slife.a2a.identity import AgentName, AgentMessage
 from slife.agent.message_history import MessageHistory
 
@@ -24,6 +22,26 @@ if TYPE_CHECKING:
     from slife.agent.loop import AgentLoop, AgentEventHandler
 
 logger = logging.getLogger(__name__)
+
+
+def _is_bad_request(exc: BaseException) -> bool:
+    """True if *exc* is a provider bad-request/content-policy error — the
+    only class of failure where the message history itself is the problem.
+
+    Both SDK generations (openai, anthropic — the latter also covering
+    Bailian/Qwen via the Anthropic-compatible endpoint) raise an API-status
+    error with ``status_code == 400`` for content-filter / policy rejects
+    and for malformed-request 400s; matching the status code instead of the
+    SDK's class names keeps this provider-agnostic (a hard ``openai`` import
+    here both pulled in the package for a match and missed the anthropic
+    backends entirely).  4xx auth errors (401/403) are deliberately NOT
+    rolled back — the turn is valid, the credentials are the problem.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status == 400:
+        return True
+    # openai's client-side content-filter signal (no HTTP round-trip).
+    return type(exc).__name__ == "ContentFilterFinishReasonError"
 
 
 class MemorySaveError(RuntimeError):
@@ -155,6 +173,18 @@ class Inbox:
         logger.debug(
             "inbox_post source=%s content=%.80s", msg.source, msg.content,
         )
+
+    def has_queued(self, predicate: "Callable[[AgentMessage], bool]") -> bool:
+        """True if any *queued* (not yet processed) message satisfies
+        *predicate*.  Non-destructive — the scheduler uses it to decide
+        whether a pending-fire guard can be dropped without re-firing.
+
+        Peek the underlying deque directly (the queue's public API offers
+        no non-destructive scan); the attribute is stable in every
+        supported asyncio version.
+        """
+        deque = getattr(self._queue, "_queue", (), )
+        return any(predicate(m) for m in deque)
 
     # ── Run ───────────────────────────────────────────────────────────
 
@@ -330,9 +360,7 @@ class Inbox:
             # errors (connection, timeout, rate-limit, server errors)
             # keep the history intact so typing "go" continues
             # with full context.
-            if history is not None and isinstance(
-                e, (BadRequestError, ContentFilterFinishReasonError),
-            ):
+            if history is not None and _is_bad_request(e):
                 try:
                     history.pop_last_turn()
                     # The rejected turn was rolled back — the finally must NOT

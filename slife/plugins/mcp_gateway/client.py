@@ -478,7 +478,10 @@ class MCPClient:
             logger.warning("mcp_tool_error name=%s err=%s", name, e)
             return f"Error: {msg}"
 
-        if getattr(result, "isError", False):
+        # CallToolResult carries ``is_error`` (snake_case) — the SDK's
+        # pydantic field name, matching connection.py's read.  The wire/
+        # camelCase alias ``isError`` does not exist on the parsed model.
+        if getattr(result, "is_error", False):
             parts: list[str] = []
             for block in result.content:
                 if hasattr(block, "text"):

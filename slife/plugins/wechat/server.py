@@ -406,6 +406,16 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
             await asyncio.sleep(_QR_POLL_INTERVAL)
             continue
 
+        if data.get("redirect_base"):
+            # scaned_but_redirect — the code needs to be confirmed on a
+            # different node.  Switch the poll target and keep waiting;
+            # without this the loop polls the original host forever and
+            # the login never completes (mirrors client._wait_login_confirmation).
+            base_url = data["redirect_base"]
+            logger.debug("qr_poll_node_switch url=%s", base_url)
+            await asyncio.sleep(_QR_POLL_INTERVAL)
+            continue
+
         if data.get("bot_token"):
             bot_token = data["bot_token"]
             bu = data.get("baseurl", base_url)

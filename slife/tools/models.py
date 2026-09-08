@@ -13,7 +13,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, ClassVar
 
-from slife.tools._config_io import _ConfigPathMixin, read_config, write_config
+from slife.tools._config_io import (
+    _ConfigPathMixin,
+    config_write_locked,
+    read_config,
+    write_config,
+)
 from slife.tools.base import Tool, make_params
 
 if TYPE_CHECKING:
@@ -210,6 +215,7 @@ class SetModelTool(_ModelConfigTool):
         "required": ["provider", "model", "name"],
     }
 
+    @config_write_locked
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
             return "Error: config path not available."
@@ -323,6 +329,7 @@ class RemoveModelTool(_ModelConfigTool):
         "required": ["ref"],
     }
 
+    @config_write_locked
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
             return "Error: config path not available."
@@ -400,6 +407,7 @@ class SwitchModelTool(_ModelConfigTool):
         "required": ["ref"],
     }
 
+    @config_write_locked
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
             return "Error: config path not available."

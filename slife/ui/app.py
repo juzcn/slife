@@ -12,7 +12,7 @@ from textual.message import Message
 from textual.widgets import Static, TextArea
 
 from slife.config import Config
-from slife.a2a.card import format_presence_line
+from slife.a2a.card import _safe_name, format_presence_line
 from slife.agent.service import AgentService, MemoryDatabaseError
 from slife.agent.plugins import PluginStartStatus
 from slife.ui.chat import ChatView
@@ -867,7 +867,11 @@ class SlifeApp(App):
             chat_view.add_system_message(line, color=color)
 
         elif kind == "task_received":
-            source = kwargs.get("source", "unknown")
+            # ``source`` is a remote, untrusted A2A peer name off the MQTT
+            # wire — scrub control chars before rendering into the TUI (same
+            # defence as presence lines), or a hostile peer could inject
+            # ANSI/instructions into the user's terminal.
+            source = _safe_name(kwargs.get("source", "unknown"))
             content = kwargs.get("content", "").strip()
             # Show source agent ID as prefix so user knows who sent the task
             chat_view.add_user_message(
@@ -878,7 +882,6 @@ class SlifeApp(App):
 
         elif kind == "peer_message":
             # Peer terminal (WeChat etc.) — show with channel prefix
-            source = kwargs.get("source", "wechat")
             content = kwargs.get("content", "").strip()
             chat_view.add_user_message(
                 content,
@@ -902,7 +905,7 @@ class SlifeApp(App):
             chat_view.add_system_message(t("loop_error", err=error), color="#f85149")
 
         elif kind == "task_completed":
-            source = kwargs.get("source", "unknown")
+            source = _safe_name(kwargs.get("source", "unknown"))
             chat_view.add_system_message(
                 t("task_completed", source=source), color="#3fb950",
             )
