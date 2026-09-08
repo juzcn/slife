@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -2832,6 +2832,7 @@ dependencies = [
     { name = "credstore" },
     { name = "croniter" },
     { name = "fastmcp" },
+    { name = "filelock" },
     { name = "httpx2" },
     { name = "jinja2" },
     { name = "json5" },
@@ -2878,6 +2879,7 @@ requires-dist = [
     { name = "credstore", editable = "credstore" },
     { name = "croniter", specifier = ">=6.2.4" },
     { name = "fastmcp", specifier = ">=2.0.0" },
+    { name = "filelock", specifier = ">=3.12.0" },
     { name = "httpx2", specifier = ">=2.7.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "json5", specifier = ">=0.15.0" },

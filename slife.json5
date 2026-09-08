@@ -61,6 +61,25 @@
           }
         ]
       },
+      qianfan: {
+        base_url: "https://qianfan.baidubce.com/v2/tokenplan/personal",
+        api_key: "${QIANFAN_API_KEY}",
+        api: "openai-completions",
+        models: [
+          {
+            model: "qianfan-code-latest",
+            name: "switch by control panel",
+            reasoning: true,
+            input: [
+              "text"
+            ],
+            context_window: 1000000,
+            max_tokens: 384000,
+            temperature: 0.7,
+            top_p: 1.0
+          },
+        ]
+      },
       scnet: {
         base_url: "https://api.scnet.cn/api/llm/v1",
         api_key: "${SCNET_TOKEN_PLAN}",
@@ -310,7 +329,7 @@
       }
     }
   },
-  active_model: "bailian_personal/glm-5.2",
+  active_model: "qianfan/qianfan-code-latest",
   job_coding_model: "bailian_personal/qwen3.6-flash",
   plugins: {
     required: [
@@ -373,7 +392,7 @@
   embeddings: {
     providers: {
       local_embed: {
-        base_url: "http://127.0.0.1:17347/v1",   // OpenAI 兼容端点;每个 provider 一个 model
+        base_url: "http://127.0.0.1:17347/v1",
         model: "bge-m3",
         api_key: "local"
       }
