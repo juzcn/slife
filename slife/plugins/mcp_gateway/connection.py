@@ -22,12 +22,13 @@ import json
 import logging
 import os
 import subprocess as _subprocess
+import tempfile
 import time as _time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from enum import Enum
-from io import TextIOBase
+from typing import Any
 
 import httpx2
 
@@ -63,6 +64,11 @@ _CONNECT_STARTUP_TIMEOUT = 120.0
 # failed/cancelled connect — a request hung against a not-yet-ready server
 # can keep aclose() from returning promptly; the retry must progress.
 _CLEANUP_TIMEOUT = 2.0
+
+# stdio stderr capture: poll interval for the errlog-file drain task, and how
+# many lines of the tail connect()'s error path may read back.
+_STDERR_POLL_INTERVAL = 0.05
+_STDERR_BUFFER_LIMIT = 500
 
 #: Per-session deadline for tools/list_changed notifications (matches the
 #: gateway server's notify-bound; kept together here for the connection side).
@@ -107,38 +113,6 @@ class ServerConfig:
         return "http" if self.url else "stdio"
 
 
-class _StderrCapture(TextIOBase):
-    """TextIO sink for the SDK's stdio transport — feeds the stderr tail.
-
-    Passed as ``errlog`` to :func:`mcp.client.stdio.stdio_client`, which
-    writes the child's stderr hered.  Keeps the last ``_MAX_STDERR_LINES``
-    lines (connect()'s error path reads the tail, like the relay it
-    replaces); a chatty server must not grow it without bound.
-    """
-
-    _MAX_STDERR_LINES = 500
-
-    def __init__(self, connection: "MCPServerConnection") -> None:
-        self._conn = connection
-
-    def writable(self) -> bool:
-        return True
-
-    def write(self, text: str) -> int:
-        buf = self._conn._stderr_buffer
-        buf.append(text)
-        if len(buf) > self._MAX_STDERR_LINES:
-            del buf[: len(buf) - self._MAX_STDERR_LINES]
-        logger.debug(
-            "mcp_stderr server=%s line=%s",
-            self._conn.config.name, text.rstrip("\n"),
-        )
-        return len(text)
-
-    def flush(self) -> None:
-        pass
-
-
 class MCPServerConnection:
     """Persistent MCP client connection over the official SDK sessions.
 
@@ -160,7 +134,13 @@ class MCPServerConnection:
         self._session: ClientSession | None = None
         self._http_client: httpx2.AsyncClient | None = None
         self._sse_mode: bool = False
-        self._stderr_capture: _StderrCapture | None = None
+        # stdio stderr capture: a real temp file passed as the SDK's errlog
+        # (the child writes straight to disk), drained by _drain_stderr into
+        # the ring buffer below.  The file handle is the capture's source of
+        # truth on every platform — an in-memory TextIO cannot be a child's
+        # stderr (the subprocess machinery needs a real fd).
+        self._stderr_dump: Any | None = None
+        self._stderr_task: "asyncio.Task | None" = None
         self._stderr_buffer: list[str] = []
         self._tools_cache: list[dict] = []
         self._error: str | None = None
@@ -283,15 +263,64 @@ class MCPServerConnection:
         )
         if self._exit_stack is None:
             self._exit_stack = AsyncExitStack()
-        self._stderr_capture = _StderrCapture(self)
+
+        # errlog must be a REAL file: the SDK hands it verbatim to the child
+        # as its stderr handle (anyio → asyncio → subprocess → msvcrt
+        # get_osfhandle needs a real fd; an in-memory TextIO raises
+        # ``io.UnsupportedOperation`` on Windows and POSIX alike).  A temp
+        # file also means a stalled drain can never wedge the child on a full
+        # pipe — it writes straight to disk, we poll the appended bytes.
+        self._stderr_dump = tempfile.TemporaryFile(mode="w+b")
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
         read_stream, write_stream = await self._exit_stack.enter_async_context(
-            # _StderrCapture subclasses io.TextIOBase (a typing.TextIO); Pylance
-            # treats the stdlib structural alias strictly, but it IS one.
-            stdio_client(params, errlog=self._stderr_capture),  # type: ignore[arg-type]
+            # SDK types errlog as TextIO; a real (binary) file is what it
+            # actually needs to hand the child a stderr handle.
+            stdio_client(params, errlog=self._stderr_dump),  # type: ignore[arg-type]
         )
         self._session = await self._exit_stack.enter_async_context(
             self._new_session(read_stream, write_stream),
         )
+
+    async def _drain_stderr(self) -> None:
+        """Poll the errlog temp file into the ring buffer + DEBUG log.
+
+        The child holds a duplicated handle to the same OS file and appends
+        as it logs (never overwrites), so this monotonic read at our own
+        offset is always current — no stale buffering.  Encapsulates the
+        relay's guarantees: the buffer is bounded, over-long bytes are
+        capped per line, and secrets are scrubbed before logging.
+        """
+        dump = self._stderr_dump
+        if dump is None:
+            return
+        # Raw unbuffered layer — sees each poll's on-disk bytes directly.
+        raw = getattr(dump, "raw", dump)
+        position = 0
+        from slife.plugins.mcp_gateway.logging import sanitize_secrets
+        try:
+            while True:
+                await asyncio.sleep(_STDERR_POLL_INTERVAL)
+                try:
+                    raw.seek(position)
+                    chunk = raw.read()
+                except (OSError, ValueError):
+                    # File closed/seek off EOF (e.g. poll raced teardown).
+                    return
+                if not chunk:
+                    continue
+                position += len(chunk)
+                text = chunk.decode("utf-8", errors="replace").rstrip()
+                if not text:
+                    continue
+                self._stderr_buffer.append(text + "\n")
+                if len(self._stderr_buffer) > _STDERR_BUFFER_LIMIT:
+                    del self._stderr_buffer[: len(self._stderr_buffer) - _STDERR_BUFFER_LIMIT]
+                logger.debug(
+                    "mcp_stderr server=%s line=%s",
+                    self.config.name, sanitize_secrets(text),
+                )
+        except asyncio.CancelledError:
+            pass
 
     async def _connect_http(self) -> None:
         """Create HTTP client; detect SSE vs Streamable HTTP and connect the SDK transport."""
@@ -810,7 +839,22 @@ class MCPServerConnection:
                 pass
             self._exit_stack = None
         self._session = None
-        self._stderr_capture = None
+        # stdio stderr capture: stop the drain and release the temp file (the
+        # child's duplicate handle keeps writing harmlessly until it exits).
+        if self._stderr_task is not None and not self._stderr_task.done():
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except asyncio.CancelledError:
+                pass
+        self._stderr_task = None
+        if self._stderr_dump is not None:
+            try:
+                self._stderr_dump.close()
+            except OSError:
+                pass
+            self._stderr_dump = None
+            self._stderr_buffer.clear()
         self._sse_mode = False
         if self._http_client is not None:
             try:

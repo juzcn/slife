@@ -61,6 +61,13 @@ def _scan_undeclared() -> list[tuple[str, str]]:
 
     Returns ``(public_name, module_path)`` pairs.
     """
+    # A spec-declared module must never also be source-scanned as
+    # "undeclared" — identity match, not name match: PLUGIN_SPECS is keyed by
+    # the hyphenated PUBLIC name while the package leaf is snake_case
+    # (mcp-gateway ↔ mcp_gateway), so a leaf:in-PLUGIN_SPECS check would miss
+    # the collision and spawn the same server.module twice.
+    declared_modules = {s.module for s in PLUGIN_SPECS.values()}
+
     import slife.plugins as _pkg
 
     plugins: list[tuple[str, str]] = []
@@ -71,9 +78,9 @@ def _scan_undeclared() -> list[tuple[str, str]]:
         if not is_pkg:
             continue
         leaf = name.split(".")[-1]
-        if leaf in PLUGIN_SPECS:
-            continue  # spec-declared — handled by the canonical pass
         server_module = name + ".server"
+        if server_module in declared_modules:
+            continue  # spec-declared — handled by the canonical pass
         if not _server_module_exists(server_module):
             continue
         public = _PUBLIC_NAME_OVERRIDE.get(leaf, leaf)

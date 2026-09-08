@@ -950,8 +950,10 @@ class TestMCPServerConnectionStdio:
         assert saw["params"].command.replace("\\", "/").endswith(("npx", "npx.CMD"))
         assert saw["params"].args == ["-y", "srv"]
         assert saw["params"].env["FOO"] == "bar"
-        assert saw["errlog"] is conn._stderr_capture
+        # errlog is a real OS file — the subprocess machinery needs a fileno.
+        assert saw["errlog"] is conn._stderr_dump
         assert conn._session is not None
+        await conn._cleanup_resources()  # cancel the drain task, close temp file
 
     @pytest.mark.asyncio
     async def test_cleanup_closes_exit_stack(self):

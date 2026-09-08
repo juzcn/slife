@@ -96,3 +96,36 @@ class TestSpecFor:
     def test_unknown_without_module_guesses_path(self):
         spec = spec_for("my-plug", None)
         assert spec.module == "slife.plugins.my_plug.server"
+
+
+class TestDiscovery:
+    """discover_plugins() — the spec rows plus the open scan must never
+    double-list a plugin.  Regression: mcp_gateway's snake_case leaf failed
+    the old ``leaf in PLUGIN_SPECS`` skip (keys are hyphenated public names),
+    so its spec'd module was re-scanned as "undeclared" and spawned twice."""
+
+    def test_no_duplicate_names_or_modules(self):
+        from slife.plugins import discover_plugins
+
+        plugins = discover_plugins()
+        names = [n for n, _ in plugins]
+        modules = [m for _, m in plugins]
+        assert len(names) == len(set(names)), f"duplicate plugin names: {names}"
+        assert len(modules) == len(set(modules)), f"duplicate server modules: {modules}"
+
+    def test_each_spec_module_discovered_exactly_once(self):
+        from slife.plugins import discover_plugins
+        from slife.plugins.spec import PLUGIN_SPECS
+
+        modules = [m for _, m in discover_plugins()]
+        for spec in PLUGIN_SPECS.values():
+            assert modules.count(spec.module) == 1, (
+                f"{spec.module} discovered {modules.count(spec.module)}x"
+            )
+
+    def test_underscore_mcp_gateway_never_leaks(self):
+        from slife.plugins import discover_plugins
+
+        names = [n for n, _ in discover_plugins()]
+        assert "mcp_gateway" not in names
+        assert names.count("mcp-gateway") == 1
