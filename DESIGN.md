@@ -900,7 +900,6 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 | `tools` | Per-tool overrides (timeout, enabled) |
 | `mcp-plugin.json5: servers` | External MCP server configs (self-hosted by the gateway) |
 | `embeddings` | First-class embeddings config: `providers` (OpenAI-compatible endpoints), `active_model`, `enabled` — shared by memdb/memfiles + the gateway's tool catalog (host passes the active endpoint via handshake) |
-| `plugin_server` | slife-as-plugin: the in-process MCP server port exposing the live ToolRegistry |
 | `wechat` | `enabled` toggle |
 | `media` | Non-chat generation config (defaults, providers → api adapter + models) — plugin-read, ignored by the main `Config` parser |
 | `a2a` | A2A config (transport binding, broker host/port, heartbeat, task_timeout) |

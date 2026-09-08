@@ -2009,14 +2009,18 @@ class AgentService:
         if not self.is_subagent:
             from slife.mcp.host_server import start_host_server
             try:
-                server, task, _stop = start_host_server(
+                # Every instance binds its own OS-assigned free port — there is
+                # no fixed well-known address, so a second concurrent agent in
+                # the same data dir never collides.  The bound port is returned,
+                # logged, and published for consumers.
+                server, task, _stop, host_port = start_host_server(
                     self.tool_registry,
-                    port=self.config.plugin_server_port,
                 )
-                self._host_server = (server, task, _stop)
+                self._host_server = (server, task, _stop, host_port)
+                os.environ["SLIFE_HOST_PORT"] = str(host_port)
                 logger.info(
                     "host_server_started port=%s tools=%d",
-                    self.config.plugin_server_port,
+                    host_port,
                     len(self.tool_registry.list_tools()),
                 )
             except Exception:
@@ -2056,12 +2060,13 @@ class AgentService:
     async def stop_inbox(self) -> None:
         """Stop the inbox background processor (and the heartbeat)."""
         if self._host_server is not None:
-            _server, _task, _stop = self._host_server
+            _server, _task, _stop, _port = self._host_server
             try:
                 await _stop()
             except Exception as e:
                 logger.debug("host_server_stop_error err=%s", e)
             self._host_server = None
+            os.environ.pop("SLIFE_HOST_PORT", None)
         if self._heartbeat_task is not None:
             self._heartbeat_task.cancel()
             try:

@@ -28,7 +28,6 @@ from slife.mcp.host_server import (
     build_registry_mcp,
     is_exposed,
     start_host_server,
-    DEFAULT_HOST_PORT,
 )
 
 
@@ -211,7 +210,7 @@ class TestLiveSync:
         applies, and its session broadcast notifies connected consumers).
         """
         reg = _registry()
-        server, task, stop = start_host_server(reg, port=0)
+        server, task, stop, _port = start_host_server(reg)
         try:
             class NewTool:
                 name = "count_letters"
@@ -238,7 +237,7 @@ class TestLiveSync:
     async def test_change_listener_added_by_start(self):
         """start_host_server subscribes to the registry's change listeners."""
         reg = _registry()
-        server, task, stop = start_host_server(reg, port=0)
+        server, task, stop, _port = start_host_server(reg)
         try:
             assert len(reg._on_change) >= 1
             # Registry alone (no host) has none.

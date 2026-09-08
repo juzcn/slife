@@ -27,9 +27,10 @@ a design note in `DESIGN.md` ever disagree, this document and the code win.
 - **Not plugins** (never discovered, never spawned, not in the registry):
   - the main agent's in-process **host server** (`slife/mcp/host_server.py`,
     "slife-as-plugin") — the running agent exposes its live `ToolRegistry`
-    over MCP on a fixed port (`plugin_server.port`, default 17878).  It runs
-    **in** the main process and is deliberately placed outside
-    `slife.plugins.*` so discovery can't spawn it;
+    over MCP on an OS-assigned free port (no fixed well-known address;
+    published as `SLIFE_HOST_PORT` so concurrent agents never collide on
+    one host).  It runs **in** the main process and is deliberately placed
+    outside `slife.plugins.*` so discovery can't spawn it;
   - **local-embed** — a manually-started standalone daemon serving
     OpenAI-compatible `/v1/embeddings`.
 - Third-party capability enters *only* as a standard MCP server registered in

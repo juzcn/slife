@@ -376,9 +376,6 @@ class Config:
     # optional (failure warns and the session continues).
     plugins_required: frozenset[str] = field(default_factory=frozenset)
     cli_tools: dict = field(default_factory=dict)
-    # slife-as-plugin: the in-process MCP server exposing the live ToolRegistry.
-    # ``plugin_server.port`` in slife.json5 (default ``DEFAULT_HOST_PORT``).
-    plugin_server_port: int = 17878
     _path: Path | None = None
 
     def __post_init__(self):
@@ -423,7 +420,6 @@ class Config:
             "subagent_config": self.subagent_config,
             "plugins_required": sorted(self.plugins_required),
             "cli_tools": self.cli_tools,
-            "plugin_server_port": self.plugin_server_port,
         }
 
     @classmethod
@@ -464,7 +460,6 @@ class Config:
             subagent_config=data.get("subagent_config"),
             plugins_required=_as_name_set(data.get("plugins_required")),
             cli_tools=data.get("cli_tools", {}),
-            plugin_server_port=int(data.get("plugin_server_port", 17878)),
         )
 
     # ── Config file I/O helpers ─────────────────────────────────────
@@ -920,12 +915,6 @@ class Config:
         # CLI tools — managed section, no config class
         cli_tools = _parse_section(raw, "cli_tools", dict, {})
 
-        # slife-as-plugin — the in-process MCP server exposing the live
-        # ToolRegistry (DESIGNER_NOTES §8).  ``plugin_server.port`` overrides
-        # the fixed default port.
-        plugin_server = _parse_section(raw, "plugin_server", dict, {})
-        plugin_server_port = int(plugin_server.get("port", 17878))
-
         plugins_section = _parse_section(raw, "plugins", dict, {})
         # Required (core) plugins — named in ``plugins.required``.  A
         # required plugin that fails to become ready aborts startup; the
@@ -963,7 +952,6 @@ class Config:
             subagent_config=subagent_config,
             plugins_required=plugins_required,
             cli_tools=cli_tools,
-            plugin_server_port=plugin_server_port,
         )
         config._path = path
         # mcp-plugin is a built-in slife plugin — it resolves mcp-plugin.json5

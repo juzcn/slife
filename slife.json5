@@ -318,9 +318,6 @@
       "memfiles"
     ]
   },
-  plugin_server: {
-    port: 17878
-  },
   a2a: {
     broker: {
       host: "localhost",

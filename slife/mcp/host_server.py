@@ -42,16 +42,12 @@ from typing import TYPE_CHECKING
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
-from slife.server_utils import INTERNAL_TOOL_PREFIX
+from slife.server_utils import INTERNAL_TOOL_PREFIX, bind_free_port
 
 if TYPE_CHECKING:
     from slife.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
-
-#: Default fixed host port — mirrors local-embed's fixed-port precedent.
-#: Configurable via slife.json5 top-level ``plugin_server.port``.
-DEFAULT_HOST_PORT = 17878
 
 #: Tools excluded from the outward face — harness/context controls that mutate
 #: the *host* agent's own state (a foreign client must not reset the host's
@@ -226,17 +222,23 @@ _started_servers: set[int] = set()
 def start_host_server(
     registry: "ToolRegistry",
     *,
-    port: int = DEFAULT_HOST_PORT,
+    port: int = 0,
     host: str = "127.0.0.1",
     instructions: str = "",
 ):
     """Start the slife-as-plugin server as an in-process asyncio task.
 
-    Returns ``(server, task, stop_coro)``:
+    Each instance binds its own OS-assigned free port (``port=0``) so
+    concurrent agents on one host never collide — the actual bound port is
+    returned (and published by the caller as ``SLIFE_HOST_PORT``).  An
+    explicit non-zero *port* is honored for tests/debugging only.
+
+    Returns ``(server, task, stop_coro, port)``:
 
     - ``server`` — the FastMCP instance (for introspection/tests).
     - ``task`` — the running asyncio task serving Streamable HTTP.
     - ``stop_coro`` — ``await`` it to shut the server down cleanly.
+    - ``port`` — the bound port (OS-assigned when *port* was 0).
 
     Must run from inside a running event loop (the main agent's).  Subscribes
     to the registry's change listener so a live tool-set mutation pushes
@@ -244,13 +246,29 @@ def start_host_server(
     """
     server = build_registry_mcp(registry, instructions)
 
+    # Bind a free socket up front (race-free — no gap between port discovery
+    # and serve) unless an explicit port was requested.  Mirror of the plugin
+    # child path (``run_plugin_server`` with ``sockets=[sock]``).
+    sockets = None
+    if not port:
+        sock, port = bind_free_port(host)
+        sockets = [sock]
+
     async def _serve() -> None:
-        await server.run_async(
-            transport="streamable-http",
-            host=host,
-            port=port,
-            show_banner=False,
-        )
+        if sockets is not None:
+            await server.run_async(
+                transport="streamable-http",
+                host=host,
+                sockets=sockets,
+                show_banner=False,
+            )
+        else:
+            await server.run_async(
+                transport="streamable-http",
+                host=host,
+                port=port,
+                show_banner=False,
+            )
 
     task = asyncio.create_task(_serve())
     sid = id(server)
@@ -279,4 +297,4 @@ def start_host_server(
                 pass
         _started_servers.discard(sid)
 
-    return server, task, _stop
+    return server, task, _stop, port
