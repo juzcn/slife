@@ -266,7 +266,6 @@ class AgentLoop:
         context_window: int = 0,
         context_ceiling: float = 0.8,
         context_floor: float = 0.2,
-        memdb_enabled: bool = True,
         supports_vision: bool = False,
         model_name: str = "",
         input_modalities: str = "",
@@ -285,7 +284,6 @@ class AgentLoop:
         self.context_window = context_window
         self.context_ceiling = context_ceiling
         self.context_floor = context_floor
-        self.memdb_enabled = memdb_enabled
         #: Wall-clock cap on a single LLM stream call (``None`` = unlimited).
         #: A silent provider stall would otherwise block the ``async for``
         #: forever with no exception — set for subagents so a hang becomes a

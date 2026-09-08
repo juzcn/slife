@@ -232,7 +232,6 @@ class AgentService:
             context_window=config.active_model.context_window,
             context_ceiling=config.context_ceiling,
             context_floor=config.context_floor,
-            memdb_enabled=not is_subagent,
             supports_vision=config.active_model.supports_vision,
             model_name=config.active_model.display_name,
             input_modalities=", ".join(config.active_model.input_modalities),
@@ -1810,7 +1809,7 @@ class AgentService:
                 timeout=10.0,
             )
             return True
-        except (asyncio.TimeoutError, Exception):
+        except Exception:
             logger.warning("context_start_advance_skipped count=%d", count)
             return False
 

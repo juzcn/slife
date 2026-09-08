@@ -132,13 +132,6 @@ class SubagentProcess:
             1 for r in self._task_records.values()
             if r.get("mode") == "async" and r.get("status") == "pending"
         )
-    @property
-    def pending_async_ids(self) -> list[str]:
-        """task_ids of async tasks sent but not yet completed."""
-        return [
-            r["task_id"] for r in self._task_records.values()
-            if r.get("mode") == "async" and r.get("status") == "pending"
-        ]
 
     async def start(self) -> None:
         if self._running: return

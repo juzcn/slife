@@ -28,19 +28,17 @@ Convenience helpers
   :func:`require_params` — validate that named kwargs are non-empty.
   ``NO_PARAMS`` — ready-to-use schema for tools with no arguments.
 
-Minimal example
-  :file:`slife/tools/os_info.py` (the simplest built-in tool)::
+Minimal example::
 
       from slife.tools.base import Tool, NO_PARAMS
-      from slife.platform import get_os_info
 
-      class GetOsInfoTool(Tool):
-          name = "get_os_info"
-          description = "Return the current OS: Windows, Linux, or macOS."
+      class PingTool(Tool):
+          name = "ping"
+          description = "Return pong."
           parameters = NO_PARAMS
 
           async def execute(self, **kwargs) -> str:
-              return get_os_info()
+              return "pong"
 
 Tool with arguments (using :func:`make_params`)::
 

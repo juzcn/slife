@@ -182,7 +182,7 @@ class TestAgentCard:
         assert card.status == "busy"
 
     def test_create_factory(self):
-        card = AgentCard.create(
+        card = AgentCard(
             agent_name=AgentName("agent-x"),
             status="idle",
         )
@@ -190,11 +190,11 @@ class TestAgentCard:
         assert card.status == "idle"
 
     def test_create_defaults(self):
-        card = AgentCard.create(agent_name=AgentName("agent-x"))
+        card = AgentCard(agent_name=AgentName("agent-x"))
         assert card.status == "idle"
 
     def test_create_busy_status(self):
-        card = AgentCard.create(
+        card = AgentCard(
             agent_name=AgentName("agent-x"),
             status="busy",
         )

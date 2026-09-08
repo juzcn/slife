@@ -10,7 +10,6 @@ for the LLM to relay to the user.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
@@ -75,20 +74,25 @@ def _envelope_error(result: dict) -> str:
 class WechatClawbotClient:
     """Async client for the WeChat iLink ClawBot protocol.
 
+    The QR login flow lives in ``server.py`` (``_fetch_qrcode`` +
+    ``_qr_poll_loop`` — the server owns the turn/refresh/redirect dance);
+    this class provides the session operations the server drives:
+
     Usage::
 
         client = WechatClawbotClient()
         if not await client.try_restore_session(saved):
-            result = await client.login()
-            await client.start(result["bot_token"], result.get("baseurl", ""))
+            # server._qr_poll_loop():
+            #   data = await client._fetch_qrcode(url)
+            #   … await client._poll_login_status(qrcode, url) …
+            #   await client.start(result["bot_token"], result.get("baseurl", ""))
             # save client.get_session_dict()
 
-        while True:
-            for msg in await client.poll_updates():
-                text = msg["item_list"][0]["text_item"]["text"]
-                await client.send_message(
-                    msg["from_user_id"], msg["context_token"], f"echo: {text}"
-                )
+        for msg in await client.poll_updates():
+            text = msg["item_list"][0]["text_item"]["text"]
+            await client.send_message(
+                msg["from_user_id"], msg["context_token"], f"echo: {text}"
+            )
 
         await client.stop()
     """
@@ -113,45 +117,13 @@ class WechatClawbotClient:
         self.auth_failed: bool = False
 
     # ── Login ─────────────────────────────────────────────────────────
-
-    async def login(self, base_url: str = "") -> dict:
-        """Full QR login flow.
-
-        Returns a dict with ``qrcode`` (the QR content string) and
-        ``status`` — one of ``"confirmed"`` (login succeeded),
-        ``"expired"``, ``"timeout"``, or ``"error"``.
-
-        On success the dict also contains ``bot_token`` and ``baseurl``.
-        The caller should display *qrcode* to the user.
-        """
-        url = base_url or BASE_URL
-        refresh_count = 0
-        max_refresh = 3
-
-        while True:
-            data = await self._fetch_qrcode(url)
-            qrcode = data["qrcode"]
-            qrcode_img = data.get("qrcode_img_content", "")
-
-            logger.debug("qr_fetched qrcode=%s", qrcode)
-
-            result = await self._wait_login_confirmation(qrcode, url)
-            if result.get("bot_token"):
-                result["qrcode"] = str(qrcode_img or qrcode)
-                result["status"] = "confirmed"
-                return result
-            if result.get("already_connected"):
-                logger.debug("qr_server_connected action=refresh")
-            elif result.get("expired"):
-                logger.info("qr_expired action=refresh")
-            elif result.get("verify_code_blocked"):
-                logger.warning("qr_verify_blocked action=refresh")
-            elif result.get("timeout"):
-                logger.info("qr_timeout action=refresh")
-
-            refresh_count += 1
-            if refresh_count >= max_refresh:
-                return {"status": "error", "error": "二维码多次失效，请稍后重试"}
+    # The live login flow lives in server.py's ``_qr_poll_loop`` (fetch QR →
+    # poll ``_poll_login_status`` → handle redirect_base).  There used to be
+    # a ``login()`` + ``_wait_login_confirmation()`` pair here, but it had no
+    # callers anywhere — and it silently contained the ``redirect_base``
+    # node-switch handling the live loop was missing, which is how the
+    # "QR login hangs forever" bug stayed hidden.  Removed; the flow is now
+    # implemented where it runs (server._qr_poll_loop).
 
     async def _fetch_qrcode(self, base_url: str) -> dict:
         body = {"local_token_list": []}
@@ -200,48 +172,6 @@ class WechatClawbotClient:
             logger.debug("login_poll status=%s raw=%.200s", state, status)
 
         return {}
-
-    async def _wait_login_confirmation(
-        self, qrcode: str, base_url: str, timeout: float = 600,
-    ) -> dict:
-        deadline = asyncio.get_event_loop().time() + timeout
-        current_base_url = base_url
-        pending_verify_code: str | None = None
-
-        while True:
-            if asyncio.get_event_loop().time() >= deadline:
-                return {"timeout": True}
-
-            try:
-                result = await self._poll_login_status(
-                    qrcode, current_base_url, pending_verify_code,
-                )
-            except Exception as e:
-                logger.debug("login_poll_failed err=%s", e)
-                await asyncio.sleep(1)
-                continue
-
-            if result.get("bot_token"):
-                return result
-            if result.get("already_connected") or result.get("expired"):
-                return result
-            if result.get("verify_code_blocked"):
-                return result
-            if result.get("redirect_base"):
-                current_base_url = result["redirect_base"]
-                logger.debug("poll_node_switch url=%s", current_base_url)
-                continue
-            if result.get("scanned"):
-                if pending_verify_code and result.get("verify_code_accepted"):
-                    pending_verify_code = None
-                logger.info("qr_scanned action=wait_confirmation")
-            if result.get("need_verifycode"):
-                # Headless mode — can't prompt for verify code.
-                # Just wait; most logins don't require it.
-                logger.warning("qr_verify_required mode=headless")
-                continue
-
-            await asyncio.sleep(1)
 
     # ── Session lifecycle ──────────────────────────────────────────────
 

@@ -58,10 +58,6 @@ class AgentCard:
     # running an older slife.
     instance: str = ""
 
-    @classmethod
-    def create(cls, agent_name: AgentName, status: str = "idle") -> "AgentCard":
-        return cls(agent_name=agent_name, status=status)
-
     def to_dict(self) -> dict:
         """Serialize as the presence wire payload (official + slife fields)."""
         d: dict = {

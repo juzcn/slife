@@ -18,9 +18,6 @@ class TestAttachImageTool:
     def test_category(self):
         assert AttachImageTool.category == "Models"
 
-    def test_requires_vision(self):
-        assert AttachImageTool._requires_vision is True
-
     def test_description(self):
         assert "Attach one or more images" in AttachImageTool.description
 

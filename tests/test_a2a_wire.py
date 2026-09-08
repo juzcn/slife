@@ -92,7 +92,7 @@ class TestTaskState:
 
 class TestAgentCardWire:
     def test_to_dict_keeps_slife_extensions(self):
-        card = AgentCard.create(agent_name=AgentName("jack"), status="busy")
+        card = AgentCard(agent_name=AgentName("jack"), status="busy")
         d = card.to_dict()
         assert d["agent_name"] == "jack"
         assert d["status"] == "busy"

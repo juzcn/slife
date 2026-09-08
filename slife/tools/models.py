@@ -474,7 +474,6 @@ class AttachImageTool(Tool):
 
     name: ClassVar[str] = "attach_image"
     category: ClassVar[str] = "Models"
-    _requires_vision: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Attach one or more images for vision (data URI, local path, or URL; "
         "list via 'sources', single via 'source')."
