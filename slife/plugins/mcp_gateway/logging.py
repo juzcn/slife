@@ -11,7 +11,6 @@ import asyncio
 import contextvars
 import json
 import logging
-import re
 import secrets
 from datetime import datetime
 from pathlib import Path
@@ -275,93 +274,12 @@ def error_json(message: str, **extra: object) -> str:
 
 
 # ── Secret sanitization for stderr / log output ──────────────────────
-
-# Credential patterns — well-known prefixes + key=value pairs.
-# No generic heuristics; secrets belong in the credential store.
-_SECRET_PATTERNS: list[re.Pattern] = [
-    # ── Well-known AI / cloud provider prefixes ─────────────────────
-    re.compile(r"\bsk-(?:ant|agent|proj|svcacct|admin|or|org)?[A-Za-z0-9_-]{20,}\b"),
-    # Stripe secret/restricted keys (underscore form: sk_live_…, sk_test_…)
-    re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}\b"),
-    # Groq
-    re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b"),
-    # HuggingFace
-    re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
-    # Replicate
-    re.compile(r"\br8_[A-Za-z0-9]{20,}\b"),
-    # Perplexity
-    re.compile(r"\bpplx-[A-Za-z0-9]{20,}\b"),
-    # xAI / Grok
-    re.compile(r"\bxai-[A-Za-z0-9]{20,}\b"),
-    # Google AI / Gemini (AIzaSy...)
-    re.compile(r"\bAIza[A-Za-z0-9_-]{30,}\b"),
-    # Fireworks AI
-    re.compile(r"\bfw_[A-Za-z0-9]{20,}\b"),
-    # NVIDIA
-    re.compile(r"\bnvapi-[A-Za-z0-9_-]{20,}\b"),
-    # Baidu Qianfan (bce-v3/ALTAK-...)
-    re.compile(r"\bbce-v3/ALTAK-[A-Za-z0-9/_-]{20,}\b"),
-    # ── Generic service tokens ──────────────────────────────────────
-    # GitHub classic PATs (ghp_/ghs_/ghu_) and fine-grained PATs (github_pat_)
-    re.compile(r"\bgh[psu]_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
-    # Google OAuth
-    re.compile(r"\bya29\.[A-Za-z0-9._-]{20,}\b"),
-    # PyPI
-    re.compile(r"\bpypi-[A-Za-z0-9._-]{20,}\b"),
-    # ── Header / key=value patterns ─────────────────────────────────
-    # Authorization: Bearer|Basic|Token <credential> (and bare Bearer/Token).
-    re.compile(
-        r"(?:Authorization\s*:\s*)?(?:Basic|Bearer|Token)\s+"
-        r"([A-Za-z0-9+/=._-]{8,})",
-        re.IGNORECASE,
-    ),
-    # key=value pairs — whole words (api_key, token, password, …) and
-    # compound names (AWS_SECRET_ACCESS_KEY, STRIPE_SECRET_KEY, …).
-    # The key-name sandwiches bound their repeats ({0,64}, not *).
-    re.compile(
-        r"(?:api[_-]?key|apikey|token|password|auth[_-]?token|"
-        r"[A-Za-z0-9_]{0,64}secret[A-Za-z0-9_]{0,64}|"
-        r"[A-Za-z0-9_]{0,64}access[_-]?key[A-Za-z0-9_]{0,64})\s*[=:]\s*"
-        r"([^\s\"'{}()\[\];,]{6,})",
-        re.IGNORECASE,
-    ),
-]
-
-_MASKED = "<MASKED>"
-
-# Connection-string credentials: scheme://user:password@host — mask just the
-# password, keeping the rest of the URL readable.  The password class excludes
-# `/` so "https://host:8080/user@domain" (a port + path, NOT credentials) is
-# no longer corrupted by swallowing "8080/user".
-_URL_CREDENTIAL_PATTERN = re.compile(r"(://[^/\s@]*:)[^@\s/]+(@)")
-
-
-def sanitize_secrets(text: str) -> str:
-    """Mask credentials from *text*.
-
-    Catches well-known API key prefixes (``sk-``, ``ghp_``, ``ya29.``,
-    ``pypi-``), ``Authorization: Bearer`` tokens, and key=value pairs
-    with credential-like names (``api_key``, ``secret``, ``token``,
-    ``password``, ``auth_token``).
-
-    No generic hex/blob heuristics — secrets belong in the credential store.
-
-    >>> sanitize_secrets("Authorization: Bearer sk-ant-api03-abc123...")
-    'Authorization: <MASKED>'
-    >>> sanitize_secrets("DEEPSEEK_API_KEY=sk-abc123...")
-    '<MASKED>'
-    """
-    if not text or not isinstance(text, str):
-        return text
-
-    for pat in _SECRET_PATTERNS:
-        text = pat.sub(_MASKED, text)
-
-    # Mask credentials embedded in connection-string URLs (scheme://user:pass@host).
-    text = _URL_CREDENTIAL_PATTERN.sub(r"\1" + _MASKED + r"\2", text)
-
-    return text
+# Single source of truth: slife.logfmt.sanitize_secrets.  An independent
+# redaction table here would silently diverge (a regex fixed in one path
+# hanging the other); re-export the shared implementation so every
+# sanitizing caller — logfmt (tool results) and the gateway stderr relay —
+# redacts identically.  ``re`` stays imported for the other uses below.
+from slife.logfmt import sanitize_secrets  # noqa: F401  (re-exported)
 
 
 # ── Shared root-logging setup ──────────────────────────────────────────

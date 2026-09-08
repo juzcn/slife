@@ -36,6 +36,7 @@ from slife.plugins.memdb.store import (
     _clamp_limit,
     _contains_cjk,
     _serialize_f32,
+    _split_sql,
     _to_fts5_query,
 )
 
@@ -174,126 +175,6 @@ def _flatten_schema(schema_text: str) -> str:
     return "\n".join(lines)
 
 
-def _looks_like_trigger_start(stmt: str) -> bool:
-    """True if *stmt* starts a CREATE TRIGGER that has a BEGIN body.
-
-    Tolerates leading ``--`` comment lines (e.g. the comment block above the
-    trigger): the comments accumulate into the same fragment and must not
-    hide the CREATE TRIGGER keyword — otherwise the trigger body's interior
-    semicolons split into orphan fragments and the trigger is never created.
-    """
-    first_non_comment = next(
-        (
-            ln.strip()
-            for ln in stmt.splitlines()
-            if ln.strip() and not ln.strip().startswith("--")
-        ),
-        "",
-    )
-    upper = first_non_comment.upper()
-    return upper.startswith("CREATE TRIGGER") and "BEGIN" in upper
-
-
-def _looks_like_trigger_end(stmt: str) -> bool:
-    """True if *stmt* ends a trigger body (``END;``)."""
-    stripped = stmt.strip().rstrip(";").strip().upper()
-    return stripped.endswith("END")
-
-
-def _split_sql(sql_text: str) -> list[str]:
-    """Split SQL text on semicolons, respecting quotes and comments.
-
-    Multi-statement constructs (CREATE TRIGGER … BEGIN … END) are kept
-    together so SQLite can parse them as a single statement.  Otherwise the
-    interior INSERT / DELETE would be split into orphaned fragments.
-    """
-    statements = []
-    current: list[str] = []
-    in_single = False
-    in_double = False
-    in_line = False
-    in_block = False
-    in_trigger = False  # track CREATE TRIGGER … BEGIN … END blocks
-
-    chars = list(sql_text)
-    i = 0
-    while i < len(chars):
-        ch = chars[i]
-        nxt = chars[i + 1] if i + 1 < len(chars) else ""
-
-        if in_line:
-            current.append(ch)
-            if ch == "\n":
-                in_line = False
-            i += 1
-            continue
-
-        if in_block:
-            current.append(ch)
-            if ch == "*" and nxt == "/":
-                current.append(nxt)
-                i += 2
-                in_block = False
-                continue
-            i += 1
-            continue
-
-        if in_single:
-            current.append(ch)
-            if ch == "'":
-                in_single = False
-            i += 1
-            continue
-
-        if in_double:
-            current.append(ch)
-            if ch == '"':
-                in_double = False
-            i += 1
-            continue
-
-        if ch == "-" and nxt == "-":
-            in_line = True
-            current.append(ch)
-            i += 1
-            continue
-
-        if ch == "/" and nxt == "*":
-            in_block = True
-            current.append(ch)
-            current.append(nxt)
-            i += 2
-            continue
-
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif ch == ";" and not in_single and not in_double:
-            current.append(ch)
-            stmt = "".join(current)
-            # Detect start of a multi-statement TRIGGER block
-            if not in_trigger and _looks_like_trigger_start(stmt):
-                in_trigger = True
-            # A TRIGGER body ends with END;
-            if in_trigger and _looks_like_trigger_end(stmt):
-                in_trigger = False
-            if in_trigger:
-                # Keep accumulating — this semicolon is inside the trigger body
-                i += 1
-                continue
-            statements.append(stmt)
-            current = []
-            i += 1
-            continue
-
-        current.append(ch)
-        i += 1
-
-    remainder = "".join(current).strip()
-    if remainder:
-        statements.append(remainder)
-    return statements
 
 
 class ToolStore:

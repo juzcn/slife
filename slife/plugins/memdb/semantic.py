@@ -25,6 +25,7 @@ memdb + memfiles); ``enable`` re-reads it on every call.
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 
 from slife.plugins.memdb.embeddings import EmbeddingClient
 from slife.plugins.memdb.embedding_config import read_embedding_config
@@ -63,7 +64,16 @@ def _backend_unavailable_reason(embedder: EmbeddingClient) -> str:
 
 
 class SemanticManager:
-    """The semantic-search actor: gate + embedder + event-driven drainer."""
+    """The semantic-search actor: gate + embedder + event-driven drainer.
+
+    Shared by the memdb, memfiles and mcp_gateway plugins.  The diverging
+    bits — how the embedder is built (memdb/memfiles read the ``embeddings``
+    config; the gateway takes the connecting host's endpoint), how the store
+    records a model change, and how one document is embedded — are hook
+    methods (:meth:`_new_embedder`, :meth:`_on_model_selected`,
+    :meth:`_embed_doc`, :meth:`_start_enabled`) overridden by subclasses.
+    The gate, drain loop, no-progress bound and status readers are shared.
+    """
 
     def __init__(self, store, config_path: str | None = None):
         self._store = store
@@ -76,16 +86,73 @@ class SemanticManager:
         self._drain_task: asyncio.Task | None = None
         self._work_event = asyncio.Event()
         self._enable_lock = asyncio.Lock()
-        self._write_lock = asyncio.Lock()  # serializes diary_semantic writes
+        self._write_lock = asyncio.Lock()  # serializes index writes
         self._no_progress = 0
+
+    # ── plugin hook points (overridden by subclasses) ────────────────
+    # ``Any`` return/param on these: each plugin has its OWN structurally
+    # identical EmbeddingClient class (memdb vs gateway), and a subclass
+    # passing its own must not trip type checkers.
+
+    def _new_embedder(self) -> Any:
+        """Build the embedder for this plugin's config shape."""
+        return EmbeddingClient.from_config(config_path=self._config_path)
+
+    def _start_enabled(self) -> bool:
+        """Whether :meth:`start` should enable (True) or disable (False)."""
+        cfg = read_embedding_config()
+        return bool(cfg and cfg.get("enabled", True))
+
+    async def _on_model_selected(self, embedder: Any) -> None:
+        """Apply a model identity to the store (memdb migrates vec0 in place;
+        the gateway drops stale vectors via its meta/drop contract)."""
+        model_id = f"{embedder.backend}:{embedder._model}"
+        await self._store.reconfigure_for_embedding(
+            embedding_dim=embedder.dimension,
+            embedding_model=model_id,
+        )
+
+    async def _embed_doc(self, embedder: Any, doc: dict) -> bool:
+        """Embed one unembedded document; return True when committed.
+
+        memdb/memfiles chunk long documents and store per-chunk vectors;
+        the gateway's documents are short tool schemas embedded whole.
+        """
+        from slife.plugins.memdb.store import (
+            _chunk_text, _split_chunks_to_token_limit,
+        )
+        embed_text = doc["text"]
+        if not embed_text.strip():
+            return False
+        chunks = _chunk_text(embed_text)
+        chunks = _split_chunks_to_token_limit(chunks, embedder.max_tokens)
+        if not chunks:
+            return False
+        # Embed one chunk per request.  A long document batched into a
+        # single request can exceed the client's embed timeout on a slow
+        # (CPU) backend, so the whole doc times out and stays unembedded.
+        # Per-chunk requests are small and fast; more requests are fine.
+        embeddings: list[list[float]] = []
+        for chunk in chunks:
+            vec = await embedder.embed([chunk])
+            if not vec or not vec[0]:
+                return False
+            embeddings.append(vec[0])
+        if len(embeddings) != len(chunks):
+            return False
+        async with self._write_lock:
+            await self._store.replace_embedding_chunks(doc, embeddings)
+        return True
+
+    def _unavailable_reason(self, embedder: EmbeddingClient) -> str:
+        return _backend_unavailable_reason(embedder)
 
     # ── public entry points ──────────────────────────────────────────
 
     async def start(self) -> None:
         """Startup: enable when config present + enabled, else disable."""
         try:
-            cfg = read_embedding_config()
-            if cfg and cfg.get("enabled", True):
+            if self._start_enabled():
                 await self.enable()
             else:
                 await self.disable()
@@ -107,10 +174,10 @@ class SemanticManager:
             self._state = "loading"
             self._reason = ""
 
-            embedder = EmbeddingClient.from_config(config_path=self._config_path)
+            embedder = self._new_embedder()
             if not embedder.available:
                 self._state = "disabled"
-                self._reason = _backend_unavailable_reason(embedder)
+                self._reason = self._unavailable_reason(embedder)
                 return self._status(
                     status="degraded", embedder=embedder,
                     message="Embedding backend unavailable — keyword search still works.",
@@ -124,11 +191,7 @@ class SemanticManager:
                     status="degraded", message="Embedding model failed to load.",
                 )
 
-            model_id = f"{embedder.backend}:{embedder._model}"
-            await self._store.reconfigure_for_embedding(
-                embedding_dim=embedder.dimension,
-                embedding_model=model_id,
-            )
+            await self._on_model_selected(embedder)
 
             self._enabled = True
             self._no_progress = 0
@@ -289,14 +352,11 @@ class SemanticManager:
     async def _process_batch(self, batch_limit: int = REINDEX_BATCH_LIMIT) -> dict:
         """Embed one batch of unembedded documents.
 
-        Returns ``{total, indexed, remaining, complete}``. Only documents whose
-        every chunk produced a vector are committed (atomic replace) and
-        counted — a partial/failed embed leaves the document fully unembedded
-        so the next pass retries it (and the M7 no-progress bound still trips).
+        Returns ``{total, indexed, remaining, complete}``. Only documents
+        whose embedding :meth:`_embed_doc` committed are counted — a
+        partial/failed embed leaves the document fully unembedded so the
+        next pass retries it (and the M7/no-progress bound still trips).
         """
-        from slife.plugins.memdb.store import (
-            _chunk_text, _split_chunks_to_token_limit,
-        )
         embedder = self._embedder
         if not embedder or not embedder.available:
             return {"total": 0, "indexed": 0, "remaining": 0, "complete": True,
@@ -308,30 +368,7 @@ class SemanticManager:
         indexed = 0
         for doc in docs:
             try:
-                embed_text = doc["text"]
-                if not embed_text.strip():
-                    continue
-                chunks = _chunk_text(embed_text)
-                chunks = _split_chunks_to_token_limit(chunks, embedder.max_tokens)
-                if not chunks:
-                    continue
-                # Embed one chunk per request.  A long document batched into a
-                # single request can exceed the client's embed timeout on a slow
-                # (CPU) backend, so the whole doc times out and stays unembedded.
-                # Per-chunk requests are small and fast; more requests are fine.
-                embeddings: list[list[float]] = []
-                ok = True
-                for chunk in chunks:
-                    vec = await embedder.embed([chunk])
-                    if not vec or not vec[0]:
-                        ok = False
-                        break
-                    embeddings.append(vec[0])
-                if ok and len(embeddings) == len(chunks):
-                    async with self._write_lock:
-                        await self._store.replace_embedding_chunks(
-                            doc, embeddings,
-                        )
+                if await self._embed_doc(embedder, doc):
                     indexed += 1
             except Exception as e:
                 logger.debug("reindex_skip doc_id=%s err=%s", doc.get("doc_id"), e)
