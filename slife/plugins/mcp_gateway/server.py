@@ -24,7 +24,11 @@ from slife.plugins.mcp_gateway import config as plugin_config
 from slife.plugins.spec import mcp_child_reserved_names
 from slife.plugins.mcp_gateway.connection import ConnectionPool, ServerConfig, ServerStatus
 from slife.plugins.mcp_gateway.logging import error_json, ok_json
-from slife.plugins.mcp_gateway.search import SCORE_BAND_HINT, annotate_scores, merge_hybrid
+from slife.plugins.mcp_gateway.search import (
+    SCORE_BAND_HINT,
+    annotate_scores,
+    merge_hybrid,
+)
 from slife.plugins.mcp_gateway.semantic import SemanticManager
 from slife.plugins.mcp_gateway.server_runtime import create_plugin_server
 from slife.plugins.mcp_gateway.store import ToolStore
@@ -919,7 +923,9 @@ async def mcp_tool_search(
     reported_mode = mode if mode == "grep" else ("hybrid" if semantic_available else "fts5")
     results = results[:limit]
     if semantic_available and results:
-        annotate_scores(results)
+        # Tool search computes COSINE distances — the cosine branch of the
+        # shared score contract (see memdb.search.annotate_scores).
+        annotate_scores(results, metric="cosine")
         hint = SCORE_BAND_HINT if not hint else f"{hint} · {SCORE_BAND_HINT}"
     return ok_json(
         mode=reported_mode,

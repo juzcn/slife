@@ -32,59 +32,22 @@ from typing import Any
 
 import aiosqlite
 
+from slife.plugins.memdb.store import (
+    _clamp_limit,
+    _contains_cjk,
+    _serialize_f32,
+    _to_fts5_query,
+)
+
 logger = logging.getLogger(__name__)
 
-_MAX_SEARCH_LIMIT = 200
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _serialize_f32(vector: list[float]) -> bytes:
-    return struct.pack(f"{len(vector)}f", *vector)
-
-
 def _deserialize_f32(blob: bytes) -> list[float]:
     return list(struct.unpack(f"{len(blob) // 4}f", blob))
-
-
-def _clamp_limit(limit: int) -> int:
-    """Clamp a search limit to a sane positive range.
-
-    SQLite treats a negative LIMIT as unlimited — a malformed/negative limit
-    from the LLM would otherwise scan the whole table.
-    """
-    if limit is None or limit < 1:
-        return 20
-    return min(limit, _MAX_SEARCH_LIMIT)
-
-
-def _contains_cjk(text: str) -> bool:
-    """True if *text* contains CJK ideographs (incl. Extension A).
-
-    SQLite FTS5's unicode61 tokenizer does not segment Chinese — a
-    whole-sentence CJK query becomes a phrase/run token that never matches a
-    longer stored description.  Substring (LIKE) matching is what Chinese
-    users expect, so keyword search routes CJK queries to it.
-    """
-    return any(
-        "㐀" <= ch <= "䶿" or "一" <= ch <= "鿿"
-        for ch in text
-    )
-
-
-def _to_fts5_query(query: str) -> str:
-    cleaned = query.replace('"', "").replace("'", "").replace("*", "")
-    words = cleaned.split()
-    if not words:
-        return '""'
-    # Quote FTS5 reserved operators so a literal "and"/"or"/"not"/"near"
-    # doesn't become a syntax error (e.g. "foo AND bar" → "foo AND AND bar").
-    quoted = [
-        f'"{w}"' if w.lower() in ("and", "or", "not", "near") else w
-        for w in words
-    ]
-    return " AND ".join(quoted)
 
 
 def _like_escape(pattern: str) -> str:
