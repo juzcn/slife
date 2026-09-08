@@ -77,14 +77,11 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 5. 设计特点
 
-5.1 Sessionless：没有session概念，agent重启使用退出时的上下文。
+5.1 All are plugins design, plugin is a standard http streamable MCP with additional plugin contract。
 
-5.2 Turn-based：会话和持久化都是以turn为单位。
+5.2 Sessionless：没有session概念，agent重启使用退出时的上下文。
 
-5.3 Architecture: 系统架构是主进程+插件。
-- 主进程是TUI、agentloop+和核心工具；
-- 插件是一个标准的http streamable MCP服务，独立进程。
-- 插件契约：在MCP契约之上，增加了内部工具和大模型可见工具的区分，内置工具以__为前缀。每个插件有__check工具。
+5.3 Turn-based：会话和持久化都是以turn为单位。
 
 5.4 Meta arguments: 所有Function tool都注入timeout, async， approve 参数，由agent运行时选择。
 
@@ -110,7 +107,9 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 5.15 每个agent有大模型或人工可以修改的提示词部分USER.md，它相当于一个常驻记忆，反映用户使用偏好和要求。 启动是追加到系统提示词尾部，作为提示词的一部分。不应频繁修改破坏缓存命中。
 
-5.16 Installation: 一键安装：从源码安装，避免pypi库的版本冲突；自动安装所有依赖，开箱即用，但语义功能需独立安装和配置。
+5.16 plugin, native tools and jobs are auto discorvered
+
+5.17 Installation: 一键安装：从源码安装，避免pypi库的版本冲突；自动安装所有依赖，开箱即用，但语义功能需独立安装和配置。
 
 6. To do list
 
@@ -121,26 +120,6 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 6.3 共享代码库？现在项目里有重复的functions，增大代码量和维护量，是否值得？
 
 6.4 多wechat接入
-
-7. 测试反馈
-
-7.1 前面有微信对话，再从TUI输入，Agent会误判，回复到微信上。
-
-7.2 心跳信息，Agent有时不尊重输出"."保持沉默，还会加上一段。
-
-7.3 Agent选择web search工作比较随意，需要明确让它用baidu search skill，它才会用。
-
-8. All plugins design
-
-- turn slife to a plugin, cli+plugin
-- local-embed as an independent app, like mosquitto, need to be started manually 
-- turn mcp-plugin as internal plugin, just like other internal plugins
-- remove embeddings setting in mcp-plugin.json5， mcp-plugin as internal plugin, use embeddings setting of slife.json5.
-- remove slife external plugin's design, no external plugin
-- slife expose internal tools to crud ToolRegistry, keep  ToolRegistry live and real time.
-
-
-
 
 
 
