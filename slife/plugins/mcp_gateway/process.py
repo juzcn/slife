@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 # Default wrapper module path
 _DEFAULT_SERVER_MODULE = "slife.plugins.mcp_gateway.server"
 
+#: How long to wait for a child's one-line port signal on stdout.  Deliberately
+#: generous (60s, matching the harness's spawn hang-guard): it bounds a *hung*
+#: child, not a *slow* one — N concurrent children cold-importing heavy deps
+#: on a slow machine can exceed 30s before the lifespan even finishes.
+PORT_SIGNAL_TIMEOUT: float = 60.0
+
 # stderr markers emitted by the OAuth device flow inside the gateway child
 # (slife.plugins.mcp_gateway.oauth) — the gateway's stdout is closed after the port
 # signal, so user instructions come over stderr.
@@ -172,14 +178,22 @@ class MCPWrapperProcess:
         assert self._process and self._process.stdout
 
         try:
+            # Generous, aligned with the harness's spawn hang-guard
+            # (PLUGIN_SPAWN_TIMEOUT): a child's cold import of its heavy
+            # deps + a marginally slower lifespan finish can exceed 30s while
+            # N children spawn at once on a slow machine (job-coding sits
+            # ~20s in import alone).  The port read bounds a *hung* child,
+            # not a *slow* one — a 30s cap misfired and aborted a plugin
+            # that was still making progress.
             line = await asyncio.wait_for(
-                self._process.stdout.readline(), timeout=30.0,
+                self._process.stdout.readline(), timeout=PORT_SIGNAL_TIMEOUT,
             )
         except asyncio.TimeoutError:
             stderr_tail = await self._read_stderr_tail()
             raise RuntimeError(
                 f"Plugin process (pid={self._process.pid}) did not send "
-                f"port signal within 30s. stderr:\n{stderr_tail}"
+                f"port signal within {PORT_SIGNAL_TIMEOUT:.0f}s. "
+                f"stderr:\n{stderr_tail}"
             )
 
         if not line:

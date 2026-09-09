@@ -53,7 +53,6 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 from slife.paths import get_memfiles_dir
-from slife.plugins.memdb.embeddings import EmbeddingClient
 from slife.plugins.memdb.search import SCORE_BAND_HINT, annotate_scores
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.plugins.memfiles.store import MemfilesStore, _slugify, _unique_path
@@ -198,23 +197,16 @@ async def _ensure_store_locked() -> MemfilesStore:
     _db_path = _get_db_path()
     logger.info("memfiles_init db=%s", _db_path)
 
-    probe = EmbeddingClient.from_config()
-    defer_vec0 = bool(probe.available and probe.backend == "transformer")
-    dim = 0 if defer_vec0 else (probe.dimension if probe.available else 0)
-    # Stamp a model identity ONLY once the model is actually known.  A bare
-    # provider (``active_model: "provider"``) defers the model until
-    # load()/discovery, so ``probe._model`` is "" here — stamping "api:" would
-    # read as a model change against the persisted identity and drop the vec0
-    # index on every start.  SemanticManager.enable() records the real identity
-    # after discovery; genuine model/dimension changes still rebuild there.
-    model_id = (
-        f"{probe.backend}:{probe._model}"
-        if probe.available and not defer_vec0 and probe._model
-        else ""
-    )
-
+    # Handshake-fast: the store is built WITHOUT vectors.  Embedding setup
+    # (config read, sqlite-vec load, vec0 table) is heavy and belongs on the
+    # post-handshake warm path (SemanticManager.enable() re-runs the schema
+    # with the real width via reconfigure_for_embedding), never in the
+    # lifespan — the plugin contract says the lifespan must stay
+    # handshake-fast, and embeddings are optional: a slow or unavailable
+    # backend must not gate startup.  Keyword search serves with no vectors;
+    # the vec0 tables appear once the embedding model loads.
     _store = MemfilesStore(_db_path)
-    await _store.setup(embedding_dim=dim, embedding_model=model_id)
+    await _store.setup(embedding_dim=0, embedding_model="")
 
     _manager = SemanticManager(_store)
     return _store

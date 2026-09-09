@@ -88,6 +88,31 @@ _current_client: contextvars.ContextVar = contextvars.ContextVar(
     "slife_job_llm_client", default=None
 )
 
+
+class _LLMClientRef:
+    """A lazily-resolved LLM client bound to a job tool.
+
+    Job tools are registered in the lifespan so the harness's first
+    ``tools/list`` already lists them — and the lifespan must stay
+    handshake-fast.  Building the real ``LLMClient`` imports the provider
+    SDK (a multi-second cold import that, on a slow machine, pushed
+    job-coding past the spawn guard).  The client is therefore deferred
+    until the job actually calls ``llm.chat``: :meth:`get` builds it once
+    (from the zero-arg *factory*) and caches it; a ``None`` factory result
+    (no model configured) is a valid cached value.
+    """
+
+    def __init__(self, factory):
+        self._factory = factory
+        self._client: Any = None
+        self._resolved = False
+
+    def get(self) -> Any:
+        if not self._resolved:
+            self._client = self._factory()
+            self._resolved = True
+        return self._client
+
 #: Cached main Config for per-call model lookups (``llm.chat(model=...)``).
 _config: Any = None
 
@@ -378,12 +403,19 @@ def wrap(fn, client) -> Any:
     on the loop, sync fns in a worker thread so the loop stays free), and
     normalizes the result.  Errors become ``"Error: …"`` tool results —
     deterministic, never a plugin crash.
+
+    *client* may be the LLMClient itself or a lazy ``_LLMClientRef`` (the
+    server registers jobs with a ref so the heavy provider-SDK import is
+    deferred to the job's first ``llm.chat``, never paid at registration).
     """
     name = getattr(fn, "__name__", "?")
 
     @functools.wraps(fn)
     async def _run(**kwargs):
-        token = _current_client.set(client)
+        # A lazy ref defers LLMClient construction (heavy provider-SDK
+        # import) to the job's first llm.chat — registration stays fast.
+        resolved = client.get() if isinstance(client, _LLMClientRef) else client
+        token = _current_client.set(resolved)
         try:
             if inspect.iscoroutinefunction(fn):
                 result = await fn(**kwargs)

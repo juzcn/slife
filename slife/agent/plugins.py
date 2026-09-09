@@ -48,13 +48,21 @@ _WATCHDOG_BACKOFF_MAX: float = 30.0
 _WATCHDOG_BACKOFF_MULTIPLIER: float = 2.0
 _WATCHDOG_MAX_RESTARTS: int = 5
 
-#: Hang guard for a plugin spawn — NOT a readiness mechanism.  Local plugin
-#: spawns finish in seconds; this only bounds a genuinely hung child (a
-#: Streamable HTTP session stuck before the lifespan finishes serving), so
-#: startup convergence still fires and the user gets a failure message
-#: instead of a dead TUI.  On timeout the spawn coroutine keeps running in
-#: the background (matching the pre-existing memdb behaviour).
-PLUGIN_SPAWN_TIMEOUT: float = 30.0
+#: Hang guard for a plugin spawn — NOT a readiness mechanism.  It only
+#: bounds a genuinely hung child (a Streamable HTTP session stuck before
+#: the lifespan finishes serving), so startup convergence still fires and
+#: the user gets a failure message instead of a dead TUI.  On timeout the
+#: spawn coroutine keeps running in the background (matching the
+#: pre-existing memdb behaviour).
+#:
+#: Deliberately generous (60s): a child's cold-import of its heavy deps
+#: (fastmcp/mcp/openai) plus the harness's connect + tools discovery can
+#: reach ~35s even on a healthy machine while 8 children spawn at once
+#: (contention doubles the import wall-clock), and a slow disk / AV scan
+#: triple it.  The guard exists for a *hung* child, not a *slow* one —
+#: a 30s cap misfired on a slow machine and aborted a required plugin
+#: (memdb/memfiles) that was still making progress.
+PLUGIN_SPAWN_TIMEOUT: float = 60.0
 
 #: A restarted child is only considered *stable* once it has stayed up this
 #: long.  The watchdog resets its consecutive-failure counter / backoff only

@@ -103,7 +103,7 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 5.13 Channel: 定义为注入Inbox的来源：System(心跳、定时任务)、Humain（TUI 输入）、Wechat、Subagent（异步结果推送）、Agent（结果推送，非标准a2a模式）。
 
-5.14 轻量级的job systems: job-coding plugin, 创建和管理native tools的功能，可以调用大模型做编排。
+5.14 轻量级的job systems: job-coding plugin, 相对于native tools, 它可以用到外接mcp服务的全部能力，可以调用大模型做编排。
 
 5.15 每个agent有大模型或人工可以修改的提示词部分USER.md，它相当于一个常驻记忆，反映用户使用偏好和要求。 启动是追加到系统提示词尾部，作为提示词的一部分。不应频繁修改破坏缓存命中。
 
@@ -122,8 +122,6 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 6.3 共享代码库？现在项目里有重复的functions，增大代码量和维护量，是否值得？
 
 6.4 多wechat接入
-
-6.5 主进程设计为plugin以后，所有的其它plugin都共享了tool registry的能力，优化job-coding，是它可以用系统里的所有工具。
 
 
 

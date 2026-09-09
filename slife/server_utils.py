@@ -193,7 +193,7 @@ def warm_after_handshake(
     mcp,
     factory: "Callable[[], Awaitable[None]]",
     *,
-    delay: float = 0.25,
+    delay: float = 5.0,
     name: str = "warmup",
 ) -> None:
     """Run a heavyweight coroutine AFTER the first MCP ``tools/list``.
@@ -203,15 +203,18 @@ def warm_after_handshake(
     handshake-fast, so anything that could stall the loop while the
     wrapper is still connecting (a GIL-holding model load, slow I/O, long
     connects) must NOT run in the lifespan.  Use this to warm up such
-    resources in the background: it triggers right after the wrapper's
-    first ``tools/list`` is handled, so the plugin is already declared
-    ready before the warm-up starts.
+    resources in the background.
 
-    ``factory`` is awaited once (plus *delay* seconds' grace so the wrapper
-    finishes its remaining handshake round-trips), on an event-loop task;
-    an exception is logged, never fatal.  Reuse for any plugin with
-    post-handshake startup work; memdb/memfiles warm their embedding model
-    this way.
+    ``factory`` is awaited once (plus *delay* seconds' grace) on an
+    event-loop task; an exception is logged, never fatal.
+
+    The grace period exists so the wrapper's first ``tools/list`` response
+    is ALWAYS flushed before the warm-up starts: the first embedding
+    config read can cold-import the API SDK (a multi-second synchronous
+    import that blocks this loop).  If the warm-up began inside that window
+    the response would be delayed by the import and the harness's spawn
+    guard could time out a perfectly healthy plugin on a slow machine, so
+    the default delay is generous (5s) rather than a tight 0.25s.
     """
     mcp.add_middleware(_WarmAfterHandshake(factory, delay, name))
 

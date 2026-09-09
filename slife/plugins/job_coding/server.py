@@ -98,10 +98,14 @@ def _register_tool(job: registry.Job) -> None:
 
     ``runner.wrap`` preserves the job function's ``__name__``/docstring/
     annotations (via ``functools.wraps``), so FastMCP derives the schema
-    from the ORIGINAL function.
+    from the ORIGINAL function.  The LLM client is passed as a lazy
+    ``_LLMClientRef``: registration happens in the lifespan, which must
+    stay handshake-fast — constructing the real ``LLMClient`` cold-imports
+    the provider SDK (30s+ on a slow machine) and is deferred to the job's
+    first ``llm.chat``.
     """
     try:
-        mcp.add_tool(runner.wrap(job.fn, _get_llm_client()))
+        mcp.add_tool(runner.wrap(job.fn, runner._LLMClientRef(_get_llm_client)))
     except Exception as e:
         logger.warning("job_tool_register_failed name=%s err=%s", job.name, e)
         return
@@ -168,6 +172,18 @@ async def _job_lifespan(_app):
     contract — jobs re-register on every plugin start).  The ``job-coding``
     authoring skill lives in the standard skills directory (seed_skills).
     """
+    # Diagnostics only: resolve the job model's REF (a cached Config read)
+    # so the ready log / __check report the real model.  The LLMClient
+    # itself stays lazy (built on a job's first llm.chat) — constructing
+    # it in the lifespan cold-imports the provider SDK and blew the spawn
+    # guard on slow machines.
+    try:
+        _model = runner.resolve_job_model()
+        if _model is not None:
+            global _llm_model_ref
+            _llm_model_ref = getattr(_model, "ref", _llm_model_ref)
+    except Exception:
+        logger.debug("job_model_ref_resolve_failed", exc_info=True)
     _reload_all()
     logger.info(
         "job_coding_ready jobs_dir=%s jobs=%d llm_model=%s",
@@ -197,7 +213,10 @@ mcp, _log_path, logger = create_plugin_server(
 
 async def _execute(job: registry.Job, kwargs: dict) -> str:
     """Run one job deterministically; returns the normalized result."""
-    return await runner.wrap(job.fn, _get_llm_client())(**kwargs)
+    # Lazy client ref — job-run must not cold-import the provider SDK.
+    return await runner.wrap(
+        job.fn, runner._LLMClientRef(_get_llm_client),
+    )(**kwargs)
 
 
 def _job_status() -> list[dict]:
@@ -386,22 +405,19 @@ async def __set_mcp_gateway_port(port: int, ctx: Context | None = None) -> str:
     ),
 )
 async def __check() -> str:
-    """Return raw job-coding facts for the harness health check."""
+    """Return raw job-coding facts for the harness health check.
+
+    Never constructs the LLM client (a cold provider-SDK import) — the
+    probe reports the resolved model ref and lazy-build state instead.
+    """
     result = {
         "jobs_dir": str(_jobs_dir),
         "jobs": len(_registry),
         "job_names": sorted(_registry),
         "llm_model": _llm_model_ref,
+        "llm_client": "ready" if _llm_client is not None else "lazy",
         "error": "",
     }
-    try:
-        client = _get_llm_client()
-        model = getattr(client, "model_config", None) if client else None
-        result["llm_model"] = (
-            getattr(model, "ref", _llm_model_ref) if model else "unconfigured"
-        )
-    except Exception as e:
-        result["error"] = str(e)
     try:
         result["mcp_gateway"] = {
             "port": runner.mcp.port,

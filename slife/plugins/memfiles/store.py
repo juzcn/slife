@@ -168,7 +168,13 @@ class MemfilesStore:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
-        await self._load_vec_extension()
+        # Embeddings are optional AND semantically deferred: when no real
+        # dimension is applied here (dim == 0), don't pay to load the
+        # sqlite-vec DLL inside the startup-critical lifespan.  The
+        # reconfigure path (SemanticManager.enable after the handshake)
+        # loads it the first time a real dimension is applied.
+        if embedding_dim > 0:
+            await self._load_vec_extension()
         if not self._vec_available:
             self._embedding_dim = 0
         await self._run_schema()

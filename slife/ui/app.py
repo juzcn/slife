@@ -369,6 +369,11 @@ class SlifeApp(App):
         status.update_info(
             model=self.service.model_display_name,
             thinking=self.service.thinking_enabled,
+            # Plugin spawns take 10-30s (slow machines) — the status bar
+            # must show "⏳ 启动中…" from the first frame, not after
+            # startup settles (the next update happens in
+            # _open_service_when_ready, which only runs once converged).
+            starting=not self.service.startup_settled,
         )
 
         # Focus input on startup

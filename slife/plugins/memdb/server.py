@@ -22,7 +22,6 @@ from pathlib import Path
 
 from slife.paths import get_data_dir
 from slife.plugins.memdb.store import SessionStore, _clamp_limit
-from slife.plugins.memdb.embeddings import EmbeddingClient
 from slife.plugins.memdb.search import (
     SCORE_BAND_HINT, annotate_scores, merge_hybrid,
 )
@@ -155,37 +154,17 @@ async def _ensure_store_locked() -> SessionStore:
 
     from slife.logfmt import elapsed
 
-    # Probe the embedding config just to size the vec0 table up front.
-    # Only defer (create vec0 with the real width after the model loads)
-    # when the width can't be trusted yet: transformer reports its dim only
-    # once loaded, and an unknown gguf/api model carries a provisional guess
-    # that would silently drop every mis-sized embedding.  The model itself
-    # is loaded later by SemanticManager.enable() in the background — saves
-    # never wait on it.
-    probe = EmbeddingClient.from_config()
-    defer_vec0 = bool(
-        probe.available
-        and (probe.backend == "transformer" or not probe.dimension_known)
-    )
-    dim = 0 if defer_vec0 else (probe.dimension if probe.available else 0)
-    # Stamp a model identity ONLY once the model is actually known.  A bare
-    # provider (``active_model: "provider"``) defers the model until
-    # load()/discovery, so ``probe._model`` is "" here — stamping "api:" would
-    # read as a model change against the persisted identity (e.g.
-    # "api:bge-m3") and drop the vec0 index on every start.  The real identity
-    # is recorded by SemanticManager.enable() after discovery; genuine model
-    # or dimension changes still rebuild there.
-    model_id = (
-        f"{probe.backend}:{probe._model}"
-        if probe.available and not defer_vec0 and probe._model
-        else ""
-    )
-
+    # Handshake-fast: the store is built WITHOUT vectors.  Embedding setup
+    # (config read, sqlite-vec load, vec0 table) is heavy and belongs on the
+    # post-handshake warm path (SemanticManager.enable() re-runs the schema
+    # with the real width via reconfigure_for_embedding), never in the
+    # lifespan — the plugin contract says the lifespan must stay
+    # handshake-fast, and embeddings are optional: a slow or unavailable
+    # backend must not gate startup.  Keyword search serves with no vectors;
+    # the vec0 tables appear once the embedding model loads.
     _store = SessionStore(_db_path)
     with elapsed("store_setup", logger, level=logging.INFO, db=str(_db_path)):
-        await _store.setup(embedding_dim=dim, embedding_model=model_id)
-    logger.info("embeddings_configured=%s backend=%s model=%s",
-                probe.available, probe.backend, probe._model)
+        await _store.setup(embedding_dim=0, embedding_model="")
 
     _manager = SemanticManager(_store)
     return _store
