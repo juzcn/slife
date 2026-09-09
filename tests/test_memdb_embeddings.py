@@ -15,6 +15,19 @@ from slife.plugins.memdb.embeddings import (
 )
 
 
+def _embeddings_cfg(**provider_kw) -> dict:
+    """A minimal top-level ``embeddings`` section with one provider p1."""
+    p = {"base_url": "https://api.siliconflow.cn/v1", "api_key": "local"}
+    p.update(provider_kw)
+    return {
+        "embeddings": {
+            "providers": {"p1": p},
+            "active_model": "p1",
+            "enabled": True,
+        },
+    }
+
+
 # ── _guess_dim ──────────────────────────────────────────────────────────────
 
 
@@ -252,6 +265,74 @@ class TestEmbeddingClientFromConfig:
             assert client.backend == "api"
             assert client.dimension == 1536
             assert client.dimension_known is True
+
+    @patch("pathlib.Path.read_text")
+    @patch("pathlib.Path.exists")
+    def test_placeholder_api_key_resolves_from_env(
+        self, mock_exists, mock_read_text, monkeypatch,
+    ):
+        """``${VAR}`` api_key resolves from the shell env, like the model
+        section — a SiliconFlow-style provider must not be blanked."""
+        mock_exists.return_value = True
+        mock_read_text.return_value = '{}'
+        monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-sf-test")
+        # Hermetic: never fall through to the real credstore lookup.
+        monkeypatch.setattr(
+            "slife.config._try_credstore_lookup", lambda key: None,
+        )
+
+        with patch("json5.loads", return_value=_embeddings_cfg(
+            api_key="${SILICONFLOW_API_KEY}",
+        )):
+            client = EmbeddingClient.from_config("/fake/config.json5")
+        assert client.backend == "api"
+        assert client.available is True
+        assert client._api_key == "sk-sf-test"
+
+    @patch("pathlib.Path.read_text")
+    @patch("pathlib.Path.exists")
+    def test_placeholder_api_key_resolves_from_credstore(
+        self, mock_exists, mock_read_text, monkeypatch,
+    ):
+        """``${VAR}`` api_key falls back to credstore when the env var is
+        unset (the documented env → credstore chain)."""
+        mock_exists.return_value = True
+        mock_read_text.return_value = '{}'
+        monkeypatch.delenv("SILICONFLOW_CRED_KEY", raising=False)
+        monkeypatch.setattr(
+            "slife.config._try_credstore_lookup",
+            lambda key: "sk-cred" if key == "SILICONFLOW_CRED_KEY" else None,
+        )
+
+        with patch("json5.loads", return_value=_embeddings_cfg(
+            api_key="${SILICONFLOW_CRED_KEY}",
+        )):
+            client = EmbeddingClient.from_config("/fake/config.json5")
+        assert client.backend == "api"
+        assert client._api_key == "sk-cred"
+
+    @patch("pathlib.Path.read_text")
+    @patch("pathlib.Path.exists")
+    def test_unresolved_placeholder_api_key_stays_empty(
+        self, mock_exists, mock_read_text, monkeypatch,
+    ):
+        """An unresolvable placeholder (neither env nor credstore) must not
+        be sent as a Bearer token — it degrades to empty (no auth header),
+        so the api backend is not activated."""
+        mock_exists.return_value = True
+        mock_read_text.return_value = '{}'
+        monkeypatch.delenv("NO_SUCH_SF_KEY_EVER", raising=False)
+        monkeypatch.setattr(
+            "slife.config._try_credstore_lookup", lambda key: None,
+        )
+
+        with patch("json5.loads", return_value=_embeddings_cfg(
+            api_key="${NO_SUCH_SF_KEY_EVER}",
+        )):
+            client = EmbeddingClient.from_config("/fake/config.json5")
+        assert client._api_key == ""
+        assert client.backend == ""
+        assert client.available is False
 
     def test_json5_not_installed(self):
         with patch("slife.plugins.memdb.embeddings.json5", create=True, side_effect=ImportError):

@@ -917,125 +917,129 @@ class TestCheckMemfilesFunction:
         assert "boom" in entries[0]["hint"]
 
 
-class _FakeLocalEmbedResponse:
-    """Minimal stand-in for the local-embed daemon's ``/v1/models`` response."""
+class TestCheckLocalEmbed:
+    """check_local_embed probes the ACTIVE embedding endpoint uniformly.
 
-    def __init__(self, models=None, ok=True):
-        self._payload = {"object": "list", "data": models or []}
-        self._ok = ok
-
-    def raise_for_status(self):
-        if not self._ok:
-            raise RuntimeError("boom")
-
-    def json(self):
-        return self._payload
-
-
-class _FakeLocalEmbedHttp:
-    """Async context manager stubbing httpx2.AsyncClient for the daemon probe."""
-
-    def __init__(self, resp):
-        self._resp = resp
-        self.get_calls = []
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def get(self, url):
-        self.get_calls.append(url)
-        return self._resp
-
-
-class TestCheckLocalEmbedFunction:
-    """Tests for check_local_embed() — probes the daemon's /v1/models."""
+    Every provider — local-embed or a cloud API like SiliconFlow — is one
+    ordinary OpenAI-compatible endpoint: the api_key resolves like the model
+    section's and rides as a Bearer header, then ``/models`` is probed.
+    Only the ACTIVE provider is probed; nothing inactive is ever checked.
+    """
 
     @staticmethod
-    def _status(**overrides):
-        data = {
-            "id": "bge-m3", "backend": "gguf", "model": "bge-m3",
-            "dimension": 1024, "dimension_known": True, "loaded": True,
-            "available": True, "max_tokens": 8192,
+    def _endpoint(**overrides):
+        ep = {
+            "provider": "siliconflow",
+            "base_url": "https://api.siliconflow.cn/v1",
+            "api_key": "${SILICONFLOW_API_KEY}",
+            "model": "BAAI/bge-m3",
         }
-        data.update(overrides)
-        return data
+        ep.update(overrides)
+        return ep
+
+    def _http(self, seen, models=None, error=None):
+        """Fake httpx2.AsyncClient recording the request headers."""
+        class _FakeResp:
+            def __init__(self, models):
+                self._models = models
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"data": self._models}
+
+        class _FakeHttp:
+            def __init__(self, *a, **k):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def get(self, url, headers=None):
+                if error is not None:
+                    raise error
+                seen["url"] = url
+                seen["authorization"] = (headers or {}).get("Authorization")
+                return _FakeResp(models or [])
+
+        return _FakeHttp
 
     @pytest.mark.asyncio
     async def test_no_base_url_offline(self):
-        """No *configured* endpoint → the bare call reports "not configured"
-        (the internal endpoint resolution falls through to offline)."""
+        """No configured endpoint → offline/not configured."""
         with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
                    return_value={"base_url": "", "api_key": "", "model": ""}):
             entries = await check_local_embed()
         assert entries[0]["component"] == "local_embed"
         assert entries[0]["level"] == "warning"
         assert entries[0]["value"] == "offline"
-        assert "not configured" in entries[0]["hint"]
+        assert "base_url" in entries[0]["hint"]
 
     @pytest.mark.asyncio
-    async def test_bare_call_resolves_configured_endpoint(self):
-        """A5 regression: check_local_embed() called with NO base_url (as
-        system_health's _run_checks does — it has no _CLIENT_FIELD entry)
-        must resolve the configured endpoint itself and probe it, instead of
-        always reporting "offline / not configured"."""
-        http = _FakeLocalEmbedHttp(_FakeLocalEmbedResponse([
-            {"id": "bge-m3", "active": True, "loaded": True,
-             "available": True, "backend": "gguf"},
-        ]))
-        with patch("slife.tools.system.httpx2.AsyncClient", return_value=http), \
-             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value={"base_url": "http://127.0.0.1:17347/v1",
-                                 "api_key": "", "model": "bge-m3"}):
+    async def test_active_cloud_provider_probed_with_auth(self):
+        """Active = siliconflow: probed with the RESOLVED Bearer key — the old
+        401 (probe without a key) is the regression being guarded."""
+        seen = {}
+        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value=self._endpoint()), \
+             patch("slife.tools.system.httpx2.AsyncClient", self._http(
+                 seen, models=[{"id": "BAAI/bge-m3"}])) , \
+             patch("slife.config._resolve_secret", return_value="sk-real"):
+            entries = await check_local_embed()
+        assert entries[0]["level"] == "ok"
+        assert seen["url"] == "https://api.siliconflow.cn/v1/models"
+        assert seen["authorization"] == "Bearer sk-real"
+        assert "siliconflow" in seen["url"]
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_placeholder_key_not_sent(self):
+        """A key credstore can't resolve is never sent as a literal token —
+        the probe still runs (header just absent)."""
+        seen = {}
+        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value=self._endpoint()), \
+             patch("slife.tools.system.httpx2.AsyncClient", self._http(
+                 seen, models=[{"id": "BAAI/bge-m3"}])), \
+             patch("slife.config._resolve_secret",
+                   return_value="${SILICONFLOW_API_KEY}"):
+            entries = await check_local_embed()
+        assert entries[0]["level"] == "ok"
+        assert seen["authorization"] is None
+
+    @pytest.mark.asyncio
+    async def test_local_embed_is_an_ordinary_endpoint(self):
+        """local-embed is handled exactly like a cloud endpoint — a model
+        list without the old loaded/available metadata is healthy, not a
+        "model not loaded" warning."""
+        seen = {}
+        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value={
+                       "provider": "local_embed",
+                       "base_url": "http://127.0.0.1:17347/v1",
+                       "api_key": "local",
+                       "model": "bge-m3",
+                   }), \
+             patch("slife.tools.system.httpx2.AsyncClient", self._http(
+                 seen, models=[{"id": "bge-m3"}])), \
+             patch("slife.config._resolve_secret", return_value="local"):
             entries = await check_local_embed()
         assert entries[0]["level"] == "ok"
         assert entries[0]["value"] == "bge-m3"
-        assert http.get_calls == ["http://127.0.0.1:17347/v1/models"]
+        assert "17347" in seen["url"] and "bge-m3" in entries[0]["hint"]
+        # The ordinary-path key "local" still rides as the Bearer header.
+        assert seen["authorization"] == "Bearer local"
 
     @pytest.mark.asyncio
-    async def test_active_model_loaded(self):
-        http = _FakeLocalEmbedHttp(_FakeLocalEmbedResponse([
-            {"id": "bge-m3", "active": True, "loaded": True,
-             "available": True, "backend": "gguf"},
-        ]))
-        with patch("slife.tools.system.httpx2.AsyncClient", return_value=http):
-            entries = await check_local_embed(base_url="http://127.0.0.1:17347/v1")
-        assert len(entries) == 1
-        assert entries[0]["level"] == "ok"
-        assert entries[0]["value"] == "bge-m3"
-        assert "bge-m3 loaded" in entries[0]["hint"]
-        assert "1/1 model(s) loaded" in entries[0]["hint"]
-        assert http.get_calls == ["http://127.0.0.1:17347/v1/models"]
-
-    @pytest.mark.asyncio
-    async def test_active_model_not_loaded(self):
-        http = _FakeLocalEmbedHttp(_FakeLocalEmbedResponse([
-            {"id": "bge-m3", "active": True, "loaded": False,
-             "available": True, "backend": "gguf"},
-        ]))
-        with patch("slife.tools.system.httpx2.AsyncClient", return_value=http):
-            entries = await check_local_embed(base_url="http://127.0.0.1:17347/v1")
-        assert len(entries) == 1
+    async def test_probe_error_reports_unreachable(self):
+        seen = {}
+        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value=self._endpoint()), \
+             patch("slife.tools.system.httpx2.AsyncClient", self._http(
+                 seen, error=RuntimeError("Connection error."))), \
+             patch("slife.config._resolve_secret", return_value="sk-real"):
+            entries = await check_local_embed()
         assert entries[0]["level"] == "warning"
-        assert "NOT loaded" in entries[0]["hint"]
-
-    @pytest.mark.asyncio
-    async def test_no_models_reports_warning(self):
-        http = _FakeLocalEmbedHttp(_FakeLocalEmbedResponse(models=[]))
-        with patch("slife.tools.system.httpx2.AsyncClient", return_value=http):
-            entries = await check_local_embed(base_url="http://127.0.0.1:17347/v1")
-        assert entries[0]["level"] == "warning"
-        assert "NOT loaded" in entries[0]["hint"]
-
-    @pytest.mark.asyncio
-    async def test_check_failure_reports_warning(self):
-        with patch("slife.tools.system.httpx2.AsyncClient",
-                   side_effect=RuntimeError("boom")):
-            entries = await check_local_embed(base_url="http://127.0.0.1:17347/v1")
-        assert entries[0]["level"] == "warning"
-        assert "boom" in entries[0]["hint"]
+        assert entries[0]["value"] == "unavailable"
+        assert "unreachable" in entries[0]["hint"]
 
 
 class TestCheckToolsInternal:

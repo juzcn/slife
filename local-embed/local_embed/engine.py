@@ -76,6 +76,16 @@ def _guess_max_tokens(model: str) -> int:
     return pair[1] if pair else _DEFAULT_MAX_TOKENS
 
 
+class EmbeddingInputTooLong(ValueError):
+    """An input text exceeds the model's token limit.
+
+    Raised instead of silently truncating — a local backend that cuts the
+    text (llama.cpp n_ctx / sentence-transformers max_seq_length) hides
+    data loss from the caller; the OpenAI-compatible route must surface it
+    as a 400 ``invalid_request_error`` exactly like a cloud API does.
+    """
+
+
 # Optional backend classes — resolved LAZILY, once, on the first backend
 # availability check (never at module import).  `sentence_transformers`
 # drags in torch/transformers (~5s of imports) and `llama_cpp` is heavy
@@ -408,6 +418,20 @@ class Engine:
         if not valid:
             return [[0.0] * spec.dim for _ in texts]
 
+        # Enforce the model's token limit BEFORE encoding.  The backends
+        # truncate silently (llama.cpp at n_ctx, sentence-transformers at
+        # max_seq_length), which would otherwise turn an over-limit request
+        # into a successful embed of a CUT document — data loss the caller
+        # can't see.  Match cloud-API behaviour: reject it.
+        for i, t in enumerate(valid):
+            n_tokens = self._count_tokens(client, spec.backend, t)
+            if n_tokens > spec.max_tokens:
+                raise EmbeddingInputTooLong(
+                    f"input {i} contains {n_tokens} tokens, which exceeds "
+                    f"the maximum context length of {spec.max_tokens} tokens "
+                    f"for model '{name}'"
+                )
+
         dim = self._dims.get(name, spec.dim)
         if spec.backend == "gguf":
             vecs = await self._encode_gguf(client, valid)
@@ -422,6 +446,26 @@ class Engine:
         return result
 
     # ── internal ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _count_tokens(client: Any, backend: str, text: str) -> int:
+        """Count tokens *text* would consume on *backend*'s model.
+
+        GGUF counts exactly via llama-cpp's tokenizer (identical to what
+        ``create_embedding`` sees).  Transformer falls back to a
+        conservative **1 char/token** floor — the densest any BPE gets —
+        so an over-limit text is never let through as "fits"; normal text
+        is unaffected (the conservative bound only over-estimates dense
+        punctuation/escaped-JSON runs, which is the safe direction).
+        """
+        if backend == "gguf":
+            try:
+                ids = client.tokenize(text, special=False)
+                if ids is not None:
+                    return len(ids)
+            except Exception:
+                pass
+        return len(text)
 
     @staticmethod
     def _read_model_dim(client: Any) -> int:

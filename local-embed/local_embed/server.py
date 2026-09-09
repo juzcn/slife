@@ -36,7 +36,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from local_embed.config import DEFAULT_PORT
-from local_embed.engine import Engine
+from local_embed.engine import EmbeddingInputTooLong, Engine
 from local_embed.logging import silence_noisy_loggers, setup_logging
 from local_embed.server_utils import bind_port, create_plugin_server, warm_after_handshake
 
@@ -177,6 +177,13 @@ async def v1_embeddings(request: Request) -> Response:
         return JSONResponse(
             {"error": {"message": str(e), "type": "invalid_request_error"}},
             status_code=404,
+        )
+    except EmbeddingInputTooLong as e:
+        # Input exceeds the model's token limit — reject like a cloud API
+        # (OpenAI 400 invalid_request_error; no silent truncation).
+        return JSONResponse(
+            {"error": {"message": str(e), "type": "invalid_request_error"}},
+            status_code=400,
         )
     except Exception as e:
         logger.warning("embeddings_failed err=%s", e)

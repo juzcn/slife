@@ -279,9 +279,19 @@ class EmbeddingClient:
         base_url = ep["base_url"]
         model = ep["model"]
 
-        # Skip unresolved ${VAR} placeholders — they are NOT real API keys.
-        # The install template ships with api_key: "${DEEPSEEK_API_KEY}" and
-        # real resolution happens at the Config level, not here.
+        # Resolve ${VAR} / keyring references — the raw embeddings section
+        # ships with api_key: "${SILICONFLOW_API_KEY}" and, unlike the model
+        # section (ModelConfig.from_dict) or the mcp_gateway embedding client,
+        # this path never resolved it — a placeholder was blanked below → no
+        # Authorization header → the provider rejects every embed with an
+        # auth error.  Same chain as the model section: env → credstore →
+        # literal.
+        from slife.config import _resolve_secret
+        api_key = _resolve_secret(api_key, accept_keyring_uri=True)
+
+        # Skip still-unresolved ${VAR} placeholders — they are NOT real API
+        # keys.  A ref that even credstore can't resolve must not be sent as
+        # a Bearer token (the install template ships with one).
         if api_key and _looks_like_placeholder(api_key):
             api_key = ""
 

@@ -14,6 +14,7 @@ pytestmark = pytest.mark.unit
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from local_embed.engine import (
+    EmbeddingInputTooLong,
     Engine,
     ModelSpec,
     _guess_dim,
@@ -215,6 +216,76 @@ class TestEmbed:
         e._failed.add("bge-m3")
         with pytest.raises(RuntimeError):
             await e.embed([])
+
+
+class TestEmbedInputTooLong:
+    """Over-limit inputs must be rejected, not silently truncated by the
+    local backends (llama.cpp n_ctx / sentence-transformers max_seq_length)."""
+
+    @pytest.mark.asyncio
+    async def test_gguf_oversized_input_rejected(self):
+        with (
+            patch("local_embed.engine._Llama", MagicMock()),
+            patch("local_embed.engine.run_daemon", new_callable=AsyncMock) as mock_run,
+        ):
+            client = MagicMock()
+            client.n_embd = MagicMock(return_value=1024)
+            client.create_embedding = MagicMock(
+                return_value={"data": [{"embedding": [0.1] * 1024}]}
+            )
+            client.tokenize = MagicMock(return_value=list(range(9000)))
+            mock_run.side_effect = lambda fn, name="daemon": (
+                client if name.startswith("gguf-load") else fn()
+            )
+
+            e = Engine(backend="gguf", model="bge-m3", gguf_path="/model.gguf")
+            with pytest.raises(EmbeddingInputTooLong) as ei:
+                await e.embed(["x" * 100])
+            assert "9000 tokens" in str(ei.value)
+            assert "8192" in str(ei.value)
+            # Rejected BEFORE encoding — nothing was truncated into a vector.
+            client.create_embedding.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_gguf_within_limit_passes(self):
+        with (
+            patch("local_embed.engine._Llama", MagicMock()),
+            patch("local_embed.engine.run_daemon", new_callable=AsyncMock) as mock_run,
+        ):
+            client = MagicMock()
+            client.n_embd = MagicMock(return_value=1024)
+            client.create_embedding = MagicMock(
+                return_value={"data": [{"embedding": [0.1] * 1024}]}
+            )
+            client.tokenize = MagicMock(return_value=list(range(100)))
+            mock_run.side_effect = lambda fn, name="daemon": (
+                client if name.startswith("gguf-load") else fn()
+            )
+
+            e = Engine(backend="gguf", model="bge-m3", gguf_path="/model.gguf")
+            vecs = await e.embed(["a short input"])
+            assert len(vecs) == 1 and len(vecs[0]) == 1024
+            client.create_embedding.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_transformer_oversized_rejected_via_char_floor(self):
+        """Transformer has no cheap tokenizer here — the conservative
+        1-char/token floor still rejects what would be truncated."""
+        with (
+            patch("local_embed.engine._SentenceTransformer", MagicMock()),
+            patch("local_embed.engine.run_daemon", new_callable=AsyncMock) as mock_run,
+        ):
+            client = MagicMock()
+            client.get_sentence_embedding_dimension = MagicMock(return_value=768)
+            client.encode = MagicMock(return_value=[])
+            mock_run.side_effect = lambda fn, name="daemon": (
+                client if name.startswith("transformer-load") else fn()
+            )
+
+            e = Engine(backend="transformer", model="BAAI/bge-m3")
+            with pytest.raises(EmbeddingInputTooLong):
+                await e.embed(["x" * 9000])
+            client.encode.assert_not_called()
 
 
 # ── Multi-model switching ─────────────────────────────────────────────────

@@ -338,70 +338,60 @@ _PROBE_TIMEOUT = 5.0
 
 
 async def check_local_embed(base_url: str = "") -> list[dict]:
-    """Return the local-embed daemon status as health entries.
+    """Probe the ACTIVE embedding endpoint.
 
-    local-embed runs as a standalone daemon (like mosquitto — the user starts
-    it; slife never spawns it).  The probe reads its OpenAI-compatible
-    ``GET {base_url}/models`` endpoint (each entry carries ``active`` /
-    ``loaded`` / ``available``).  The endpoint comes from slife.json5's
-    top-level ``embeddings`` section (``get_active_endpoint``); no endpoint
-    configured, or an unreachable daemon, reports offline/degraded — semantic
-    search falls back to keyword.
+    Every configured embeddings provider — local-embed or a cloud API like
+    SiliconFlow — is treated as ONE ordinary OpenAI-compatible endpoint and
+    handled the same way: the api_key is resolved like the model section's
+    (env → credstore → literal) and sent as the Bearer header, then
+    ``GET {base_url}/models`` is probed.  Reachability + model list IS the
+    health signal — no local-embed-specific loaded/available semantics.
+
+    Only the ACTIVE provider is probed.  A configured-but-inactive provider
+    (e.g. a local-embed daemon that is listed but not active) is never
+    touched or warned about.
     """
     try:
+        from slife.plugins.memdb.embedding_config import get_active_endpoint
+        ep = get_active_endpoint()
+        base_url = (base_url or ep.get("base_url") or "").strip()
         if not base_url:
-            # Resolve the configured endpoint here rather than returning
-            # "not configured": the probe is also reached from system_health's
-            # _run_checks with no base_url (check_local_embed has no
-            # _CLIENT_FIELD entry), so without this resolution a configured
-            # and running daemon was always reported offline.
-            from slife.plugins.memdb.embedding_config import get_active_endpoint
-            base_url = (get_active_endpoint().get("base_url") or "").strip()
-            if not base_url:
-                return [{"component": "local_embed", "level": "warning", "key": "plugin",
-                         "value": "offline",
-                         "hint": "local-embed daemon not configured — no embeddings base_url in slife.json5. "
-                                 "Start local-embed manually and set the embeddings endpoint."}]
+            return [{"component": "local_embed", "level": "warning", "key": "plugin",
+                     "value": "offline",
+                     "hint": "No embeddings base_url in slife.json5 — configure the "
+                             "top-level embeddings section (see embeddings_model_set)."}]
+        headers: dict[str, str] = {}
+        api_key = ep.get("api_key") or ""
+        if api_key:
+            # Uniform for every endpoint: a cloud API needs the key, local-embed
+            # ignores it.  An unresolvable placeholder is never sent as a token.
+            from slife.config import _resolve_secret
+            api_key = _resolve_secret(api_key, accept_keyring_uri=True)
+            if not (api_key.startswith("${") and api_key.endswith("}")):
+                headers["Authorization"] = f"Bearer {api_key}"
         base_url = base_url.rstrip("/")
         async with httpx2.AsyncClient(
             timeout=httpx2.Timeout(_PROBE_TIMEOUT),
         ) as http:
-            resp = await http.get(f"{base_url}/models")
+            resp = await http.get(f"{base_url}/models", headers=headers)
             resp.raise_for_status()
             payload = resp.json()
         models = payload.get("data") or []
-        active = next(
-            (m.get("id") or "?" for m in models if m.get("active")),
-            next((m.get("id") or "?" for m in models), "?"),
-        )
-        active_entry = next((m for m in models if m.get("id") == active), None)
-        active_loaded = active_entry.get("loaded") if active_entry else None
-        active_available = active_entry.get("available") if active_entry else None
-        loaded_count = sum(1 for m in models if m.get("loaded"))
-        if active_loaded:
-            return [{"component": "local_embed", "level": "ok", "key": "status",
-                     "value": active,
-                     "hint": f"local-embed online: active model {active} loaded, "
-                             f"{loaded_count}/{len(models)} model(s) loaded."}]
-        if active_available is False:
-            # The endpoint is up but the active model's backend is unusable —
-            # dependency not installed (sentence-transformers / llama-cpp-python)
-            # or the model file is missing/broken.  Not a load-block; it will
-            # keep failing.  Semantic search degrades to keyword-only.
-            return [{"component": "local_embed", "level": "warning", "key": "status",
-                     "value": active,
-                     "hint": (f"local-embed online but active model {active} unavailable — "
-                              "embedding backend dependency missing or model file invalid. "
-                              "Semantic search off (keyword search still works).")}]
-        return [{"component": "local_embed", "level": "warning", "key": "status",
+        active = "?"
+        if models:
+            active = next(
+                (m.get("id") or "?" for m in models if m.get("active")),
+                next((m.get("id") or "?" for m in models), "?"),
+            )
+        preview = ", ".join(m.get("id", "?") for m in models[:3]) or "none"
+        return [{"component": "local_embed", "level": "ok", "key": "status",
                  "value": active,
-                 "hint": (f"local-embed online but active model {active} NOT loaded yet — "
-                          "first embed will load it (or it fails then).")}]
+                 "hint": f"Embedding endpoint {base_url}: {len(models)} model(s) exposed (e.g. {preview})."}]
     except Exception as e:
         logger.warning("local_embed_check_failed err=%s", e)
         return [{"component": "local_embed", "level": "warning", "key": "status",
                  "value": "unavailable",
-                 "hint": f"local-embed daemon unavailable (start it manually): {e}"}]
+                 "hint": f"Active embedding endpoint unreachable: {e}"}]
 
 
 # ═══════════════════════════════════════════════════════════════════════

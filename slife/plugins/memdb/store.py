@@ -1400,10 +1400,16 @@ def _split_chunks_to_token_limit(chunks: list[str], max_tokens: int) -> list[str
 def _char_limit_for_tokens(max_tokens: int, text: str) -> int:
     """Chars that fit in *max_tokens* for a mixed CJK/Latin string.
 
-    CJK is ~1 char/token; Latin ~4 chars/token.  A fixed ``max_tokens * 4``
-    over-allocates for CJK-heavy text, so a chunk that fits by characters still
-    exceeds the model's real token limit and the embed fails — stalling the
-    drainer (the completeness gate never opens).
+    CJK is ~1 char/token; Latin ~4 chars/token in prose — but that density
+    is a ceiling, not a floor.  Punctuation- and escape-dense runs (escaped
+    JSON, tool dumps) tokenize at 1-2 chars/token, so relying on it let a
+    30k-char newline-free JSON line ride as one "fits" chunk, the provider
+    rejected it (bge-m3's 8192-token cap), and the drainer stalled on that
+    turn forever.  Floor the density at **1 char/token** — the densest any
+    BPE gets — so an oversized chunk always hard-splits into pieces that
+    fit by construction.  Normal text never pays for this: ``_chunk_text``
+    already caps paragraphs at ``CHUNK_SIZE_CHARS`` (well under any limit),
+    so this budget only governs pathological single lines.
     """
     if not text:
         return max_tokens
@@ -1411,7 +1417,7 @@ def _char_limit_for_tokens(max_tokens: int, text: str) -> int:
     other = len(text) - cjk
     est_tokens = cjk + other / 4
     per_char = est_tokens / len(text)
-    return max(1, int(max_tokens / per_char))
+    return max(1, int(max_tokens / max(per_char, 1.0)))
 
 
 def _contains_cjk(text: str) -> bool:

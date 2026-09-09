@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from starlette.testclient import TestClient
 
-from local_embed.engine import Engine, ModelSpec
+from local_embed.engine import EmbeddingInputTooLong, Engine, ModelSpec
 from local_embed.server import build_server, mcp, serve_standalone
 from local_embed.server_utils import bind_port
 
@@ -108,6 +108,25 @@ class TestV1Embeddings:
         with TestClient(mcp.http_app(path="/mcp")) as c:
             resp = c.post("/v1/embeddings", json={"input": "x"})
             assert resp.status_code == 503
+
+    def test_input_too_long_400(self):
+        """An over-limit input surfaces as an OpenAI-style 400
+        invalid_request_error — never a silent truncation."""
+
+        class _TooLongEngine(_StubEngine):
+            async def embed(self, texts, model=None):
+                raise EmbeddingInputTooLong(
+                    "input 0 contains 9000 tokens, which exceeds the maximum "
+                    "context length of 8192 tokens for model 'bge-m3'"
+                )
+
+        build_server(_TooLongEngine(dim=1024, available=True))
+        with TestClient(mcp.http_app(path="/mcp")) as c:
+            resp = c.post("/v1/embeddings", json={"input": "x" * 100, "model": "bge-m3"})
+            assert resp.status_code == 400
+            err = resp.json()["error"]
+            assert err["type"] == "invalid_request_error"
+            assert "8192" in err["message"]
 
     def test_default_model_echoes_key_not_repo_id(self):
         """When the client omits `model`, the response echoes the addressable

@@ -14,6 +14,7 @@ import pytest
 
 from slife.plugins.memdb.store import (
     SessionStore,
+    _char_limit_for_tokens,
     _normalize_time_param,
     _now,
     _serialize_f32,
@@ -99,6 +100,26 @@ class TestSplitChunksToTokenLimit:
     def test_nonpositive_limit_returns_unchanged(self):
         chunks = ["abc"]
         assert _split_chunks_to_token_limit(chunks, max_tokens=0) == chunks
+
+    def test_dense_single_line_splits_inside_token_budget(self):
+        """A newline-free escaped-JSON dump (density ~1-2 chars/token) must
+        hard-split so every piece stays within *max_tokens* chars — the old
+        Latin-4-chars/token estimate let a 30k-char dump ride as one chunk,
+        the provider rejected it (400 invalid parameter), and the drainer
+        stalled on that turn forever."""
+        line = '{\\"messages\\": \\"{\\\\\\"{a\\\\\\"]\\", ' * 3000
+        out = _split_chunks_to_token_limit([line], max_tokens=8192)
+        assert out, "oversized line must split, never be dropped"
+        assert all(len(c) <= 8192 for c in out)
+        assert "".join(out) == line  # nothing lost
+
+    def test_char_limit_floors_density_at_one_char_per_token(self):
+        """The char budget never assumes a better density than 1 char/token,
+        so a piece cannot exceed the provider's real token limit no matter
+        how dense the text is."""
+        assert _char_limit_for_tokens(8192, '{"a":1}' * 2000) <= 8192
+        assert _char_limit_for_tokens(8192, "x" * 100) <= 8192
+        assert _char_limit_for_tokens(8192, "中文" * 100) <= 8192
 
 
 class TestToFts5Query:
