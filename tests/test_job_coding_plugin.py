@@ -411,3 +411,285 @@ async def test_rescan_registers_and_unregisters(sample_config):
     names = {t.name for t in service.tool_registry.list_tools()}
     assert "translate" in names
     assert "gone" not in names
+
+
+# ── mcp handle (bare MCP via the gateway) ─────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_gateway_state():
+    """Isolate the module-level mcp-handle state across in-process tests.
+
+    ``runner.mcp`` keeps its gateway port/client as module globals; any test
+    touching it must start (and end) clean so a connected fake client from
+    one test never leaks into the next.
+    """
+    runner._gateway_port = None
+    runner._gateway_port_source = ""
+    runner._gateway_client = None
+    runner._gateway_lock = None
+    yield
+    runner._gateway_port = None
+    runner._gateway_port_source = ""
+    runner._gateway_client = None
+    runner._gateway_lock = None
+
+
+class _FakeGateClient:
+    """MCPClient stand-in for the gateway connection.
+
+    Records connect / disconnect / call_tool.  ``result`` may be a str to
+    return or an exception to raise — mirrors MCPClient.call_tool's
+    never-raise contract at the proxy boundary.
+    """
+
+    def __init__(self, result="RESULT"):
+        self.result = result
+        self.calls: list = []
+        self.urls: list[str] = []
+        self.disconnects = 0
+        self._connected = False
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def connect(self, url: str) -> None:
+        self.urls.append(url)
+        self._connected = True
+
+    async def disconnect(self) -> None:
+        self.disconnects += 1
+        self._connected = False
+
+    async def call_tool(self, name: str, args: dict | None = None) -> str:
+        self.calls.append((name, args))
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_forwards_bare_call(monkeypatch):
+    client = _FakeGateClient("R")
+    monkeypatch.setattr(runner.mcp, "_client", AsyncMock(return_value=client))
+    out = await runner.mcp.call("github", "search_code", {"q": "abc"})
+    assert out == "R"
+    assert client.calls == [(
+        "__mcp_call_tool",
+        {"server": "github", "tool_name": "search_code",
+         "arguments": json.dumps({"q": "abc"}, ensure_ascii=False)},
+    )]
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_defaults_args_to_empty_json(monkeypatch):
+    client = _FakeGateClient("R")
+    monkeypatch.setattr(runner.mcp, "_client", AsyncMock(return_value=client))
+    await runner.mcp.call("fs", "list_directory")
+    assert client.calls == [(
+        "__mcp_call_tool",
+        {"server": "fs", "tool_name": "list_directory", "arguments": "{}"},
+    )]
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_no_gateway_returns_error(monkeypatch):
+    monkeypatch.setattr(runner.mcp, "_client", AsyncMock(return_value=None))
+    out = await runner.mcp.call("github", "x")
+    assert out.startswith("Error: mcp.call")
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_surfaces_client_failure(monkeypatch):
+    client = _FakeGateClient(RuntimeError("boom"))
+    monkeypatch.setattr(runner.mcp, "_client", AsyncMock(return_value=client))
+    out = await runner.mcp.call("github", "x")
+    assert out.startswith("Error: mcp.call('github', 'x')")
+    assert "boom" in out
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_opens_on_pushed_port(monkeypatch):
+    import slife.plugins.mcp_gateway.client as gw_client_mod
+
+    fake = _FakeGateClient()
+    monkeypatch.setattr(gw_client_mod, "MCPClient", lambda: fake)
+    monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "9999")  # push must win
+    runner._gateway_port = "1234"
+    runner._gateway_port_source = "push"
+
+    client = await runner.mcp._client()
+
+    assert client is fake
+    assert fake.urls == ["http://127.0.0.1:1234/mcp"]
+    assert runner._gateway_port == "1234"
+    assert runner._gateway_port_source == "push"
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_falls_back_to_env_port(monkeypatch):
+    import slife.plugins.mcp_gateway.client as gw_client_mod
+
+    fake = _FakeGateClient()
+    monkeypatch.setattr(gw_client_mod, "MCPClient", lambda: fake)
+    monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "7777")
+
+    client = await runner.mcp._client()
+
+    assert client is fake
+    assert fake.urls == ["http://127.0.0.1:7777/mcp"]
+    assert runner._gateway_port == "7777"
+    assert runner._gateway_port_source == "env"
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_no_port_returns_none(monkeypatch):
+    import slife.plugins.mcp_gateway.client as gw_client_mod
+
+    fake = _FakeGateClient()
+    monkeypatch.setattr(gw_client_mod, "MCPClient", lambda: fake)
+    monkeypatch.delenv("SLIFE_MCP_GATEWAY_PORT", raising=False)
+
+    out = await runner.mcp._client()
+
+    assert out is None
+    assert fake.urls == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_connect_failure_returns_none(monkeypatch):
+    import slife.plugins.mcp_gateway.client as gw_client_mod
+
+    class _Boom:
+        async def connect(self, url: str) -> None:
+            raise ConnectionError("refused")
+
+    monkeypatch.setattr(gw_client_mod, "MCPClient", lambda: _Boom())
+    monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "7777")
+
+    out = await runner.mcp._client()
+
+    assert out is None
+    assert runner._gateway_client is None
+
+
+@pytest.mark.asyncio
+async def test_mcp_set_port_repoints_and_drops_client():
+    old = _FakeGateClient()
+    old._connected = True
+    runner._gateway_client = old
+    runner._gateway_port = "1111"
+    runner._gateway_port_source = "push"
+
+    await runner.mcp.set_port(2222)
+
+    assert old.disconnects == 1
+    assert old.is_connected is False
+    assert runner._gateway_client is None
+    assert runner._gateway_port == "2222"
+    assert runner._gateway_port_source == "push"
+
+
+@pytest.mark.asyncio
+async def test_mcp_set_port_same_port_noop():
+    old = _FakeGateClient()
+    old._connected = True
+    runner._gateway_client = old
+    runner._gateway_port = "1111"
+    runner._gateway_port_source = "push"
+
+    await runner.mcp.set_port(1111)
+
+    assert old.disconnects == 0
+    assert runner._gateway_client is old
+
+
+@pytest.mark.asyncio
+async def test_mcp_set_port_none_clears():
+    await runner.mcp.set_port(None)
+    assert runner._gateway_port is None
+    assert runner._gateway_port_source == ""
+
+
+@pytest.mark.asyncio
+async def test_server_sets_gateway_port(srv):
+    out = json.loads(await srv.__set_mcp_gateway_port(port=5555))
+    assert out == {"port": "5555", "source": "push"}
+    assert runner._gateway_port == "5555"
+    assert runner._gateway_port_source == "push"
+
+
+@pytest.mark.asyncio
+async def test_check_reflects_opened_gateway(srv, monkeypatch):
+    import slife.plugins.mcp_gateway.client as gw_client_mod
+
+    fake = _FakeGateClient()
+    monkeypatch.setattr(gw_client_mod, "MCPClient", lambda: fake)
+    monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "7777")
+    await runner.mcp._client()
+
+    data = json.loads(await srv.__check())
+
+    assert data["mcp_gateway"] == {"port": "7777", "source": "env", "connected": True}
+
+
+# ── Host port push (AgentService) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_push_gateway_port_to_jobs(sample_config):
+    from slife.agent.service import AgentService
+    from slife.agent.plugins import PluginLifecycle
+
+    service = AgentService(sample_config)
+    jobs = PluginLifecycle("job-coding", service)
+    client = AsyncMock()
+    client.is_connected = True
+    client.call_tool = AsyncMock(return_value='{"port": "9999"}')
+    jobs.client = client
+    service._plugins["job-coding"] = jobs
+
+    await service._push_gateway_port_to_jobs(SimpleNamespace(port=9999))
+
+    client.call_tool.assert_awaited_once_with("__set_mcp_gateway_port", {"port": 9999})
+
+
+@pytest.mark.asyncio
+async def test_push_gateway_port_skips_when_jobs_down(sample_config):
+    from slife.agent.service import AgentService
+    from slife.agent.plugins import PluginLifecycle
+
+    service = AgentService(sample_config)
+    jobs = PluginLifecycle("job-coding", service)
+    jobs.client = None
+    service._plugins["job-coding"] = jobs
+
+    await service._push_gateway_port_to_jobs(SimpleNamespace(port=9999))
+    # no assertion beyond "didn't raise"
+
+
+@pytest.mark.asyncio
+async def test_wire_mcp_glue_pushes_port_to_jobs(sample_config, monkeypatch):
+    from slife.agent.service import AgentService
+    from slife.agent.plugins import PluginLifecycle
+
+    service = AgentService(sample_config)
+    gw = PluginLifecycle("mcp-gateway", service)
+    gw.port = 12345
+    gw_client = AsyncMock()
+    gw_client.is_connected = True
+    gw.client = gw_client
+    jobs = PluginLifecycle("job-coding", service)
+    jobs_client = AsyncMock()
+    jobs_client.is_connected = True
+    jobs_client.call_tool = AsyncMock(return_value='{"port": "12345"}')
+    jobs.client = jobs_client
+    service._plugins["mcp-gateway"] = gw
+    service._plugins["job-coding"] = jobs
+    service._tool_ctx.mcp_client = None
+    monkeypatch.setattr(service, "_sync_mcp_proxies", AsyncMock())
+
+    await service._wire_mcp_glue()
+
+    jobs_client.call_tool.assert_awaited_once_with("__set_mcp_gateway_port", {"port": 12345})

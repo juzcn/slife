@@ -352,11 +352,37 @@ async def job_remove(name: str, ctx: Context | None = None) -> str:
 
 
 @mcp.tool(
+    name="__set_mcp_gateway_port",
+    description=(
+        "Point the jobs' mcp handle at the mcp-gateway plugin's port. "
+        "Internal — called by the harness on gateway connect/reconnect to "
+        "keep jobs' bare-MCP access current across gateway restarts, never "
+        "exposed to the LLM."
+    ),
+)
+async def __set_mcp_gateway_port(port: int, ctx: Context | None = None) -> str:
+    """Record the mcp-gateway port for jobs' bare-MCP access (host push).
+
+    Re-pointing the port invalidates the lazy ``mcp`` client cache — the
+    next job ``mcp.call`` reconnects to the new endpoint.
+
+    Args:
+        port: The gateway's Streamable HTTP port (0/None clears).
+    """
+    _capture_session(ctx)
+    await runner.mcp.set_port(port)
+    return json.dumps(
+        {"port": str(port), "source": runner.mcp.port_source},
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool(
     name="__check",
     description=(
         "job-coding live facts: jobs dir, registered job count/names, model "
-        "ref. Internal — probed by the harness's system_health, never "
-        "exposed to the LLM."
+        "ref, mcp gateway. Internal — probed by the harness's system_health, "
+        "never exposed to the LLM."
     ),
 )
 async def __check() -> str:
@@ -376,6 +402,14 @@ async def __check() -> str:
         )
     except Exception as e:
         result["error"] = str(e)
+    try:
+        result["mcp_gateway"] = {
+            "port": runner.mcp.port,
+            "source": runner.mcp.port_source,
+            "connected": runner.mcp.connected,
+        }
+    except Exception as e:
+        result["mcp_gateway"] = {"error": str(e)}
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 

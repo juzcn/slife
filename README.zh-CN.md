@@ -311,6 +311,8 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 
 需要大模型的 job 通过注入的 `llm` 句柄**一次性**调用——`llm.chat` 用 `job_coding_model`（独立于会话 active model 配置的模型，job 调用便宜且不扰动主 agent 的 prompt-cache）。任何对话历史、系统提示词、agent loop 都到不了 job。
 
+需要外部能力的 job 还能通过 `mcp` 句柄驱动 `mcp-plugin.json5` 里配置的**任意外部 MCP server**（`from slife.plugins.job_coding import mcp`）——裸 MCP，一句一次工具调用：`await mcp.call(server, tool, args)`。调用经 mcp-gateway 的持久连接转发，**不会二次启动任何外部 server**，并且能触达**主 agent 未加载的工具**——gateway 连接面的全部工具按需可用。`mcp.call` 永不抛异常：网关不可达、server 掉线/被禁用、工具不存在，都返回可判定的 `Error: ...` 字符串。
+
 ### 图片与视觉
 
 用 `@path` / `@url` 语法附加图片（带空格的路径可加引号），喂给支持视觉的模型：

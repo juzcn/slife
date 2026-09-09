@@ -407,6 +407,8 @@ For work that is well-specified and repeatable — translate, summarize, extract
 
 A job that needs the LLM calls it **once** via the `llm` handle it imports itself (`from slife.plugins.job_coding import llm` — nothing is auto-injected, so a pure-computation job simply has no such import): a narrow, explicit `llm.chat` on `job_coding_model`, a model configured independently of the conversation's active model so jobs stay cheap and never disturb the agent's prompt cache. No conversation history, system prompt, or agent loop ever reaches a job.
 
+A job can also drive **any external MCP server** configured in `mcp-plugin.json5` through the `mcp` handle (`from slife.plugins.job_coding import mcp`) — bare MCP, one tool call per statement: `await mcp.call(server, tool, args)`. The call is routed through the mcp-gateway's persistent connections, so no external server is ever spawned a second time, and it reaches **tools the main agent hasn't loaded** — the gateway's whole connected tool surface is available to job code on demand. `mcp.call` never raises: an unreachable gateway, a disconnected or disabled server, or an unknown tool returns a clear `Error: ...` string the job can branch on.
+
 ### Image & Vision
 
 Attach images with `@path` / `@url` syntax (quotes supported for paths with spaces) to feed them to a vision-capable model:

@@ -992,6 +992,33 @@ class AgentService:
         if client is not None:
             client.on_notification = self._on_mcp_tools_changed
         await self._sync_mcp_proxies()
+        # Jobs reach external MCP servers via the gateway's persistent
+        # connections; keep their lazy ``mcp`` handle pointed at the live
+        # port (the push lands on every gateway connect, restart included).
+        await self._push_gateway_port_to_jobs(lc)
+
+    async def _push_gateway_port_to_jobs(self, lc) -> None:
+        """Best-effort push of the gateway's port to the job-coding plugin.
+
+        job-coding's ``mcp`` handle resolves the gateway port lazily, but a
+        child's spawn-time env snapshot never changes — a gateway restarted
+        on a new port would leave live jobs pointing at the old endpoint.
+        Re-pointing via the internal tool fixes that.  Non-fatal by design:
+        job-coding may not be up yet (its rebuild inherits the current env;
+        a later gateway event re-pushes) and a dead client just logs.
+        """
+        jobs = self._plugins.get("job-coding")
+        client = getattr(jobs, "client", None)
+        if client is None or not getattr(client, "is_connected", False):
+            return
+        port = getattr(lc, "port", 0)
+        if not port:
+            return
+        try:
+            raw = await client.call_tool("__set_mcp_gateway_port", {"port": port})
+            logger.debug("job_coding_gateway_port_pushed port=%s raw=%s", port, raw)
+        except Exception:
+            logger.debug("job_coding_gateway_push_failed", exc_info=True)
 
     async def _on_mcp_tools_changed(self, method: str = "", _params=None) -> None:
         """A ``notifications/tools/list_changed`` from the wrapper: re-sync.

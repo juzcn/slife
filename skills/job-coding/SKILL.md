@@ -1,6 +1,6 @@
 ---
 name: job-coding
-description: Create and manage the agent's own native tools — deterministic, code-defined Jobs, each exposed as its own MCP tool (job-write / job-list / job-remove / job-run + a per-job tool). Load this skill when the user asks for a reusable tool or automation that is well-specified, repeatable, and data-in/result-out (translate, extract, format, convert). The body covers when a Job fits vs an existing skill vs doing it inline.
+description: Create and manage the agent's own native tools — deterministic, code-defined Jobs, each exposed as its own MCP tool (job-write / job-list / job-remove / job-run + a per-job tool). Jobs may call the LLM (llm) and any external MCP tool on configured servers (mcp, bare MCP via the gateway). Load this skill when the user asks for a reusable tool or automation that is well-specified, repeatable, and data-in/result-out (translate, extract, format, convert) — especially when it should drive an external MCP server. The body covers when a Job fits vs an existing skill vs doing it inline.
 ---
 
 # job-coding — how to write a Job
@@ -51,12 +51,13 @@ async def translate(text: str, lang: str = "zh", model: str = "") -> str:
 ```
 
 Notes on the signature:
-- **Async decision — get this right first.** A job that calls the LLM MUST
-  be **`async def`** and **`await llm.chat(...)`** (forgetting the `await`
-  makes the job return a coroutine: the tool result comes back empty).
-  A pure-computation job can be plain `def` — the runner awaits async jobs
-  on the event loop and runs sync jobs on a worker thread, so don't rely on
-  loop- or thread-bound local state.
+- **Async decision — get this right first.** A job that calls the LLM
+  (`llm.chat`) or an external MCP tool (`mcp.call`) MUST be **`async def`**
+  and **`await`** the call (forgetting the `await` makes the job return a
+  coroutine: the tool result comes back empty). A pure-computation job can
+  be plain `def` — the runner awaits async jobs on the event loop and runs
+  sync jobs on a worker thread, so don't rely on loop- or thread-bound
+  local state.
 - Use explicit, JSON-serializable types only — `str`, `int`, `float`,
   `bool`, `list[...]`, `dict[...]`. **No `*args` / `**kwargs`** and no
   `datetime`/`Path`/custom objects: the tool schema is derived from the
@@ -144,6 +145,95 @@ catch it). A pure-computation job must NOT import it.
 - **A job that does not need the LLM has no `llm` import and calls nothing
   on it** — the handle exists only for LLM jobs. See `slugify` above.
 
+## The `mcp` handle — bare MCP access
+
+`from slife.plugins.job_coding import mcp` gives a job **bare MCP access**:
+any tool on any external MCP server configured in `mcp-plugin.json5`, via
+the mcp-gateway's persistent connections. No server gets spawned a second
+time, and there is **no requirement that the tool be loaded into the main
+agent's toolset** — only `autoload: true` servers' tools are; a job can
+call an *unloaded* tool directly by name.
+
+- `await mcp.call(server, tool, args=None)` — ONE bare tool call per
+  statement. `server` is the server name from `mcp-plugin.json5`
+  (e.g. `github`), `tool` the tool name without the `{server}__` prefix
+  (e.g. `search_code`), `args` an optional JSON-serialisable dict matched
+  to that tool's `inputSchema`.
+- **`mcp.call` NEVER raises** — it returns the tool's text result or a
+  clear `Error: ...` string (gateway unreachable, server disconnected or
+  disabled, unknown tool). Branch on the prefix:
+  `if result.startswith("Error"): …`.
+- **A job that uses `mcp` must be `async def` and `await mcp.call(...)`** —
+  the same rule as `llm.chat`. A sync job cannot use it.
+- **Don't import `mcp` in a pure-Python job** — like `llm`, only call it
+  when the job actually reaches an external tool.
+- **Tool names/schemas are resolved at AUTHORING time, in the agent loop** —
+  never from memory: a loaded tool is in front of you with its schema; for
+  an unloaded one, probe it with the gateway's `mcp_list` / `mcp_list_tools`
+  (host tools, usable in the same conversation) and freeze the exact
+  names/args you observed into the job.
+
+```python
+from slife.plugins.job_coding import mcp
+
+async def search_github(query: str) -> str:
+    """Search GitHub code with the configured `github` server."""
+    result = await mcp.call("github", "search_code", {"q": query})
+    if result.startswith("Error"):
+        return f"GitHub search unavailable: {result}"
+    return result
+```
+
+**Division of labour — plain Python does the deterministic part, `mcp.call`
+does the external capability.** Convert a folder's files to Markdown (the
+filesystem walk and writing stay in Python; the conversion — a capability
+the plugin process lacks — goes through an MCP server like `mcp-pandoc` or
+`markitdown`):
+
+```python
+from pathlib import Path
+from slife.plugins.job_coding import mcp
+
+async def folder_to_md(folder: str, recursive: bool = False) -> str:
+    """Convert every supported file under a folder to Markdown.
+
+    Args:
+        folder: Absolute path of the folder to convert.
+        recursive: Also convert files in subfolders.
+    """
+    root = Path(folder).expanduser()
+    if not root.is_dir():
+        return f"Error: '{folder}' is not a directory"
+
+    supported = {".pdf", ".docx", ".pptx", ".xlsx", ".html", ".txt"}
+    files = (
+        sorted(p for p in root.rglob("*") if p.suffix.lower() in supported)
+        if recursive
+        else sorted(
+            p for p in root.iterdir()
+            if p.is_file() and p.suffix.lower() in supported
+        )
+    )
+
+    ok, failed = [], []
+    for src in files:
+        out = src.with_suffix(".md")
+        try:
+            # Conversion is the external capability -> MCP.
+            result = await mcp.call(
+                "mcp-pandoc", "convert_document",
+                {"source": str(src), "to": "markdown", "output": str(out)},
+            )
+            if result.startswith("Error"):
+                failed.append(f"{src.name}: {result}")
+            else:
+                ok.append(f"{src.name} -> {out.name}")
+        except Exception as e:
+            failed.append(f"{src.name}: {type(e).__name__}: {e}")
+
+    return f"ok={len(ok)} failed={len(failed)}\n" + "\n".join(ok + failed)
+```
+
 ## Determinism contract
 
 1. `job-run` and the per-job tool invoke the function with **exactly** its
@@ -208,8 +298,11 @@ want typed arguments.
 
 **Create a job** (e.g. turn a recurring task into a job):
 1. `job-list` to see what exists and confirm the name is free.
-2. Write the code following the grammar above — start from the `translate`
-   template (LLM job) or `slugify` (pure job).
+2. If the job will call external MCP tools, probe the surface first —
+   `mcp_list` for server names, `mcp_list_tools(server)` for an unloaded
+   tool's real schema — and write against the observed names, never memory.
+3. Write the code following the grammar above — start from the `translate`
+   template (LLM job), `search_github` (MCP job), or `slugify` (pure job).
 3. **Self-review before submitting.** Check the file against the fast-fail
    rules: async + `await` for LLM jobs, `from slife.plugins.job_coding
    import llm` at the top, JSON-serializable params, **return a `str`**
@@ -237,6 +330,7 @@ homes — pick by what X needs:
 | The task needs… | Mechanism |
 |---|---|
 | A stable, reusable operation with a fixed interface — well-specified, repeatable, data-in/result-out ("translate", "summarize", "a tool that searches X and formats the results") | **Job** — `job-write`; any Python the author writes (libraries, APIs, network), exposed as a native tool with a typed schema |
+| The capability lives on an external MCP server and the flow is fixed ("call this server's tool, format the result") | **Job + `mcp.call`** — a bare one-shot tool call from Python, usable on tools the main agent hasn't loaded (`mcp_list` / `mcp_list_tools` to probe at authoring time) |
 | Open-ended or exploratory work — research, browsing, flows where the agent must judge as it goes | **Existing skill** — e.g. `baidu-search`, `browser-harness` — or inline |
 | Nothing you'll reuse | Do it inline in the agent loop |
 
