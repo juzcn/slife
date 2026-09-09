@@ -2159,3 +2159,66 @@ class TestSharefileTunnelWatch:
             await service._check_sharefile_tunnel(client)
 
         cb.assert_not_called()
+
+
+class TestReloadActiveModelContextUsage:
+    """A model switch must be a no-op on context-usage state.
+
+    context_tokens_for always reports the last API call's real
+    prompt_tokens (or, on a freshly restored session, the exit-time
+    occupancy restore_session primed into _last_usage).  Clearing either
+    on a switch made the first _sys_note after a restart-with-model-
+    restore (cc-switch restoring the recorded active model before the
+    first turn) report "Context usage: 0" even though the exit context
+    WAS restored — so neither _usage_by_history nor _last_usage is
+    touched."""
+
+    def _service_with_two_models(self, sample_model_config, thinking_model_config):
+        from slife.config import Config
+        return AgentService(Config(
+            models=[sample_model_config, thinking_model_config],
+            active_model_ref="deepseek/deepseek-v4-flash",
+            tools=[],
+        ))
+
+    def test_restored_session_keeps_context(self, sample_model_config, thinking_model_config):
+        service = self._service_with_two_models(sample_model_config, thinking_model_config)
+        # restore_session primes _last_usage with the previous turn's persisted
+        # prompt_tokens and marks the history as freshly restored.
+        service.agent_loop._last_usage = TokenUsage(
+            prompt_tokens=102400, total_tokens=102400,
+        )
+        service.agent_loop._just_restored_history = id(service.message_history)
+
+        service.reload_active_model("deepseek/deepseek-v4-pro")
+
+        # The exit-time occupancy survives the switch — the first _sys_note
+        # and the status bar report it instead of 0.
+        assert service.agent_loop._last_usage.prompt_tokens == 102400
+        assert service.current_context_tokens == 102400
+
+    def test_mid_session_switch_preserves_usage(self, sample_model_config, thinking_model_config):
+        service = self._service_with_two_models(sample_model_config, thinking_model_config)
+        # A live reading from the last API call (per-history cache) plus a
+        # restore-time fallback — neither is invalidated by switching.
+        service.agent_loop._usage_by_history[id(service.message_history)] = TokenUsage(
+            prompt_tokens=50000, total_tokens=50500,
+        )
+        service.agent_loop._last_usage = TokenUsage(
+            prompt_tokens=102400, total_tokens=102400,
+        )
+
+        service.reload_active_model("deepseek/deepseek-v4-pro")
+
+        assert service.agent_loop._usage_by_history.get(
+            id(service.message_history)
+        ).prompt_tokens == 50000
+        assert service.agent_loop._last_usage.prompt_tokens == 102400
+        # …and current_context_tokens still prefers the last real API call.
+        assert service.current_context_tokens == 50000
+
+    def test_fresh_session_still_zero(self, sample_model_config, thinking_model_config):
+        service = self._service_with_two_models(sample_model_config, thinking_model_config)
+        # Genuinely fresh start: no API call, no restore → 0, even after a switch.
+        service.reload_active_model("deepseek/deepseek-v4-pro")
+        assert service.current_context_tokens == 0

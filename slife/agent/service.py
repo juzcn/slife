@@ -486,13 +486,16 @@ class AgentService:
         self.agent_loop.max_tool_result_chars = int(
             self.config.tool_result_ceiling * model.context_window * 3
         )
-        # Drop stale per-history token caches (keyed by the old model's
-        # prompt-token footprint) so the status bar stops reporting it.
-        self.agent_loop._usage_by_history.clear()
-        # Also drop the restore-time fallback estimate — after a 32K→200K
-        # switch the status bar / trim gate must not report the old window's
-        # reading until the first API call under the new model.
-        self.agent_loop._last_usage = TokenUsage()
+        # Context-usage state is deliberately left untouched by a model
+        # switch: context_tokens_for always reports the last API call's
+        # real prompt_tokens (or, on a freshly restored session, the
+        # previous turn's persisted prompt_tokens that restore_session
+        # primed into _last_usage).  Wiping either on a switch made the
+        # first _sys_note after a restart-with-model-restore (cc-switch
+        # restoring the recorded active model before the first turn)
+        # report "Context usage: 0" even though the exit context WAS
+        # restored.  The reading self-corrects on the next API call
+        # anyway, so the switch stays a no-op here.
 
         # Rebuild system prompt with updated model info — for the human
         # history AND every persistent one (WeChat) and future ones.
