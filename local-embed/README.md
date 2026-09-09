@@ -224,6 +224,14 @@ curl http://127.0.0.1:17347/v1/embeddings \
 Empty/whitespace inputs get a zero vector of the model's dimension, keeping
 row alignment.
 
+**Input length is validated, never silently truncated.** Any input exceeding
+the model's token limit (`max_tokens`, e.g. 8192 for bge-m3) is rejected with
+a `400` `invalid_request_error` envelope — exactly like a cloud API — rather
+than cut to the context window, so callers can never mistake a truncated
+embedding for a complete one. Split long documents into pieces of at most
+`max_tokens` tokens client-side (slife's semantic drainer does this
+automatically).
+
 ### `GET /v1/models`
 
 Every configured model, each with its real embedding dimension
