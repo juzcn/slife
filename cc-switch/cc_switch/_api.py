@@ -9,6 +9,7 @@ credstore at activate time.
 File format::
 
     {
+      "active": "deepseek/deepseek-chat",
       "providers": {
         "deepseek": {
           "base_url": "https://api.deepseek.com/anthropic",
@@ -18,6 +19,9 @@ File format::
         }
       }
     }
+
+The top-level ``active`` field records the last successfully activated
+``provider/model`` spec (see :func:`set_active`) — it is metadata only.
 """
 
 from __future__ import annotations
@@ -97,7 +101,8 @@ def update_provider(name: str, base_url: str | None = None, api_key_name: str | 
                     models: list[str] | None = None, extra_env: dict | None = None) -> None:
     """Merge changes into an existing provider.  Raises KeyError if unknown."""
     _validate_extra_env(extra_env)
-    providers = _get_providers()
+    data = load_config()
+    providers = data.setdefault("providers", {})
     if name not in providers:
         raise KeyError(name)
     provider = providers[name]
@@ -109,7 +114,8 @@ def update_provider(name: str, base_url: str | None = None, api_key_name: str | 
         provider["models"] = list(models)
     if extra_env is not None:
         provider["extra_env"] = dict(extra_env)
-    save_config({"providers": providers})
+    # Save the whole dict so top-level fields (e.g. ``active``) survive.
+    save_config(data)
 
 
 def set_provider_models(name: str, models: list[str]) -> list[str]:
@@ -138,15 +144,38 @@ def set_provider_models(name: str, models: list[str]) -> list[str]:
 
 
 def remove_provider(name: str) -> bool:
-    """Delete a provider.  Returns True if it existed."""
-    providers = _get_providers()
-    if name not in providers:
+    """Delete a provider.  Returns True if it existed.
+
+    If the deleted provider was the active one, the ``active`` field is
+    cleared too, so it never points at a removed provider.
+    """
+    data = load_config()
+    providers = data.get("providers")
+    if not providers or name not in providers:
         return False
     del providers[name]
-    save_config({"providers": providers})
+    active = data.get("active")
+    if active and active.split("/", 1)[0] == name:
+        data.pop("active", None)
+    save_config(data)
     return True
 
 
 def list_providers() -> list[str]:
     """Return provider names, sorted."""
     return sorted(_get_providers().keys())
+
+
+def set_active(spec: str | None) -> None:
+    """Record the currently active ``provider/model`` spec, or clear it with None."""
+    data = load_config()
+    if spec:
+        data["active"] = spec
+    else:
+        data.pop("active", None)
+    save_config(data)
+
+
+def get_active() -> str | None:
+    """Return the last-activated ``provider/model`` spec, or None."""
+    return load_config().get("active")

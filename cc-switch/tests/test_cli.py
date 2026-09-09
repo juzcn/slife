@@ -116,6 +116,27 @@ class TestList:
         out = capsys.readouterr().out
         assert "ds/a" in out and "ds/b" in out and "sc/c" in out
 
+    def test_no_active_by_default_has_no_marker(self, config_path, capsys):
+        _api.add_provider("ds", "https://x", "K", ["a"])
+        assert cli.main([]) == 0
+        assert "active" not in capsys.readouterr().out
+
+    def test_marks_active_model_row(self, config_path, capsys):
+        _api.add_provider("ds", "https://x", "K", ["a", "b"])
+        _api.set_active("ds/b")
+        assert cli.main([]) == 0
+        out = capsys.readouterr().out
+        # only the active row carries the marker
+        assert "ds/b  (active)\n" in out
+        assert "ds/a\n" in out
+
+    def test_stale_active_still_printed(self, config_path, capsys):
+        _api.add_provider("ds", "https://x", "K", ["a"])
+        _api.set_active("ds/gone")
+        assert cli.main([]) == 0
+        out = capsys.readouterr().out
+        assert "ds/gone  (active" in out
+
 
 class TestActivate:
     def test_single_model_auto_select(self, config_path, settings_path, monkeypatch, capsys, no_real_inject):
@@ -130,6 +151,26 @@ class TestActivate:
         assert "Injected ANTHROPIC_AUTH_TOKEN" in out
         raw = open(settings_path, encoding="utf-8").read()
         assert "sk-secret" not in raw
+
+    def test_activate_records_active(self, config_path, settings_path, monkeypatch, capsys, no_real_inject):
+        _api.add_provider("ds", "https://x", "DEEPSEEK_API_KEY", ["m1", "m2"])
+        monkeypatch.setattr(_activate, "resolve_secret", lambda _n: "s")
+        monkeypatch.setattr(_activate, "SETTINGS_PATH", settings_path)
+
+        assert cli.main(["activate", "ds/m2"]) == 0
+        assert _api.get_active() == "ds/m2"
+        capsys.readouterr()
+
+    def test_failed_activate_does_not_record_active(self, config_path, settings_path, monkeypatch, capsys):
+        _api.add_provider("ds", "https://x", "MISSING", ["m1"])
+
+        def _raise_missing(_n):
+            raise _activate.SecretNotFoundError("missing")
+
+        monkeypatch.setattr(_activate, "resolve_secret", _raise_missing)
+        monkeypatch.setattr(_activate, "SETTINGS_PATH", settings_path)
+        assert cli.main(["activate", "ds/m1"]) == 1
+        assert _api.get_active() is None
 
     def test_unknown_provider(self, config_path, settings_path, monkeypatch, capsys):
         assert cli.main(["activate", "nope/m"]) == 1

@@ -13,9 +13,10 @@ Commands::
     cc-switch activate <provider>[/<model>] --custom
         Interactive override of every model slot, then write.
     cc-switch (no command)
-        List providers and their models as provider/model.
+        List providers and their models as provider/model; the
+        currently active model is marked ``(active)``.
     cc-switch list
-        Show all providers and their metadata.
+        Show all providers and their metadata (plus the active model).
 
 Non-secret interactive values use plain ``input()``.  The API key name
 is stored in the config; the key value is read from credstore only at
@@ -207,6 +208,7 @@ def _cmd_activate(args) -> int:
     print(f"Activated {provider_name}/{model_name}.")
     print(f"  Wrote: {_activate.SETTINGS_PATH}")
     print(f"  Injected ANTHROPIC_AUTH_TOKEN from credstore '{provider['api_key_name']}'.")
+    _api.set_active(f"{provider_name}/{model_name}")
     return 0
 
 
@@ -214,12 +216,20 @@ def _cmd_activate(args) -> int:
 
 
 def _cmd_list(args) -> int:
-    """List providers and their models as provider/model rows."""
-    providers = _api.load_config().get("providers", {})
+    """List providers and their models as provider/model rows.
+
+    The currently active provider/model (from ``active``) is marked
+    ``(active)``; if it points at something no longer in the model lists
+    it is still printed so the user can see the stale entry.
+    """
+    data = _api.load_config()
+    providers = data.get("providers", {})
+    active = data.get("active")
     if not providers:
         print("No providers configured.")
         print("Add one with: cc-switch set <provider-name>")
         return 0
+    seen_active = False
     for name in sorted(providers):
         provider = providers[name]
         models = provider.get("models") or []
@@ -227,16 +237,25 @@ def _cmd_list(args) -> int:
             print(f"{name}/<no models — run 'cc-switch set {name}' to add>")
             continue
         for model in models:
-            print(f"{name}/{model}")
+            spec = f"{name}/{model}"
+            is_active = spec == active
+            seen_active = seen_active or is_active
+            suffix = "  (active)" if is_active else ""
+            print(f"{spec}{suffix}")
+    if active and not seen_active:
+        print(f"{active}  (active — not in the model lists above)")
     return 0
 
 
 def _cmd_list_providers(args) -> int:
     """Show providers with their metadata (base URL, API key name) for ``list``."""
-    providers = _api.load_config().get("providers", {})
+    data = _api.load_config()
+    providers = data.get("providers", {})
     if not providers:
         print("No providers configured.")
         return 0
+    if data.get("active"):
+        print(f"Active: {data['active']}\n")
     for name in sorted(providers):
         provider = providers[name]
         models = provider.get("models") or []

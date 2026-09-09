@@ -134,3 +134,47 @@ class TestListProviders:
 
     def test_empty(self, config_path):
         assert api.list_providers() == []
+
+
+class TestActive:
+    def test_defaults_to_none(self, config_path):
+        assert api.get_active() is None
+
+    def test_roundtrip(self, config_path):
+        api.set_active("ds/m1")
+        assert api.get_active() == "ds/m1"
+        data = api.load_config()
+        assert data["active"] == "ds/m1"
+        assert data["providers"] == {}
+
+    def test_clears_with_none(self, config_path):
+        api.set_active("ds/m1")
+        api.set_active(None)
+        assert api.get_active() is None
+        assert "active" not in api.load_config()
+
+    def test_survives_update_provider(self, config_path):
+        api.add_provider("ds", "https://x", "K", ["m1"])
+        api.set_active("ds/m1")
+        api.update_provider("ds", base_url="https://y")
+        assert api.get_active() == "ds/m1"
+
+    def test_survives_set_provider_models(self, config_path):
+        api.add_provider("ds", "https://x", "K", ["m1", "m2"])
+        api.set_active("ds/m2")
+        api.set_provider_models("ds", ["m2", "m3"])
+        assert api.get_active() == "ds/m2"
+
+    def test_removed_when_active_provider_deleted(self, config_path):
+        api.add_provider("ds", "https://x", "K", ["m1"])
+        api.add_provider("sc", "https://y", "SK", ["m2"])
+        api.set_active("ds/m1")
+        assert api.remove_provider("ds") is True
+        assert api.get_active() is None
+
+    def test_kept_when_other_provider_deleted(self, config_path):
+        api.add_provider("ds", "https://x", "K", ["m1"])
+        api.add_provider("sc", "https://y", "SK", ["m2"])
+        api.set_active("ds/m1")
+        assert api.remove_provider("sc") is True
+        assert api.get_active() == "ds/m1"

@@ -58,6 +58,9 @@ settings 文件中**不含**任何凭据。
 本身未安装——`activate` 会大声报错并给出相应提示，settings 文件已留在磁盘上
 但**不会**注入 token。
 
+成功后，被激活的 `provider/model` 会记录在 `~/.claude/cc-switch.json` 顶层的
+`active` 字段中，列表视图即可显示当前激活的是哪个模型。
+
 ```bash
 cc-switch activate deepseek/deepseek-chat
 ```
@@ -75,12 +78,13 @@ cc-switch activate deepseek/deepseek-chat
 
 ### `cc-switch`
 
-不带任何命令时，每行列出所有已配置的 provider/model 对：
+不带任何命令时，每行列出所有已配置的 provider/model 对。当前激活的模型
+标记为 `(active)`：
 
 ```
 deepseek/deepseek-chat
 deepseek/deepseek-reasoner
-scnet/scnet-1m
+scnet/scnet-1m  (active)
 ```
 
 ### `cc-switch list`
@@ -96,7 +100,7 @@ scnet/scnet-1m
 
 | 路径 | 用途 |
 |------|------|
-| `~/.claude/cc-switch.json` | Provider/model 形状（无密钥） |
+| `~/.claude/cc-switch.json` | Provider/model 形状 + `active` 字段（无密钥） |
 | `~/.claude/settings.json` | 由 `activate` 生成 |
 | credstore（`DEEPSEEK_API_KEY`，…） | 实际的 API 密钥值 |
 
