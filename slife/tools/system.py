@@ -289,13 +289,19 @@ async def check_sharefile(client=None) -> list[dict]:
         return [{"component": "sharefile", "level": "ok", "key": "tunnel",
                  "value": data.get("url", "?"),
                  "hint": "File sharing tunnel is online."}]
+    # The plugin composes the actionable reason for ITS provider (a missing
+    # NGROK_AUTHTOKEN, an absent ssh/cloudflared binary).  The harness must not
+    # paste one provider's remediation onto another's failure — the provider is
+    # chosen by sharefile.json5, and __check reports which one is active.
+    provider = (data.get("provider") or "").strip()
     reason = (data.get("reason") or "").strip()
-    detail = f" — {reason}" if reason else ""
+    who = f" ({provider})" if provider else ""
+    hint = f"File sharing tunnel unavailable{who}."
+    if reason:
+        hint += f" {reason}"
+    hint += " The active provider is set by sharefile.json5 (active_provider)."
     return [{"component": "sharefile", "level": "warning", "key": "tunnel",
-             "value": "offline",
-             "hint": (f"File sharing tunnel unavailable.{detail} "
-                      "Check NGROK_AUTHTOKEN credential or ngrok account "
-                      "limits (free tier: 1 online agent — one tunnel per token).")}]
+             "value": "offline", "hint": hint}]
 
 
 # ═══════════════════════════════════════════════════════════════════════

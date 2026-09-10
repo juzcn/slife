@@ -110,10 +110,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "⚠ Plugin ready failed: {name}",
         "zh": "⚠ 插件就绪失败: {name}",
     },
-    "plugin_load_failed": {
-        "en": "⚠ Plugin not loaded: {name} (module {module} not importable)",
-        "zh": "⚠ 插件加载失败: {name}（模块 {module} 不可导入）",
-    },
     "required_failed": {
         "en": "✗ Required component failed: {name} ({reason})\n"
               "{name} is a core system component — cannot run without it. "
@@ -126,6 +122,39 @@ _STRINGS: dict[str, dict[str, str]] = {
               "Memory is a core feature — fix the database and restart.",
         "zh": "✗ 必要组件加载失败: memdb（{err}）\n"
               "memdb 是系统核心组件 — 无法在缺少它的状态下运行，请修复后重启。",
+    },
+    # ── memory-save failures (service.py → loop_error) ──
+    # Memory writes are mandatory: each of these reaches the TUI as the {err}
+    # of loop_error, so it must be localized here — the frame is not enough.
+    "memory_save_no_channel": {
+        "en": "Memory service not connected — this turn was not saved",
+        "zh": "记忆服务未连接：本轮未能写入记忆",
+    },
+    "memory_save_timeout": {
+        "en": "Memory save timed out — this turn's save is unconfirmed",
+        "zh": "记忆保存超时：未能确认本轮已写入记忆",
+    },
+    "memory_save_channel_error": {
+        "en": "Memory save failed (channel error): {err}",
+        "zh": "记忆保存失败（通道错误）：{err}",
+    },
+    "memory_save_unconfirmed": {
+        "en": "Memory save unconfirmed — unparsable response; this turn may not "
+              "have been saved",
+        "zh": "记忆保存未能确认：返回了无法解析的响应，本轮可能未写入记忆",
+    },
+
+    # sharefile tunnel down.  The provider is named and its own reason quoted
+    # (a missing NGROK_AUTHTOKEN, an absent ssh/cloudflared binary) — the cause
+    # is provider-specific, so it must not be restated generically here.
+    "tunnel_down": {
+        "en": "⚠ File-sharing tunnel unavailable ({provider}): {reason}",
+        "zh": "⚠ 文件分享隧道不可用（{provider}）：{reason}",
+    },
+    "tunnel_down_bare": {
+        "en": "⚠ File-sharing tunnel unavailable ({provider}) — ask "
+              "system_health for details",
+        "zh": "⚠ 文件分享隧道不可用（{provider}）— 可问 system_health 查看详情",
     },
 
     # ── approval_prompt.py ──

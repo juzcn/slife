@@ -65,6 +65,7 @@ packages = ["slife"]
 "slife.json5" = "slife/slife.json5"
 "local_embed.json5" = "slife/local_embed.json5"
 "mcp-plugin.json5" = "slife/mcp-plugin.json5"
+"sharefile.json5" = "slife/sharefile.json5"
 
 
 [tool.hatch.build.targets.sdist]
@@ -78,6 +79,7 @@ include = [
     "/slife.json5",
     "/local_embed.json5",
     "/mcp-plugin.json5",
+    "/sharefile.json5",
 ]
 
 [build-system]

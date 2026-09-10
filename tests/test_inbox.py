@@ -433,7 +433,7 @@ class TestInboxProcessOne:
         on_activity = AsyncMock()
         on_reply = AsyncMock()
         on_turn_complete = AsyncMock(
-            side_effect=MemorySaveError("记忆服务未连接：本轮未能写入记忆"),
+            side_effect=MemorySaveError("Memory service not connected — this turn was not saved"),
         )
         inbox = Inbox(
             mock_loop, mock_store,
@@ -457,7 +457,7 @@ class TestInboxProcessOne:
         err_call = next(
             c for c in on_activity.call_args_list if c.args[0] == "loop_error"
         )
-        assert "记忆服务未连接" in err_call.kwargs["error"]
+        assert "Memory service not connected" in err_call.kwargs["error"]
         # The run itself succeeded — its result WAS routed to the channel; a
         # save failure must NOT send a second (error) reply to a peer whose
         # task already resolved.

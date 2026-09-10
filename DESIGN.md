@@ -435,7 +435,7 @@ Processes communicate through environment variables:
 | `SLIFE_SESSION_ID` / `SLIFE_AGENT_NAME` | Log correlation, agent identity |
 | `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` | Directory overrides |
 | `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP_GATEWAY / MEMDB / WECHAT / MEMFILES / A2A / MEDIA / JOB_CODING / SHAREFILE). Key is the uppercased plugin name with dashes normalised to underscores (`job-coding` → `SLIFE_JOB_CODING_PORT`) — via `slife.agent.plugins.plugin_port_env`. Subagents read this env to share the parent's plugins. `local-embed` is a daemon, not a plugin, so it publishes no port. |
-| `SLIFE_SHAREFILE_URL` | Public ngrok URL (set inside the sharefile plugin process) |
+| `SLIFE_SHAREFILE_URL` | Public tunnel URL (set inside the sharefile plugin process) |
 
 ### Plugins (internal only)
 
@@ -445,7 +445,7 @@ Processes communicate through environment variables:
 | **memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages (a failed poll — signalled by `client.last_error`, which `poll_updates()` sets on a swallowed network error — backs off the next poll exponentially to 30 s and resets on the next clean poll), typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[WECHAT]` (model-facing; the TUI strips the marker from display since the `Wechat>` bubble prefix already shows the channel); the model replies itself by calling the LLM-visible `wechat_send_message` — no harness auto-dispatch — addressing the peer by `peer_wechat_id` (from `wechat_check_status.last_contact`). |
 | **memfiles** | Streamable HTTP | Private notes/diary/reports/files cabinet — tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, report tools `report_save` / `report_list` / `report_read`), internal `__check` + `__scheduled_*` registry ops. Notes, diary &amp; reports dual-written to markdown + a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. The scheduled-task tools (`scheduled_task_*` / `scheduled_run_*` / `run_schedule_now`) are native, in the "Schedule" category (`slife/tools/schedule.py`); this plugin only holds the schedule/run data they call. |
-| **sharefile** | Streamable HTTP + `/share` route | Public file sharing — sole LLM-visible tool `share_file`; internal tools `__tunnel_status`, `__register_file`; `GET /share/{token}` serves file bytes on the same port (one port, two protocols). Owns the ngrok tunnel (eager start, non-blocking) and the in-process token registry. |
+| **sharefile** | Streamable HTTP + `/share` route | Public file sharing — sole LLM-visible tool `share_file`; internal tools `__check`, `__register_file`; `GET /share/{token}` serves file bytes on the same port (one port, two protocols). Owns the pluggable tunnel (provider from `sharefile.json5`'s `active_provider`; eager start, non-blocking) and the in-process token registry. |
 | **a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools; only the drain/dispatch internal tools (`__a2a_*`) stay `__`-prefixed. |
 | **media** | Streamable HTTP | Non-chat AI generation (image, video, TTS, ASR) from any provider. Owns the `media:` config section (plugin-read, ignored by the main `Config` parser) and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` . Long renders use the harness's universal `_async: true` + `check_async`. Artifacts are saved to the working directory (or a `folder` passed to the tool) — work products, never memfiles cabinet files. |
 | **job-coding** | Streamable HTTP | Deterministic Jobs as MCP tools — code-defined functions in `<data_dir>/jobs/`, registered dynamically (`job-list`, `job-write`, `job-remove`, `job-run` + one tool per job). LLM access via explicit `llm.chat` one-shot calls on `job_coding_model`; external MCP access via the `mcp` handle (`mcp.call(server, tool, args)` — bare one-shot calls on the gateway's persistent connections, usable on unloaded tools). |
@@ -762,22 +762,32 @@ All save tools return the saved **local path** (clickable) — they never auto-p
 
 ### Sharefile — Public File Sharing
 
-A standard Streamable HTTP plugin (`slife/plugins/sharefile/server.py`) — self-contained, discovered and spawned exactly like media.  Its **sole LLM-visible tool is `share_file`** (registered bare as `share_file`).  The plugin owns everything: the in-process token registry, the ngrok tunnel, and serving the file bytes on the **same port** via a custom HTTP route (one port, two protocols: `/mcp` for Streamable HTTP, `/share/{token}` for plain HTTP):
+A standard Streamable HTTP plugin (`slife/plugins/sharefile/server.py`) — self-contained, discovered and spawned exactly like media.  Its **sole LLM-visible tool is `share_file`** (registered bare as `share_file`).  The plugin owns everything: the in-process token registry, the tunnel, and serving the file bytes on the **same port** via a custom HTTP route (one port, two protocols: `/mcp` for Streamable HTTP, `/share/{token}` for plain HTTP):
 
-1. `share_file(path)` (MCP) → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`.  When the tunnel is offline the tool returns a graceful error rather than being hidden.
+1. `share_file(path)` (MCP) → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://<tunnel-host>/share/<token>`.  When the tunnel is offline the tool returns a graceful error rather than being hidden.
 2. `GET /share/{token}` streams the file in 64 KB chunks (403 unknown token, 404 file gone).
 
-No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file).  `__tunnel_status` (harness health check) and `__register_file` are internal `__`-prefixed tools, never exposed to the LLM.  `attach_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/models.py`) that injects image blocks into the main-process history.
+No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file).  `__check` (harness health check; reports `{active, state, url, reason, provider}`) and `__register_file` are internal `__`-prefixed tools, never exposed to the LLM.  `attach_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/models.py`) that injects image blocks into the main-process history.
 
 `GET /share/{token}` streams the file with an RFC 5987 `Content-Disposition` — a non-ASCII filename (e.g. CJK) is emitted as an ASCII fallback in `filename=` plus the real name percent-encoded in `filename*=UTF-8''`, because HTTP header values must be Latin-1 (a raw CJK filename otherwise raises `UnicodeEncodeError` → HTTP 500).
 
-### Ngrok Tunnel
+### Tunnel Providers
 
-Started **by the sharefile plugin** (eagerly in its lifespan, non-blocking; graceful failure) via the official ngrok Python SDK (embedded agent — no external binary). Authtoken resolution: credstore `NGROK_AUTHTOKEN` → environment. Uses **endpoint pooling** (`pooling_enabled=True`) so multiple slife instances (WSL + Windows, sub-agents on different machines) share the same dev domain — ngrok load-balances across all online agents. Initial start retries up to 3 times with linear backoff (2/4 s); a background monitor performs one follow-up retry if the first start failed; share tools fall back to an on-demand start.
+The tunnel is **pluggable**.  `sharefile.json5` (path: `$SHAREFILE_FILE` > `<data dir>/sharefile.json5` — `~/.slife/` in production, the checkout root in dev; the harness exports no per-file env var, the plugin child inherits `SLIFE_DATA_DIR`) names an `active_provider` plus that provider's options; the others stay configured and inert.  Switching tunnels is a config change, never a code change.
 
-A tunnel failure is **temporary, not permanent** — free-tier sessions get recycled and another instance may free the tunnel at any time.  So the sharefile plugin **always loads** (even if the eager tunnel start fails): the monitor keeps retrying in the background, and the tunnel comes up automatically the moment it's available.  The harness surfaces a one-time warning only on a terminal `failed` state.
+Every provider presents one surface — `start` / `stop` / `is_active` / `status` / `share_url_for` / `start_monitor` / `stop_monitor` — and shares one lifecycle (`_TunnelProviderBase` in `slife/plugins/sharefile/providers.py`): the single-flight start guard with stale-start supersede (45 s), 3 retries with linear backoff (2/4 s), the `active`/`starting`/`failed`/`idle` state machine, and the background health monitor.  A provider supplies only the three things that actually differ — how to establish the tunnel once, how to tear it down, and how to probe liveness.  The tunnel is started **by the plugin** (eagerly in its lifespan, non-blocking), and the share tools fall back to an on-demand start.
 
-ngrok free tier limits: **1 online agent** (one tunnel per token — only the first agent to start gets the sharefile tunnel; subsequent agents fail to bind), 1 GB transfer/month, 20k HTTP requests/month. Endpoint pooling requires no paid plan. Subagents reuse the main agent's sharefile plugin via Streamable HTTP (`SLIFE_SHAREFILE_PORT`) instead of spawning a second tunnel.
+| Provider | Transport | Notes |
+|---|---|---|
+| `ngrok` (default) | official ngrok Python SDK — embedded agent, no external binary | Authtoken: credstore `NGROK_AUTHTOKEN` → env.  Uses **endpoint pooling** so multiple slife instances (WSL + Windows, sub-agents on different machines) share one dev domain.  **On the free tier ngrok's edge answers any request whose User-Agent contains "Mozilla" with an interstitial splash page (`ERR_NGROK_6024`)** — programmatic fetches (the multimodal-LLM path this tool exists for) pass through untouched, browsers do not.  ngrok forbids injecting the bypass header server-side, so this cannot be worked around at the origin. |
+| `localhost.run` | `ssh -R` reverse tunnel | No account, no signup, nothing to install (OpenSSH ships with the OS).  No splash page for any client — TLS terminates at their edge.  Random `*.lhr.life` hostname that rotates every few hours; the reader thread republishes the new URL in place.  File bytes are relayed by a third party. |
+| `cloudflare` | `cloudflared tunnel --url` (Quick Tunnel) | No account, no domain, no splash page, and the URL is stable for the process's lifetime.  `cloudflared` is **not bundled with slife and nothing installs it** — a missing binary is a terminal `failed` state carrying an install hint.  Cloudflare positions Quick Tunnels for testing/development, and its free-tier terms restrict proxying media through the CDN. |
+
+A **missing dependency** (ngrok token, ssh/cloudflared binary) is terminal and never retried; a **transport failure** is retried.  Either way the plugin **always loads** — the tunnel is a subordinate dependency that never gates readiness, and the harness surfaces a one-time warning only on a terminal `failed` state.  A transport failure is also **temporary**: free tiers recycle sessions, so the monitor keeps restarting the tunnel in the background and it comes back on its own.
+
+No provider can dictate the User-Agent a *third party* will fetch the link with — which provider is active is the lever for browser-reachable links.
+
+Subagents reuse the main agent's sharefile plugin via Streamable HTTP (`SLIFE_SHAREFILE_PORT`) instead of spawning a second tunnel.
 
 ## Scheduled Tasks
 
@@ -1032,7 +1042,7 @@ slife/
     memdb/             #   Turns database (store, search, embeddings, schema.sql)
     wechat/            #   WeChat messaging (iLink ClawBot client)
     memfiles/          #   Private notes/diary/files cabinet (server.py tools, store.py + schema.sql)
-    sharefile/         #   Public file sharing (share_file, /share route, tunnel.py = ngrok)
+    sharefile/         #   Public file sharing (share_file, /share route, providers.py = pluggable tunnel, config.py = sharefile.json5)
     a2a/               #   A2A mesh (a2a_* tools + A2AClient, MQTT binding)
     media/             #   Non-chat AI generation (server.py, config.py, adapters/ for dashscope-aigc + openai-images)
   mcp/                 # MCP client infra

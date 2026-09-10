@@ -703,11 +703,11 @@ class Config:
         pkg_dir = _PKG_DIR
 
         fresh = not path.exists()
-        # Data-dir configs — slife.json5 and (a built-in slife plugin now)
-        # mcp-plugin.json5 both live in the slife data dir (path.parent),
-        # resolved via slife.paths.get_data_dir().  Seed each *missing* one
-        # from the bundled default; never overwrite.
-        for name in ("slife.json5", "mcp-plugin.json5"):
+        # Data-dir configs — slife.json5, mcp-plugin.json5 and sharefile.json5
+        # (the last two belong to built-in slife plugins) all live in the slife
+        # data dir (path.parent), resolved via slife.paths.get_data_dir().
+        # Seed each *missing* one from the bundled default; never overwrite.
+        for name in ("slife.json5", "mcp-plugin.json5", "sharefile.json5"):
             target = path.parent / name
             if target.exists():
                 continue

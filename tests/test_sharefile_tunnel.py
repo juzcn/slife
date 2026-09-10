@@ -1,4 +1,9 @@
-"""Tests for slife.plugins.sharefile.tunnel — ngrok tunnel lifecycle management."""
+"""Tests for the ngrok provider — lifecycle, state machine, monitor.
+
+NgrokTunnel is one provider among three; it shares its lifecycle with
+``_CliTunnelProvider`` via ``_TunnelProviderBase``, so these tests also pin the
+behaviour every provider inherits.
+"""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -10,8 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from slife.plugins.sharefile import tunnel as tmod
-from slife.plugins.sharefile.tunnel import NgrokTunnel, _read_auth_token
+from slife.plugins.sharefile import providers as tmod
+from slife.plugins.sharefile.providers import NgrokTunnel, _read_auth_token
 
 
 # ── NgrokTunnel ───────────────────────────────────────────────────────────────
@@ -245,6 +250,11 @@ class TestNgrokTunnelStart:
         with patch.object(tunnel, "_do_start", return_value="https://fresh.ngrok.io"):
             tunnel.start(8080)
         # A second start while a *new* attempt is in flight must be rejected.
+        # An in-flight attempt has not published a URL yet, so drop the one the
+        # superseded start produced — otherwise start() short-circuits as
+        # idempotent and never reaches the guard.
+        tunnel._public_url = None
+        os.environ.pop("SLIFE_SHAREFILE_URL", None)
         tunnel._starting = True
         tunnel._starting_at = time.monotonic()
         with pytest.raises(RuntimeError, match="already in progress"):
@@ -316,7 +326,7 @@ class TestNgrokTunnelStartMonitor:
             return tunnel._public_url
 
         with patch("asyncio.sleep", side_effect=fast_sleep), \
-             patch("slife.plugins.sharefile.tunnel._tunnel_alive", return_value=True), \
+             patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive", return_value=True), \
              patch.object(tunnel, "start", side_effect=fake_start):
             task = asyncio.create_task(tunnel._run_monitor(8080, on_tunnel_up=callback))
             try:
@@ -345,7 +355,7 @@ class TestNgrokTunnelStartMonitor:
             await real_sleep(0.01)
 
         with patch("asyncio.sleep", side_effect=fast_sleep), \
-             patch("slife.plugins.sharefile.tunnel._tunnel_alive", return_value=True), \
+             patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive", return_value=True), \
              patch.object(tunnel, "start", return_value="https://already-up.ngrok.io"):
             task = asyncio.create_task(tunnel._run_monitor(8080, on_tunnel_up=callback))
             try:
@@ -378,7 +388,7 @@ class TestNgrokTunnelStartMonitor:
             return tunnel._public_url
 
         with patch("asyncio.sleep", side_effect=fast_sleep), \
-             patch("slife.plugins.sharefile.tunnel._tunnel_alive",
+             patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive",
                    side_effect=lambda _u: next(alive_results)), \
              patch.object(tunnel, "start", side_effect=fake_start) as mock_start:
             task = asyncio.create_task(tunnel._run_monitor(8080))
@@ -401,13 +411,35 @@ class TestNgrokTunnelStartMonitor:
 
 
 class TestServerOwnedTunnel:
-    """The sharefile plugin server owns its own NgrokTunnel instance."""
+    """The sharefile plugin server owns its own tunnel provider instance."""
 
     def test_server_holds_tunnel_instance(self):
-        """server.py owns an NgrokTunnel — the tunnel API is instance-based."""
+        """server.py owns the provider named by sharefile.json5's active_provider.
+
+        Asserting the *interface* rather than a concrete class is what makes
+        swapping providers a config change; asserting the concrete class
+        matches the configured name is what proves the factory actually read
+        the config instead of silently falling back to ngrok.
+        """
         from slife.plugins.sharefile import server
-        from slife.plugins.sharefile.tunnel import NgrokTunnel
-        assert isinstance(server._tunnel, NgrokTunnel)
+        from slife.plugins.sharefile.providers import (
+            CloudflareQuickTunnel,
+            LocalhostRunTunnel,
+            NgrokTunnel,
+            TunnelProvider,
+        )
+
+        expected = {
+            "ngrok": NgrokTunnel,
+            "localhost.run": LocalhostRunTunnel,
+            "cloudflare": CloudflareQuickTunnel,
+        }
+        active = server._sharefile_config.active_provider
+        assert isinstance(server._tunnel, TunnelProvider)
+        assert isinstance(server._tunnel, expected[active]), (
+            f"active_provider={active!r} but built "
+            f"{type(server._tunnel).__name__}"
+        )
 
     def test_is_active_and_public_url(self, monkeypatch):
         monkeypatch.delenv("SLIFE_SHAREFILE_URL", raising=False)
@@ -442,7 +474,7 @@ class TestReadAuthToken:
         with patch(
             "credstore.get_credential", side_effect=OSError("mock")
         ) as mock_get, patch(
-            "slife.plugins.sharefile.tunnel.logger"
+            "slife.plugins.sharefile.providers.logger"
         ) as mock_logger:
             result = _read_auth_token()
         assert result == "env-token-123"

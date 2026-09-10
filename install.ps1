@@ -69,8 +69,8 @@ try {
     Write-Host "Python            : managed by uv (3.13)"
     Write-Host "npx               : auto-install Node.js if needed (required for MCP servers)"
     Write-Host "bun               : auto-install bun if needed (required for nvidia-nim MCP)"
-    Write-Host "Configs           : seeded from bundled defaults (slife / local-embed / mcp-plugin)"
-    Write-Host "Full tool set     : yt-dlp, browser-harness, Mosquitto (SLIFE_CORE=1 to skip)"
+    Write-Host "Configs           : seeded from bundled defaults (slife / local-embed / mcp-plugin / sharefile)"
+    Write-Host "Full tool set     : yt-dlp, browser-harness, Mosquitto, cloudflared (SLIFE_CORE=1 to skip)"
     Write-Host "Disk space needed : ~500 MB (semantic setup adds +0.3-2 GB, user-run)"
     Write-Host ""
 
@@ -328,6 +328,70 @@ try {
         } else {
             Write-Warn "  No supported package manager found (winget not available) — A2A mesh disabled."
             Write-Warn "  Install manually: https://mosquitto.org/download/"
+        }
+    }
+    Write-Host ""
+
+    # 2c. sharefile tunnel providers.  sharefile's default tunnel is ngrok — a
+    # Python dependency that comes with slife — but ngrok's FREE tier answers
+    # browser requests with an interstitial splash page, so these two
+    # alternatives are how a share link becomes reachable from a browser.
+    # Neither gates anything: a missing tool disables only that provider, and
+    # only when sharefile.json5 selects it.
+    Write-Step "[optional] Checking sharefile tunnel providers (ssh, cloudflared)..."
+
+    function Find-CloudflaredDir {
+        # 1) Already on PATH
+        if (Get-Command cloudflared -ErrorAction SilentlyContinue) { return "" }
+        # 2) Common install directories (winget lands under Program Files)
+        foreach ($candidate in @(
+            "${env:ProgramFiles}\cloudflared",
+            "${env:ProgramFiles(x86)}\cloudflared",
+            "$env:LOCALAPPDATA\cloudflared"
+        )) {
+            if (Test-Path (Join-Path $candidate "cloudflared.exe")) { return $candidate }
+        }
+        return $null
+    }
+
+    # ssh — the localhost.run provider.  Detect only: the OpenSSH Client is an
+    # optional Windows capability whose enablement needs administrator, so the
+    # installer reports the command instead of running it.
+    if (Get-Command ssh -ErrorAction SilentlyContinue) {
+        Write-Ok "ssh found (localhost.run provider)"
+    } else {
+        Write-Warn "  ssh not found — the 'localhost.run' provider is unavailable."
+        Write-Warn "  Enable it from an ADMIN terminal, then re-run:"
+        Write-Dim  "    Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0"
+    }
+
+    $cfDir = Find-CloudflaredDir
+    if ($cfDir -ne $null) {
+        if ($cfDir -ne "") { $env:PATH = "$cfDir;$env:PATH" }
+        Write-Ok "cloudflared found (cloudflare provider)"
+    } elseif ($coreMode) {
+        Write-Dim "  Core mode — skipping cloudflared"
+    } elseif ($env:SLIFE_SKIP_CLOUDFLARED -eq "1") {
+        Write-Dim "  SLIFE_SKIP_CLOUDFLARED=1 — skipping cloudflared"
+    } else {
+        Write-Dim "  cloudflared not found — installing automatically (sharefile tunnel provider)..."
+        if (Get-Command winget -ErrorAction SilentlyContinue) {
+            winget install Cloudflare.cloudflared --source winget --accept-package-agreements --accept-source-agreements | Out-Null
+            # winget returns non-zero when the package is already installed
+            # and no upgrade is available — refresh PATH and re-scan.
+            $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                        [System.Environment]::GetEnvironmentVariable("Path", "User")
+            $cfDir = Find-CloudflaredDir
+            if ($cfDir -ne $null) {
+                if ($cfDir -ne "") { $env:PATH = "$cfDir;$env:PATH" }
+                Write-Ok "cloudflared installed"
+            } else {
+                Write-Warn "  cloudflared not found after install — the 'cloudflare' provider is unavailable."
+                Write-Warn "  Install manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+            }
+        } else {
+            Write-Warn "  No supported package manager found (winget not available)."
+            Write-Warn "  Install manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
         }
     }
     Write-Host ""
@@ -717,17 +781,18 @@ try {
     }
 
     # 4c. Configs: seed the git-tracked defaults out-of-the-box.  slife.json5 /
-    # local_embed.json5 / mcp-plugin.json5 come from the downloaded source tree
-    # (now git-tracked).  slife.json5 and mcp-plugin.json5 (mcp-plugin is a
-    # built-in plugin) live in ~/.slife; local_embed.json5 is local-embed's own
-    # (~/.local-embed).  Missing ones are copied silently; an existing one is
-    # only replaced (after a per-file "yes") when its content differs from the
-    # bundled default.
+    # local_embed.json5 / mcp-plugin.json5 / sharefile.json5 come from the
+    # downloaded source tree (now git-tracked).  slife.json5, mcp-plugin.json5
+    # and sharefile.json5 (the last two belong to built-in plugins) live in
+    # ~/.slife; local_embed.json5 is local-embed's own (~/.local-embed).
+    # Missing ones are copied silently; an existing one is only replaced (after
+    # a per-file "yes") when its content differs from the bundled default.
     Write-Step "[4c] Setting up configs (out-of-the-box defaults)..."
     $seedPairs = @(
         @("slife.json5", "$env:USERPROFILE\.slife\slife.json5"),
         @("local_embed.json5", "$env:USERPROFILE\.local-embed\local_embed.json5"),
-        @("mcp-plugin.json5", "$env:USERPROFILE\.slife\mcp-plugin.json5")
+        @("mcp-plugin.json5", "$env:USERPROFILE\.slife\mcp-plugin.json5"),
+        @("sharefile.json5", "$env:USERPROFILE\.slife\sharefile.json5")
     )
     foreach ($pair in $seedPairs) {
         $src = Join-Path $extractedDir.FullName $pair[0]

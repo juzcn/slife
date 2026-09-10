@@ -23,7 +23,7 @@ Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
 ## Install
 
-**Zero prerequisites, fully out-of-the-box.** The install script fetches the latest `main`, builds slife **from source** (workspace wheels — no PyPI, always the newest code), and installs it with uv into an isolated tool venv. It auto-installs what's missing — uv, Node.js (`npx`), bun, and Mosquitto — then seeds the three **git-tracked configs** and the bundled **skills** into their per-module folders, and builds the MCP tool catalog, so a first-time user gets the full tool set — local embeddings, external MCP servers, yt-dlp, browser-harness, the A2A mesh — with nothing to configure by hand. On WSL it uses Linux-native runtimes (Windows executables cannot receive custom env vars via WSL interop).
+**Zero prerequisites, fully out-of-the-box.** The install script fetches the latest `main`, builds slife **from source** (workspace wheels — no PyPI, always the newest code), and installs it with uv into an isolated tool venv. It auto-installs what's missing — uv, Node.js (`npx`), bun, and Mosquitto — then seeds the four **git-tracked configs** and the bundled **skills** into their per-module folders, and builds the MCP tool catalog, so a first-time user gets the full tool set — local embeddings, external MCP servers, yt-dlp, browser-harness, the A2A mesh — with nothing to configure by hand. On WSL it uses Linux-native runtimes (Windows executables cannot receive custom env vars via WSL interop).
 
 The **semantic embedding backend and model are deliberately not part of the install** — the backend is env-specific (CPU / CUDA / Metal) and the model download is ~2 GB, so it's a user-run step. Follow the **[Semantic Memory Search — Installation Guide](#semantic-memory-search--installation-guide)** below: install one backend, download the model weights, configure `HF_HUB_CACHE` / `BGE_M3_GGUF_PATH`, then verify the service is ready.
 
@@ -37,9 +37,11 @@ The installer is best-effort: it uses standard paths, tries several install rout
 | Node.js (`npx`) | package manager (apt / brew / dnf / pacman / winget) → cluster `module load nodejs` → official LTS tarball → `~/.local` (rootless fallback) | npx-based MCP servers: `file-search`, `serper`, `tavily-mcp`, `github`, `amap-maps`, `filesystem` |
 | bun | `~/.bun/bin` | `nvidia-nim` MCP server |
 | Mosquitto | package manager (winget / apt / brew / dnf / pacman) | A2A MQTT mesh — best-effort auto-install; A2A stays disabled until a broker runs |
+| `cloudflared` | winget / Homebrew → official release binary → `~/.local/bin` (rootless, Linux) | `sharefile`'s `cloudflare` tunnel provider — best-effort auto-install; that provider stays unavailable without it (skip with `SLIFE_SKIP_CLOUDFLARED=1`) |
+| `ssh` | ships with the OS (Windows: the optional *OpenSSH Client* capability) | `sharefile`'s `localhost.run` tunnel provider — **detection only**; enabling the Windows capability needs administrator |
 | `unzip` (Linux) | package manager | bun installer dependency |
 
-**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto (always attempted), the three configs (`slife.json5` and `mcp-plugin.json5` → `~/.slife/`, `local_embed.json5` → `~/.local-embed/`) seeded from bundled defaults, and the bundled skills (`~/.slife/skills/`).
+**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto and `cloudflared` (always attempted), the four configs (`slife.json5`, `mcp-plugin.json5` and `sharefile.json5` → `~/.slife/`, `local_embed.json5` → `~/.local-embed/`) seeded from bundled defaults, and the bundled skills (`~/.slife/skills/`).
 
 If a runtime can't be installed, the installer **warns and continues** — slife itself still installs; only the features needing that runtime are unavailable. For example, on a Linux box older than **glibc 2.28 / libstdc++ 3.4.29**, the Node rootless tarball fallback won't run (the installer reports the missing `GLIBC_2.28` / `GLIBCXX_3.4.xx` symbols). The supported route is **not** an older Node — it's a Node built for your distro (e.g. `module load nodejs` on HPC clusters, or your distro's package). Install that, then re-run this installer — it detects an existing `npx` and skips its own Node install.
 
@@ -415,7 +417,7 @@ Attach images with `@path` / `@url` syntax (quotes supported for paths with spac
 Check this screenshot @D:\Downloads\error.png
 ```
 
-Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `attach_image` tool lets the agent attach images mid-turn (local sources are capped at 20 MB so a stray path never base64s a huge file into the context). Nothing is ever rendered in the terminal — files open with the OS default app, and `share_file` publishes any local file as a public HTTPS link via the ngrok tunnel (returns a graceful error while the tunnel is offline).
+Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `attach_image` tool lets the agent attach images mid-turn (local sources are capped at 20 MB so a stray path never base64s a huge file into the context). Nothing is ever rendered in the terminal — files open with the OS default app, and `share_file` publishes any local file as a public HTTPS link via its tunnel — the provider (ngrok / localhost.run / Cloudflare Quick Tunnel) is chosen by `sharefile.json5`; it returns a graceful error while the tunnel is offline.
 
 ### Plugins
 
@@ -432,7 +434,7 @@ as a Python plugin:
 | **memdb** | Turns database with hybrid search |
 | **wechat** | Bidirectional WeChat messaging |
 | **memfiles** | Notes / diary / files cabinet (private). Notes & diary dual-written to markdown + a SQLite hybrid index. All save tools return local paths — never auto-publish |
-| **sharefile** | Public file sharing — sole tool `share_file` publishes a local file as a public HTTPS URL (`/share` route on the same port; ngrok tunnel owned by the plugin) |
+| **sharefile** | Public file sharing — sole tool `share_file` publishes a local file as a public HTTPS URL (`/share` route on the same port; pluggable tunnel owned by the plugin, provider chosen by `sharefile.json5`) |
 | **a2a** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
 | **media** | Non-chat AI generation (image, video, TTS, ASR) from any provider — owns the `media:` config section and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | **job-coding** | Deterministic **Jobs** as MCP tools — code-defined functions in `~/.slife/jobs/` run with exactly their declared args; one-shot LLM calls via `llm.chat` on `job_coding_model`. Tools: `job-list`, `job-write`, `job-remove`, `job-run` + one tool per job |

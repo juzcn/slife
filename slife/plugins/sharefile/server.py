@@ -3,8 +3,11 @@
 A self-contained, replaceable Streamable HTTP plugin (same contract as
 memdb / media): the harness spawns ``server.py``, connects via MCP, and
 registers the sharefile tools.  The plugin owns the in-process
-token registry, the ngrok tunnel, and serves file bytes on the same port
-via a custom HTTP route (``GET /share/{file_id}``).
+token registry, the tunnel, and serves file bytes on the same port
+via a custom HTTP route (``GET /share/{file_id}``).  The tunnel provider
+(ngrok, localhost.run) is chosen by ``sharefile.json5`` — see
+:mod:`slife.plugins.sharefile.config` and
+:mod:`slife.plugins.sharefile.providers`.
 
 Its sole LLM-visible tool is ``share_file`` — it publishes a local file
 as a public HTTPS URL that multimodal LLM APIs can fetch directly
@@ -34,7 +37,8 @@ from starlette.responses import Response, StreamingResponse
 
 from urllib.parse import quote
 
-from slife.plugins.sharefile.tunnel import NgrokTunnel
+from slife.plugins.sharefile.config import load_sharefile_config
+from slife.plugins.sharefile.providers import create_provider
 from slife.server_utils import (
     bind_free_port,
     create_plugin_server,
@@ -45,8 +49,16 @@ from slife.server_utils import (
 # ── Own port — bound by main() so the tunnel can forward to it ────────
 _PLUGIN_PORT: int = 0
 
-# The plugin owns its tunnel instance (single consumer of NgrokTunnel).
-_tunnel = NgrokTunnel()
+# The plugin owns its tunnel instance.  The provider is chosen by
+# sharefile.json5's ``active_provider`` (ngrok by default, or "localhost.run").
+# A missing / unreadable / unknown-provider config degrades to ngrok instead of
+# failing: the tunnel is a subordinate dependency and never gates readiness
+# (PLUGIN_CONTRACT.md).
+_sharefile_config = load_sharefile_config()
+_tunnel = create_provider(
+    _sharefile_config.active_provider,
+    _sharefile_config.options_for(_sharefile_config.active_provider),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -305,8 +317,6 @@ async def handle_share(request: Request) -> Response:
             "Content-Type": content_type,
             "Content-Length": str(file_size),
             "Content-Disposition": _content_disposition(file_path.name),
-            # Suppress the ngrok free-tier interstitial browser-warning page.
-            "ngrok-skip-browser-warning": "true",
         },
     )
 
@@ -318,7 +328,7 @@ async def handle_share(request: Request) -> Response:
 
 @mcp.tool(name="__check", description="File-sharing tunnel live state as JSON facts. Internal — probed by the harness's system_health.")
 async def __check() -> str:
-    """Return ``{active, state, url, reason}`` live tunnel facts.
+    """Return ``{active, state, url, reason, provider}`` live tunnel facts.
 
     ``state`` distinguishes the harness-relevant cases: ``active`` (a public
     URL is live), ``starting`` (an eager start attempt is still in flight —
@@ -334,6 +344,9 @@ async def __check() -> str:
             "state": st["state"],
             "url": st.get("url", ""),
             "reason": st.get("reason", ""),
+            # Which tunnel provider is live — the harness never branches on it
+            # (every consumer uses .get), it is diagnostics for system_health.
+            "provider": _sharefile_config.active_provider,
         },
         ensure_ascii=False,
     )

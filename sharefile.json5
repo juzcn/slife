@@ -1,0 +1,65 @@
+{
+  // sharefile — public file sharing.  The ACTIVE tunnel provider exposes this
+  // machine's local plugin port as a public HTTPS URL; share_file hands that
+  // URL out and GET /share/{token} serves the bytes on the same port.
+  //
+  // Config path: $SHAREFILE_FILE > <slife data dir>/sharefile.json5
+  //              (dev: the repo root; production: ~/.slife/sharefile.json5).
+  // Provider options support ${VAR} / ${VAR:-default}, resolved through
+  // shell env → credstore → literal default (slife.env.resolve_env).
+  //
+  // Providers differ in what they need and in what a *browser* sees:
+  //
+  //   ngrok          Needs an NGROK_AUTHTOKEN credential (credstore, or the env
+  //                  var) — nothing to configure here.  One stable dev domain
+  //                  per account.  On the FREE tier ngrok's edge answers any
+  //                  request whose User-Agent contains "Mozilla" with an
+  //                  interstitial splash page (ERR_NGROK_6024), so a link
+  //                  opened in a browser shows ngrok's warning instead of the
+  //                  file.  Programmatic fetches (OpenAI / Anthropic / curl /
+  //                  requests — the multimodal-LLM path this tool exists for)
+  //                  pass through untouched.  Server-side suppression is not
+  //                  possible: ngrok forbids injecting the bypass header.
+  //
+  //   localhost.run  An SSH reverse tunnel — no account, no signup, nothing to
+  //                  install (Windows 10+ ships OpenSSH; a missing ssh client
+  //                  is reported as a tunnel failure, not a startup failure).
+  //                  No splash page for any client, because TLS is terminated
+  //                  at their edge.  Trade-offs: the URL is a random
+  //                  *.lhr.life hostname that rotates after a few hours (the
+  //                  provider picks the new one up automatically), and file
+  //                  bytes are relayed by a third party.
+  //
+  //   cloudflare     A Cloudflare Quick Tunnel (cloudflared tunnel --url) — no
+  //                  account, no domain, no splash page, and the URL is stable
+  //                  for as long as the process lives.  Two caveats: the
+  //                  cloudflared binary is NOT bundled with slife and nothing
+  //                  installs it (missing → a tunnel failure, never a startup
+  //                  failure), and Cloudflare positions Quick Tunnels for
+  //                  testing/development while its free-tier terms restrict
+  //                  proxying media through the CDN — which is what sharing
+  //                  images does.
+  //
+  // Exactly one provider is active; the others stay configured and inert.
+  active_provider: "cloudflare",
+  providers: {
+    ngrok: {},
+    "localhost.run": {
+      // Binary name (resolved on PATH, then Windows' bundled OpenSSH) or an
+      // absolute path to an ssh client.  The legacy key "ssh" also works.
+      binary: "${SSH_BINARY:-ssh}",
+      host: "localhost.run",
+      // "nokey" is localhost.run's anonymous free tier — no SSH key required,
+      // so no -i identity is needed (and none is read from credstore).
+      user: "nokey",
+      // Remote port 80 is what maps to the https://<id>.lhr.life URL.
+      remote_port: 80
+    },
+    cloudflare: {
+      // Binary name (resolved on PATH, then the usual Windows install
+      // locations) or an absolute path to cloudflared.  There is nothing else
+      // to configure — Quick Tunnels take no token and no domain.
+      binary: "${CLOUDFLARED_BINARY:-cloudflared}"
+    }
+  }
+}

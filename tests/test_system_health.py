@@ -12,6 +12,7 @@ from slife.tools.system import (
     check_memdb,
     check_wechat,
     check_memfiles,
+    check_sharefile,
     check_local_embed,
     check_mcp_gateway,
     check_a2a,
@@ -915,6 +916,66 @@ class TestCheckMemfilesFunction:
         entries = await check_memfiles(client=client)
         assert entries[0]["level"] == "warning"
         assert "boom" in entries[0]["hint"]
+
+
+class _FakeSharefileClient:
+    """Minimal stand-in for the sharefile plugin MCP client."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def call_tool(self, name, arguments=None):
+        assert name == "__check"
+        return json.dumps(self._payload)
+
+
+class TestCheckSharefileFunction:
+    """Tests for check_sharefile() — the tunnel facts the harness composes."""
+
+    @pytest.mark.asyncio
+    async def test_client_unavailable(self):
+        """No client at all — distinct from "the plugin answered, tunnel down"."""
+        entries = await check_sharefile()
+        assert entries[0]["component"] == "sharefile"
+        assert entries[0]["level"] == "warning"
+        assert entries[0]["value"] == "plugin_offline"
+
+    @pytest.mark.asyncio
+    async def test_active_tunnel_reports_its_url(self):
+        client = _FakeSharefileClient({
+            "active": True, "state": "active",
+            "url": "https://x.lhr.life", "reason": "", "provider": "localhost.run",
+        })
+        entries = await check_sharefile(client=client)
+        assert entries[0]["level"] == "ok"
+        assert entries[0]["value"] == "https://x.lhr.life"
+
+    @pytest.mark.asyncio
+    async def test_down_tunnel_names_the_provider_and_carries_its_reason(self):
+        """The hint must not paste one provider's remediation onto another's
+        failure: it names the active provider and quotes that provider's own
+        reason verbatim."""
+        client = _FakeSharefileClient({
+            "active": False, "state": "failed", "url": "",
+            "provider": "cloudflare",
+            "reason": "cloudflared not found ('cloudflared').",
+        })
+        entries = await check_sharefile(client=client)
+        hint = entries[0]["hint"]
+        assert entries[0]["level"] == "warning"
+        assert "cloudflare" in hint
+        assert "cloudflared not found" in hint
+        # The ngrok-specific remediation must not leak into another provider.
+        assert "NGROK_AUTHTOKEN" not in hint
+
+    @pytest.mark.asyncio
+    async def test_down_tunnel_without_a_reason_still_names_the_provider(self):
+        client = _FakeSharefileClient({
+            "active": False, "state": "failed", "url": "",
+            "provider": "ngrok", "reason": "",
+        })
+        entries = await check_sharefile(client=client)
+        assert "ngrok" in entries[0]["hint"]
 
 
 class TestCheckLocalEmbed:

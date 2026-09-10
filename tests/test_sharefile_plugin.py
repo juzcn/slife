@@ -221,7 +221,10 @@ class TestShareRoute:
         resp = await plugin.handle_share(_request(tok))
         assert resp.status_code == 200
         assert resp.headers["Content-Type"].startswith("text/plain")
-        assert "ngrok-skip-browser-warning" in resp.headers
+        # The share route is provider-agnostic — it carries no tunnel-specific
+        # headers (an ngrok bypass header here would be dead weight: ngrok's
+        # edge decides before the request ever reaches this handler).
+        assert not [h for h in resp.headers if "ngrok" in h.lower()]
 
         body = b"".join([c async for c in resp.body_iterator])
         assert body == payload

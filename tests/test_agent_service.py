@@ -13,9 +13,11 @@ import pytest
 from slife.agent.service import (
     AgentService,
     _extract_turn_annotation,
+    _short_reason,
     compact_tool_results,
 )
 from slife.agent.inbox import MemorySaveError
+from slife.ui.i18n import t
 from slife.agent.plugins import PluginStartStatus
 from slife.agent.llm_client import TokenUsage
 from slife.a2a.identity import HUMAN, WECHAT
@@ -720,7 +722,8 @@ class TestAgentServiceMemory:
         assert surfaced == ["database is locked"]
         # Inbox frozen — new turns are dropped, not run without memory.
         assert service.inbox._frozen is True
-        assert "记忆保存失败" in service.inbox._frozen_reason
+        # Log-only text — English, like every other log line.
+        assert "memory save failed" in service.inbox._frozen_reason
 
     @pytest.mark.asyncio
     async def test_save_to_memory_unparsable_response_raises(self, sample_config):
@@ -2159,6 +2162,80 @@ class TestSharefileTunnelWatch:
             await service._check_sharefile_tunnel(client)
 
         cb.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_warning_names_the_provider_and_its_reason(self, sample_config):
+        """A deterministic, provider-specific cause reaches the user.
+
+        The tunnel is down for a reason the harness already knows ("cloudflared
+        is not installed"), so the warning must say so rather than sending the
+        user to system_health for it.
+        """
+        service = AgentService(sample_config)
+        cb = MagicMock()
+        service.on_tunnel_down(cb)
+        client = AsyncMock()
+        client.call_tool.return_value = _json.dumps({
+            "active": False, "state": "failed", "url": "",
+            "provider": "cloudflare",
+            "reason": "cloudflared not found ('cloudflared'). A Cloudflare Quick "
+                      "Tunnel needs the cloudflared binary — install it from "
+                      "https://developers.cloudflare.com/downloads/",
+        })
+
+        await service._check_sharefile_tunnel(client)
+
+        message = cb.call_args[0][0]
+        # One short line: provider + cause, the reason's own terminator not
+        # doubled, and no install URL (that belongs in the log) nor the
+        # restated consequence + system_health pointer.  Asserted through the
+        # localizer so it holds in either language.
+        assert message == t(
+            "tunnel_down",
+            provider="cloudflare",
+            reason="cloudflared not found ('cloudflared')",
+        )
+
+    @pytest.mark.asyncio
+    async def test_warning_without_a_reason_points_at_system_health(self, sample_config):
+        """Nothing to say beyond "down" — then the pointer earns its place."""
+        service = AgentService(sample_config)
+        cb = MagicMock()
+        service.on_tunnel_down(cb)
+        client = AsyncMock()
+        client.call_tool.return_value = _json.dumps({
+            "active": False, "state": "failed", "url": "",
+            "provider": "ngrok", "reason": "",
+        })
+
+        await service._check_sharefile_tunnel(client)
+
+        message = cb.call_args[0][0]
+        assert "ngrok" in message
+        assert "system_health" in message
+
+
+class TestShortReason:
+    """_short_reason condenses a provider's log-grade reason to one line."""
+
+    def test_empty_stays_empty(self):
+        assert _short_reason("") == ""
+
+    def test_whitespace_and_newlines_collapse(self):
+        assert _short_reason("line one\n   line two") == "line one line two"
+
+    def test_first_sentence_wins(self):
+        assert _short_reason("boom. and then a long tail") == "boom."
+
+    def test_long_single_sentence_is_truncated(self):
+        out = _short_reason("x" * 400)
+        assert len(out) <= 140
+        assert out.endswith("…")
+
+    def test_sentence_past_the_limit_is_truncated_not_split(self):
+        out = _short_reason("y" * 200 + ". tail")
+        assert len(out) <= 140
+        assert out.endswith("…")
 
 
 class TestReloadActiveModelContextUsage:

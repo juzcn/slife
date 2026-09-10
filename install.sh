@@ -62,8 +62,8 @@ echo "npx               : auto-install Node.js if needed (required for MCP serve
 echo "bun               : auto-install bun if needed (required for nvidia-nim MCP)"
 echo "unzip             : auto-install on Linux if missing (bun installer dependency)"
 echo "rootless fallback : official tarballs → ~/.local when no root/package manager"
-echo "Configs           : seeded from bundled defaults (slife / local-embed / mcp-plugin)"
-echo "Full tool set     : yt-dlp, browser-harness, Mosquitto (rootless — no sudo; --core to skip)"
+echo "Configs           : seeded from bundled defaults (slife / local-embed / mcp-plugin / sharefile)"
+echo "Full tool set     : yt-dlp, browser-harness, Mosquitto, cloudflared (rootless — no sudo; --core to skip)"
 echo "Disk space needed : ~500 MB (semantic setup adds 0.3–2 GB, user-run)"
 echo ""
 
@@ -255,6 +255,32 @@ _slife_install_mosquitto_rootless() {
     return 0
 }
 
+# cloudflared (Cloudflare Quick Tunnel — an optional sharefile tunnel provider).
+# Cloudflare publishes a plain static binary per platform, so the rootless route
+# is a direct download → ~/.local/bin: no apt source to add, no root, no
+# package manager.  As with Mosquitto we WARN and move on if it fails — nothing
+# here gates the install, and the provider is only used when sharefile.json5
+# selects it.
+_slife_install_cloudflared_rootless() {
+    local _bin="$HOME/.local/bin"
+    local _arch _url
+    mkdir -p "$_bin" || return 1
+
+    case "$(uname -m)" in
+        x86_64|amd64)  _arch=amd64 ;;
+        aarch64|arm64) _arch=arm64 ;;
+        *) return 1 ;;
+    esac
+    _url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$_arch"
+
+    curl -fsSL --max-time 120 -o "$_bin/cloudflared" "$_url" || return 1
+    chmod +x "$_bin/cloudflared" 2>/dev/null || return 1
+    "$_bin/cloudflared" --version >/dev/null 2>&1 || return 1
+
+    echo -e "  ${GRAY}binary: $_bin/cloudflared${NC}"
+    return 0
+}
+
 #
 if command -v df &>/dev/null; then
     FREE_KB=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}' || echo "0")
@@ -424,6 +450,57 @@ if [ "$HAVE_MOSQUITTO" = false ]; then
         echo -e "${YELLOW}  Or with sudo (system service):${NC}"
         echo "    sudo apt-get install -y mosquitto mosquitto-clients"
         echo -e "${YELLOW}  Docs: https://mosquitto.org/download/${NC}"
+    fi
+fi
+
+#
+# sharefile tunnel providers.  sharefile's default tunnel is ngrok — a Python
+# dependency that comes with slife — but ngrok's FREE tier answers browser
+# requests with an interstitial splash page, so these two alternatives are how
+# a share link becomes reachable from a browser.  Neither gates anything: a
+# missing tool disables only that provider, and only when sharefile.json5
+# selects it.
+echo -e "${YELLOW}[optional] Checking sharefile tunnel providers (ssh, cloudflared)…${NC}"
+HAVE_SSH=false
+if command -v ssh &>/dev/null; then
+    echo -e "${GREEN}  ✓${NC} ssh found (localhost.run provider)"
+    HAVE_SSH=true
+fi
+if [ "$HAVE_SSH" = false ]; then
+    # Detect only — macOS ships ssh with the OS, and installing openssh-client
+    # anywhere else needs root (never auto-sudo: a piped, non-TTY install would
+    # hang on the password prompt).
+    echo -e "${YELLOW}  ssh not found — the 'localhost.run' provider is unavailable.${NC}"
+    echo -e "${YELLOW}  Install an SSH client (needs root): apt-get install -y openssh-client${NC}"
+fi
+
+HAVE_CLOUDFLARED=false
+if command -v cloudflared >/dev/null 2>&1 || [ -x "$HOME/.local/bin/cloudflared" ]; then
+    echo -e "${GREEN}  ✓${NC} cloudflared found (cloudflare provider)"
+    HAVE_CLOUDFLARED=true
+elif [ "$CORE_MODE" = true ]; then
+    echo -e "${GRAY}  --core: skipping cloudflared${NC}"
+    HAVE_CLOUDFLARED=true
+elif [ "${SLIFE_SKIP_CLOUDFLARED:-0}" = "1" ]; then
+    echo -e "${GRAY}  SLIFE_SKIP_CLOUDFLARED=1: skipping cloudflared${NC}"
+    HAVE_CLOUDFLARED=true
+fi
+
+if [ "$HAVE_CLOUDFLARED" = false ]; then
+    echo -e "${GRAY}  cloudflared not found — installing rootless (no sudo)…${NC}"
+    if command -v brew &>/dev/null; then
+        # Homebrew is user-prefix already — no root involved.
+        if brew install cloudflared 2>/dev/null; then
+            echo -e "${GREEN}  ✓${NC} cloudflared installed (Homebrew)"
+        else
+            echo -e "${YELLOW}  cloudflared unavailable — the 'cloudflare' provider is unavailable.${NC}"
+            echo -e "${YELLOW}  Docs: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/${NC}"
+        fi
+    elif ( set +e; _slife_install_cloudflared_rootless; ); then
+        echo -e "${GREEN}  ✓${NC} cloudflared installed (rootless → ~/.local/bin)"
+    else
+        echo -e "${YELLOW}  cloudflared unavailable — the 'cloudflare' provider is unavailable.${NC}"
+        echo -e "${YELLOW}  Install manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/${NC}"
     fi
 fi
 
@@ -660,22 +737,24 @@ else
 fi
 
 # ── Configs: seed the git-tracked defaults out-of-the-box ───────────────
-# slife.json5 / local_embed.json5 / mcp-plugin.json5 come from the downloaded
-# source tree (now git-tracked).  slife.json5 and mcp-plugin.json5 (mcp-plugin
-# is a built-in plugin) live in ~/.slife; local_embed.json5 is local-embed's
-# own (~/.local-embed).  Missing ones are copied silently; an existing one is
+# slife.json5 / local_embed.json5 / mcp-plugin.json5 / sharefile.json5 come
+# from the downloaded source tree (now git-tracked).  slife.json5,
+# mcp-plugin.json5 and sharefile.json5 (the last two belong to built-in
+# plugins) live in ~/.slife; local_embed.json5 is local-embed's own
+# (~/.local-embed).  Missing ones are copied silently; an existing one is
 # only replaced (after a per-file "yes") when its content differs from the
 # bundled default.
 echo -e "${YELLOW}[4c] Setting up configs (out-of-the-box defaults)…${NC}"
 SEED_DIR="$TMP_DIR/slife-main"
-for _name in slife.json5 local_embed.json5 mcp-plugin.json5; do
+for _name in slife.json5 local_embed.json5 mcp-plugin.json5 sharefile.json5; do
     _src="$SEED_DIR/$_name"
     [ -f "$_src" ] || continue   # older main snapshots may lack the seeds
-    # slife.json5 and mcp-plugin.json5 sit in ~/.slife; local_embed.json5 in
-    # local-embed's own folder.
+    # slife.json5, mcp-plugin.json5 and sharefile.json5 sit in ~/.slife;
+    # local_embed.json5 in local-embed's own folder.
     case "$_name" in
         local_embed.json5) _target="$HOME/.local-embed/local_embed.json5" ;;
         mcp-plugin.json5)  _target="$HOME/.slife/mcp-plugin.json5" ;;
+        sharefile.json5)   _target="$HOME/.slife/sharefile.json5" ;;
         *)                 _target="$HOME/.slife/slife.json5" ;;
     esac
     mkdir -p "$(dirname "$_target")" 2>/dev/null || true

@@ -42,6 +42,9 @@ from slife.tools.factory import create_tools_from_config
 from slife.mcp.tool_adapter import create_proxy_tools
 from slife.platform import terminate_process_sync
 from slife.server_utils import is_internal_tool
+# The harness composes the TUI's user-facing text, so it localizes it too
+# (same as slife/tools/system.py) — the TUI only renders what it is handed.
+from slife.ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +64,29 @@ class MemoryDatabaseError(Exception):
 _on_model_switched: list[Callable[[str], None]] = []
 
 # ── Sharefile tunnel readiness watch ─────────────────────────────────────
-# The sharefile plugin eager-starts its ngrok tunnel on a background task,
-# so the harness's one-time probe must not race a still-running attempt: a
-# failed start retries up to 3× with 2s/4s backoff (~9s before it concludes).
-# The harness probes __check until the plugin reports a terminal
-# state, bounded by these constants, and surfaces "tunnel down" only once.
+# The sharefile plugin eager-starts its tunnel on a background task, so the
+# harness's one-time probe must not race a still-running attempt: a failed
+# start retries up to 3× with 2s/4s backoff (~9s before it concludes).  The
+# harness probes __check until the plugin reports a terminal state, bounded
+# by these constants, and surfaces "tunnel down" only once.
 _TUNNEL_SETTLE_TIMEOUT = 20.0  # seconds — max wait for the eager attempt
 _TUNNEL_PROBE_INTERVAL = 1.0   # seconds — between __check probes
+
+
+def _short_reason(reason: str, limit: int = 140) -> str:
+    """Condense a provider's failure reason to one readable line.
+
+    A provider's reason is written for the log — it can embed an install URL
+    or a multi-line output tail.  The TUI warning gets the first sentence, or
+    a truncated single line when there is no sentence break.
+    """
+    text = " ".join(reason.split())
+    if not text:
+        return ""
+    cut = text.find(". ")
+    if 0 < cut < limit:
+        return text[: cut + 1]
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 # ── Tool result compaction for permanent memory ─────────────────────────
@@ -794,7 +813,7 @@ class AgentService:
         )
 
     def _watch_sharefile_tunnel(self, lc) -> None:
-        """After sharefile loads, watch its eager ngrok attempt to settle and
+        """After sharefile loads, watch its eager tunnel attempt to settle and
         surface a TUI message when the tunnel is down.
 
         The harness owns the surfacing (main-process side); the plugin never
@@ -832,28 +851,40 @@ class AgentService:
             if data.get("active"):
                 return  # tunnel is up — nothing to surface
             if data.get("state") == "failed":
-                self._report_tunnel_down(data.get("reason") or "")
+                self._report_tunnel_down(
+                    data.get("reason") or "", data.get("provider") or ""
+                )
                 return
             if _time.monotonic() >= deadline:
                 return  # never reached a terminal state — stay silent
             await asyncio.sleep(_TUNNEL_PROBE_INTERVAL)
 
-    def _report_tunnel_down(self, detail: str) -> None:
+    def _report_tunnel_down(self, detail: str, provider: str = "") -> None:
         """Log the failure and surface a one-line warning to the TUI.
 
-        The message is deliberately generic (any failure cause — account
-        limit, missing token, SDK absent) and points at ``system_health``
-        for the concrete reason, matching the established convention
-        (sharefile errors reference system_health for details).
+        The warning names the active provider and carries its own reason: the
+        cause is nearly always actionable and provider-specific (a missing
+        ``NGROK_AUTHTOKEN``, an absent ``ssh``/``cloudflared`` binary), so a
+        bare "tunnel unavailable" would send the user to ``system_health`` for
+        something the harness already knows.  ``detail`` is condensed by
+        :func:`_short_reason` — provider reasons are written for the log and
+        can embed an install URL — and the line stops there: the consequence
+        ("share_file stops working") is what "tunnel unavailable" already
+        means, and the full reason is one ``system_health`` away.
+
+        The text is localized here, not in the TUI — the harness owns the
+        user-facing message, and the TUI only renders what it is handed.
         """
-        logger.warning("tunnel_unavailable detail=%s", detail)
+        logger.warning("tunnel_unavailable provider=%s detail=%s", provider, detail)
         cb = self._on_tunnel_down
         if cb is not None:
             try:
-                cb(
-                    "⚠ 文件分享隧道不可用：share_file 与文件分享链接将不可用。"
-                    "可问 system_health 查看具体原因。"
-                )
+                # Drop the sentence's own terminator — the line ends with it.
+                reason = _short_reason(detail).rstrip("。.")
+                if reason:
+                    cb(t("tunnel_down", provider=provider, reason=reason))
+                else:
+                    cb(t("tunnel_down_bare", provider=provider))
             except Exception:
                 logger.debug("surface_tunnel_down_error", exc_info=True)
 
@@ -1564,9 +1595,7 @@ class AgentService:
             # watchdog-restart).  Never drop the turn silently — raise so the
             # inbox surfaces it like an LLM API error and the turn is not
             # treated as a clean completion.
-            raise MemorySaveError(
-                "记忆服务未连接：本轮未能写入记忆"
-            )
+            raise MemorySaveError(t("memory_save_no_channel"))
         assert self._plugins["memdb"].client is not None  # guarded above
         save_args = {
             "user_message": user_message,
@@ -1608,16 +1637,12 @@ class AgentService:
             # may still be written server-side — surface that uncertainty to
             # the user rather than silently skipping.
             logger.warning("memdb_save_timeout reason=save_call_exceeded_timeout")
-            raise MemorySaveError(
-                "记忆保存超时：未能确认本轮已写入记忆"
-            ) from None
+            raise MemorySaveError(t("memory_save_timeout")) from None
         except Exception as e:
             # A raised call_tool is a transient MCP/channel failure (the
             # plugin returns {"error": ...} for DB-side failures instead).
             logger.warning("memdb_save_error err=%s", e)
-            raise MemorySaveError(
-                f"记忆保存失败（通道错误）：{e}"
-            ) from e
+            raise MemorySaveError(t("memory_save_channel_error", err=e)) from e
 
         # The plugin returns {"error": ...} on a persistent DB failure
         # (broken schema, corruption, disk).  Memory is core — this is a
@@ -1632,7 +1657,9 @@ class AgentService:
                 self._memory_error = parsed["error"]
                 logger.error("memory_save_fatal err=%s", self._memory_error)
                 if self.inbox is not None:
-                    self.inbox.freeze(f"记忆保存失败: {self._memory_error}")
+                    # Log-only (the TUI gets the localized memory_broken
+                    # message via _on_memory_broken) — logs stay English.
+                    self.inbox.freeze(f"memory save failed: {self._memory_error}")
                 if self._on_memory_broken is not None:
                     try:
                         self._on_memory_broken(self._memory_error)
@@ -1672,9 +1699,7 @@ class AgentService:
                 # and there is no way to tell.  Don't swallow it silently:
                 # surface it to the user (memory writes are mandatory).
                 logger.warning("memdb_save_unparsable response=%.120r", result)
-                raise MemorySaveError(
-                    "记忆保存未能确认：返回了无法解析的响应，本轮可能未写入记忆"
-                )
+                raise MemorySaveError(t("memory_save_unconfirmed"))
 
     def _annotate_saved_turn(
         self,
