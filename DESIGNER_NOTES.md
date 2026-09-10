@@ -123,13 +123,16 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 6.4 多wechat接入
 
+7. Channel 设计
 
+Channel 是指主Agent的inbox的来源， 目前有：
 
-
-
-
-
-
+- TUI：用户输入
+- 心跳 
+- 定时任务
+- Wechat：用户微信输入
+- A2A：peer 输入
+- Subagent：执行任务的结果自动推送
 
 
 
