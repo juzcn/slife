@@ -21,7 +21,7 @@ merged here — one category (System), one module per category.)
 
 OS name, architecture, Python path/version, and package manager are in the
 system prompt.  The current shell and working directory are reported by the
-per-turn context footer (``_sys_note``) when they change.
+per-turn prompt (``_turn_prompt``) when they change.
 Permissions and git status are covered by execute_shell / GitHub MCP.
 check_os_info, check_shells, and check_workspace have been removed.
 """
@@ -1218,7 +1218,7 @@ class ClearContextTool(Tool):
                 await advance(removed)
             except Exception:
                 logger.exception("context_start_advance_failed_on_clear")
-        # Restart the "Context covers" range — otherwise the next _sys_note
+        # Restart the "Context covers" range — otherwise the next _turn_prompt
         # would keep reporting the pre-clear start.
         reset_time = getattr(ctx, "reset_context_time", None)
         if reset_time is not None:

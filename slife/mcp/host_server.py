@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 #: consumer-usable capability — including plugin proxy tools, which execute in
 #: the owning plugin process just as for the agent itself.
 _EXCLUDED_NAMES = frozenset({
-    "_sys_note",           # harness marker injector — mutates the host context
+    "_turn_prompt",        # harness marker injector — mutates the host context
     "_model_config_tool",  # internal base class, not a real tool
     "clear_context",       # resets the host's loaded turns
     "set_max_iterations",  # changes the host loop's iteration cap

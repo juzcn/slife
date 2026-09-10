@@ -218,7 +218,7 @@ class TestSpawnSubagentTool:
         assert roles == ["user", "assistant"]
 
     def test_serialize_cloned_context_drops_system(self):
-        """The parent's system message (incl. footer) is not serialized."""
+        """The parent's system message is not serialized."""
         from slife.agent.message_history import MessageHistory
         from slife.config import Config, ModelConfig
         from slife.tools.context import ToolContext

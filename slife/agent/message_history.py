@@ -471,7 +471,7 @@ class MessageHistory:
             elif thinking_enabled and m.get("role") == "assistant":
                 # DeepSeek/Qwen require reasoning_content on EVERY
                 # assistant message when thinking is on, even synthetic
-                # harness messages (_sys_note) that never carried
+                # harness messages (_turn_prompt) that never carried
                 # reasoning.
                 m["reasoning_content"] = ""
             m.pop("images", None)  # internal attachment tracking

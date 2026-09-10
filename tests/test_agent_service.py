@@ -2244,7 +2244,7 @@ class TestReloadActiveModelContextUsage:
     context_tokens_for always reports the last API call's real
     prompt_tokens (or, on a freshly restored session, the exit-time
     occupancy restore_session primed into _last_usage).  Clearing either
-    on a switch made the first _sys_note after a restart-with-model-
+    on a switch made the first _turn_prompt after a restart-with-model-
     restore (cc-switch restoring the recorded active model before the
     first turn) report "Context usage: 0" even though the exit context
     WAS restored — so neither _usage_by_history nor _last_usage is
@@ -2269,7 +2269,7 @@ class TestReloadActiveModelContextUsage:
 
         service.reload_active_model("deepseek/deepseek-v4-pro")
 
-        # The exit-time occupancy survives the switch — the first _sys_note
+        # The exit-time occupancy survives the switch — the first _turn_prompt
         # and the status bar report it instead of 0.
         assert service.agent_loop._last_usage.prompt_tokens == 102400
         assert service.current_context_tokens == 102400

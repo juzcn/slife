@@ -1,9 +1,9 @@
-"""Tests for Harness tools (_sys_note) and the internal trim + marker.
+"""Tests for Harness tools (_turn_prompt) and the internal trim + marker.
 
 Covers:
 - Registration + schema declaration (fixes H3 — Anthropic/Responses validate
   history tool names against the declared tools list).
-- _sys_note execute output.
+- _turn_prompt execute output.
 - The loop's auto-invoke producing normal tool-call pairs.
 - _trim_after_save: internal trim (after a turn is saved) uses real usage,
   appends a runtime trim note, and respects the restore exemption.
@@ -36,29 +36,29 @@ class TestRegistration:
     def test_tools_auto_discovered(self):
         reg = _registry()
         names = {t.name for t in reg.list_tools()}
-        assert "_sys_note" in names
+        assert "_turn_prompt" in names
         assert "_sys_trim" not in names  # trim is now an internal mechanism
 
     def test_declared_in_schema(self):
-        """The note appears in to_openai_functions() — the H3 fix."""
+        """The prompt appears in to_openai_functions() — the H3 fix."""
         reg = _registry()
         fnames = {f["function"]["name"] for f in reg.to_openai_functions()}
-        assert "_sys_note" in fnames
+        assert "_turn_prompt" in fnames
         assert "_sys_trim" not in fnames
 
-    def test_sys_note_category(self):
+    def test_turn_prompt_category(self):
         reg = _registry()
-        assert reg.get("_sys_note").category == "Models"
+        assert reg.get("_turn_prompt").category == "Models"
 
 
 # ── Tool execution ───────────────────────────────────────────────────────
 
 
-class TestSysNote:
+class TestTurnPrompt:
     @pytest.mark.asyncio
     async def test_renders_status_with_kwargs(self):
         reg = _registry()
-        out = await reg.execute("_sys_note", context_window=131072, last_context_tokens=50000)
+        out = await reg.execute("_turn_prompt", context_window=131072, last_context_tokens=50000)
         assert "Context usage" in out
         assert "50,000" in out
         assert "(38.1%)" in out
@@ -67,14 +67,14 @@ class TestSysNote:
     async def test_renders_default_status_bare(self):
         """Called without args (LLM disobeying) still returns a valid status."""
         reg = _registry()
-        out = await reg.execute("_sys_note")
+        out = await reg.execute("_turn_prompt")
         assert "Context usage" in out
 
     @pytest.mark.asyncio
     async def test_renders_schedule_reminder(self):
         reg = _registry()
         out = await reg.execute(
-            "_sys_note",
+            "_turn_prompt",
             schedule_status=[{"name": "daily", "due_at": "2026-08-25T09:00:00",
                               "status": "failed"}],
         )
@@ -85,14 +85,14 @@ class TestSysNote:
     @pytest.mark.asyncio
     async def test_renders_restart_flag(self):
         reg = _registry()
-        out = await reg.execute("_sys_note", restarted=True)
+        out = await reg.execute("_turn_prompt", restarted=True)
         assert "System restarted" in out
-        out = await reg.execute("_sys_note", restarted=False)
+        out = await reg.execute("_turn_prompt", restarted=False)
         assert "System restarted" not in out
 
 
-class TestFooterKwargsRestarted:
-    """_footer_kwargs flags the first footer after a session restore."""
+class TestTurnPromptKwargsRestarted:
+    """_turn_prompt_kwargs flags the first prompt after a session restore."""
 
     def test_flags_restored_history_once(self):
         reg = _registry()
@@ -100,20 +100,20 @@ class TestFooterKwargsRestarted:
         conv = MessageHistory(system_prompt="SYS")
         loop._just_restored_history = id(conv)  # restore_session marks this
 
-        kwargs = loop._footer_kwargs(conv, conv.count_tokens())
+        kwargs = loop._turn_prompt_kwargs(conv, conv.count_tokens())
         assert kwargs.get("restarted") is True
-        # The restore marker is consumed by _trim_after_save, not the footer.
+        # The restore marker is consumed by _trim_after_save, not the prompt.
         assert loop._just_restored_history == id(conv)
 
     def test_no_flag_for_other_histories(self):
         reg = _registry()
         loop = _loop(reg)
         conv = MessageHistory(system_prompt="SYS")
-        loop._footer_kwargs(conv, conv.count_tokens())
+        loop._turn_prompt_kwargs(conv, conv.count_tokens())
 
         other = MessageHistory(system_prompt="SYS")
         loop._just_restored_history = id(conv)
-        kwargs = loop._footer_kwargs(other, other.count_tokens())
+        kwargs = loop._turn_prompt_kwargs(other, other.count_tokens())
         assert "restarted" not in kwargs
 
 
@@ -279,14 +279,14 @@ class TestConsecutiveUserFix:
         loop = _loop(reg)
         conv = MessageHistory(system_prompt="SYS")
 
-        # Turn 1: user message + harness _sys_note, then cancelled (no reply).
+        # Turn 1: user message + harness _turn_prompt, then cancelled (no reply).
         conv.add_user_message("第一轮：帮我搜一下X")
-        await loop._auto_invoke("_sys_note", loop._footer_kwargs(conv, conv.count_tokens()), conv)
+        await loop._auto_invoke("_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv)
         conv._ensure_turn_consistent("")
 
-        # Turn 2: the next user message + fresh _sys_note.
+        # Turn 2: the next user message + fresh _turn_prompt.
         conv.add_user_message("第二轮：继续")
-        await loop._auto_invoke("_sys_note", loop._footer_kwargs(conv, conv.count_tokens()), conv)
+        await loop._auto_invoke("_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv)
 
         self._assert_alternating(conv, "cancelled-then-next")
 
@@ -297,18 +297,18 @@ class TestConsecutiveUserFix:
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
 
-        await loop._auto_invoke("_sys_note", loop._footer_kwargs(conv, conv.count_tokens()), conv)
+        await loop._auto_invoke("_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv)
 
         last = conv.messages[-2:]
         assert last[0]["role"] == "assistant"
-        assert last[0]["tool_calls"][0]["function"]["name"] == "_sys_note"
+        assert last[0]["tool_calls"][0]["function"]["name"] == "_turn_prompt"
         assert last[1]["role"] == "tool"
         assert "Context usage" in last[1]["content"]
 
     @pytest.mark.asyncio
-    async def test_auto_invoked_note_injects_schedule_reminder(self):
-        """The loop injects the schedule_provider's open runs into _sys_note
-        each turn — the reminder rides the existing per-turn footer pair."""
+    async def test_auto_invoked_prompt_injects_schedule_reminder(self):
+        """The loop injects the schedule_provider's open runs into _turn_prompt
+        each turn — the reminder rides the existing per-turn prompt pair."""
         reg = _registry()
         loop = _loop(reg)
         loop._schedule_provider = lambda: [
@@ -319,14 +319,14 @@ class TestConsecutiveUserFix:
         conv.add_user_message("hi")
 
         await loop._auto_invoke(
-            "_sys_note", loop._footer_kwargs(conv, conv.count_tokens()), conv,
+            "_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv,
         )
 
         assert "Scheduled runs not settled" in conv.messages[-1]["content"]
         assert "daily @ 2026-08-25T09:00:00 (missed)" in conv.messages[-1]["content"]
 
     def test_context_time_start_change_detected(self):
-        """'Context covers' is reported on the first footer, then only when
+        """'Context covers' is reported on the first prompt, then only when
         the start time changes (restore sets it, trim advances it)."""
         reg = _registry()
         loop = _loop(reg)
@@ -334,16 +334,16 @@ class TestConsecutiveUserFix:
         conv.add_user_message("hi")
 
         loop._context_time_start = "2026-01-01T00:00:00+08:00"
-        first = loop._footer_kwargs(conv, conv.count_tokens())
+        first = loop._turn_prompt_kwargs(conv, conv.count_tokens())
         assert first.get("context_time_start") == "2026-01-01T00:00:00+08:00"
 
         # Unchanged on the next turn → not reported again.
-        second = loop._footer_kwargs(conv, conv.count_tokens())
+        second = loop._turn_prompt_kwargs(conv, conv.count_tokens())
         assert "context_time_start" not in second
 
         # A trim advances the start → reported again.
         loop._context_time_start = "2026-02-01T00:00:00+08:00"
-        third = loop._footer_kwargs(conv, conv.count_tokens())
+        third = loop._turn_prompt_kwargs(conv, conv.count_tokens())
         assert third.get("context_time_start") == "2026-02-01T00:00:00+08:00"
 
     def test_ensure_turn_consistent_appends_assistant(self):

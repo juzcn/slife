@@ -15,7 +15,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: ~60 native tools across 12 categories (including two reserved harness tools, `_sys_note` and `_model_config_tool`), eight internal plugin services (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, and the MCP gateway, `mcp-gateway`), the `local-embed` embedding daemon (started manually), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: ~60 native tools across 12 categories (including two reserved harness tools, `_turn_prompt` and `_model_config_tool`), eight internal plugin services (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, and the MCP gateway, `mcp-gateway`), the `local-embed` embedding daemon (started manually), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -328,7 +328,7 @@ Switch at runtime: `model_list` → `model_switch(ref="bailian/qwen3.8-max")`.
 
 All unified as OpenAI function definitions. The LLM sees no difference between native, plugin, and external MCP tools.
 
-**~60 native tools in 12 categories** — auto-discovered from `slife/tools/` (58 LLM-visible by default; `_sys_note`/`_model_config_tool` are reserved harness tools, `attach_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
+**~60 native tools in 12 categories** — auto-discovered from `slife/tools/` (58 LLM-visible by default; `_turn_prompt`/`_model_config_tool` are reserved harness tools, `attach_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
 
 | Category | Tools |
 |----------|-------|
@@ -340,7 +340,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image` (feed images to a vision model), `_sys_note` (context status, auto-invoked) |
+| Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image` (feed images to a vision model), `_turn_prompt` (per-turn prompt, auto-invoked) |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | embeddings | `embeddings_model_list`, `embeddings_enable`, `embeddings_model_set`, `embeddings_model_remove`, `embeddings_model_switch` |
 | mcp | `mcp_tool_load` |

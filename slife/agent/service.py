@@ -224,13 +224,13 @@ class AgentService:
             * 3
         )
         # Pending A2A peer presence events (epoch, TUI line), drained into
-        # the context footer on the next turn.  Unbounded by design — events
+        # the turn prompt on the next turn.  Unbounded by design — events
         # are consumed on every turn, so the steady-state size is "events
         # since last turn"; the guard below only protects against a
         # pathological long-idle + heavy-flapping session.
         self._presence_events: deque[tuple[float, str]] = deque()
-        # Open failed/missed scheduled runs, surfaced in the ``_sys_note``
-        # footer until the user backfills or skips them.  Refreshed by the
+        # Open failed/missed scheduled runs, surfaced in the ``_turn_prompt``
+        # until the user backfills or skips them.  Refreshed by the
         # schedule loop and the startup sweep (see schedules.py).
         self._schedule_pending: list[dict] = []
         # Subagents fail fast on LLM errors and cap a single stream call:
@@ -441,7 +441,7 @@ class AgentService:
     @property
     def current_context_tokens(self) -> int:
         """Context tokens the next API call would send — same single source
-        as ``_sys_note`` (see :meth:`AgentLoop.context_tokens_for`):
+        as ``_turn_prompt`` (see :meth:`AgentLoop.context_tokens_for`):
         last API call's actual prompt tokens, else the restore-time
         estimate, else a live history estimate."""
         return self.agent_loop.context_tokens_for(self.message_history)
@@ -510,7 +510,7 @@ class AgentService:
         # real prompt_tokens (or, on a freshly restored session, the
         # previous turn's persisted prompt_tokens that restore_session
         # primed into _last_usage).  Wiping either on a switch made the
-        # first _sys_note after a restart-with-model-restore (cc-switch
+        # first _turn_prompt after a restart-with-model-restore (cc-switch
         # restoring the recorded active model before the first turn)
         # report "Context usage: 0" even though the exit context WAS
         # restored.  The reading self-corrects on the next API call
@@ -943,7 +943,7 @@ class AgentService:
             # Canonical marker: a plugin tool named ``__*`` (double underscore)
             # is internal — called programmatically via call_tool(), never
             # exposed to the LLM.  (Single ``_`` = harness but LLM-visible,
-            # e.g. the native `_sys_note`.)
+            # e.g. the native `_turn_prompt`.)
             tagged = [
                 {**t, "server": name}
                 for t in plugin_tools
@@ -1485,7 +1485,7 @@ class AgentService:
             token_count: Cumulative token usage for the turn (billing).
             prompt_tokens: The LAST LLM call's prompt_tokens — the exact
                 context size at turn end.  Persisted so restore primes the
-                footer / _sys_note with the real exit-time occupancy.
+                _turn_prompt with the real exit-time occupancy.
             history: The history to extract messages from.
                 Defaults to self.message_history (the TUI history).
             channel: Source channel identity — 'human', 'wechat', or remote agent id.
@@ -2369,7 +2369,7 @@ class AgentService:
 
         Called by ``AgentLoop`` at the start of each turn (read-once):
         events that happened since the last turn are injected into the
-        context footer exactly once.  If the buffer ever grows
+        turn prompt exactly once.  If the buffer ever grows
         pathologically large it is trimmed here, not silently at
         render time — the oldest entries are dropped with a warning.
         """
@@ -2385,13 +2385,13 @@ class AgentService:
         return events
 
     def set_schedule_pending(self, runs: list[dict]) -> None:
-        """Publish the open failed/missed scheduled runs (footer data).
+        """Publish the open failed/missed scheduled runs (turn-prompt data).
 
         Written by the schedule loop and the startup sweep (schedules.py)
-        on their cadence; read by the ``_sys_note`` footer each turn.
+        on their cadence; read by the ``_turn_prompt`` each turn.
         Each item is ``{name, due_at, status}`` — failed and missed are
         the same question ("backfill or skip?") to the user, with
-        ``status`` kept so the footer can show which one it was.
+        ``status`` kept so the turn prompt can show which one it was.
         """
         self._schedule_pending = runs
 

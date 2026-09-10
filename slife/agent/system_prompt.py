@@ -117,7 +117,7 @@ def _render_context(config: Config) -> dict:
     }
 
 
-def build_context_status(
+def build_turn_prompt(
     context_window: int = 0,
     last_context_tokens: int = 0,
     model_name: str = "",
@@ -129,7 +129,7 @@ def build_context_status(
     schedule_status: list[dict] | None = None,
     restarted: bool = False,
 ) -> str:
-    """Render the dynamic context status footer.
+    """Render the turn prompt injected at the start of each turn.
 
     Time and token are always shown.  Model, CWD, shell are only
     passed (and rendered) when they changed since the last turn.
@@ -169,7 +169,7 @@ def build_context_status(
          "status": r.get("status", "")}
         for r in (schedule_status or [])
     ]
-    return _env.get_template("context_status.j2").render(
+    return _env.get_template("turn_prompt.j2").render(
         current_datetime=format_turn_ts(now),
         utc_offset=now.strftime("%z"),
         last_context_tokens=f"{last_context_tokens:,}",
@@ -198,7 +198,7 @@ def _memory_start_time(agent_name: str) -> str:
     turns are evicted from the *context*, never deleted from the diary),
     so the earliest ``created_at`` is stable across trims and session
     restarts.  It belongs in the static system prompt, not the per-turn
-    footer.  Reads directly (sync, bounded timeout) — no tool dependency.
+    prompt.  Reads directly (sync, bounded timeout) — no tool dependency.
     """
     try:
         from slife.paths import get_db_path

@@ -75,7 +75,7 @@ Internal tools
   filter these out by the ``__`` prefix (see :func:`is_internal_tool`), so
   they never reach the LLM's tool registry.  The main process calls them
   programmatically via ``client.call_tool()``.  This is distinct from the
-  harness concept: a single ``_`` prefix (e.g. the native ``_sys_note``)
+  harness concept: a single ``_`` prefix (e.g. the native ``_turn_prompt``)
   means *harness* — LLM-visible-but-reserved, auto-invoked by the agent
   loop.  The plugin description text is not a filter key — the ``__``
   prefix is canonical.
@@ -150,7 +150,7 @@ logger = logging.getLogger(__name__)
 #: Plugin internal-tool prefix.  ``__``-prefixed MCP tools are internal to
 #: the plugin — called programmatically by the main process via
 #: ``client.call_tool()``, never exposed to the LLM.  (Single ``_`` =
-#: harness, LLM-visible-but-reserved, e.g. the native ``_sys_note``.)
+#: harness, LLM-visible-but-reserved, e.g. the native ``_turn_prompt``.)
 INTERNAL_TOOL_PREFIX = "__"
 
 

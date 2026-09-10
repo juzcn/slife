@@ -56,8 +56,8 @@ class ConfigTool:  # an excluded harness/context-control
         return "cleared"
 
 
-class SysNoteTool:
-    name = "_sys_note"
+class TurnPromptTool:
+    name = "_turn_prompt"
     description = "Harness marker (must be excluded from outward face)."
     parameters = {"type": "object", "properties": {}}
 
@@ -69,7 +69,7 @@ def _registry() -> ToolRegistry:
     r = ToolRegistry()
     r.register(EchoTool())
     r.register(ConfigTool())
-    r.register(SysNoteTool())
+    r.register(TurnPromptTool())
     return r
 
 
@@ -88,8 +88,8 @@ class TestIsExposed:
         assert is_exposed(EchoTool()) is True
 
     def test_harness_context_control_excluded(self):
-        assert is_exposed(ConfigTool()) is False   # clear_context
-        assert is_exposed(SysNoteTool()) is False  # _sys_note
+        assert is_exposed(ConfigTool()) is False      # clear_context
+        assert is_exposed(TurnPromptTool()) is False  # _turn_prompt
 
     def test_internal_prefix_excluded(self):
         class _Internal:
@@ -111,7 +111,7 @@ class TestBuildRegistryMcp:
         assert "echo" in names                # native tool, bare name
         assert "__check" in names             # internal harness probe
         assert "clear_context" not in names   # harness control excluded
-        assert "_sys_note" not in names       # harness marker excluded
+        assert "_turn_prompt" not in names    # harness marker excluded
 
     def test_wrapped_tool_carries_slife_schema(self):
         reg = _registry()
@@ -179,7 +179,7 @@ class TestMultiToolRouting:
     @pytest.mark.asyncio
     async def test_routing_survives_a_live_sync_pass(self):
         """Adding a later tool must not rewire the earlier tools' target."""
-        reg = _registry()  # registers echo/clear_context/_sys_note together
+        reg = _registry()  # registers echo/clear_context/_turn_prompt together
         mcp = build_registry_mcp(reg)
         echo = next(c for c in mcp.local_provider._components.values()
                     if isinstance(c, FunctionTool) and c.name == "echo")

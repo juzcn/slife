@@ -576,15 +576,15 @@ class TestThinkingEnabledRoundtrip:
         trim_msg = msgs[1]
         assert trim_msg["reasoning_content"] == ""
 
-    def test_synthetic_context_status_gets_empty_reasoning(self):
-        """_context_status harness messages get empty reasoning_content."""
+    def test_synthetic_turn_prompt_gets_empty_reasoning(self):
+        """_turn_prompt harness messages get empty reasoning_content."""
         conv = MessageHistory(system_prompt="test")
         conv.add_user_message("hello")
         conv.messages.append({
             "role": "assistant",
             "content": None,
             "tool_calls": [{"id": "_ctx_abc12345", "type": "function",
-                            "function": {"name": "_context_status", "arguments": "{}"}}],
+                            "function": {"name": "_turn_prompt", "arguments": "{}"}}],
         })
         msgs = conv.to_openai_messages(thinking_enabled=True)
         ctx_msg = msgs[-1]

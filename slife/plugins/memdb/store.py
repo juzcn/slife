@@ -339,8 +339,9 @@ class SessionStore:
 
         ``token_count`` is the turn's cumulative total_tokens (billing);
         ``prompt_tokens`` is the LAST LLM call's prompt_tokens — the exact
-        context size at turn end, which restore uses to prime the footer /
-        _sys_note with the real exit-time occupancy instead of an estimate.
+        context size at turn end, which restore uses to prime
+        ``_turn_prompt`` with the real exit-time occupancy instead of an
+        estimate.
 
         ``channel`` is the identity string; ``channel_data`` is the JSON
         payload for the channel's own fields (A2A peer name, subagent

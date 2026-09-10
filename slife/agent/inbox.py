@@ -435,7 +435,7 @@ class Inbox:
                     # The LAST LLM call's prompt_tokens = the exact context
                     # size at turn end (per-history, from the loop's
                     # usage cache).  Persisted so restore can prime the
-                    # footer / _sys_note with the real exit-time occupancy
+                    # _turn_prompt with the real exit-time occupancy
                     # instead of an estimate.  Absent on a cancel-without-API
                     # → 0 (restore falls back to the token estimate).
                     usage = self._agent_loop._usage_by_history.get(id(history))

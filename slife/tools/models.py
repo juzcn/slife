@@ -5,7 +5,7 @@ model_set              — add or update a model (creates provider if new)
 model_remove           — remove a model by ref (cannot remove the active model)
 model_switch           — switch the active model (instant, no restart)
 attach_image           — feed images to a vision-capable model in the current turn
-_sys_note              — current context status (auto-invoked once per turn)
+_turn_prompt           — per-turn prompt (auto-invoked once per turn)
 """
 
 from __future__ import annotations
@@ -580,48 +580,74 @@ class AttachImageTool(Tool):
         return deduped
 
 
-# ── Context Status (harness auto-invoke) ───────────────────────────────
+# ── Turn Prompt (harness auto-invoke) ──────────────────────────────────
 
 
-#: Optional render kwargs the loop passes to ``_sys_note`` each turn.
-#: All optional — the tool degrades to a default status if called bare.
-_SYS_NOTE_PARAMS = make_params(
+#: Render kwargs the loop passes to ``_turn_prompt`` each turn — the
+#: facts it renders into the turn prompt.  All optional, so the tool
+#: degrades to a bare time + usage prompt if it is ever called without
+#: them.  The change-detected ones (model, CWD, shell, context start)
+#: are passed only on the turn they change, which keeps the prompt from
+#: repeating unchanged facts every round.
+_TURN_PROMPT_PARAMS = make_params(
     context_window={"type": "integer", "default": 0,
-                    "description": "Context window size."},
+                    "description": "Context window size in tokens (0 = unknown)."},
     last_context_tokens={"type": "integer", "default": 0,
-                         "description": "Context token count from the previous turn."},
+                         "description": "Prompt tokens of the previous turn's "
+                                        "last API call — the context size this "
+                                        "turn starts from (0 = unknown)."},
     model_name={"type": "string", "default": "",
-                "description": "Current model display name."},
+                "description": "Display name of the active model; omitted "
+                               "while it is unchanged."},
     input_modalities={"type": "string", "default": "",
-                      "description": "Model input modalities."},
+                      "description": 'Input modalities of model_name, e.g. '
+                                     '"text, image".'},
     cwd={"type": "string", "default": "",
-         "description": "Current working directory."},
+         "description": "Working directory; omitted while it is unchanged."},
     shell={"type": "string", "default": "",
-           "description": "Current shell."},
+           "description": "Active shell; omitted while it is unchanged."},
     context_time_start={"type": "string", "default": "",
-                        "description": "Context coverage start time."},
+                        "description": "Timestamp the context's covered time "
+                                       "window starts at."},
     presence_events={"type": "array", "default": [],
-                     "description": "Peer online/offline events since the last poll."},
+                     "items": {"type": "array"},
+                     "description": "Peer online/offline/timeout events since "
+                                    "the last turn, as [epoch_seconds, line] pairs."},
     schedule_status={"type": "array", "default": [],
-                     "description": "Open failed/missed runs (name/due_at/status)."},
+                     "items": {"type": "object"},
+                     "description": "Unsettled failed/missed runs, as "
+                                    "{name, due_at, status} objects."},
     restarted={"type": "boolean", "default": False,
-               "description": "True on the first turn after a system restart."},
+               "description": "Set on the one turn that follows a restart."},
 )
 
 
-class SysNoteTool(Tool):
-    """Report the current context status (time, usage %, tokens, peers,
-    and any unresolved failed/missed scheduled runs)."""
+class TurnPromptTool(Tool):
+    """Build the turn prompt that opens every turn.
 
-    name = "_sys_note"
+    The Agent Loop auto-invokes this ahead of each turn's first LLM call
+    — never the LLM itself — and records the result as a normal
+    assistant(tool_calls) + tool pair, so the turn begins with the
+    current system state already in context: the time, how full the
+    context is, anything that changed since the last turn (model,
+    working directory, shell), peer presence events, and scheduled runs
+    still waiting to be backfilled or skipped.  Without it the model
+    would have to infer all of that from the previous turn, so every
+    turn would run on state that has drifted.
+    """
+
+    name = "_turn_prompt"
     category = "Models"
-    description = ("Current context status: time, context %, tokens, peer "
-                   "events, open scheduled runs.")
-    parameters = _SYS_NOTE_PARAMS
+    description = ("Auto-invoked tool that builds the per-turn prompt, "
+                   "injected at the start of every turn: current time, "
+                   "context usage, what changed since the last turn, peer "
+                   "presence events, and unsettled scheduled runs — so the "
+                   "turn executes with up-to-date state.")
+    parameters = _TURN_PROMPT_PARAMS
 
     async def execute(self, **kwargs) -> str:
         # Strip harness meta params (_timeout/_async/_approve) the schema
-        # injects on every tool — they are not build_context_status params.
+        # injects on every tool — they are not build_turn_prompt params.
         clean = {k: v for k, v in kwargs.items() if k not in ("_timeout", "_async", "_approve")}
-        from slife.agent.system_prompt import build_context_status
-        return build_context_status(**clean)
+        from slife.agent.system_prompt import build_turn_prompt
+        return build_turn_prompt(**clean)

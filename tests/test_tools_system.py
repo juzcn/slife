@@ -235,13 +235,13 @@ class TestListNativeToolsTool:
 
     @pytest.mark.asyncio
     async def test_harness_marker_for_underscore_tools(self):
-        """Native harness tools (_sys_note) are shown with a marker."""
+        """Native harness tools (_turn_prompt) are shown with a marker."""
         from slife.tools.registry import ToolRegistry
         from slife.tools.base import Tool
 
         class _Harness(Tool):
-            name = "_sys_note"
-            description = "Current context status."
+            name = "_turn_prompt"
+            description = "Per-turn prompt."
             parameters = {"type": "object", "properties": {}}
             async def execute(self, **kwargs): return "ok"
 
@@ -253,7 +253,7 @@ class TestListNativeToolsTool:
         try:
             tool._ctx = ToolContext(registry=registry)
             result = await tool.execute()
-            assert "`_sys_note`" in result
+            assert "`_turn_prompt`" in result
             assert "harness, auto-invoked" in result
         finally:
             tool._ctx = None
@@ -561,7 +561,7 @@ class TestClearContextTool:
     @pytest.mark.asyncio
     async def test_resets_context_time(self):
         """Clearing context restarts the "Context covers" range — otherwise
-        the next _sys_note would keep reporting the pre-clear start."""
+        the next _turn_prompt would keep reporting the pre-clear start."""
         from slife.agent.message_history import MessageHistory
         from slife.tools.context import ToolContext
         tool = ClearContextTool()

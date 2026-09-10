@@ -56,7 +56,7 @@ def _serialize_cloned_context(ctx) -> list[dict] | None:
     history = getattr(ctx, "message_history", None)
     if history is None:
         return None
-    # Drop the parent's system message (incl. its dynamic context footer).
+    # Drop the parent's system message — the worker renders its own.
     return [m for m in history.messages if m.get("role") != "system"]
 
 

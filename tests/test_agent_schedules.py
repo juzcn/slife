@@ -431,7 +431,7 @@ async def test_schedule_startup_sweep_reaps_failed_and_posts_nothing():
 
     # The sweep settles state silently: no task is due-missed here (so no
     # missed-marking fires), nothing is ever posted to the inbox, and the
-    # footer reminder is fed with the swept runs.
+    # turn-prompt reminder is fed with the swept runs.
     assert posted == []
     assert "__scheduled_fail_unconfirmed" in calls
     assert "__scheduled_tasks_state" in calls
@@ -485,13 +485,13 @@ async def test_schedule_startup_sweep_marks_missed_without_posting(monkeypatch):
         {"task_id": 1, "due_at": _iso(datetime(2026, 8, 25, 9, 0).astimezone())},
     ]
     assert posted == []  # missed runs are recorded, never announced
-    # footer reminder fed (no open runs in the fake → empty list)
+    # turn-prompt reminder fed (no open runs in the fake → empty list)
     service.set_schedule_pending.assert_called_with([])
 
 
 @pytest.mark.asyncio
 async def test_pending_schedule_runs_merges_dedupes_and_sorts():
-    """Failed and missed are one "backfill or skip?" list for the footer:
+    """Failed and missed are one "backfill or skip?" list for the turn prompt:
     merged, deduplicated, newest first, each run exactly once."""
     client = AsyncMock()
 

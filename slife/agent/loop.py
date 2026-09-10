@@ -319,32 +319,32 @@ class AgentLoop:
         self.model_name = model_name
         self.input_modalities = input_modalities
         #: Read-and-clear provider for pending A2A peer presence events.
-        #: Injected by AgentService so the context footer can show what
+        #: Injected by AgentService so the turn prompt can show what
         #: changed since the last turn.  Returns ``(epoch_seconds, text)``.
         self._presence_provider = presence_provider
-        #: Provider for open failed/missed scheduled runs (footer reminder).
+        #: Provider for open failed/missed scheduled runs (turn-prompt reminder).
         #: Returns render-ready ``{name, due_at, status}`` items; the loop
-        #: injects them into ``_sys_note`` each turn.
+        #: injects them into ``_turn_prompt`` each turn.
         self._schedule_provider = schedule_provider
         self._cancel_event = asyncio.Event()
         # Last API usage by history identity.  Every inbox message shares
         # the main agent's ONE context (human / wechat / heartbeat /
         # scheduled / subagent all flow into the same history), so this
         # holds a single live entry — the last completed API call's
-        # usage, read by _sys_note, the TUI status bar, and the turn
+        # usage, read by _turn_prompt, the TUI status bar, and the turn
         # save.  _last_usage is kept only as the restore-time estimate
         # slot (primed by restore_session).
         self._usage_by_history: dict[int, TokenUsage] = {}
         self._last_usage = TokenUsage()
-        # Track stable fields — only emit in context footer when they change.
+        # Track stable fields — only emit in the turn prompt when they change.
         self._last_cwd: str = ""
         self._last_shell: str = ""
         self._last_model_name: str = ""
         self._last_input_modalities: str = ""
         self._context_time_start: str = ""  # earliest turn date in context; set by restore, advanced by trim
-        self._last_context_time_start: str = ""  # for change-detection in the footer
+        self._last_context_time_start: str = ""  # change-detection in the turn prompt
         self._context_turn_dates: list[str] = []  # dates of restored turns, oldest-first; consumed by trim
-        self._current_turn_start: str = ""  # start date of the turn currently running (seeds the trim-exhausted footer anchor)
+        self._current_turn_start: str = ""  # start date of the running turn (seeds the trim-exhausted turn-prompt anchor)
         #: ``id(history)`` whose restore must not be immediately
         #: shredded by the ceiling trim.  Restore primes the history
         #: up to the ceiling; the first replacement turn would otherwise
@@ -383,7 +383,7 @@ class AgentLoop:
         The next turn re-seeds ``_context_time_start`` from its own start,
         so "Context covers" reflects the fresh context instead of the
         pre-clear range.  Also forgets the measured context occupancy —
-        the history was just wiped, so ``_sys_note`` / the status bar must
+        the history was just wiped, so ``_turn_prompt`` / the status bar must
         not keep reporting the pre-clear size until the next API call.
         """
         self._context_time_start = ""
@@ -482,13 +482,13 @@ class AgentLoop:
     # ── Context trimming ────────────────────────────────────────────
 
     def context_tokens_for(self, history: MessageHistory) -> int:
-        """Context usage reported by ``_sys_note`` and the TUI status bar.
+        """Context usage reported by ``_turn_prompt`` and the TUI status bar.
 
         The **previous turn's** last API call's real ``prompt_tokens`` for
-        this history — ``_sys_note`` is auto-invoked before the current
+        this history — ``_turn_prompt`` is auto-invoked before the current
         turn's first API call, so the current round's usage is unknowable
         by construction; the last completed call is the previous round's.
-        Single source for ``_sys_note``, the trim decision
+        Single source for ``_turn_prompt``, the trim decision
         (``_trim_after_save``), and the TUI status bar — one value, no
         recompute.  Resolution order:
 
@@ -587,7 +587,7 @@ class AgentLoop:
             # don't leave a stale "covers since …" that points at a turn
             # that is no longer in context.  Seed from the current turn's
             # actual start (recorded at run() time), not from wall-clock
-            # now — the footer's "covers since HH:MM" must track the turn.
+            # now — the turn prompt's "covers since HH:MM" must track the turn.
             self._context_time_start = getattr(
                 self, "_current_turn_start", "") or format_turn_ts()
         logger.info(
@@ -611,15 +611,15 @@ class AgentLoop:
 
     # ── Harness tool invocation ────────────────────────────────────
 
-    def _footer_kwargs(self, history: MessageHistory, current: int) -> dict:
-        """Build the render kwargs for the ``_sys_note`` status tool.
+    def _turn_prompt_kwargs(self, history: MessageHistory, current: int) -> dict:
+        """Build the render kwargs for the ``_turn_prompt`` status tool.
 
         Time + token always shown; model/CWD/shell only when they
         changed since the last turn.  *current* is the context token
-        count — computed once in :meth:`run` for the note (the trim
+        count — computed once in :meth:`run` for the prompt (the trim
         decision later uses its own reading in ``_trim_after_save``).
         The ``restarted`` flag rides the restore marker (consumed by
-        ``_trim_after_save``, not here) so only the very first footer
+        ``_trim_after_save``, not here) so only the very first prompt
         after a restart reports it.
         """
         cwd_now = os.getcwd()
@@ -647,7 +647,7 @@ class AgentLoop:
             kwargs["context_time_start"] = self._context_time_start
             self._last_context_time_start = self._context_time_start
         # presence_events are NOT drained here — _auto_invoke reads them only
-        # when the note is actually recorded, so a cancelled turn doesn't lose
+        # when the prompt is actually recorded, so a cancelled turn doesn't lose
         # them.
         return kwargs
 
@@ -668,21 +668,21 @@ class AgentLoop:
         """
         if self._cancel_event.is_set():
             return
-        if name == "_sys_note" and self._presence_provider is not None:
-            # Drain pending peer-presence events only now that the note will
-            # actually be recorded — draining them in the _footer_kwargs args
+        if name == "_turn_prompt" and self._presence_provider is not None:
+            # Drain pending peer-presence events only now that the prompt will
+            # actually be recorded — draining them in the _turn_prompt_kwargs args
             # expression while cancelled would lose them.
             args = dict(args)
             args["presence_events"] = self._presence_provider()
-        if name == "_sys_note" and self._schedule_provider is not None:
+        if name == "_turn_prompt" and self._schedule_provider is not None:
             args = dict(args)
             args["schedule_status"] = self._schedule_provider()
         tool = self.tool_registry.get(name)
         if tool is None:
             logger.warning("auto_invoke_tool_missing name=%s", name)
             return
-        # Harness ids strip a leading underscore if present (_sys_note →
-        # _harness_sys_note_…); non-underscore tools (attach_image) keep
+        # Harness ids strip a leading underscore if present (_turn_prompt →
+        # _harness_turn_prompt_…); non-underscore tools (attach_image) keep
         # their name: _harness_attach_image_…
         stem = name[1:] if name.startswith("_") else name
         tc = ToolCallInfo(
@@ -1239,7 +1239,7 @@ class AgentLoop:
 
         # @path / programmatic attachments ride the SAME attach_image path
         # the model would use — invoked by the harness so no LLM iteration
-        # is spent deciding to attach.  Reuses _auto_invoke (the _sys_note
+        # is spent deciding to attach.  Reuses _auto_invoke (the _turn_prompt
         # machinery): records the assistant(tool_use) + tool result pair, runs
         # the tool directly, and attach_image's execute injects the image
         # content blocks into the user message in memory (never persisted —
@@ -1277,15 +1277,15 @@ class AgentLoop:
                         # without bound.
                         del self._context_turn_dates[_MAX_CONTEXT_DATES:]
 
-                # Context usage is computed ONCE and shared: _sys_note
+                # Context usage is computed ONCE and shared: _turn_prompt
                 # reports it as the usage %, and the TUI status bar.
                 current = self.context_tokens_for(history)
                 await self._auto_invoke(
-                    "_sys_note", self._footer_kwargs(history, current), history,
+                    "_turn_prompt", self._turn_prompt_kwargs(history, current), history,
                 )
                 # Context trimming no longer happens here — it moved to
                 # _trim_after_save (after each turn is persisted), where the
-                # real API usage is known.  The _sys_note percentage and the
+                # real API usage is known.  The _turn_prompt percentage and the
                 # trim decision now come from the same context_tokens_for
                 # reading at their respective times.
                 # max_iterations = 0 means no cap.  The cap is checked live

@@ -297,7 +297,7 @@ async def restore_session(
                 if (msg.get("content") or "").strip() == ".":
                     continue
                 # Nothing to show → skip.  Covers harness messages
-                # (_sys_note — LLM context only, never in the live
+                # (_turn_prompt — LLM context only, never in the live
                 # TUI) AND genuinely empty messages.  An empty tool-iteration
                 # message with REAL tool calls stays: its ToolCallWidgets
                 # render the work even without a message body.
@@ -382,7 +382,7 @@ async def restore_session(
     if turns:
         app.service.agent_loop._just_restored_history = id(history)
 
-    # Prime the context time range so _sys_note shows the LLM
+    # Prime the context time range so _turn_prompt shows the LLM
     # what time window its current context covers.  The start date is
     # advanced by the agent loop after each trim.
     if turns:
@@ -431,7 +431,7 @@ async def restore_session(
                     am.finalize(intermediate=not op.get("is_final", False))
 
                 for tc in op.get("tool_calls", []):
-                    # Skip harness notifications (_trim_context, _context_status).
+                    # Skip harness notifications (_trim_context, _turn_prompt).
                     # They are system-injected, not LLM actions — showing them
                     # as tool widgets confuses the human user.
                     if tc.get("name", "").startswith("_"):
@@ -459,11 +459,11 @@ async def restore_session(
     # Reset session token counter — session starts fresh
     app.service.session_usage.total_tokens = 0
 
-    # Prime the context footer with the restored context size.  On the
+    # Prime the turn prompt with the restored context size.  On the
     # first round we have no real API usage yet, so `context_tokens_for` /
     # the status bar fall back to `_last_usage`.  Use the **latest restored
     # turn's persisted prompt_tokens** — the exact context size at exit
-    # (what _sys_note would have reported) — instead of an estimate.
+    # (what _turn_prompt would have reported) — instead of an estimate.
     # A missing/zero value (e.g. a cancelled turn) falls back to the estimate.
     last_turn = turns[-1] if turns else {}
     prompt = last_turn.get("prompt_tokens") or 0

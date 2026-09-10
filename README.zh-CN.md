@@ -14,7 +14,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：12 个类别约 60 个原生工具（含 2 个保留的 harness 工具 `_sys_note` 与 `_model_config_tool`）、八个内部插件服务（memdb、wechat、memfiles、sharefile、a2a、media、job-coding，以及 MCP 网关 `mcp-gateway`）、手动启动的 `local-embed` 嵌入守护进程、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：12 个类别约 60 个原生工具（含 2 个保留的 harness 工具 `_turn_prompt` 与 `_model_config_tool`）、八个内部插件服务（memdb、wechat、memfiles、sharefile、a2a、media、job-coding，以及 MCP 网关 `mcp-gateway`）、手动启动的 `local-embed` 嵌入守护进程、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -232,7 +232,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 统一为 OpenAI 函数定义。LLM 看不出原生、插件与外部 MCP 工具的区别。
 
-**12 个类别约 60 个原生工具** — 从 `slife/tools/` 自动发现（默认 58 个 LLM 可见；`_sys_note`/`_model_config_tool` 是保留的 harness 工具，`attach_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
+**12 个类别约 60 个原生工具** — 从 `slife/tools/` 自动发现（默认 58 个 LLM 可见；`_turn_prompt`/`_model_config_tool` 是保留的 harness 工具，`attach_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
 
 | 类别 | 工具 |
 |------|------|
@@ -244,7 +244,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image`（把本地图片或 URL 注入对话）, `_sys_note`（上下文状态，loop 代调） |
+| Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image`（把本地图片或 URL 注入对话）, `_turn_prompt`（每轮提示词，loop 代调） |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | embeddings | `embeddings_model_list`, `embeddings_enable`, `embeddings_model_set`, `embeddings_model_remove`, `embeddings_model_switch` |
 | mcp | `mcp_tool_load` |

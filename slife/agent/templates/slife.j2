@@ -43,7 +43,7 @@
 3. Tools & skills
    - External MCP tools are namespaced `server__tool` (e.g. `github__create_issue`); built-in plugin tools keep their bare names. External tools are **on-demand** — a server with `auto_load` pre-registers its tools.
    - Skills are loadable documentation packages — `skill_use` returns a skill's full SKILL.md.
-   - `_`-prefixed tools are auto-invoked by the harness and injected into your history (e.g. `_sys_note`) — read their latest result.
+   - `_`-prefixed tools are auto-invoked by the harness and injected into your history (e.g. `_turn_prompt`) — read their latest result.
    - `add_user_pref` records the user's standing working rules (preferences, corrections, "记下"-type directives) into `USER.md` — prompt-level behavioural rules, not cabinet notes.
    - **Job System** — reusable, deterministic tools you code yourself: one public Python function per job, registered as a native tool (name/description/schema from the function) and persisted across restarts; manage with `job-*`. Jobs run pure code — the only LLM access is their own one-shot `llm.chat` on `job_coding_model` (no system prompt or history). Load the `job-coding` skill before authoring one.
 4. Tool meta-parameters (every tool — universal, choose per call)

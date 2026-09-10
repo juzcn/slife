@@ -135,11 +135,11 @@ class TestRestoreSkipsEmptyAssistantMessages:
 
     @pytest.mark.asyncio
     async def test_harness_message_still_skipped(self):
-        """``_sys_note`` is context-only — never widgets."""
+        """``_turn_prompt`` is context-only — never widgets."""
         app, conv, config, chat_view, am = self._build()
         tcs = [{
             "id": "h1", "type": "function",
-            "function": {"name": "_sys_note", "arguments": "{}"},
+            "function": {"name": "_turn_prompt", "arguments": "{}"},
         }]
         turns = [self._turn([
             {"role": "assistant", "content": "", "tool_calls": tcs},

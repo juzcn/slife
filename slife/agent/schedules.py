@@ -259,12 +259,12 @@ def _surface_reply(service):
     return _reply
 
 
-#: Cap on runs shown in the per-turn footer reminder.
-_SYS_NOTE_MAX_RUNS = 20
+#: Cap on runs shown in the per-turn prompt reminder.
+_TURN_PROMPT_MAX_RUNS = 20
 
 
 async def _pending_schedule_runs(client) -> list[dict]:
-    """Open failed/missed runs, ready for the ``_sys_note`` footer.
+    """Open failed/missed runs, ready for the ``_turn_prompt``.
 
     Failed and missed are the same question to the user ("backfill or
     skip?"), so they are merged into one deduplicated list of
@@ -299,7 +299,7 @@ async def _pending_schedule_runs(client) -> list[dict]:
             })
 
     runs.sort(key=lambda r: r["due_at"], reverse=True)
-    return runs[:_SYS_NOTE_MAX_RUNS]
+    return runs[:_TURN_PROMPT_MAX_RUNS]
 
 
 async def _schedule_completion_content(service, name: str) -> str:
@@ -350,7 +350,7 @@ async def _schedule_completion_content(service, name: str) -> str:
 
 
 async def _refresh_schedule_status(service, client) -> None:
-    """Re-publish the open failed/missed runs for the ``_sys_note`` footer."""
+    """Re-publish the open failed/missed runs for the ``_turn_prompt``."""
     runs = await _pending_schedule_runs(client)
     try:
         service.set_schedule_pending(runs)
@@ -363,7 +363,7 @@ async def schedule_startup_sweep(service) -> None:
 
     Runs exactly once per process lifetime, outside the timed loop, and
     posts no message (nothing is announced; the settled records feed the
-    per-turn footer reminder and ``scheduled_run_list``):
+    per-turn prompt reminder and ``scheduled_run_list``):
 
       1. Sweep unconfirmed runs to ``failed``
          (``__scheduled_fail_unconfirmed``) — a run is recorded ``pending``
@@ -406,7 +406,7 @@ async def schedule_startup_sweep(service) -> None:
         logger.info("schedule_missed task=%s due_at=%s",
                     task.get("name"), due_iso)
 
-    # Feed the footer's backfill reminder with what we just settled.
+    # Feed the turn prompt's backfill reminder with what we just settled.
     await _refresh_schedule_status(service, client)
 
 
@@ -461,7 +461,7 @@ async def schedule_loop(service) -> None:
             states = await _load_task_states(client)
             await _recycle_idle_workers(states)
 
-            # Keep the footer's failed/missed reminder current (it renders
+            # Keep the turn prompt's failed/missed reminder current (it renders
             # only while open runs exist).
             await _refresh_schedule_status(service, client)
 
@@ -511,7 +511,7 @@ async def fire_task_now(service, name: str, due_at: str = "") -> str:
 
     *due_at* selects the run to record: a backfill passes the failed/missed
     run's due time, which ``__scheduled_record_run`` transitions to
-    ``pending`` in place (update, not insert), so the same run the footer
+    ``pending`` in place (update, not insert), so the same run the turn prompt
     nagged about later becomes ``ran``; the cron path omits it and records a
     fresh run at now.  The dispatched worker receives *due_at* and confirms
     the exact run via ``report_save(due_at=…)`` so ``pending`` →

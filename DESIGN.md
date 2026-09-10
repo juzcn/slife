@@ -31,7 +31,7 @@ the human-facing TUI follows the OS locale.
 
 **Model input — English (uniform):**
 
-- **System prompt** (`agent.j2` / `subagent.j2` + `slife.j2`, `context_status.j2`): English.
+- **System prompt** (`agent.j2` / `subagent.j2` + `slife.j2`, `turn_prompt.j2`): English.
 - **Native tool schemas** — tool `name`, `description`, parameter docs, and result strings: English.
 - **Plugin tool schemas and result strings**: English (same policy as native tools — they are model-visible).
 - **External tools** (MCP servers, skills, third-party commands): keep the language of the external source — do not translate. They are opaque and pass through as-is.
@@ -78,7 +78,7 @@ the human-facing TUI follows the OS locale.
 │  Agent Loop                              │  MCP Client                │
 │  Streaming function-calling              │  Streamable HTTP transport │
 │  Context trim (internal, after save)     │  OAuth device-code flow    │
-│  + status (_sys_note); concurrent tools  │  Tool proxy + adapter      │
+│  + _turn_prompt status; concurrent tools │  Tool proxy + adapter      │
 │  Reasoning (thinking) support            │                            │
 ├──────────────────────────────────────────┴───────────────────────────┤
 │  Tool Registry — unified OpenAI function definitions for all tools   │
@@ -104,7 +104,7 @@ Single function-calling loop. Every tool is registered as an OpenAI function def
 User Input → MessageHistory.add_user_message()        (secrets sanitized)
   → loop (max_iterations):
     → cancel check
-    → auto-invoke _sys_note (context status)        (usage computed once)
+    → auto-invoke _turn_prompt (per-turn prompt)    (usage computed once)
     → LLM stream → thinking/text/tool deltas → handler callbacks
     → tool calls? → ToolRegistry.execute() concurrently (asyncio.gather)
                     → sanitize_secrets() on each result → truncate → loop
@@ -127,8 +127,8 @@ User Input → MessageHistory.add_user_message()        (secrets sanitized)
   1. **No orphaned tool_calls** — an assistant `tool_call` whose result never arrived (an interrupted turn, e.g. a hung tool) gets a synthetic `(Tool execution interrupted)` result inserted right after it; otherwise the orphan is persisted and re-repaired on every restore.
   2. **Alternating roles** — a history ending on a `user`/`tool` message (a tool result is a `user` role on the Anthropic wire, which rejects two consecutive users with a 400) gets a closing assistant message.
 
-  It has exactly **two call sites**: `save_to_memory` (before persisting — the save-side guarantee, which runs unconditionally after every turn via the inbox `finally`), and `restore_session` (after loading from memory — the load-side guarantee). Because every turn is saved unconditionally, the history is always left consistent before the next user message is appended. Each turn also opens with an auto-invoked `_sys_note` assistant+tool pair, so a user message is always sandwiched between assistant messages.
-- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (actual `prompt_tokens` from the last API call, else the restore-time value primed on `_last_usage` — now the **latest restored turn's persisted `prompt_tokens`** rather than an estimate — before the first call, else the chars÷3 live estimate). It drives `_sys_note`, the trim decision, and the TUI status bar — one value, no recompute. Usage is tracked **per history** (`_usage_by_history`, keyed by `id()`): the heartbeat, A2A, and WeChat turns run in their own (often tiny) histories, so a global last-usage would let a 9.6% heartbeat drag the human history's status bar / `_sys_note` down from its real 26.5%. Each history keeps its own reading; `_last_usage` is retained only as the restore-time slot.
+  It has exactly **two call sites**: `save_to_memory` (before persisting — the save-side guarantee, which runs unconditionally after every turn via the inbox `finally`), and `restore_session` (after loading from memory — the load-side guarantee). Because every turn is saved unconditionally, the history is always left consistent before the next user message is appended. Each turn also opens with an auto-invoked `_turn_prompt` assistant+tool pair, so a user message is always sandwiched between assistant messages.
+- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (actual `prompt_tokens` from the last API call, else the restore-time value primed on `_last_usage` — now the **latest restored turn's persisted `prompt_tokens`** rather than an estimate — before the first call, else the chars÷3 live estimate). It drives `_turn_prompt`, the trim decision, and the TUI status bar — one value, no recompute. Usage is tracked **per history** (`_usage_by_history`, keyed by `id()`): the heartbeat, A2A, and WeChat turns run in their own (often tiny) histories, so a global last-usage would let a 9.6% heartbeat drag the human history's status bar / `_turn_prompt` down from its real 26.5%. Each history keeps its own reading; `_last_usage` is retained only as the restore-time slot.
 
 ### Context Window Management
 
@@ -142,9 +142,9 @@ Active history stays within `context_floor`–`context_ceiling` (default 20%–8
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Detect**: context usage is computed via `context_tokens_for()` — the history's last API call's actual prompt tokens after the first round (per-history, so heartbeat turns don't contaminate the human reading), else the restore-time value primed on `_last_usage` (the latest restored turn's **persisted `prompt_tokens`** — the exact context size at exit — not an estimate), else the chars÷3 live estimate; `_sys_note` reports it as the usage %
+- **Detect**: context usage is computed via `context_tokens_for()` — the history's last API call's actual prompt tokens after the first round (per-history, so heartbeat turns don't contaminate the human reading), else the restore-time value primed on `_last_usage` (the latest restored turn's **persisted `prompt_tokens`** — the exact context size at exit — not an estimate), else the chars÷3 live estimate; `_turn_prompt` reports it as the usage %
 - **Trim**: happens **after a turn is saved** (`save_to_memory` → `AgentLoop._trim_after_save`) — by then the last API call's real `prompt_tokens` are known, so the ceiling check uses the true context occupancy, not the estimate the loop had at the turn's start. When occupancy hits the configured `context_ceiling` (default 80%), `extract_oldest_turns` removes the oldest **complete** turns down to `context_window × context_floor` (default 20%), always keeping the current (just-saved) turn. It is an **internal mechanism — no tool call, no LLM-visible pair**: the cut is marked with a runtime-only **`[INFO: N oldest turns have been removed from context]`** note appended to the last assistant message (N = turns removed), mirrored in the live TUI as a dim/italic footnote. `advance_context_start` persists the boundary, and the tracked "Context covers" time range advances by the same count (reset to the current turn if the date list is exhausted). A freshly-restored history is exempt from the first-turn trim (`_just_restored_history`) — a restored context is a pre-exit state, not growth.
-- **Status**: once per turn the loop auto-invokes **`_sys_note`** (a normal tool-call pair) — it renders `context_status.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), and any A2A peer presence events since the last turn (online/offline/timeout, drained read-once). On the first round after a restore, `context_tokens_for` falls back to `_last_usage`, which restore primes with the latest restored turn's **persisted `prompt_tokens`** — so `_sys_note` reports the real exit-time occupancy instead of an estimate.
+- **Turn prompt**: once per turn the loop auto-invokes **`_turn_prompt`** (a normal tool-call pair) — it renders `turn_prompt.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), and any A2A peer presence events since the last turn (online/offline/timeout, drained read-once). On the first round after a restore, `context_tokens_for` falls back to `_last_usage`, which restore primes with the latest restored turn's **persisted `prompt_tokens`** — so `_turn_prompt` reports the real exit-time occupancy instead of an estimate.
 - **Restore**: on startup, the diary rows recorded **after the persisted live-context boundary** are loaded directly from SQLite **verbatim** — no ceiling re-slicing. The boundary already encodes the trimmed state, so restore simply replays the exact slice that was live at exit (the agent picks up where it left off); only a stale boundary of `0` from a pre-boundary DB is defensively capped at 2× the ceiling. The boundary lives in `diary_meta.context_start` (exclusive rowid): the internal trim advances it by the turns it evicted and `clear_context` flushes it past the whole in-context slice (a one-shot clear is one big trim — the same advance landing on the last row). `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept for call-site compatibility only. The just-restored history is exempt from the first-turn trim (`_just_restored_history`). The boundary reuses the existing `diary_meta` table (ships idempotently in `schema.sql`) — there is no migration layer (backward compatibility is not supported): schema changes land directly in `schema.sql` and apply to fresh databases only.
 - **Tool result cap (HARD constraint)**: a single tool result is truncated at `tool_result_ceiling × context_window × 3` characters (default 20% of the window; ~3 chars/token heuristic). This is the **hard** window-safety limit — it is deliberately generous so a large-but-real file read (≤ ~600K chars) is never truncated, and only pathological outputs that could not fit the window at all are capped. It protects the model's live reasoning; it is not where memory is saved.
 - **Permanent-memory compaction**: the diary does **not** hoard reproducible tool output. At `save_to_memory`, any tool result exceeding `memory_tool_result_chars` (default 8000) is stored as a head+tail digest with an explicit marker (original size + which tool to re-run). Small results are stored as-is. Rationale: tool output is reproducible (re-run the tool), a single result must never starve session restore within the floor budget, and turn_search recall stays cheap. The live history keeps the full result — compaction only affects the persisted copy.
@@ -157,12 +157,12 @@ tiers of the same thing:
 
 1. **`_` (single underscore) = harness, LLM-visible but reserved.** Harness
    tools are invoked by the agent loop *on the agent's behalf* — the LLM does
-   not decide to call them. The only one is the native `_sys_note`
+   not decide to call them. The only one is the native `_turn_prompt`
    (`slife/tools/models.py`): `AgentLoop._auto_invoke()` injects it each turn
    as a normal `assistant(tool_calls)` + `tool` pair. It **does** appear in the
    schema — required so the Anthropic / OpenAI-Responses backends accept its
    tool-call pair in history — and the system prompt forbids the LLM from
-   calling it. `_sys_note` is pure (only reads state). Context trimming is
+   calling it. `_turn_prompt` is pure (only reads state). Context trimming is
    **not** a tool: it runs internally after each save (`_trim_after_save`),
    marking the cut with a runtime `[INFO: N oldest turns have been removed from
    context]` note — no `_sys_trim` in the schema, no pair to validate. Note: `attach_image` is also auto-invoked
@@ -178,7 +178,7 @@ tiers of the same thing:
 
 | Tool | Shape | Category |
 |------|-------|----------|
-| `_sys_note` | Native tool, auto-invoked each turn | Harness — visible-but-forbidden |
+| `_turn_prompt` | Native tool, auto-invoked each turn | Harness — visible-but-forbidden |
 | `__memory_save_turn` / `__memory_get_recent_turns` | memdb plugin | Internal — invisible |
 | `__wechat_drain_incoming` | wechat plugin | Internal — invisible |
 | `__a2a_drain_incoming` / `__a2a_dispatch_result` | a2a plugin | Internal — invisible |
@@ -195,7 +195,7 @@ The system prompt splits **identity** from **world** so each role reads one cohe
 
 - **Identity** — `slife/agent/templates/agent.j2` (main agent) / `subagent.j2` (worker): who the agent is. Role framing only — heartbeat/persistence ownership for the main agent, ephemeral/send-only constraints for a worker. The only part that carries persona.
 - **World** — `slife/agent/templates/slife.j2`, `{% include 'slife.j2' %}` by both identity templates: the runtime spec — context policy (floor/ceiling/tool-result %), host platform (OS, arch, shell, python), workspace paths (data/config/logs/db/images/skills), credstore backend name, MCP tool naming prefix, and A2A broker info when configured. Byte-identical in both roles.
-- **Dynamic** — `slife/agent/templates/context_status.j2`, rendered by the `_sys_note` tool (auto-invoked once per turn): current time + UTC offset and context usage % always; context time range when set; model/CWD/shell/modalities only when changed; pending A2A peer presence events since the last turn (the same lines the TUI shows, drained once); open failed/missed scheduled runs (one deduplicated "backfill or skip?" list, refreshed by the schedule loop and the startup sweep).
+- **Dynamic** — `slife/agent/templates/turn_prompt.j2`, rendered by the `_turn_prompt` tool (auto-invoked once per turn): current time + UTC offset and context usage % always; context time range when set; model/CWD/shell/modalities only when changed; pending A2A peer presence events since the last turn (the same lines the TUI shows, drained once); open failed/missed scheduled runs (one deduplicated "backfill or skip?" list, refreshed by the schedule loop and the startup sweep).
 
 Identity + world are rendered once at startup and never change → maximal prompt cache hit rate.
 
@@ -220,7 +220,7 @@ The agent is otherwise purely user-driven — no input, no activity. A heartbeat
 The system introduces information into the context on its own initiative in three ways, distinguished by *what* is injected and *whether it persists*. Two orthogonal notions run through the forms below. The **channel** names the source of the message — its sender identity relative to the main agent's inbox, recoverable from the message alone, persisted with the turn, and by default not part of the LLM context. The **marker** is the machine-generated notation an injection carries (`[Heartbeat]`, `[Schedule <name>]`, the `[INFO: …]` footnote/trim note). A marker never determines a channel and a channel never forces a marker: a scheduled task, for instance, is a marker whose trigger rides the system channel and whose completion rides the subagent channel.
 
 1. **A new user message, marker-carrying — persistent.** The heartbeat (`[Heartbeat]`) and scheduled-task triggers (`[Schedule <name>]`) are posted to the inbox as synthetic user messages. Each runs as a normal agent-loop turn and is saved to the diary like any turn. The marker lets the TUI filter the trigger (never shown) and surface only a real reply (`⚡ 自主`). See *Autonomous Heartbeat* and *Scheduled Tasks*.
-2. **A harness tool-pair — persistent.** A harness tool is auto-invoked once per turn and contributes an assistant `tool_call` plus its tool-result to the history — `_sys_note` (context status). The pair is part of the turn, so it persists; it exists to keep the context state visible to the model without spending an LLM iteration deciding to call it. Context trimming is not such a tool: it runs internally after each save and is announced by the trim note (form 3), not by a harness pair.
+2. **A harness tool-pair — persistent.** A harness tool is auto-invoked once per turn and contributes an assistant `tool_call` plus its tool-result to the history — `_turn_prompt` (per-turn prompt). The pair is part of the turn, so it persists; it exists to keep the context state visible to the model without spending an LLM iteration deciding to call it. Context trimming is not such a tool: it runs internally after each save and is announced by the trim note (form 3), not by a harness pair.
 3. **Info appended to an existing message, marker-carrying — not persistent content.** The turn footnote (`[INFO: {"turn_id": N, "begin": …, "end": …}]`) is appended to a user message after the turn saves (so the next call can reference the turn), and the trim note (`[INFO: N oldest turns have been removed from context]`) announces evicted turns. These annotate a message already present rather than injecting a standalone one; they are reconstructed as metadata, not stored as injected content.
 
 Forms 1 and 2 add real turns/pairs to the record; form 3 decorates what is already there. All three keep the model informed without waiting for user input.
@@ -248,9 +248,9 @@ Reasoning ("thinking") support is per-backend:
 | Anthropic Messages | `thinking.budget_tokens = max(max_tokens // 2, 1024)` | `compat.thinkingFormat: "openai"` (Bailian/Qwen) sends no thinking param — the model always thinks |
 | OpenAI Responses | `reasoning.effort` (default `"medium"`) | Streams both `reasoning_text` and `reasoning_summary_text` deltas |
 
-**Prompt caching (Anthropic system blocks):** `AnthropicBackend._oa_msgs_to_anthropic` emits each OpenAI `system` message as an Anthropic system content block and tags the **last** one with `cache_control: {type: "ephemeral"}` — the static base prompt becomes the cache breakpoint, so only the dynamic `_sys_note` status (a message-stream tool pair, never a second `system` message) changes per turn. Guarded by `_use_system_cache_control()`: on by default for `api.anthropic.com`, off for Anthropic-compatible providers (Bailian/Qwen) that may reject the field, overridable per model via `compat.cacheControl`.
+**Prompt caching (Anthropic system blocks):** `AnthropicBackend._oa_msgs_to_anthropic` emits each OpenAI `system` message as an Anthropic system content block and tags the **last** one with `cache_control: {type: "ephemeral"}` — the static base prompt becomes the cache breakpoint, so only the dynamic `_turn_prompt` status (a message-stream tool pair, never a second `system` message) changes per turn. Guarded by `_use_system_cache_control()`: on by default for `api.anthropic.com`, off for Anthropic-compatible providers (Bailian/Qwen) that may reject the field, overridable per model via `compat.cacheControl`.
 
-**History validation (H3, resolved):** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_sys_note` is therefore a **declared native tool** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not a history-layer fabrication — so its pair validates. The system prompt forbids the LLM from calling it (see Tools & skills, §3 under **Capabilities** in `slife.j2`), and it is side-effect free if it does. DeepSeek (Chat Completions) doesn't validate and is unaffected. Context trimming no longer needs schema validation at all — it is internal (`_trim_after_save`), not a tool call.
+**History validation (H3, resolved):** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_turn_prompt` is therefore a **declared native tool** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not a history-layer fabrication — so its pair validates. The system prompt forbids the LLM from calling it (see Tools & skills, §3 under **Capabilities** in `slife.j2`), and it is side-effect free if it does. DeepSeek (Chat Completions) doesn't validate and is unaffected. Context trimming no longer needs schema validation at all — it is internal (`_trim_after_save`), not a tool call.
 
 **History wire shape (W2, resolved):** `OpenAIResponsesBackend._oa_msgs_to_responses` emits the Responses API's native `function_call` / `function_call_output` items for tool history — not the Chat-Completions `role:"tool"` / `tool_calls` shape. Multi-turn tool histories are accepted by the Responses API (unit-tested; not yet exercised against a live endpoint).
 
@@ -559,7 +559,7 @@ Every turn permanently recorded as an independent row — no session concept, a 
 | `channel` | Channel identity: `human`, `wechat`, `subagent`, `heartbeat`, `system`, or the A2A peer name (the peer name doubles as the identity so full-text search still matches it) |
 | `who_helped` / `what_model` | Agent identity + model used |
 | `token_count` | Cumulative billed tokens for this turn |
-| `prompt_tokens` | Context size at the last API call (restore primes the footer / `_sys_note` with it) |
+| `prompt_tokens` | Context size at the last API call (restore primes `_turn_prompt` with it) |
 
 Supporting structures: `diary_fts` (FTS5 content-sync table over message/summary/tags/channel with insert/update/delete triggers — the update trigger keeps `turn_summarize`'s summary/tags visible to keyword search), `diary_semantic` (sqlite-vec `vec0` table: embedding + rowid + chunk index + summary/tags/created_at), `diary_meta` (key-value store tracking the embedding model identity for migration detection), and `turn_channel` (a sibling row per turn holding the channel's JSON payload — A2A peer name, subagent name/task, … — written atomically with the diary insert under the same lock/commit, and created on existing databases by `CREATE IF NOT EXISTS` with no migration).
 
@@ -628,7 +628,7 @@ On startup, recent turns are read **directly from SQLite** — no MCP transport,
 
 Restore rebuilds the **exit-time context verbatim**. The `diary_meta.context_start` row (an exclusive rowid) marks the live-context boundary: the internal trim advances it past every turn it evicts (`advance_context_start`), and `clear_context` flushes it past the whole in-context slice — one cut-op for both (a one-shot clear is one big trim via the same `advance_context_start`). `get_recent_turns` reads it directly from SQLite. Turns after the boundary are returned **verbatim — no ceiling re-slicing**: the boundary already encodes the trimmed state, so restore replays the exact slice that was live at exit, and the agent picks up where it left off. `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept only for call-site compatibility; the only cap is a defensive 2×-ceiling guard against a stale `0` boundary from a not-yet-trimmed DB (normal operation never reaches it). The just-restored history is exempt from the first-turn trim (`_just_restored_history`), so nothing is compacted before the user's first exchange. Older turns stay in the diary, searchable via `turn_search`.
 
-The restored context footer is primed with the **latest restored turn's persisted `prompt_tokens`** — the exact context size at exit (what `_sys_note` would have reported) — so the first `_sys_note` / status bar shows the real occupancy instead of an estimate. A missing/zero value (e.g. a cancelled turn that never made an API call) falls back to the token estimate. The `prompt_tokens` column ships in `schema.sql`; no migration for older databases.
+The restored turn prompt is primed with the **latest restored turn's persisted `prompt_tokens`** — the exact context size at exit (what `_turn_prompt` would have reported) — so the first `_turn_prompt` / status bar shows the real occupancy instead of an estimate. A missing/zero value (e.g. a cancelled turn that never made an API call) falls back to the token estimate. The `prompt_tokens` column ships in `schema.sql`; no migration for older databases.
 
 **Restore failure is fatal, never silent.** A present-but-broken memory DB (missing column, corruption, disk error) makes `get_recent_turns` raise `MemoryDatabaseError` instead of returning `[]` — the TUI shows the error and **aborts startup**. The agent must not begin a memory-less session as if nothing happened. memdb and memfiles are likewise **required plugins** (declared via `plugins.required` in `slife.json5`, an empty list by default): a required plugin that fails to *load* (its process never becomes ready — including a bounded 30 s timeout on a hung spawn, or an embedding-model load that stalls the lifespan) likewise aborts startup with a red message, stops all plugins, and exits — never silently limping on without a core component.
 
@@ -664,7 +664,7 @@ The LLM-facing `a2a_*` tools live in the a2a plugin (one uniform prefix; the MCP
 - Duplicate agent detection: after subscribing, the client listens 1.5 s for an existing presence with the same id and exits with a clear error rather than splitting the identity
 - Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; if the probe fails, the a2a plugin is not started (A2A disabled) and this is reported via `system_health`
 - The mesh connects **eagerly** when the plugin starts (lifespan hook) so presence is announced at launch; a failed eager connect is tolerated and mesh tools attempt a lazy connect on demand
-- Peer presence **transitions** (online/offline/timeout) reach the LLM context: the a2a plugin queues them; `AgentService._a2a_poll_loop` drains them and appends the TUI-identical line (via `format_presence_line`, which also filters heartbeat-driven `status_change`) to a buffer that `AgentLoop` drains read-once into the `_sys_note` footer each turn. The footer carries only *changes* — the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with stale state
+- Peer presence **transitions** (online/offline/timeout) reach the LLM context: the a2a plugin queues them; `AgentService._a2a_poll_loop` drains them and appends the TUI-identical line (via `format_presence_line`, which also filters heartbeat-driven `status_change`) to a buffer that `AgentLoop` drains read-once into the `_turn_prompt` each turn. The prompt carries only *changes* — the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with stale state
 - Async task results **auto-push by default**: a peer's result arrives on `Slife/<agent_name>/tasks/result` over MQTT → the client fires `on_task_result` → the plugin queues a completion → `_a2a_poll_loop` drains it into the history ("Peer X completed async task (ID: …): …"). The agent sends async and the result simply arrives — no polling or blocking (MQTT subscription is implicit, so the HTTP/SSE-style `a2a_subscribe_task` was dropped). `a2a_send_task_async` takes `mode="auto"` (default — auto-push) or `mode="poll"` (no push; retrieve via `a2a_get_task_result`), mirroring the subagent delivery mode so a caller that polls a result in-turn isn't also handed the same result as a new turn.
 
 ### Unified Inbox
@@ -699,7 +699,7 @@ Local child-process workers, always available — no config toggle.  A subagent 
 
 ### Image Input
 
-User attaches images with `@` directives — **one `@` = one image source**, any number per input, parsed independently. The user message stays verbatim (the `@` reference remains visible like any text); the extracted sources are handed to the loop, which **auto-invokes** the `attach_image` tool once with the whole `sources` list via the harness-call machinery (`_auto_invoke`, same as `_sys_note`) — a single history shape (one assistant(tool_use) + tool-result pair), no LLM iteration spent deciding to attach.
+User attaches images with `@` directives — **one `@` = one image source**, any number per input, parsed independently. The user message stays verbatim (the `@` reference remains visible like any text); the extracted sources are handed to the loop, which **auto-invokes** the `attach_image` tool once with the whole `sources` list via the harness-call machinery (`_auto_invoke`, same as `_turn_prompt`) — a single history shape (one assistant(tool_use) + tool-result pair), no LLM iteration spent deciding to attach.
 
 #### `@` syntax
 
@@ -1014,13 +1014,13 @@ slife/
     history.py    #   Message storage + history (OpenAI-format, sanitization, _ensure_turn_consistent)
     llm_client.py      #   Backend router + StreamChunk
     system_prompt.py   #   Prompt rendering (static + dynamic Jinja2)
-    templates/         #   agent.j2, subagent.j2, slife.j2, context_status.j2, schedule.j2, schedule_trigger.j2
+    templates/         #   agent.j2, subagent.j2, slife.j2, turn_prompt.j2, schedule.j2, schedule_trigger.j2
     llm_backends/      #   API backends: openai.py, anthropic.py, openai_responses.py
     inbox.py           #   Unified message queue + MessageHistoryStore
     plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle)
     multimodal.py      #   Image encoding for vision models
     heartbeat.py       #   Autonomous heartbeat scheduling
-  tools/               # Native tools (auto-discovered, 60: 59 LLM-visible + _sys_note)
+  tools/               # Native tools (auto-discovered, 60: 59 LLM-visible + _turn_prompt)
     base.py            #   Tool ABC + make_params/NO_PARAMS/require_params
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
@@ -1034,7 +1034,7 @@ slife/
     cli.py             #   External CLI tool management
     rest_api.py        #   REST API tool management (OpenAPI → MCP)
     subagent.py        #   Local worker tools (spawn/list/stop + delegation + task mgmt)
-    models.py          #   Model management + attach_image (vision) + _sys_note (harness)
+    models.py          #   Model management + attach_image (vision) + _turn_prompt (harness)
     config.py          #   Config env var + native tool toggles
     credentials.py     #   Credential check/inject/uninject
     embeddings.py      #   embeddings_model_* — first-class embeddings section config
