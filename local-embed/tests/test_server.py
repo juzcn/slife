@@ -132,6 +132,19 @@ class TestV1Embeddings:
             assert resp.status_code == 503
             assert resp.json()["error"]["type"] == "server_error"
 
+    def test_engine_loading_503(self):
+        """A request while the model's engine is still loading → 503
+        server_error, retry shortly (is_loading detection)."""
+        engine = _make_engine()
+        build_server(engine)
+        with TestClient(mcp.http_app(path="/mcp")) as c, \
+             patch.object(engine, "is_loading", return_value=True):
+            resp = c.post("/v1/embeddings", json={"input": "x", "model": "bge-m3"})
+            assert resp.status_code == 503
+            err = resp.json()["error"]
+            assert err["type"] == "server_error"
+            assert "still loading" in err["message"]
+
     def test_unexpected_error_500(self):
         """Anything that isn't a known unavailable/validation error is our
         own bug → 500 server_error, never a 503."""

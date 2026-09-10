@@ -260,7 +260,7 @@ Every error uses the standard envelope
 | `400` | `invalid_request_error` | unparseable JSON body; `input` not a string/array of strings; missing `model` | `input` / `model` |
 | `400` | `invalid_request_error` | input exceeds the model's context length (`max_tokens` — never silently truncated) | `input` / `context_length_exceeded` |
 | `404` | `invalid_request_error` | unknown `model` ("does not exist or you do not have access to it") | — / `model_not_found` |
-| `503` | `server_error` | the model's engine is unavailable (backend dependency missing, load failed) | — |
+| `503` | `server_error` | the model's engine is **still loading** (is_loading — retry shortly) or unavailable (backend dependency missing, load failed) | — |
 | `500` | `server_error` | unexpected internal failure | — |
 
 Split long documents into pieces of at most `max_tokens` tokens client-side

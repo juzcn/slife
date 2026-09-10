@@ -335,6 +335,33 @@ class TestLoadAutoload:
         assert spec.autoload is False
 
 
+class TestIsLoading:
+    @pytest.mark.asyncio
+    async def test_true_while_load_in_flight(self):
+        with patch("local_embed.engine._Llama", MagicMock()):
+            e = Engine(backend="gguf", model="bge-m3", gguf_path="/x.gguf")
+            pending = asyncio.get_running_loop().create_future()
+
+            async def _block_load(fn="load", name="daemon"):
+                await pending                  # the load never finishes
+                return object()
+
+            with patch(
+                "local_embed.engine.run_daemon",
+                new_callable=AsyncMock,
+                side_effect=_block_load,
+            ):
+                assert e.is_loading("bge-m3") is False
+                task = asyncio.create_task(e.ensure_loaded("bge-m3"))
+                await asyncio.sleep(0)              # let the load start
+                assert e.is_loading("bge-m3") is True
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            # cancelled load cleaned up — no longer "loading"
+            assert e.is_loading("bge-m3") is False
+
+
 # ── Multi-model peers ────────────────────────────────────────────────────
 
 

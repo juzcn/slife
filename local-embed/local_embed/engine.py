@@ -318,6 +318,15 @@ class Engine:
     def is_loaded(self, name: str) -> bool:
         return name in self._clients
 
+    def is_loading(self, name: str) -> bool:
+        """Whether *name*'s load is currently in flight (started, not yet done).
+
+        The server 503s (``server_error`` "still loading", retry shortly) any
+        request that arrives while a model's weights are being materialised;
+        the request that started the load awaits its own outcome instead.
+        """
+        return name in self._loading
+
     # ── loading ───────────────────────────────────────────────────────
 
     async def ensure_loaded(self, name: str) -> int:

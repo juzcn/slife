@@ -212,8 +212,9 @@ async def v1_embeddings(request: Request) -> Response:
         - 400 invalid_request_error  — missing/invalid ``model`` or ``input``,
                                         input exceeds the model's context length
         - 404 invalid_request_error  — unknown ``model`` (code model_not_found)
-        - 503 server_error           — the model's engine is unavailable
-                                        (backend dependency missing / load failed)
+        - 503 server_error           — the model's engine is unavailable (backend
+                                        dependency missing / load failed) or still
+                                        loading (retry shortly)
         - 500 server_error           — unexpected internal failure
 
     Response is the standard shape::
@@ -241,9 +242,25 @@ async def v1_embeddings(request: Request) -> Response:
             "You must provide a model parameter.",
             param="model",
         )
+    if model not in engine.models:
+        return _error(
+            f"The model '{model}' does not exist or you do not have access to it.",
+            code="model_not_found",
+            status=404,
+        )
+    if engine.is_loading(model):
+        # The model's engine is still warming up — respond 503 (retry
+        # shortly) instead of queuing behind the in-flight load.  The
+        # request that started the load awaits its own outcome.
+        return _error(
+            f"The model '{model}' is still loading. Please try again shortly.",
+            type="server_error",
+            status=503,
+        )
     try:
         vecs = await engine.embed(texts, model=model)
     except KeyError:
+        # Defensive — the membership check above already 404s unknown ids.
         return _error(
             f"The model '{model}' does not exist or you do not have access to it.",
             code="model_not_found",
