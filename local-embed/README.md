@@ -246,8 +246,9 @@ any configured model.  Returns the standard shape:
 }
 ```
 
-Empty/whitespace inputs get a zero vector of the model's dimension, keeping
-row alignment.
+OpenAI forbids empty-string input, so an empty/whitespace string in the
+batch is rejected with a strict `400` — there is no zero-vector row
+alignment on the wire; filter blanks before batching.
 
 #### Errors — the OpenAI contract
 
@@ -257,7 +258,7 @@ Every error uses the standard envelope
 
 | Status | `type` | When | `param` / `code` |
 |---|---|---|---|
-| `400` | `invalid_request_error` | unparseable JSON body; `input` not a string/array of strings; missing `model` | `input` / `model` |
+| `400` | `invalid_request_error` | unparseable JSON body; `input` not a string/array of strings; missing `model`; empty / whitespace-only input | `input` / `model` |
 | `400` | `invalid_request_error` | input exceeds the model's context length (`max_tokens` — never silently truncated) | `input` / `context_length_exceeded` |
 | `404` | `invalid_request_error` | unknown `model` ("does not exist or you do not have access to it") | — / `model_not_found` |
 | `503` | `server_error` | the model's engine is **still loading** (is_loading — retry shortly) or unavailable (backend dependency missing, load failed) | — |

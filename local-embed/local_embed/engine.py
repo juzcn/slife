@@ -95,6 +95,17 @@ class EmbeddingInputTooLong(ValueError):
     """
 
 
+class EmbeddingInputEmpty(ValueError):
+    """An input text is empty or whitespace-only.
+
+    OpenAI forbids empty-string inputs (``input`` cannot be an empty
+    string); the OpenAI-compatible route surfaces this as a 400
+    ``invalid_request_error`` like the cloud API.  There is deliberately
+    no zero-vector row-alignment on the wire — callers filter blanks
+    before batching.
+    """
+
+
 # Optional backend classes — resolved LAZILY, once, on the first backend
 # availability check (never at module import).  `sentence_transformers`
 # drags in torch/transformers (~5s of imports) and `llama_cpp` is heavy
@@ -386,11 +397,11 @@ class Engine:
         """Embed a list of texts with the named *model*.
 
         The request names the model (standard OpenAI semantics — there is no
-        active model / fallback).  Returns one vector per non-empty input;
-        empty/whitespace inputs get a zero vector of the model's dim (row
-        alignment).  Raises ``ValueError`` when *model* is empty, ``KeyError``
-        for an unknown model, and ``RuntimeError`` when the backend is
-        unavailable.
+        active model / fallback).  OpenAI forbids empty-string input: any
+        empty/whitespace text raises ``EmbeddingInputEmpty`` (there is no
+        zero-vector row alignment — callers filter blanks before batching).
+        Also raises ``ValueError`` when *model* is empty, ``KeyError`` for an
+        unknown model, and ``RuntimeError`` when the backend is unavailable.
         """
         if not model:
             raise ValueError("model is required")
@@ -401,29 +412,30 @@ class Engine:
         # heavy import happens exactly once, only when that model is about
         # to be used — never at engine construction for inactive models.
         _resolve_backend(spec.backend)
+        if not texts:
+            return []
+        # Parameter validation first — an empty/whitespace input is a 400,
+        # and must win over (and never pay for) an unavailable engine.
+        for i, t in enumerate(texts):
+            if not t.strip():
+                raise EmbeddingInputEmpty(f"`input[{i}]` cannot be an empty string.")
         if not spec.runtime_available() or model in self._failed:
             raise RuntimeError(
                 f"embedding backend unavailable: {spec.backend} "
                 "(dependency missing or load failed)"
             )
-        if not texts:
-            return []
         if model not in self._clients:
             await self.ensure_loaded(model)
         client = self._clients.get(model)
         if client is None:
             raise RuntimeError(f"embedding backend failed to load: {spec.backend}")
 
-        valid = [t for t in texts if t.strip()]
-        if not valid:
-            return [[0.0] * spec.dim for _ in texts]
-
         # Enforce the model's token limit BEFORE encoding.  The backends
         # truncate silently (llama.cpp at n_ctx, sentence-transformers at
         # max_seq_length), which would otherwise turn an over-limit request
         # into a successful embed of a CUT document — data loss the caller
         # can't see.  Match cloud-API behaviour: reject it.
-        for i, t in enumerate(valid):
+        for i, t in enumerate(texts):
             n_tokens = self._count_tokens(client, spec.backend, t)
             if n_tokens > spec.max_tokens:
                 raise EmbeddingInputTooLong(
@@ -432,18 +444,9 @@ class Engine:
                     f"for model '{model}'"
                 )
 
-        dim = self._dims.get(model, spec.dim)
         if spec.backend == "gguf":
-            vecs = await self._encode_gguf(client, valid)
-        else:
-            vecs = await self._encode_transformer(client, valid)
-
-        # Restore row alignment for empty inputs (zero vector).
-        result: list[list[float]] = []
-        it = iter(vecs)
-        for t in texts:
-            result.append(next(it) if t.strip() else [0.0] * dim)
-        return result
+            return await self._encode_gguf(client, texts)
+        return await self._encode_transformer(client, texts)
 
     # ── internal ─────────────────────────────────────────────────────
 

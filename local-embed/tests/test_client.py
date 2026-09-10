@@ -61,10 +61,13 @@ def test_client_usage_reported(client):
     assert body["usage"]["total_tokens"] >= 1
 
 
-def test_usage_zero_for_empty_inputs(client):
-    """Empty/whitespace inputs get zero vectors and must not count tokens."""
+def test_empty_input_rejected_400(client):
+    """OpenAI forbids empty-string input — a blank string in the batch is a
+    strict 400 invalid_request_error, never a zero vector."""
     resp = client.post(
         "/v1/embeddings", json={"model": "bge-m3", "input": ["", "   "]}
     )
-    assert resp.status_code == 200
-    assert resp.json()["usage"]["prompt_tokens"] == 0
+    assert resp.status_code == 400
+    err = resp.json()["error"]
+    assert err["type"] == "invalid_request_error"
+    assert err["param"] == "input"

@@ -94,6 +94,21 @@ class TestV1Embeddings:
         assert err["param"] == "input"
         assert "input" in err["message"]
 
+    def test_empty_input_400(self, client):
+        """OpenAI forbids empty-string input — empty/whitespace (string or in
+        the batch) is a strict 400 invalid_request_error, param input."""
+        for payload in (
+            {"model": "bge-m3", "input": ""},
+            {"model": "bge-m3", "input": ["   "]},
+            {"model": "bge-m3", "input": ["ok", ""]},
+        ):
+            resp = client.post("/v1/embeddings", json=payload)
+            assert resp.status_code == 400
+            err = resp.json()["error"]
+            assert err["type"] == "invalid_request_error"
+            assert err["param"] == "input"
+            assert "empty string" in err["message"]
+
     def test_invalid_json(self, client):
         resp = client.post("/v1/embeddings", content="{not json")
         assert resp.status_code == 400

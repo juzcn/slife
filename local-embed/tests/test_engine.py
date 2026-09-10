@@ -14,6 +14,7 @@ pytestmark = pytest.mark.unit
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from local_embed.engine import (
+    EmbeddingInputEmpty,
     EmbeddingInputTooLong,
     Engine,
     ModelSpec,
@@ -149,30 +150,15 @@ class TestGgufLoad:
 
 class TestEmbed:
     @pytest.mark.asyncio
-    async def test_embed_gguf_rows_aligned(self):
-        """Empty/whitespace inputs get zero vectors, keeping row alignment."""
-        with (
-            patch("local_embed.engine._Llama", MagicMock()),
-            patch("local_embed.engine.run_daemon", new_callable=AsyncMock) as mock_run,
-        ):
-            client = MagicMock()
-            client.n_embd = MagicMock(return_value=1024)
-            client.create_embedding = MagicMock(
-                side_effect=lambda t: {
-                    "data": [{"embedding": [float(len(t) + 100 + 0.5)] * 1024}]
-                }
-            )
-            # load → client; encode → run the blocking fn inline
-            mock_run.side_effect = lambda fn, name="daemon": (
-                client if name.startswith("gguf-load") else fn()
-            )
-
-            e = Engine(backend="gguf", model="bge-m3", gguf_path="/model.gguf")
-            vecs = await e.embed(["hello", "", "a much longer text"], "bge-m3")
-            assert len(vecs) == 3
-            assert len(vecs[0]) == 1024
-            assert vecs[1] == [0.0] * 1024
-            assert vecs[0] != vecs[2]  # different texts → different vectors
+    async def test_embed_rejects_empty_input(self):
+        """OpenAI forbids empty-string input — a blank input raises
+        EmbeddingInputEmpty (a 400 on the wire) before any load/encode;
+        there is no zero-vector row alignment."""
+        e = Engine(backend="gguf", model="bge-m3", gguf_path="/model.gguf")
+        with pytest.raises(EmbeddingInputEmpty, match="empty"):
+            await e.embed(["hello", ""], "bge-m3")
+        with pytest.raises(EmbeddingInputEmpty):
+            await e.embed(["   "], "bge-m3")
 
     @pytest.mark.asyncio
     async def test_embed_transformer(self):
@@ -207,10 +193,11 @@ class TestEmbed:
 
     @pytest.mark.asyncio
     async def test_embed_empty_list(self):
+        """An empty batch short-circuits to [] — even with an unavailable
+        backend (parameter validation wins; nothing to embed)."""
         e = Engine(backend="gguf", model="bge-m3", gguf_path="/x.gguf")
         e._failed.add("bge-m3")
-        with pytest.raises(RuntimeError):
-            await e.embed([], "bge-m3")
+        assert await e.embed([], "bge-m3") == []
 
     @pytest.mark.asyncio
     async def test_embed_requires_model(self):

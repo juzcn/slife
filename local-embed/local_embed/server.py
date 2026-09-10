@@ -38,7 +38,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from local_embed.config import DEFAULT_PORT
-from local_embed.engine import EmbeddingInputTooLong, Engine
+from local_embed.engine import EmbeddingInputEmpty, EmbeddingInputTooLong, Engine
 from local_embed.logging import silence_noisy_loggers, setup_logging
 from local_embed.server_utils import bind_port, create_plugin_server
 
@@ -209,8 +209,10 @@ async def v1_embeddings(request: Request) -> Response:
     and names any configured model, exactly like the cloud API.  Errors
     follow the OpenAI contract::
 
-        - 400 invalid_request_error  — missing/invalid ``model`` or ``input``,
-                                        input exceeds the model's context length
+        - 400 invalid_request_error  — missing/invalid ``model`` or ``input``
+                                        (incl. empty/whitespace input — OpenAI
+                                        forbids empty strings), input exceeds
+                                        the model's context length
         - 404 invalid_request_error  — unknown ``model`` (code model_not_found)
         - 503 server_error           — the model's engine is unavailable (backend
                                         dependency missing / load failed) or still
@@ -233,6 +235,14 @@ async def v1_embeddings(request: Request) -> Response:
     if texts is None:
         return _error(
             "`input` must be a string or an array of strings.",
+            param="input",
+        )
+    if any(not t.strip() for t in texts):
+        # OpenAI forbids empty-string input — strict 400, no zero-vector
+        # row alignment on the wire.  Validated here (HTTP parameter layer)
+        # AND enforced again inside Engine.embed for direct callers.
+        return _error(
+            "`input` cannot be an empty string.",
             param="input",
         )
 
@@ -266,6 +276,9 @@ async def v1_embeddings(request: Request) -> Response:
             code="model_not_found",
             status=404,
         )
+    except EmbeddingInputEmpty as e:
+        # OpenAI forbids empty-string input — strict 400.
+        return _error(str(e), param="input")
     except EmbeddingInputTooLong as e:
         # Input exceeds the model's token limit — reject like a cloud API
         # (400 invalid_request_error; no silent truncation).
