@@ -6,8 +6,9 @@ set -euo pipefail
 #   curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh | bash
 #
 # No prerequisites — the script installs uv if needed, then uses
-# ``uv tool install`` to install cc-switch in an isolated environment.
-# credstore (a dependency) is pulled in automatically by uv.
+# ``uv tool install --force`` in an isolated environment.  --force makes
+# the script idempotent: first run installs, re-runs upgrade to the latest
+# PyPI release.  credstore (a dependency) is pulled in automatically by uv.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -19,7 +20,7 @@ REPO="https://github.com/juzcn/slife"
 
 echo -e "${CYAN}cc-switch Installer${NC}"
 echo ""
-echo "Install method : uv tool install (isolated environment)"
+echo "Install method : uv tool install --force (isolated environment; re-run = update)"
 echo "User data      : ~/.claude/cc-switch.json (provider/model configs)"
 echo "Python         : managed by uv"
 echo ""
@@ -32,9 +33,11 @@ if ! command -v uv &>/dev/null; then
 fi
 echo -e "${GREEN}  ✓${NC} uv $(uv --version 2>&1)"
 
-# [2/2] Install cc-switch from PyPI.
-echo -e "${YELLOW}[2/2] Installing cc-switch…${NC}"
-if uv tool install cc-switch; then
+# [2/2] Install/update cc-switch from PyPI.  --force: re-running this
+# script upgrades an existing install (a plain ``uv tool install`` no-ops
+# with "already installed").
+echo -e "${YELLOW}[2/2] Installing/updating cc-switch…${NC}"
+if uv tool install --force cc-switch; then
     echo -e "${GREEN}  ✓${NC} cc-switch ready"
 else
     echo -e "${RED}Error: cc-switch installation failed.${NC}"

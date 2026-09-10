@@ -14,10 +14,25 @@ cc-switch 是独立的 PyPI 包——与 slife 分开安装（安装 slife **不
 cc-switch，反之亦然）。两者都依赖 [credstore](https://github.com/juzcn/slife/blob/main/credstore/README.md)，会自动拉取。
 
 ```bash
-uv tool install cc-switch
-# 或在本仓库内：
+uv tool install --force cc-switch
+# 或在本仓库内（开发环境）：
 uv sync
 ```
+
+一键安装脚本（必要时先装 `uv`，再 `uv tool install --force cc-switch`）：
+
+```bash
+# macOS / Linux / WSL
+curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh | bash
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.ps1 | iex"
+```
+
+安装脚本和 `--force` 形式都是**幂等**的——首次运行安装，重跑即**更新**到
+PyPI 最新版。不带 `--force` 的 `uv tool install cc-switch` 在工具已安装时
+是空操作。卸载用 `uninstall.sh` / `uninstall.ps1`（`~/.claude/cc-switch.json`
+下的配置会保留）。
 
 ## 命令
 

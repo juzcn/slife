@@ -6,8 +6,9 @@ set -euo pipefail
 #   curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh | bash
 #
 # No prerequisites — the script installs uv if needed, then uses
-# ``uv tool install`` to install credstore in an isolated environment.
-# Python is managed automatically by uv.
+# ``uv tool install --force`` in an isolated environment.  --force makes
+# the script idempotent: first run installs, re-runs upgrade to the latest
+# PyPI release.  Python is managed automatically by uv.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -19,7 +20,7 @@ REPO="https://github.com/juzcn/slife"
 
 echo -e "${CYAN}credstore Installer${NC}"
 echo ""
-echo "Install method : uv tool install (isolated environment)"
+echo "Install method : uv tool install --force (isolated environment; re-run = update)"
 echo "User data      : ~/.credstore/ (encrypted credential backup)"
 echo "Python         : managed by uv"
 echo ""
@@ -32,9 +33,11 @@ if ! command -v uv &>/dev/null; then
 fi
 echo -e "${GREEN}  ✓${NC} uv $(uv --version 2>&1)"
 
-# [2/2] Install credstore from PyPI.
-echo -e "${YELLOW}[2/2] Installing credstore…${NC}"
-if uv tool install credstore; then
+# [2/2] Install/update credstore from PyPI.  --force: re-running this
+# script upgrades an existing install (a plain ``uv tool install`` no-ops
+# with "already installed").
+echo -e "${YELLOW}[2/2] Installing/updating credstore…${NC}"
+if uv tool install --force credstore; then
     echo -e "${GREEN}  ✓${NC} credstore ready"
 else
     echo -e "${RED}Error: credstore installation failed.${NC}"

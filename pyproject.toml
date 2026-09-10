@@ -90,6 +90,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "cc-switch",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
@@ -101,8 +102,8 @@ members = ["credstore", "cc-switch", "local-embed"]
 
 [tool.uv.sources]
 credstore = { workspace = true }
-cc-switch = { workspace = true }
 local-embed = { workspace = true }
+cc-switch = { workspace = true }
 
 [tool.pytest.ini_options]
 minversion = "9.1"

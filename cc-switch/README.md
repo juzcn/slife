@@ -17,10 +17,26 @@ Both depend on [credstore](https://github.com/juzcn/slife/blob/main/credstore/RE
 automatically.
 
 ```bash
-uv tool install cc-switch
-# or, in this repo:
+uv tool install --force cc-switch
+# or, in this repo (dev):
 uv sync
 ```
+
+One-click installers (install `uv` if needed, then `uv tool install --force cc-switch`):
+
+```bash
+# macOS / Linux / WSL
+curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh | bash
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.ps1 | iex"
+```
+
+The installers and the `--force` form are **idempotent** — the first run
+installs, re-running **updates** to the latest PyPI release.  A plain
+`uv tool install cc-switch` no-ops when the tool is already installed.
+Uninstall with `uninstall.sh` / `uninstall.ps1` (config under
+`~/.claude/cc-switch.json` is left in place).
 
 ## Commands
 

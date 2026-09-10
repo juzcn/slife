@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -311,7 +311,7 @@ wheels = [
 
 [[package]]
 name = "cc-switch"
-version = "0.9.9"
+version = "0.9.10"
 source = { editable = "cc-switch" }
 dependencies = [
     { name = "credstore" },
@@ -2865,6 +2865,7 @@ transformer = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "cc-switch" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -2904,6 +2905,7 @@ provides-extras = ["gguf", "transformer", "embeddings"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "cc-switch", editable = "cc-switch" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },

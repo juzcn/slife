@@ -45,14 +45,31 @@ Requires Python ≥ 3.13.
 The core package is `fastmcp` + `starlette` + `json5`; the model backends are
 optional extras.
 
+One-click installers (install `uv` if needed, then `uv tool install --force
+local-embed` — the backend is **not** included, see below):
+
+```bash
+# macOS / Linux / WSL
+curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/local-embed/install.sh | bash
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/local-embed/install.ps1 | iex"
+```
+
+Manual installs are equivalent:
+
 ```bash
 # the app + CLI (standalone tool)
-uv tool install local-embed
+uv tool install --force local-embed
 
 # with a backend:
-uv tool install "local-embed[transformer]"
-uv tool install "local-embed[gguf]"
+uv tool install --force "local-embed[transformer]"
+uv tool install --force "local-embed[gguf]"
 ```
+
+`--force` (used by the installers too) is **idempotent** — the first run
+installs, re-running **updates** to the latest PyPI release.  A plain
+`uv tool install local-embed` no-ops when the tool is already installed.
 
 If you run local-embed inside an *existing* environment (alongside another
 tool), install the backend into **that** environment's interpreter instead of

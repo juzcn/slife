@@ -13,10 +13,10 @@
 ```bash
 pip install credstore
 # 或在隔离环境中：
-uv tool install credstore
+uv tool install --force credstore
 ```
 
-一键安装脚本（必要时先装 `uv`，再 `uv tool install credstore`）：
+一键安装脚本（必要时先装 `uv`，再 `uv tool install --force credstore`）：
 
 ```bash
 # macOS / Linux / WSL
@@ -26,7 +26,10 @@ curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.ps1 | iex"
 ```
 
-卸载用 `uninstall.sh` / `uninstall.ps1`（`~/.credstore/` 下的用户数据会保留）。
+安装脚本和 `--force` 形式都是**幂等**的——首次运行安装，重跑即**更新**到
+PyPI 最新版。不带 `--force` 的 `uv tool install credstore` 在工具已安装时
+是空操作。卸载用 `uninstall.sh` / `uninstall.ps1`（`~/.credstore/` 下的用户
+数据会保留）。
 
 验证：`credstore status`
 

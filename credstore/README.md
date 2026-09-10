@@ -13,10 +13,10 @@ Requires **Python ≥ 3.13**.
 ```bash
 pip install credstore
 # or, in an isolated environment:
-uv tool install credstore
+uv tool install --force credstore
 ```
 
-One-click installers (install `uv` if needed, then `uv tool install credstore`):
+One-click installers (install `uv` if needed, then `uv tool install --force credstore`):
 
 ```bash
 # macOS / Linux / WSL
@@ -26,7 +26,11 @@ curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.ps1 | iex"
 ```
 
-Uninstall with `uninstall.sh` / `uninstall.ps1` (user data under `~/.credstore/` is left in place).
+The installers and the `--force` form are **idempotent** — the first run
+installs, re-running **updates** to the latest PyPI release.  A plain
+`uv tool install credstore` no-ops when the tool is already installed.
+Uninstall with `uninstall.sh` / `uninstall.ps1` (user data under
+`~/.credstore/` is left in place).
 
 Verify: `credstore status`
 

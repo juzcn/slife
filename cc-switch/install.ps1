@@ -4,8 +4,9 @@
 
 .DESCRIPTION
     No prerequisites — the script installs uv if needed, then uses
-    ``uv tool install`` to install cc-switch in an isolated environment.
-    credstore (a dependency) is pulled in automatically by uv.
+    ``uv tool install --force`` in an isolated environment.  --force makes
+    the script idempotent: first run installs, re-runs upgrade to the latest
+    PyPI release.  credstore (a dependency) is pulled in automatically by uv.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.ps1 | iex"
@@ -27,7 +28,7 @@ $repo = "https://github.com/juzcn/slife"
 
 Write-Host "cc-switch Installer" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Install method : uv tool install (isolated environment)"
+Write-Host "Install method : uv tool install --force (isolated environment; re-run = update)"
 Write-Host "User data      : ~\.claude\cc-switch.json (provider/model configs)"
 Write-Host "Python         : managed by uv"
 Write-Host ""
@@ -41,11 +42,13 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 Write-Ok "uv $(uv --version 2>&1)"
 
-# [2/2] Install cc-switch from PyPI
-Write-Step "[2/2] Installing cc-switch..."
+# [2/2] Install/update cc-switch from PyPI.  --force: re-running this
+# script upgrades an existing install (a plain ``uv tool install`` no-ops
+# with "already installed").
+Write-Step "[2/2] Installing/updating cc-switch..."
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-& uv tool install cc-switch 2>&1 | Out-Null
+& uv tool install --force cc-switch 2>&1 | Out-Null
 $ok = ($LASTEXITCODE -eq 0)
 $ErrorActionPreference = $prevEAP
 if (-not $ok) {
