@@ -164,12 +164,34 @@ async def __check() -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _error(
+    message: str,
+    *,
+    type: str = "invalid_request_error",
+    param: "str | None" = None,
+    code: "str | None" = None,
+    status: int = 400,
+) -> JSONResponse:
+    """One OpenAI-standard error envelope — every field always present.
+
+    The cloud API's error body always carries ``message`` / ``type`` /
+    ``param`` / ``code`` (``param`` and ``code`` are null when not
+    applicable).  Status codes follow the OpenAI contract: parameter /
+    validation / context-length errors → 400, unknown model → 404, engine
+    unavailable → 503, unexpected internal failure → 500.
+    """
+    return JSONResponse(
+        {"error": {"message": message, "type": type, "param": param, "code": code}},
+        status_code=status,
+    )
+
+
 def _parse_embedding_input(body: dict) -> "list[str] | None":
     """Extract a list of input texts from a request body.
 
     OpenAI accepts ``input`` as a string or a list of strings.  Returns
     None when the body is missing or has an unsupported shape (caller
-    responds 422).
+    responds 400 ``invalid_request_error``, param ``input``).
     """
     raw = body.get("input")
     if isinstance(raw, str):
@@ -184,9 +206,17 @@ async def v1_embeddings(request: Request) -> Response:
     """OpenAI-compatible embeddings endpoint.
 
     Body: ``{"input": str | [str], "model": str}`` — ``model`` is required
-    and names any configured model, exactly like the cloud API: a missing
-    model is a 400 ``invalid_request_error``, an unknown one a 404
-    ``model_not_found``.  Response is the standard shape::
+    and names any configured model, exactly like the cloud API.  Errors
+    follow the OpenAI contract::
+
+        - 400 invalid_request_error  — missing/invalid ``model`` or ``input``,
+                                        input exceeds the model's context length
+        - 404 invalid_request_error  — unknown ``model`` (code model_not_found)
+        - 503 server_error           — the model's engine is unavailable
+                                        (backend dependency missing / load failed)
+        - 500 server_error           — unexpected internal failure
+
+    Response is the standard shape::
 
         {"object": "list", "data": [{"object": "embedding", "index": 0,
                                      "embedding": [0.1, …]}], "model": …,
@@ -196,52 +226,49 @@ async def v1_embeddings(request: Request) -> Response:
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": {"message": "invalid JSON body", "type": "invalid_request_error"}}, status_code=400)
+        return _error("We could not parse the JSON body of your request.")
 
     texts = _parse_embedding_input(body)
     if texts is None:
-        return JSONResponse(
-            {"error": {"message": "input must be a string or a list of strings", "type": "invalid_request_error"}},
-            status_code=422,
+        return _error(
+            "`input` must be a string or an array of strings.",
+            param="input",
         )
 
     model = body.get("model") or ""
     if not model:
-        return JSONResponse(
-            {
-                "error": {
-                    "message": "You must provide a model parameter.",
-                    "type": "invalid_request_error",
-                    "param": "model",
-                }
-            },
-            status_code=400,
+        return _error(
+            "You must provide a model parameter.",
+            param="model",
         )
     try:
         vecs = await engine.embed(texts, model=model)
     except KeyError:
-        return JSONResponse(
-            {
-                "error": {
-                    "message": f"The model '{model}' does not exist.",
-                    "type": "invalid_request_error",
-                    "code": "model_not_found",
-                }
-            },
-            status_code=404,
+        return _error(
+            f"The model '{model}' does not exist or you do not have access to it.",
+            code="model_not_found",
+            status=404,
         )
     except EmbeddingInputTooLong as e:
         # Input exceeds the model's token limit — reject like a cloud API
-        # (OpenAI 400 invalid_request_error; no silent truncation).
-        return JSONResponse(
-            {"error": {"message": str(e), "type": "invalid_request_error"}},
-            status_code=400,
+        # (400 invalid_request_error; no silent truncation).
+        return _error(str(e), param="input", code="context_length_exceeded")
+    except RuntimeError as e:
+        # The model's engine is unavailable (backend dependency missing,
+        # load failed) — 503, the cloud API's "engine unavailable" code.
+        logger.warning("embeddings_unavailable err=%s", e)
+        return _error(
+            str(e),
+            type="server_error",
+            status=503,
         )
     except Exception as e:
+        # Anything else is our own bug — 500, not 503.
         logger.warning("embeddings_failed err=%s", e)
-        return JSONResponse(
-            {"error": {"message": str(e), "type": "server_error"}},
-            status_code=503,
+        return _error(
+            "The server had an error while processing your request.",
+            type="server_error",
+            status=500,
         )
 
     data = [
@@ -301,16 +328,10 @@ async def v1_models_retrieve(request: Request) -> Response:
     engine = get_engine()
     name = request.path_params["name"]
     if name not in engine.models:
-        return JSONResponse(
-            {
-                "error": {
-                    "message": f"The model '{name}' does not exist.",
-                    "type": "invalid_request_error",
-                    "param": None,
-                    "code": "model_not_found",
-                }
-            },
-            status_code=404,
+        return _error(
+            f"The model '{name}' does not exist or you do not have access to it.",
+            code="model_not_found",
+            status=404,
         )
     return JSONResponse(_model_entry(engine, name))
 

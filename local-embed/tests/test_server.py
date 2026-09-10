@@ -85,8 +85,14 @@ class TestV1Embeddings:
         assert len(resp.json()["data"]) == 2
 
     def test_invalid_input_type(self, client):
+        """Wrong `input` shape is 400 invalid_request_error (param input) —
+        the cloud API's parameter-error code, not a 422."""
         resp = client.post("/v1/embeddings", json={"input": 42})
-        assert resp.status_code == 422
+        assert resp.status_code == 400
+        err = resp.json()["error"]
+        assert err["type"] == "invalid_request_error"
+        assert err["param"] == "input"
+        assert "input" in err["message"]
 
     def test_invalid_json(self, client):
         resp = client.post("/v1/embeddings", content="{not json")
@@ -94,16 +100,18 @@ class TestV1Embeddings:
 
     def test_bad_json(self, client):
         resp = client.post("/v1/embeddings", content=b"", headers={"Content-Type": "application/json"})
-        assert resp.status_code in (400, 422)
+        assert resp.status_code == 400
+        assert resp.json()["error"]["type"] == "invalid_request_error"
 
     def test_missing_model_400(self, client):
-        """A request without `model` is malformed — 400 invalid_request_error,
-        exactly like the cloud API (no server-side default / active model to
-        fall back to)."""
+        """A request without `model` is malformed — 400 invalid_request_error
+        with param=model, exactly like the cloud API (no server-side default /
+        active model to fall back to)."""
         resp = client.post("/v1/embeddings", json={"input": "x"})
         assert resp.status_code == 400
         err = resp.json()["error"]
         assert err["type"] == "invalid_request_error"
+        assert err["param"] == "model"
         assert "model parameter" in err["message"]
 
     def test_unknown_model_404(self, client):
@@ -114,16 +122,35 @@ class TestV1Embeddings:
         assert err["type"] == "invalid_request_error"
         assert err["code"] == "model_not_found"
         assert "typo" in err["message"]
+        assert "does not exist" in err["message"]
 
     def test_backend_failure_503(self):
+        """The model's engine is unavailable → 503 server_error."""
         build_server(_make_engine(available=False))
         with TestClient(mcp.http_app(path="/mcp")) as c:
             resp = c.post("/v1/embeddings", json={"input": "x", "model": "bge-m3"})
             assert resp.status_code == 503
+            assert resp.json()["error"]["type"] == "server_error"
+
+    def test_unexpected_error_500(self):
+        """Anything that isn't a known unavailable/validation error is our
+        own bug → 500 server_error, never a 503."""
+
+        class _BoomEngine(_StubEngine):
+            async def embed(self, texts, model):
+                raise ValueError("unexpected internal bug")
+
+        build_server(_BoomEngine())
+        with TestClient(mcp.http_app(path="/mcp")) as c:
+            resp = c.post("/v1/embeddings", json={"input": "x", "model": "bge-m3"})
+            assert resp.status_code == 500
+            err = resp.json()["error"]
+            assert err["type"] == "server_error"
 
     def test_input_too_long_400(self):
         """An over-limit input surfaces as an OpenAI-style 400
-        invalid_request_error — never a silent truncation."""
+        invalid_request_error (param input, code context_length_exceeded) —
+        never a silent truncation."""
 
         class _TooLongEngine(_StubEngine):
             async def embed(self, texts, model=None):
@@ -138,6 +165,8 @@ class TestV1Embeddings:
             assert resp.status_code == 400
             err = resp.json()["error"]
             assert err["type"] == "invalid_request_error"
+            assert err["param"] == "input"
+            assert err["code"] == "context_length_exceeded"
             assert "8192" in err["message"]
 
     def test_response_echoes_requested_model(self):

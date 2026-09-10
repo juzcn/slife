@@ -232,10 +232,7 @@ curl http://127.0.0.1:17347/v1/embeddings \
 ```
 
 `input` is a string or a list of strings; `model` is **required** and names
-any configured model.  It follows the cloud API exactly: a missing `model`
-is a `400` `invalid_request_error`, an unknown one a `404`
-`invalid_request_error` with `code: "model_not_found"` — never a silent
-fallback to another model. Returns the standard shape:
+any configured model.  Returns the standard shape:
 
 ```json
 {
@@ -252,13 +249,22 @@ fallback to another model. Returns the standard shape:
 Empty/whitespace inputs get a zero vector of the model's dimension, keeping
 row alignment.
 
-**Input length is validated, never silently truncated.** Any input exceeding
-the model's token limit (`max_tokens`, e.g. 8192 for bge-m3) is rejected with
-a `400` `invalid_request_error` envelope — exactly like a cloud API — rather
-than cut to the context window, so callers can never mistake a truncated
-embedding for a complete one. Split long documents into pieces of at most
-`max_tokens` tokens client-side (slife's semantic drainer does this
-automatically).
+#### Errors — the OpenAI contract
+
+Every error uses the standard envelope
+`{"error": {"message", "type", "param", "code"}}` (`param` / `code` are
+`null` when not applicable):
+
+| Status | `type` | When | `param` / `code` |
+|---|---|---|---|
+| `400` | `invalid_request_error` | unparseable JSON body; `input` not a string/array of strings; missing `model` | `input` / `model` |
+| `400` | `invalid_request_error` | input exceeds the model's context length (`max_tokens` — never silently truncated) | `input` / `context_length_exceeded` |
+| `404` | `invalid_request_error` | unknown `model` ("does not exist or you do not have access to it") | — / `model_not_found` |
+| `503` | `server_error` | the model's engine is unavailable (backend dependency missing, load failed) | — |
+| `500` | `server_error` | unexpected internal failure | — |
+
+Split long documents into pieces of at most `max_tokens` tokens client-side
+(slife's semantic drainer does this automatically).
 
 ### `GET /v1/models`
 
