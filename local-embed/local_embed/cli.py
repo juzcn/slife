@@ -7,13 +7,12 @@ Entry paths share this module:
   ``local_embed.json5`` (the CLI takes no model/endpoint flags).
 
 - ``local-embed set <model_name> [--HF_HUB_CACHE <dir>] [--port <n>]``:
-  configure a transformer model in ``local_embed.json5`` and make it the
-  active model (idempotent; the model must already be downloaded into the
-  cache).
+  configure a transformer model in ``local_embed.json5`` (idempotent; the
+  model must already be downloaded into the cache).
 
 - ``local-embed set-gguf <model_name> --path <PATH> [--port <n>]``:
-  configure a gguf model in ``local_embed.json5`` and make it the active
-  model (idempotent; ``--path`` must point at an existing ``.gguf`` file).
+  configure a gguf model in ``local_embed.json5`` (idempotent; ``--path``
+  must point at an existing ``.gguf`` file).
 
 - ``python -m local_embed.server``: the **plugin spawn target** used by a
   host (slife) — binds a free port, serves MCP on ``/mcp`` and embeddings
@@ -28,7 +27,7 @@ import logging
 import sys
 
 from local_embed.config import DEFAULT_PORT, resolve_engine_settings
-from local_embed.engine import Engine, resolve_backend_runtime
+from local_embed.engine import Engine
 from local_embed.logging import setup_logging
 
 
@@ -46,11 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command")
     set_p = sub.add_parser(
         "set",
-        help="configure a transformer model and make it active",
+        help="configure a transformer model",
         description=(
-            "Add (or update) a transformer model in local_embed.json5, make it "
-            "the active model, and pin the HF cache + port.  Idempotent; the "
-            "model must already be downloaded into the cache."
+            "Add (or update) a transformer model in local_embed.json5 and pin "
+            "the HF cache + port.  Idempotent; the model must already be "
+            "downloaded into the cache."
         ),
     )
     set_p.add_argument(
@@ -69,11 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     gguf_p = sub.add_parser(
         "set-gguf",
-        help="configure a gguf model and make it active",
+        help="configure a gguf model",
         description=(
-            "Add (or update) a gguf model in local_embed.json5, make it the "
-            "active model, and pin the port.  Idempotent; --path must point "
-            "at an existing .gguf file."
+            "Add (or update) a gguf model in local_embed.json5 and pin the "
+            "port.  Idempotent; --path must point at an existing .gguf file."
         ),
     )
     gguf_p.add_argument(
@@ -121,39 +119,21 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"Error: cannot read config: {e}", file=sys.stderr)
         return 2
 
-    engine = Engine(specs=settings["specs"], active=settings["active"])
+    engine = Engine(specs=settings["specs"])
 
-    # Validate the active model can actually run.  `resolve_backend_runtime`
-    # (not `check_backend_runtime`, which never imports) so the answer
-    # reflects reality.  Only the ACTIVE model is import-checked at startup:
-    # a non-active model's backend import cost (torch!) is only worth paying
-    # when the model is actually requested — it fails at load time then,
-    # and this CLI must not stall on it (or hang an impatient Ctrl-C during
-    # the import).  gguf_path is still checked for every model.
-    active_name = engine.active_model
+    # Validate every model for CONFIG-SHAPE problems only.  No backend is
+    # imported at startup: finding out a transformer backend is missing
+    # would require importing it (torch — seconds) and stalling the CLI for
+    # every configured model.  Local-embed is a lazy server now — with no
+    # single 'active' model there is nothing worth pre-importing, and a
+    # model that can't load is reported truthfully via /v1/models's
+    # ``available`` flag and fails per request (503), exactly like a cloud
+    # endpoint.  gguf_path is still checked here because it is config, not
+    # an import.
     for spec in settings["specs"]:
         problems: list[str] = []
         if spec.backend == "gguf" and not spec.gguf_path:
             problems.append("no gguf_path (set gguf_path in local_embed.json5)")
-        if spec.name == active_name:
-            try:
-                installed = resolve_backend_runtime(spec.backend)
-            except KeyboardInterrupt:
-                print("Interrupted — local-embed not started.", file=sys.stderr)
-                return 130
-            if not installed:
-                from local_embed.cmd_set import backend_install_hint
-
-                problems.append(
-                    f"{spec.backend} backend not installed "
-                    f"({backend_install_hint(spec.backend)})"
-                )
-        if spec.name == active_name and problems:
-            print(
-                f"Error: active model '{spec.name}' cannot start: {'; '.join(problems)}",
-                file=sys.stderr,
-            )
-            return 2
         if problems:
             print(
                 f"Warning: model '{spec.name}': {'; '.join(problems)} "

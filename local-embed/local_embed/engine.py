@@ -1,4 +1,4 @@
-"""Embedding engine — one process, many models, ONE active.
+"""Embedding engine — one process, many models, each named by the request.
 
 Owns one or more local embedding models (GGUF via llama-cpp-python, HF
 transformers via sentence-transformers), each loaded lazily on first use
@@ -7,9 +7,10 @@ place a model is ever materialised in the whole process tree — every
 consumer (slife's memdb + memfiles) calls it over HTTP instead of loading
 its own copy.
 
-Exactly one model is *active* at a time — the one requests land on unless
-they name another explicitly.  Switching active model (``set_active``)
-loads it on demand and reports its real dimension, so a vector table is
+There is NO *active* model — that concept does not exist on a standard
+OpenAI embeddings backend.  Every request names the model it wants
+(``POST /v1/embeddings``'s ``model`` field is required); a named model
+loads on demand and reports its real dimension, so a vector table is
 always sized from the width the server actually produces.
 
 Thread-safety: llama-cpp ``create_embedding`` and
@@ -29,6 +30,7 @@ is created with the correct size.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import os
 import sys
@@ -155,7 +157,7 @@ def _guarded_stdout():
 
 
 def check_backend_runtime(backend: str) -> bool:
-    """Whether the Python package a backend needs is already importable.
+    """Whether the Python package a backend needs is already usable.
 
     ``available`` must reflect *runtime* usability — not just whether a
     GGUF file exists on disk.  Without this, a missing dependency is
@@ -163,14 +165,22 @@ def check_backend_runtime(backend: str) -> bool:
 
     Deliberately does NOT trigger a lazy import: it is called for EVERY
     configured model at ``Engine.__init__`` (the ``model_configured`` log),
-    and resolving an inactive backend there would pay its import cost even
-    when only the active model is ever used.  The import happens in
-    :meth:`Engine._load_spec`, i.e. only when a model is actually loaded.
+    and resolving a backend there would pay its import cost even when the
+    model is never used.  Instead it answers with the resolved backend
+    class when one is present (an earlier import or a test patch), else a
+    cheap ``importlib.util.find_spec`` — locating a top-level package never
+    imports it, so a transformer model is NOT loaded just by asking whether
+    its dependency is installed.  The heavy import happens only in
+    :meth:`Engine._load_spec`, i.e. when a model is actually loaded.
     """
     if backend == "gguf":
-        return _Llama is not None
+        if _Llama is not None:
+            return True
+        return importlib.util.find_spec("llama_cpp") is not None
     if backend == "transformer":
-        return _SentenceTransformer is not None
+        if _SentenceTransformer is not None:
+            return True
+        return importlib.util.find_spec("sentence_transformers") is not None
     return False
 
 
@@ -220,22 +230,20 @@ class ModelSpec:
 
 
 class Engine:
-    """The embedding engine — many models, one active, lazy-loaded.
+    """The embedding engine — many models as peers, lazy-loaded.
 
     Usage::
 
         engine = Engine(specs=[ModelSpec("bge-m3", backend="gguf",
-                                         gguf_path="/p/model.gguf")],
-                        active="bge-m3")
-        await engine.ensure_loaded()          # materialises the active model
-        vecs = await engine.embed(["text"])   # list[list[float]]
+                                         gguf_path="/p/model.gguf")])
+        await engine.ensure_loaded("bge-m3")   # materialises the model
+        vecs = await engine.embed(["text"], "bge-m3")   # list[list[float]]
     """
 
     def __init__(
         self,
         *,
         specs: list[ModelSpec] | None = None,
-        active: str | None = None,
         # Single-model convenience (backwards compatible):
         backend: str = "gguf",
         model: str = "bge-m3",
@@ -252,7 +260,6 @@ class Engine:
                     gguf_path=gguf_path, device=device, max_tokens=max_tokens,
                 )
             }
-        self._active = active if active in self._specs else next(iter(self._specs), "")
         # name -> loaded client (Llama | SentenceTransformer)
         self._clients: dict[str, Any] = {}
         # name -> real dimension once loaded
@@ -264,12 +271,12 @@ class Engine:
         # Serialises model inference across ALL models — see the module doc.
         self._encode_lock = threading.Lock()
 
-        # No backend is resolved here — construction must be handshake-fast
-        # (a transformer active model would otherwise import torch and delay
-        # the port signal past the host's spawn window).  The active model's
-        # backend is resolved asynchronously by the server's post-handshake
-        # warm-up (``warm_after_handshake``) or on the first embed; inactive
-        # models stay unresolved until they are loaded.
+        # No backend is imported here — construction must be handshake-fast
+        # (a transformer model would otherwise import torch and delay the
+        # port signal past the host's spawn window).  ``runtime_available``
+        # answers cheaply (find_spec, never an import); the heavy import
+        # happens in :meth:`Engine._load_spec`, i.e. only when that model is
+        # actually loaded.
         for spec in self._specs.values():
             logger.info(
                 "model_configured name=%s backend=%s model=%s dim=%d dim_known=%s "
@@ -278,74 +285,34 @@ class Engine:
                 spec.runtime_available(),
             )
 
-    # ── active model (public) ─────────────────────────────────────────
-
-    @property
-    def active_model(self) -> str:
-        return self._active
+    # ── models (public) ───────────────────────────────────────────────
 
     @property
     def models(self) -> list[str]:
         return list(self._specs)
 
-    def model_spec(self, name: str | None = None) -> ModelSpec:
-        """Return the spec for *name* (default active); raises on unknown."""
-        name = name or self._active
+    def model_spec(self, name: str) -> ModelSpec:
+        """Return the spec for *name*; raises on unknown."""
         try:
             return self._specs[name]
         except KeyError:
             raise KeyError(f"unknown model: {name}") from None
-
-    @property
-    def backend(self) -> str:
-        return self.model_spec().backend
-
-    @property
-    def model(self) -> str:
-        return self.model_spec().model
 
     def available_for(self, name: str) -> bool:
         """Whether model *name*'s backend is usable (not failed)."""
         spec = self.model_spec(name)
         return spec.runtime_available() and name not in self._failed
 
-    @property
-    def available(self) -> bool:
-        """Whether the active model's backend is usable (not failed)."""
-        return self.available_for(self._active)
-
-    @property
-    def loaded(self) -> bool:
-        """Whether the active model is actually materialised in memory."""
-        return self._active in self._clients
-
     def is_loaded(self, name: str) -> bool:
         return name in self._clients
 
-    @property
-    def dimension(self) -> int:
-        """Active model's embedding dimension (real once loaded)."""
-        spec = self.model_spec()
-        return self._dims.get(self._active, spec.dim)
-
-    @property
-    def dimension_known(self) -> bool:
-        """Whether ``dimension`` is authoritative or a provisional guess."""
-        spec = self.model_spec()
-        return spec.dim_known or self._active in self._dims
-
-    @property
-    def max_tokens(self) -> int:
-        return self.model_spec().max_tokens
-
     # ── loading ───────────────────────────────────────────────────────
 
-    async def ensure_loaded(self, name: str | None = None) -> int:
-        """Load the model (default active) if needed; return its real dim.
+    async def ensure_loaded(self, name: str) -> int:
+        """Load *name* if needed; return its real dim.
 
         Idempotent — concurrent callers share one in-flight load per model.
         """
-        name = name or self._active
         spec = self.model_spec(name)
         if name in self._clients:
             return self._dims.get(name, spec.dim)
@@ -377,40 +344,37 @@ class Engine:
             self._loading.pop(name, None)
         return self._dims.get(name, spec.dim)
 
-    async def set_active(self, name: str) -> int:
-        """Switch the active model (loading it on demand); return its dim."""
-        self.model_spec(name)  # raises on unknown
-        self._active = name
-        return await self.ensure_loaded(name)
-
     # ── embedding ────────────────────────────────────────────────────
 
-    async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
-        """Embed a list of texts with *model* (default active).
+    async def embed(self, texts: list[str], model: str) -> list[list[float]]:
+        """Embed a list of texts with the named *model*.
 
-        Returns one vector per non-empty input; empty/whitespace inputs get
-        a zero vector of the model's dim (row alignment).  Raises ``KeyError``
-        for an explicitly-named unknown model (never silently substitutes the
-        active model), and ``RuntimeError`` when the backend is unavailable.
+        The request names the model (standard OpenAI semantics — there is no
+        active model / fallback).  Returns one vector per non-empty input;
+        empty/whitespace inputs get a zero vector of the model's dim (row
+        alignment).  Raises ``ValueError`` when *model* is empty, ``KeyError``
+        for an unknown model, and ``RuntimeError`` when the backend is
+        unavailable.
         """
-        if model and model not in self._specs:
+        if not model:
+            raise ValueError("model is required")
+        if model not in self._specs:
             raise KeyError(f"unknown model: {model}") from None
-        name = model if model else self._active
-        spec = self.model_spec(name)
+        spec = self.model_spec(model)
         # Resolving here (not in runtime_available) means the backend's
         # heavy import happens exactly once, only when that model is about
         # to be used — never at engine construction for inactive models.
         _resolve_backend(spec.backend)
-        if not spec.runtime_available() or name in self._failed:
+        if not spec.runtime_available() or model in self._failed:
             raise RuntimeError(
                 f"embedding backend unavailable: {spec.backend} "
                 "(dependency missing or load failed)"
             )
         if not texts:
             return []
-        if name not in self._clients:
-            await self.ensure_loaded(name)
-        client = self._clients.get(name)
+        if model not in self._clients:
+            await self.ensure_loaded(model)
+        client = self._clients.get(model)
         if client is None:
             raise RuntimeError(f"embedding backend failed to load: {spec.backend}")
 
@@ -429,10 +393,10 @@ class Engine:
                 raise EmbeddingInputTooLong(
                     f"input {i} contains {n_tokens} tokens, which exceeds "
                     f"the maximum context length of {spec.max_tokens} tokens "
-                    f"for model '{name}'"
+                    f"for model '{model}'"
                 )
 
-        dim = self._dims.get(name, spec.dim)
+        dim = self._dims.get(model, spec.dim)
         if spec.backend == "gguf":
             vecs = await self._encode_gguf(client, valid)
         else:

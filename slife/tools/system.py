@@ -377,15 +377,12 @@ async def check_local_embed(base_url: str = "") -> list[dict]:
             resp.raise_for_status()
             payload = resp.json()
         models = payload.get("data") or []
-        active = "?"
-        if models:
-            active = next(
-                (m.get("id") or "?" for m in models if m.get("active")),
-                next((m.get("id") or "?" for m in models), "?"),
-            )
+        # A standard /v1/models listing has no active marker — the first
+        # model id stands in as the health value.
+        exposed = next((m.get("id") or "?" for m in models), "?")
         preview = ", ".join(m.get("id", "?") for m in models[:3]) or "none"
         return [{"component": "local_embed", "level": "ok", "key": "status",
-                 "value": active,
+                 "value": exposed,
                  "hint": f"Embedding endpoint {base_url}: {len(models)} model(s) exposed (e.g. {preview})."}]
     except Exception as e:
         logger.warning("local_embed_check_failed err=%s", e)

@@ -25,14 +25,15 @@ them ([Model weights](#model-weights)).
    vector DB / RAG pipeline ──────┘                          ▼
                                               ┌───────────────────────┐
    slife (plugin host) ─── /mcp ────────────> │       local-embed     │
-                                              │  ONE loaded model     │
+                                              │  models load on demand │
                                               └───────────────────────┘
 ```
 
 ## Features
 
 - **OpenAI-compatible** `/v1/embeddings` + Models API + `/health`.
-- Two backends (GGUF / transformer), **many models configured, one active**.
+- Two backends (GGUF / transformer), **many models as peers — each request
+  names the one it wants** (standard OpenAI semantics, no "active model").
 - **Lazy load** — startup is fast; the model materialises on first use.
 - **Real dimension** reported after load (a guessed width is never served).
 - Runs standalone, and can also be **loaded as a slife plugin** (see
@@ -131,13 +132,12 @@ Installing does **not** fetch a model — get the weights first.
 
 ## Configuration: `local_embed.json5`
 
-Everything — host, port, models, active model, backend — comes from
+Everything — host, port, models, backend — comes from
 `local_embed.json5`, written by the CLI helpers or by hand. Path resolution:
 `$LOCAL_EMBED_FILE` > slife project root (dev) > `~/.local-embed/local_embed.json5`.
 
 ```json5
 {
-  active_model: "bge-m3",          // model served by default
   models: {
     "bge-m3": { backend: "gguf", gguf_path: "…", device: "" },
     "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3", device: "" }
@@ -152,7 +152,8 @@ Everything — host, port, models, active model, backend — comes from
 ```
 
 - `models` — map of name → `{backend, gguf_path | model, device, max_tokens}`.
-- `active_model` — key into `models`.
+  Every configured model is a peer; there is **no `active_model`** — each
+  request names the model it wants (standard OpenAI semantics).
 - `env:` — injected before any backend loads; an existing shell env var wins.
   Without `HF_HUB_CACHE`, transformer repos resolve against the default cache
   and a model downloaded elsewhere is silently re-fetched.
@@ -223,8 +224,11 @@ curl http://127.0.0.1:17347/v1/embeddings \
   -d '{"model": "bge-m3", "input": ["hello world", "another text"]}'
 ```
 
-`input` is a string or a list of strings; `model` names any configured model
-(defaults to the active one). Returns the standard shape:
+`input` is a string or a list of strings; `model` is **required** and names
+any configured model.  It follows the cloud API exactly: a missing `model`
+is a `400` `invalid_request_error`, an unknown one a `404`
+`invalid_request_error` with `code: "model_not_found"` — never a silent
+fallback to another model. Returns the standard shape:
 
 ```json
 {
@@ -252,21 +256,19 @@ automatically).
 ### `GET /v1/models`
 
 Every configured model, each with its real embedding dimension
-(`dimension` / `dimension_known`), backend, load state, and an `active` flag.
+(`dimension` / `dimension_known`), backend, and load state.  The listing is
+standard — no `active` marker, all models are peers.
 
 ### `GET /v1/models/{id}`
 
 One model's detail (the OpenAI `retrieve` endpoint); 404 with the standard
 error envelope when the id is unknown.
 
-### `POST /v1/models/{id}/activate`
-
-Switch the active model (loads it on demand). A local-embed extension, not an
-OpenAI endpoint.
-
 ### `GET /health`
 
-`{status, active_model, backend, model, dimension, dimension_known, loaded}`.
+Liveness + engine state: `{status, models: [{name, backend, model,
+dimension, dimension_known, loaded, available, max_tokens}]}` — `status`
+is `ok` when any configured model's backend is usable.
 
 ### Any OpenAI client
 
@@ -299,10 +301,11 @@ config.
 
 ### `local-embed set` / `set-gguf` — write the config
 
-`set` (transformer) and `set-gguf` (gguf) upsert a model in the config, make it
-**active**, and pin port (and, for `set`, the HF cache + offline flag). Both
-are **idempotent** — re-running yields the same config — and leave other models
-untouched.
+`set` (transformer) and `set-gguf` (gguf) upsert a model in the config and
+pin port (and, for `set`, the HF cache + offline flag). Both are
+**idempotent** — re-running yields the same config — and leave other models
+untouched.  There is no `active_model`: every configured model is a peer
+and requests name the one they want.
 
 | | `set` (transformer) | `set-gguf` |
 |---|---|---|
@@ -372,7 +375,7 @@ claude mcp add --transport http local-embed http://127.0.0.1:17347/mcp
 > reachable from the desktop app.
 
 **Over MCP you get status, not embeddings.** The only MCP tool is the internal
-`__check` status probe (active model, dimensions, load state) — local-embed is
+`__check` status probe (model list, dimensions, load state) — local-embed is
 a *service-provider* MCP server, not a tool provider. To embed text, point
 your consumer at the OpenAI-compatible `/v1/*` API instead. A client that only
 speaks stdio can reach it through a stdio→HTTP bridge (e.g. `mcp-remote`).
@@ -393,6 +396,7 @@ embeddings: {
     local: {
       base_url: "http://127.0.0.1:17347/v1",  // stable port from local_embed.json5
       api_key: "local",
+      model: "bge-m3",                        // id POSTed on /v1/embeddings
     }
   },
   active_model: "local",      // provider-id only, or "local/<model>"
@@ -401,14 +405,14 @@ embeddings: {
 ```
 
 slife treats every embedding model as a remote OpenAI-compatible endpoint —
-local-embed is one such endpoint. The model is **determined by the daemon's
-active model**: slife discovers it from `GET /v1/models` (the entry flagged
-`active: true`) on load. When the daemon is unreachable, slife degrades
-gracefully to keyword search (`check_local_embed` in `system_health` probes the
-daemon's HTTP endpoint and reports it down).
+local-embed is one such endpoint. The model a request hits is the one the
+caller names; when the config names no model, slife discovers it from
+`GET /v1/models` (the first entry) on load. When the daemon is unreachable,
+slife degrades gracefully to keyword search (`check_local_embed` in
+`system_health` probes the daemon's HTTP endpoint and reports it down).
 
 The MCP surface it still serves is the internal **`__check`** (engine status:
-active model, model list, dimensions, load state) — a service-provider facade
+model list, dimensions, load state) — a service-provider facade
 for direct probing, not a slife plugin contract. It also serves plain OpenAPI
 routes (`/v1/embeddings`, `/v1/models`, `/health`) on the same port via
 `@mcp.custom_route` — one port, two protocols, no slife involvement.

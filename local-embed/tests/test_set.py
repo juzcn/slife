@@ -11,7 +11,6 @@ pytestmark = pytest.mark.unit
 
 from local_embed.cli import main
 
-import local_embed.cli as cli
 from local_embed.cmd_set import (
     ENV_CACHE_KEY,
     ENV_OFFLINE_KEY,
@@ -42,10 +41,10 @@ class TestSetTransformerModel:
         out = set_transformer_model({}, "BAAI/bge-m3", "C:\\hub", 8000)
         assert out == {
             "models": {"BAAI/bge-m3": {"backend": "transformer", "model": "BAAI/bge-m3"}},
-            "active_model": "BAAI/bge-m3",
             "port": 8000,
             "env": {ENV_CACHE_KEY: "C:\\hub", ENV_OFFLINE_KEY: "1"},
         }
+        assert "active_model" not in out
 
     def test_offline_flag_defaults_on(self):
         # the server should never silently refetch a missing repo — pin
@@ -61,7 +60,7 @@ class TestSetTransformerModel:
         }
         out = set_transformer_model(cfg, "BAAI/bge-m3", "C:\\hub", 8123)
         assert out["models"]["old"] == cfg["models"]["old"]
-        assert out["active_model"] == "BAAI/bge-m3"
+        assert "active_model" not in out   # models are peers — never rewritten
         assert out["env"] == {"HF_HUB_OFFLINE": "1", ENV_CACHE_KEY: "C:\\hub"}
         assert out["port"] == 8123
 
@@ -76,9 +75,9 @@ class TestSetGgufModel:
         out = set_gguf_model({}, "bge-m3", "D:\\m\\bge.gguf", 8000)
         assert out == {
             "models": {"bge-m3": {"backend": "gguf", "gguf_path": "D:\\m\\bge.gguf"}},
-            "active_model": "bge-m3",
             "port": 8000,
         }
+        assert "active_model" not in out
 
     def test_preserves_existing_models_and_env(self):
         cfg = {
@@ -90,7 +89,7 @@ class TestSetGgufModel:
         out = set_gguf_model(cfg, "bge-m3", "/a.gguf", 8000)
         assert out["models"]["old"] == cfg["models"]["old"]
         assert out["env"] == cfg["env"]
-        assert out["active_model"] == "bge-m3"
+        assert "active_model" not in out
         assert out["port"] == 8000
 
     def test_idempotent(self):
@@ -154,7 +153,7 @@ class TestRunSet:
         code = main(["set", "BAAI/bge-m3", "--HF_HUB_CACHE", str(cache), "--port", "8123"])
         assert code == 0
         cfg = load_config(config_path)
-        assert cfg["active_model"] == "BAAI/bge-m3"
+        assert "active_model" not in cfg
         assert cfg["port"] == 8123
         assert cfg["env"][ENV_CACHE_KEY] == str(cache)
         assert cfg["models"]["BAAI/bge-m3"] == {"backend": "transformer", "model": "BAAI/bge-m3"}
@@ -203,7 +202,7 @@ class TestRunSetGguf:
         code = main(["set-gguf", "bge-m3", "--path", str(gguf), "--port", "8123"])
         assert code == 0
         cfg = load_config(config_path)
-        assert cfg["active_model"] == "bge-m3"
+        assert "active_model" not in cfg
         assert cfg["port"] == 8123
         assert cfg["models"]["bge-m3"] == {"backend": "gguf", "gguf_path": str(gguf)}
         assert "bge-m3" in capsys.readouterr().out
@@ -226,45 +225,35 @@ class TestRunSetGguf:
         assert config_path.read_text(encoding="utf-8") == first
 
 
-class TestCliCtrlC:
-    """Ctrl-C during the active backend check must exit 130, never traceback.
+class TestCliStartupWarnings:
+    """Startup validation is config-shape only — no backend is imported
+    (there is no active model to justify it), and broken models warn but
+    never gate startup (they fail per request with a 503, like a cloud
+    endpoint)."""
 
-    Regression: the startup validation calls ``resolve_backend_runtime``
-    (a REAL import — torch takes seconds), and a Ctrl-C landing mid-import
-    used to propagate as a raw KeyboardInterrupt traceback.
-    """
-
-    def _write_active_transformer(self, config_path):
+    def test_broken_gguf_model_warns_not_errors(self, monkeypatch, config_path, capsys):
         write_config(
             {
-                "active_model": "bge-m3-transformer",
                 "models": {
-                    "bge-m3-transformer": {
-                        "backend": "transformer",
-                        "model": "BAAI/bge-m3",
-                    }
+                    "broken": {"backend": "gguf"},  # no gguf_path
                 },
             },
             config_path,
         )
+        monkeypatch.setattr(
+            "local_embed.server.serve_standalone", lambda *a, **k: 0
+        )
+        code = main([])
+        assert code == 0
+        err = capsys.readouterr().err
+        assert "broken" in err and "gguf_path" in err
 
-    def test_interrupt_during_active_check_exits_130(self, monkeypatch, config_path, capsys):
-        self._write_active_transformer(config_path)
-
-        def interrupt(_backend):
-            raise KeyboardInterrupt()
-
-        monkeypatch.setattr(cli, "resolve_backend_runtime", interrupt)
-        code = cli.main([])
-        assert code == 130
-        assert "Interrupted" in capsys.readouterr().err
-
-    def test_non_active_backend_not_resolved(self, monkeypatch, config_path):
-        # active = gguf; the non-active transformer must NOT trigger the
-        # torch import at startup (it is only checked when actually loaded).
+    def test_transformer_backend_not_imported(self, monkeypatch, config_path):
+        """A transformer model must NOT trigger a real import at startup —
+        with no active model, the torch-bearing backend is only imported when
+        that model is actually requested."""
         write_config(
             {
-                "active_model": "bge-m3",
                 "models": {
                     "bge-m3": {"backend": "gguf", "gguf_path": "/x.gguf"},
                     "bge-m3-transformer": {
@@ -275,18 +264,8 @@ class TestCliCtrlC:
             },
             config_path,
         )
-        resolved = []
-
-        def tracking(backend):
-            resolved.append(backend)
-            return True
-
-        monkeypatch.setattr(cli, "resolve_backend_runtime", tracking)
-        # stop after the validation loop instead of serving (serve_standalone
-        # is imported lazily inside main, so patch its source module)
         monkeypatch.setattr(
             "local_embed.server.serve_standalone", lambda *a, **k: 0
         )
-        code = cli.main([])
+        code = main([])
         assert code == 0
-        assert resolved == ["gguf"]  # only the active backend was imported

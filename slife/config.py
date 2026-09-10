@@ -286,9 +286,9 @@ class EmbeddingsConfig:
 
     - ``providers``: each provider is **one OpenAI-compatible endpoint** —
       ``base_url`` + ``api_key`` plus a single ``model`` (the id POSTed on
-      ``/v1/embeddings``).  Model may be omitted; then the endpoint's
-      /v1/models ``active`` (or first) model is used as a fallback (many
-      endpoints, e.g. OpenAI official, have no active flag).
+      ``/v1/embeddings``).  Model may be omitted; then the endpoint's first
+      listed model on /v1/models is used as a fallback (a standard OpenAI
+      listing has no ``active`` marker — all models are peers).
     - ``active_model``: names the active provider.
 
     The vector dimension is never configured — it is auto-detected from the

@@ -206,7 +206,7 @@ class EmbeddingClient:
         """GET ``{base_url}/models`` to pin the model + dimension.
 
         Configured model wins (its dimension picked up if reported); else the
-        endpoint's ``active`` model, else the first entry.
+        first entry — a standard OpenAI backend has no ``active`` marker.
         """
         if not self._base_url:
             return False
@@ -236,9 +236,9 @@ class EmbeddingClient:
                     self._dim = new_dim
                     self._dim_known = True
             return True  # configured id wins even when unlisted
-        active = next((m for m in entries if m.get("active")), entries[0])
-        self._model = active["id"]
-        new_dim = int(active.get("dimension") or 0)
+        entry = entries[0]  # models are peers — no active marker on /v1/models
+        self._model = entry["id"]
+        new_dim = int(entry.get("dimension") or 0)
         if new_dim:
             self._dim = new_dim
             self._dim_known = True

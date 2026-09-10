@@ -120,7 +120,7 @@ the `local-embed` CLI (start it manually).
 
 Semantic (hybrid) memory search — recall by meaning across `memdb` turns and `memfiles` notes — needs **two things** the one-click installer deliberately does not bring: a local embedding **backend** (a Python package, platform-specific) and the **model weights** (downloaded by you — the server never auto-downloads). Keyword search (`grep` / `fts5` / `time`) works without any of this. Setup is a **user-run** step; every piece is fail-open, so a missing backend leaves a working keyword-only core.
 
-**How it fits together.** slife treats every embedding provider as an OpenAI-compatible endpoint (`base_url` + `api_key`). The `local-embed` daemon — a standalone service you start manually (like Mosquitto), exposing the `local-embed` CLI — loads **one** local model **once** and serves it at `http://127.0.0.1:17347/v1` (`POST /v1/embeddings`, `GET /v1/models`, `GET /health`). `memdb` and `memfiles` both call that endpoint, so a model is never loaded twice. Which model serves is decided by `local_embed.json5` (`active_model`); slife's `embeddings.active_model` (`"local"` by default) falls back to the endpoint's active model.
+**How it fits together.** slife treats every embedding provider as an OpenAI-compatible endpoint (`base_url` + `api_key`). The `local-embed` daemon — a standalone service you start manually (like Mosquitto), exposing the `local-embed` CLI — loads each local model **once** and serves it at `http://127.0.0.1:17347/v1` (`POST /v1/embeddings`, `GET /v1/models`, `GET /health`). `memdb` and `memfiles` both call that endpoint, so a model is never loaded twice. local-embed has **no "active model"** — every request names the model it wants (`model` in `local_embed.json5`'s `models` map, sent on `/v1/embeddings`); slife's `embeddings.active_model` (`"local"` by default) chooses which provider slife embeds against, and the provider's `model` id names the model.
 
 ### 1. Install the backend dependency
 
@@ -142,29 +142,28 @@ Install the backend **into the slife tool venv** — the same interpreter `local
 
 Offline by default — `HF_HUB_OFFLINE=1`, **no auto-download**. Make the weights available yourself via one of two routes. The `hf` CLI is not shipped by the backends — install it once: `uv tool install "huggingface-hub[cli]"` (or prefix any `hf` command with `uvx --from huggingface-hub`).
 
-**Transformer route (default config, ~2 GB).** The seeded active model is `BAAI/bge-m3`; download it into the HF cache and no config change is needed:
+**Transformer route (default config, ~2 GB).** The seeded model is `BAAI/bge-m3`; download it into the HF cache and no config change is needed:
 
 ```bash
 hf download BAAI/bge-m3                                    # → ~/.cache/huggingface/hub
 HF_ENDPOINT=https://hf-mirror.com hf download BAAI/bge-m3  # mainland-China mirror
 ```
 
-**GGUF route (small offline file, ~100 MB).** Use any quantized BGE-M3 GGUF you trust — these are community conversions with no single authoritative source (prefer a high-fidelity `Q8_0`). Get it from any source (HF single-file pull, browser, `wget`/`curl`), then place it at the default path and switch the active model:
+**GGUF route (small offline file, ~100 MB).** Use any quantized BGE-M3 GGUF you trust — these are community conversions with no single authoritative source (prefer a high-fidelity `Q8_0`). Get it from any source (HF single-file pull, browser, `wget`/`curl`), then place it at the default path and point the client at the `bge-m3` model:
 
 ```bash
 hf download <owner>/<repo> <model>.gguf --local-dir ~/.local-embed/models   # HF single-file pull
 mv ~/.local-embed/models/<model>.gguf ~/.local-embed/models/bge-m3-q4_k_m.gguf     # the expected default path
 ```
 
-The GGUF entry is **inert until it is active** — see `active_model` in step 3.
+Every model in the `models` map is served as a **peer** — there is no `active_model`; the client names the model on every request (a stale `active_model` key in an existing config is ignored).
 
 ### 3. Configure the HF cache & GGUF path
 
-Everything — host, port, models, active model, backend — lives in **`local_embed.json5`**, seeded by the installer (path resolution: `$LOCAL_EMBED_FILE` > slife project root (dev) > `~/.local-embed/local_embed.json5`). Values support `${VAR}` / `${VAR:-default}` expansion, and **a shell env var wins over the config**. The seeded file already carries portable placeholders — usually you only set env vars or edit two lines:
+Everything — host, port, models, backend — lives in **`local_embed.json5`**, seeded by the installer (path resolution: `$LOCAL_EMBED_FILE` > slife project root (dev) > `~/.local-embed/local_embed.json5`). Values support `${VAR}` / `${VAR:-default}` expansion, and **a shell env var wins over the config**. The seeded file already carries portable placeholders — usually you only set env vars or edit two lines:
 
 ```json5
 {
-  active_model: "BAAI/bge-m3",                       // "BAAI/bge-m3" (transformer) or "bge-m3" (gguf)
   env: {
     HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}",   // where transformer repos resolve
     HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}",          // 1 = never auto-download; 0 = allow on-demand
@@ -182,11 +181,10 @@ Everything — host, port, models, active model, backend — lives in **`local_e
 | `env.HF_HUB_CACHE` / `HF_HUB_CACHE` | Where the transformer route resolves HF repo ids. Default `~/.cache/huggingface/hub`. If your model was downloaded into a different cache, point this at it — otherwise the repo is silently re-fetched. |
 | `env.HF_HUB_OFFLINE` / `HF_HUB_OFFLINE` | `"1"` (default) — offline; the model must already be in the cache / on disk. `"0"` — allow the model loader to reach the network (no managed download / mirror fallback). |
 | `models."bge-m3".gguf_path` / `BGE_M3_GGUF_PATH` | The `.gguf` file for the GGUF route. `~` is expanded; `BGE_M3_GGUF_PATH` in the shell overrides the config default. |
-| `active_model` | Which entry serves: `"BAAI/bge-m3"` (transformer) or `"bge-m3"` (gguf). |
 
-Changes apply on the next start of the local-embed service (restart slife).
+Requests name the model they want (slife's provider `model` id — `"BAAI/bge-m3"` for the transformer route, `"bge-m3"` for the GGUF route). Changes apply on the next start of the local-embed service (restart slife).
 
-**CLI alternative** — `local-embed` (on PATH after install) upserts a model config, makes it active, and pins the port (idempotent, leaves other models untouched):
+**CLI alternative** — `local-embed` (on PATH after install) upserts a model config and pins the port (idempotent, leaves other models untouched):
 
 ```bash
 local-embed set BAAI/bge-m3 --HF_HUB_CACHE ~/.cache/huggingface/hub
@@ -207,7 +205,7 @@ curl http://127.0.0.1:17347/v1/embeddings -H 'Content-Type: application/json' \
   -d '{"model": "bge-m3", "input": ["hello world"]}'   # returns a real vector
 ```
 
-A healthy state: `/health` → `loaded: true`; `system_health` → `local_embed` component probes the active embedding endpoint (reachable + model list = `ok` — whether that endpoint is the local daemon or a cloud provider like SiliconFlow), and the `memdb`/`memfiles` components show `semantic_ready`. When the service is unreachable (backend missing, weights missing, still loading), slife **degrades gracefully to keyword search** — `system_health` reports the reason, and once the index is fully built for the current model, hybrid results resume automatically.
+A healthy state: `/health` → `status: ok`; `system_health` → `local_embed` component probes the active embedding endpoint (reachable + model list = `ok` — whether that endpoint is the local daemon or a cloud provider like SiliconFlow), and the `memdb`/`memfiles` components show `semantic_ready`. When the service is unreachable (backend missing, weights missing, still loading), slife **degrades gracefully to keyword search** — `system_health` reports the reason, and once the index is fully built for the current model, hybrid results resume automatically.
 
 ### Troubleshooting
 
@@ -215,7 +213,7 @@ A healthy state: `/health` → `loaded: true`; `system_health` → `local_embed`
 |---------|-----|
 | Log: `backend_unavailable … reason=llama_cpp_not_installed` / `sentence_transformers_not_installed` | Run the step-1 install for your platform — the log prints the exact command. |
 | Transformer route won't load with `HF_HUB_OFFLINE=1` | The repo isn't in the cache — run `hf download BAAI/bge-m3` and make sure `HF_HUB_CACHE` points at the cache that holds it. |
-| GGUF route won't load | File missing at `gguf_path` — check `BGE_M3_GGUF_PATH` / `gguf_path`, and that `active_model` is `"bge-m3"` (the GGUF entry is inert while the transformer is active). |
+| GGUF route won't load | File missing at `gguf_path` — check `BGE_M3_GGUF_PATH` / `gguf_path`, and that the client requests `"bge-m3"` (all configured models are peers — nothing is gated behind an `active_model`). |
 | `system_health` shows `local_embed` as `unavailable` ("Active embedding endpoint unreachable") | The active embedding endpoint didn't answer `GET /v1/models` — start the `local-embed` daemon (or fix the cloud provider's key: `api_key` resolves `${VAR}` → env → credstore). The component only ever probes the **active** provider. |
 | First embed very slow | A transformer download/warm-up is deferred to the first embed; subsequent calls are fast. |
 
@@ -381,7 +379,7 @@ Every turn is permanently recorded in SQLite (`~/.slife/<agent>.db`). Hybrid sea
 | `hybrid` | Semantic recall (FTS5 + vector → RRF merge) |
 | `time` | Browse by date |
 
-Embeddings are a **first-class top-level `embeddings` section** in `slife.json5` (shared by `memdb` + `memfiles`), managed by the native tools `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, and `embeddings_enable` (category `embeddings`); runtime index status is surfaced by `system_health`. Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); the `api_key` resolves `${VAR}` / `keyring:` references exactly like model secrets (shell env → credstore → literal). `active_model` (`"provider/model"` or bare `"provider"`) is configuration-authoritative. The **`local-embed` daemon** (started manually, like Mosquitto — not a slife plugin) serves a local GGUF/transformer model at `http://127.0.0.1:17347/v1`, loaded **once** and shared by `memdb` and `memfiles` — no double load. The actual model is pinned from the endpoint's `GET /v1/models` when the config names no model. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
+Embeddings are a **first-class top-level `embeddings` section** in `slife.json5` (shared by `memdb` + `memfiles`), managed by the native tools `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, and `embeddings_enable` (category `embeddings`); runtime index status is surfaced by `system_health`. Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); the `api_key` resolves `${VAR}` / `keyring:` references exactly like model secrets (shell env → credstore → literal). `active_model` (`"provider/model"` or bare `"provider"`) is configuration-authoritative. The **`local-embed` daemon** (started manually, like Mosquitto — not a slife plugin) serves local GGUF/transformer models at `http://127.0.0.1:17347/v1`, each loaded **once** and shared by `memdb` and `memfiles` — no double load. It has no "active model": the client names the model on every request, and when the config names no model the endpoint's first listed model on `GET /v1/models` is used. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
 Each turn records two timestamps — the user's input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers in the chat. User messages carry a compact **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** footnote (the turn id plus when the turn happened) so the LLM can reference turns by id (`turn_read` / `turn_summarize`) — and the human reads the same line in the TUI.
 

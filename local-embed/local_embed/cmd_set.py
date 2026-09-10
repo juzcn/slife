@@ -1,4 +1,4 @@
-"""``local-embed set`` / ``set-gguf`` — configure a model and make it active.
+"""``local-embed set`` / ``set-gguf`` — configure a model.
 
 Pure, testable core + CLI orchestration for the two config subcommands:
 
@@ -9,10 +9,11 @@ Pure, testable core + CLI orchestration for the two config subcommands:
   ``.gguf`` file it points at must already exist.
 
 Both share the same logic: the model entry is upserted (existing models /
-``env:`` keys are preserved, never deleted), the model becomes
-``active_model``, ``port`` is pinned, and the config is written atomically
-in the repo's canonical JSON5 style (:func:`local_embed.config.write_config`).
-Idempotent — applying the same args twice yields the same config.
+``env:`` keys are preserved, never deleted), ``port`` is pinned, and the
+config is written atomically in the repo's canonical JSON5 style
+(:func:`local_embed.config.write_config`).  There is no ``active_model`` —
+all configured models are peers (standard OpenAI semantics).  Idempotent —
+applying the same args twice yields the same config.
 """
 
 from __future__ import annotations
@@ -92,13 +93,17 @@ def model_in_cache(cache: str, repo: str) -> bool:
 
 
 def _upsert_model(cfg: dict, model: str, entry: dict, port: int) -> dict:
-    """Insert or replace ``model``, make it active, pin ``port``.
+    """Insert or replace ``model`` and pin ``port``.
 
-    Idempotent: re-applying the same args to the result yields the same dict.
+    Models are peers — a stale ``active_model`` key (if a pre-existing
+    config carries one) is dropped on rewrite.  Idempotent: re-applying the
+    same args to the result yields the same dict.
     """
     models = dict(cfg.get("models") or {})
     models[model] = entry
-    return {**cfg, "models": models, "active_model": model, "port": int(port)}
+    out = {**cfg, "models": models, "port": int(port)}
+    out.pop("active_model", None)
+    return out
 
 
 def set_transformer_model(cfg: dict, model: str, cache: str, port: int) -> dict:
@@ -161,7 +166,7 @@ def run_set(args) -> int:
     return _write_model(
         lambda cfg: set_transformer_model(cfg, args.model, cache, args.port),
         rows=[
-            ("transformer model", f"{args.model}  (active)"),
+            ("transformer model", args.model),
             ("HF cache", cache),
             ("port", args.port),
         ],
@@ -177,7 +182,7 @@ def run_set_gguf(args) -> int:
     return _write_model(
         lambda cfg: set_gguf_model(cfg, args.model, args.path, args.port),
         rows=[
-            ("gguf model", f"{args.model}  (active)"),
+            ("gguf model", args.model),
             ("gguf file", args.path),
             ("port", args.port),
         ],

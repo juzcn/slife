@@ -30,22 +30,20 @@ class _StubEngine(Engine):
     def __init__(self, dim: int = 1024, available: bool = True):
         self._dim_val = dim
         self._avail = available
-        # Build with a mocked runtime so construction doesn't warn; the
-        # subclass overrides available anyway.
+        # Build with a mocked runtime so construction doesn't warn.
         with (
             patch("local_embed.engine._Llama", MagicMock()),
             patch("local_embed.engine.check_backend_runtime", return_value=True),
         ):
             super().__init__(backend="gguf", model="bge-m3", gguf_path="/x.gguf")
 
-    @property
-    def available(self) -> bool:
+    def available_for(self, name):
         return self._avail
 
-    async def embed(self, texts, model=None):
+    async def embed(self, texts, model):
         if not self._avail:
             raise RuntimeError("embedding backend unavailable")
-        if model and model not in self.models:
+        if model not in self.models:
             raise KeyError(f"unknown model: {model}")
         return [[0.5] * self._dim_val for _ in texts]
 
@@ -98,15 +96,29 @@ class TestV1Embeddings:
         resp = client.post("/v1/embeddings", content=b"", headers={"Content-Type": "application/json"})
         assert resp.status_code in (400, 422)
 
+    def test_missing_model_400(self, client):
+        """A request without `model` is malformed — 400 invalid_request_error,
+        exactly like the cloud API (no server-side default / active model to
+        fall back to)."""
+        resp = client.post("/v1/embeddings", json={"input": "x"})
+        assert resp.status_code == 400
+        err = resp.json()["error"]
+        assert err["type"] == "invalid_request_error"
+        assert "model parameter" in err["message"]
+
     def test_unknown_model_404(self, client):
+        """An unknown `model` is 404 model_not_found — OpenAI's contract."""
         resp = client.post("/v1/embeddings", json={"input": "x", "model": "typo"})
         assert resp.status_code == 404
-        assert resp.json()["error"]["type"] == "invalid_request_error"
+        err = resp.json()["error"]
+        assert err["type"] == "invalid_request_error"
+        assert err["code"] == "model_not_found"
+        assert "typo" in err["message"]
 
     def test_backend_failure_503(self):
         build_server(_make_engine(available=False))
         with TestClient(mcp.http_app(path="/mcp")) as c:
-            resp = c.post("/v1/embeddings", json={"input": "x"})
+            resp = c.post("/v1/embeddings", json={"input": "x", "model": "bge-m3"})
             assert resp.status_code == 503
 
     def test_input_too_long_400(self):
@@ -128,22 +140,27 @@ class TestV1Embeddings:
             assert err["type"] == "invalid_request_error"
             assert "8192" in err["message"]
 
-    def test_default_model_echoes_key_not_repo_id(self):
-        """When the client omits `model`, the response echoes the addressable
-        config key (the id /v1/models reports), not the internal repo id —
-        the repo id is not an engine key and would 404 if echoed back."""
+    def test_response_echoes_requested_model(self):
+        """The response `model` echoes the addressable config key (the id
+        /v1/models reports), not the internal repo id — the repo id is not
+        an engine key and would 404 if echoed back."""
         spec = ModelSpec("bge-m3-transformer", backend="transformer", model="BAAI/bge-m3")
-        engine = Engine(specs=[spec], active="bge-m3-transformer")
+        engine = Engine(specs=[spec])
 
-        async def _embed(texts, model=None):
+        async def _embed(texts, model):
             return [[0.5] * 1024 for _ in texts]
 
         engine.embed = _embed
         build_server(engine)
         with TestClient(mcp.http_app(path="/mcp")) as c:
-            resp = c.post("/v1/embeddings", json={"input": "hello"})
+            resp = c.post(
+                "/v1/embeddings",
+                json={"input": "hello", "model": "bge-m3-transformer"},
+            )
             assert resp.status_code == 200
             assert resp.json()["model"] == "bge-m3-transformer"
+            # the requested key, not the transformer repo id
+            assert resp.json()["model"] != "BAAI/bge-m3"
 
 
 # ── /v1/models ───────────────────────────────────────────────────────────
@@ -189,8 +206,8 @@ class TestHealth:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "ok"
-        assert body["active_model"] == "bge-m3"
-        assert body["dimension"] == 1024
+        assert body["models"][0]["name"] == "bge-m3"
+        assert body["models"][0]["dimension"] == 1024
 
     def test_health_degraded(self):
         build_server(_make_engine(available=False))

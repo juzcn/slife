@@ -55,7 +55,7 @@ def test_client_single_input(client):
 
 
 def test_client_usage_reported(client):
-    resp = client.post("/v1/embeddings", json={"input": "hello"})
+    resp = client.post("/v1/embeddings", json={"model": "bge-m3", "input": "hello"})
     body = resp.json()
     assert "usage" in body
     assert body["usage"]["total_tokens"] >= 1
@@ -63,6 +63,8 @@ def test_client_usage_reported(client):
 
 def test_usage_zero_for_empty_inputs(client):
     """Empty/whitespace inputs get zero vectors and must not count tokens."""
-    resp = client.post("/v1/embeddings", json={"input": ["", "   "]})
+    resp = client.post(
+        "/v1/embeddings", json={"model": "bge-m3", "input": ["", "   "]}
+    )
     assert resp.status_code == 200
     assert resp.json()["usage"]["prompt_tokens"] == 0

@@ -524,9 +524,9 @@ class EmbeddingClient:
         Model selection is CONFIGURATION-AUTHORITATIVE: when the active
         provider configures a ``model``, that id is used verbatim and only
         its ``dimension`` (if reported) is picked up.  When the provider
-        configures no model, the endpoint's ``active`` model wins
-        (local-embed sets ``active: true`` on /v1/models); otherwise the
-        first entry.  On success this pins ``self._model`` / ``self._dim``.
+        configures no model, the endpoint's first listed entry wins — a
+        standard OpenAI backend has no ``active`` marker, models are peers.
+        On success this pins ``self._model`` / ``self._dim``.
         Returns True on success.
 
         Defensive about attributes — tests construct clients via
@@ -603,24 +603,22 @@ class EmbeddingClient:
             # (the endpoint may serve it without listing), and probe its dim.
             return True
 
-        # No configured model — endpoint's active (local-embed) or first entry.
-        active = next(
-            (m for m in entries if getattr(m, "active", False)),
-            entries[0],
-        )
-        if not getattr(active, "available", True):
+        # No configured model — the endpoint's first entry (standard OpenAI
+        # /v1/models listing; models are peers, no active marker).
+        entry = entries[0]
+        if not getattr(entry, "available", True):
             self._available = False
             logger.warning(
                 "embedding_model_unavailable model=%s base_url=%s "
                 "(backend dependency missing — keyword search only)",
-                active.id, base_url,
+                entry.id, base_url,
             )
             return False
-        new_model = active.id
-        new_dim = int(getattr(active, "dimension", 0) or 0)
+        new_model = entry.id
+        new_dim = int(getattr(entry, "dimension", 0) or 0)
         if new_model and new_model != self._model:
             logger.info(
-                "embedding_model_active model=%s (was %s)", new_model, self._model,
+                "embedding_model_pinned model=%s (was %s)", new_model, self._model,
             )
             self._model = new_model
         if new_dim:
@@ -645,9 +643,9 @@ class EmbeddingClient:
         """
         if self._client is not None or self._backend == "api":
             # The API backend has no local model to load — but the model
-            # itself is determined by the endpoint (e.g. the local-embed
-            # plugin's active model), so discover it from /v1/models and pin
-            # the real dimension before the vec0 table uses it.
+            # itself is determined by the endpoint (e.g. a local-embed
+            # daemon's model listing), so discover it from /v1/models and
+            # pin the real dimension before the vec0 table uses it.
             if self._backend == "api":
                 if not await self._discover_model():
                     # Endpoint unreachable or no usable model — not available.

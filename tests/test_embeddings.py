@@ -13,7 +13,7 @@ from slife.plugins.mcp_gateway.embeddings import EmbeddingClient
 def _make_transport(models=None, embeddings_dim=3):
     """MockTransport answering /models + /embeddings (OpenAI-compatible)."""
     models = models or [
-        {"id": "bge-m3", "dimension": embeddings_dim, "active": True},
+        {"id": "bge-m3", "dimension": embeddings_dim},
     ]
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -111,7 +111,7 @@ async def test_api_key_placeholder_resolved_value_sent_as_bearer(tmp_path, monke
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen["authorization"] = request.headers.get("authorization")
         if request.url.path.endswith("/models"):
-            return httpx2.Response(200, json={"data": [{"id": "bge-m3", "dimension": 3, "active": True}]})
+            return httpx2.Response(200, json={"data": [{"id": "bge-m3", "dimension": 3}]})
         return httpx2.Response(404, json={"error": "not found"})
 
     c = EmbeddingClient.from_plugin_config(override=_override(api_key="${EMBED_API_KEY}"))

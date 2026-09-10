@@ -599,9 +599,10 @@ The shape mirrors the LLM
   an optional `models` list (`{model, dim?}`).
 - **`active_model`** (`"provider/model"` or bare `"provider"`) is
   configuration-authoritative: slife embeds against that provider and POSTs
-  the configured model id.  Many endpoints (e.g. OpenAI official) have no
-  `active` flag on `/v1/models`, so the endpoint's active model is only a
-  fallback when no model is configured.
+  the configured model id.  A standard OpenAI `/v1/models` listing has no
+  `active` marker (models are peers — local-embed included), so the
+  endpoint's first listed model is the fallback when no model is
+  configured.
 - **dimension**: configured `dim` → matched from the endpoint's `/v1/models`
   → probe embed (`_probe_api_dim`).  The embedder (`EmbeddingClient`,
   `embeddings.py`) exposes `available` / `loaded` / `dimension` /
@@ -931,7 +932,7 @@ Because the standalone checks are subsets of `system_health`, their tool schemas
 | `check_memdb` | Database file + embedding backend (model, dimension, availability) | Application state (memdb plugin) |
 | `check_wechat` | Login status, session age, QR expiry | Application state (wechat plugin) |
 | `check_memfiles` | File cabinet (notes / diary / files) connected? semantic index ready? (via the memfiles plugin's internal `__check` tool) | Application state (memfiles plugin) |
-| `check_local_embed` | Local embedding daemon online? active model, loaded models? (probes the daemon's HTTP `GET /v1/models` — local-embed is not a plugin) | Application state (local-embed daemon) |
+| `check_local_embed` | Local embedding daemon online? model list? (probes the daemon's HTTP `GET /v1/models` — local-embed is not a plugin) | Application state (local-embed daemon) |
 | `check_sharefile` | File-sharing tunnel online? ngrok URL? | Application state (sharefile plugin) |
 | `check_mcp_gateway` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, hints) | Application state (MCP wrapper + external servers) |
 | `check_a2a` | A2A mesh connection + peer status (via the a2a plugin's `__a2a_status` internal tool) | Application state (a2a plugin) |

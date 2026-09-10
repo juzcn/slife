@@ -38,7 +38,7 @@ from starlette.responses import JSONResponse, Response
 from local_embed.config import DEFAULT_PORT
 from local_embed.engine import EmbeddingInputTooLong, Engine
 from local_embed.logging import silence_noisy_loggers, setup_logging
-from local_embed.server_utils import bind_port, create_plugin_server, warm_after_handshake
+from local_embed.server_utils import bind_port, create_plugin_server
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ def _model_status(engine: Engine, name: str) -> dict:
     }
 
 
-@mcp.tool(name="__check", description="Embedding service status as JSON: active model, model list, dimensions, loaded. Internal — probed by the host's system_health.")
+@mcp.tool(name="__check", description="Embedding service status as JSON: model list, dimensions, loaded. Internal — probed by the host's system_health.")
 async def __check() -> str:
     """Return the current engine status as a JSON string.
 
@@ -117,10 +117,7 @@ async def __check() -> str:
     """
     engine = get_engine()
     return json.dumps(
-        {
-            "active_model": engine.active_model,
-            "models": [_model_status(engine, n) for n in engine.models],
-        },
+        {"models": [_model_status(engine, n) for n in engine.models]},
         ensure_ascii=False,
     )
 
@@ -149,9 +146,10 @@ def _parse_embedding_input(body: dict) -> "list[str] | None":
 async def v1_embeddings(request: Request) -> Response:
     """OpenAI-compatible embeddings endpoint.
 
-    Body: ``{"input": str | [str], "model": str}`` — ``model`` may name any
-    configured model (defaults to the active one).  Response is the
-    standard shape::
+    Body: ``{"input": str | [str], "model": str}`` — ``model`` is required
+    and names any configured model, exactly like the cloud API: a missing
+    model is a 400 ``invalid_request_error``, an unknown one a 404
+    ``model_not_found``.  Response is the standard shape::
 
         {"object": "list", "data": [{"object": "embedding", "index": 0,
                                      "embedding": [0.1, …]}], "model": …,
@@ -171,11 +169,28 @@ async def v1_embeddings(request: Request) -> Response:
         )
 
     model = body.get("model") or ""
-    try:
-        vecs = await engine.embed(texts, model=model or None)
-    except KeyError as e:
+    if not model:
         return JSONResponse(
-            {"error": {"message": str(e), "type": "invalid_request_error"}},
+            {
+                "error": {
+                    "message": "You must provide a model parameter.",
+                    "type": "invalid_request_error",
+                    "param": "model",
+                }
+            },
+            status_code=400,
+        )
+    try:
+        vecs = await engine.embed(texts, model=model)
+    except KeyError:
+        return JSONResponse(
+            {
+                "error": {
+                    "message": f"The model '{model}' does not exist.",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found",
+                }
+            },
             status_code=404,
         )
     except EmbeddingInputTooLong as e:
@@ -201,22 +216,27 @@ async def v1_embeddings(request: Request) -> Response:
         {
             "object": "list",
             "data": data,
-            "model": model or engine.active_model,
+            "model": model,
             "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
         }
     )
 
 
 def _model_entry(engine: Engine, name: str) -> dict:
-    """One OpenAI-shaped model entry (shared by the list + retrieve routes)."""
+    """One OpenAI-shaped model entry (shared by the list + retrieve routes).
+
+    Standard listing shape (``id``/``object``/``created``/``owned_by``) plus
+    local-embed's per-model metadata.  No ``active`` marker — models are
+    peers, as on any standard OpenAI backend.
+    """
     spec = engine.model_spec(name)
     return {
         "id": name,
         "object": "model",
         "created": int(time.time()),
         "owned_by": "local-embed",
-        "active": name == engine.active_model,
         "backend": spec.backend,
+        "model": spec.model,
         "dimension": spec.dim,
         "dimension_known": spec.dim_known,
         "loaded": engine.is_loaded(name),
@@ -258,44 +278,15 @@ async def v1_models_retrieve(request: Request) -> Response:
     return JSONResponse(_model_entry(engine, name))
 
 
-@mcp.custom_route("/v1/models/{name}/activate", methods=["POST"])
-async def v1_models_activate(request: Request) -> Response:
-    """Switch the active model (loads it on demand)."""
-    engine = get_engine()
-    name = request.path_params["name"]
-    try:
-        await engine.set_active(name)
-    except KeyError as e:
-        return JSONResponse(
-            {"error": {"message": str(e), "type": "invalid_request_error"}},
-            status_code=404,
-        )
-    except Exception as e:
-        logger.warning("activate_failed name=%s err=%s", name, e)
-        return JSONResponse(
-            {"error": {"message": str(e), "type": "server_error"}},
-            status_code=503,
-        )
-    return JSONResponse({"active_model": engine.active_model})
-
-
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> Response:
-    """Liveness + engine state."""
+    """Liveness + engine state, per model (no active model to report)."""
     engine = get_engine()
+    models = [_model_status(engine, n) for n in engine.models]
     return JSONResponse(
         {
-            "status": "ok" if engine.available else "degraded",
-            "active_model": engine.active_model,
-            "backend": engine.backend,
-            "model": engine.model,
-            "dimension": engine.dimension,
-            "dimension_known": engine.dimension_known,
-            "loaded": engine.loaded,
-            "models": [
-                {"name": n, "loaded": engine.is_loaded(n)}
-                for n in engine.models
-            ],
+            "status": "ok" if any(m["available"] for m in models) else "degraded",
+            "models": models,
         }
     )
 
@@ -308,29 +299,16 @@ async def health(request: Request) -> Response:
 def build_server(engine: Engine) -> FastMCP:
     """Return the FastMCP server wired to *engine* (module singleton shared).
 
-    The active model is loaded in the BACKGROUND after the MCP handshake
-    (``warm_after_handshake``), never in the lifespan — so startup is
-    handshake-fast even when the active model's backend is heavy (a
+    Models load lazily on the first request that names them — there is no
+    eager warm-up (no active model to warm), and nothing heavy runs in the
+    lifespan, so startup is handshake-fast even when a backend is heavy (a
     transformer model imports torch/transformers and can take seconds).
-    The first embed blocks on the load if it hasn't finished yet; readiness
-    is never gated on it.
+    Backend availability is import-checked cheaply (``find_spec``) at
+    construction, so ``/v1/models`` and ``/health`` report real usability
+    before any model has been loaded; the first embed blocks on the load
+    if it hasn't finished yet, and readiness is never gated on it.
     """
     set_engine(engine)
-
-    async def _warmup() -> None:
-        try:
-            await engine.ensure_loaded()
-            if engine.loaded:
-                logger.info(
-                    "active_model_warmed name=%s dim=%d",
-                    engine.active_model, engine.dimension,
-                )
-            else:
-                logger.warning("active_model_warm_failed name=%s", engine.active_model)
-        except Exception as e:
-            logger.warning("active_model_warm_failed err=%s", e)
-
-    warm_after_handshake(mcp, _warmup, delay=0.1, name="local-embed-warmup")
     return mcp
 
 
@@ -362,7 +340,10 @@ def serve_standalone(engine: Engine, *, host: str = "127.0.0.1", port: int = DEF
     the plugin spawn path gets — instead of a raw uvicorn bind error.
     """
     build_server(engine)
-    logger.info("serve_standalone host=%s port=%s backend=%s", host, port, engine.backend)
+    logger.info(
+        "serve_standalone host=%s port=%s models=%s",
+        host, port, ",".join(engine.models),
+    )
     try:
         sock, _ = bind_port(host, port)
     except RuntimeError as e:
@@ -395,7 +376,7 @@ def main() -> int:
 
     settings = resolve_engine_settings()
 
-    engine = Engine(specs=settings["specs"], active=settings["active"])
+    engine = Engine(specs=settings["specs"])
     build_server(engine)
 
     # Bind the configured port (default {DEFAULT_PORT} — a STABLE port so a
@@ -411,8 +392,8 @@ def main() -> int:
         print(f"local-embed load failed: {e}", file=sys.stderr)
         return 1
     logger.info(
-        "local_embed_start port=%s active=%s models=%s",
-        port, engine.active_model, engine.models,
+        "local_embed_start port=%s models=%s",
+        port, engine.models,
     )
     return run_plugin_server(mcp, sockets=[sock])
 

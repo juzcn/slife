@@ -12,7 +12,6 @@ Path precedence (mirrors mcp-plugin / credstore):
 Config shape::
 
     {
-      active_model: "bge-m3",
       models: {
         "bge-m3": { backend: "gguf", gguf_path: "…", device: "" },
         "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3" },
@@ -20,6 +19,11 @@ Config shape::
       host: "127.0.0.1",    // standalone only
       port: 17347,          // standalone only
     }
+
+Every configured model is a peer — there is no ``active_model`` (a standard
+OpenAI embeddings backend has no such concept).  Each request names the
+model it wants via ``POST /v1/embeddings``'s ``model`` field.  A stale
+``active_model`` key in an existing config is ignored.
 
 ``env`` (optional, top level) is injected into this process's environment
 by :func:`apply_env` before any backend loads — a ``transformer`` ``model``
@@ -30,7 +34,6 @@ expansion from ``os.environ`` (see :func:`expand_value`), so the shipped
 config can carry portable placeholders instead of machine-specific paths::
 
     {
-      active_model: "bge-m3-transformer",
       env: { HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}", HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}" },
       models: { "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3" } },
     }
@@ -167,7 +170,8 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
     """Merge config file + env overrides into engine settings.
 
     Precedence: env vars (plugin spawn) > config file > defaults.  Returns
-    ``{"specs": [ModelSpec, ...], "active": str, "host", "port"}``.
+    ``{"specs": [ModelSpec, ...], "host", "port"}`` — no active model; every
+    configured model is a peer named by the request.
 
     A ``models`` map (multi-model) takes precedence; otherwise the
     single-model top-level keys build one spec.
@@ -209,10 +213,6 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
                     max_tokens=int(m.get("max_tokens", 0) or 0),
                 )
             )
-        # Precedence: env override > config file > default (mirrors _pick).
-        active = _pick("active_model", specs[0].name)
-        if active not in {s.name for s in specs}:
-            active = specs[0].name
     else:
         backend = _pick("backend", "gguf")
         model = _pick("model", "bge-m3")
@@ -227,18 +227,16 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
                 max_tokens=int(_pick("max_tokens", 0) or 0),
             )
         ]
-        active = model
 
     return {
         "specs": specs,
-        "active": active,
         "host": _pick("host", DEFAULT_HOST),
         "port": int(_pick("port", DEFAULT_PORT)),
     }
 
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
-_KNOWN_KEY_ORDER = ("active_model", "env", "models", "host", "port")
+_KNOWN_KEY_ORDER = ("env", "models", "host", "port")
 
 
 def _js_key(k: str) -> str:
@@ -285,13 +283,14 @@ def render_json5(cfg: dict) -> str:
 
     2-space indent, unquoted keys when they are identifiers, double-quoted
     strings, multiline objects, the file's header comment.  Known top-level
-    keys keep the canonical order from ``local_embed.json5`` (``active_model``,
-    ``env``, ``models``, ``host``, ``port``); extra keys append in their
-    existing order.  Deterministic — the same dict always renders the same
+    keys keep the canonical order from ``local_embed.json5`` (``env``,
+    ``models``, ``host``, ``port``); extra keys append in their existing
+    order.  Deterministic — the same dict always renders the same
     text, so writing twice is idempotent.
     """
     header = (
-        "  // local-embed — one process, many local embedding models, ONE active.",
+        "  // local-embed — one process, many local embedding models; the request names",
+        "  // the model (standard OpenAI semantics — no 'active' model).",
         "  // Config path: $LOCAL_EMBED_FILE > slife project root (dev) > ~/.local-embed/",
     )
     body = "\n".join(header) + "\n" + _render_members(_ordered_items(cfg), indent=2)

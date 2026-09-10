@@ -56,29 +56,23 @@ class TestEngineInit:
     def test_single_model_convenience(self):
         e = Engine(backend="gguf", model="bge-m3", gguf_path="/x.gguf")
         assert e.models == ["bge-m3"]
-        assert e.active_model == "bge-m3"
-        assert e.dimension == 1024
-        assert e.dimension_known is True
-        assert e.loaded is False
+        assert e.model_spec("bge-m3").gguf_path == "/x.gguf"
+        assert e.is_loaded("bge-m3") is False
 
-    def test_multi_model_active(self):
+    def test_multi_model_peers(self):
+        """All configured models are peers — no active one."""
         specs = [
             ModelSpec("bge-m3", backend="gguf", gguf_path="/x.gguf"),
             ModelSpec("nomic", backend="transformer", model="nomic-ai/nomic-embed-text-v1.5"),
         ]
-        e = Engine(specs=specs, active="bge-m3")
+        e = Engine(specs=specs)
         assert e.models == ["bge-m3", "nomic"]
-        assert e.active_model == "bge-m3"
         assert e.model_spec("nomic").model == "nomic-ai/nomic-embed-text-v1.5"
-
-    def test_unknown_active_falls_back(self):
-        specs = [ModelSpec("bge-m3", backend="gguf", gguf_path="/x.gguf")]
-        e = Engine(specs=specs, active="nope")
-        assert e.active_model == "bge-m3"
+        assert e.model_spec("bge-m3").max_tokens == 8192
 
     def test_custom_max_tokens(self):
         e = Engine(backend="gguf", model="bge-m3", gguf_path="/x.gguf", max_tokens=1000)
-        assert e.max_tokens == 1000
+        assert e.model_spec("bge-m3").max_tokens == 1000
 
     def test_available_for_per_model(self):
         with patch("local_embed.engine._Llama", MagicMock()):
@@ -87,7 +81,6 @@ class TestEngineInit:
                     ModelSpec("a", backend="gguf", gguf_path="/a.gguf"),
                     ModelSpec("b", backend="gguf", gguf_path="/b.gguf"),
                 ],
-                active="a",
             )
             assert e.available_for("a") is True
             e._failed.add("b")
@@ -111,11 +104,11 @@ class TestGgufLoad:
             mock_run.return_value = client
 
             e = Engine(backend="gguf", model="my-embed", gguf_path="/model.gguf")
-            dim = await e.ensure_loaded()
+            dim = await e.ensure_loaded("my-embed")
             assert dim == 768
-            assert e.dimension == 768
-            assert e.dimension_known is True
-            assert e.loaded is True
+            assert e.model_spec("my-embed").dim == 768
+            assert e.model_spec("my-embed").dim_known is True
+            assert e.is_loaded("my-embed") is True
             mock_run.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -130,7 +123,9 @@ class TestGgufLoad:
             mock_run.return_value = client
 
             e = Engine(backend="gguf", model="bge-m3", gguf_path="/model.gguf")
-            results = await asyncio.gather(e.ensure_loaded(), e.ensure_loaded())
+            results = await asyncio.gather(
+                e.ensure_loaded("bge-m3"), e.ensure_loaded("bge-m3"),
+            )
             assert results == [1024, 1024]
             assert mock_run.await_count == 1
 
@@ -145,8 +140,8 @@ class TestGgufLoad:
             ),
         ):
             e = Engine(backend="gguf", model="bge-m3", gguf_path="/model.gguf")
-            await e.ensure_loaded()
-            assert e.available is False
+            await e.ensure_loaded("bge-m3")
+            assert e.available_for("bge-m3") is False
 
 
 # ── Engine embed ──────────────────────────────────────────────────────────
@@ -173,7 +168,7 @@ class TestEmbed:
             )
 
             e = Engine(backend="gguf", model="bge-m3", gguf_path="/model.gguf")
-            vecs = await e.embed(["hello", "", "a much longer text"])
+            vecs = await e.embed(["hello", "", "a much longer text"], "bge-m3")
             assert len(vecs) == 3
             assert len(vecs[0]) == 1024
             assert vecs[1] == [0.0] * 1024
@@ -199,7 +194,7 @@ class TestEmbed:
             mock_run.side_effect = _side
 
             e = Engine(backend="transformer", model="BAAI/bge-m3")
-            vecs = await e.embed(["a", "b"])
+            vecs = await e.embed(["a", "b"], "BAAI/bge-m3")
             assert len(vecs) == 2
             assert len(vecs[0]) == 768
 
@@ -208,14 +203,23 @@ class TestEmbed:
         e = Engine(backend="gguf", model="bge-m3", gguf_path="/x.gguf")
         e._failed.add("bge-m3")  # simulate a failed load
         with pytest.raises(RuntimeError):
-            await e.embed(["text"])
+            await e.embed(["text"], "bge-m3")
 
     @pytest.mark.asyncio
     async def test_embed_empty_list(self):
         e = Engine(backend="gguf", model="bge-m3", gguf_path="/x.gguf")
         e._failed.add("bge-m3")
         with pytest.raises(RuntimeError):
-            await e.embed([])
+            await e.embed([], "bge-m3")
+
+    @pytest.mark.asyncio
+    async def test_embed_requires_model(self):
+        """Every request names the model — no active fallback to pick one."""
+        e = Engine(backend="gguf", model="bge-m3", gguf_path="/x.gguf")
+        with pytest.raises(ValueError, match="model is required"):
+            await e.embed(["x"], "")
+        with pytest.raises(ValueError, match="model is required"):
+            await e.embed(["x"], None)  # type: ignore[arg-type]
 
 
 class TestEmbedInputTooLong:
@@ -240,7 +244,7 @@ class TestEmbedInputTooLong:
 
             e = Engine(backend="gguf", model="bge-m3", gguf_path="/model.gguf")
             with pytest.raises(EmbeddingInputTooLong) as ei:
-                await e.embed(["x" * 100])
+                await e.embed(["x" * 100], "bge-m3")
             assert "9000 tokens" in str(ei.value)
             assert "8192" in str(ei.value)
             # Rejected BEFORE encoding — nothing was truncated into a vector.
@@ -263,7 +267,7 @@ class TestEmbedInputTooLong:
             )
 
             e = Engine(backend="gguf", model="bge-m3", gguf_path="/model.gguf")
-            vecs = await e.embed(["a short input"])
+            vecs = await e.embed(["a short input"], "bge-m3")
             assert len(vecs) == 1 and len(vecs[0]) == 1024
             client.create_embedding.assert_called_once()
 
@@ -284,16 +288,18 @@ class TestEmbedInputTooLong:
 
             e = Engine(backend="transformer", model="BAAI/bge-m3")
             with pytest.raises(EmbeddingInputTooLong):
-                await e.embed(["x" * 9000])
+                await e.embed(["x" * 9000], "BAAI/bge-m3")
             client.encode.assert_not_called()
 
 
-# ── Multi-model switching ─────────────────────────────────────────────────
+# ── Multi-model peers ────────────────────────────────────────────────────
 
 
 class TestMultiModel:
     @pytest.mark.asyncio
-    async def test_set_active_switches_and_loads(self):
+    async def test_named_model_loads_on_demand(self):
+        """Two peers load independently — the named model materialises on
+        first use, the other stays untouched (no active model to switch)."""
         with (
             patch("local_embed.engine._Llama", MagicMock()),
             patch("local_embed.engine._SentenceTransformer", MagicMock()),
@@ -303,7 +309,9 @@ class TestMultiModel:
             gguf_client.n_embd = MagicMock(return_value=1024)
             tf_client = MagicMock()
             tf_client.get_sentence_embedding_dimension = MagicMock(return_value=768)
-            tf_client.encode = MagicMock(return_value=[[0.5] * 768])
+            emb = MagicMock()
+            emb.tolist.return_value = [0.5] * 768
+            tf_client.encode = MagicMock(return_value=[emb])
 
             def _side(fn, name="daemon"):
                 if name.startswith("gguf-load"):
@@ -318,19 +326,14 @@ class TestMultiModel:
                     ModelSpec("bge-m3", backend="gguf", gguf_path="/x.gguf"),
                     ModelSpec("nomic", backend="transformer", model="nomic-ai/nomic-embed-text-v1.5"),
                 ],
-                active="bge-m3",
             )
-            assert e.active_model == "bge-m3"
-            dim = await e.set_active("nomic")
-            assert e.active_model == "nomic"
+            # Every call names the model — no active state, nothing switched.
+            dim = await e.ensure_loaded("nomic")
             assert dim == 768
-            assert e.dimension == 768
-            assert e.loaded is True
             assert e.is_loaded("nomic") is True
-            # switching back loads the gguf model on demand
-            dim = await e.set_active("bge-m3")
-            assert dim == 1024
-            assert e.is_loaded("bge-m3") is True
+            assert e.is_loaded("bge-m3") is False   # the peer stays unloaded
+            vecs = await e.embed(["hi"], "nomic")
+            assert len(vecs[0]) == 768
 
     @pytest.mark.asyncio
     async def test_embed_named_model(self):
@@ -352,20 +355,18 @@ class TestMultiModel:
                     ModelSpec("bge-m3", backend="gguf", gguf_path="/x.gguf"),
                     ModelSpec("other", backend="gguf", gguf_path="/y.gguf"),
                 ],
-                active="bge-m3",
             )
-            vecs = await e.embed(["hello"], model="other")
+            vecs = await e.embed(["hello"], "other")
             assert len(vecs[0]) == 1024
 
     @pytest.mark.asyncio
     async def test_embed_unknown_model_raises(self):
-        """An explicitly-named unknown model must raise, not silently
-        fall back to the active model (which would return the wrong
-        vectors labeled with the requested name)."""
+        """An unknown model must raise — never silently fall back to
+        another model (which would return the wrong vectors labeled with
+        the requested name)."""
         with patch("local_embed.engine._Llama", MagicMock()):
             e = Engine(
                 specs=[ModelSpec("bge-m3", backend="gguf", gguf_path="/x.gguf")],
-                active="bge-m3",
             )
             with pytest.raises(KeyError, match="unknown model"):
-                await e.embed(["hello"], model="typo")
+                await e.embed(["hello"], "typo")

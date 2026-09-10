@@ -626,8 +626,9 @@ class TestDimProbe:
         probe.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_load_api_discovers_active_model(self):
-        """The model is determined by the endpoint's /v1/models active model."""
+    async def test_load_api_discovers_first_model(self):
+        """No configured model → the endpoint's FIRST /v1/models entry (a
+        standard OpenAI listing has no active marker; models are peers)."""
         client = EmbeddingClient.__new__(EmbeddingClient)
         client._backend = "api"
         client._available = True
@@ -640,15 +641,14 @@ class TestDimProbe:
         client._client_init_lock = asyncio.Lock()
 
         class _Model:
-            def __init__(self, id, active=False, dimension=0):
+            def __init__(self, id, dimension=0):
                 self.id = id
-                self.active = active
                 self.dimension = dimension
 
         class _ModelsResponse:
             data = [
-                _Model("bge-m3", active=True, dimension=1024),
-                _Model("other", active=False, dimension=768),
+                _Model("bge-m3", dimension=1024),
+                _Model("other", dimension=768),
             ]
 
         fake_client = MagicMock()
@@ -659,13 +659,13 @@ class TestDimProbe:
             ok = await client.load()
 
         assert ok is True
-        assert client._model == "bge-m3"      # server's active model
+        assert client._model == "bge-m3"      # first listed entry
         assert client.dimension == 1024
         assert client.dimension_known is True
 
     @pytest.mark.asyncio
     async def test_load_api_configured_model_is_authoritative(self):
-        """A configured model id wins — even when the endpoint's active differs."""
+        """A configured model id wins — even when it is not listed first."""
         client = EmbeddingClient.__new__(EmbeddingClient)
         client._backend = "api"
         client._available = True
@@ -678,15 +678,14 @@ class TestDimProbe:
         client._client_init_lock = asyncio.Lock()
 
         class _Model:
-            def __init__(self, id, active=False, dimension=0):
+            def __init__(self, id, dimension=0):
                 self.id = id
-                self.active = active
                 self.dimension = dimension
 
         class _ModelsResponse:
             data = [
-                _Model("bge-m3", active=True, dimension=1024),
-                _Model("text-embedding-3-small", active=False, dimension=1536),
+                _Model("bge-m3", dimension=1024),
+                _Model("text-embedding-3-small", dimension=1536),
             ]
 
         fake_client = MagicMock()
@@ -714,13 +713,12 @@ class TestDimProbe:
         client._client_init_lock = asyncio.Lock()
 
         class _Model:
-            def __init__(self, id, active=False, dimension=0):
+            def __init__(self, id, dimension=0):
                 self.id = id
-                self.active = active
                 self.dimension = dimension
 
         class _ModelsResponse:
-            data = [_Model("bge-m3", active=True, dimension=1024)]
+            data = [_Model("bge-m3", dimension=1024)]
 
         fake_client = MagicMock()
         fake_client.models.list = AsyncMock(return_value=_ModelsResponse())
