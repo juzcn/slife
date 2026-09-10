@@ -5,6 +5,7 @@ import json
 import pytest
 import pytest_asyncio
 
+from slife.plugins.mcp_gateway.semantic import SemanticManager
 from slife.plugins.mcp_gateway.store import ToolStore, _cosine_distance, _deserialize_f32, _serialize_f32
 
 
@@ -21,6 +22,11 @@ def _tool(name, description="", schema=None):
     if schema is not None:
         tool["inputSchema"] = schema
     return tool
+
+
+async def _set_embedding(store, full_name, vec, *, model="test-model"):
+    """Store one tool's vector via the chunk API (a single-chunk doc)."""
+    await store.replace_embedding_chunks({"doc_id": full_name}, [vec], model=model)
 
 
 @pytest.mark.asyncio
@@ -53,7 +59,7 @@ async def test_sync_server_invalidates_stale_embedding(store):
     s1 = {"type": "object", "properties": {"repo": {"type": "string", "description": "repo name"}}}
     s2 = {"type": "object", "properties": {"user": {"type": "string", "description": "user name"}}}
     await store.sync_server("svcA", [_tool("search", "full-text search", schema=s1)])
-    await store.replace_embedding("svcA__search", [0.1, 0.2, 0.3], "api:bge-m3")
+    await _set_embedding(store, "svcA__search", [0.1, 0.2, 0.3], model="api:bge-m3")
     assert await store.count_unembedded() == 0
 
     # description edit → part of the descriptor text → stale vector dropped
@@ -61,7 +67,7 @@ async def test_sync_server_invalidates_stale_embedding(store):
     assert await store.count_unembedded() == 1
 
     # schema edit → stale vector dropped too
-    await store.replace_embedding("svcA__search", [0.1, 0.2, 0.3], "api:bge-m3")
+    await _set_embedding(store, "svcA__search", [0.1, 0.2, 0.3], model="api:bge-m3")
     await store.sync_server("svcA", [_tool("search", "semantic vector search", schema=s2)])
     assert await store.count_unembedded() == 1
 
@@ -214,8 +220,8 @@ async def test_search_semantic_cosine_ordering(store):
     await store.sync_server("svcA", [_tool("search", "github api")])
     await store.sync_server("svcB", [_tool("list", "todo list")])
     # Deliberately give svcB__list a different dim to exercise the dim guard.
-    await store.replace_embedding("svcA__search", [1.0, 0.0, 0.0], "test-model")
-    await store.replace_embedding("svcB__list", [0.0, 1.0, 0.0, 1.0], "test-model")
+    await _set_embedding(store, "svcA__search", [1.0, 0.0, 0.0])
+    await _set_embedding(store, "svcB__list", [0.0, 1.0, 0.0, 1.0])
 
     hits = await store.search_semantic([1.0, 0.5, 0.0])
     assert [h["full_name"] for h in hits] == ["svcA__search"]
@@ -226,8 +232,8 @@ async def test_search_semantic_cosine_ordering(store):
 async def test_semantic_server_filter(store):
     await store.sync_server("svcA", [_tool("search")])
     await store.sync_server("svcB", [_tool("search")])
-    await store.replace_embedding("svcA__search", [1.0, 0.0], "test-model")
-    await store.replace_embedding("svcB__search", [1.0, 0.0], "test-model")
+    await _set_embedding(store, "svcA__search", [1.0, 0.0])
+    await _set_embedding(store, "svcB__search", [1.0, 0.0])
     hits = await store.search_semantic([1.0, 0.0], server="svcB")
     assert [h["full_name"] for h in hits] == ["svcB__search"]
 
@@ -248,7 +254,7 @@ async def test_drainer_contract(store):
     assert "params: repo (string)" in by_id["svcA__search"]
     assert by_id["svcA__list"] == "name: list"
 
-    await store.replace_embedding("svcA__search", [1.0, 0.0], "test-model")
+    await _set_embedding(store, "svcA__search", [1.0, 0.0])
     assert await store.count_unembedded() == 1
     assert await store.count_embedded() == 1
 
@@ -279,6 +285,111 @@ async def test_semantic_doc_text_is_full_descriptor(store):
     assert "repo (string, required): repository name" in text
     assert "filters (object): archived (boolean)" in text
     assert "name: search" in text.splitlines()[0]  # name-first, then description
+
+
+@pytest.mark.asyncio
+async def test_chunked_schema_aggregated_in_semantic_search(store):
+    # A long schema stores several chunk rows; search still returns the tool
+    # ONCE, scored by its closest chunk (per-tool aggregation).
+    await store.sync_server("svcA", [_tool("search", "find")])
+    await store.sync_server("svcB", [_tool("list", "todo list")])
+    await store.replace_embedding_chunks(
+        {"doc_id": "svcA__search"}, [[1.0, 0.0], [0.5, 0.5], [0.0, 0.5]],
+        model="test-model",
+    )
+    await _set_embedding(store, "svcB__list", [0.3, 0.9])
+
+    hits = await store.search_semantic([1.0, 0.0])
+    assert [h["full_name"] for h in hits] == ["svcA__search", "svcB__list"]
+    # svcA__search appears exactly once, at its closest chunk's distance
+    # (the [1.0, 0.0] chunk scores 0.0, not the [0.5, 0.5] / [0.0, 0.5] ones).
+    assert [h["full_name"] for h in hits].count("svcA__search") == 1
+    row = next(h for h in hits if h["full_name"] == "svcA__search")
+    assert row["distance"] == pytest.approx(0.0)
+    assert await store.count_embedded() == 2
+
+
+@pytest.mark.asyncio
+async def test_drainer_chunks_oversized_schema_like_memdb(store):
+    # Regression for the mcp_semantic stall: a tool whose flattened schema
+    # exceeds the embedding model's token limit used to be POSTed whole,
+    # the endpoint rejected it (400 context_length_exceeded), the doc stayed
+    # unembedded forever and the drainer hit its no-progress bound → "stalled".
+    # The gateway now inherits the memdb chunking _embed_doc, so the schema
+    # is hard-split under max_tokens and the index always completes.
+    big = "y" * 20000
+    await store.sync_server("svcA", [
+        _tool("huge", "a very long tool", schema={
+            "type": "object", "properties": {"text": {"type": "string", "description": big}},
+        }),
+        _tool("short", "a short tool"),
+    ])
+    docs = {d["doc_id"]: d for d in await store.get_unembedded_docs()}
+    assert set(docs) == {"svcA__huge", "svcA__short"}
+
+    class FakeEmbedder:
+        model = "bge-m3"
+        max_tokens = 100
+        embed_calls = 0
+
+        @property
+        def available(self):
+            return True
+
+        async def embed(self, texts):
+            type(self).embed_calls += 1
+            return [[float(len(t) % 7)] for t in texts]
+
+    emb = FakeEmbedder()
+    await store.set_meta("embedding_model", "api:bge-m3")
+
+    mgr = SemanticManager(store)
+    assert await mgr._embed_doc(emb, docs["svcA__huge"]) is True  # chunked, not 400'd
+    assert await mgr._embed_doc(emb, docs["svcA__short"]) is True
+
+    assert await store.count_unembedded() == 0
+    assert await store.count_embedded() == 2
+    # The long schema produced multiple hard-split chunk rows.
+    cursor = await store._c.execute(
+        "SELECT COUNT(*) FROM tool_embeddings WHERE full_name = 'svcA__huge'",
+    )
+    row = await cursor.fetchone()
+    assert row[0] >= 2
+
+
+@pytest.mark.asyncio
+async def test_replacing_chunks_is_atomic_all_or_nothing(store):
+    # A failed write rolls back to the PREVIOUS state — a half-written batch
+    # must never look complete (memdb's all-or-nothing contract).
+    await store.sync_server("svcA", [_tool("search", "find")])
+    await _set_embedding(store, "svcA__search", [0.7])
+    assert await store.count_unembedded() == 0
+
+    class Boom(Exception):
+        pass
+
+    original_commit = store._c.commit
+
+    async def flaky_commit():
+        raise Boom("transaction failed mid-write")
+
+    store._c.commit = flaky_commit
+    with pytest.raises(Boom):
+        await store.replace_embedding_chunks(
+            {"doc_id": "svcA__search"}, [[0.1], [0.2]], model="test-model",
+        )
+    store._c.commit = original_commit
+
+    # The failed replace left exactly the old row — never the 2 new chunks,
+    # and never nothing-with-old-gone either.
+    cursor = await store._c.execute(
+        "SELECT embedding FROM tool_embeddings WHERE full_name = 'svcA__search'",
+    )
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert _deserialize_f32(rows[0]["embedding"]) == pytest.approx([0.7])
+    assert await store.count_unembedded() == 0
+    assert await store.count_embedded() == 1
 
 
 @pytest.mark.asyncio

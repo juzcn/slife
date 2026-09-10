@@ -133,6 +133,31 @@ async def test_load_pins_model_and_dim(client):
     assert client.dimension_known is True
 
 
+def test_max_tokens_constructor_explicit_wins():
+    assert EmbeddingClient(model="bge-m3", max_tokens=512).max_tokens == 512
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_guessed_when_list_missing_it(client):
+    # The endpoint's model entry carries no max_tokens → best-effort
+    # per-family guess (the drainer's chunk ceiling).
+    assert await client.load() is True
+    assert client.max_tokens == 8192  # memdb's bge-m3 guess
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_captured_from_models_list():
+    c = EmbeddingClient(
+        model="bge-m3", api_key="local", base_url="http://127.0.0.1:17347/v1",
+        transport=_make_transport(
+            models=[{"id": "bge-m3", "dimension": 3, "max_tokens": 2048}],
+        ),
+    )
+    assert await c.load() is True
+    assert c.max_tokens == 2048  # endpoint report wins over the guess
+    await c.close()
+
+
 @pytest.mark.asyncio
 async def test_embed_batch(client):
     assert await client.load()

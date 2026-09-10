@@ -20,6 +20,7 @@ import logging
 
 import httpx2
 
+from slife.plugins.memdb.embeddings import _guess_max_tokens  # shared token-limit guess
 from slife.plugins.mcp_gateway.config import _resolve_secret
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class EmbeddingClient:
         dim: int = 0,
         dim_known: bool | None = None,
         enabled: bool = True,
+        max_tokens: int = 0,
         transport: httpx2.AsyncBaseTransport | None = None,
     ):
         self._model = model
@@ -53,6 +55,7 @@ class EmbeddingClient:
         self._dim_known = dim_known
         self._enabled = enabled
         self._loaded = False
+        self._max_tokens = max_tokens or _guess_max_tokens(model)
         self._client: httpx2.AsyncClient | None = None
         self._client_init_lock = asyncio.Lock()
         self._transport = transport  # test hook (httpx2.MockTransport)
@@ -127,6 +130,24 @@ class EmbeddingClient:
     @property
     def dimension_known(self) -> bool:
         return bool(self._dim_known)
+
+    @property
+    def max_tokens(self) -> int:
+        """The model's context limit — the drainer's chunk ceiling.
+
+        Real value when captured from the endpoint's ``/v1/models`` listing,
+        else a best-effort per-family guess (like memdb/memfiles).  The
+        gateway's :meth:`~slife.plugins.mcp_gateway.semantic.SemanticManager`
+        inherits the shared chunking ``_embed_doc``, which hard-splits any
+        schema beyond this many tokens instead of letting the endpoint reject
+        the request (and stall the index forever).
+        """
+        return self._max_tokens
+
+    @max_tokens.setter
+    def max_tokens(self, value: int) -> None:
+        if isinstance(value, int) and value > 0:
+            self._max_tokens = value
 
     @property
     def base_url(self) -> str:
@@ -235,6 +256,7 @@ class EmbeddingClient:
                 if new_dim:
                     self._dim = new_dim
                     self._dim_known = True
+                self.max_tokens = int(match.get("max_tokens") or 0)
             return True  # configured id wins even when unlisted
         entry = entries[0]  # models are peers — no active marker on /v1/models
         self._model = entry["id"]
@@ -242,6 +264,7 @@ class EmbeddingClient:
         if new_dim:
             self._dim = new_dim
             self._dim_known = True
+        self.max_tokens = int(entry.get("max_tokens") or 0)
         return True
 
     async def _probe_api_dim(self) -> None:

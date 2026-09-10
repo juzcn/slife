@@ -61,12 +61,16 @@ END;
 
 
 -- ── 语义搜索 ──────────────────────────────────────────────────
--- 一个工具一条向量（完整 schema：name + description + 参数 + 返回说明），不切块。
--- 向量以 f32 BLOB 存储（struct.pack），检索时 Python 余弦。
+-- 一个工具一个文档（完整 schema：name + description + 参数 + 返回说明），
+-- 长 schema 按嵌入模型 token 上限切块（同 memdb/memfiles），一块一行；
+-- 检索时按块取最小距离、每工具聚合成一条。向量以 f32 BLOB 存储
+-- （struct.pack），Python 余弦比较。
 CREATE TABLE IF NOT EXISTS tool_embeddings (
-    full_name TEXT PRIMARY KEY REFERENCES tools(full_name) ON DELETE CASCADE,
-    embedding BLOB NOT NULL,
-    model     TEXT NOT NULL                    -- 产生该向量的模型 id
+    full_name   TEXT NOT NULL REFERENCES tools(full_name) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    embedding   BLOB NOT NULL,
+    model       TEXT NOT NULL,               -- 产生该向量的模型 id
+    PRIMARY KEY (full_name, chunk_index)
 );
 
 

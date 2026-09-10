@@ -12,8 +12,12 @@ are the four hook points the base class exposes:
     gates on a usable (non-placeholder) host-provided base_url.
   - ``_on_model_selected``: memdb migrates vec0 in place; the gateway
     drops stale vectors via its meta/drop contract (different store).
-  - ``_embed_doc``: memdb chunks long documents; the gateway's documents
-    are short tool schemas embedded whole.
+
+  ``_embed_doc`` is NOT overridden: long tool schemas are chunked at the
+  embedding model's token limit exactly like memdb/memfiles documents —
+  a schema beyond the limit must never reach the endpoint whole (an
+  OpenAI-compatible service 400s ``context_length_exceeded``, the chunk
+  would stay unembedded forever, and the drainer would stall).
 
 Everything else — the drain loop, no-progress bound, status readers,
 ``enable``/``disable``/``close`` transitions — is inherited unchanged.
@@ -61,20 +65,6 @@ class SemanticManager(_BaseSemanticManager):
             )
             await self._store.drop_embeddings()
         await self._store.set_meta("embedding_model", model_id)
-
-    async def _embed_doc(self, embedder, doc: dict) -> bool:
-        """Embed one tool schema whole (no chunking — tool docs are short)."""
-        text = doc.get("text", "")
-        if not text.strip():
-            return False
-        vec = await embedder.embed_one(text)
-        if not vec:
-            return False
-        async with self._write_lock:
-            await self._store.replace_embedding(
-                doc["doc_id"], vec, f"api:{embedder.model}",
-            )
-        return True
 
     def _unavailable_reason(self, embedder) -> str:
         if not embedder.base_url:

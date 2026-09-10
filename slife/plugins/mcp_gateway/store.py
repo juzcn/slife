@@ -16,9 +16,13 @@ together; the semantic vector is sourced from this single column ALONE
 (flattened to readable text at embed time), so it covers name +
 description + parameters + return description.
 
-The store is a "document source" for :class:`mcp_plugin.semantic.SemanticManager`
-(``count_unembedded`` / ``get_unembedded_docs`` / ``replace_embedding``) —
-one tool = one document, never chunked.
+The store is a "document source" for
+:class:`~slife.plugins.mcp_gateway.semantic.SemanticManager`
+(``count_unembedded`` / ``get_unembedded_docs`` /
+``replace_embedding_chunks``) — one tool = one document; a long schema is
+chunked at the embedding model's token limit (same mechanism as
+memdb/memfiles), one vector row per chunk, aggregated to one row per tool
+at search time.
 """
 
 import asyncio
@@ -517,6 +521,9 @@ class ToolStore:
     ) -> list[dict]:
         """Brute-force cosine KNN over stored BLOB vectors.
 
+        A tool's document may span several chunk rows (long schemas are
+        chunked at the embedding model's token limit) — each tool is scored
+        by its closest chunk, then aggregated back to one row per tool.
         Only tools of enabled, non-auto_load servers are discoverable.
         Vectors whose width differs from *vec* are skipped (defensive against
         stale rows from a previous embedding model).
@@ -530,7 +537,7 @@ class ToolStore:
                JOIN servers s ON s.name = t.server
                     AND s.enabled = 1 AND s.auto_load = 0"""
         )
-        matches: list[dict] = []
+        best: dict[str, dict] = {}
         for row in await cursor.fetchall():
             r = dict(row)
             if server and r["server"] != server:
@@ -539,23 +546,28 @@ class ToolStore:
             if len(stored) != len(vec):
                 continue
             r["distance"] = _cosine_distance(vec, stored)
-            matches.append(r)
-        matches.sort(key=lambda x: x["distance"])
-        results = matches[:limit]
+            cur = best.get(r["full_name"])
+            if cur is None or r["distance"] < cur["distance"]:
+                best[r["full_name"]] = r
+        results = sorted(best.values(), key=lambda x: x["distance"])[:limit]
         logger.debug("tool_search_semantic hits=%s", len(results))
         return results
 
     # ── Embedding drainer contract ─────────────────────────────────
 
     async def count_unembedded(self) -> int:
-        """Count tools with no embedding row and a non-empty schema text.
+        """Count tools with no embedding chunk and a non-empty schema text.
 
         Tools whose flattened schema is empty (no vector source) are skipped
-        so they can never wedge the semantic gate open.
+        so they can never wedge the semantic gate open.  A tool counts as
+        embedded once it has ANY chunk row — ``replace_embedding_chunks``
+        writes all of a tool's chunks in ONE transaction, so a partial row
+        can never look complete.
         """
         cursor = await self._c.execute(
             """SELECT input_schema FROM tools
-               WHERE full_name NOT IN (SELECT full_name FROM tool_embeddings)""",
+               WHERE full_name NOT IN (
+                   SELECT DISTINCT full_name FROM tool_embeddings)""",
         )
         return sum(
             1 for (schema_text,) in await cursor.fetchall()
@@ -567,12 +579,15 @@ class ToolStore:
 
         Each doc carries ``doc_id`` (the full_name) and ``text`` (the
         full-descriptor column flattened to readable text) — the semantic
-        vector is sourced from the ``input_schema`` column alone, one tool
-        = one vector.  Tools with no flattenable text produce no doc.
+        source is the ``input_schema`` column alone.  Long schemas are
+        chunked by the drainer at the model's token limit (one vector per
+        chunk, like memdb/memfiles).  Tools with no flattenable text
+        produce no doc.
         """
         cursor = await self._c.execute(
             """SELECT full_name, input_schema FROM tools
-               WHERE full_name NOT IN (SELECT full_name FROM tool_embeddings)
+               WHERE full_name NOT IN (
+                   SELECT DISTINCT full_name FROM tool_embeddings)
                ORDER BY full_name
                LIMIT ?""",
             (limit,),
@@ -585,18 +600,49 @@ class ToolStore:
             docs.append({"doc_id": row[0], "text": text})
         return docs
 
-    async def replace_embedding(self, full_name: str, vec: list[float], model: str) -> None:
-        """Store (or replace) one tool's embedding vector."""
+    async def replace_embedding_chunks(
+        self, doc: dict, embeddings: list[list[float]], *, model: str = "",
+    ) -> None:
+        """Atomically replace one tool's embedding chunks.
+
+        Mirrors the memdb/memfiles drainer: deletes the tool's old chunks
+        and inserts every new chunk in ONE transaction.  A crash (or error)
+        mid-way rolls back to NO chunks — the tool is fully unembedded again
+        and re-indexed on the next pass, never left half-indexed where the
+        ``NOT IN (SELECT DISTINCT full_name …)`` unembedded query would
+        mistake it for complete.  ``doc`` is a drainer row whose ``doc_id``
+        is the tool's ``full_name``.
+        """
+        full_name = doc["doc_id"]
+        if not model:
+            # The base drainer calls us without a model; fill it from the
+            # embedding_model meta (set by _on_model_selected before drain).
+            model = (await self.get_meta("embedding_model")) or ""
+        vec_blobs = [_serialize_f32(emb) for emb in embeddings]
         async with self._write_lock:
-            await self._c.execute(
-                """INSERT OR REPLACE INTO tool_embeddings(full_name, embedding, model)
-                   VALUES (?, ?, ?)""",
-                (full_name, _serialize_f32(vec), model),
-            )
-            await self._c.commit()
+            try:
+                await self._c.execute(
+                    "DELETE FROM tool_embeddings WHERE full_name = ?",
+                    (full_name,),
+                )
+                for idx, blob in enumerate(vec_blobs):
+                    await self._c.execute(
+                        """INSERT INTO tool_embeddings
+                           (full_name, chunk_index, embedding, model)
+                           VALUES (?, ?, ?, ?)""",
+                        (full_name, idx, blob, model),
+                    )
+                await self._c.commit()
+            except Exception:
+                await self._c.rollback()
+                raise
+        logger.debug(
+            "tool_embedding_chunks_replaced full_name=%s chunks=%d",
+            full_name, len(vec_blobs),
+        )
 
     async def drop_embeddings(self) -> int:
-        """Delete all embedding rows. Returns count deleted."""
+        """Delete all embedding rows. Returns chunk rows deleted."""
         async with self._write_lock:
             cursor = await self._c.execute("SELECT COUNT(*) FROM tool_embeddings")
             row = await cursor.fetchone()
@@ -607,7 +653,10 @@ class ToolStore:
         return count
 
     async def count_embedded(self) -> int:
-        cursor = await self._c.execute("SELECT COUNT(*) FROM tool_embeddings")
+        """Count distinct tools that have at least one embedding chunk."""
+        cursor = await self._c.execute(
+            "SELECT COUNT(DISTINCT full_name) FROM tool_embeddings",
+        )
         row = await cursor.fetchone()
         return row[0] if row else 0
 

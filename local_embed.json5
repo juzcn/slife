@@ -47,7 +47,7 @@
     "bge-m3": {
       backend: "gguf",
       gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/hf_KimChen_bge-m3-q4_k_m.gguf}",
-      autoload: false
+      autoload: true
     }
   },
   port: 17347  // uncommon fixed port — see local_embed.config.DEFAULT_PORT

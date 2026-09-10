@@ -402,7 +402,7 @@
         api_key: "${SILICONFLOW_API_KEY}"
       }
     },
-    active_model: "siliconflow",
+    active_model: "local_embed",
     enabled: true
   }
 }
