@@ -34,7 +34,9 @@ them ([Model weights](#model-weights)).
 - **OpenAI-compatible** `/v1/embeddings` + Models API + `/health`.
 - Two backends (GGUF / transformer), **many models as peers — each request
   names the one it wants** (standard OpenAI semantics, no "active model").
-- **Lazy load** — startup is fast; the model materialises on first use.
+- **Lazy load** — startup is fast; each model materialises on the first
+  request that names it (per-model `autoload: true` preloads a specific
+  model at startup).
 - **Real dimension** reported after load (a guessed width is never served).
 - Runs standalone, and can also be **loaded as a slife plugin** (see
   [Loading as a slife plugin](#loading-as-a-slife-plugin)).
@@ -139,7 +141,7 @@ Everything — host, port, models, backend — comes from
 ```json5
 {
   models: {
-    "bge-m3": { backend: "gguf", gguf_path: "…", device: "" },
+    "bge-m3": { backend: "gguf", gguf_path: "…", device: "", autoload: false },
     "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3", device: "" }
   },
   env: {                            // injected into this process before any model loads
@@ -151,9 +153,14 @@ Everything — host, port, models, backend — comes from
 }
 ```
 
-- `models` — map of name → `{backend, gguf_path | model, device, max_tokens}`.
+- `models` — map of name → `{backend, gguf_path | model, device, max_tokens, autoload}`.
   Every configured model is a peer; there is **no `active_model`** — each
   request names the model it wants (standard OpenAI semantics).
+- `autoload` (per model, default `false`) — a model's weights are large and
+  memory-hungry, so nothing loads until a request names it (**lazy**).
+  `autoload: true` on one model eager-loads just that model in the
+  background at startup (memory paid up front for a warm first embed); every
+  unflagged model stays lazy.
 - `env:` — injected before any backend loads; an existing shell env var wins.
   Without `HF_HUB_CACHE`, transformer repos resolve against the default cache
   and a model downloaded elsewhere is silently re-fetched.

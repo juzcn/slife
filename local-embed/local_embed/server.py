@@ -25,11 +25,13 @@ standalone ``local-embed`` server behind the CLI.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import sys
 import time
+from contextlib import asynccontextmanager
 
 from fastmcp import FastMCP
 from starlette.requests import Request
@@ -67,6 +69,40 @@ def get_engine() -> Engine:
     return _engine
 
 
+async def _eager_load_autoload() -> None:
+    """Background eager-load of the models flagged ``autoload: true``.
+
+    Per-model eager loading: a model whose config entry has ``autoload:
+    true`` is loaded in the background shortly after the server starts, so
+    the first embed on it is already warm — every unflagged model stays lazy
+    (a local model's weights are large and memory-hungry).
+    """
+    engine = _engine
+    if engine is None:
+        return  # never armed (no build_server) — nothing to preload
+    try:
+        await engine.load_autoload()
+    except Exception as e:  # noqa: BLE001 — a failed pass must never kill the server
+        logger.warning("autoload_failed models=%s err=%s", engine.models, e)
+
+
+@asynccontextmanager
+async def _startup_eager(app):
+    """FastMCP lifespan: schedule the per-model eager load as a background task.
+
+    Loading is lazy by default; only models whose spec has ``autoload: true``
+    are preloaded.  The task is created but NOT awaited, so the lifespan
+    completes immediately — the port signal stays handshake-fast and the
+    loads themselves run on daemon threads (``engine.load_autoload`` →
+    ``run_daemon``); a heavy model simply warms up in the background while
+    the server already serves.
+    """
+    # Always schedule it; ``Engine.load_autoload`` skips every model whose
+    # spec is not flagged, so this is a no-op when nothing sets autoload.
+    asyncio.get_running_loop().create_task(_eager_load_autoload())
+    yield
+
+
 # The server is built through ``create_plugin_server`` so the port signal
 # (``{"port": N}`` on stdout) actually fires: that helper wraps the FastMCP
 # lifespan so the ready callback runs once the app is serving, and the host
@@ -83,6 +119,7 @@ mcp, _ = create_plugin_server(
         "probed by the host's check_local_embed — the host consumes the model "
         "service over HTTP, never through MCP tools."
     ),
+    lifespan=_startup_eager,
 )
 
 
@@ -299,14 +336,19 @@ async def health(request: Request) -> Response:
 def build_server(engine: Engine) -> FastMCP:
     """Return the FastMCP server wired to *engine* (module singleton shared).
 
-    Models load lazily on the first request that names them — there is no
-    eager warm-up (no active model to warm), and nothing heavy runs in the
-    lifespan, so startup is handshake-fast even when a backend is heavy (a
-    transformer model imports torch/transformers and can take seconds).
-    Backend availability is import-checked cheaply (``find_spec``) at
-    construction, so ``/v1/models`` and ``/health`` report real usability
-    before any model has been loaded; the first embed blocks on the load
-    if it hasn't finished yet, and readiness is never gated on it.
+    Loading is lazy by default — a local model's weights are large and
+    memory-hungry, so nothing is materialised until the first request names
+    that model.  A model whose config entry sets ``autoload: true`` is
+    eager-loaded by the ``_startup_eager`` lifespan hook right after the
+    server starts (see :func:`_eager_load_autoload`), so its first embed is
+    already warm; the lifespan itself never waits on a load, no heavy import
+    runs in it, and startup stays handshake-fast even when a backend is
+    heavy (a transformer model imports torch/transformers and can take
+    seconds).  Backend availability is import-checked cheaply
+    (``find_spec``) at construction, so ``/v1/models`` and ``/health``
+    report real usability before any model has been loaded; the first embed
+    blocks on the load if it hasn't finished yet, and readiness is never
+    gated on it.
     """
     set_engine(engine)
     return mcp
@@ -392,8 +434,9 @@ def main() -> int:
         print(f"local-embed load failed: {e}", file=sys.stderr)
         return 1
     logger.info(
-        "local_embed_start port=%s models=%s",
+        "local_embed_start port=%s models=%s autoload=%s",
         port, engine.models,
+        [n for n in engine.models if engine.model_spec(n).autoload] or "-",
     )
     return run_plugin_server(mcp, sockets=[sock])
 

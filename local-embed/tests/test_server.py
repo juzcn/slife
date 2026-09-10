@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from starlette.testclient import TestClient
 
 from local_embed.engine import EmbeddingInputTooLong, Engine, ModelSpec
-from local_embed.server import build_server, mcp, serve_standalone
+from local_embed.server import _eager_load_autoload, build_server, mcp, serve_standalone, set_engine
 from local_embed.server_utils import bind_port
 
 
@@ -215,6 +215,18 @@ class TestHealth:
             resp = c.get("/health")
             assert resp.status_code == 200
             assert resp.json()["status"] == "degraded"
+
+
+class TestAutoload:
+    @pytest.mark.asyncio
+    async def test_eager_runner_delegates_to_engine(self):
+        """The startup eager runner loads exactly the autoload-flagged models
+        via Engine.load_autoload (per-model eager loading)."""
+        engine = _make_engine()
+        set_engine(engine)
+        with patch.object(engine, "load_autoload", new=AsyncMock()) as m:
+            await _eager_load_autoload()
+        m.assert_awaited_once()
 
 
 class TestBindPort:

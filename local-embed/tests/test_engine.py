@@ -292,6 +292,49 @@ class TestEmbedInputTooLong:
             client.encode.assert_not_called()
 
 
+# ── Per-model autoload ───────────────────────────────────────────────────
+
+
+class TestLoadAutoload:
+    @pytest.mark.asyncio
+    async def test_loads_only_flagged_models(self):
+        """autoload is PER MODEL — only the flagged model is eager-loaded;
+        every unflagged peer stays lazy (its weights are never touched)."""
+        with (
+            patch("local_embed.engine._Llama", MagicMock()),
+            patch("local_embed.engine.run_daemon", new_callable=AsyncMock) as mock_run,
+        ):
+            def _client(dim):
+                c = MagicMock()
+                c.n_embd = MagicMock(return_value=dim)
+                return c
+
+            warm = _client(1024)
+            cold = _client(768)
+            mock_run.side_effect = lambda fn, name="daemon": (
+                warm if name.startswith("gguf-load-warm") else cold
+            )
+
+            e = Engine(
+                specs=[
+                    ModelSpec("warm", backend="gguf", gguf_path="/w.gguf",
+                              autoload=True),
+                    ModelSpec("cold", backend="gguf", gguf_path="/c.gguf"),
+                ],
+            )
+            assert e.model_spec("warm").autoload is True
+            assert e.model_spec("cold").autoload is False
+
+            await e.load_autoload()
+
+            assert e.is_loaded("warm") is True
+            assert e.is_loaded("cold") is False
+
+    def test_autoload_defaults_false(self):
+        spec = ModelSpec("m", backend="gguf", gguf_path="/x.gguf")
+        assert spec.autoload is False
+
+
 # ── Multi-model peers ────────────────────────────────────────────────────
 
 

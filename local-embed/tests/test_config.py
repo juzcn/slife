@@ -143,6 +143,65 @@ class TestGgufPathExpansion:
         assert out["specs"][0].gguf_path == "${BGE_M3_GGUF_PATH}"
 
 
+class TestAutoload:
+    """autoload is PER MODEL — default false (lazy); true eager-loads that
+    one model at startup while every unflagged model stays lazy."""
+
+    @staticmethod
+    def _out(monkeypatch, cfg):
+        monkeypatch.delenv("LOCAL_EMBED_AUTOLOAD", raising=False)
+        monkeypatch.setattr("local_embed.config.load_config", lambda: cfg)
+        return resolve_engine_settings()
+
+    def test_default_false_per_model(self, monkeypatch):
+        out = self._out(monkeypatch, {
+            "models": {"m": {"backend": "gguf", "gguf_path": "/x.gguf"}},
+        })
+        assert out["specs"][0].autoload is False
+
+    def test_true_from_model_entry(self, monkeypatch):
+        out = self._out(monkeypatch, {
+            "models": {"m": {"backend": "gguf", "gguf_path": "/x.gguf",
+                             "autoload": True}},
+        })
+        assert out["specs"][0].autoload is True
+
+    def test_string_true_parsed(self, monkeypatch):
+        out = self._out(monkeypatch, {
+            "models": {"m": {"backend": "gguf", "gguf_path": "/x.gguf",
+                             "autoload": "1"}},
+        })
+        assert out["specs"][0].autoload is True
+
+    def test_mixed_flags_and_absent(self, monkeypatch):
+        """One model flagged autoload, the other not — flags are per model."""
+        out = self._out(monkeypatch, {
+            "models": {
+                "warm": {"backend": "gguf", "gguf_path": "/w.gguf", "autoload": True},
+                "cold": {"backend": "gguf", "gguf_path": "/c.gguf"},
+            },
+        })
+        assert {s.name: s.autoload for s in out["specs"]} == {
+            "warm": True, "cold": False,
+        }
+
+    def test_single_model_top_level_autoload(self, monkeypatch):
+        monkeypatch.delenv("LOCAL_EMBED_AUTOLOAD", raising=False)
+        out = self._out(monkeypatch, {
+            "backend": "gguf", "model": "bge-m3", "gguf_path": "/x.gguf",
+            "autoload": True,
+        })
+        assert out["specs"][0].autoload is True
+
+    def test_env_override_in_single_model_shape(self, monkeypatch):
+        monkeypatch.setattr(
+            "local_embed.config.load_config",
+            lambda: {"backend": "gguf", "model": "bge-m3", "gguf_path": "/x.gguf"},
+        )
+        monkeypatch.setenv("LOCAL_EMBED_AUTOLOAD", "1")
+        assert resolve_engine_settings()["specs"][0].autoload is True
+
+
 class TestHostPortEnvOverride:
     """host/port honor LOCAL_EMBED_HOST / LOCAL_EMBED_PORT like every other
     key (the documented env-override precedence)."""

@@ -1,17 +1,24 @@
 """Embedding engine — one process, many models, each named by the request.
 
 Owns one or more local embedding models (GGUF via llama-cpp-python, HF
-transformers via sentence-transformers), each loaded lazily on first use
-and cached.  Because local-embed is a standalone process, this is the only
-place a model is ever materialised in the whole process tree — every
-consumer (slife's memdb + memfiles) calls it over HTTP instead of loading
-its own copy.
+transformers via sentence-transformers), each loaded lazily on the first
+request that names it and cached.  Because local-embed is a standalone
+process, this is the only place a model is ever materialised in the whole
+process tree — every consumer (slife's memdb + memfiles) calls it over
+HTTP instead of loading its own copy.
 
 There is NO *active* model — that concept does not exist on a standard
 OpenAI embeddings backend.  Every request names the model it wants
 (``POST /v1/embeddings``'s ``model`` field is required); a named model
 loads on demand and reports its real dimension, so a vector table is
 always sized from the width the server actually produces.
+
+Loading is lazy by default (model weights are large and memory-hungry —
+nothing materialises until a request names the model).  ``autoload`` is PER
+MODEL (a field on a model entry): ``Engine.load_autoload`` eager-loads only
+the models flagged ``autoload: true`` in the background shortly after the
+server starts, so a small model can be pre-warmed while a large one stays
+lazy.
 
 Thread-safety: llama-cpp ``create_embedding`` and
 ``SentenceTransformer.encode`` are NOT safe for concurrent calls — a burst
@@ -201,7 +208,7 @@ class ModelSpec:
     """One configured embedding model — name key + backend/weights."""
 
     __slots__ = (
-        "backend", "device", "dim", "dim_known", "gguf_path",
+        "autoload", "backend", "device", "dim", "dim_known", "gguf_path",
         "max_tokens", "model", "name",
     )
 
@@ -214,6 +221,7 @@ class ModelSpec:
         gguf_path: str | None = None,
         device: str = "",
         max_tokens: int = 0,
+        autoload: bool = False,
     ):
         self.name = name
         self.backend = backend
@@ -223,6 +231,10 @@ class ModelSpec:
         self.max_tokens = max_tokens or _guess_max_tokens(self.model)
         self.dim = _guess_dim(self.model)
         self.dim_known = _known_model(self.model) is not None
+        #: Eager-load this model (only this one) at server start, instead of
+        #: waiting for the first request that names it.  Default False — model
+        #: weights are large and memory-hungry, so loading is lazy per-model.
+        self.autoload = autoload
 
     def runtime_available(self) -> bool:
         """Whether this model's backend dependency is importable."""
@@ -343,6 +355,21 @@ class Engine:
         finally:
             self._loading.pop(name, None)
         return self._dims.get(name, spec.dim)
+
+    async def load_autoload(self) -> None:
+        """Eagerly load only the models flagged ``autoload: true``.
+
+        Per-model eager loading (the config's per-model ``autoload`` field):
+        a small model can be pre-warmed while a large one stays lazy.  Loads
+        serially — a backend's first load is GIL-heavy and memory-hungry, so
+        one at a time keeps memory and the event loop predictable.  Each
+        load is idempotent (``ensure_loaded``), and a model that fails to
+        load is logged by it and stays listed as unavailable (per-model
+        ``available_for``) — one bad model never fails the pass.
+        """
+        for name, spec in self._specs.items():
+            if spec.autoload:
+                await self.ensure_loaded(name)
 
     # ── embedding ────────────────────────────────────────────────────
 

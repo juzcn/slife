@@ -18,6 +18,12 @@
   //   2) GGUF (small offline file): drop a quantized BGE-M3 GGUF (~100 MB) at
   //      ~/.local-embed/models/bge-m3-q4_k_m.gguf (the default path below), or set
   //      BGE_M3_GGUF_PATH in the shell / edit gguf_path.
+  //
+  // autoload (per model, default false): eager loading is OFF — model weights
+  // are large and memory-hungry, so each model is loaded only when a request
+  // names it.  Set "autoload": true on one model to eager-load just that model
+  // in the background at startup (memory paid up front for a warm first embed);
+  // every unflagged model stays lazy.
   env: {
     HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}",
     // Offline by default — the model is NOT auto-downloaded (too slow).
@@ -27,15 +33,21 @@
     HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}"
   },
   models: {
+    // autoload (per model, default false) — false = lazy: the model loads only
+    // when a request names it.  Set "autoload": true to preload a model in
+    // the background at startup (e.g. the ~100 MB GGUF below) while a large
+    // one like this ~2 GB transformer stays lazy.
     "BAAI/bge-m3": {
       backend: "transformer",
-      model: "BAAI/bge-m3"
+      model: "BAAI/bge-m3",
+      autoload: false
     },
     // GGUF route (local file) — inert until a file exists at the default
     // path; override with BGE_M3_GGUF_PATH ("~" is expanded).
     "bge-m3": {
       backend: "gguf",
-      gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/hf_KimChen_bge-m3-q4_k_m.gguf}"
+      gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/hf_KimChen_bge-m3-q4_k_m.gguf}",
+      autoload: false
     }
   },
   port: 17347  // uncommon fixed port — see local_embed.config.DEFAULT_PORT

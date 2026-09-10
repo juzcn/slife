@@ -13,7 +13,7 @@ Config shape::
 
     {
       models: {
-        "bge-m3": { backend: "gguf", gguf_path: "…", device: "" },
+        "bge-m3": { backend: "gguf", gguf_path: "…", device: "", autoload: false },
         "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3" },
       },
       host: "127.0.0.1",    // standalone only
@@ -24,6 +24,14 @@ Every configured model is a peer — there is no ``active_model`` (a standard
 OpenAI embeddings backend has no such concept).  Each request names the
 model it wants via ``POST /v1/embeddings``'s ``model`` field.  A stale
 ``active_model`` key in an existing config is ignored.
+
+``autoload`` is PER MODEL (a field on a model entry, default ``false``):
+model weights are large and memory-hungry, so a model is only materialised
+on the first request that names it (lazy).  ``autoload: true`` on one model
+eager-loads it in the background shortly after the server starts — the
+memory cost is paid up front for that model in exchange for a warm first
+embed, while every unflagged model stays lazy.  The single-model
+convenience shape accepts a top-level ``autoload`` key the same way.
 
 ``env`` (optional, top level) is injected into this process's environment
 by :func:`apply_env` before any backend loads — a ``transformer`` ``model``
@@ -166,12 +174,25 @@ def apply_env() -> dict:
     return effective
 
 
+def _to_bool(value, default: bool = False) -> bool:
+    """Lenient boolean from json5/env: ``true``/``1``/``yes``/``on`` → True."""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
 def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
     """Merge config file + env overrides into engine settings.
 
     Precedence: env vars (plugin spawn) > config file > defaults.  Returns
     ``{"specs": [ModelSpec, ...], "host", "port"}`` — no active model; every
-    configured model is a peer named by the request.
+    configured model is a peer named by the request.  ``autoload`` is
+    PER MODEL on each spec (default False = lazy loading — the model is
+    materialised only on the first request that names it).
 
     A ``models`` map (multi-model) takes precedence; otherwise the
     single-model top-level keys build one spec.
@@ -211,6 +232,7 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
                     gguf_path=gguf_path,
                     device=m.get("device", ""),
                     max_tokens=int(m.get("max_tokens", 0) or 0),
+                    autoload=_to_bool(m.get("autoload", False)),
                 )
             )
     else:
@@ -225,6 +247,9 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
                    or None),
                 device=_pick("device", ""),
                 max_tokens=int(_pick("max_tokens", 0) or 0),
+                # The single-model shape accepts ``autoload`` at the top
+                # level (or the LOCAL_EMBED_AUTOLOAD env override).
+                autoload=_to_bool(_pick("autoload", False)),
             )
         ]
 
