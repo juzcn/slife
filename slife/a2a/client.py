@@ -272,12 +272,17 @@ class A2AClient:
 
     async def send_task(
         self, target: AgentName, task: str, timeout: float | None = None,
+        record: bool = True,
     ) -> str:
         """Send a task to *target* and wait for the result.
 
         Publishes an official ``SendMessage`` JSON-RPC request to
         ``slife/<target>/tasks/inbox`` (task text wrapped in a
         ``Message``), then waits for the result on our own result topic.
+
+        With ``record=False`` the exchange is a stateless message — no
+        task-store record is created (``a2a_list_tasks`` / ``cancel_task``
+        don't see it).
         """
         if timeout is None:
             timeout = self._config.task_timeout
@@ -285,7 +290,8 @@ class A2AClient:
         corr_id = uuid.uuid4().hex[:12]
 
         from slife.a2a.task_store import get_store
-        get_store().record_send(corr_id, str(target), task, "mqtt")
+        if record:
+            get_store().record_send(corr_id, str(target), task, "mqtt")
 
         payload = json.dumps(
             wire.send_message_envelope(
@@ -312,11 +318,13 @@ class A2AClient:
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
             logger.debug("a2a_task_result corr_id=%s len=%d", corr_id, len(result))
-            get_store().record_result(corr_id, result)
+            if record:
+                get_store().record_result(corr_id, result)
             return result
         except asyncio.TimeoutError:
             self._pending_tasks.pop(corr_id, None)
-            get_store().record_error(corr_id, "timeout")
+            if record:
+                get_store().record_error(corr_id, "timeout")
             raise TimeoutError(
                 f"Task to '{target}' timed out after {timeout}s"
             )
@@ -328,22 +336,30 @@ class A2AClient:
             # Mark the store record terminal so a cancelled waiter doesn't
             # leave it "pending" forever.  If a2a_cancel_task already marked
             # it cancelled, leave that status alone.
-            rec = get_store().get(corr_id)
-            if rec is not None and rec.status == "pending":
-                get_store().record_error(corr_id, "cancelled")
+            if record:
+                rec = get_store().get(corr_id)
+                if rec is not None and rec.status == "pending":
+                    get_store().record_error(corr_id, "cancelled")
             raise
 
     # ── Async task routing ────────────────────────────────────────────
 
-    async def send_task_async(self, target: AgentName, task: str) -> str:
+    async def send_task_async(
+        self, target: AgentName, task: str, record: bool = True,
+    ) -> str:
         """Send a task without waiting — returns *correlation_id* immediately.
 
         The result can be retrieved later via :meth:`get_task_result`.
+
+        With ``record=False`` the exchange is a stateless message — no
+        task-store record is created (``a2a_list_tasks`` / ``cancel_task``
+        don't see it; the reply still lands in ``get_task_result``).
         """
         corr_id = uuid.uuid4().hex[:12]
 
         from slife.a2a.task_store import get_store
-        get_store().record_send(corr_id, str(target), task, "mqtt")
+        if record:
+            get_store().record_send(corr_id, str(target), task, "mqtt")
 
         payload = json.dumps(
             wire.send_message_envelope(

@@ -101,6 +101,40 @@ class TestSendTaskWire:
         assert env["id"] == corr_id
         assert env["params"]["message"]["content"][0]["text"] == "do X"
 
+    @pytest.mark.asyncio
+    async def test_send_task_record_false_skips_task_store(self):
+        """record=False (stateless message) — the sync exchange returns the
+        reply but never writes the task store."""
+        from slife.a2a.task_store import get_store
+
+        client = self._client()
+        adapter = client._adapter
+
+        async def _publish(topic, payload, qos=1, retain=False):
+            adapter.published.append((topic, payload))
+            cid = json.loads(payload).get("id")
+            fut = client._pending_tasks.get(cid)
+            if fut and not fut.done():
+                fut.set_result("replied")
+
+        adapter.publish = _publish
+
+        result = await client.send_task(
+            AgentName("peer-1"), "hi", timeout=5, record=False,
+        )
+        assert result == "replied"
+        assert get_store().list_tasks() == []
+
+    @pytest.mark.asyncio
+    async def test_send_task_async_record_false_skips_task_store(self):
+        """record=False (stateless message) — the async send creates no
+        task-store record."""
+        from slife.a2a.task_store import get_store
+
+        client = self._client()
+        await client.send_task_async(AgentName("peer-1"), "hi", record=False)
+        assert get_store().list_tasks() == []
+
 
 class TestCancelTask:
     """REVIEW C5 — cancel_task returns a status string and never mislabels

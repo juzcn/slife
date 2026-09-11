@@ -123,6 +123,82 @@ class TestPluginTools:
             assert await getattr(plugin, "a2a_cancel_task")("peer-1", "corr-1") == "cancelled"
 
 
+class TestA2aMessageTools:
+    """Stateless message tools — mirror the task tools but never write the
+    task store (a2a_list_tasks / a2a_cancel_task don't see messages)."""
+
+    @pytest.mark.asyncio
+    async def test_send_message_sync_stateless(self):
+        """a2a_send_message sends with record=False and returns the reply."""
+        from slife.a2a.identity import AgentName
+
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            result = await getattr(plugin, "a2a_send_message")("peer-1", "hello")
+        assert result == "result-text"
+        client.send_task.assert_called_once_with(
+            AgentName("peer-1"), "hello", record=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_message_async_auto_completion_kind_message(self):
+        """auto-mode message — the reply completes as kind='message' with the
+        peer preserved (there is no task-store record to look it up)."""
+        from slife.a2a.identity import AgentName
+        from slife.a2a.task_store import get_store, clear_store
+
+        clear_store()
+        plugin._message_sends.clear()
+        plugin._poll_tasks.clear()
+        plugin._task_completions.clear()
+        client = _fake_client()
+        try:
+            with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+                result = await getattr(plugin, "a2a_send_message_async")(
+                    "peer-1", "hello",
+                )
+            assert result == "corr-1"
+            client.send_task_async.assert_called_once_with(
+                AgentName("peer-1"), "hello", record=False,
+            )
+            assert plugin._message_sends.get("corr-1") == "peer-1"
+            assert "corr-1" not in plugin._poll_tasks
+            assert get_store().list_tasks() == []
+
+            await plugin._on_task_result("corr-1", "the answer", False)
+            out = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
+            assert out["task_completions"] == [{
+                "corr_id": "corr-1", "result": "the answer",
+                "cancelled": False, "peer": "peer-1", "kind": "message",
+            }]
+            assert plugin._message_sends == {}
+        finally:
+            clear_store()
+
+    @pytest.mark.asyncio
+    async def test_send_message_async_poll_suppresses_push(self):
+        """poll-mode message — no auto-push; the reply is left for
+        a2a_get_task_result (client-side), and the peer map is consumed."""
+        plugin._message_sends.clear()
+        plugin._poll_tasks.clear()
+        plugin._task_completions.clear()
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            result = await getattr(plugin, "a2a_send_message_async")(
+                "peer-1", "hello", mode="poll",
+            )
+        assert result.startswith("corr-1")
+        assert "a2a_get_task_result" in result
+        assert "corr-1" in plugin._poll_tasks
+        assert plugin._message_sends.get("corr-1") == "peer-1"
+
+        await plugin._on_task_result("corr-1", "the answer", False)
+        out = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
+        assert out["task_completions"] == []
+        assert "corr-1" not in plugin._poll_tasks
+        assert plugin._message_sends == {}
+
+
 class TestIncomingCancel:
     """REVIEW C5 — inbound CancelTask drops the queued task (replying a
     CANCELLED result) and queues a cancel for the harness."""
@@ -217,7 +293,7 @@ class TestHarnessTools:
         out = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
         assert out["task_completions"] == [
             {"corr_id": "cid-1", "result": "the answer",
-             "cancelled": False, "peer": ""},
+             "cancelled": False, "peer": "", "kind": "task"},
         ]
         # Queue is cleared after drain
         assert plugin._inbound_tasks == []
@@ -301,7 +377,8 @@ class TestHarnessTools:
         tools = await plugin.mcp._list_tools()
         by_name = {t.name: t.description for t in tools}
         for name in (
-            "a2a_send_task", "a2a_send_task_async", "a2a_list_agents",
+            "a2a_send_task", "a2a_send_task_async", "a2a_send_message",
+            "a2a_send_message_async", "a2a_list_agents",
             "a2a_get_task_result", "a2a_cancel_task", "a2a_list_tasks",
             "a2a_agent_card", "a2a_broadcast",
         ):

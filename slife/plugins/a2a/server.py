@@ -76,6 +76,10 @@ _presence_events: list[dict] = []
 _cancellations: list[dict] = []
 _task_completions: list[dict] = []  # outbound async results → auto-push to harness
 _poll_tasks: "FifoSet" = FifoSet()  # outbound async task_ids sent in "poll" mode (no auto-push)
+# Outbound stateless message corr_ids → peer name (no task-store record).  A
+# completion pops its entry; a silent peer can only evict past `_MAX_QUEUED`
+# (oldest first, insertion order).
+_message_sends: dict[str, str] = {}
 _MAX_QUEUED = 500
 
 
@@ -138,20 +142,29 @@ async def _on_incoming_task(msg: AgentMessage) -> None:
 
 
 async def _on_task_result(corr_id: str, result: str, cancelled: bool) -> None:
-    """Queue an outbound async-task completion for auto-push to the harness.
+    """Queue an outbound completion (async task or stateless message) for
+    auto-push to the harness.
 
     The result arrived over MQTT (the peer published to our result topic);
     the harness drains this and pushes it into the history so the agent
-    never needs to poll or block on ``a2a_subscribe_task``.
+    never needs to poll or block on subscribe.  A stateless message
+    completion carries ``kind="message"`` and its peer from
+    ``_message_sends`` (messages have no task-store record); a task's peer
+    comes from the store.
     """
-    peer = ""
-    try:
-        from slife.a2a.task_store import get_store
-        rec = get_store().get(corr_id)
-        if rec is not None:
-            peer = rec.agent_name
-    except Exception:
-        pass
+    if corr_id in _message_sends:
+        peer = _message_sends.pop(corr_id, "")
+        kind = "message"
+    else:
+        peer = ""
+        try:
+            from slife.a2a.task_store import get_store
+            rec = get_store().get(corr_id)
+            if rec is not None:
+                peer = rec.agent_name
+        except Exception:
+            pass
+        kind = "task"
     if corr_id in _poll_tasks:
         # Sent in "poll" mode — the caller retrieves via a2a_get_task_result;
         # no auto-push (avoids the redundant double-delivery of poll + push).
@@ -162,7 +175,7 @@ async def _on_task_result(corr_id: str, result: str, cancelled: bool) -> None:
         _task_completions.pop(0)
     _task_completions.append({
         "corr_id": corr_id, "result": result,
-        "cancelled": cancelled, "peer": peer,
+        "cancelled": cancelled, "peer": peer, "kind": kind,
     })
 
 
@@ -247,8 +260,8 @@ async def a2a_send_task_async(agent_name: str, task: str, mode: str = "auto") ->
     Args:
         agent_name: Remote peer's agent_name (from a2a_list_agents).
         task: The task text/instruction for the peer.
-        mode: 'auto' (default) auto-push the result; 'poll' — retrieve with
-            a2a_get_task_result.
+        mode: 'auto' (default) auto-push the result (also pollable);
+            'poll' — no push, retrieve with a2a_get_task_result.
     """
     if mode not in ("auto", "poll"):
         return f"Error: mode must be 'auto' or 'poll', got {mode!r}."
@@ -258,6 +271,66 @@ async def a2a_send_task_async(agent_name: str, task: str, mode: str = "auto") ->
         # Bound the poll-tracking set — a silent peer would otherwise
         # accumulate ids forever (each id is only removed when its result
         # arrives).  Eviction drops the OLDEST id, not an arbitrary one (F10).
+        _poll_tasks.add(corr_id)
+        _poll_tasks.evict_to(_MAX_QUEUED)
+        return (
+            f"{corr_id}\n[auto-delivery disabled (mode=poll) — retrieve with "
+            f"a2a_get_task_result]"
+        )
+    return corr_id
+
+
+@mcp.tool(
+    name="a2a_send_message",
+    description="Send a stateless message to a remote A2A mesh peer and wait "
+    "for its reply.",
+)
+async def a2a_send_message(agent_name: str, text: str) -> str:
+    """Send a stateless message to *agent_name* and wait for its reply.
+
+    A conversational ping-pong — unlike a2a_send_task it is not recorded as
+    a task (a2a_list_tasks / a2a_cancel_task don't see it).
+
+    Args:
+        agent_name: Remote peer's agent_name (from a2a_list_agents).
+        text: The message text for the peer.
+    """
+    client = await _ensure_connected()
+    return await client.send_task(AgentName(agent_name), text, record=False)
+
+
+@mcp.tool(
+    name="a2a_send_message_async",
+    description="Send a stateless message to a remote A2A mesh peer without "
+    "waiting — returns a message id; mode 'poll' disables auto-delivery "
+    "(retrieve with a2a_get_task_result).",
+)
+async def a2a_send_message_async(
+    agent_name: str, text: str, mode: str = "auto",
+) -> str:
+    """Send a stateless message without waiting — returns the message id.
+
+    Like a2a_send_message the exchange is not recorded as a task.
+
+    Args:
+        agent_name: Remote peer's agent_name (from a2a_list_agents).
+        text: The message text for the peer.
+        mode: 'auto' (default) auto-push the reply (also pollable);
+            'poll' — no push, retrieve with a2a_get_task_result.
+    """
+    if mode not in ("auto", "poll"):
+        return f"Error: mode must be 'auto' or 'poll', got {mode!r}."
+    client = await _ensure_connected()
+    corr_id = await client.send_task_async(
+        AgentName(agent_name), text, record=False,
+    )
+    # Bound the message-peer map — a silent peer would otherwise accumulate
+    # ids forever (each id is only removed when its reply arrives).  Eviction
+    # drops the OLDEST id, not an arbitrary one (F10).
+    _message_sends[corr_id] = str(agent_name)
+    if len(_message_sends) > _MAX_QUEUED:
+        _message_sends.pop(next(iter(_message_sends)))
+    if mode == "poll":
         _poll_tasks.add(corr_id)
         _poll_tasks.evict_to(_MAX_QUEUED)
         return (

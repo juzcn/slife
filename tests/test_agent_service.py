@@ -1179,6 +1179,55 @@ class TestAgentServiceA2A:
         assert posted[0].content == "[Task cid-1 from Jack] do X"
         assert posted[0].correlation_id == "cid-1"
 
+    @pytest.mark.asyncio
+    async def test_a2a_poll_frames_completion_by_kind(self, sample_config):
+        """Auto-pushed completions are framed by kind: a stateless message
+        reply reads "replied to your message", a task "completed async task"."""
+        import json as _json
+
+        service = AgentService(sample_config)
+        mock_a2a = MagicMock()
+        mock_a2a.is_connected = True
+        calls = [0]
+
+        async def mock_call_tool(name, _):
+            if name == "__a2a_drain_incoming":
+                calls[0] += 1
+                if calls[0] == 1:
+                    return _json.dumps({
+                        "tasks": [], "presence": [], "cancellations": [],
+                        "task_completions": [
+                            {"corr_id": "c-task", "result": "the answer",
+                             "cancelled": False, "peer": "peer-1",
+                             "kind": "task"},
+                            {"corr_id": "c-msg", "result": "hi",
+                             "cancelled": False, "peer": "peer-2",
+                             "kind": "message"},
+                        ],
+                    })
+                service._plugins["a2a"].client = None  # end the loop
+                return _json.dumps({
+                    "tasks": [], "presence": [],
+                    "cancellations": [], "task_completions": [],
+                })
+            return "{}"
+
+        mock_a2a.call_tool = mock_call_tool
+        service._plugins["a2a"].client = mock_a2a
+
+        posted = []
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock(side_effect=lambda msg: posted.append(msg))
+        mock_inbox.cancel_correlation = MagicMock()
+        service.inbox = mock_inbox
+
+        await service._a2a_poll_loop(interval=0.001)
+
+        contents = [m.content for m in posted]
+        assert len(contents) == 2
+        assert "Peer **peer-1** completed async task (ID: `c-task`):\n\nthe answer" in contents
+        assert "Peer **peer-2** replied to your message:\n\nhi" in contents
+
 
 # ── AgentService subagent ───────────────────────────────────────────────────
 

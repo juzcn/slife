@@ -2267,16 +2267,25 @@ class AgentService:
                     peer = cev.get("peer", "") or corr_id or "peer"
                     if not result:
                         continue
-                    state = "cancelled" if cev.get("cancelled") else "completed"
-                    await self.inbox.post(AgentMessage(
-                        source=AgentName(peer),
-                        content=(
+                    if cev.get("kind") == "message":
+                        # Stateless message reply — framed as a reply, not a
+                        # task completion (the caller sent a message).
+                        content = (
+                            f"Peer **{peer}** replied to your message:\n\n"
+                            f"{result}"
+                        )
+                    else:
+                        state = "cancelled" if cev.get("cancelled") else "completed"
+                        content = (
                             f"Peer **{peer}** {state} async task "
                             f"(ID: `{corr_id}`):\n\n{result}"
-                        ),
+                        )
+                    await self.inbox.post(AgentMessage(
+                        source=AgentName(peer),
+                        content=content,
                         channel=Channel.a2a(peer),
                     ))
-                    logger.debug("a2a_task_completed_autopushed peer=%s task=%s", peer, corr_id)
+                    logger.debug("a2a_completion_autopushed peer=%s task=%s kind=%s", peer, corr_id, cev.get("kind", "task"))
             except asyncio.CancelledError:
                 break
             except Exception as e:
