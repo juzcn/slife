@@ -338,7 +338,8 @@ class SubagentProcess:
         """Send a task without waiting for the result — returns *rpc_id*.
 
         *mode* ``"auto"`` (default) auto-pushes the result to the parent
-        when the worker completes; ``"poll"`` suppresses the push — the
+        when the worker completes — it ALSO stays retrievable via
+        :meth:`get_task_result`; ``"poll"`` suppresses the push — the
         caller retrieves the result via :meth:`get_task_result`.
         """
         if not self.is_running or not self._process or not self._process.stdin:
@@ -577,17 +578,19 @@ class SubagentProcess:
             if self._inflight > 0: self._inflight -= 1
             if "error" in msg:
                 err = msg["error"].get("message", "Unknown")
-                self._store_async_result(rpc_id, f"Error: {err}")
-                self._record_update(rpc_id, "failed", f"Error: {err}")
+                result_text = f"Error: {err}"
+                self._store_async_result(rpc_id, result_text)
+                self._record_update(rpc_id, "failed", result_text)
             else:
                 result_text = str(msg.get("result", ""))
                 self._store_async_result(rpc_id, result_text)
                 self._record_update(rpc_id, "completed", result_text)
             # Notify the manager so it can auto-push the result to the user,
             # unless the task was sent in "poll" mode — the caller retrieves
-            # it via get_task_result instead (no redundant push).
+            # it via get_task_result instead (no redundant push).  The store
+            # keeps the result in BOTH modes, so an auto task is pollable too.
             if rec.get("mode") != "async-poll":
-                self._notify_manager_task_done(rpc_id)
+                self._notify_manager_task_done(rpc_id, result_text)
         elif rpc_id is None:
             # JSON-RPC notification or ready signal (no id)
             if isinstance(msg.get("result"), dict) and msg["result"].get("ready"):
@@ -622,11 +625,18 @@ class SubagentProcess:
             running_check=lambda: self._running,
         )
 
-    def _notify_manager_task_done(self, task_id: str) -> None:
-        """Signal the manager that an async task has completed."""
+    def _notify_manager_task_done(self, task_id: str, result_text: str) -> None:
+        """Signal the manager that an async task has completed.
+
+        *result_text* is passed in directly (captured when the result was
+        stored) rather than re-read from :attr:`_async_results`: a
+        ``mode="auto"`` task's result stays retrievable via
+        :meth:`get_task_result`, and a poll POPS the stored entry — the
+        scheduled push must still deliver the real text, never an empty
+        string for a completed task.
+        """
         mgr = get_manager()
         if mgr is not None and mgr.on_task_complete is not None:
-            result_text = self._async_results.get(task_id, "")
             import asyncio
             try:
                 loop = asyncio.get_running_loop()
@@ -695,8 +705,9 @@ class SubagentManager:
     ) -> str:
         """Send a task without waiting — returns *rpc_id* immediately.
 
-        *mode* ``"auto"`` (default) auto-pushes the result when complete;
-        ``"poll"`` suppresses the push (retrieve via get_task_result).
+        *mode* ``"auto"`` (default) auto-pushes the result when complete
+        (the result stays retrievable via get_task_result); ``"poll"``
+        suppresses the push (retrieve via get_task_result).
         """
         if (proc := self._subagents.get(agent_name)) is None:
             raise ValueError(f"Subagent '{agent_name}' not found")

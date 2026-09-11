@@ -5,7 +5,11 @@ import pytest; pytestmark = pytest.mark.unit
 
 import pytest
 
-from slife.agent.message_history import MessageHistory, unwrap_info_envelope
+from slife.agent.message_history import (
+    MessageHistory,
+    subagent_marker,
+    unwrap_info_envelope,
+)
 
 
 # ── Display unwrapping ────────────────────────────────────────────────
@@ -34,6 +38,37 @@ class TestUnwrapInfoEnvelope:
         assert unwrap_info_envelope(
             '[WECHAT] hello [INFO: {"turn_id": 5}]'
         ) == 'hello {"turn_id": 5}'
+
+    def test_strips_leading_subagent_marker(self):
+        # The [Subagent:…] envelope names the worker+task for the LLM; the
+        # TUI drops it (the channel already shows as Subagent(<name>)>).
+        assert unwrap_info_envelope(
+            '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] done'
+        ) == "done"
+
+    def test_subagent_marker_builds_json_payload(self):
+        # Keys mirror the LLM-facing tool arguments (subagent_name / task_id).
+        assert subagent_marker("researcher", "t-3") == (
+            '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] '
+        )
+        assert subagent_marker("researcher") == (
+            '[Subagent:{"subagent_name": "researcher"}] '
+        )
+
+    def test_subagent_literal_in_body_left_alone(self):
+        # Only the injected leading envelope is stripped.
+        assert unwrap_info_envelope(
+            '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] '
+            "read [Subagent: literally]"
+        ) == "read [Subagent: literally]"
+
+    def test_restored_subagent_turn_renders_clean(self):
+        # A restored subagent turn carries the marker AND the trailing INFO
+        # footnote — neither reaches the human; the bubble reads clean.
+        assert unwrap_info_envelope(
+            '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] '
+            "the result [INFO: {\"turn_id\": 5}]"
+        ) == "the result {\"turn_id\": 5}"
 
 
 # ── Construction ─────────────────────────────────────────────────────

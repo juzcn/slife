@@ -2317,6 +2317,7 @@ class AgentService:
         # generation died is never announced as "report saved".
         async def _on_subagent_done(agent_name: str, task_id: str, result: str) -> None:
             from slife.a2a.identity import AgentMessage, Channel
+            from slife.agent.message_history import subagent_marker
             from slife.subagent.identity import SUBAGENT
             from slife.agent.schedules import (
                 _SCHEDULE_WORKERS, _schedule_completion_content,
@@ -2325,7 +2326,11 @@ class AgentService:
             if scheduled:
                 content = await _schedule_completion_content(self, agent_name)
             else:
+                # The [Subagent:…] marker names the worker and task id so the
+                # LLM can attribute the pushed result; the TUI drops it for
+                # display (the channel already shows as Subagent(<name>)>).
                 content = (
+                    f"{subagent_marker(agent_name, task_id)}"
                     f"Subagent **{agent_name}** completed async task "
                     f"(ID: `{task_id}`):\n\n"
                     f"{result}"

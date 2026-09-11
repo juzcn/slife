@@ -1266,6 +1266,11 @@ class TestAgentServiceSubagent:
 
             await cb("researcher", "t-3", "the result")
             content2 = service.inbox.post.call_args.args[0].content
+            # The auto-push carries the [Subagent:…] marker naming the worker
+            # and task id, so the LLM can attribute the pushed result.
+            assert content2.startswith(
+                '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] '
+            )
             assert "Subagent **researcher**" in content2
             assert "the result" in content2
         finally:

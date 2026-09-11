@@ -9,8 +9,10 @@ this agent (via the a2a plugin).
 This module is fully decoupled from A2A:
   * lifecycle — ``spawn_subagent`` / ``list_subagents`` / ``stop_subagent``
   * delegation — ``subagent_send_task`` (sync wait),
-    ``subagent_send_task_async`` (async, result auto-pushed to the parent),
-    ``subagent_get_task_result`` (poll an async result)
+    ``subagent_send_task_async`` (async; mode=auto result auto-pushed to the
+    parent, mode=poll not pushed),
+    ``subagent_get_task_result`` (poll an async result — works for both
+    modes: an auto-pushed result stays retrievable)
 
 There is deliberately no ``subagent_subscribe_task`` — async results are
 auto-subscribed: when a worker finishes, the result is pushed to the
@@ -285,7 +287,8 @@ class SubagentSendTaskAsyncTool(Tool):
 
     Returns a task_id.  Delivery of the result is chosen at send time:
     ``mode="auto"`` (default) pushes the result to this agent's
-    history when the worker finishes; ``mode="poll"`` suppresses the
+    history when the worker finishes — the result ALSO stays retrievable
+    with ``subagent_get_task_result``; ``mode="poll"`` suppresses the
     push — the caller retrieves it with ``subagent_get_task_result``.
     """
 
@@ -293,7 +296,8 @@ class SubagentSendTaskAsyncTool(Tool):
     category = "Subagent"
     description = (
         "Send a task to a local subagent worker without waiting — returns a "
-        "task_id; mode 'poll' disables auto-push (retrieve with "
+        "task_id; mode 'auto' (default) auto-pushes the result and stays "
+        "pollable, mode 'poll' disables auto-push (retrieve with "
         "subagent_get_task_result)."
     )
     parameters: ClassVar[dict] = make_params(
@@ -303,7 +307,7 @@ class SubagentSendTaskAsyncTool(Tool):
             "type": "string",
             "enum": ["auto", "poll"],
             "default": "auto",
-            "description": "'auto' (default) auto-push the result; 'poll' — retrieve with subagent_get_task_result.",
+            "description": "'auto' (default) auto-push the result (also pollable); 'poll' — no push, retrieve with subagent_get_task_result.",
         },
     )
 
@@ -327,7 +331,9 @@ class SubagentSendTaskAsyncTool(Tool):
                 )
             return (
                 f"Task sent to subagent '{subagent_name}' (task_id: {rpc_id}). "
-                "The result will be delivered automatically when complete."
+                "Auto-push enabled (mode=auto): the result will be delivered "
+                "automatically when complete — it can also be polled at any "
+                "time with subagent_get_task_result."
             )
         except Exception as e:
             return f"Error sending task to subagent '{subagent_name}': {e}"

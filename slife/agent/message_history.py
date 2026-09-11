@@ -90,6 +90,13 @@ INFO_PREFIX = "[INFO: "
 #: ``Wechat>`` bubble prefix, so ``unwrap_info_envelope`` strips the marker
 #: for display (the model still sees the full content with the marker).
 WECHAT_MARKER = "[WECHAT] "
+#: Channel marker for an auto-pushed subagent completion: ``[Subagent:…]``
+#: with a JSON payload naming the worker and its task id, so the LLM can tell
+#: which subagent's which task pushed the result (the channel itself never
+#: enters the context by default).  Like ``[WECHAT]`` it is machine-facing —
+#: the TUI already shows the ``Subagent(<name>)> `` bubble prefix, so
+#: ``unwrap_info_envelope`` strips the marker for display.
+SUBAGENT_PREFIX = "[Subagent:"
 #: Runtime-only trim note: ``[INFO: <N> oldest turns have been removed from
 #: context]``.  Appended by the loop after a trim — NEVER persisted: a
 #: restored session is already the trimmed state, so a "past session was
@@ -154,6 +161,22 @@ def _trim_note_in(content: str) -> int | None:
     return start if payload[:1].isdigit() else None
 
 
+def subagent_marker(subagent_name: str, task_id: str | None = None) -> str:
+    """Content prefix for an auto-pushed subagent completion.
+
+    ``[Subagent:{"subagent_name": …, "task_id": …}] `` — the JSON names the
+    worker and its task id so the LLM can attribute the pushed result.  The
+    keys mirror the LLM-facing subagent tool arguments (``subagent_name`` /
+    ``task_id``).  The marker is machine-facing; ``unwrap_info_envelope``
+    drops it for display (the TUI shows the ``Subagent(<name>)> `` bubble
+    prefix instead).  A ``None`` task id is omitted from the payload.
+    """
+    payload: dict[str, str] = {"subagent_name": subagent_name}
+    if task_id is not None:
+        payload["task_id"] = task_id
+    return f"{SUBAGENT_PREFIX}{json.dumps(payload, ensure_ascii=False)}] "
+
+
 def unwrap_info_envelope(text: str) -> str:
     """Display form of a machine-injected marker in message text.
 
@@ -165,16 +188,22 @@ def unwrap_info_envelope(text: str) -> str:
       JSON turn footnote as ``{"turn_id": N, …}``, the prose trim note as
       ``N oldest turns have been removed from context``);
     - a leading ``[WECHAT]`` marker is dropped entirely — the channel is
-      already shown by the ``Wechat>`` bubble prefix.
+      already shown by the ``Wechat>`` bubble prefix;
+    - a leading ``[Subagent:…]`` envelope is dropped entirely — the channel
+      is already shown by the ``Subagent(<name>)> `` bubble prefix.
 
     Only the *trailing* INFO envelope is unwrapped (``rfind``) — an
     annotation is always a suffix, and a user message may legitimately
-    contain the literal ``[INFO:`` in prose.  Only a *leading* WECHAT
-    marker (exactly our injected prefix) is stripped.  Returns *text*
-    unchanged when no marker is present.
+    contain the literal ``[INFO:`` in prose.  Only *leading* WECHAT and
+    Subagent markers (exactly our injected prefixes) are stripped.  Returns
+    *text* unchanged when no marker is present.
     """
     if text.startswith(WECHAT_MARKER):
         text = text[len(WECHAT_MARKER):]
+    if text.startswith(SUBAGENT_PREFIX):
+        end = text.find("]", len(SUBAGENT_PREFIX))
+        if end != -1:
+            text = text[end + 1:].lstrip()
     start = text.rfind(INFO_PREFIX)
     if start == -1:
         return text

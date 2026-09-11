@@ -233,6 +233,40 @@ class TestSubagentProcessReadStdout:
             clear_manager()
 
     @pytest.mark.asyncio
+    async def test_dispatch_auto_mode_keeps_result_pollable(self):
+        """mode='auto' pushes AND keeps the result retrievable — a caller may
+        poll a pushed result in the same turn (auto is not single-use)."""
+        proc = self._proc()
+        manager = Mock(spec=SubagentManager)
+        manager.on_task_complete = AsyncMock()
+        set_manager(manager)
+        try:
+            proc._record_send("rpc-1", "do X", mode="async")
+            proc._dispatch_message({"id": "rpc-1", "result": "done"})
+            await asyncio.sleep(0)
+            manager.on_task_complete.assert_awaited_once_with("test", "rpc-1", "done")
+            assert proc.get_task_result("rpc-1") == "done"
+        finally:
+            clear_manager()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_auto_push_survives_early_poll(self):
+        """The auto-push carries the stored text even if a poll consumed the
+        store entry first — it must not re-read _async_results (which pops)."""
+        proc = self._proc()
+        manager = Mock(spec=SubagentManager)
+        manager.on_task_complete = AsyncMock()
+        set_manager(manager)
+        try:
+            proc._record_send("rpc-1", "do X", mode="async")
+            proc._dispatch_message({"id": "rpc-1", "result": "done"})
+            proc.get_task_result("rpc-1")  # poll consumes the stored entry
+            await asyncio.sleep(0)
+            manager.on_task_complete.assert_awaited_once_with("test", "rpc-1", "done")
+        finally:
+            clear_manager()
+
+    @pytest.mark.asyncio
     async def test_dispatch_poll_mode_skips_manager_notify(self):
         """mode='poll' tasks don't auto-push — the result stays retrievable
         via get_task_result instead."""
