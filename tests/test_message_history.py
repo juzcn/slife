@@ -9,6 +9,7 @@ from slife.agent.message_history import (
     MessageHistory,
     subagent_marker,
     unwrap_info_envelope,
+    wechat_marker,
 )
 
 
@@ -37,6 +38,31 @@ class TestUnwrapInfoEnvelope:
     def test_wechat_marker_then_info_envelope(self):
         assert unwrap_info_envelope(
             '[WECHAT] hello [INFO: {"turn_id": 5}]'
+        ) == 'hello {"turn_id": 5}'
+
+    def test_strips_leading_wechat_json_marker(self):
+        # The [Wechat:…] envelope names the peer+thread for the LLM; the
+        # TUI drops it (the channel already shows as Wechat>).
+        assert unwrap_info_envelope(
+            '[Wechat:{"peer_wechat_id": "wx_1", "context_token": "c1"}] 你好'
+        ) == "你好"
+        # The legacy prose marker on old stored rows is stripped too.
+        assert unwrap_info_envelope("[WECHAT] old row") == "old row"
+        # Strips exactly what the builder emits.
+        assert unwrap_info_envelope(wechat_marker("wx_1", "c1") + "hi") == "hi"
+
+    def test_wechat_marker_builds_json_payload(self):
+        # Keys mirror the wechat_send_message arguments (peer/context).
+        assert wechat_marker("wx_1", "c1") == (
+            '[Wechat:{"peer_wechat_id": "wx_1", "context_token": "c1"}] '
+        )
+        assert wechat_marker("wx_1") == (
+            '[Wechat:{"peer_wechat_id": "wx_1"}] '
+        )
+
+    def test_wechat_json_marker_then_info_envelope(self):
+        assert unwrap_info_envelope(
+            '[Wechat:{"peer_wechat_id": "wx_1"}] hello [INFO: {"turn_id": 5}]'
         ) == 'hello {"turn_id": 5}'
 
     def test_strips_leading_subagent_marker(self):

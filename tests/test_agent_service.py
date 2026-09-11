@@ -1604,7 +1604,10 @@ class TestAgentServiceWeChat:
         mock_inbox.post.assert_called_once()
         msg = mock_inbox.post.call_args[0][0]
         assert msg.source == WECHAT
-        assert msg.content == "[WECHAT] 你好"
+        assert msg.content == (
+            '[Wechat:{"peer_wechat_id": "wx_user_123", '
+            '"context_token": "ctx_abc"}] 你好'
+        )
         assert msg.metadata["channel"] == "wechat"
         assert msg.on_reply is None
 
@@ -1642,7 +1645,9 @@ class TestAgentServiceWeChat:
         # Only the non-empty message is posted, with the channel marker.
         assert mock_inbox.post.call_count == 1
         msg = mock_inbox.post.call_args[0][0]
-        assert msg.content == "[WECHAT] real"
+        assert msg.content == (
+            '[Wechat:{"peer_wechat_id": "wx_2", "context_token": "c2"}] real'
+        )
 
     @pytest.mark.asyncio
     async def test_wechat_message_has_no_auto_dispatch(self, sample_config):
@@ -1683,7 +1688,10 @@ class TestAgentServiceWeChat:
 
         msg = mock_inbox.post.call_args[0][0]
         assert msg.source == WECHAT
-        assert msg.content == "[WECHAT] 帮我查一下天气"
+        assert msg.content == (
+            '[Wechat:{"peer_wechat_id": "wx_123", '
+            '"context_token": "ctx_xyz"}] 帮我查一下天气'
+        )
         # No on_reply → the assistant's final text is NOT routed back to
         # WeChat; the model must send its reply via wechat_send_message.
         assert msg.on_reply is None
@@ -1725,7 +1733,9 @@ class TestAgentServiceWeChat:
         # starts the typing keep-alive. Verify message arrived at inbox instead.
         mock_inbox.post.assert_called_once()
         msg = mock_inbox.post.call_args[0][0]
-        assert msg.content == "[WECHAT] hello"
+        assert msg.content == (
+            '[Wechat:{"peer_wechat_id": "wx_1", "context_token": "ctx_1"}] hello'
+        )
         assert msg.on_reply is None
 
     @pytest.mark.asyncio

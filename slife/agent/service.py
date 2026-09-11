@@ -1428,7 +1428,7 @@ class AgentService:
         """
         import json as _json
         from slife.a2a.identity import AgentMessage, Channel, WECHAT
-        from slife.agent.message_history import WECHAT_MARKER
+        from slife.agent.message_history import wechat_marker
 
         logger.info("wechat_poll_loop_start interval=%.1fs", interval)
 
@@ -1443,20 +1443,27 @@ class AgentService:
                 msgs = data.get("messages", [])
 
                 for m in msgs:
-                    from_id = m.get("to_user_id", "")
+                    peer_id = m.get("to_user_id", "")
                     text = m.get("text", "")
+                    context_token = m.get("context_token", "")
 
                     if not text.strip():
                         continue
 
                     msg = AgentMessage(
                         source=WECHAT,
-                        content=f"{WECHAT_MARKER}{text}",
+                        # The [Wechat:{…}] marker carries the peer + thread so
+                        # the model can reply via wechat_send_message; the TUI
+                        # drops it for display (channel already shows Wechat>).
+                        content=(
+                            f"{wechat_marker(peer_id, context_token or None)}"
+                            f"{text}"
+                        ),
                         metadata={"channel": "wechat"},
                         channel=Channel.wechat(),
                     )
                     await self.inbox.post(msg)
-                    logger.debug("wechat_in from=%s text=%.100s", from_id, text)
+                    logger.debug("wechat_in from=%s text=%.100s", peer_id, text)
 
             except asyncio.CancelledError:
                 break

@@ -84,11 +84,17 @@ def estimate_message_tokens(msg: dict) -> int:
 #: Envelope of machine-injected annotations (``[INFO: …]``).  Shared by the
 #: restore path, the save path, and the TUI ``UserMessage`` styler.
 INFO_PREFIX = "[INFO: "
-#: Channel marker prepended to an incoming WeChat peer message in the stored
-#: content (the LLM reads it to know the turn arrived over WeChat).  It is a
-#: machine annotation — the TUI already shows the channel as its own
-#: ``Wechat>`` bubble prefix, so ``unwrap_info_envelope`` strips the marker
-#: for display (the model still sees the full content with the marker).
+#: Channel marker for an incoming WeChat peer message: ``[Wechat:…]`` with a
+#: JSON payload carrying what ``wechat_send_message`` needs to reply
+#: (``peer_wechat_id``, ``context_token``), so the LLM can attribute the
+#: message to its sender and reply without a separate status lookup.  The
+#: keys mirror the tool's arguments.  It is machine-facing — the TUI shows
+#: the ``Wechat>`` bubble prefix and ``unwrap_info_envelope`` strips the
+#: marker for display (the model still sees the full content).
+WECHAT_PREFIX = "[Wechat:"
+#: Legacy marker for pre-JSON WeChat rows (old ``[WECHAT] `` prose prefix).
+#: Kept so restored history written before :data:`WECHAT_PREFIX` still
+#: renders without the marker; new messages use the JSON marker.
 WECHAT_MARKER = "[WECHAT] "
 #: Channel marker for an auto-pushed subagent completion: ``[Subagent:…]``
 #: with a JSON payload naming the worker and its task id, so the LLM can tell
@@ -161,6 +167,22 @@ def _trim_note_in(content: str) -> int | None:
     return start if payload[:1].isdigit() else None
 
 
+def wechat_marker(peer_wechat_id: str, context_token: str | None = None) -> str:
+    """Content prefix for an incoming WeChat peer message.
+
+    ``[Wechat:{"peer_wechat_id": …, "context_token": …}] `` — the JSON keys
+    mirror the ``wechat_send_message`` arguments so the model can reply to
+    the right peer and thread without a separate status lookup.  The marker
+    is machine-facing; ``unwrap_info_envelope`` drops it for display (the
+    TUI shows the ``Wechat> `` bubble prefix instead).  A ``None`` context
+    token is omitted from the payload.
+    """
+    payload: dict[str, str] = {"peer_wechat_id": peer_wechat_id}
+    if context_token is not None:
+        payload["context_token"] = context_token
+    return f"{WECHAT_PREFIX}{json.dumps(payload, ensure_ascii=False)}] "
+
+
 def subagent_marker(subagent_name: str, task_id: str | None = None) -> str:
     """Content prefix for an auto-pushed subagent completion.
 
@@ -187,23 +209,25 @@ def unwrap_info_envelope(text: str) -> str:
     - a trailing ``[INFO: …]`` envelope renders as its payload alone (the
       JSON turn footnote as ``{"turn_id": N, …}``, the prose trim note as
       ``N oldest turns have been removed from context``);
-    - a leading ``[WECHAT]`` marker is dropped entirely — the channel is
-      already shown by the ``Wechat>`` bubble prefix;
+    - a leading ``[Wechat:…]`` envelope is dropped entirely — the channel is
+      already shown by the ``Wechat>`` bubble prefix (the legacy prose
+      ``[WECHAT] `` marker on older stored rows is dropped too);
     - a leading ``[Subagent:…]`` envelope is dropped entirely — the channel
       is already shown by the ``Subagent(<name>)> `` bubble prefix.
 
     Only the *trailing* INFO envelope is unwrapped (``rfind``) — an
     annotation is always a suffix, and a user message may legitimately
-    contain the literal ``[INFO:`` in prose.  Only *leading* WECHAT and
-    Subagent markers (exactly our injected prefixes) are stripped.  Returns
-    *text* unchanged when no marker is present.
+    contain the literal ``[INFO:`` in prose.  Only *leading* Wechat, Subagent
+    (and legacy WECHAT) markers — exactly our injected prefixes — are
+    stripped.  Returns *text* unchanged when no marker is present.
     """
     if text.startswith(WECHAT_MARKER):
         text = text[len(WECHAT_MARKER):]
-    if text.startswith(SUBAGENT_PREFIX):
-        end = text.find("]", len(SUBAGENT_PREFIX))
-        if end != -1:
-            text = text[end + 1:].lstrip()
+    for prefix in (WECHAT_PREFIX, SUBAGENT_PREFIX):
+        if text.startswith(prefix):
+            end = text.find("]", len(prefix))
+            if end != -1:
+                text = text[end + 1:].lstrip()
     start = text.rfind(INFO_PREFIX)
     if start == -1:
         return text

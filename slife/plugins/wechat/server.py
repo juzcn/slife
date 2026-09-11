@@ -542,7 +542,7 @@ async def wechat_send_message(
 
     Args:
         peer_wechat_id: The WeChat user id to message (from
-            wechat_check_status.last_contact / the [WECHAT: ...] input marker).
+            wechat_check_status.last_contact / the [Wechat:{...}] input marker).
         context_token: Thread context token; empty for the first message.
         text: The message body.
     """
