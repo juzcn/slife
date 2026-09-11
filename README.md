@@ -345,7 +345,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | embeddings | `embeddings_model_list`, `embeddings_enable`, `embeddings_model_set`, `embeddings_model_remove`, `embeddings_model_switch` |
 | mcp | `mcp_tool_load` |
 
-The A2A mesh tools (`a2a_*`, 8 of them) and all plugin tools are hosted in plugins, not the native tool set — see below.
+The A2A mesh tools (`a2a_*`, 10 of them) and all plugin tools are hosted in plugins, not the native tool set — see below.
 
 Every tool additionally accepts three tool meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt in the chat — Y approve / N deny / Esc deny).
 
@@ -393,7 +393,7 @@ While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_
 
 ### Scheduled Tasks
 
-Ask the agent to do something on a schedule — "write a diary entry every night at midnight", "summarize the week every Friday" — and it registers a cron-scheduled task (`scheduled_task_set`). The task name is also its worker's name, so it should be a short ASCII identifier. When a task fires, the agent dispatches the work to a subagent worker named after the task (`run_schedule_now`) rather than doing it inline, and the worker saves the result as a **report** in the file cabinet (`report_save`) and notifies you when done. Every fire is recorded (`scheduled_run_list`), so you can see what ran and what it produced (`report_list` / `report_read`).
+Ask the agent to do something on a schedule — "write a diary entry every night at midnight", "summarize the week every Friday" — and it registers a cron-scheduled task (`scheduled_task_set`). The task name is also its worker's name, so it should be a short ASCII identifier. When a task fires, the agent dispatches the work to a subagent worker named after the task (`run_schedule_now`) rather than doing it inline, and the worker saves the result as a **report** in the file cabinet (`report_save`) and notifies you when done. Every fire is recorded (`scheduled_run_list`), so you can see what ran and what it produced (`report_list` / `report_read`). A task's **description is required** at creation (`scheduled_task_set`) — it is the worker's instruction, so an empty task cannot exist. `run_schedule_now` accepts `clone_context=True` to give the worker a clone of the current conversation when the task depends on what you've been discussing; omit it for self-contained tasks.
 
 Tasks fire **only while Slife is running**. At the next start a one-shot sweep settles what a previous session left behind in `scheduled_run_list`: runs that never finished become **failed**, and fires that were due while Slife was closed are marked **missed**. Nothing is announced and nothing waits for your input — a failed or missed run can still be backfilled with `run_schedule_now` (it fires immediately) or closed with `scheduled_run_skip`.
 
