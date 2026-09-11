@@ -21,6 +21,7 @@
 15. [Logging Convention](#logging-convention) — sinks, log vs TUI
 16. [Dev vs. Production Data Directory](#dev-vs-production-data-directory)
 17. [Project Structure](#project-structure)
+18. [Context Harnessing](CONTEXT_HARNESSING.md) — channels, markers, harness tool-pair (standalone)
 
 ---
 
@@ -216,6 +217,11 @@ The agent is otherwise purely user-driven — no input, no activity. A heartbeat
 - The heartbeat history is separate (source `heartbeat`), so the autonomous reflections persist in the diary without polluting the human history.
 
 ### Context Injection
+
+> The authoritative description of the mechanisms below — channels, markers,
+> and the `_turn_prompt` harness tool-pair — is
+> [CONTEXT_HARNESSING.md](CONTEXT_HARNESSING.md); this section is the
+> condensed overview.
 
 The system introduces information into the context on its own initiative in three ways, distinguished by *what* is injected and *whether it persists*. Two orthogonal notions run through the forms below. The **channel** names the source of the message — its sender identity relative to the main agent's inbox, recoverable from the message alone, persisted with the turn, and by default not part of the LLM context. The **marker** is the machine-generated notation an injection carries (`[Heartbeat]`, `[Schedule <name>]`, the `[INFO: …]` footnote/trim note). A marker never determines a channel and a channel never forces a marker: a scheduled task, for instance, is a marker whose trigger rides the system channel and whose completion rides the subagent channel.
 

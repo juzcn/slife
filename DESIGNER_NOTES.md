@@ -123,25 +123,34 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 6.4 多wechat接入
 
-7. Channel 设计
+7. Context Harnessing
 
-Channel 是指主Agent的inbox的来源， 目前有：
+7.1 Tool Pair
 
-- TUI：用户输入
-- 心跳 
-- 定时任务
-- Wechat：用户微信输入
-- A2A：peer 输入
-- Subagent：执行任务的结果自动推送
+_turn_prompt: Turn的提示词，每一轮开始，自动调用_turn_prompt， 用tool pair message注入到上下文，工具结果 turn_prompt.j2, 进入记忆。目的是让大模型在每轮开始知道更新的系统状态信息。 user → [attach_image pair] → _turn_prompt pair → LLM.
 
+7.2 Context Marker
 
+- slife 启动时，在每一个恢复的Turn的user message开头注入 [Turn:json] , 不进入记忆。目的是让agent知道上下文中每个Turn的id。
+- slife 当上下文达到80%上限。系统移除历史turns，使之降到20%（靠估算）。在assitant message尾部追加 [Turn: ... removed]，不进入记忆。目的是让大模型知道发生了截断，上下文中移除了多少Turns. trailing footnote. 
+7.3 Channel and Markers
 
+Channel 是指Agent Loop Inbox的来源，TUI是默认的、正常的channel。
 
+- Channel Heartbeat：系统每隔1800秒（默认值），向Inbox注入 [Heartbeat] click user Message， agent loop 闲时注入，忙时跳过。TUI 过滤这条User message，在状态栏提示；如果assistant message = '.', TUI过滤掉，非'.' 显示 自主 信息。进入记忆。使用silent handler，TUI过滤中间过程。
 
+- Channel Subagent：只有当创建的subagent是自动推送结果时才会出现。自动推送的结果要加上[Subagent:json], json数据中要有suabgent name和task name（id），让大模型知道是哪个subagent的哪个task发过来的信息。TUI显示 Subagent(subagent name)> ，并过滤TUIMarker。
 
+- Channel Wechat: 当用户微信输入时，注入inbox时加上 [Wechat:json], json里面包含send wechat message所需要的信息。TUI显示 Wechat> ， 并过滤掉marker。
 
+- Channel A2A: 有两者情况， 
 
+一种是发送消息和发送任务，需要在消息文本中增加Marker [A2A:json]，前者的json含peer，后者的json含peer，task。接收方 TUI 显示 A2A(peer)> ，TUI中过滤Marker。让大模型知道是哪个peer发过来的，如果是task，是什么task。
 
+另一个是结果自动推送。自动推送中加入MARKER [A2A-PUSH:json], json与前面一样。接收方逻辑也一样。
 
+- Schedule: 
 
+定时任务触发执行注入 schedule_trigger.j2，没有Marker，TUI 过滤这条user message， assistant message 显示 定时。
 
+定时任务结束的回复，是Subagent的回复, 按照Subagent channel 方式。
