@@ -30,7 +30,9 @@ def test_trigger_text_has_mark_name_and_dispatch_hint():
     text = S.trigger_text("daily_diary", "Write today's diary")
     assert text.startswith(S.SCHEDULE_MARK + " daily_diary]")
     assert "Write today's diary" in text
-    assert 'run_schedule_now(name="daily_diary")' in text
+    # The dispatch hint shows the tool shape for a fresh run: name known,
+    # due_at omitted (default ""), clone_context left as the judgment slot.
+    assert 'run_schedule_now(name="daily_diary", clone_context=' in text
     # Dispatch is delegated to the tool — no subagent instructions leak.
     assert "subagent_send_task_async" not in text
     assert "spawn_subagent" not in text
@@ -189,6 +191,81 @@ async def test_fire_task_now_dispatches_directly(monkeypatch):
     assert manager.send_task_async.call_args.kwargs["mode"] == "auto"
     assert service.inbox.post.await_count == 0  # no inbox relay
     assert "daily" in S._SCHEDULE_WORKERS  # tracked for reword + recycle
+
+
+@pytest.mark.asyncio
+async def test_fire_task_now_clones_context_when_requested(monkeypatch):
+    """clone_context=True hands `service._tool_ctx`'s history to the worker
+    (cloned one-shot context, minus the system message); run + dispatch are
+    unchanged and the reply notes the clone."""
+    S._SCHEDULE_WORKERS.clear()
+    client = AsyncMock()
+
+    async def fake_call_tool(name, arguments=None):
+        if name == "__scheduled_task_by_name":
+            return ('{"id": 7, "name": "daily", "description": "d", '
+                    '"schedule": "0 9 * * *", "timezone": "", '
+                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+        if name == "__scheduled_record_run":
+            return "{}"
+        return "null"
+
+    client.call_tool = fake_call_tool
+    ctx = MagicMock()
+    ctx.memfiles_client = client
+    ctx.message_history = MagicMock(
+        messages=[{"role": "system", "content": "sys"},
+                 {"role": "user", "content": "u1"},
+                 {"role": "assistant", "content": "a1"}],
+    )
+    service = MagicMock()
+    service._tool_ctx = ctx
+
+    manager = AsyncMock()
+    manager.spawn = AsyncMock(return_value="daily")
+    manager.send_task_async = AsyncMock(return_value="rpc-1")
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
+
+    result = await S.fire_task_now(service, "daily", clone_context=True)
+    assert "context: cloned" in result
+    manager.spawn.assert_awaited_once_with(
+        name="daily", context_source="cloned",
+        context_messages=[{"role": "user", "content": "u1"},
+                          {"role": "assistant", "content": "a1"}],
+    )
+
+
+@pytest.mark.asyncio
+async def test_fire_task_now_clone_falls_back_to_clean(monkeypatch):
+    """clone_context=True with no reachable history degrades to a clean
+    spawn (same contract as spawn_subagent's clone_context fallback)."""
+    S._SCHEDULE_WORKERS.clear()
+    client = AsyncMock()
+
+    async def fake_call_tool(name, arguments=None):
+        if name == "__scheduled_task_by_name":
+            return ('{"id": 7, "name": "daily", "description": "d", '
+                    '"schedule": "0 9 * * *", "timezone": "", '
+                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+        if name == "__scheduled_record_run":
+            return "{}"
+        return "null"
+
+    client.call_tool = fake_call_tool
+    ctx = MagicMock()
+    ctx.memfiles_client = client
+    ctx.message_history = None  # _serialize_cloned_context → None
+    service = MagicMock()
+    service._tool_ctx = ctx
+
+    manager = AsyncMock()
+    manager.spawn = AsyncMock(return_value="daily")
+    manager.send_task_async = AsyncMock(return_value="rpc-1")
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
+
+    result = await S.fire_task_now(service, "daily", clone_context=True)
+    assert "context: cloned" not in result
+    manager.spawn.assert_awaited_once_with(name="daily")
 
 
 @pytest.mark.asyncio
@@ -593,7 +670,7 @@ async def test_run_schedule_now_tool_calls_hook():
     object.__setattr__(tool, "_ctx", ctx)
     result = await tool.execute(name="daily")
     assert result == "dispatched"
-    ctx.fire_schedule_now.assert_awaited_once_with("daily", "")
+    ctx.fire_schedule_now.assert_awaited_once_with("daily", "", clone_context=False)
 
 
 @pytest.mark.asyncio
@@ -607,7 +684,22 @@ async def test_run_schedule_now_tool_passes_backfill_due_at():
     due = "2026-08-27T10:55:00+08:00"
     result = await tool.execute(name="daily", due_at=due)
     assert result == "dispatched"
-    ctx.fire_schedule_now.assert_awaited_once_with("daily", due)
+    ctx.fire_schedule_now.assert_awaited_once_with("daily", due, clone_context=False)
+
+
+@pytest.mark.asyncio
+async def test_run_schedule_now_tool_passes_clone_context():
+    from slife.tools.schedule import RunScheduleNowTool
+
+    tool = RunScheduleNowTool()
+    ctx = MagicMock()
+    ctx.fire_schedule_now = AsyncMock(return_value="dispatched")
+    object.__setattr__(tool, "_ctx", ctx)
+    result = await tool.execute(name="daily", clone_context=True)
+    assert result == "dispatched"
+    ctx.fire_schedule_now.assert_awaited_once_with(
+        "daily", "", clone_context=True,
+    )
 
 
 # ── completion reconciliation: run record, not worker narration ─────

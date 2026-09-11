@@ -1974,17 +1974,22 @@ class AgentService:
             logger.info("heartbeat_quiet")
             await self._notify_heartbeat("quiet")
 
-    async def fire_schedule_now(self, name: str, due_at: str = "") -> str:
+    async def fire_schedule_now(self, name: str, due_at: str = "",
+                                clone_context: bool = False) -> str:
         """Run a scheduled task immediately (backfill / manual trigger).
 
         Delegates to :func:`slife.agent.schedules.fire_task_now`, which
         records a run and injects the task's trigger into the inbox.  *due_at*
         targets an exact run (a missed/failed backfill); omit for a fresh
-        cron-fire run at now.
+        cron-fire run at now.  *clone_context* spawns the worker with the main
+        agent's current conversation, so a task with no stored description
+        still has substance to act on.
         """
         from slife.agent.schedules import fire_task_now
 
-        return await fire_task_now(self, name, due_at)
+        return await fire_task_now(
+            self, name, due_at, clone_context=clone_context,
+        )
 
     async def schedule_wakeup(self, delay_seconds: float, note: str) -> None:
         """Schedule a one-shot ``[Timer]`` wake after *delay_seconds*.

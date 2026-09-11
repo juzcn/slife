@@ -92,8 +92,7 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
         },
         description={
             "type": "string",
-            "default": "",
-            "description": "The task text handed to the worker when it fires.",
+            "description": "The task text handed to the worker when it fires — required: it is the worker's instruction.",
         },
         schedule={
             "type": "string",
@@ -281,9 +280,22 @@ class RunScheduleNowTool(Tool):
                 "omit for a fresh run."
             ),
         },
+        clone_context={
+            "type": "boolean",
+            "default": False,
+            "description": (
+                "Clone the main agent's current conversation into the worker, "
+                "so it knows the live context. Set True when the task has no "
+                "description or depends on what we discussed; omit for a "
+                "self-contained task."
+            ),
+        },
     )
 
-    async def execute(self, name: str = "", due_at: str = "", **kwargs) -> str:
+    async def execute(
+        self, name: str = "", due_at: str = "", clone_context: bool = False,
+        **kwargs,
+    ) -> str:
         if err := require_params(name=name):
             return err
         ctx = getattr(self, "_ctx", None)
@@ -293,4 +305,4 @@ class RunScheduleNowTool(Tool):
                 "Error: the scheduler is not available yet — call this after "
                 "the agent service has started."
             )
-        return await fire(name, due_at)
+        return await fire(name, due_at, clone_context=clone_context)

@@ -84,11 +84,11 @@ class ToolContext:
     API call (the byte change touches the prompt cache; accepted, writes are
     rare).  Populated by AgentService."""
 
-    fire_schedule_now: Callable[[str], Awaitable[str]] | None = None
-    """Run a scheduled task immediately (record a run + inject its trigger).
-    Populated by AgentService (main agent only); used by the
-    ``run_schedule_now`` tool to backfill a failed/missed run or fire a task
-    now."""
+    fire_schedule_now: Callable[..., Awaitable[str]] | None = None
+    """Run a scheduled task immediately — ``(name, due_at="", clone_context=False)``.
+    Populated by AgentService (main agent only); used by the ``run_schedule_now``
+    tool to backfill a failed/missed run or fire a task now.  *clone_context*
+    hands the worker the main agent's current conversation."""
 
     schedule_wakeup: Callable[[float, str], Awaitable[None]] | None = None
     """Schedule a one-shot ``[Timer]`` wake after *delay_seconds*.

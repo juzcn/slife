@@ -502,7 +502,8 @@ async def schedule_loop(service) -> None:
             logger.debug("schedule_loop_error err=%s", e)
 
 
-async def fire_task_now(service, name: str, due_at: str = "") -> str:
+async def fire_task_now(service, name: str, due_at: str = "",
+                        clone_context: bool = False) -> str:
     """Trigger a scheduled task now — the single dispatch path.
 
     Used by both the cron trigger (the agent calls ``run_schedule_now`` after
@@ -515,7 +516,14 @@ async def fire_task_now(service, name: str, due_at: str = "") -> str:
     fresh run at now.  The dispatched worker receives *due_at* and confirms
     the exact run via ``report_save(due_at=…)`` so ``pending`` →
     ``ran``.  Works for disabled tasks too (an explicit run is explicit).
+
+    *clone_context* spawns the worker with the main agent's current
+    conversation (``service._tool_ctx.message_history``) as its one-shot
+    history, so a worker whose task has no stored description — or depends on
+    what we discussed — still has real substance to act on.  Degrades to a
+    clean spawn when no history is reachable.
     """
+    from slife.tools.subagent import _serialize_cloned_context
     from slife.subagent.process import get_manager
 
     client = _memfiles_client(service)
@@ -537,8 +545,17 @@ async def fire_task_now(service, name: str, due_at: str = "") -> str:
             "Error: the subagent manager is not available yet — call this "
             "after the agent service has started."
         )
+    spawn_kw: dict = {}
+    if clone_context:
+        ctx = getattr(service, "_tool_ctx", None)
+        context_messages = _serialize_cloned_context(ctx) if ctx is not None else None
+        if context_messages:
+            spawn_kw = {
+                "context_source": "cloned",
+                "context_messages": context_messages,
+            }
     try:
-        await manager.spawn(name=worker)
+        await manager.spawn(name=worker, **spawn_kw)
         rpc_id = await manager.send_task_async(
             worker,
             build_worker_task(worker, task.get("description", ""),
@@ -554,7 +571,8 @@ async def fire_task_now(service, name: str, due_at: str = "") -> str:
 
     _SCHEDULE_WORKERS.add(worker)
     _pending_fires.pop(worker, None)
+    context_note = " (context: cloned)" if spawn_kw else ""
     return (
         f"Scheduled task '{name}' dispatched now to worker "
-        f"'{worker}' (task_id: {rpc_id})."
+        f"'{worker}'{context_note} (task_id: {rpc_id})."
     )
