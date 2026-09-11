@@ -378,7 +378,7 @@
         api_key: "${SILICONFLOW_API_KEY}"
       }
     },
-    active_model: "local_embed",
+    active_model: "siliconflow",
     enabled: true
   }
 }
