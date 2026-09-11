@@ -1020,13 +1020,27 @@ class AgentLoop:
             # Map _timeout → timeout and let the tool drive — no
             # asyncio.wait_for wrapper.
             tool = self.tool_registry.get(tc.name)
-            has_native_timeout = (
-                "timeout" in getattr(tool, 'parameters', {}).get("properties", {})
-            )
+            prop_keys = getattr(tool, 'parameters', {}).get("properties", {})
+            has_native_timeout = "timeout" in prop_keys
             if has_native_timeout and inline_timeout is not None:
                 timeout_val = int(float(inline_timeout))
                 if timeout_val > 0:
                     actual_args["timeout"] = timeout_val
+
+            # ── Bare `timeout` alias ─────────────────────────────
+            # LLMs routinely append a bare ``timeout`` arg to tools whose
+            # schema defines no such parameter (a2a sends, subagent sends,
+            # plugin proxies) — the server's input validation then rejects
+            # the WHOLE call with "Unexpected keyword argument" and the
+            # turn dies.  Read it as the per-call bound instead: pop it so
+            # it never reaches the tool, and let the wait_for logic below
+            # enforce it exactly like ``_timeout``.  A tool WITH a native
+            # timeout keeps its schema-valid arg untouched above — it
+            # enforces it itself.
+            if not has_native_timeout and inline_timeout is None:
+                bare_timeout = actual_args.pop("timeout", None)
+                if bare_timeout is not None:
+                    inline_timeout = float(bare_timeout)
 
             # ── Approval gate — pure model judgment ────────────────
             # The LLM decides per-call whether the operation needs user

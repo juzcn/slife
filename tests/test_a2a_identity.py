@@ -174,7 +174,7 @@ class TestChannel:
         assert Channel.human().display_prefix() == "You> "
         assert Channel.wechat().display_prefix() == "Wechat> "
         assert Channel.heartbeat().display_prefix() == "Heartbeat> "
-        assert Channel.a2a("Jack").display_prefix() == "A2A(Jack)"
+        assert Channel.a2a("Jack").display_prefix() == "A2A(Jack)> "
         assert Channel.subagent("w1").display_prefix() == "Subagent(w1)> "
         # No name → fallback label, still renders.
         assert Channel.subagent("").display_prefix() == "Subagent(subagent)> "
@@ -203,7 +203,7 @@ class TestChannel:
         assert restored == ch
         assert restored.kind == "a2a"
         assert restored.data["agent_name"] == "human"
-        assert restored.display_prefix() == "A2A(human)"
+        assert restored.display_prefix() == "A2A(human)> "
 
     def test_from_db_round_trip(self):
         """to_db → from_db round-trips every kind unchanged."""
@@ -220,7 +220,7 @@ class TestChannel:
         ch = Channel.from_db("Jack", "{}")
         assert ch.kind == "a2a"
         assert ch.data == {"agent_name": "Jack"}
-        assert ch.display_prefix() == "A2A(Jack)"
+        assert ch.display_prefix() == "A2A(Jack)> "
 
     def test_from_db_unknown_identity_is_a2a_peer(self):
         """Any unknown identity string classifies as an A2A peer."""

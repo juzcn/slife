@@ -471,6 +471,13 @@ class TestSaveUrlPublicGuard:
         assert plugin._reject_non_public_url("http://8.8.8.8/x") is None
         assert plugin._reject_non_public_url("https://1.1.1.1") is None
 
+    def test_allows_fake_ip_resolver_range(self):
+        """Clash / sing-box fake-ip resolvers answer public hostnames from
+        the RFC 2544 benchmarking range (198.18.0.0/15) — that's the proxy's
+        front door, not LAN infra, and must not be refused."""
+        assert plugin._reject_non_public_url("http://198.18.0.1/x") is None
+        assert plugin._reject_non_public_url("http://198.18.255.9/") is None
+
     def test_rejects_non_http_schemes(self):
         assert plugin._reject_non_public_url("ftp://example.com/x")
         assert plugin._reject_non_public_url("file:///etc/passwd")

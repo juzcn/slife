@@ -744,6 +744,52 @@ class TestExecuteTools:
         call_args = handler.on_tool_result.call_args
         assert call_args[0][2] is False  # Not an error prefix
 
+    @pytest.mark.asyncio
+    async def test_bare_timeout_arg_bounds_tool_without_native_timeout(
+        self, sample_model_config, history,
+    ):
+        """An LLM-appended bare ``timeout`` arg (no ``_timeout`` prefix) on
+        a tool whose schema defines no timeout parameter is read as the
+        per-call bound — not forwarded — so the call no longer dies with the
+        server's 'Unexpected keyword argument' rejection."""
+        from slife.tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(_HungTool())
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, registry)
+        handler = AsyncMock(spec=AgentEventHandler)
+
+        tcs = [ToolCallInfo(id="c1", name="hung", arguments={"timeout": 0.05})]
+        await loop._execute_tools(tcs, history, handler)
+
+        result = handler.on_tool_result.call_args[0][1]
+        assert "timed out (0.05s)" in result
+        assert handler.on_tool_result.call_args[0][2] is True
+
+    @pytest.mark.asyncio
+    async def test_bare_timeout_arg_not_forwarded(
+        self, sample_model_config, tool_registry, history,
+    ):
+        """A bare ``timeout`` arg is popped for tools without a native
+        timeout — the business args reach the tool untouched and the call
+        succeeds (unpopped it would have errored the tool execution)."""
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, tool_registry)
+        handler = AsyncMock(spec=AgentEventHandler)
+
+        tcs = [
+            ToolCallInfo(
+                id="c1", name="echo",
+                arguments={"message": "hi", "timeout": 30},
+            )
+        ]
+        await loop._execute_tools(tcs, history, handler)
+
+        result = handler.on_tool_result.call_args[0][1]
+        assert "Echo: hi" in result
+        assert handler.on_tool_result.call_args[0][2] is False
+
 
 class _HungTool:
     """A Tool WITHOUT a native ``timeout`` parameter that never resolves —

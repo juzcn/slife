@@ -352,7 +352,7 @@ class TestRestoreTurnHeader:
         # Needs the peer name from the channel payload, not a fallback.
         chat_view.add_user_message.assert_called_once()
         kwargs = chat_view.add_user_message.call_args.kwargs
-        assert kwargs["prefix"] == "A2A(Jack)"
+        assert kwargs["prefix"] == "A2A(Jack)> "
         call_kwargs = chat_view.add_user_message.call_args
         assert call_kwargs.args[0].startswith("GO")
 
@@ -366,7 +366,7 @@ class TestRestoreTurnHeader:
         await self._restore(app, conv, config, [turn])
 
         kwargs = chat_view.add_user_message.call_args.kwargs
-        assert kwargs["prefix"] == "A2A(desk-01)"
+        assert kwargs["prefix"] == "A2A(desk-01)> "
 
     @pytest.mark.asyncio
     async def test_subagent_turn_renders_name_prefix(self):

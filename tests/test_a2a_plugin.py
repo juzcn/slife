@@ -60,6 +60,37 @@ class TestPluginTools:
         client.send_task.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_a2a_send_task_timeout_forwarded(self):
+        """A positive per-call ``timeout`` is honored (native-timeout
+        contract: the plugin enforces the deadline instead of the sender's
+        harness killing the MCP call)."""
+        from slife.a2a.identity import AgentName
+
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            result = await getattr(plugin, "a2a_send_task")(
+                "peer-1", "hello", timeout=30,
+            )
+        assert result == "result-text"
+        client.send_task.assert_called_once_with(
+            AgentName("peer-1"), "hello", timeout=30,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a2a_send_task_timeout_default_on_nonpositive(self):
+        """timeout ≤ 0 selects the plugin default — no timeout kwarg is sent
+        (the client then applies its ``task_timeout``), matching the loop's
+        ``_timeout: 0`` convention."""
+        from unittest.mock import call
+
+        from slife.a2a.identity import AgentName
+
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            await getattr(plugin, "a2a_send_task")("peer-1", "hello", timeout=0)
+        client.send_task.assert_called_once_with(AgentName("peer-1"), "hello")
+
+    @pytest.mark.asyncio
     async def test_a2a_send_task_async(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
@@ -138,6 +169,22 @@ class TestA2aMessageTools:
         assert result == "result-text"
         client.send_task.assert_called_once_with(
             AgentName("peer-1"), "hello", record=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_message_timeout_forwarded(self):
+        """a2a_send_message honors a per-call timeout, preserving the
+        stateless record=False shape."""
+        from slife.a2a.identity import AgentName
+
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            result = await getattr(plugin, "a2a_send_message")(
+                "peer-1", "hello", timeout=30,
+            )
+        assert result == "result-text"
+        client.send_task.assert_called_once_with(
+            AgentName("peer-1"), "hello", record=False, timeout=30,
         )
 
     @pytest.mark.asyncio

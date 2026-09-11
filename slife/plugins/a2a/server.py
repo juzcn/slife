@@ -238,16 +238,31 @@ async def _on_agent_change(card: AgentCard, event: str) -> None:
 
 @mcp.tool(
     name="a2a_send_task",
-    description="Send a task to a remote A2A mesh peer and wait for the result.",
+    description="Send a task to a remote A2A mesh peer and wait for the result. "
+    "timeout: seconds to wait before timing out (default 120; ≤0 = default).",
 )
-async def a2a_send_task(agent_name: str, task: str) -> str:
+async def a2a_send_task(
+    agent_name: str, task: str, timeout: float | None = None,
+) -> str:
     """Send a task to *agent_name* and wait for the result.
+
+    The wait is enforced here in the plugin — the peer's task-store record
+    is marked ``timeout`` — rather than by the sender's harness killing the
+    MCP call mid-flight (the sender's ``_timeout`` meta-param maps onto this
+    parameter, per the native-timeout contract).
 
     Args:
         agent_name: Remote peer's agent_name (from a2a_list_agents).
         task: The task text/instruction for the peer.
+        timeout: Seconds to wait for the peer's result before timing out.
+            Defaults to the plugin's ``task_timeout`` (120 s); a value ≤ 0
+            also selects the default.
     """
+    if timeout is not None and timeout <= 0:
+        timeout = None  # ≤0 → plugin default, matching `_timeout: 0`
     client = await _ensure_connected()
+    if timeout is not None:
+        return await client.send_task(AgentName(agent_name), task, timeout=timeout)
     return await client.send_task(AgentName(agent_name), task)
 
 
@@ -286,19 +301,35 @@ async def a2a_send_task_async(agent_name: str, task: str, mode: str = "auto") ->
 @mcp.tool(
     name="a2a_send_message",
     description="Send a stateless message to a remote A2A mesh peer and wait "
-    "for its reply.",
+    "for its reply. timeout: seconds to wait before timing out (default 120; "
+    "≤0 = default).",
 )
-async def a2a_send_message(agent_name: str, text: str) -> str:
+async def a2a_send_message(
+    agent_name: str, text: str, timeout: float | None = None,
+) -> str:
     """Send a stateless message to *agent_name* and wait for its reply.
 
     A conversational ping-pong — unlike a2a_send_task it is not recorded as
     a task (a2a_list_tasks / a2a_cancel_task don't see it).
 
+    The wait is enforced here in the plugin rather than by the sender's
+    harness killing the MCP call mid-flight (the sender's ``_timeout``
+    meta-param maps onto this parameter).
+
     Args:
         agent_name: Remote peer's agent_name (from a2a_list_agents).
         text: The message text for the peer.
+        timeout: Seconds to wait for the peer's reply before timing out.
+            Defaults to the plugin's ``task_timeout`` (120 s); a value ≤ 0
+            also selects the default.
     """
+    if timeout is not None and timeout <= 0:
+        timeout = None  # ≤0 → plugin default, matching `_timeout: 0`
     client = await _ensure_connected()
+    if timeout is not None:
+        return await client.send_task(
+            AgentName(agent_name), text, record=False, timeout=timeout,
+        )
     return await client.send_task(AgentName(agent_name), text, record=False)
 
 
