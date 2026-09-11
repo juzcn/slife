@@ -198,30 +198,65 @@ mcp.add_middleware(_WarmSemanticAfterHandshake())
 # LookupError in background tasks), so tools that run on the request path
 # stash their session here for later use by the reconnect hook.
 _active_sessions: set[Any] = set()
+#: Bound on tracked sessions.  A client that connects and disconnects cleanly
+#: (a send that never raises) would otherwise leak a session entry forever,
+#: and every entry widens the notification fan-out.  Past the bound an
+#: arbitrary entry is dropped — a dead one is reaped, a live one re-registers
+#: on its next tool call.
+_MAX_TRACKED_SESSIONS = 64
+#: Per-session deadline for tools/list_changed notifications.
+_NOTIFY_TIMEOUT = 5.0
+#: Coalescing state: at most ONE send is in flight, and pushes that land while
+#: it runs fold into a trailing-edge re-send (notification carries no payload —
+#: a host re-lists on receipt anyway).
+_notify_pending = False
+_notify_task: asyncio.Task | None = None
 
 
 def _capture_session(ctx: Context | None) -> None:
     """Remember the caller's ServerSession for background notifications."""
     if ctx is not None and ctx.session is not None:
         _active_sessions.add(ctx.session)
+        if len(_active_sessions) > _MAX_TRACKED_SESSIONS:
+            _active_sessions.discard(next(iter(_active_sessions)))
 
 
-#: Per-session deadline for tools/list_changed notifications — a
-#: backpressured/stuck client session must not stall the whole pool.
-#: :func:`_notify_tools_changed` is invoked from inside ``connect()`` (while
-#: holding the per-server connect lock), so a slow send would otherwise block
-#: every concurrent ``mcp_remove`` / ``mcp_set_enabled`` / ``mcp_set``.
-_NOTIFY_TIMEOUT = 5.0
+def _request_tools_changed() -> None:
+    """Coalesce-and-schedule ``notifications/tools/list_changed`` to all clients.
+
+    Fire-and-forget, and the send runs in a DETACHED task — never inside a
+    request handler's task/scope.  That split exists because the dispatcher in
+    mcp 2.1.1 desyncs its cancel-scope stack when a slow ``tools/call`` handler
+    (e.g. ``mcp_set_enabled`` (re)connecting a server) writes a burst of
+    notifications into its own session mid-handler — the session then crashes
+    and every later call dies with ``Session not found``.  Coalescing also
+    collapses the dozen-plus pushes one enable used to fan out into a single
+    send.  Because it is detached and fire-and-forget, callers MUST NOT rely on
+    delivery ordering; hosts re-list on receipt.
+    """
+    global _notify_pending, _notify_task
+    _notify_pending = True
+    if _notify_task is not None and not _notify_task.done():
+        return  # a send is scheduled/in flight — it re-checks the flag
+    _notify_task = asyncio.create_task(_notify_daemon())
 
 
-async def _notify_tools_changed() -> None:
-    """Push ``notifications/tools/list_changed`` to every known client.
+async def _notify_daemon() -> None:
+    """Trailing edge: while pushes keep landing, re-send after the in-flight
+    round so the freshest catalog always reaches every host, at most one send
+    in flight."""
+    global _notify_pending
+    while _notify_pending:
+        _notify_pending = False
+        await _notify_send_all()
 
-    Invoked by the connection pool when an external MCP server (re)connects
-    successfully — a listening host re-syncs its tool registry.  Best-effort:
-    a dead/stale session is dropped; the rest are still served.  Sends run
-    CONCURRENTLY (gather), each bounded by :data:`_NOTIFY_TIMEOUT`, so one
-    slow/backpressured client degrades only itself (F4).
+
+async def _notify_send_all() -> None:
+    """One eager notification round to every known client, in this task.
+
+    Best-effort: a dead/stale session is dropped; the rest are still served.
+    Sends run CONCURRENTLY (gather), each bounded by :data:`_NOTIFY_TIMEOUT`,
+    so one slow/backpressured client degrades only itself (F4).
     """
     sessions = list(_active_sessions)
 
@@ -235,6 +270,13 @@ async def _notify_tools_changed() -> None:
             _active_sessions.discard(sess)
 
     await asyncio.gather(*(_send_one(s) for s in sessions))
+
+
+async def _notify_tools_changed() -> None:
+    """Eager-flush alias kept for tests/…: run one full notification round
+    now, in this task (deterministic delivery — no coalescing).  Production
+    notification paths should use :func:`_request_tools_changed`."""
+    await _notify_send_all()
 
 
 # ── Tool catalog (in-memory) ────────────────────────────────────────────
@@ -372,7 +414,7 @@ async def _on_connected(server_name: str) -> None:
                 _manager.on_saved()
         except Exception as e:
             logger.warning("tool_sync_connected_failed server=%s err=%s", server_name, e)
-    await _notify_tools_changed()
+    _request_tools_changed()
 
 
 _pool = ConnectionPool(on_connected=_on_connected)
@@ -482,7 +524,7 @@ async def mcp_set(
         auth: OAuth config for device code flow (auth type 'oauth').
     """
     # Remember the caller's session so the reconnect hook can push
-    # tools/list_changed notifications (see _notify_tools_changed).
+    # tools/list_changed notifications (see _request_tools_changed).
     _capture_session(ctx)
 
     if not command and not url:
@@ -605,14 +647,12 @@ async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) 
         # ``enabled: false`` a prior disable wrote — otherwise the re-enable
         # would be lost on the next restart (the server would load disabled).
         plugin_config.set_server_enabled(name, True)
-        if existing.status != ServerStatus.CONNECTED:
-            await existing.connect()  # fires _on_connected → sync_server
+        # Server-level toggle (per-mcp only — no per-tool state exists).
+        store = await _ensure_store()
+        if store is not None:
+            await store.set_server_enabled(name, True)
         if existing.status == ServerStatus.CONNECTED:
             tools = existing.list_tools()
-            # Server-level toggle (per-mcp only — no per-tool state exists).
-            store = await _ensure_store()
-            if store is not None:
-                await store.set_server_enabled(name, True)
             return ok_json(
                 status="connected",
                 server=name,
@@ -621,10 +661,27 @@ async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) 
                 tools=[t["name"] for t in tools],
                 note="Server enabled.",
             )
-        return error_json(
-            existing.error or "Unknown error",
-            status=existing.status.value,
+        # Not connected — fan the (re)connect out behind a fast response.
+        # connect() owns its per-connection lock and, on success, fires
+        # ``_on_connected`` -> catalog sync + one coalesced list_changed the
+        # host re-lists from.  Returning immediately keeps this control call
+        # off the slow path that previously held the request open for seconds
+        # while notification bursts interleaved with its cancel scope (the
+        # mcp 2.1.1 dispatcher crash this module guards against).
+        async def _connect_async() -> None:
+            try:
+                await existing.connect()
+            except Exception as e:
+                logger.warning("mcp_enable_connect_failed server=%s err=%s", name, e)
+
+        asyncio.create_task(_connect_async())
+        return ok_json(
+            status="enabling",
             server=name,
+            transport=existing.config.transport,
+            tool_count=0,
+            tools=[],
+            note="Server enabling — tools register when it connects.",
         )
     await _pool.disconnect_server(name)
     plugin_config.set_server_enabled(name, False)
@@ -633,7 +690,7 @@ async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) 
     if store is not None:
         await store.set_server_enabled(name, False)
     # Notify so the host reconcile drops this server's loaded proxies.
-    await _notify_tools_changed()
+    _request_tools_changed()
     return ok_json(
         status="disabled",
         server=name,
@@ -660,7 +717,7 @@ async def mcp_remove(name: str, ctx: Context | None = None) -> str:
         store = await _ensure_store()
         if store is not None:
             await store.remove_server(name)
-        await _notify_tools_changed()
+        _request_tools_changed()
         return ok_json(status="removed", server=name)
     except Exception as e:
         logger.exception("mcp_remove_failed server=%s", name)

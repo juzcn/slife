@@ -27,6 +27,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from contextlib import asynccontextmanager
@@ -52,25 +53,74 @@ _registry: dict[str, registry.Job] = {}
 _llm_client = None            # LLMClient for job llm.chat (lazy)
 _llm_model_ref = "?"          # diagnostic: model ref resolved at boot
 _active_sessions: set = set()  # client sessions to notify on tool-set change
+#: Bound on tracked sessions — a stalled entry otherwise leaks forever and
+#: widens the fan-out.  Past the bound a dead entry is reaped, a live one
+#: re-registers on its next tool call.
+_MAX_TRACKED_SESSIONS = 64
+#: Per-session deadline for tools/list_changed notifications.
+_NOTIFY_TIMEOUT = 5.0
+#: Coalescing state: at most ONE send in flight; pushes that land while it
+#: runs fold into a trailing-edge re-send.
+_notify_pending = False
+_notify_task: asyncio.Task | None = None
 
 
 def _capture_session(ctx: Context | None) -> None:
     """Remember the caller's session for background notifications."""
     if ctx is not None and ctx.session is not None:
         _active_sessions.add(ctx.session)
+        if len(_active_sessions) > _MAX_TRACKED_SESSIONS:
+            _active_sessions.discard(next(iter(_active_sessions)))
+
+
+def _request_tools_changed() -> None:
+    """Coalesce-and-schedule ``notifications/tools/list_changed`` to all clients.
+
+    Fire-and-forget, sent from a DETACHED task — never inside a request
+    handler's task/scope, where mcp 2.1.1's dispatcher desyncs its
+    cancel-scope stack under a notification burst and crashes the session.
+    A listening harness re-syncs its tool registry on receipt.
+    """
+    global _notify_pending, _notify_task
+    _notify_pending = True
+    if _notify_task is not None and not _notify_task.done():
+        return  # a send is scheduled/in flight — it re-checks the flag
+    _notify_task = asyncio.create_task(_notify_daemon())
+
+
+async def _notify_daemon() -> None:
+    """Trailing edge: re-send after the in-flight round while pushes keep
+    landing, so the freshest catalog always reaches every host."""
+    global _notify_pending
+    while _notify_pending:
+        _notify_pending = False
+        await _notify_send_all()
+
+
+async def _notify_send_all() -> None:
+    """One eager notification round to every known client, in this task.
+
+    Best-effort: a dead/stale session is dropped, the rest are served.
+    Sends run CONCURRENTLY, each bounded by :data:`_NOTIFY_TIMEOUT`.
+    """
+    sessions = list(_active_sessions)
+
+    async def _send_one(sess) -> None:
+        try:
+            await asyncio.wait_for(
+                sess.send_tool_list_changed(), timeout=_NOTIFY_TIMEOUT,
+            )
+        except Exception:
+            _active_sessions.discard(sess)
+
+    await asyncio.gather(*(_send_one(s) for s in sessions))
 
 
 async def _notify_tools_changed() -> None:
-    """Push ``notifications/tools/list_changed`` to every known client.
-
-    A listening harness re-syncs its tool registry.  Best-effort: a
-    dead/stale session is dropped, the rest are served.
-    """
-    for sess in list(_active_sessions):
-        try:
-            await sess.send_tool_list_changed()
-        except Exception:
-            _active_sessions.discard(sess)
+    """Eager-flush alias kept for tests/…: run one full notification round
+    now, in this task (deterministic delivery — no coalescing).  Production
+    notification paths should use :func:`_request_tools_changed`."""
+    await _notify_send_all()
 
 
 def _get_llm_client():
@@ -337,7 +387,7 @@ async def job_write(name: str, code: str, ctx: Context | None = None) -> str:
             f"Error: the code must define a public function named '{name}' "
             f"(received {sorted(_registry) or '(none)'})"
         )
-    await _notify_tools_changed()
+    _request_tools_changed()
     if created:
         return (
             f"Job '{name}' created and registered as the tool '{name}'. "
@@ -361,7 +411,7 @@ async def job_remove(name: str, ctx: Context | None = None) -> str:
     if path.exists():
         path.unlink()
     _unregister_tool(name)
-    await _notify_tools_changed()
+    _request_tools_changed()
     return f"Job '{name}' removed."
 
 

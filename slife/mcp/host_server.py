@@ -99,8 +99,42 @@ def _capture_session(ctx: Context | None) -> None:
             _active_sessions.discard(next(iter(_active_sessions)))
 
 
-async def _notify_tools_changed() -> None:
-    """Push ``notifications/tools/list_changed`` to every known client.
+#: Coalescing state: at most ONE send in flight; pushes that land while it
+#: runs fold into a trailing-edge re-send (the notification carries no payload
+#: — a host re-lists on receipt anyway).
+_notify_pending = False
+_notify_task: asyncio.Task | None = None
+
+
+def _request_tools_changed() -> None:
+    """Coalesce-and-schedule ``notifications/tools/list_changed`` to all clients.
+
+    Fire-and-forget, and the send runs in a DETACHED task — never inside a
+    request handler's task/scope.  mcp 2.1.1's dispatcher desyncs its
+    cancel-scope stack when a slow ``tools/call`` handler writes notification
+    bursts into its own session mid-handler (the session then crashes and
+    every later call dies with ``Session not found``).  Coalescing also folds
+    bursts into a single send.  Hosts re-list on receipt, so no ordering
+    guarantees are assumed.
+    """
+    global _notify_pending, _notify_task
+    _notify_pending = True
+    if _notify_task is not None and not _notify_task.done():
+        return  # a send is scheduled/in flight — it re-checks the flag
+    _notify_task = asyncio.create_task(_notify_daemon())
+
+
+async def _notify_daemon() -> None:
+    """Trailing edge: re-send after the in-flight round while pushes keep
+    landing, so the freshest catalog always reaches every host."""
+    global _notify_pending
+    while _notify_pending:
+        _notify_pending = False
+        await _notify_send_all()
+
+
+async def _notify_send_all() -> None:
+    """One eager notification round to every known client, in this task.
 
     Best-effort: a dead/stale session is dropped, the rest are served.
     Sends run CONCURRENTLY, each bounded by :data:`_NOTIFY_TIMEOUT`, so one
@@ -117,6 +151,13 @@ async def _notify_tools_changed() -> None:
             _active_sessions.discard(sess)
 
     await asyncio.gather(*(_send_one(s) for s in sessions))
+
+
+async def _notify_tools_changed() -> None:
+    """Eager-flush alias kept for tests/…: run one full notification round
+    now, in this task (deterministic delivery — no coalescing).  Production
+    notification paths should use :func:`_request_tools_changed`."""
+    await _notify_send_all()
 
 
 def build_registry_mcp(registry: "ToolRegistry", instructions: str = "") -> FastMCP:
@@ -278,7 +319,7 @@ def start_host_server(
 
         async def _on_registry_changed() -> None:
             _sync_registry(server, registry)
-            await _notify_tools_changed()
+            _request_tools_changed()
 
         def _listen() -> None:
             try:

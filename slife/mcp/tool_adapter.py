@@ -194,8 +194,10 @@ class MCPProxyTool(Tool):
                     headers=kwargs.get("headers"),
                 )
                 logger.debug("mcp_persisted server=%s", server_name)
-            elif status == "connected" and self._on_server_updated:
+            elif status in ("connected", "enabling") and self._on_server_updated:
                 # mcp_set_enabled re-enabled — persist + register tools.
+                # "enabling" = the connect ran in the background; tools register
+                # when the server connects, driven by tools/list_changed.
                 await self._on_server_updated(name=server_name, enabled=True)
             elif status == "disabled" and self._on_server_updated:
                 # enabled=False — persist disabled and unregister tools.
