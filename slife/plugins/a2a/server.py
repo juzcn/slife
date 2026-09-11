@@ -138,6 +138,9 @@ async def _on_incoming_task(msg: AgentMessage) -> None:
         "content": msg.content,
         "reply_to": msg.reply_to or "",
         "correlation_id": msg.correlation_id or "",
+        # Wire kind (stateless message vs task) — drives the receiver's
+        # [A2A:…] marker.  Defaults to task for peers that don't stamp it.
+        "kind": msg.metadata.get("a2a_kind", "task"),
     })
 
 

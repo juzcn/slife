@@ -2182,6 +2182,7 @@ class AgentService:
         import json as _json
         from slife.a2a.identity import AgentName, AgentMessage, Channel
         from slife.a2a.card import AgentCard, format_presence_line
+        from slife.agent.message_history import a2a_marker, a2a_push_marker
 
         logger.info("a2a_poll_loop_start interval=%.1fs", interval)
 
@@ -2224,8 +2225,17 @@ class AgentService:
                     task_text = ev.get("content", "")
                     corr_id = ev.get("correlation_id", "")
                     src = ev.get("source", "unknown")
-                    if corr_id:
-                        task_text = f"[Task {corr_id} from {src}] {task_text}"
+                    kind = ev.get("kind", "task")
+                    # The [A2A:…] marker names the sending peer and (for a
+                    # task) its task id, so the LLM can attribute the turn and
+                    # reference the task it is responding to instead of making
+                    # one up (a reported mismatch in round-trips).  The TUI
+                    # drops it for display (A2A(<name>)> bubble prefix).
+                    task_id = (corr_id or None) if kind == "task" else None
+                    task_text = (
+                        f"{a2a_marker(src, task_id)}"
+                        f"{task_text}"
+                    )
                     msg = AgentMessage(
                         source=AgentName(src),
                         content=task_text,
@@ -2268,15 +2278,18 @@ class AgentService:
                     if not result:
                         continue
                     if cev.get("kind") == "message":
-                        # Stateless message reply — framed as a reply, not a
-                        # task completion (the caller sent a message).
+                        # Stateless message reply — the [A2A-PUSH:…] marker
+                        # names the peer; framed as a reply, not a task
+                        # completion (the caller sent a message).
                         content = (
+                            f"{a2a_push_marker(peer)}"
                             f"Peer **{peer}** replied to your message:\n\n"
                             f"{result}"
                         )
                     else:
                         state = "cancelled" if cev.get("cancelled") else "completed"
                         content = (
+                            f"{a2a_push_marker(peer, corr_id or None)}"
                             f"Peer **{peer}** {state} async task "
                             f"(ID: `{corr_id}`):\n\n{result}"
                         )

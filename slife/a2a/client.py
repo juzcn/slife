@@ -299,6 +299,7 @@ class A2AClient:
                 source=str(self._agent_name),
                 task=task,
                 reply_to=f"Slife/{self._agent_name}/tasks/result",
+                kind="message" if not record else "task",
             ),
             ensure_ascii=False,
         )
@@ -367,6 +368,7 @@ class A2AClient:
                 source=str(self._agent_name),
                 task=task,
                 reply_to=f"Slife/{self._agent_name}/tasks/result",
+                kind="message" if not record else "task",
             ),
             ensure_ascii=False,
         )
@@ -690,12 +692,13 @@ class A2AClient:
             f_result.cancel()
 
     async def _handle_incoming_task(self, msg: TransportMessage) -> None:
-        """Process an incoming task request (official ``SendMessage``).
+        """Process an incoming task/message request (official ``SendMessage``).
 
         ``CancelTask`` requests are routed to the ``on_incoming_cancel``
         callback (the receiver drops/preempts the task) rather than being
         delivered as tasks.  Slife routing fields ride in the ``_slife``
-        extension.
+        extension, including ``kind`` (a stateless message vs a task —
+        defaults to task for peers that don't stamp it).
         """
         try:
             data = json.loads(msg.payload)
@@ -706,6 +709,7 @@ class A2AClient:
         method = data.get("method", "")
         slife = data.get("_slife", {}) if isinstance(data.get("_slife"), dict) else {}
         source = AgentName(slife.get("source", "unknown"))
+        kind = slife.get("kind", "task")
 
         if method == "CancelTask":
             logger.info("a2a_incoming_cancel source=%s task_id=%s", source, data.get("id"))
@@ -734,6 +738,7 @@ class A2AClient:
                 reply_to=reply_to,
                 correlation_id=corr_id,
                 channel=Channel.a2a(source),
+                metadata={"a2a_kind": kind},
             )
             await self._incoming_task_callback(agent_msg)
 

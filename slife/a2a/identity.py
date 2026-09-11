@@ -99,7 +99,7 @@ class Channel:
             name = self.data.get("name") or "subagent"
             return f"Subagent({name})> "
         peer = self.data.get("agent_name") or self.data.get("name") or "?"
-        return f"A2A({peer})"
+        return f"A2A({peer})> "
 
     def to_db(self) -> tuple[str, dict]:
         """Persisted form: (``diary.channel`` identity string, payload).

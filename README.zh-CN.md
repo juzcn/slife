@@ -347,7 +347,7 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 ### A2A — 智能体间通信（网格）
 
 A2A 协议（JSON-RPC 操作与 Message/Task/AgentCard 数据形状，镜像官方 a2a-python 参考接口）运行在可插拔的传输 **binding** 上——当前为 MQTT。**`a2a` 插件**承载 LLM 可见工具与 `A2AClient`，仅在 broker 可达时启动：
-- **网格工具**（统一 `a2a_` 前缀）：`a2a_send_task`、`a2a_send_task_async`、`a2a_get_task_result`、`a2a_cancel_task`、`a2a_list_agents`、`a2a_list_tasks`、`a2a_agent_card`、`a2a_broadcast`。无状态**消息**工具 `a2a_send_message` / `a2a_send_message_async`（mode auto/poll）做对话式单轮交换——与任务不同,**不记入 task_store**（`a2a_list_tasks` / `a2a_cancel_task` 看不到；异步回复以 "replied to your message" 自动推送,或用 `a2a_get_task_result` 轮询）。
+- **网格工具**（统一 `a2a_` 前缀）：`a2a_send_task`、`a2a_send_task_async`、`a2a_get_task_result`、`a2a_cancel_task`、`a2a_list_agents`、`a2a_list_tasks`、`a2a_agent_card`、`a2a_broadcast`。无状态**消息**工具 `a2a_send_message` / `a2a_send_message_async`（mode auto/poll）做对话式单轮交换——与任务不同,**不记入 task_store**（`a2a_list_tasks` / `a2a_cancel_task` 看不到；异步回复以 "replied to your message" 自动推送,或用 `a2a_get_task_result` 轮询）。入站的 peer 消息/任务以 **`[A2A:{"agent_name": …, "task_id": …}]`** 前缀到达模型（`task_id` 只在任务出现——消息只带 peer）,自动推送的异步结果以 **`[A2A-PUSH:…]`** 前缀;TUI 显示 `A2A(<peer>)> ` 并剥离这些 marker。
 - **本地 worker 不是 A2A**：`spawn_subagent`、`list_subagents`、`stop_subagent`、`subagent_send_task`、`subagent_send_task_async`、`subagent_get_task_result`、`subagent_list_tasks`、`subagent_cancel_task`。一个 worker 一次处理一个任务；对忙碌 worker 的同步发送会自动转异步入队（返回 task_id）并告知。
 
 A2A 唯一已实现的传输 binding 是 MQTT——把 `transport` 设为任何其他值会禁用 A2A 并打印警告，而不是导致启动崩溃。所有消息——人类输入、微信、MQTT、子智能体结果——通过单一收件箱队列逐个处理。

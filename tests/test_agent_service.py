@@ -1135,8 +1135,8 @@ class TestAgentServiceA2A:
 
     @pytest.mark.asyncio
     async def test_a2a_poll_prepends_task_id(self, sample_config):
-        """Inbound a2a tasks surface [Task <id> from <source>] to the LLM,
-        so the receiver knows the task_id it is responding to."""
+        """Inbound a2a tasks surface the [A2A:…] marker to the LLM, so the
+        receiver knows the peer and the task_id it is responding to."""
         import json as _json
 
         service = AgentService(sample_config)
@@ -1176,7 +1176,10 @@ class TestAgentServiceA2A:
         await service._a2a_poll_loop(interval=0.001)
 
         assert len(posted) == 1
-        assert posted[0].content == "[Task cid-1 from Jack] do X"
+        assert posted[0].content == (
+            '[A2A:{"agent_name": "Jack", "task_id": "cid-1"}] '
+            "do X"
+        )
         assert posted[0].correlation_id == "cid-1"
 
     @pytest.mark.asyncio
@@ -1225,8 +1228,14 @@ class TestAgentServiceA2A:
 
         contents = [m.content for m in posted]
         assert len(contents) == 2
-        assert "Peer **peer-1** completed async task (ID: `c-task`):\n\nthe answer" in contents
-        assert "Peer **peer-2** replied to your message:\n\nhi" in contents
+        assert (
+            '[A2A-PUSH:{"agent_name": "peer-1", "task_id": "c-task"}] '
+            "Peer **peer-1** completed async task (ID: `c-task`):\n\nthe answer"
+        ) in contents
+        assert (
+            '[A2A-PUSH:{"agent_name": "peer-2"}] '
+            "Peer **peer-2** replied to your message:\n\nhi"
+        ) in contents
 
 
 # ── AgentService subagent ───────────────────────────────────────────────────

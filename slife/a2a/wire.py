@@ -234,9 +234,14 @@ def task_result_text(task: dict) -> str:
 
 
 def send_message_envelope(
-    corr_id: str, source: str, task: str, reply_to: str,
+    corr_id: str, source: str, task: str, reply_to: str, kind: str = "task",
 ) -> dict:
-    """Build the outbound ``SendMessage`` JSON-RPC request (→ inbox topic)."""
+    """Build the outbound ``SendMessage`` JSON-RPC request (→ inbox topic).
+
+    *kind* distinguishes a stateless message from a task for the receiving
+    peer's channel marker (``[A2A:…]``).  Defaults to ``"task"`` for peers
+    that don't stamp it.
+    """
     return {
         "jsonrpc": "2.0",
         "method": "SendMessage",
@@ -247,6 +252,7 @@ def send_message_envelope(
         "_slife": {
             "source": source,
             "reply_to": reply_to,
+            "kind": kind,
         },
     }
 

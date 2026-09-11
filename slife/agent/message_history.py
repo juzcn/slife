@@ -103,6 +103,16 @@ WECHAT_MARKER = "[WECHAT] "
 #: the TUI already shows the ``Subagent(<name>)> `` bubble prefix, so
 #: ``unwrap_info_envelope`` strips the marker for display.
 SUBAGENT_PREFIX = "[Subagent:"
+#: Channel markers for A2A mesh messages pushed into the agent's context.
+#: ``[A2A:…]`` prefixes an inbound peer message/task (the receiving agent
+#: reads who sent it and — for a task — its task id); ``[A2A-PUSH:…]``
+#: prefixes an auto-pushed async result.  Keys mirror the a2a tool
+#: arguments (``agent_name`` / ``task_id``); the absence or presence of
+#: ``task_id`` is what tells a message from a task.  Machine-facing — the
+#: TUI shows the ``A2A(<name>)> `` bubble prefix and
+#: ``unwrap_info_envelope`` strips them for display.
+A2A_PREFIX = "[A2A:"
+A2A_PUSH_PREFIX = "[A2A-PUSH:"
 #: Runtime-only trim note: ``[INFO: <N> oldest turns have been removed from
 #: context]``.  Appended by the loop after a trim — NEVER persisted: a
 #: restored session is already the trimmed state, so a "past session was
@@ -183,6 +193,36 @@ def wechat_marker(peer_wechat_id: str, context_token: str | None = None) -> str:
     return f"{WECHAT_PREFIX}{json.dumps(payload, ensure_ascii=False)}] "
 
 
+def a2a_marker(agent_name: str, task_id: str | None = None) -> str:
+    """Content prefix for an inbound A2A peer message/task.
+
+    ``[A2A:{"agent_name": …, "task_id": …}] `` — the JSON names the sending
+    peer; ``task_id`` is present only for a task (a stateless message omits
+    it), and that presence is how the LLM tells the two apart.  The marker
+    is machine-facing; ``unwrap_info_envelope`` drops it for display (the
+    TUI shows the ``A2A(<name>)> `` bubble prefix instead).
+    """
+    return _a2a_payload_marker(A2A_PREFIX, agent_name, task_id)
+
+
+def a2a_push_marker(agent_name: str, task_id: str | None = None) -> str:
+    """Content prefix for an auto-pushed A2A async result.
+
+    Same shape as :func:`a2a_marker` under the ``[A2A-PUSH:…]`` envelope —
+    ``task_id`` rides only for a task result, so the pushed message names
+    which peer's which task it belongs to.
+    """
+    return _a2a_payload_marker(A2A_PUSH_PREFIX, agent_name, task_id)
+
+
+def _a2a_payload_marker(prefix: str, agent_name: str, task_id: str | None) -> str:
+    """Shared builder — the two A2A envelopes differ only in their prefix."""
+    payload: dict[str, str] = {"agent_name": agent_name}
+    if task_id is not None:
+        payload["task_id"] = task_id
+    return f"{prefix}{json.dumps(payload, ensure_ascii=False)}] "
+
+
 def subagent_marker(subagent_name: str, task_id: str | None = None) -> str:
     """Content prefix for an auto-pushed subagent completion.
 
@@ -213,17 +253,19 @@ def unwrap_info_envelope(text: str) -> str:
       already shown by the ``Wechat>`` bubble prefix (the legacy prose
       ``[WECHAT] `` marker on older stored rows is dropped too);
     - a leading ``[Subagent:…]`` envelope is dropped entirely — the channel
-      is already shown by the ``Subagent(<name>)> `` bubble prefix.
+      is already shown by the ``Subagent(<name>)> `` bubble prefix;
+    - leading ``[A2A:…]`` / ``[A2A-PUSH:…]`` envelopes are dropped entirely
+      — the channel is already shown by the ``A2A(<name>)> `` bubble prefix.
 
     Only the *trailing* INFO envelope is unwrapped (``rfind``) — an
     annotation is always a suffix, and a user message may legitimately
     contain the literal ``[INFO:`` in prose.  Only *leading* Wechat, Subagent
-    (and legacy WECHAT) markers — exactly our injected prefixes — are
-    stripped.  Returns *text* unchanged when no marker is present.
+    and A2A (plus legacy WECHAT) markers — exactly our injected prefixes —
+    are stripped.  Returns *text* unchanged when no marker is present.
     """
     if text.startswith(WECHAT_MARKER):
         text = text[len(WECHAT_MARKER):]
-    for prefix in (WECHAT_PREFIX, SUBAGENT_PREFIX):
+    for prefix in (WECHAT_PREFIX, SUBAGENT_PREFIX, A2A_PREFIX, A2A_PUSH_PREFIX):
         if text.startswith(prefix):
             end = text.find("]", len(prefix))
             if end != -1:

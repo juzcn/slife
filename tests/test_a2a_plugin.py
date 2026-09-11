@@ -281,8 +281,23 @@ class TestHarnessTools:
         assert len(out["tasks"]) == 1
         assert out["tasks"][0]["content"] == "do this"
         assert out["tasks"][0]["correlation_id"] == "cid-1"
+        assert out["tasks"][0]["kind"] == "task"  # default for unstamped peers
         assert len(out["presence"]) == 1
         assert out["presence"][0]["event"] == "online"
+
+    @pytest.mark.asyncio
+    async def test_drain_preserves_inbound_kind(self):
+        """The wire kind (message vs task) rides the drained task entry."""
+        from slife.a2a.identity import AgentMessage
+
+        plugin._inbound_tasks.clear()
+        await plugin._on_incoming_task(AgentMessage(
+            source="peer-1", content="hi",
+            reply_to="Slife/slife/tasks/result", correlation_id="cid-9",
+            metadata={"a2a_kind": "message"},
+        ))
+        out = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
+        assert out["tasks"][0]["kind"] == "message"
 
     @pytest.mark.asyncio
     async def test_task_completion_queued_and_drained(self):

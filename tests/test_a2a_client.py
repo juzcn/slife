@@ -85,6 +85,7 @@ class TestSendTaskWire:
         assert env["method"] == "SendMessage"
         assert env["_slife"]["source"] == "jack"
         assert env["_slife"]["reply_to"] == "Slife/jack/tasks/result"
+        assert env["_slife"]["kind"] == "task"
         assert env["params"]["message"]["content"][0]["text"] == "do X"
         assert env["params"]["message"]["role"] == "user"
 
@@ -99,6 +100,7 @@ class TestSendTaskWire:
         assert topic == "Slife/peer-1/tasks/inbox"
         env = json.loads(payload)
         assert env["id"] == corr_id
+        assert env["_slife"]["kind"] == "task"
         assert env["params"]["message"]["content"][0]["text"] == "do X"
 
     @pytest.mark.asyncio
@@ -124,6 +126,9 @@ class TestSendTaskWire:
         )
         assert result == "replied"
         assert get_store().list_tasks() == []
+        # record=False ↦ kind="message" on the wire.
+        env = json.loads(adapter.published[0][1])
+        assert env["_slife"]["kind"] == "message"
 
     @pytest.mark.asyncio
     async def test_send_task_async_record_false_skips_task_store(self):
@@ -134,6 +139,42 @@ class TestSendTaskWire:
         client = self._client()
         await client.send_task_async(AgentName("peer-1"), "hi", record=False)
         assert get_store().list_tasks() == []
+        # record=False ↦ kind="message" on the wire.
+        env = json.loads(client._adapter.published[0][1])
+        assert env["_slife"]["kind"] == "message"
+
+    @pytest.mark.asyncio
+    async def test_incoming_task_reads_wire_kind_into_metadata(self):
+        """Inbound SendMessage carries _slife.kind; it rides on the
+        AgentMessage metadata so the receiver's [A2A:…] marker can tell a
+        message from a task.  Peers that don't stamp kind default to task."""
+        from slife.a2a import wire
+
+        client = self._client()
+        got = []
+
+        async def _cb(msg):
+            got.append(msg)
+
+        client.on_incoming_task(_cb)
+
+        payload = json.dumps(wire.send_message_envelope(
+            "cid-77", "peer-1", "material for the report",
+            "Slife/jack/tasks/result", kind="message",
+        ))
+        await client._handle_incoming_task(
+            TransportMessage(topic="Slife/jack/tasks/inbox", payload=payload),
+        )
+        assert got[0].content == "material for the report"
+        assert got[0].metadata.get("a2a_kind") == "message"
+
+        payload2 = json.dumps(wire.send_message_envelope(
+            "cid-78", "peer-2", "do X", "Slife/jack/tasks/result",
+        ))
+        await client._handle_incoming_task(
+            TransportMessage(topic="Slife/jack/tasks/inbox", payload=payload2),
+        )
+        assert got[1].metadata.get("a2a_kind") == "task"
 
 
 class TestCancelTask:

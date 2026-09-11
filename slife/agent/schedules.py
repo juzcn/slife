@@ -114,8 +114,7 @@ def build_worker_task(name: str, description: str, due_at: str = "") -> str:
     """Self-contained task text for the worker running scheduled task *name*.
 
     The worker starts with a clean context but has the full toolset (incl.
-    ``report_save`` and a way to notify the user).  The headless worker
-    wraps this as ``[Task <rpc_id> from <agent>] …``.  The text lives in
+    ``report_save`` and a way to notify the user).  The text lives in
     ``schedule.j2`` (rendered through ``system_prompt.render_template``).
     *due_at* is the exact run the worker must confirm in ``report_save``
     — a backfill's missed/failed run, or the cron fire's dispatch time.

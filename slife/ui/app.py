@@ -881,7 +881,7 @@ class SlifeApp(App):
             # Show source agent ID as prefix so user knows who sent the task
             chat_view.add_user_message(
                 content,
-                prefix=f"A2A({source})",
+                prefix=f"A2A({source})> ",
                 timestamp=datetime.now().astimezone(),
             )
 
