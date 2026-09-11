@@ -24,10 +24,8 @@ from slife.plugins.wechat.client import WechatClawbotClient, BASE_URL
 from slife.plugins.wechat.config import (
     load_wechat_config,
     save_wechat_config,
+    update_wechat_updates_buf,
     clear_wechat_config,
-    load_wechat_sync,
-    save_wechat_sync,
-    clear_wechat_sync,
 )
 from slife.server_utils import create_plugin_server
 from slife.logfmt import error_json
@@ -118,7 +116,7 @@ _seen_keys: dict[str, float] = {}
 _DEDUP_WINDOW = 30.0  # seconds — re-deliveries arrive well within this
 _MAX_QUEUED = 200  # keep at most 200 pending messages
 
-# Last get_updates_buf written to the sidecar — persist only on change.
+# Last get_updates_buf written to the session file — persist only on change.
 _persisted_sync_buf: str = ""
 
 
@@ -128,10 +126,10 @@ def _persist_updates_buf(buf: str) -> None:
     if not isinstance(buf, str) or not buf or buf == _persisted_sync_buf:
         return
     try:
-        save_wechat_sync(_agent_name, buf, _work_dir)
+        update_wechat_updates_buf(_agent_name, buf, _work_dir)
         _persisted_sync_buf = buf
     except Exception:
-        logger.debug("wechat_sync_persist_failed", exc_info=True)
+        logger.debug("wechat_cursor_persist_failed", exc_info=True)
 
 # Typing indicator keep-alive — per-conversation tasks managed by the server
 _typing_tasks: dict[str, asyncio.Task] = {}
@@ -711,9 +709,7 @@ async def wechat_check_status() -> str:
                     # Seed the persisted getupdates ack so the first poll after
                     # a restart resumes ack'ing instead of re-receiving the
                     # unacked window (D6).
-                    seed = load_wechat_sync(
-                        _agent_name, _work_dir,
-                    ).get("get_updates_buf", "")
+                    seed = saved.get("get_updates_buf", "")
                     if seed:
                         _client.updates_buf = seed
                     # Restore last contact so the LLM knows who to message
@@ -810,9 +806,8 @@ async def wechat_logout() -> str:
         logger.debug("stop_error err=%s", e)
 
     _client = WechatClawbotClient()
+    # Removes the session file — the getupdates ack cursor goes with it.
     clear_wechat_config(_agent_name, _work_dir)
-    # Drop the persisted getupdates ack — it belongs to the ended session.
-    clear_wechat_sync(_agent_name, _work_dir)
 
     return json.dumps({
         "status": "logged_out",

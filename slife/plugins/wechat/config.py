@@ -1,8 +1,15 @@
-"""Per-user WeChat configuration I/O.
+"""Per-user WeChat session I/O — one ``wechat_<user>.json5`` file per login.
 
-Each user gets their own ``wechat_<user>.json5`` file in the working
-directory (alongside ``slife.json5``).  The bot token is stored directly
-in the file — it is short-lived (~24h) and does not warrant credstore.
+The file is one short-lived (~24h) session unit: login credentials plus the
+``get_updates_buf`` ack cursor (D6).  The token expires in ~24h and does not
+warrant credstore.
+
+The cursor comes back from the iLink ``getupdates`` endpoint; passing it back
+on the next poll tells the server we've seen everything up to there.  Keeping
+it in the session file lets a restored session resume ack'ing instead of
+re-receiving the unacked window — which the poll loop would otherwise re-ingest
+as genuine duplicates once its 30s in-memory dedup window has passed (D6).
+It is written only when it changes, and always atomically.
 
 Config format::
 
@@ -11,10 +18,10 @@ Config format::
       base_url: "https://ilinkai.weixin.qq.com",
       saved_at: 1718400000.0,
       ilink_user_id: "",
+      get_updates_buf: "ChAIARC...",
     }
 """
 
-import json
 import os
 import tempfile
 
@@ -27,45 +34,17 @@ logger = logging.getLogger("slife_wechat")
 DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
 
 
-# ── Sync state (dedupe/replay ack), a small sidecar next to the session ──
-# The iLink getupdates endpoint returns an opaque ``get_updates_buf`` ack;
-# passing it back on the next poll tells the server we've seen up to there.
-# Persisting it across a restart lets a restored session resume ack'ing
-# instead of re-receiving the unacked window — which the poll loop would
-# re-ingest as genuine duplicates once its 30s in-memory dedup window has
-# passed (D6).
+def _atomic_write_json5(path: Path, data: dict) -> None:
+    """Write *data* to *path* atomically (temp file + rename).
 
-
-def _sync_path(user: str, work_dir: Path | None = None) -> Path:
-    wd = work_dir or Path(".")
-    return wd / f"wechat_{user}_sync.json"
-
-
-def load_wechat_sync(user: str, work_dir: Path | None = None) -> dict:
-    """Load the persisted sync state (``get_updates_buf``) for *user*."""
-    path = _sync_path(user, work_dir)
-    if not path.exists():
-        return {"get_updates_buf": ""}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        logger.warning("wechat_sync_parse_failed path=%s", path)
-        return {"get_updates_buf": ""}
-    if not isinstance(raw, dict):
-        return {"get_updates_buf": ""}
-    return {"get_updates_buf": raw.get("get_updates_buf", "") or ""}
-
-
-def save_wechat_sync(
-    user: str, get_updates_buf: str, work_dir: Path | None = None,
-) -> Path:
-    """Persist the current ``get_updates_buf`` ack for *user* (atomic write)."""
-    path = _sync_path(user, work_dir)
+    A cursor write must never be able to leave the session file half-written
+    — readers see either the old or the new content, never a torn mix.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".wechat_sync_")
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".wechat_cfg_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"get_updates_buf": get_updates_buf}, f)
+            f.write(json5.dumps(data, indent=2))
         os.replace(tmp, path)
     except Exception:
         try:
@@ -73,19 +52,6 @@ def save_wechat_sync(
         except OSError:
             pass
         raise
-    logger.debug("wechat_sync_saved user=%s path=%s", user, path)
-    return path
-
-
-def clear_wechat_sync(user: str, work_dir: Path | None = None) -> None:
-    """Delete the persisted sync state (on logout / fresh login)."""
-    path = _sync_path(user, work_dir)
-    if path.exists():
-        try:
-            path.unlink()
-        except OSError:
-            pass
-        logger.info("wechat_sync_cleared user=%s", user)
 
 
 def _config_path(user: str, work_dir: Path | None = None) -> Path:
@@ -100,8 +66,8 @@ def load_wechat_config(
     """Load WeChat session config for *user*.
 
     Returns a dict with keys ``bot_token``, ``base_url``, ``saved_at``,
-    ``ilink_user_id``.  Returns an empty dict if the config file does
-    not exist or cannot be parsed.
+    ``ilink_user_id``, ``get_updates_buf``.  Returns an empty dict if the
+    config file does not exist or cannot be parsed.
     """
     path = _config_path(user, work_dir)
     if not path.exists():
@@ -121,16 +87,17 @@ def load_wechat_config(
         "base_url": raw.get("base_url", DEFAULT_BASE_URL),
         "saved_at": raw.get("saved_at", 0),
         "ilink_user_id": raw.get("ilink_user_id", ""),
+        "get_updates_buf": raw.get("get_updates_buf", "") or "",
     }
 
 
 def save_wechat_config(
     user: str, session: dict, work_dir: Path | None = None,
 ) -> Path:
-    """Save (or update) WeChat session config for *user*.
+    """Save (or update) WeChat session config for *user* (atomic write).
 
-    *session* should contain ``bot_token``, ``base_url``, ``saved_at``,
-    and optionally ``ilink_user_id``.
+    *session* should contain ``bot_token``, ``base_url``, ``saved_at`` and
+    optionally ``ilink_user_id`` and ``get_updates_buf``.
     """
     path = _config_path(user, work_dir)
 
@@ -142,16 +109,49 @@ def save_wechat_config(
     ilink_user_id = session.get("ilink_user_id", "")
     if ilink_user_id:
         data["ilink_user_id"] = ilink_user_id
+    get_updates_buf = session.get("get_updates_buf", "")
+    if get_updates_buf:
+        data["get_updates_buf"] = get_updates_buf
 
-    path.write_text(json5.dumps(data, indent=2), encoding="utf-8")
+    _atomic_write_json5(path, data)
     logger.info("wechat_config_saved user=%s path=%s", user, path)
+    return path
+
+
+def update_wechat_updates_buf(
+    user: str, get_updates_buf: str, work_dir: Path | None = None,
+) -> Path | None:
+    """Merge *get_updates_buf* into the session file for *user* (atomic).
+
+    A cursor is only meaningful alongside a live session, so the write is
+    skipped — returns None — when the session file is missing or tokenless.
+    Everything else in the file (notably ``saved_at``, which drives the 24h
+    expiry) is preserved untouched.
+    """
+    if not get_updates_buf:
+        return None
+    path = _config_path(user, work_dir)
+    if not path.exists():
+        return None
+    try:
+        raw = json5.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("wechat_cursor_merge_parse_failed path=%s", path)
+        return None
+    if not isinstance(raw, dict) or not raw.get("bot_token"):
+        return None
+
+    raw = dict(raw)
+    raw["get_updates_buf"] = get_updates_buf
+    _atomic_write_json5(path, raw)
+    logger.debug("wechat_cursor_saved user=%s path=%s", user, path)
     return path
 
 
 def clear_wechat_config(
     user: str, work_dir: Path | None = None,
 ) -> bool:
-    """Delete the WeChat session file for *user*."""
+    """Delete the WeChat session file for *user* — the ack cursor goes with it."""
     path = _config_path(user, work_dir)
     if path.exists():
         path.unlink()

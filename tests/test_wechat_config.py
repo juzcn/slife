@@ -14,10 +14,8 @@ from slife.plugins.wechat.config import (
     _config_path,
     load_wechat_config,
     save_wechat_config,
+    update_wechat_updates_buf,
     clear_wechat_config,
-    load_wechat_sync,
-    save_wechat_sync,
-    clear_wechat_sync,
     DEFAULT_BASE_URL,
 )
 
@@ -112,6 +110,7 @@ class TestLoadWechatConfig:
         assert result["base_url"] == DEFAULT_BASE_URL
         assert result["saved_at"] == 0
         assert result["ilink_user_id"] == ""
+        assert result["get_updates_buf"] == ""
 
     def test_malformed_json_returns_empty(self, tmp_path):
         path = tmp_path / "wechat_test.json5"
@@ -190,6 +189,23 @@ class TestSaveWechatConfig:
         # ilink_user_id should not appear when empty
         assert "ilink_user_id" not in content
 
+    def test_saves_get_updates_buf(self, tmp_path):
+        session = {
+            "bot_token": "tok",
+            "get_updates_buf": "buf-xyz",
+            "saved_at": 1000.0,
+        }
+        save_wechat_config("user", session, work_dir=tmp_path)
+        loaded = load_wechat_config("user", work_dir=tmp_path)
+        assert loaded["get_updates_buf"] == "buf-xyz"
+
+    def test_get_updates_buf_empty_not_written(self, tmp_path):
+        session = {"bot_token": "tok", "saved_at": 0, "get_updates_buf": ""}
+        path = save_wechat_config("user", session, work_dir=tmp_path)
+        content = path.read_text(encoding="utf-8")
+        # get_updates_buf should not appear when empty
+        assert "get_updates_buf" not in content
+
     def test_returns_path_object(self, tmp_path):
         session = {"bot_token": "a", "saved_at": 0}
         result = save_wechat_config("x", session, work_dir=tmp_path)
@@ -247,25 +263,40 @@ class TestIntegration:
         assert bob["bot_token"] == "bob_token"
 
 
-class TestSyncSidecar:
-    """D6: the getupdates ack token is persisted across restarts so a restored
-    session resumes ack'ing instead of re-receiving the replay window."""
+class TestUpdatesBufRoundtrip:
+    """D6: the getupdates ack lives in the session file, so a restored session
+    resumes ack'ing instead of re-receiving the replay window."""
 
-    def test_save_load_roundtrip(self, tmp_path):
-        save_wechat_sync("alice", "buf-abc123", work_dir=tmp_path)
-        loaded = load_wechat_sync("alice", work_dir=tmp_path)
-        assert loaded["get_updates_buf"] == "buf-abc123"
+    def test_merge_preserves_session(self, tmp_path):
+        save_wechat_config("alice", {
+            "bot_token": "base-token",
+            "saved_at": 1111.0,
+            "ilink_user_id": "wxid_a",
+        }, work_dir=tmp_path)
+        update_wechat_updates_buf("alice", "buf-1", work_dir=tmp_path)
+        loaded = load_wechat_config("alice", work_dir=tmp_path)
+        assert loaded["bot_token"] == "base-token"
+        assert loaded["saved_at"] == 1111.0
+        assert loaded["ilink_user_id"] == "wxid_a"
+        assert loaded["get_updates_buf"] == "buf-1"
 
-    def test_missing_returns_empty(self, tmp_path):
-        assert load_wechat_sync("ghost", work_dir=tmp_path) == {"get_updates_buf": ""}
+    def test_latest_wins(self, tmp_path):
+        save_wechat_config("alice", {"bot_token": "tok", "saved_at": 1},
+                           work_dir=tmp_path)
+        update_wechat_updates_buf("alice", "buf-a", work_dir=tmp_path)
+        update_wechat_updates_buf("alice", "buf-b", work_dir=tmp_path)
+        assert load_wechat_config("alice", work_dir=tmp_path)["get_updates_buf"] == "buf-b"
 
-    def test_clear_removes(self, tmp_path):
-        save_wechat_sync("alice", "buf", work_dir=tmp_path)
-        clear_wechat_sync("alice", work_dir=tmp_path)
-        assert load_wechat_sync("alice", work_dir=tmp_path) == {"get_updates_buf": ""}
+    def test_no_session_skipped(self, tmp_path):
+        # No session file — a cursor without credentials is meaningless.
+        assert update_wechat_updates_buf("ghost", "buf", work_dir=tmp_path) is None
+        assert not (tmp_path / "wechat_ghost.json5").exists()
 
-    def test_per_user_isolation(self, tmp_path):
-        save_wechat_sync("alice", "buf-a", work_dir=tmp_path)
-        save_wechat_sync("bob", "buf-b", work_dir=tmp_path)
-        assert load_wechat_sync("alice", work_dir=tmp_path)["get_updates_buf"] == "buf-a"
-        assert load_wechat_sync("bob", work_dir=tmp_path)["get_updates_buf"] == "buf-b"
+    def test_tokenless_session_skipped(self, tmp_path):
+        (tmp_path / "wechat_alice.json5").write_text("{}", encoding="utf-8")
+        assert update_wechat_updates_buf("alice", "buf", work_dir=tmp_path) is None
+
+    def test_empty_buf_skipped(self, tmp_path):
+        save_wechat_config("alice", {"bot_token": "tok", "saved_at": 1},
+                           work_dir=tmp_path)
+        assert update_wechat_updates_buf("alice", "", work_dir=tmp_path) is None

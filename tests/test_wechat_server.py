@@ -361,27 +361,27 @@ class TestSyncBufPersist:
 
     def test_persists_on_change_and_dedups(self):
         persisted = []
-        original = ws.save_wechat_sync
-        ws.save_wechat_sync = lambda _u, buf, _wd=None: persisted.append(buf)
+        original = ws.update_wechat_updates_buf
+        ws.update_wechat_updates_buf = lambda _u, buf, _wd=None: persisted.append(buf)
         try:
             ws._persisted_sync_buf = ""
             ws._persist_updates_buf("buf-1")
             ws._persist_updates_buf("buf-1")  # unchanged → no second write
             ws._persist_updates_buf("buf-2")
         finally:
-            ws.save_wechat_sync = original
+            ws.update_wechat_updates_buf = original
             ws._persisted_sync_buf = ""
         assert persisted == ["buf-1", "buf-2"]
 
     def test_non_string_buf_skipped(self):
         persisted = []
-        original = ws.save_wechat_sync
-        ws.save_wechat_sync = lambda _u, buf, _wd=None: persisted.append(buf)
+        original = ws.update_wechat_updates_buf
+        ws.update_wechat_updates_buf = lambda _u, buf, _wd=None: persisted.append(buf)
         try:
             ws._persisted_sync_buf = ""
             ws._persist_updates_buf(None)  # test fakes expose MagicMock attrs
             ws._persist_updates_buf("")
         finally:
-            ws.save_wechat_sync = original
+            ws.update_wechat_updates_buf = original
             ws._persisted_sync_buf = ""
         assert persisted == []
