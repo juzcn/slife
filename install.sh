@@ -665,7 +665,10 @@ if [ $BUILD_EXIT -ne 0 ]; then
 fi
 
 set +eo pipefail
-uv tool install --python 3.13 --find-links "$WHEELHOUSE" slife > "$TOOL_INSTALL_LOG" 2>&1
+# --force: a failed install can leave stale executables (credstore) in
+# uv's tool bin dir even after env/shims are cleaned — location varies by
+# UV_TOOL_BIN_DIR, so uv itself suggests --force to overwrite them.
+uv tool install --python 3.13 --find-links "$WHEELHOUSE" --force slife > "$TOOL_INSTALL_LOG" 2>&1
 INSTALL_EXIT=$?
 set -eo pipefail
 if [ $INSTALL_EXIT -ne 0 ]; then
