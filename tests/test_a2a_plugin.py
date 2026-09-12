@@ -167,9 +167,11 @@ class TestA2aMessageTools:
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
             result = await getattr(plugin, "a2a_send_message")("peer-1", "hello")
         assert result == "result-text"
-        client.send_task.assert_called_once_with(
-            AgentName("peer-1"), "hello", record=False,
-        )
+        client.send_task.assert_called_once()
+        assert client.send_task.call_args.args == (AgentName("peer-1"), "hello")
+        kwargs = client.send_task.call_args.kwargs
+        assert kwargs["record"] is False
+        assert callable(kwargs["on_abandoned"])
 
     @pytest.mark.asyncio
     async def test_send_message_timeout_forwarded(self):
@@ -183,9 +185,58 @@ class TestA2aMessageTools:
                 "peer-1", "hello", timeout=30,
             )
         assert result == "result-text"
-        client.send_task.assert_called_once_with(
-            AgentName("peer-1"), "hello", record=False, timeout=30,
-        )
+        client.send_task.assert_called_once()
+        assert client.send_task.call_args.args == (AgentName("peer-1"), "hello")
+        kwargs = client.send_task.call_args.kwargs
+        assert kwargs["record"] is False
+        assert kwargs["timeout"] == 30
+        assert callable(kwargs["on_abandoned"])
+
+    @pytest.mark.asyncio
+    async def test_send_message_sync_degrade_tracks_late_reply_as_message(self):
+        """B1 regression — a sync stateless send whose wait degrades (B1) is
+        registered in ``_message_sends``, so its late reply auto-pushes as a
+        ``kind="message"`` reply with the peer preserved — never a task
+        completion whose "peer" is the corr_id."""
+        from slife.a2a.task_store import clear_store
+
+        plugin._message_sends.clear()
+        plugin._task_completions.clear()
+
+        async def _degrading_send(target, task, **kwargs):
+            # The real client's auto-degrade: drop the waiter, then fire the
+            # abandonment hook so the plugin keeps tracking the late reply.
+            cb = kwargs.get("on_abandoned")
+            if cb is not None:
+                await cb("corr-9")
+            return (
+                f"Task to '{target}' timed out after 0.05s — auto-degraded "
+                f"to async … task_id: corr-9"
+            )
+
+        client = _fake_client()
+        client.send_task = AsyncMock(side_effect=_degrading_send)
+        try:
+            with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+                result = await getattr(plugin, "a2a_send_message")(
+                    "peer-1", "hello", timeout=0.05,
+                )
+            assert "auto-degraded" in result
+
+            # The degraded wait registered the peer, mirroring the async path.
+            assert plugin._message_sends.get("corr-9") == "peer-1"
+
+            await plugin._on_task_result("corr-9", "the answer", False)
+            out = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
+            assert out["task_completions"] == [{
+                "corr_id": "corr-9", "result": "the answer",
+                "cancelled": False, "peer": "peer-1", "kind": "message",
+            }]
+            assert plugin._message_sends == {}
+        finally:
+            plugin._message_sends.clear()
+            plugin._task_completions.clear()
+            clear_store()
 
     @pytest.mark.asyncio
     async def test_send_message_async_auto_completion_kind_message(self):

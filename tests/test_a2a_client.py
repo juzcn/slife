@@ -114,7 +114,24 @@ class TestSendTaskWire:
         assert get_store().get(cid).status == "pending"
 
     @pytest.mark.asyncio
-    async def test_degraded_sync_task_late_result_auto_pushes(self):
+    async def test_send_task_stateless_timeout_fires_on_abandoned(self):
+        """B1 regression (client side) — a stateless sync send whose wait
+        degrades fires ``on_abandoned(corr_id)`` so the caller can keep
+        tagging the still-pending request's late reply."""
+        client = self._client()
+        abandoned: list[str] = []
+
+        async def _on_abandoned(corr_id: str) -> None:
+            abandoned.append(corr_id)
+
+        result = await client.send_task(
+            AgentName("peer-1"), "hi", record=False, timeout=0.05,
+            on_abandoned=_on_abandoned,
+        )
+        assert "auto-degraded" in result
+        cid = json.loads(client._adapter.published[0][1])["id"]
+        assert abandoned == [cid]
+        assert cid not in client._pending_tasks  # the waiter was dropped — no leak
         """A sync task whose wait degraded keeps its delivery: the late result
         flows through the async branch (store + auto-push) instead of being
         discarded after the timeout."""

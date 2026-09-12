@@ -345,11 +345,29 @@ async def a2a_send_message(
     if timeout is not None and timeout <= 0:
         timeout = None  # ≤0 → plugin default, matching `_timeout: 0`
     client = await _ensure_connected()
+
+    async def _track_abandoned(corr_id: str) -> None:
+        # A sync stateless send whose wait ended WITHOUT a result (timeout
+        # auto-degrade, or a cancelled waiter) is still live on the wire —
+        # the request was already published, so the peer may still answer.
+        # Register it in `_message_sends` so the late reply auto-pushes as a
+        # *message* reply (kind="message", peer preserved) instead of a
+        # misclassified task completion whose "peer" is the corr_id (B1).
+        # Mirrors a2a_send_message_async's registration; consumed (popped) by
+        # _on_task_result when the reply arrives.
+        _message_sends[corr_id] = str(agent_name)
+        if len(_message_sends) > _MAX_QUEUED:
+            _message_sends.pop(next(iter(_message_sends)))
+
     if timeout is not None:
         return await client.send_task(
             AgentName(agent_name), text, record=False, timeout=timeout,
+            on_abandoned=_track_abandoned,
         )
-    return await client.send_task(AgentName(agent_name), text, record=False)
+    return await client.send_task(
+        AgentName(agent_name), text, record=False,
+        on_abandoned=_track_abandoned,
+    )
 
 
 @mcp.tool(

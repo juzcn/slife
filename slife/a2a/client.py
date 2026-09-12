@@ -273,6 +273,7 @@ class A2AClient:
     async def send_task(
         self, target: AgentName, task: str, timeout: float | None = None,
         record: bool = True,
+        on_abandoned: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """Send a task to *target* and wait for the result.
 
@@ -288,6 +289,15 @@ class A2AClient:
         raising: the request was already delivered, so the record stays
         pending and the late result is stored + auto-pushed to the inbox
         when it arrives (never retry a timed-out sync call).
+
+        *on_abandoned* — optional async callback ``(corr_id) -> None`` fired
+        when the sync wait ends **without a resolved result** (the timeout
+        auto-degrade, or a cancelled waiter — the request itself was already
+        published either way, so the peer may still answer).  It lets a
+        caller tag an abandoned send so the *late* reply is still framed
+        correctly when it arrives (e.g. a stateless message reply rather
+        than a misclassified task completion).  Fired after the pending
+        future is dropped; exceptions are logged, never raised.
         """
         if timeout is None:
             timeout = self._config.task_timeout
@@ -338,6 +348,13 @@ class A2AClient:
             # (record=False) degrades the same way — its late reply auto-pushes
             # through the plugin's _message_sends map.
             self._pending_tasks.pop(corr_id, None)
+            if on_abandoned is not None:
+                try:
+                    await on_abandoned(corr_id)
+                except Exception:
+                    logger.warning(
+                        "a2a_send_abandoned_cb_error corr_id=%s", corr_id,
+                    )
             return (
                 f"Task to '{target}' timed out after {timeout:g}s — "
                 f"auto-degraded to async (the request was already delivered; "
@@ -356,6 +373,16 @@ class A2AClient:
                 rec = get_store().get(corr_id)
                 if rec is not None and rec.status == "pending":
                     get_store().record_error(corr_id, "cancelled")
+            elif on_abandoned is not None:
+                # Stateless (record=False): no record to make terminal — tell
+                # the caller the late reply is still on the wire, exactly like
+                # the wait-timeout path above, so it is not misclassified.
+                try:
+                    await on_abandoned(corr_id)
+                except Exception:
+                    logger.warning(
+                        "a2a_send_abandoned_cb_error corr_id=%s", corr_id,
+                    )
             raise
 
     # ── Async task routing ────────────────────────────────────────────
