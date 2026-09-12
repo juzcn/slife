@@ -2233,11 +2233,12 @@ class AgentService:
                     corr_id = ev.get("correlation_id", "")
                     src = ev.get("source", "unknown")
                     kind = ev.get("kind", "task")
-                    # The [A2A:…] marker names the sending peer and (for a
-                    # task) its task id, so the LLM can attribute the turn and
-                    # reference the task it is responding to instead of making
-                    # one up (a reported mismatch in round-trips).  The TUI
-                    # drops it for display (A2A(<name>)> bubble prefix).
+                    # The [A2A:…] marker's `from` names the sending peer —
+                    # never the receiver — and (for a task) its task id, so
+                    # the LLM can attribute the turn and reference the task it
+                    # is responding to instead of making one up (a reported
+                    # mismatch in round-trips).  The TUI drops it for display
+                    # (A2A(<name>)> bubble prefix).
                     task_id = (corr_id or None) if kind == "task" else None
                     task_text = (
                         f"{a2a_marker(src, task_id)}"
@@ -2285,9 +2286,9 @@ class AgentService:
                     if not result:
                         continue
                     if cev.get("kind") == "message":
-                        # Stateless message reply — the [A2A-PUSH:…] marker
-                        # names the peer; framed as a reply, not a task
-                        # completion (the caller sent a message).
+                        # Stateless message reply — the [A2A-PUSH:…] marker's
+                        # `from` names the responding peer; framed as a reply,
+                        # not a task completion (the caller sent a message).
                         content = (
                             f"{a2a_push_marker(peer)}"
                             f"Peer **{peer}** replied to your message:\n\n"

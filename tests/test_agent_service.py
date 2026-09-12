@@ -1177,7 +1177,7 @@ class TestAgentServiceA2A:
 
         assert len(posted) == 1
         assert posted[0].content == (
-            '[A2A:{"agent_name": "Jack", "task_id": "cid-1"}] '
+            '[A2A:{"from": "Jack", "task_id": "cid-1"}] '
             "do X"
         )
         assert posted[0].correlation_id == "cid-1"
@@ -1229,11 +1229,11 @@ class TestAgentServiceA2A:
         contents = [m.content for m in posted]
         assert len(contents) == 2
         assert (
-            '[A2A-PUSH:{"agent_name": "peer-1", "task_id": "c-task"}] '
+            '[A2A-PUSH:{"from": "peer-1", "task_id": "c-task"}] '
             "Peer **peer-1** completed async task (ID: `c-task`):\n\nthe answer"
         ) in contents
         assert (
-            '[A2A-PUSH:{"agent_name": "peer-2"}] '
+            '[A2A-PUSH:{"from": "peer-2"}] '
             "Peer **peer-2** replied to your message:\n\nhi"
         ) in contents
 

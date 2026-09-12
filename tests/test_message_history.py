@@ -68,33 +68,34 @@ class TestUnwrapInfoEnvelope:
         ) == 'hello {"turn_id": 5}'
 
     def test_a2a_marker_builds_json_payload(self):
-        # Keys mirror the a2a tool arguments (agent_name / task_id); the
-        # presence of task_id is what distinguishes a task from a message.
+        # `from` names the SENDING peer — not `agent_name`, which is the
+        # agent's own identity in the system prompt; the presence of task_id
+        # is what distinguishes a task from a message.
         assert a2a_marker("Jack", "cid-1") == (
-            '[A2A:{"agent_name": "Jack", "task_id": "cid-1"}] '
+            '[A2A:{"from": "Jack", "task_id": "cid-1"}] '
         )
         # A stateless message omits the task id.
-        assert a2a_marker("Jack") == '[A2A:{"agent_name": "Jack"}] '
+        assert a2a_marker("Jack") == '[A2A:{"from": "Jack"}] '
 
     def test_a2a_push_marker_builds_json_payload(self):
         assert a2a_push_marker("peer-1", "cid-1") == (
-            '[A2A-PUSH:{"agent_name": "peer-1", "task_id": "cid-1"}] '
+            '[A2A-PUSH:{"from": "peer-1", "task_id": "cid-1"}] '
         )
         # A message reply carries no task id.
-        assert a2a_push_marker("peer-1") == '[A2A-PUSH:{"agent_name": "peer-1"}] '
+        assert a2a_push_marker("peer-1") == '[A2A-PUSH:{"from": "peer-1"}] '
 
     def test_strips_leading_a2a_markers(self):
         # Inbound and auto-pushed A2A markers are dropped for display (the
         # channel already shows as A2A(<name>)>).
         assert unwrap_info_envelope(
-            '[A2A:{"agent_name": "Jack", "task_id": "cid-1"}] do X'
+            '[A2A:{"from": "Jack", "task_id": "cid-1"}] do X'
         ) == "do X"
         assert unwrap_info_envelope(
-            '[A2A-PUSH:{"agent_name": "Jack", "task_id": "cid-1"}] the answer'
+            '[A2A-PUSH:{"from": "Jack", "task_id": "cid-1"}] the answer'
         ) == "the answer"
         # A literal [A2A: bracket in the body survives.
         assert unwrap_info_envelope(
-            '[A2A:{"agent_name": "Jack"}] see [A2A: literally]'
+            '[A2A:{"from": "Jack"}] see [A2A: literally]'
         ) == "see [A2A: literally]"
 
     def test_strips_leading_subagent_marker(self):

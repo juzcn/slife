@@ -106,9 +106,11 @@ SUBAGENT_PREFIX = "[Subagent:"
 #: Channel markers for A2A mesh messages pushed into the agent's context.
 #: ``[A2A:…]`` prefixes an inbound peer message/task (the receiving agent
 #: reads who sent it and — for a task — its task id); ``[A2A-PUSH:…]``
-#: prefixes an auto-pushed async result.  Keys mirror the a2a tool
-#: arguments (``agent_name`` / ``task_id``); the absence or presence of
-#: ``task_id`` is what tells a message from a task.  Machine-facing — the
+#: prefixes an auto-pushed async result.  The peer rides under the key
+#: ``from`` — deliberately NOT ``agent_name``, which in the system prompt
+#: names the agent's *own* identity; a receiver can then never misread
+#: the marker as telling it who it is.  The presence or absence of
+#: ``task_id`` is what tells a task from a message.  Machine-facing — the
 #: TUI shows the ``A2A(<name>)> `` bubble prefix and
 #: ``unwrap_info_envelope`` strips them for display.
 A2A_PREFIX = "[A2A:"
@@ -196,11 +198,14 @@ def wechat_marker(peer_wechat_id: str, context_token: str | None = None) -> str:
 def a2a_marker(agent_name: str, task_id: str | None = None) -> str:
     """Content prefix for an inbound A2A peer message/task.
 
-    ``[A2A:{"agent_name": …, "task_id": …}] `` — the JSON names the sending
-    peer; ``task_id`` is present only for a task (a stateless message omits
-    it), and that presence is how the LLM tells the two apart.  The marker
-    is machine-facing; ``unwrap_info_envelope`` drops it for display (the
-    TUI shows the ``A2A(<name>)> `` bubble prefix instead).
+    ``[A2A:{"from": …, "task_id": …}] `` — ``from`` names the *sending* peer
+    (never the receiver); ``task_id`` is present only for a task (a
+    stateless message omits it), and that presence is how the LLM tells
+    the two apart.  The key is ``from``, not ``agent_name`` — that word in
+    the system prompt is the agent's own identity, so ``from`` keeps the
+    marker unmistakably directional.  The marker is machine-facing;
+    ``unwrap_info_envelope`` drops it for display (the TUI shows the
+    ``A2A(<name>)> `` bubble prefix instead).
     """
     return _a2a_payload_marker(A2A_PREFIX, agent_name, task_id)
 
@@ -209,15 +214,19 @@ def a2a_push_marker(agent_name: str, task_id: str | None = None) -> str:
     """Content prefix for an auto-pushed A2A async result.
 
     Same shape as :func:`a2a_marker` under the ``[A2A-PUSH:…]`` envelope —
-    ``task_id`` rides only for a task result, so the pushed message names
-    which peer's which task it belongs to.
+    ``from`` names the responding peer (never the receiver) and ``task_id``
+    rides only for a task result, so the pushed message names which peer's
+    which task it belongs to.
     """
     return _a2a_payload_marker(A2A_PUSH_PREFIX, agent_name, task_id)
 
 
 def _a2a_payload_marker(prefix: str, agent_name: str, task_id: str | None) -> str:
     """Shared builder — the two A2A envelopes differ only in their prefix."""
-    payload: dict[str, str] = {"agent_name": agent_name}
+    # ``from`` — the peer's name — deliberately not ``agent_name``: that word
+    # is the agent's self-identity in the system prompt, and reusing it here
+    # made receivers misread the sender as themselves.
+    payload: dict[str, str] = {"from": agent_name}
     if task_id is not None:
         payload["task_id"] = task_id
     return f"{prefix}{json.dumps(payload, ensure_ascii=False)}] "

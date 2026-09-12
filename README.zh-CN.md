@@ -341,7 +341,7 @@ job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱
 
 A2A 协议运行在可插拔的传输 **binding**（当前为 MQTT）上，让多个智能体——同一台机器或不同机器——互相发现、发送任务与消息、共享结果：
 
-- **网格工具**（统一 `a2a_` 前缀）：`a2a_send_task`、`a2a_send_task_async`、`a2a_send_message`、`a2a_send_message_async`、`a2a_get_task_result`、`a2a_cancel_task`、`a2a_list_agents`、`a2a_list_tasks`、`a2a_agent_card`、`a2a_broadcast`。入站的 peer 消息/任务以 **`[A2A:{"agent_name": …, "task_id": …}]`** 前缀到达模型（`task_id` 只在任务时出现——无状态消息只带 peer），自动推送的异步结果以 **`[A2A-PUSH:…]`** 前缀；TUI 显示 `A2A(<peer>)>`。`a2a` 插件只在 MQTT broker 可达时启动。
+- **网格工具**（统一 `a2a_` 前缀）：`a2a_send_task`、`a2a_send_task_async`、`a2a_send_message`、`a2a_send_message_async`、`a2a_get_task_result`、`a2a_cancel_task`、`a2a_list_agents`、`a2a_list_tasks`、`a2a_agent_card`、`a2a_broadcast`。入站的 peer 消息/任务以 **`[A2A:{"from": …, "task_id": …}]`** 前缀到达模型（`from` 是发送方 peer——永远不是接收者自己；`task_id` 只在任务时出现——无状态消息只带 peer），自动推送的异步结果以 **`[A2A-PUSH:…]`** 前缀；TUI 显示 `A2A(<peer>)>`。`a2a` 插件只在 MQTT broker 可达时启动。
 - **Subagent 是本地 worker，不是 A2A peer**：`spawn_subagent` / `subagent_send_task` / `subagent_get_task_result` / ……创建共享你的插件、一次处理一个任务的子进程 worker（对忙碌 worker 的同步发送会自动转为异步入队）。异步结果自动推送到你的聊天（`mode="auto"`，默认）或只能轮询（`mode="poll"`）。Subagent 绝不清空你的收件箱——所有回复与管理都属于主 agent。
 
 所有消息——人类输入、微信、MQTT、subagent 结果——都流经单一收件箱队列，逐轮处理。
