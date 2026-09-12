@@ -38,20 +38,20 @@ def total_tokens(since: str = "", until: str = "", db_path: str = "") -> str:
 
         row = conn.execute(
             "SELECT COUNT(*), COALESCE(SUM(token_count),0), "
-            "COALESCE(SUM(prompt_tokens),0) "
+            "COALESCE(SUM(context_tokens),0) "
             f"FROM diary {where}",
             params,
         ).fetchone()
     finally:
         conn.close()
 
-    n, total, prompt = row
+    n, total, ctx = row
     avg = round(total / n, 1) if n else 0
     return (
         f"数据库: {path}\n"
         f"轮数(turns): {n}\n"
         f"总token花费(token_count): {total}\n"
-        f"总prompt_tokens: {prompt}\n"
+        f"总context_tokens: {ctx}\n"
         f"平均每轮: {avg}\n"
         f"筛选: since={since or '(无)'} until={until or '(无)'}"
     )

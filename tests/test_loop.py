@@ -893,7 +893,7 @@ class TestAgentLoopRun:
 
         with patch.object(llm, 'chat_stream', side_effect=mock_human):
             await loop.run("hi", empty_history)
-        assert loop.context_tokens_for(empty_history) == 10_000
+        assert loop.context_tokens_for(empty_history) == 10_005
 
         # A heartbeat-like turn runs against the SAME history — there is
         # no separate small context to leak from or into.
@@ -905,7 +905,7 @@ class TestAgentLoopRun:
             await loop.run("[Heartbeat]", empty_history)
 
         # One context → one reading: the shared history's last-call usage.
-        assert loop.context_tokens_for(empty_history) == 11_000
+        assert loop.context_tokens_for(empty_history) == 11_002
 
     @pytest.mark.asyncio
     async def test_run_with_tool_calls(self, sample_model_config, tool_registry, history):

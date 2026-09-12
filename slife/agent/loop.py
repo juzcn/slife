@@ -484,19 +484,20 @@ class AgentLoop:
     def context_tokens_for(self, history: MessageHistory) -> int:
         """Context usage reported by ``_turn_prompt`` and the TUI status bar.
 
-        The **previous turn's** last API call's real ``prompt_tokens`` for
-        this history — ``_turn_prompt`` is auto-invoked before the current
-        turn's first API call, so the current round's usage is unknowable
-        by construction; the last completed call is the previous round's.
-        Single source for ``_turn_prompt``, the trim decision
-        (``_trim_after_save``), and the TUI status bar — one value, no
-        recompute.  Resolution order:
+        The **previous turn's** last API call's real ``prompt_tokens +
+        completion_tokens`` for this history — the exact token count of the
+        saved history as the next request would re-send it.  ``_turn_prompt``
+        is auto-invoked before the current turn's first API call, so the
+        current round's usage is unknowable by construction; the last
+        completed call is the previous round's.  Single source for
+        ``_turn_prompt``, the trim decision (``_trim_after_save``), and the
+        TUI status bar — one value, no recompute.  Resolution order:
 
-        1. This history's last API call's actual ``prompt_tokens`` (tracked
-           per history, so a heartbeat's small context never pollutes the
-           human history's reading).
+        1. This history's last API call's actual prompt + completion tokens
+           (tracked per history, so a heartbeat's small context never
+           pollutes the human history's reading).
         2. After a restore, ``_last_usage`` — primed from the latest
-           restored turn's **persisted** ``prompt_tokens`` (the exact
+           restored turn's **persisted** ``context_tokens`` (the exact
            context size at exit), so a restarted slife still reports the
            previous round's value.
         3. Neither (genuinely fresh start — no previous round) → ``0``.
@@ -504,9 +505,9 @@ class AgentLoop:
         """
         usage = self._usage_by_history.get(id(history))
         if usage is None:
-            usage = self._last_usage  # restored session: previous round's persisted prompt_tokens
-        if usage.prompt_tokens:
-            return usage.prompt_tokens
+            usage = self._last_usage  # restored session: previous round's persisted context_tokens
+        if usage.prompt_tokens or usage.completion_tokens:
+            return usage.prompt_tokens + usage.completion_tokens
         if usage.total_tokens:
             return usage.total_tokens
         return 0  # fresh start — no previous round's usage yet
@@ -517,7 +518,7 @@ class AgentLoop:
         """Trim the oldest turns after a turn is saved to memory.
 
         Called by ``save_to_memory`` once the just-completed turn is
-        persisted.  By then the last API call's real ``prompt_tokens`` are
+        persisted.  By then the last API call's real prompt + completion tokens are
         known (``context_tokens_for`` reads ``_usage_by_history``), so the
         ceiling check uses the true context occupancy — not the estimate
         the loop had at the turn's start.

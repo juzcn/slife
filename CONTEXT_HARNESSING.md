@@ -118,8 +118,9 @@ than injecting a standalone turn:
   the restored non-synthetic turns.
 - **Trim note** — `[INFO: N oldest turns have been removed from context]`
   (`trim_note`, same module).  Announced when context trimming evicts turns:
-  the trim triggers at the 80 % ceiling using **real** `prompt_tokens` from
-  the API, and re-fills to the 20 % floor estimated with `count_tokens`.
+  the trim triggers at the 80 % ceiling using the last API call's **real
+  prompt + completion tokens** (the exact count the persisted history will
+  re-send), and re-fills to the 20 % floor estimated with `count_tokens`.
 
 ---
 

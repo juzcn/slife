@@ -85,12 +85,13 @@ class TestAgentService:
         assert service.current_context_tokens == 5000
 
     def test_current_context_tokens_last_call_actual(self, sample_config):
-        """After the first API call → the last call's real prompt_tokens."""
+        """After the first API call → prompt + completion of the last call
+        (the persisted history the next request would re-send)."""
         service = AgentService(sample_config)
         service.agent_loop._last_usage = TokenUsage(
             prompt_tokens=4321, completion_tokens=99, total_tokens=4420,
         )
-        assert service.current_context_tokens == 4321
+        assert service.current_context_tokens == 4420
 
     @pytest.mark.asyncio
     async def test_process_message(self, sample_config):

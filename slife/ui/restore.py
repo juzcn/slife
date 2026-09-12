@@ -462,11 +462,12 @@ async def restore_session(
     # Prime the turn prompt with the restored context size.  On the
     # first round we have no real API usage yet, so `context_tokens_for` /
     # the status bar fall back to `_last_usage`.  Use the **latest restored
-    # turn's persisted prompt_tokens** — the exact context size at exit
-    # (what _turn_prompt would have reported) — instead of an estimate.
-    # A missing/zero value (e.g. a cancelled turn) falls back to the estimate.
+    # turn's persisted context_tokens** — the last call's prompt+completion,
+    # i.e. the exact context size at exit (what _turn_prompt would have
+    # reported) — instead of an estimate.  A missing/zero value (e.g. a
+    # cancelled turn) falls back to the estimate.
     last_turn = turns[-1] if turns else {}
-    prompt = last_turn.get("prompt_tokens") or 0
+    prompt = last_turn.get("context_tokens") or 0
     if prompt <= 0:
         prompt = estimate_turn_tokens(last_turn) if last_turn else 0
     if prompt > 0:

@@ -47,7 +47,7 @@ async def _create_diary_table(conn) -> None:
             who_helped     TEXT DEFAULT '',
             what_model     TEXT DEFAULT '',
             token_count    INTEGER NOT NULL DEFAULT 0,
-            prompt_tokens  INTEGER NOT NULL DEFAULT 0
+            context_tokens  INTEGER NOT NULL DEFAULT 0
         )""")
     await conn.execute("""\
         CREATE TABLE IF NOT EXISTS turn_channel (
@@ -547,7 +547,7 @@ class TestSessionStoreGetRecentTurns:
                 who_helped     TEXT DEFAULT '',
                 what_model     TEXT DEFAULT '',
                 token_count    INTEGER NOT NULL DEFAULT 0,
-                prompt_tokens  INTEGER NOT NULL DEFAULT 0
+                context_tokens  INTEGER NOT NULL DEFAULT 0
             )""")
         await conn.execute("""\
             CREATE TABLE IF NOT EXISTS turn_channel (
@@ -979,8 +979,8 @@ class TestSessionStoreTokenUsage:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 2, "token_count": 300, "prompt_tokens": 200},
-            {"rowid": 1, "token_count": 100, "prompt_tokens": 80},
+            {"rowid": 2, "token_count": 300, "context_tokens": 200},
+            {"rowid": 1, "token_count": 100, "context_tokens": 80},
         ])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
@@ -988,8 +988,9 @@ class TestSessionStoreTokenUsage:
         result = await store.token_usage(limit=50)
         assert result["summary"]["count"] == 2
         assert result["summary"]["total_token_count"] == 400
-        assert result["summary"]["total_prompt_tokens"] == 280
+        assert result["summary"]["total_context_tokens"] == 280
         assert result["summary"]["avg_token_count"] == 200
+        assert result["summary"]["avg_context_tokens"] == 140
 
     @pytest.mark.asyncio
     async def test_rowid_filters(self):
@@ -1005,6 +1006,45 @@ class TestSessionStoreTokenUsage:
         assert "rowid = ?" in sql
         assert 7 in params
         assert 10 in params
+        # Stats-only: the query must never pull message text into the dump.
+        assert "user_message" not in sql
+
+    @pytest.mark.asyncio
+    async def test_real_db_rows_are_usage_only(self, tmp_path):
+        """token_usage rows carry usage figures only — no user_message.
+
+        The tool is a stats report; dragging message text into the LLM-facing
+        dump would burn tokens for nothing (the turn_id is enough to read the
+        message on demand).
+        """
+        import json
+
+        import aiosqlite
+
+        db_path = tmp_path / "usage.db"
+        conn = await aiosqlite.connect(str(db_path))
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await _create_diary_table(conn)
+        await conn.execute(
+            "INSERT INTO diary (user_message, messages, created_at, "
+            "token_count, context_tokens) "
+            "VALUES ('a long user message', '[]', '2026-08-01T10:00:00', 100, 200)"
+        )
+        await conn.commit()
+        await conn.close()
+
+        store = SessionStore(db_path)
+        store._conn = await aiosqlite.connect(str(db_path))
+        store._conn.row_factory = aiosqlite.Row
+
+        result = await store.token_usage(limit=10)
+        assert len(result["turns"]) == 1
+        turn = result["turns"][0]
+        assert "user_message" not in turn
+        assert turn["context_tokens"] == 200
+        assert turn["token_count"] == 100
+        assert "created_at" in turn
 
     @pytest.mark.asyncio
     async def test_time_window_filters(self):

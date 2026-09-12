@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS diary (
 
     -- ▼ 用量
     token_count    INTEGER NOT NULL DEFAULT 0,  -- 本轮累计 total_tokens（计费）
-    prompt_tokens  INTEGER NOT NULL DEFAULT 0   -- 最后一次 LLM 调用的 prompt_tokens（上下文大小）
+    context_tokens INTEGER NOT NULL DEFAULT 0   -- 最后一次 LLM 调用的 prompt+completion（上下文大小：整份已存历史将被下一请求重发的 token 数）
 );
 
 

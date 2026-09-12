@@ -195,6 +195,24 @@ class SessionStore:
         # recreates with the correct dimension — old embeddings are
         # invalid anyway (different model → different vector space).
         await self._maybe_migrate_vec_dimension()
+
+        # A diary table still carrying the legacy `prompt_tokens` column means
+        # the database predates the rename to `context_tokens` (the CREATE IF
+        # NOT EXISTS in schema.sql never alters an existing table).  The new
+        # code SELECT/INSERTs `context_tokens`, so such a DB fails on the next
+        # save or restore — surface the one-time migration path loudly.
+        try:
+            cursor = await self._c.execute("PRAGMA table_info(diary)")
+            cols = [r[1] for r in await cursor.fetchall()]
+            if "prompt_tokens" in cols and "context_tokens" not in cols:
+                logger.error(
+                    "diary_legacy_column prompt_tokens still present — run "
+                    "`python scripts/migrate_context_tokens.py` to rename to "
+                    "context_tokens (path=%s)", self._db_path,
+                )
+        except Exception:
+            pass
+
         logger.debug("schema_ready path=%s", self._db_path)
 
     async def _maybe_migrate_vec_dimension(self) -> None:
@@ -317,7 +335,7 @@ class SessionStore:
         user_message: str = "",
         messages: list[dict] | None = None,
         token_count: int = 0,
-        prompt_tokens: int = 0,
+        context_tokens: int = 0,
         who_helped: str = "",
         what_model: str = "",
         channel: str = "",
@@ -338,8 +356,9 @@ class SessionStore:
         falls back to the current wall clock.
 
         ``token_count`` is the turn's cumulative total_tokens (billing);
-        ``prompt_tokens`` is the LAST LLM call's prompt_tokens — the exact
-        context size at turn end, which restore uses to prime
+        ``context_tokens`` is the LAST LLM call's prompt_tokens plus its
+        completion_tokens — the exact token count of the persisted history
+        as the next request would re-send it, which restore uses to prime
         ``_turn_prompt`` with the real exit-time occupancy instead of an
         estimate.
 
@@ -358,10 +377,10 @@ class SessionStore:
                 """INSERT INTO diary (user_message, messages, summary, tags,
                                       channel, created_at, completed_at,
                                       who_helped, what_model, token_count,
-                                      prompt_tokens)
+                                      context_tokens)
                    VALUES (?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)""",
                 (user_message, messages_json, channel, now, done,
-                 who_helped, what_model, token_count, prompt_tokens),
+                 who_helped, what_model, token_count, context_tokens),
             )
             if channel_data and channel_data != "{}":
                 # Per-channel payload rides a sibling row — CREATE IF NOT
@@ -402,7 +421,7 @@ class SessionStore:
         cursor = await self._c.execute(
             """SELECT rowid, user_message, messages, summary, tags,
                       channel, created_at, completed_at,
-                      who_helped, what_model, token_count, prompt_tokens
+                      who_helped, what_model, token_count, context_tokens
                FROM diary
                WHERE rowid IN (
                    SELECT rowid FROM diary
@@ -665,8 +684,9 @@ class SessionStore:
 
         Returns the matching turns (newest-first) with their billing
         (``token_count`` = cumulative total_tokens) and context size
-        (``prompt_tokens`` = the last call's prompt_tokens), plus a summary
-        of totals / averages across the filtered set.
+        (``context_tokens`` = the last call's prompt + completion tokens,
+        i.e. the persisted history the next request would re-send), plus a
+        summary of totals / averages across the filtered set.
 
         ``rowid`` narrows to a single turn; ``since``/``until`` filter by
         ``created_at`` (ISO datetime, relative expressions accepted via
@@ -690,8 +710,8 @@ class SessionStore:
         params.append(limit)
 
         cursor = await self._c.execute(
-            f"""SELECT rowid, user_message, created_at, completed_at,
-                      token_count, prompt_tokens
+            f"""SELECT rowid, created_at,
+                      token_count, context_tokens
                FROM diary{where}
                ORDER BY rowid DESC
                LIMIT ?""",
@@ -702,14 +722,16 @@ class SessionStore:
             r["turn_id"] = r.pop("rowid")
 
         total_billed = sum(r.get("token_count") or 0 for r in rows)
-        total_context = sum(r.get("prompt_tokens") or 0 for r in rows)
+        total_context = sum(r.get("context_tokens") or 0 for r in rows)
         return {
             "turns": rows,
             "summary": {
                 "count": len(rows),
                 "total_token_count": total_billed,
-                "total_prompt_tokens": total_context,
+                "total_context_tokens": total_context,
                 "avg_token_count": (total_billed // len(rows))
+                if rows else 0,
+                "avg_context_tokens": (total_context // len(rows))
                 if rows else 0,
             },
             "filters": {"turn_id": rowid, "since": since, "until": until},

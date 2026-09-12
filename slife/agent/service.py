@@ -507,8 +507,8 @@ class AgentService:
         )
         # Context-usage state is deliberately left untouched by a model
         # switch: context_tokens_for always reports the last API call's
-        # real prompt_tokens (or, on a freshly restored session, the
-        # previous turn's persisted prompt_tokens that restore_session
+        # real prompt+completion (or, on a freshly restored session, the
+        # previous turn's persisted context_tokens that restore_session
         # primed into _last_usage).  Wiping either on a switch made the
         # first _turn_prompt after a restart-with-model-restore (cc-switch
         # restoring the recorded active model before the first turn)
@@ -1478,7 +1478,7 @@ class AgentService:
         self,
         user_message: str = "",
         token_count: int | None = None,
-        prompt_tokens: int | None = None,
+        context_tokens: int | None = None,
         history: "MessageHistory | None" = None,
         channel: str = "",
         channel_data: str = "{}",
@@ -1490,8 +1490,9 @@ class AgentService:
         Args:
             user_message: The user's input text.
             token_count: Cumulative token usage for the turn (billing).
-            prompt_tokens: The LAST LLM call's prompt_tokens — the exact
-                context size at turn end.  Persisted so restore primes the
+            context_tokens: The LAST LLM call's prompt + completion tokens —
+                the exact token count of the persisted history as the next
+                request would re-send it.  Persisted so restore primes the
                 _turn_prompt with the real exit-time occupancy.
             history: The history to extract messages from.
                 Defaults to self.message_history (the TUI history).
@@ -1608,7 +1609,7 @@ class AgentService:
             "user_message": user_message,
             "messages": turn_messages,
             "token_count": token_count or 0,
-            "prompt_tokens": prompt_tokens or 0,
+            "context_tokens": context_tokens or 0,
             "who_helped": self.config.agent_name,
             "what_model": self.config.active_model.ref,
             "channel": channel,
@@ -1688,9 +1689,10 @@ class AgentService:
                 except Exception:
                     logger.debug("turn_annotation_skipped", exc_info=True)
                 # Trim AFTER the turn is safely persisted: the just-completed
-                # turn's real prompt_tokens are now known (the last API call's
-                # usage), so the ceiling check is exact, and a trim can never
-                # lose an unsaved turn.  Operates on *conv* (the history
+                # turn's real context size (the last API call's prompt +
+                # completion) is now known, so the ceiling check is exact, and
+                # a trim can never lose an unsaved turn.  Operates on *conv*
+                # (the history
                 # this turn ran in — human / wechat / a2a), never the global.
                 # Best-effort: a trim failure must not break the save flow.
                 loop = getattr(self, "agent_loop", None)

@@ -90,7 +90,7 @@ class Inbox:
         self._agent_loop = agent_loop
         self._histories = histories
         self._on_activity = on_activity  # async cb(kind, **kwargs)
-        self._on_turn_complete = on_turn_complete  # async cb(user_message, token_count, history)
+        self._on_turn_complete = on_turn_complete  # async cb(user_message, token_count, context_tokens, history)
         #: Startup gate — awaited once before the first message is consumed.
         #: The service opens for input only after every plugin spawn
         #: converged, so user input can never race ahead of core services.
@@ -432,19 +432,23 @@ class Inbox:
                     token_count = 0
                     if result is not None and hasattr(result, "usage"):
                         token_count = result.usage.total_tokens
-                    # The LAST LLM call's prompt_tokens = the exact context
-                    # size at turn end (per-history, from the loop's
-                    # usage cache).  Persisted so restore can prime the
-                    # _turn_prompt with the real exit-time occupancy
-                    # instead of an estimate.  Absent on a cancel-without-API
-                    # → 0 (restore falls back to the token estimate).
+                    # The last API call's prompt + completion tokens = the exact
+                    # token count of the persisted history as the next request
+                    # would re-send it (per-history, from the loop's usage
+                    # cache).  Persisted so restore can prime the _turn_prompt
+                    # with the real exit-time occupancy instead of an
+                    # estimate.  Absent on a cancel-without-API → 0 (restore
+                    # falls back to the token estimate).
                     usage = self._agent_loop._usage_by_history.get(id(history))
-                    prompt_tokens = usage.prompt_tokens if usage else 0
+                    context_tokens = (
+                        usage.prompt_tokens + usage.completion_tokens
+                        if usage else 0
+                    )
                     channel_identity, channel_data = _channel_persist(msg)
                     await self._on_turn_complete(
                         user_message=msg.content,
                         token_count=token_count,
-                        prompt_tokens=prompt_tokens,
+                        context_tokens=context_tokens,
                         history=history,
                         channel=channel_identity,
                         channel_data=channel_data,

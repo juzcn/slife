@@ -195,7 +195,7 @@ async def __memory_save_turn(
     user_message: str = "",
     messages: list[dict] | None = None,
     token_count: int = 0,
-    prompt_tokens: int = 0,
+    context_tokens: int = 0,
     who_helped: str = "",
     what_model: str = "",
     channel: str = "",
@@ -213,7 +213,7 @@ async def __memory_save_turn(
             rowid = await store.save_turn(
                 user_message=user_message, messages=messages,
                 token_count=token_count,
-                prompt_tokens=prompt_tokens,
+                context_tokens=context_tokens,
                 who_helped=who_helped, what_model=what_model,
                 channel=channel, channel_data=channel_data,
                 created_at=created_at,
@@ -347,8 +347,10 @@ async def turn_list(
 @mcp.tool(
     name="turn_token_usage",
     description=(
-        "Token consumption per turn, with totals/averages; filter by turn id "
-        "or ISO time range."
+        "Token usage per turn, with totals/averages; filter by turn id or "
+        "ISO time range. token_count = billed cumulative tokens for the "
+        "turn, context_tokens = the last call's prompt+completion (the "
+        "persisted history's context size)."
     ),
 )
 async def turn_token_usage(
@@ -370,6 +372,8 @@ async def turn_token_usage(
         result = await store.token_usage(
             rowid=turn_id, since=since, until=until, limit=limit,
         )
+        # No user_message in the dump — the tool is usage-only, and message
+        # text would burn tokens for nothing (the ids are enough to turn_read).
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("token_usage_failed turn_id=%s", turn_id)

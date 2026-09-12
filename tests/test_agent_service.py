@@ -1898,7 +1898,7 @@ class TestGetRecentTurns:
             "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
             "tags TEXT, channel TEXT, "
             "created_at TEXT, completed_at TEXT, "
-            "who_helped TEXT, what_model TEXT, token_count INT, prompt_tokens INT)"
+            "who_helped TEXT, what_model TEXT, token_count INT, context_tokens INT)"
         )
         con.execute(
             "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -1985,7 +1985,7 @@ class TestGetRecentTurns:
             "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
             "tags TEXT, channel TEXT, "
             "created_at TEXT, completed_at TEXT, "
-            "who_helped TEXT, what_model TEXT, token_count INT, prompt_tokens INT)"
+            "who_helped TEXT, what_model TEXT, token_count INT, context_tokens INT)"
         )
         con.execute(
             "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -2033,7 +2033,7 @@ class TestGetRecentTurns:
         import sqlite3
         from slife.agent.service import AgentService, MemoryDatabaseError
 
-        # Old-schema DB — missing the `prompt_tokens` column the store SELECTs.
+        # Old-schema DB — missing the `context_tokens` column the store SELECTs.
         db = tmp_path / "old.db"
         con = sqlite3.connect(str(db))
         con.execute(
@@ -2315,7 +2315,7 @@ class TestReloadActiveModelContextUsage:
     """A model switch must be a no-op on context-usage state.
 
     context_tokens_for always reports the last API call's real
-    prompt_tokens (or, on a freshly restored session, the exit-time
+    prompt + completion tokens (or, on a freshly restored session, the exit-time
     occupancy restore_session primed into _last_usage).  Clearing either
     on a switch made the first _turn_prompt after a restart-with-model-
     restore (cc-switch restoring the recorded active model before the
@@ -2334,7 +2334,7 @@ class TestReloadActiveModelContextUsage:
     def test_restored_session_keeps_context(self, sample_model_config, thinking_model_config):
         service = self._service_with_two_models(sample_model_config, thinking_model_config)
         # restore_session primes _last_usage with the previous turn's persisted
-        # prompt_tokens and marks the history as freshly restored.
+        # context_tokens and marks the history as freshly restored.
         service.agent_loop._last_usage = TokenUsage(
             prompt_tokens=102400, total_tokens=102400,
         )
