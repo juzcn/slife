@@ -955,9 +955,12 @@ if [ -z "${_SLIFE_PIPED_INSTALL:-}" ] && command -v slife &>/dev/null; then
 fi
 
 if [ "$NEEDS_SHELL_REFRESH" = true ]; then
-    echo -e "${YELLOW}IMPORTANT: slife is installed but not on your current PATH.${NC}"
-    echo -e "${YELLOW}  Run: source "$HOME/.local/bin/env"${NC}"
-    echo -e "${YELLOW}  Or simply open a new terminal.${NC}"
+    # The PATH additions above go into the user's rc files (~/.bashrc,
+    # ~/.zshrc, ~/.profile, fish config) — reloading those, or opening a new
+    # terminal, is what makes slife reachable.  There is no ~/.local/bin/env
+    # file to source; only the rc reload / new terminal is accurate.
+    echo -e "${YELLOW}IMPORTANT: slife is installed — reload your shell to pick up the new PATH.${NC}"
+    echo -e "${YELLOW}  Open a new terminal, or: source ~/.bashrc   # bash · source ~/.zshrc   # zsh${NC}"
     echo ""
 fi
 
