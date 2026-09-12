@@ -767,9 +767,11 @@ fi
 # from the downloaded source tree (now git-tracked).  slife.json5,
 # mcp-plugin.json5 and sharefile.json5 (the last two belong to built-in
 # plugins) live in ~/.slife; local_embed.json5 is local-embed's own
-# (~/.local-embed).  Missing ones are copied silently; an existing one is
-# only replaced (after a per-file "yes") when its content differs from the
-# bundled default.
+# (~/.local-embed).  Missing ones are copied silently; when an existing one
+# differs from the bundled default, the NEW default is seeded into ~/.slife/
+# as a versioned copy (<name>.<version>.<ext>) — never prompted, never
+# overwritten; the user applies or discards it.  A reinstall of the same
+# version simply refreshes the copy.
 echo -e "${YELLOW}[4c] Setting up configs (out-of-the-box defaults)…${NC}"
 SEED_DIR="$TMP_DIR/slife-main"
 for _name in slife.json5 local_embed.json5 mcp-plugin.json5 sharefile.json5; do
@@ -790,26 +792,15 @@ for _name in slife.json5 local_embed.json5 mcp-plugin.json5 sharefile.json5; do
             echo -e "  ${GRAY}unchanged  $_target${NC}"
             continue
         fi
-        # Ask per file — the user may have customized one config but want
-        # defaults for another; never force a reset on all of them together.
-        _ask="n"
-        if [ -t 0 ]; then
-            read -p "  Reset $_target to the bundled default? (y/N, default: N): " _ask
+        # The user may have customized the live file — never overwrite it,
+        # never prompt.  Seed the new default into ~/.slife/ as
+        # <name>.<version>.<ext>, where no tooling picks it up; a same-
+        # version reinstall refreshes the copy.
+        _copy="$HOME/.slife/${_name%.*}.$VERSION.${_name##*.}"
+        if cp -f "$_src" "$_copy" 2>/dev/null && chmod 600 "$_copy" 2>/dev/null; then
+            echo -e "  ${YELLOW}kept $_target (possibly customized); new default seeded to $_copy (apply: cp '$_copy' '$_target')${NC}"
         else
-            # Piped install (curl … | bash) has no TTY stdin, so no prompt is
-            # possible — keep the user's file, but drop the updated bundled
-            # default next to it so it's one copy away, never silently stale.
-            if cp "$_src" "$_target.bundled" 2>/dev/null; then
-                echo -e "  ${YELLOW}kept $_target (possibly customized); bundled default: $_target.bundled${NC}"
-                continue
-            fi
-        fi
-        if [ "$_ask" = "y" ] || [ "$_ask" = "Y" ]; then
-            if cp -f "$_src" "$_target" 2>/dev/null && chmod 600 "$_target" 2>/dev/null; then
-                echo -e "  ${GRAY}reset  $_target${NC}"
-            else
-                echo -e "  ${RED}⚠ could not write $_target${NC}"
-            fi
+            echo -e "  ${RED}⚠ could not write $_copy${NC}"
         fi
     else
         if cp "$_src" "$_target" 2>/dev/null && chmod 600 "$_target" 2>/dev/null; then
@@ -821,8 +812,9 @@ for _name in slife.json5 local_embed.json5 mcp-plugin.json5 sharefile.json5; do
 done
 
 # Skills: copy the bundled skills into ~/.slife/skills/.  A skill that
-# doesn't exist yet is copied as-is; an existing skill of the SAME NAME (the
-# user may have edited it) is only replaced after a per-skill confirm.
+# doesn't exist yet is copied as-is; an existing skill of the SAME NAME is
+# left untouched — a changed bundled default is seeded into ~/.slife/ as
+# <name>.<version> (never under skills/, so it can't be loaded as a skill).
 SKILLS_SRC="$SEED_DIR/skills"
 SKILLS_DST="$HOME/.slife/skills"
 if [ -d "$SKILLS_SRC" ]; then
@@ -838,26 +830,15 @@ if [ -d "$SKILLS_SRC" ]; then
                 echo -e "  ${GRAY}unchanged  skill '$SKILLS_DST/$_name'${NC}"
                 continue
             fi
-            _ask="n"
-            if [ -t 0 ]; then
-                read -p "  Overwrite skill '$SKILLS_DST/$_name' with the bundled default? (y/N, default: N): " _ask
+            # Never overwrite the user's skill, never prompt — seed into ~/.slife/
+            # as <name>.<version> (refreshed on reinstall; other versions'
+            # copies are kept for reference).
+            _copy="$HOME/.slife/${_name}.$VERSION"
+            rm -rf "$_copy" 2>/dev/null || true
+            if cp -R "$_skill" "$_copy" 2>/dev/null; then
+                echo -e "  ${YELLOW}kept skill '$SKILLS_DST/$_name' (possibly customized); new default seeded to '$_copy' (apply: cp -R '$_copy' '$SKILLS_DST/$_name')${NC}"
             else
-                # Piped install (curl … | bash) has no TTY stdin, so no prompt
-                # is possible — keep the user's skill, but drop the updated
-                # bundled default next to it, never silently stale.
-                rm -rf "$_dst.bundled" 2>/dev/null || true
-                if cp -R "$_skill" "$_dst.bundled" 2>/dev/null; then
-                    echo -e "  ${YELLOW}kept skill '$SKILLS_DST/$_name' (possibly customized); bundled default: '$SKILLS_DST/$_name.bundled'${NC}"
-                    continue
-                fi
-            fi
-            if [ "$_ask" = "y" ] || [ "$_ask" = "Y" ]; then
-                rm -rf "$_dst" 2>/dev/null || true
-                if cp -R "$_skill" "$_dst" 2>/dev/null; then
-                    echo -e "  ${GRAY}overwrote skill '$SKILLS_DST/$_name'${NC}"
-                else
-                    echo -e "  ${RED}⚠ could not write skill '$SKILLS_DST/$_name'${NC}"
-                fi
+                echo -e "  ${RED}⚠ could not write skill '$_copy'${NC}"
             fi
         else
             if cp -R "$_skill" "$_dst" 2>/dev/null; then
@@ -871,8 +852,9 @@ fi
 
 # Jobs (job-coding plugin): copy the bundled sample jobs into ~/.slife/jobs/.
 # Same semantics as skills — a job file that doesn't exist yet is seeded
-# as-is; an existing file of the SAME NAME (the user may have edited it) is
-# only replaced after a per-file confirm.
+# as-is; an existing file of the SAME NAME is left untouched and a changed
+# bundled default is seeded into ~/.slife/ as <name>.<version>.py — never
+# under jobs/, so the registry's *.py scan can't load it as a duplicate job.
 JOBS_SRC="$SEED_DIR/jobs"
 JOBS_DST="$HOME/.slife/jobs"
 if [ -d "$JOBS_SRC" ]; then
@@ -888,24 +870,14 @@ if [ -d "$JOBS_SRC" ]; then
                 echo -e "  ${GRAY}unchanged  job '$JOBS_DST/$_name'${NC}"
                 continue
             fi
-            _ask="n"
-            if [ -t 0 ]; then
-                read -p "  Overwrite job '$JOBS_DST/$_name' with the bundled default? (y/N, default: N): " _ask
+            # Never overwrite the user's job, never prompt — seed into ~/.slife/ as
+            # <name>.<version>.py; not under jobs/, so the registry's *.py
+            # scan can't load it as a duplicate job.
+            _copy="$HOME/.slife/${_name%.*}.$VERSION.${_name##*.}"
+            if cp -f "$_job" "$_copy" 2>/dev/null; then
+                echo -e "  ${YELLOW}kept job '$JOBS_DST/$_name' (possibly edited); new default seeded to '$_copy' (apply: cp '$_copy' '$JOBS_DST/$_name')${NC}"
             else
-                # Piped install (curl … | bash) has no TTY stdin, so no prompt
-                # is possible — keep the user's job, but drop the updated
-                # bundled default next to it, never silently stale.
-                if cp "$_job" "$_dst.bundled" 2>/dev/null; then
-                    echo -e "  ${YELLOW}kept job '$JOBS_DST/$_name' (possibly edited); to apply the bundled default: cp '$JOBS_DST/$_name.bundled' '$JOBS_DST/$_name'${NC}"
-                    continue
-                fi
-            fi
-            if [ "$_ask" = "y" ] || [ "$_ask" = "Y" ]; then
-                if cp "$_job" "$_dst" 2>/dev/null; then
-                    echo -e "  ${GRAY}overwrote job '$JOBS_DST/$_name'${NC}"
-                else
-                    echo -e "  ${RED}⚠ could not write job '$JOBS_DST/$_name'${NC}"
-                fi
+                echo -e "  ${RED}⚠ could not write '$_copy'${NC}"
             fi
         else
             if cp "$_job" "$_dst" 2>/dev/null; then

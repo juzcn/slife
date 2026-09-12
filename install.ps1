@@ -53,11 +53,9 @@ New-Item -ItemType Directory -Force $tmpDir | Out-Null
 $coreMode = ($env:SLIFE_CORE -eq "1") -or ($args -contains "--core")
 $skipMosquitto = ($env:SLIFE_SKIP_MOSQUITTO -eq "1")
 
-# Answer every overwrite prompt with "yes" and never call Read-Host.
-# Use for piped installs (`irm url | iex`) and non-interactive terminals,
-# where interactive Read-Host inside a piped script is unreliable and can
-# hang.  `-y` or SLIFE_ASSUME_YES=1.
-$assumeYes = ($env:SLIFE_ASSUME_YES -eq "1") -or ($args -contains "-y")
+# Seeding a changed bundled default never prompts — the new default is
+# placed into ~/.slife/ as a versioned copy next to the user's file
+# (mirrors install.sh).  No `-y` / SLIFE_ASSUME_YES needed: nothing to answer.
 
 try {
     Write-Host "Slife Installer" -ForegroundColor Cyan
@@ -768,10 +766,8 @@ try {
         }
     }
 
-    # Recursive content comparison.  An overwrite prompt should only appear
-    # when the existing file/skill actually DIFFERS from the bundled default —
-    # identical files are left untouched without asking, so the user's judgment
-    # is reserved for real differences.
+    # Recursive content comparison.  Only a REAL difference triggers seeding
+    # a versioned copy; identical trees are left untouched silently.
     function Test-SameDir {
         param([string]$srcDir, [string]$dstDir)
         if (-not (Test-Path $dstDir)) { return $false }
@@ -793,8 +789,9 @@ try {
     # downloaded source tree (now git-tracked).  slife.json5, mcp-plugin.json5
     # and sharefile.json5 (the last two belong to built-in plugins) live in
     # ~/.slife; local_embed.json5 is local-embed's own (~/.local-embed).
-    # Missing ones are copied silently; an existing one is only replaced (after
-    # a per-file "yes") when its content differs from the bundled default.
+    # Missing ones are copied silently; when an existing one differs, the NEW
+    # default is seeded into ~/.slife/ as <name>.<version>.<ext> — never
+    # overwritten, never prompted; the user applies or discards it.
     Write-Step "[4c] Setting up configs (out-of-the-box defaults)..."
     $seedPairs = @(
         @("slife.json5", "$env:USERPROFILE\.slife\slife.json5"),
@@ -812,12 +809,11 @@ try {
                 Write-Dim "  unchanged  $($pair[1])"
                 continue
             }
-            $ans = "n"
-            if ($assumeYes) { $ans = "y" } else { try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Reset $($pair[1]) to the bundled default? (y/N, default: N)" } } catch { $ans = "n" } }
-            if ($ans -match '^[yY]') {
-                Copy-Item $src $pair[1] -Force
-                Write-Dim "  reset  $($pair[1])"
-            }
+            # Never overwrite the live config, never prompt — seed the new default
+            # into ~/.slife/ as <name>.<version>.<ext>.
+            $copy = Join-Path "$env:USERPROFILE\.slife" ("{0}.{1}{2}" -f [IO.Path]::GetFileNameWithoutExtension($pair[0]), $version, [IO.Path]::GetExtension($pair[0]))
+            Copy-Item $src $copy -Force
+            Write-Warn "  kept $($pair[1]) (possibly customized); new default seeded to $copy (apply: Copy-Item '$copy' '$($pair[1])')"
         } else {
             Copy-Item $src $pair[1] -Force
             Write-Dim "  seeded $($pair[1])"
@@ -826,18 +822,16 @@ try {
 
     # Skills: copy the bundled skills into ~/.slife/skills/.  A skill that
     # doesn't exist yet is copied as-is; an existing skill of the SAME NAME
-    # (the user may have edited it) is only replaced after a per-skill confirm.
+    # is left untouched — a changed bundled default is seeded into ~/.slife/
+    # as <name>.<version> (never under skills/, so it can't be loaded).
     $skillsSrc = Join-Path $extractedDir.FullName "skills"
     $skillsDst = "$env:USERPROFILE\.slife\skills"
     if (Test-Path $skillsSrc) {
         Write-Step "[4c] Setting up skills (bundled defaults)..."
         New-Item -ItemType Directory -Force $skillsDst | Out-Null
-        # Read-Host inside a `Get-ChildItem | ForEach-Object` PIPELINE is
-        # unreliable in Windows PowerShell — an interactive read can block on
-        # the pipeline's console-input handling (the config loop above uses a
-        # plain `foreach` statement and never hangs).  Materialise the list
-        # first, then use a plain `foreach`; skip prompting entirely when
-        # stdin is redirected (fail-open, mirroring install.sh's `[ -t 0 ]`).
+        # Materialise the list first, then iterate with a plain `foreach`
+        # (a Read-Host inside a pipeline was unreliable in Windows PowerShell
+        # — moot now that seeding never prompts).
         $skillDirs = @(Get-ChildItem -Path $skillsSrc -Directory)
         foreach ($skill in $skillDirs) {
             $name = $skill.Name
@@ -848,13 +842,13 @@ try {
                     Write-Dim "  unchanged  skill '$name'"
                     continue
                 }
-                $ans = "n"
-                if ($assumeYes) { $ans = "y" } else { try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Overwrite skill '$skillsDst\$name' with the bundled default? (y/N, default: N)" } } catch { $ans = "n" } }
-                if ($ans -match '^[yY]') {
-                    Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue
-                    Copy-Item -Recurse $skill.FullName $dst -Force
-                    Write-Dim "  overwrote skill '$skillsDst\$name'"
-                }
+                # Never overwrite the user's skill, never prompt — seed into ~/.slife/
+                # as <name>.<version> (refreshed on reinstall; other versions'
+                # copies are kept for reference).
+                $copyDir = Join-Path "$env:USERPROFILE\.slife" "$name.$version"
+                Remove-Item -Recurse -Force $copyDir -ErrorAction SilentlyContinue
+                Copy-Item -Recurse $skill.FullName $copyDir -Force
+                Write-Warn "  kept skill '$skillsDst\$name' (possibly customized); new default seeded to '$copyDir' (apply: Copy-Item -Recurse '$copyDir' '$skillsDst\$name')"
             } else {
                 Copy-Item -Recurse $skill.FullName $dst -Force
                 Write-Dim "  seeded skill '$skillsDst\$name'"
@@ -864,8 +858,10 @@ try {
 
     # Jobs (job-coding plugin): copy the bundled sample jobs into
     # ~/.slife/jobs/.  Same semantics as skills — a job file that doesn't
-    # exist yet is seeded as-is; an existing file of the SAME NAME (the user
-    # may have edited it) is only replaced after a per-file confirm.
+    # exist yet is seeded as-is; an existing file of the SAME NAME is left
+    # untouched and a changed bundled default is seeded into ~/.slife/ as
+    # <name>.<version>.py — never under jobs/, so the *.py scan can't load
+    # it as a duplicate job.
     $jobsSrc = Join-Path $extractedDir.FullName "jobs"
     $jobsDst = "$env:USERPROFILE\.slife\jobs"
     if (Test-Path $jobsSrc) {
@@ -881,12 +877,12 @@ try {
                     Write-Dim "  unchanged  job '$name'"
                     continue
                 }
-                $ans = "n"
-                if ($assumeYes) { $ans = "y" } else { try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Overwrite job '$jobsDst\$name' with the bundled default? (y/N, default: N)" } } catch { $ans = "n" } }
-                if ($ans -match '^[yY]') {
-                    Copy-Item $job.FullName $dst -Force
-                    Write-Dim "  overwrote job '$jobsDst\$name'"
-                }
+                # Never overwrite the user's job, never prompt — seed into ~/.slife/
+                # as <name>.<version>.py; not under jobs/, so the registry's
+                # *.py scan can't load it as a duplicate job.
+                $copy = Join-Path "$env:USERPROFILE\.slife" ("{0}.{1}{2}" -f [IO.Path]::GetFileNameWithoutExtension($name), $version, [IO.Path]::GetExtension($name))
+                Copy-Item -Force $job.FullName $copy
+                Write-Warn "  kept job '$jobsDst\$name' (possibly edited); new default seeded to '$copy' (apply: Copy-Item '$copy' '$jobsDst\$name')"
             } else {
                 Copy-Item $job.FullName $dst -Force
                 Write-Dim "  seeded job '$jobsDst\$name'"
