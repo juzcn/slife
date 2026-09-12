@@ -478,6 +478,23 @@ class TestSaveUrlPublicGuard:
         assert plugin._reject_non_public_url("http://198.18.0.1/x") is None
         assert plugin._reject_non_public_url("http://198.18.255.9/") is None
 
+    def test_allows_fake_ip_resolver_range_v6(self):
+        """sing-box's default IPv6 fake-ip pool (fdfe:dcba:9876::/48) is ULA
+        — Python flags it private, but a fake-ip resolver answering public
+        hostnames from it is the proxy's front door, not LAN infra."""
+        assert plugin._reject_non_public_url(
+            "http://[fdfe:dcba:9876::1]/x"
+        ) is None
+        assert plugin._reject_non_public_url(
+            "http://[fdfe:dcba:9876:ffff::2]/x"
+        ) is None
+
+    def test_rejects_ula_outside_the_fake_ip_pool(self):
+        """Only the documented fake-ip prefixes are exempt — any other ULA
+        (fc00::/7) answer is still refused."""
+        assert plugin._reject_non_public_url("http://[fdfe::1]/x")
+        assert plugin._reject_non_public_url("http://[fd12:3456::1]/x")
+
     def test_rejects_non_http_schemes(self):
         assert plugin._reject_non_public_url("ftp://example.com/x")
         assert plugin._reject_non_public_url("file:///etc/passwd")

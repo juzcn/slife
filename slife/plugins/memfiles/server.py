@@ -1085,9 +1085,9 @@ def _reject_non_public_url(url: str) -> str | None:
     ngrok tunnel up, the response would be published as a public file. The
     host is validated as an IP literal or via DNS resolution; **every**
     resolved address must be globally routable, with one exception: the
-    fake-ip benchmarking range 198.18.0.0/15 is accepted, because Clash /
-    sing-box fake-ip resolvers answer real public hostnames with addresses
-    from that range.
+    ranges fake-ip resolvers answer *public* hostnames with.  Clash /
+    sing-box answer from 198.18.0.0/15 (the RFC 2544 benchmark space) and
+    sing-box's IPv6 pool fdfe:dcba:9876::/48, so both are accepted.
 
     ``url_save`` re-runs this guard on EVERY redirect hop immediately before
     that hop's fetch (an earlier comment claiming redirect chains are not
@@ -1103,12 +1103,19 @@ def _reject_non_public_url(url: str) -> str | None:
     import socket
 
     # Clash / Mihomo / sing-box fake-ip resolvers answer *public* hostnames
-    # with addresses from the RFC 2544 benchmarking range (198.18.0.0/15) —
-    # that's the proxy's front door for public hosts, not LAN/metadata
-    # infrastructure.  Python's ipaddress flags the range as is_private
-    # since 3.8, so exempt it explicitly or url_save refuses every URL when
-    # a fake-ip resolver is the system DNS.
-    _FAKE_IP_NET = ipaddress.ip_network("198.18.0.0/15")
+    # with synthetic addresses that Python's ipaddress classifies as private
+    # (198.18.0.0/15, RFC 2544 benchmark space) or ULA (sing-box's IPv6 pool
+    # under fc00::/7) — that's the proxy's front door for public hosts, not
+    # LAN/metadata infrastructure.  Exempt only the documented pools or
+    # url_save refuses every URL when a fake-ip resolver is the system DNS:
+    #   * 198.18.0.0/15        — Clash / sing-box IPv4 fake-ip (RFC 2544)
+    #   * fdfe:dcba:9876::/48  — sing-box default IPv6 fake-ip pool
+    # ANY other non-globally-routable answer (loopback, private, link-local,
+    # multicast, a real fc00::/7 ULA LAN host, ...) is still refused.
+    _FAKE_IP_NETS = (
+        ipaddress.ip_network("198.18.0.0/15"),
+        ipaddress.ip_network("fdfe:dcba:9876::/48"),
+    )
 
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -1125,7 +1132,7 @@ def _reject_non_public_url(url: str) -> str | None:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if ip in _FAKE_IP_NET:
+        if any(ip in net for net in _FAKE_IP_NETS):
             continue
         if (
             ip.is_loopback
