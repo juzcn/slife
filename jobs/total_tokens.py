@@ -22,7 +22,8 @@ def total_tokens(since: str = "", until: str = "", db_path: str = "") -> str:
     if path is None:
         return (
             "Error: memdb database not found "
-            "(tried $SLIFE_AGENT_NAME.db, $SLIFE_DATA_DIR, cwd, ../)"
+            "(tried $SLIFE_MEMDB_DB, $SLIFE_AGENT_NAME.db, "
+            "$SLIFE_DATA_DIR, cwd, ../)"
         )
 
     conn = sqlite3.connect(path)
@@ -92,6 +93,12 @@ def _resolve_db(db_path: str = "") -> str | None:
             if os.path.exists(cand):
                 return cand
         return None
+
+    # Canonical override the main process / memdb server / agent service all
+    # honor first.  If it's set, it IS the database — trust it.
+    override = os.environ.get("SLIFE_MEMDB_DB", "").strip()
+    if override:
+        return override if os.path.exists(override) else None
 
     data_dir = _data_dir()
     agent = os.environ.get("SLIFE_AGENT_NAME", "").strip()
