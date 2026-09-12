@@ -151,6 +151,26 @@ class TestShellExecute:
         mock_process.wait.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_timeout_zero_uses_default_not_instant_kill(self):
+        """B2 regression (tool level) — a `timeout: 0`/negative is treated
+        as the tool default, never forwarded into `wait_for(..., timeout=0)`
+        which would fire instantly and kill the command on arrival."""
+        tool = ShellTool(timeout=10)
+
+        for bad in (0, -5):
+            mock_process = MagicMock()  # fresh pipes — _MockStream is one-shot
+            mock_process.stdout = _MockStream(b"hello world")
+            mock_process.stderr = _MockStream(b"")
+            mock_process.returncode = 0
+
+            with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
+                result = await tool.execute(command="echo hello", timeout=bad)
+            # The command ran to completion under the default timeout —
+            # never an instant "timed out after 0s".
+            assert "hello world" in result, f"timeout={bad}: {result!r}"
+            assert "timed out" not in result
+
+    @pytest.mark.asyncio
     async def test_empty_output(self):
         """Commands with no output return exit code info."""
         tool = ShellTool(timeout=10)

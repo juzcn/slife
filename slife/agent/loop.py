@@ -1032,14 +1032,36 @@ class AgentLoop:
             # Tools with a native ``timeout`` parameter (e.g.
             # execute_shell) handle their own timeout internally.
             # Map _timeout → timeout and let the tool drive — no
-            # asyncio.wait_for wrapper.
+            # asyncio.wait_for wrapper.  ``_timeout`` of 0 or negative
+            # (or sub-second, which truncates to 0) can NOT mean "no
+            # timeout" on this path: the tool's deadline is then the ONLY
+            # bound, and a tool reading its ``timeout`` arg into
+            # ``wait_for(..., timeout=0)`` fires INSTANTLY (execute_shell)
+            # — the opposite of the prompt's "0 = no timeout" (B2/B3).
+            # Normalise ≤0 to "omit the arg" so the tool's own default
+            # governs — the contract the a2a tools already document
+            # ("≤0 = default") — and never forward the instant-kill zero.
             tool = self.tool_registry.get(tc.name)
             prop_keys = getattr(tool, 'parameters', {}).get("properties", {})
             has_native_timeout = "timeout" in prop_keys
-            if has_native_timeout and inline_timeout is not None:
-                timeout_val = int(float(inline_timeout))
-                if timeout_val > 0:
-                    actual_args["timeout"] = timeout_val
+            if has_native_timeout:
+                if inline_timeout is not None:
+                    timeout_val = int(float(inline_timeout))
+                    if timeout_val > 0:
+                        actual_args["timeout"] = timeout_val
+                    else:
+                        actual_args.pop("timeout", None)
+                elif actual_args.get("timeout") is not None:
+                    # A bare ``timeout`` arg is schema-valid here and
+                    # normally reaches the tool untouched — but a 0 or
+                    # negative spelling is the same instant-kill footgun as
+                    # ``_timeout: 0``; pop it so the tool default governs.
+                    try:
+                        _bare_native = float(actual_args["timeout"])
+                    except (TypeError, ValueError):
+                        _bare_native = 1.0  # unparseable → keep the arg
+                    if _bare_native <= 0:
+                        actual_args.pop("timeout", None)
 
             # ── Bare `timeout` alias ─────────────────────────────
             # LLMs routinely append a bare ``timeout`` arg to tools whose

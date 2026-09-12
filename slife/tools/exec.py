@@ -156,7 +156,7 @@ class ShellTool(Tool):
         "type": "object",
         "properties": {
             "command": {"type": "string", "description": "Shell command to execute."},
-            "timeout": {"type": "integer", "description": "Timeout in seconds. Default 30."},
+            "timeout": {"type": "integer", "description": "Timeout in seconds. Default 30; ≤0 = default (never instant)."},
         },
         "required": ["command"],
     }
@@ -174,6 +174,14 @@ class ShellTool(Tool):
     async def execute(self, **kwargs) -> str:
         command: str = kwargs["command"]
         timeout: int = kwargs.get("timeout", self.timeout)
+        # A 0/negative timeout would reach the read loop as
+        # ``wait_for(..., timeout=0)`` → INSTANT TimeoutError, the opposite
+        # of the "0 = no timeout" intent (B2/B3).  Treat ≤0 as "use the
+        # tool default" — same contract the loop's native mapping enforces
+        # and the a2a tools document ("≤0 = default").  Defense in depth:
+        # a direct caller who bypasses the loop gets the same semantics.
+        if timeout <= 0:
+            timeout = self.timeout
         logger.debug("shell_exec cmd=%.200s timeout=%d", sanitize_secrets(command), timeout)
 
         # Run the detected shell (not COMSPEC=cmd.exe on Windows) so the

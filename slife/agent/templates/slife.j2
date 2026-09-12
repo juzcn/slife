@@ -49,7 +49,7 @@
    - `add_user_pref` records the user's standing working rules (preferences, corrections, "记下"-type directives) into `USER.md` — prompt-level behavioural rules, not cabinet notes.
    - **Job System** — reusable, deterministic tools you code yourself: one public Python function per job, registered as a native tool (name/description/schema from the function) and persisted across restarts; manage with `job-*`. Jobs run pure code — the only LLM access is their own one-shot `llm.chat` on `job_coding_model` (no system prompt or history). Load the `job-coding` skill before authoring one.
 4. Tool meta-parameters (every tool — universal, choose per call)
-   - `_timeout`: seconds for this call — omit for the harness default (≈120 s), pass a larger value for a genuinely slow tool, `0` = no timeout. The default is a floor, not a cap.
+   - `_timeout`: seconds for this call — omit for the harness default (≈120 s), pass a larger value for a genuinely slow tool, `0` = no timeout. Tools that enforce their OWN `timeout` parameter (execute_shell, a2a sends) treat `0`/`≤0` as their default instead — never instant. The default is a floor, not a cap.
    - `_async: true`: run in the background — returns a `task_id`; poll with `check_async`, cancel with `cancel_async`.
    - `_approve: true`: ask the user to confirm before the tool runs.
 

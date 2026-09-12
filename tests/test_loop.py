@@ -790,6 +790,88 @@ class TestExecuteTools:
         assert "Echo: hi" in result
         assert handler.on_tool_result.call_args[0][2] is False
 
+    @pytest.mark.asyncio
+    async def test_native_timeout_zero_never_reaches_the_tool(
+        self, sample_model_config, history,
+    ):
+        """B2/B3 regression — on a tool with a NATIVE ``timeout`` parameter,
+        both `_timeout: 0` and a bare `timeout: 0` MUST NOT be forwarded:
+        a tool reading its arg into ``wait_for(..., timeout=0)`` would fire
+        INSTANTLY — the opposite of the prompt's "0 = no timeout".  Both
+        spellings fall back to the tool's own default."""
+        from slife.tools.registry import ToolRegistry
+
+        for args in ({"_timeout": 0}, {"timeout": 0}, {"timeout": -1}):
+            tool = _NativeTimeoutTool()
+            registry = ToolRegistry()
+            registry.register(tool)
+            llm = LLMClient(sample_model_config)
+            loop = AgentLoop(llm, registry)
+            handler = AsyncMock(spec=AgentEventHandler)
+
+            tcs = [ToolCallInfo(id="c1", name="native_timed", arguments=dict(args))]
+            await loop._execute_tools(tcs, history, handler)
+
+            assert tool.received == 30, (
+                f"{args}: expected the tool default (30), got {tool.received!r}"
+            )
+            assert handler.on_tool_result.call_args[0][2] is False
+
+    @pytest.mark.asyncio
+    async def test_native_timeout_positive_still_mapped(
+        self, sample_model_config, history,
+    ):
+        """Control for the native mapping — a positive `_timeout` is still
+        forwarded onto the native arg (existing contract); a sub-second
+        `_timeout` truncates to the tool default rather than forwarding a
+        fractional bound; a bare positive ``timeout`` reaches the tool."""
+        from slife.tools.registry import ToolRegistry
+
+        cases = [
+            ({"_timeout": 7}, 7),
+            ({"_timeout": 0.4}, 30),  # int() truncation → ≤0 → default
+            ({"timeout": 7}, 7),
+        ]
+        for args, expected in cases:
+            tool = _NativeTimeoutTool()
+            registry = ToolRegistry()
+            registry.register(tool)
+            llm = LLMClient(sample_model_config)
+            loop = AgentLoop(llm, registry)
+            handler = AsyncMock(spec=AgentEventHandler)
+
+            tcs = [ToolCallInfo(id="c1", name="native_timed", arguments=dict(args))]
+            await loop._execute_tools(tcs, history, handler)
+
+            assert tool.received == expected, (
+                f"{args}: expected {expected}, got {tool.received!r}"
+            )
+
+
+class _NativeTimeoutTool:
+    """A Tool WITH a native ``timeout`` parameter (the ShellTool shape) that
+    records the value it actually received — B2/B3 regression: the harness
+    must never forward a ≤0 ``timeout`` that a tool would read into an
+    instant-kill ``wait_for(..., timeout=0)``."""
+
+    name = "native_timed"
+    description = "Records the timeout it received."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "timeout": {"type": "integer", "description": "Timeout in seconds. Default 30."},
+        },
+        "required": [],
+    }
+
+    def __init__(self, default: int = 30):
+        self.default = default
+        self.received: int | None = None
+
+    async def execute(self, **kwargs) -> str:
+        self.received = kwargs.get("timeout", self.default)
+        return f"timeout={self.received}"
+
 
 class _HungTool:
     """A Tool WITHOUT a native ``timeout`` parameter that never resolves —
