@@ -262,13 +262,63 @@ class TestToolSuccess:
         plugin._config = _full_config()
         adapter = _fake_adapter()
         plugin._adapters["test"] = adapter
-        result = await plugin.generate_image(prompt="a cat", size="512*512")
+        result = await plugin.generate_image(prompt="a cat", size="1024*1024")
         assert result == "/tmp/img.png"
         adapter.generate_image.assert_awaited_once()
         kwargs = adapter.generate_image.call_args.kwargs
         assert kwargs["model"] == "img"
-        assert kwargs["size"] == "512*512"
+        assert kwargs["size"] == "1024*1024"
         assert kwargs["extra_params"] == {}
+
+    @pytest.mark.asyncio
+    async def test_generate_image_rejects_too_small_size(self, fresh_plugin):
+        plugin._config = _full_config()
+        adapter = _fake_adapter()
+        plugin._adapters["test"] = adapter
+        result = await plugin.generate_image(prompt="a cat", size="512*512")
+        assert result.startswith("Error:")
+        assert "too small" in result
+        assert "589824" in result
+        adapter.generate_image.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_generate_image_rejects_too_large_size(self, fresh_plugin):
+        plugin._config = _full_config()
+        adapter = _fake_adapter()
+        plugin._adapters["test"] = adapter
+        result = await plugin.generate_image(prompt="a cat", size="8192*8192")
+        assert result.startswith("Error:")
+        assert "too large" in result
+        assert "16777216" in result
+        adapter.generate_image.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_generate_image_rejects_malformed_size(self, fresh_plugin):
+        plugin._config = _full_config()
+        adapter = _fake_adapter()
+        plugin._adapters["test"] = adapter
+        result = await plugin.generate_image(prompt="a cat", size="abc")
+        assert result.startswith("Error:")
+        assert "Invalid image size" in result
+        adapter.generate_image.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_generate_image_empty_size_passes_through(self, fresh_plugin):
+        plugin._config = _full_config()
+        adapter = _fake_adapter()
+        plugin._adapters["test"] = adapter
+        result = await plugin.generate_image(prompt="a cat")
+        assert result == "/tmp/img.png"
+        assert adapter.generate_image.call_args.kwargs["size"] == ""
+
+    @pytest.mark.asyncio
+    async def test_generate_image_boundary_valid(self, fresh_plugin):
+        plugin._config = _full_config()
+        adapter = _fake_adapter()
+        plugin._adapters["test"] = adapter
+        for size in ("768*768", "1024*1024", "4096*4096"):
+            result = await plugin.generate_image(prompt="a cat", size=size)
+            assert result == "/tmp/img.png", size
 
     @pytest.mark.asyncio
     async def test_generate_video_merges_overrides(self, fresh_plugin):

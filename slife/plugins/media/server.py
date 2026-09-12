@@ -22,6 +22,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -124,6 +125,53 @@ def _error(e: Exception) -> str:
     return f"Error: {e}"
 
 
+#: Bailian (DashScope AIGC) image generation total-pixel bounds.
+#: The API rejects sizes whose W*H total pixels fall outside
+#: [589824, 16777216] (~768x768 .. 4096x4096).
+_IMAGE_MIN_PIXELS = 589824
+_IMAGE_MAX_PIXELS = 16777216
+
+
+def _validate_image_size(size: str) -> str | None:
+    """Validate a 'WIDTH*HEIGHT' image size string against Bailian bounds.
+
+    Returns an error message when invalid, else None (valid).  An empty
+    size is allowed (provider default applies).
+    """
+    if not size:
+        return None
+    s = size.strip()
+    m = re.match(r"^(\d+)\s*[xX*]\s*(\d+)$", s)
+    if not m:
+        return (
+            "Error: Invalid image size %r. Expected the form 'WIDTH*HEIGHT' "
+            "with positive integers, e.g. '1024*1024'." % (size,)
+        )
+    w, h = int(m.group(1)), int(m.group(2))
+    pixels = w * h
+    if pixels < _IMAGE_MIN_PIXELS:
+        return (
+            "Error: Image size %r is too small (%d total pixels). Bailian "
+            "requires total pixels between %d and %d "
+            "(about %dx%d to %dx%d)." % (
+                size, pixels, _IMAGE_MIN_PIXELS, _IMAGE_MAX_PIXELS,
+                768, 768, 4096, 4096,
+            )
+        )
+    if pixels > _IMAGE_MAX_PIXELS:
+        return (
+            "Error: Image size %r is too large (%d total pixels). Bailian "
+            "requires total pixels between %d and %d "
+            "(about %dx%d to %dx%d)." % (
+                size, pixels, _IMAGE_MIN_PIXELS, _IMAGE_MAX_PIXELS,
+                768, 768, 4096, 4096,
+            )
+        )
+    return None
+
+
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # LLM-visible tools
 # ═══════════════════════════════════════════════════════════════════════
@@ -155,6 +203,9 @@ async def generate_image(
                 "Error: No media provider configured. Add a media: "
                 "section to slife.json5."
             )
+        size_err = _validate_image_size(size)
+        if size_err:
+            return size_err
         pid, pcfg, entry = cfg.resolve_model("image", model or None)
         adapter = _get_adapter(pid, pcfg)
         result = await adapter.generate_image(
