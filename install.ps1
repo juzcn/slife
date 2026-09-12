@@ -544,10 +544,18 @@ try {
     }
 
     # uv tool uninstall may leave the venv directory behind on Windows
-    # when a process (antivirus, leftover slife, etc.) holds a lock.
-    # Clean it up explicitly — rename out of the way if removal fails
-    # so the subsequent uv tool install has a clean slate.
-    $oldToolDir = "$env:APPDATA\uv\tools\slife"
+    # when a process (antivirus, leftover slife, etc.) holds a lock — and
+    # `uv tool list` silently skips a corrupt / partial env (missing
+    # Scripts\python.exe, from an interrupted install), so uninstall can
+    # miss it entirely while `uv tool install` then dies on the stale
+    # directory ("Invalid environment: missing Python executable").
+    # Clean the dir up explicitly — rename out of the way if removal
+    # fails so the subsequent uv tool install has a clean slate.
+    $uvToolDir = uv tool dir 2>$null | Select-Object -First 1
+    if (-not $uvToolDir) {
+        $uvToolDir = "$env:APPDATA\uv\tools"   # legacy fallback (old default layout)
+    }
+    $oldToolDir = Join-Path $uvToolDir "slife"
     if (Test-Path $oldToolDir) {
         try {
             Remove-Item -Recurse -Force $oldToolDir -ErrorAction Stop
