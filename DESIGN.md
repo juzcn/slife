@@ -45,7 +45,7 @@ The sections are layered — orientation first, then the deep mechanics, then re
 | **Diary** | The `diary` table in `memdb` — a continuous, time-ordered log of every turn. (Not to be confused with the memfiles **Diary** records that `diary_write` writes.) |
 | **Channel** | The sender identity of a message entering the unified inbox (`human`, `wechat`, `subagent`, `heartbeat`, `system`, `a2a`), persisted with the turn. A marker never determines a channel and vice versa. |
 | **Marker** | Machine-generated notation inside a raw message (`[Heartbeat]`, `[Wechat:…]`, `[A2A:…]`, `[INFO: …]`) telling the model or the TUI something the message text alone doesn't say. |
-| **Harness tool** | A `_`-prefixed, LLM-visible-but-reserved tool the loop auto-invokes — currently only `_turn_prompt`. |
+| **Harness tool** | A `_`-prefixed, LLM-visible-but-reserved tool the loop auto-invokes — `_turn_prompt` (per turn) and `_check_new_input` (mid-turn message injection at iteration boundaries, cut-in mode). |
 | **Internal tool** | A `__`-prefixed plugin tool that serves the main process, not the LLM — filtered out of the schema before registration. |
 | **Silence contract** | A bare `.` assistant reply is silence, never rendered, from any turn source. |
 | **Plugin** | An independent child process declared by one row in the central plugin spec, speaking the MCP contract to the main process. |
@@ -333,7 +333,7 @@ There is a deliberate asymmetry: tool schemas sent to the LLM carry **business p
 
 `slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory` and the `_skip_auto_register` base classes `_ModelConfigTool` / `_EmbeddingsConfigTool`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides and per-model requirements enforced at **execute time** rather than load time: tools are always registered, and a tool like `attach_image` refuses at runtime when the active model has no vision (`vision=false` error) instead of being silently-missing.
 
-The current inventory — 58 native classes in 12 categories (~57 LLM-visible with the shipped config's `install_python_package: enabled: false`), plus the built-in plugin tools by server — is enumerated in the [README](README.md#tools). It is a *reference*, not a duplicate: the mechanism lives here, the catalog lives there.
+The current inventory — 60 native classes in 12 categories (~59 LLM-visible with the shipped config's `install_python_package: enabled: false`), plus the built-in plugin tools by server — is enumerated in the [README](README.md#tools). It is a *reference*, not a duplicate: the mechanism lives here, the catalog lives there.
 
 ### Tool Categories & Managed Surfaces
 

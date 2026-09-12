@@ -229,6 +229,78 @@ class TestInboxCancelCorrelation:
         mock_loop.cancel.assert_not_called()
 
 
+# ── Inbox — mid-turn input injection (cut-in mode) ─────────────────────
+
+
+class TestInboxInjection:
+    """has_injectable / extract_injectable — "push all" rule, one per check."""
+
+    @pytest.fixture
+    def mock_loop(self):
+        return MagicMock()
+
+    @pytest.fixture
+    def mock_store(self):
+        return MagicMock(spec=MessageHistoryStore)
+
+    @staticmethod
+    def _drain(inbox):
+        rest = []
+        while not inbox._queue.empty():
+            rest.append(inbox._queue.get_nowait())
+        return rest
+
+    @pytest.mark.asyncio
+    async def test_has_injectable_false_when_empty(self, mock_loop, mock_store):
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+        assert inbox.has_injectable() is False
+
+    @pytest.mark.asyncio
+    async def test_has_injectable_true_when_queued_non_destructive(
+        self, mock_loop, mock_store,
+    ):
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+        await inbox.post(AgentMessage(source=AgentName("peer"), content="do X"))
+        assert inbox.has_injectable() is True
+        assert inbox.pending == 1  # peek doesn't consume
+
+    @pytest.mark.asyncio
+    async def test_extract_pulls_first_preserves_order(self, mock_loop, mock_store):
+        """extract takes the FIRST queued message only; survivors keep FIFO."""
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+        await inbox.post(AgentMessage(source=AgentName("peer"), content="a"))
+        await inbox.post(AgentMessage(source=AgentName("human"), content="b"))
+        await inbox.post(AgentMessage(source=AgentName("x"), content="c"))
+
+        picked = inbox.extract_injectable()
+        assert picked is not None and picked.content == "a"
+        assert [m.content for m in self._drain(inbox)] == ["b", "c"]
+
+    @pytest.mark.asyncio
+    async def test_extract_consumes_one_per_call(self, mock_loop, mock_store):
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+        await inbox.post(AgentMessage(source=AgentName("peer"), content="a"))
+        await inbox.post(AgentMessage(source=AgentName("peer"), content="b"))
+
+        first = inbox.extract_injectable()
+        second = inbox.extract_injectable()
+        third = inbox.extract_injectable()
+
+        assert first.content == "a"
+        assert second.content == "b"
+        assert third is None
+
+    @pytest.mark.asyncio
+    async def test_extract_empty_returns_none(self, mock_loop, mock_store):
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+        assert inbox.extract_injectable() is None
+
+
 # ── Inbox — _process_one ──────────────────────────────────────────────
 
 

@@ -80,6 +80,9 @@ _poll_tasks: "FifoSet" = FifoSet()  # outbound async task_ids sent in "poll" mod
 # completion pops its entry; a silent peer can only evict past `_MAX_QUEUED`
 # (oldest first, insertion order).
 _message_sends: dict[str, str] = {}
+# Because we're the responder, and we don't have a global registry that maps task IDs to their
+# initiating agent's inbox, we snapshot the inbound task's reply_to at receive time.
+_reply_tos: dict[str, str] = {}
 _MAX_QUEUED = 500
 
 
@@ -142,6 +145,16 @@ async def _on_incoming_task(msg: AgentMessage) -> None:
         # [A2A:…] marker.  Defaults to task for peers that don't stamp it.
         "kind": msg.metadata.get("a2a_kind", "task"),
     })
+    # Snapshot the requester's result topic so the LLM can complete this task
+    # later via ``a2a_set_task_done(task_id, …)`` — the model never needs to
+    # name a topic.  Only messages that name both an id and a reply topic are
+    # completable; the map is bounded by evicting the oldest entry.
+    corr_id = msg.correlation_id or ""
+    reply_to = msg.reply_to or ""
+    if corr_id and reply_to:
+        _reply_tos[corr_id] = reply_to
+        if len(_reply_tos) > _MAX_QUEUED:
+            _reply_tos.pop(next(iter(_reply_tos)))
 
 
 async def _on_task_result(corr_id: str, result: str, cancelled: bool) -> None:
@@ -189,6 +202,9 @@ async def _on_incoming_cancel(corr_id: str) -> None:
     agent loop, which needs to preempt it (Esc-equivalent).
     """
     if corr_id:
+        # The peer gave up on this task — it must never be completable as
+        # success via a2a_set_task_done afterwards.
+        _reply_tos.pop(str(corr_id), None)
         for i, t in enumerate(_inbound_tasks):
             if t.get("correlation_id") == corr_id:
                 entry = _inbound_tasks.pop(i)
@@ -239,7 +255,9 @@ async def _on_agent_change(card: AgentCard, event: str) -> None:
 @mcp.tool(
     name="a2a_send_task",
     description="Send a task to a remote A2A mesh peer and wait for the result. "
-    "timeout: seconds to wait before timing out (default 120; ≤0 = default).",
+    "timeout: seconds to wait before timing out (default 120; ≤0 = default). "
+    "On a wait-timeout the call auto-degrades to async — the result is "
+    "auto-delivered to your inbox when it arrives.",
 )
 async def a2a_send_task(
     agent_name: str, task: str, timeout: float | None = None,
@@ -302,7 +320,8 @@ async def a2a_send_task_async(agent_name: str, task: str, mode: str = "auto") ->
     name="a2a_send_message",
     description="Send a stateless message to a remote A2A mesh peer and wait "
     "for its reply. timeout: seconds to wait before timing out (default 120; "
-    "≤0 = default).",
+    "≤0 = default). On a wait-timeout the call auto-degrades to async — the "
+    "reply is auto-delivered to your inbox when it arrives.",
 )
 async def a2a_send_message(
     agent_name: str, text: str, timeout: float | None = None,
@@ -555,18 +574,15 @@ async def __check() -> str:
     }, ensure_ascii=False)
 
 
-@mcp.tool(
-    name="__a2a_dispatch_result",
-    description="Publish a task result to a requester's result topic. Internal — called by the agent service.",
-)
-async def __a2a_dispatch_result(
-    reply_to: str, corr_id: str = "", text: str = "", cancelled: bool = False,
+async def _publish_task_result(
+    reply_to: str, corr_id: str, text: str, cancelled: bool,
 ) -> str:
-    """Publish a task result to the requester's result topic (harness only).
+    """Publish a completed/cancelled :class:`Task` result envelope to *reply_to*.
 
-    The payload is the official JSON-RPC response envelope carrying a
-    completed :class:`Task`, or a CANCELLED one when *cancelled* is true
-
+    Shared by the internal ``__a2a_dispatch_result`` and the LLM-visible
+    ``a2a_set_task_done`` — one publish path, one envelope shape.  This is the
+    A2A request→response closure: a ``result.task`` envelope keyed by the
+    original corr id on the requester's result topic.
     """
     client = await _ensure_connected()
     task = (
@@ -578,6 +594,65 @@ async def __a2a_dispatch_result(
     )
     await client.publish_message(reply_to, payload, qos=1)
     return "ok"
+
+
+@mcp.tool(
+    name="a2a_set_task_done",
+    description="Complete an inbound A2A task you received and are answering this "
+    "turn. Its task_id is the [A2A:...] marker's task_id. Publishes the task's "
+    "final result to the sender; unknown task_ids are refused. Completing a task "
+    "is not sending a new message — it closes the task.",
+)
+async def a2a_set_task_done(
+    task_id: str, result: str, cancelled: bool = False,
+) -> str:
+    """Mark a received A2A task as done, delivering *result* to its requester.
+
+    The semantic is a terminal state transition (completed, or cancelled with
+    *cancelled* true) on the ONE inbound task named by *task_id* — not a new
+    message, and never a new task.  No task-store record is created here and
+    nothing is awaited: the task's requester resolves from the published
+    result envelope.
+
+    Args:
+        task_id: The inbound task's id (the [A2A:...] marker's ``task_id``).
+        result: The task's result text (the artifact the requester receives).
+        cancelled: If true, publish a CANCELLED result instead of completed.
+    """
+    if not task_id:
+        return "Error: task_id required."
+    reply_to = _reply_tos.get(task_id)
+    if reply_to is None:
+        return (
+            f"Error: unknown task_id {task_id!r} — no inbound task with that "
+            f"id is awaiting a result."
+        )
+    try:
+        ok = await _publish_task_result(reply_to, task_id, result, cancelled)
+    except Exception as e:
+        logger.warning(
+            "a2a_set_task_done_publish_failed task=%s err=%s", task_id, e,
+        )
+        return f"Error: failed to publish the result — {e}"
+    # One-shot: a second completion of the same task becomes an explicit
+    # unknown-task error, never a silent duplicate result envelope.
+    _reply_tos.pop(task_id, None)
+    return ok
+
+
+@mcp.tool(
+    name="__a2a_dispatch_result",
+    description="Publish a task result to a requester's result topic. Internal — called by the agent service.",
+)
+async def __a2a_dispatch_result(
+    reply_to: str, corr_id: str = "", text: str = "", cancelled: bool = False,
+) -> str:
+    """Publish a task result to the requester's result topic (harness only).
+
+    The payload is the official JSON-RPC response envelope carrying a
+    completed :class:`Task`, or a CANCELLED one when *cancelled* is true.
+    """
+    return await _publish_task_result(reply_to, corr_id, text, cancelled)
 
 
 def main() -> None:

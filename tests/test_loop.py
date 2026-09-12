@@ -907,6 +907,84 @@ class TestAgentLoopRun:
         # One context → one reading: the shared history's last-call usage.
         assert loop.context_tokens_for(empty_history) == 11_002
 
+
+class TestMidturnInjection:
+    """Cut-in mode: a pending queued message is injected at the iteration
+    boundary into the running turn (one per boundary); queue mode never
+    injects — the original strict behavior."""
+
+    @pytest.mark.asyncio
+    async def test_run_injects_pending_at_iteration_boundary(
+        self, sample_model_config, history,
+    ):
+        from slife.a2a.identity import AgentMessage, AgentName
+        from slife.tools.context import ToolContext
+        from slife.tools.factory import create_tools_from_config
+
+        llm = LLMClient(sample_model_config)
+        reg = create_tools_from_config()
+        msg = AgentMessage(
+            source=AgentName("jack"),
+            content='[A2A:{"from": "jack", "task_id": "cid-1"}] do X',
+            correlation_id="cid-1", metadata={"a2a_kind": "task"},
+        )
+        calls = {"n": 0}
+
+        def _extract():
+            calls["n"] += 1
+            return msg if calls["n"] == 1 else None
+
+        ctx = ToolContext()
+        ctx.extract_injectable = _extract  # instance attr — never a bound method
+        reg.get("_check_new_input")._ctx = ctx
+        loop = AgentLoop(llm, reg)
+        loop.pending_input_has = lambda: True
+
+        async def mock_stream(messages, tools, **kwargs):
+            yield StreamChunk(content="Handled.")
+            yield StreamChunk(usage=TokenUsage(1, 1, 2))
+
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
+            result = await loop.run("Hi", history)
+
+        assert result.text == "Handled."
+        calls_made = [
+            m["tool_calls"][0]["function"]["name"]
+            for m in history.messages
+            if m.get("role") == "assistant" and m.get("tool_calls")
+        ]
+        assert "_check_new_input" in calls_made
+        tool_contents = [
+            m["content"] for m in history.messages if m.get("role") == "tool"
+        ]
+        assert msg.content in tool_contents  # the bare inbox text
+        assert calls["n"] == 1  # one extracted, consumed once
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_never_injects(
+        self, sample_model_config, history,
+    ):
+        from slife.tools.factory import create_tools_from_config
+
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, create_tools_from_config())
+        loop.cutin_enabled = False  # queue mode — original strict behavior
+        loop.pending_input_has = lambda: True
+
+        async def mock_stream(messages, tools, **kwargs):
+            yield StreamChunk(content="done.")
+            yield StreamChunk(usage=TokenUsage(1, 1, 2))
+
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
+            result = await loop.run("Hi", history)
+
+        assert result.text == "done."
+        assert not any(
+            m.get("role") == "assistant" and m.get("tool_calls")
+            and m["tool_calls"][0]["function"]["name"] == "_check_new_input"
+            for m in history.messages
+        )
+
     @pytest.mark.asyncio
     async def test_run_with_tool_calls(self, sample_model_config, tool_registry, history):
         """Agent correctly handles tool calls and loops back."""

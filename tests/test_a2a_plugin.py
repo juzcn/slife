@@ -442,10 +442,127 @@ class TestHarnessTools:
             "a2a_send_task", "a2a_send_task_async", "a2a_send_message",
             "a2a_send_message_async", "a2a_list_agents",
             "a2a_get_task_result", "a2a_cancel_task", "a2a_list_tasks",
-            "a2a_agent_card", "a2a_broadcast",
+            "a2a_agent_card", "a2a_broadcast", "a2a_set_task_done",
         ):
             assert name in by_name, f"{name} missing from plugin tools"
             assert not name.startswith("__"), name
+
+
+class TestSetTaskDone:
+    """a2a_set_task_done — complete a received task with its result."""
+
+    def setup_method(self):
+        plugin._reply_tos.clear()
+
+    @pytest.mark.asyncio
+    async def test_publishes_completed_to_snapshot_reply_to(self):
+        """Completes the ONE inbound task named by task_id, to its requester's
+        reply topic, as the official completed envelope — no task record."""
+        from slife.a2a.task_store import get_store
+
+        plugin._reply_tos["cid-1"] = "Slife/jack/tasks/result"
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            result = await getattr(plugin, "a2a_set_task_done")("cid-1", "the answer")
+
+        assert result == "ok"
+        topic, payload = client.publish_message.call_args.args
+        assert topic == "Slife/jack/tasks/result"
+        env = json.loads(payload)
+        assert env["id"] == "cid-1"
+        task = env["result"]["task"]
+        assert task["status"]["state"] == "completed"
+        assert task["artifacts"][0]["parts"][0]["text"] == "the answer"
+        # One-shot and never a task-store record.
+        assert "cid-1" not in plugin._reply_tos
+        assert get_store().list_tasks() == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_task_id_errors(self):
+        """A task id this agent never received is refused — no publish."""
+        plugin._reply_tos.clear()
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            result = await getattr(plugin, "a2a_set_task_done")("cid-nope", "x")
+
+        assert result.startswith("Error")
+        assert "unknown task_id" in result
+        client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_publishes_cancelled(self):
+        plugin._reply_tos["cid-2"] = "Slife/x/tasks/result"
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            await getattr(plugin, "a2a_set_task_done")(
+                "cid-2", "", cancelled=True,
+            )
+        env = json.loads(client.publish_message.call_args.args[1])
+        assert env["result"]["task"]["status"]["state"] == "cancelled"
+        assert "cid-2" not in plugin._reply_tos
+
+    @pytest.mark.asyncio
+    async def test_duplicate_reply_becomes_unknown(self):
+        """A second completion of the same task is refused, not duplicated."""
+        from slife.a2a.identity import AgentMessage
+
+        plugin._reply_tos["cid-3"] = "Slife/x/tasks/result"
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            first = await getattr(plugin, "a2a_set_task_done")("cid-3", "once")
+            second = await getattr(plugin, "a2a_set_task_done")("cid-3", "twice")
+
+        assert first == "ok"
+        assert second.startswith("Error")
+        assert client.publish_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_snapshot_recorded_on_incoming_task(self):
+        """Receiving a task snapshots its reply topic for later completion."""
+        from slife.a2a.identity import AgentMessage
+
+        plugin._reply_tos.clear()
+        plugin._inbound_tasks.clear()
+        await plugin._on_incoming_task(AgentMessage(
+            source="jack", content="do it",
+            reply_to="Slife/jack/tasks/result", correlation_id="cid-snap",
+        ))
+        assert plugin._reply_tos.get("cid-snap") == "Slife/jack/tasks/result"
+
+    @pytest.mark.asyncio
+    async def test_snapshot_skipped_without_reply_to_or_corr(self):
+        from slife.a2a.identity import AgentMessage
+
+        plugin._reply_tos.clear()
+        await plugin._on_incoming_task(AgentMessage(
+            source="jack", content="no id",
+        ))
+        await plugin._on_incoming_task(AgentMessage(
+            source="jack", content="no reply_to", correlation_id="cid-x",
+        ))
+        assert plugin._reply_tos == {}
+
+    @pytest.mark.asyncio
+    async def test_snapshot_evicts_oldest(self):
+        """The snapshot map stays bounded — the oldest entry is evicted when a
+        flood of inbound tasks arrives (insert path evicts, like _message_sends)."""
+        from slife.a2a.identity import AgentMessage
+
+        plugin._reply_tos.clear()
+        plugin._inbound_tasks.clear()
+        for i in range(plugin._MAX_QUEUED + 1):
+            await plugin._on_incoming_task(AgentMessage(
+                source="jack", content="t",
+                reply_to=f"t{i}", correlation_id=f"c-{i:04d}",
+            ))
+        assert "c-0000" not in plugin._reply_tos
+        assert f"c-{plugin._MAX_QUEUED:04d}" in plugin._reply_tos
+
+    @pytest.mark.asyncio
+    async def test_incoming_cancel_pops_snapshot(self):
+        plugin._reply_tos["cid-c"] = "Slife/x/tasks/result"
+        await plugin._on_incoming_cancel("cid-c")
+        assert "cid-c" not in plugin._reply_tos
 
 
 class TestConfig:

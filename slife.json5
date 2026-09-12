@@ -12,7 +12,9 @@
     max_iterations: 30,
     context_floor: 0.2,
     context_ceiling: 0.8,
-    heartbeat_interval: 1800
+    heartbeat_interval: 1800,
+    // 入站消息可否在安全迭代边界插入当前轮（插队）：true=可以（默认）；false=排队等当前轮结束。
+    cutin_enabled: true
   },
   models: {
     mode: "merge",

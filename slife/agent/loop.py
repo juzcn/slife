@@ -271,6 +271,8 @@ class AgentLoop:
         input_modalities: str = "",
         presence_provider: Callable[[], list[tuple[float, str]]] | None = None,
         schedule_provider: Callable[[], list[dict]] | None = None,
+        cutin_enabled: bool = True,
+        pending_input_has: "Callable[[], bool] | None" = None,
         advance_context_start: Callable[[int], Awaitable[bool]] | None = None,
         stream_timeout: float | None = None,
         stream_max_retries: int | None = None,
@@ -326,6 +328,17 @@ class AgentLoop:
         #: Returns render-ready ``{name, due_at, status}`` items; the loop
         #: injects them into ``_turn_prompt`` each turn.
         self._schedule_provider = schedule_provider
+        #: Mid-turn input preemption (cut-in mode): when True the loop injects
+        #: a pending queued message at each iteration boundary; when False,
+        #: messages wait in the queue until the turn ends (the original
+        #: behavior).  Toggleable at runtime via ``set_midturn_input``.
+        self.cutin_enabled = cutin_enabled
+        #: Inbox hook for cut-in mode — ``has_injectable()`` bound by
+        #: AgentService after the Inbox is constructed.  Left ``None``
+        #: (e.g. subagents, never wired) disables injection regardless of the
+        #: flag.  The extraction itself is the ``_check_new_input`` tool's
+        #: job (via the ``extract_injectable`` ToolContext hook).
+        self.pending_input_has = pending_input_has
         self._cancel_event = asyncio.Event()
         # Last API usage by history identity.  Every inbox message shares
         # the main agent's ONE context (human / wechat / heartbeat /
@@ -1313,6 +1326,19 @@ class AgentLoop:
                     if self._cancel_event.is_set():
                         logger.info("agent_cancelled iter=%d", i + 1)
                         raise AgentCancelled()
+
+                    # Cut-in mode: a message arrived mid-turn — inject it at
+                    # this safe point so the model addresses it in the same
+                    # iteration.  The gate is cheap (queue emptiness); the
+                    # extraction itself happens only inside _auto_invoke once
+                    # the pair will be recorded, so a cancelled turn never
+                    # loses the queued message.
+                    if (
+                        self.cutin_enabled
+                        and self.pending_input_has is not None
+                        and self.pending_input_has()
+                    ):
+                        await self._auto_invoke("_check_new_input", {}, history)
 
                     with elapsed("iter", logger, iter=i + 1):
                         result = await self._process_stream(history, handler)

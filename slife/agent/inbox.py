@@ -204,6 +204,38 @@ class Inbox:
         deque = getattr(self._queue, "_queue", (), )
         return any(predicate(m) for m in deque)
 
+    # ── Mid-turn input injection (cut-in mode) ────────────────────────
+
+    def has_injectable(self) -> bool:
+        """True if any queued message may cut into the running turn.
+
+        Cut-in mode makes *any* queued message injectable ("push all") — the
+        loop's iteration-boundary check asks, extracts one, and the model
+        decides what to do with it.  The gate lives on the loop
+        (``cutin_enabled``), not here: in queue mode this is never consulted.
+        Non-destructive.
+        """
+        return not self._queue.empty()
+
+    def extract_injectable(self) -> "AgentMessage | None":
+        """Pull the FIRST queued message out for mid-turn injection.
+
+        Drain-rebuild (same shape as :meth:`cancel_correlation`), preserving
+        the survivors' FIFO order — pinned by the cancel-correlation ordering
+        tests.  The picked message is consumed once and never runs as its own
+        turn; if the model ignores it, sender-side timeout+degrade is the
+        backstop.  Returns ``None`` when the queue is empty.
+        """
+        if self._queue.empty():
+            return None
+        picked = self._queue.get_nowait()
+        rest: list[AgentMessage] = []
+        while not self._queue.empty():
+            rest.append(self._queue.get_nowait())
+        for item in rest:
+            self._queue.put_nowait(item)
+        return picked
+
     # ── Run ───────────────────────────────────────────────────────────
 
     async def run(self) -> None:

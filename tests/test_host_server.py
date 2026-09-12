@@ -65,11 +65,21 @@ class TurnPromptTool:
         return "note"
 
 
+class CheckInputTool:
+    name = "_check_new_input"
+    description = "Mid-turn input injector (must be excluded from outward face)."
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs) -> str:
+        return "injected"
+
+
 def _registry() -> ToolRegistry:
     r = ToolRegistry()
     r.register(EchoTool())
     r.register(ConfigTool())
     r.register(TurnPromptTool())
+    r.register(CheckInputTool())
     return r
 
 
@@ -90,6 +100,7 @@ class TestIsExposed:
     def test_harness_context_control_excluded(self):
         assert is_exposed(ConfigTool()) is False      # clear_context
         assert is_exposed(TurnPromptTool()) is False  # _turn_prompt
+        assert is_exposed(CheckInputTool()) is False  # _check_new_input
 
     def test_internal_prefix_excluded(self):
         class _Internal:
@@ -112,6 +123,7 @@ class TestBuildRegistryMcp:
         assert "__check" in names             # internal harness probe
         assert "clear_context" not in names   # harness control excluded
         assert "_turn_prompt" not in names    # harness marker excluded
+        assert "_check_new_input" not in names  # input injector excluded
 
     def test_wrapped_tool_carries_slife_schema(self):
         reg = _registry()

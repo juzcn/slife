@@ -1260,6 +1260,38 @@ class SetMaxIterationsTool(Tool):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# set_midturn_input
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class SetMidturnInputTool(Tool):
+    name = "set_midturn_input"
+    category: ClassVar[str] = "System"
+    description = (
+        "Allow inbound messages (peer tasks, chat) to cut into the running "
+        "turn at the next safe point (true, the default), or queue them "
+        "until the turn ends (false — the original strict behavior)."
+    )
+    parameters = make_params(
+        enabled={
+            "type": "boolean",
+            "description": (
+                "true = mid-turn cut-in allowed (default); "
+                "false = messages queue until the running turn ends."
+            ),
+        },
+    )
+
+    async def execute(self, enabled: bool = True, **kwargs) -> str:
+        setter = getattr(self, "_ctx", None)
+        if setter is not None:
+            setter = setter.set_midturn_input
+        if setter is None:
+            return "Error: agent service is not available yet — call this after the agent service has started."
+        return setter(enabled)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # notify_user
 # ═══════════════════════════════════════════════════════════════════════
 

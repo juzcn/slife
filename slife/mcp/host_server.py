@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 #: the owning plugin process just as for the agent itself.
 _EXCLUDED_NAMES = frozenset({
     "_turn_prompt",        # harness marker injector — mutates the host context
+    "_check_new_input",    # mid-turn input injector — reads the host's queue
     "_model_config_tool",  # internal base class, not a real tool
     "clear_context",       # resets the host's loaded turns
     "set_max_iterations",  # changes the host loop's iteration cap

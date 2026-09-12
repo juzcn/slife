@@ -90,6 +90,59 @@ class TestSendTaskWire:
         assert env["params"]["message"]["role"] == "user"
 
     @pytest.mark.asyncio
+    async def test_send_task_timeout_auto_degrades_to_async(self):
+        """A wait-timeout degrades to async instead of failing the task.
+
+        The request was already published — the peer may still answer — so the
+        call returns a degrade notice (not an exception) and the store record
+        stays *pending* (never failed), letting the late result deliver.
+        """
+        from slife.a2a.task_store import get_store
+
+        client = self._client()
+        adapter = client._adapter  # _RecordingAdapter: publish records, never resolves
+
+        result = await client.send_task(
+            AgentName("peer-1"), "do X", timeout=0.05,
+        )
+
+        assert "auto-degraded to async" in result
+        assert "task_id: " in result
+        cid = json.loads(adapter.published[0][1])["id"]
+        assert cid in result
+        # Deferred, not failed — cancelling / polling still work on it.
+        assert get_store().get(cid).status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_degraded_sync_task_late_result_auto_pushes(self):
+        """A sync task whose wait degraded keeps its delivery: the late result
+        flows through the async branch (store + auto-push) instead of being
+        discarded after the timeout."""
+        from slife.a2a import wire
+        from slife.a2a.task_store import get_store
+
+        client = self._client()
+        got: list[tuple[str, str, bool]] = []
+
+        async def _cb(corr_id, result, cancelled):
+            got.append((corr_id, result, cancelled))
+
+        client.on_task_result(_cb)
+
+        # Simulate a degraded sync send: record pending, no live waiter.
+        get_store().record_send("cid-deg", "peer-1", "do X", "mqtt")
+
+        task = wire.Task.completed("cid-deg", "the answer")
+        payload = json.dumps(wire.task_result_envelope("cid-deg", task))
+        await client._handle_result(
+            TransportMessage(topic="Slife/jack/tasks/result", payload=payload),
+        )
+
+        assert got == [("cid-deg", "the answer", False)]
+        assert get_store().get("cid-deg").status == "completed"
+        assert client.get_task_result("cid-deg") == "the answer"
+
+    @pytest.mark.asyncio
     async def test_send_task_async_publishes_sendmessage_envelope(self):
         client = self._client()
         adapter = client._adapter

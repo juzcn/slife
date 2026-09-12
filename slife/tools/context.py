@@ -78,6 +78,17 @@ class ToolContext:
     (0 = unlimited).  Populated by AgentService after the loop is built;
     used by the ``set_max_iterations`` tool."""
 
+    set_midturn_input: Callable[[bool], str] | None = None
+    """Runtime hook to toggle mid-turn input preemption (True = a new inbound
+    message may cut into the running turn; False = queue until it ends).
+    Populated by AgentService; used by the ``set_midturn_input`` tool."""
+
+    extract_injectable: Callable[[], object] | None = None
+    """Pull the FIRST queued inbox message for mid-turn injection (cut-in
+    mode).  Populated by AgentService after the Inbox is built (main agent
+    only); read by the auto-invoked ``_check_new_input`` tool, which returns
+    the message's bare text.  ``None`` → the tool reports no pending input."""
+
     refresh_system_prompt: Callable[[], None] | None = None
     """Re-render the session's system prompt after USER.md changed — called
     by the ``add_user_pref`` tool so the new preference is live from the next

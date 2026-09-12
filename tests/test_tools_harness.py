@@ -51,6 +51,111 @@ class TestRegistration:
         assert reg.get("_turn_prompt").category == "Models"
 
 
+class TestCheckNewInput:
+    """_check_new_input — the mid-turn input injector (cut-in mode).
+
+    A zero-argument harness tool: the loop records assistant(tool_calls) with
+    EMPTY arguments (no duplication — the message exists once, in the tool
+    result), and the tool pulls the first queued message itself via the
+    ``extract_injectable`` context hook, returning its bare text.
+    """
+
+    @staticmethod
+    def _ctx_registry(extract):
+        from slife.tools.context import ToolContext
+
+        reg = _registry()
+        ctx = ToolContext()
+        ctx.extract_injectable = extract  # instance attr — never a bound method
+        reg.get("_check_new_input")._ctx = ctx
+        return reg
+
+    def test_registered_and_in_schema(self):
+        reg = _registry()
+        names = {t.name for t in reg.list_tools()}
+        assert "_check_new_input" in names
+        fnames = {f["function"]["name"] for f in reg.to_openai_functions()}
+        assert "_check_new_input" in fnames
+        # zero-argument — nothing for the model to choose
+        assert reg.get("_check_new_input").parameters.get("properties", {}) == {}
+
+    @pytest.mark.asyncio
+    async def test_execute_returns_bare_content(self):
+        from slife.a2a.identity import AgentMessage, AgentName
+        from slife.tools.context import ToolContext
+
+        reg = _registry()
+        content = '[A2A:{"from": "jack", "task_id": "cid-1"}] do X'
+        ctx = ToolContext()
+        ctx.extract_injectable = lambda: AgentMessage(  # instance attr, not bound
+            source=AgentName("jack"), content=content,
+        )
+        reg.get("_check_new_input")._ctx = ctx
+
+        out = await reg.execute("_check_new_input")
+        assert out == content  # the inbox's bare text, no wrapper
+
+    @pytest.mark.asyncio
+    async def test_execute_no_ctx_or_empty_returns_notice(self):
+        reg = _registry()
+        out = await reg.execute("_check_new_input")  # _ctx is None on bare registry
+        assert out == "No pending input — nothing to inject at this boundary."
+
+    @pytest.mark.asyncio
+    async def test_auto_invoke_records_pair_with_empty_args(self):
+        from slife.a2a.identity import AgentMessage, AgentName
+
+        content = '[A2A:{"from": "jack", "task_id": "cid-1"}] do X'
+        reg = self._ctx_registry(lambda: AgentMessage(
+            source=AgentName("jack"), content=content,
+        ))
+        loop = _loop(reg)
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("working…")
+
+        await loop._auto_invoke("_check_new_input", {}, conv)
+
+        last = conv.messages[-2:]
+        assert last[0]["role"] == "assistant"
+        assert last[0]["tool_calls"][0]["function"]["name"] == "_check_new_input"
+        assert last[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+        assert last[1]["role"] == "tool"
+        assert last[1]["content"] == content  # bare text, single copy
+
+    @pytest.mark.asyncio
+    async def test_auto_invoke_extract_none_records_notice(self):
+        reg = self._ctx_registry(lambda: None)
+        loop = _loop(reg)
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("working…")
+
+        await loop._auto_invoke("_check_new_input", {}, conv)
+
+        last = conv.messages[-2:]
+        assert last[0]["tool_calls"][0]["function"]["name"] == "_check_new_input"
+        assert "No pending input" in last[1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_auto_invoke_cancel_guard_skips_extraction(self):
+        from slife.a2a.identity import AgentMessage, AgentName
+
+        extracted: list = []
+
+        def _extract():
+            extracted.append(1)
+            return AgentMessage(source=AgentName("jack"), content="x")
+
+        reg = self._ctx_registry(_extract)
+        loop = _loop(reg)
+        loop._cancel_event.set()
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("working…")
+
+        await loop._auto_invoke("_check_new_input", {}, conv)
+
+        assert extracted == []  # a cancelled turn never drops the queued message
+
+
 # ── Tool execution ───────────────────────────────────────────────────────
 
 

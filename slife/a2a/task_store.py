@@ -122,8 +122,10 @@ class TaskStore:
 
         A task that is already in a terminal state (cancelled or failed) stays
         there — a result arriving from a peer after the caller was told about a
-        cancel or a timeout must not flip the record back to completed and
-        contradict what the caller saw.
+        cancel must not flip the record back to completed and contradict what
+        the caller saw.  A *wait* timeout is no longer terminal: the sender
+        auto-degrades to async, so a pending record flips to completed here and
+        the late result still delivers.
         """
         rec = self._records.get(task_id)
         if rec is None:

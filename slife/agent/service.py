@@ -248,6 +248,7 @@ class AgentService:
             max_iterations=config.max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             tool_timeout=config.tool_timeout,
+            cutin_enabled=config.cutin_enabled,
             context_window=config.active_model.context_window,
             context_ceiling=config.context_ceiling,
             context_floor=config.context_floor,
@@ -266,6 +267,8 @@ class AgentService:
         self._tool_ctx.message_history = self.message_history
         # Runtime iteration-cap hook for the set_max_iterations tool.
         self._tool_ctx.set_max_iterations = self.agent_loop.set_max_iterations
+        # Runtime mid-turn preemption hook for the set_midturn_input tool.
+        self._tool_ctx.set_midturn_input = self.set_midturn_input
         # USER.md write hook for the add_user_pref tool — re-render the
         # system prompt (re-reads USER.md) so the new preference is live
         # from the next call.  Populated for the main agent and subagents.
@@ -334,6 +337,14 @@ class AgentService:
                 else self.wait_startup_settled
             ),
         )
+        # Cut-in mode wiring: the loop gates the boundary check on the inbox's
+        # has_injectable; the auto-invoked _check_new_input tool pulls the
+        # message itself via the shared tool context's extract_injectable.
+        # Main agent only — subagents are single-task workers and never
+        # preempt their own turn (the hooks stay None → no injection).
+        if not self.is_subagent:
+            self.agent_loop.pending_input_has = self.inbox.has_injectable
+            self._tool_ctx.extract_injectable = self.inbox.extract_injectable
         self._inbox_task: asyncio.Task | None = None
         # slife-as-plugin in-process MCP server (server, task, stop) — started
         # lazily in start_inbox for the main agent only; None for subagents.
@@ -473,6 +484,29 @@ class AgentService:
             self.config._write_config(raw)
         self.reload_active_model(ref)
         return f"Switched to {self.config.active_model.display_name}"
+
+    def set_midturn_input(self, enabled: bool) -> str:
+        """Toggle mid-turn input preemption at runtime (persisted to config).
+
+        True = a new inbound message may cut into the running turn at the next
+        safe iteration boundary (the default); False = messages queue until
+        the running turn ends (the original ``queue`` behavior).  Mirrors
+        ``switch_model``: updates the live loop and persists the config file.
+        """
+        enabled = bool(enabled)
+        self.config.cutin_enabled = enabled
+        self.agent_loop.cutin_enabled = enabled
+        raw = self.config._read_config(
+            "set_midturn_input", self.config.agent_name,
+        )
+        if raw is not None:
+            raw.setdefault("agent", {})["cutin_enabled"] = enabled
+            self.config._write_config(raw)
+        state = "on" if enabled else "off"
+        return (
+            f"Mid-turn input preemption turned {state} — inbound messages "
+            f"{'can now cut into the running turn at the next safe point' if enabled else 'now queue until the running turn ends (the original behavior)'}."
+        )
 
     def reload_active_model(self, new_ref: str) -> None:
         """Reload runtime state after the active model is switched.
@@ -2183,8 +2217,11 @@ class AgentService:
         """Drain inbound a2a tasks/presence from the plugin into the inbox.
 
         The harness stays a thin client: it only drains the plugin's
-        ``__a2a_drain_incoming`` and feeds the unified inbox.  Replies are
-        routed back through the plugin via ``__a2a_dispatch_result``.
+        ``__a2a_drain_incoming`` and feeds the unified inbox.  Replies are the
+        model's job — an inbound task is completed with ``a2a_set_task_done``,
+        a stateless message is answered with ``a2a_send_message`` — the
+        harness no longer auto-dispatches the turn's final text out (the
+        WeChat precedent).
         """
         import json as _json
         from slife.a2a.identity import AgentName, AgentMessage, Channel
@@ -2209,22 +2246,7 @@ class AgentService:
                     if cid:
                         self.inbox.cancel_correlation(cid)
 
-                a2a_client = client  # narrowed MCPClient for the reply closure
                 for ev in data.get("tasks", []):
-                    async def _reply(
-                        reply_text: str, cancelled: bool = False,
-                        rt=ev.get("reply_to", ""),
-                        cid=ev.get("correlation_id", ""),
-                    ) -> None:
-                        try:
-                            assert a2a_client is not None
-                            await a2a_client.call_tool("__a2a_dispatch_result", {
-                                "reply_to": rt, "corr_id": cid, "text": reply_text,
-                                "cancelled": cancelled,
-                            })
-                        except Exception:
-                            pass
-
                     # The sender knows the task_id (a2a_send_task_async returns
                     # it); surface the same id to the receiver so it can
                     # reference the task it is responding to instead of making
@@ -2249,7 +2271,10 @@ class AgentService:
                         content=task_text,
                         reply_to=ev.get("reply_to", ""),
                         correlation_id=ev.get("correlation_id", ""),
-                        on_reply=_reply,
+                        # Wire kind (task/message) rides the message so the
+                        # inbox / mid-turn injection can frame it right after
+                        # the queue round-trip (no marker re-parsing).
+                        metadata={"a2a_kind": kind},
                         channel=Channel.a2a(src),
                     )
                     await self.inbox.post(msg)
@@ -2304,6 +2329,9 @@ class AgentService:
                     await self.inbox.post(AgentMessage(
                         source=AgentName(peer),
                         content=content,
+                        # A result push is an FYI (a response to a prior request),
+                        # never a task — frames the injected pair accordingly.
+                        metadata={"a2a_kind": "push"},
                         channel=Channel.a2a(peer),
                     ))
                     logger.debug("a2a_completion_autopushed peer=%s task=%s kind=%s", peer, corr_id, cev.get("kind", "task"))

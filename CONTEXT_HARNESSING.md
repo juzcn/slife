@@ -104,6 +104,33 @@ rendered from `turn_prompt.j2` via `build_turn_prompt`
 Context trimming is *not* such a tool: it runs internally after save and is
 announced by the trim note (§5), not by a harness pair.
 
+### `_check_new_input` — mid-turn message injection (cut-in mode)
+
+`_check_new_input` (`slife/tools/models.py`) is the **zero-argument** counterpart
+of `_turn_prompt`, auto-invoked at each *iteration boundary* (before the next
+LLM call) when a queued message may cut into the running turn.  It is a mode:
+`agent.cutin_enabled` (default **true**) — toggled at runtime with
+`set_midturn_input(enabled)`; when false (the original `queue` behavior) the
+boundary check is skipped entirely.
+
+- **"Push all", one per boundary.**  The check asks `inbox.has_injectable()`
+  (queue non-empty, no channel filter); `_check_new_input`'s execution pulls
+  the FIRST queued message via the `extract_injectable` ToolContext hook
+  (drain-rebuild, survivors stay FIFO) and returns its **bare text** — the
+  content already carries its `[A2A:…]`/`[A2A-PUSH:…]`/`[Wechat:…]` marker, so
+  no wrapper or per-kind instructions are needed (the reply protocol lives in
+  the system prompt).
+- **Same tool-pair mechanics as `_turn_prompt`** — assistant `tool_call` (with
+  EMPTY arguments, so the message exists once in context) + tool result,
+  recorded and restored.  Extraction is gated behind the same cancel guard so
+  a cancelled turn never drops the queued message.
+- **Main agent only** — subagents never wire the hooks, and an inbox-absent
+  tool just reports "no pending input".
+- **LLM judgment.**  An injected message is a live input the model addresses in
+  the same turn — or, for an `[A2A-PUSH:…]` result FYI, acknowledges and
+  ignores.  Tasks it chooses not to complete are covered by the sender's
+  sync-timeout auto-degrade.
+
 ---
 
 ## 5. Context markers on existing messages

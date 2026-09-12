@@ -6,6 +6,7 @@ model_remove           — remove a model by ref (cannot remove the active model
 model_switch           — switch the active model (instant, no restart)
 attach_image           — feed images to a vision-capable model in the current turn
 _turn_prompt           — per-turn prompt (auto-invoked once per turn)
+_check_new_input       — mid-turn input injector (auto-invoked at iteration boundaries)
 """
 
 from __future__ import annotations
@@ -651,3 +652,38 @@ class TurnPromptTool(Tool):
         clean = {k: v for k, v in kwargs.items() if k not in ("_timeout", "_async", "_approve")}
         from slife.agent.system_prompt import build_turn_prompt
         return build_turn_prompt(**clean)
+
+
+class CheckNewInputTool(Tool):
+    """Inject a message that arrived mid-turn into the running turn.
+
+    The Agent Loop auto-invokes this at each iteration boundary when cut-in
+    mode is on and the inbox reports a queued message — never the LLM, and
+    always with NO arguments (there is nothing for the model to choose).  The
+    tool itself pulls the FIRST queued message — AgentService binds the
+    Inbox's ``extract_injectable`` onto the shared tool context — and returns
+    the message's bare text.  The content already carries its
+    [A2A:…]/[A2A-PUSH:…]/[Wechat:…] marker, so the model reads the source and
+    task id without any wrapper.  The message is consumed once and never runs
+    as its own turn.
+    """
+
+    name = "_check_new_input"
+    category = "Harness"
+    description = ("Auto-invoked by the harness at a safe point when a message "
+                   "arrived mid-turn (cut-in mode) — the tool result is the "
+                   "pending message verbatim.")
+    parameters = make_params()
+
+    async def execute(self, **kwargs) -> str:
+        ctx = getattr(self, "_ctx", None)
+        extract = (
+            getattr(ctx, "extract_injectable", None)
+            if ctx is not None else None
+        )
+        if extract is None:
+            return "No pending input — nothing to inject at this boundary."
+        msg = extract()
+        if msg is None:
+            return "No pending input — nothing to inject at this boundary."
+        return msg.content

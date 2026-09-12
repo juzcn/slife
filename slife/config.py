@@ -365,6 +365,10 @@ class Config:
     agent_name: str = "slife"
     tool_timeout: float = 120.0  # seconds, 0 to disable — fallback wrap for tools w/o native timeout/`_timeout`
     heartbeat_interval: int = 1800  # seconds — autonomous idle heartbeat period
+    # Mid-turn input preemption: when True (default) a new inbound message may
+    # cut into the running turn at the next safe iteration boundary; when
+    # False it waits in the queue until the turn ends (the original behavior).
+    cutin_enabled: bool = True
     memdb_config: MemdbConfig | None = None
     embeddings_config: EmbeddingsConfig | None = None
     wechat_config: WechatConfig | None = None
@@ -408,6 +412,7 @@ class Config:
             "max_iterations": self.max_iterations,
             "tool_timeout": self.tool_timeout,
             "heartbeat_interval": self.heartbeat_interval,
+            "cutin_enabled": self.cutin_enabled,
             "context_floor": self.context_floor,
             "context_ceiling": self.context_ceiling,
             "tool_result_ceiling": self.tool_result_ceiling,
@@ -450,6 +455,7 @@ class Config:
             max_iterations=data.get("max_iterations", 30),
             tool_timeout=data.get("tool_timeout", 120.0),
             heartbeat_interval=data.get("heartbeat_interval", 1800),
+            cutin_enabled=data.get("cutin_enabled", True),
             context_floor=data.get("context_floor", 0.2),
             context_ceiling=data.get("context_ceiling", 0.8),
             tool_result_ceiling=data.get("tool_result_ceiling", 0.2),
@@ -855,6 +861,7 @@ class Config:
         max_iterations = agent.get("max_iterations", 30)
         tool_timeout = agent.get("tool_timeout", 120.0)
         heartbeat_interval = agent.get("heartbeat_interval", 1800)
+        cutin_enabled = agent.get("cutin_enabled", True)
         context_floor = agent.get("context_floor", 0.2)
         context_ceiling = agent.get("context_ceiling", 0.8)
         tool_result_ceiling = agent.get("tool_result_ceiling", 0.2)
@@ -940,6 +947,7 @@ class Config:
             max_iterations=max_iterations,
             tool_timeout=tool_timeout,
             heartbeat_interval=heartbeat_interval,
+            cutin_enabled=cutin_enabled,
             context_floor=context_floor,
             context_ceiling=context_ceiling,
             tool_result_ceiling=tool_result_ceiling,

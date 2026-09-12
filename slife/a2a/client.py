@@ -283,6 +283,11 @@ class A2AClient:
         With ``record=False`` the exchange is a stateless message — no
         task-store record is created (``a2a_list_tasks`` / ``cancel_task``
         don't see it).
+
+        On a wait-timeout the call **auto-degrades to async** instead of
+        raising: the request was already delivered, so the record stays
+        pending and the late result is stored + auto-pushed to the inbox
+        when it arrives (never retry a timed-out sync call).
         """
         if timeout is None:
             timeout = self._config.task_timeout
@@ -323,11 +328,21 @@ class A2AClient:
                 get_store().record_result(corr_id, result)
             return result
         except asyncio.TimeoutError:
+            # Auto-degrade to async on a *wait* timeout — the request was
+            # already published (peer may still answer), so this is not a
+            # failure.  Leave the store record pending (never mark it failed):
+            # the late result then flows through _handle_result's async branch
+            # (store + auto-push to the inbox) instead of being discarded, and
+            # a2a_cancel_task / a2a_get_task_result still work on it.  Only
+            # cancellation (below) is a true "give up"; a stateless message
+            # (record=False) degrades the same way — its late reply auto-pushes
+            # through the plugin's _message_sends map.
             self._pending_tasks.pop(corr_id, None)
-            if record:
-                get_store().record_error(corr_id, "timeout")
-            raise TimeoutError(
-                f"Task to '{target}' timed out after {timeout}s"
+            return (
+                f"Task to '{target}' timed out after {timeout:g}s — "
+                f"auto-degraded to async (the request was already delivered; "
+                f"its result will be auto-delivered to your inbox as an "
+                f"[A2A-PUSH] when it arrives). task_id: {corr_id}"
             )
         except asyncio.CancelledError:
             # A cancelled wait (loop tool_timeout, or a2a_cancel_task cancelling
@@ -786,11 +801,13 @@ class A2AClient:
                 future.set_result(result_text)
             logger.debug("a2a_result_resolved corr_id=%s", corr_id)
         else:
-            # No synchronous waiter.  Either this is an async task whose result
-            # should be stored for polling, or a late result for a task that
-            # already timed out (record already failed).  A timed-out task must
-            # not be resurrected into _completed_tasks or auto-pushed as a
-            # success the caller was already told failed.
+            # No synchronous waiter — an async task, or a sync task whose wait
+            # already auto-degraded (send_task's timeout leaves the record
+            # *pending*, so its late result lands here): store it for polling
+            # AND auto-push, exactly like an async task.  A genuinely "failed"
+            # record (an explicit record_error) stays terminal — its caller
+            # was already told it failed, so resurrecting it would contradict
+            # what the caller saw.
             rec = get_store().get(corr_id)
             if rec is not None and rec.status == "failed":
                 logger.warning(

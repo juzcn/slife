@@ -1181,6 +1181,11 @@ class TestAgentServiceA2A:
             "do X"
         )
         assert posted[0].correlation_id == "cid-1"
+        # Explicit-completion protocol: no auto-dispatch closure rides the
+        # message — the model completes the task via a2a_set_task_done.  The
+        # wire kind rides metadata so the mid-turn injector can frame it.
+        assert posted[0].on_reply is None
+        assert posted[0].metadata.get("a2a_kind") == "task"
 
     @pytest.mark.asyncio
     async def test_a2a_poll_frames_completion_by_kind(self, sample_config):
