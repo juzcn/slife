@@ -812,7 +812,7 @@ try {
             # into ~/.slife/ as <name>.<version>.<ext>.
             $copy = Join-Path "$env:USERPROFILE\.slife" ("{0}.{1}{2}" -f [IO.Path]::GetFileNameWithoutExtension($pair[0]), $version, [IO.Path]::GetExtension($pair[0]))
             Copy-Item $src $copy -Force
-            Write-Warn "  kept $($pair[1]) (possibly customized); new default seeded to $copy (apply: Copy-Item '$copy' '$($pair[1])')"
+            Write-Warn "  seeded $([IO.Path]::GetFileName($copy)) → $([IO.Path]::GetDirectoryName($copy))"
         } else {
             Copy-Item $src $pair[1] -Force
             Write-Dim "  seeded $($pair[1])"
@@ -846,7 +846,7 @@ try {
                 $copyDir = Join-Path "$env:USERPROFILE\.slife" "$name.$version"
                 Remove-Item -Recurse -Force $copyDir -ErrorAction SilentlyContinue
                 Copy-Item -Recurse $skill.FullName $copyDir -Force
-                Write-Warn "  kept skill '$skillsDst\$name' (possibly customized); new default seeded to '$copyDir' (apply: Copy-Item -Recurse '$copyDir' '$skillsDst\$name')"
+                Write-Warn "  seeded $([IO.Path]::GetFileName($copyDir)) → $([IO.Path]::GetDirectoryName($copyDir))"
             } else {
                 Copy-Item -Recurse $skill.FullName $dst -Force
                 Write-Dim "  seeded skill '$skillsDst\$name'"
@@ -879,7 +879,7 @@ try {
                 # *.py scan can't load it as a duplicate job.
                 $copy = Join-Path "$env:USERPROFILE\.slife" ("{0}.{1}{2}" -f [IO.Path]::GetFileNameWithoutExtension($name), $version, [IO.Path]::GetExtension($name))
                 Copy-Item -Force $job.FullName $copy
-                Write-Warn "  kept job '$jobsDst\$name' (possibly customized); new default seeded to '$copy' (apply: Copy-Item '$copy' '$jobsDst\$name')"
+                Write-Warn "  seeded $([IO.Path]::GetFileName($copy)) → $([IO.Path]::GetDirectoryName($copy))"
             } else {
                 Copy-Item $job.FullName $dst -Force
                 Write-Dim "  seeded job '$jobsDst\$name'"

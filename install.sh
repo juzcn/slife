@@ -797,7 +797,7 @@ for _name in slife.json5 local_embed.json5 mcp-plugin.json5 sharefile.json5; do
         # version reinstall refreshes the copy.
         _copy="$HOME/.slife/${_name%.*}.$VERSION.${_name##*.}"
         if cp -f "$_src" "$_copy" 2>/dev/null && chmod 600 "$_copy" 2>/dev/null; then
-            echo -e "  ${YELLOW}kept $_target (possibly customized); new default seeded to $_copy (apply: cp '$_copy' '$_target')${NC}"
+            echo -e "  ${YELLOW}seeded ${_copy##*/} → ${_copy%/*}${NC}"
         else
             echo -e "  ${RED}⚠ could not write $_copy${NC}"
         fi
@@ -834,7 +834,7 @@ if [ -d "$SKILLS_SRC" ]; then
             _copy="$HOME/.slife/${_name}.$VERSION"
             rm -rf "$_copy" 2>/dev/null || true
             if cp -R "$_skill" "$_copy" 2>/dev/null; then
-                echo -e "  ${YELLOW}kept skill '$SKILLS_DST/$_name' (possibly customized); new default seeded to '$_copy' (apply: cp -R '$_copy' '$SKILLS_DST/$_name')${NC}"
+                echo -e "  ${YELLOW}seeded ${_copy##*/} → ${_copy%/*}${NC}"
             else
                 echo -e "  ${RED}⚠ could not write skill '$_copy'${NC}"
             fi
@@ -872,7 +872,7 @@ if [ -d "$JOBS_SRC" ]; then
             # scan can't load it as a duplicate job.
             _copy="$HOME/.slife/${_name%.*}.$VERSION.${_name##*.}"
             if cp -f "$_job" "$_copy" 2>/dev/null; then
-                echo -e "  ${YELLOW}kept job '$JOBS_DST/$_name' (possibly customized); new default seeded to '$_copy' (apply: cp '$_copy' '$JOBS_DST/$_name')${NC}"
+                echo -e "  ${YELLOW}seeded ${_copy##*/} → ${_copy%/*}${NC}"
             else
                 echo -e "  ${RED}⚠ could not write '$_copy'${NC}"
             fi
