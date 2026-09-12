@@ -804,9 +804,8 @@ try {
         if (-not (Test-Path $src)) { continue }   # older main snapshots may lack the seeds
         New-Item -ItemType Directory -Force (Split-Path $pair[1] -Parent) | Out-Null
         if (Test-Path $pair[1]) {
-            # Same content as the bundled default — nothing to do.
+            # Same content as the bundled default — do nothing, silently.
             if ((Get-FileHash $src).Hash -eq (Get-FileHash $pair[1]).Hash) {
-                Write-Dim "  unchanged  $($pair[1])"
                 continue
             }
             # Never overwrite the live config, never prompt — seed the new default
@@ -837,9 +836,8 @@ try {
             $name = $skill.Name
             $dst = Join-Path $skillsDst $name
             if (Test-Path $dst) {
-                # Same content as the bundled default — nothing to do.
+                # Same content as the bundled default — do nothing, silently.
                 if (Test-SameDir $skill.FullName $dst) {
-                    Write-Dim "  unchanged  skill '$name'"
                     continue
                 }
                 # Never overwrite the user's skill, never prompt — seed into ~/.slife/
@@ -872,9 +870,8 @@ try {
             $name = $job.Name
             $dst = Join-Path $jobsDst $name
             if (Test-Path $dst) {
-                # Same content as the bundled default — nothing to do.
+                # Same content as the bundled default — do nothing, silently.
                 if ((Get-FileHash $job.FullName).Hash -eq (Get-FileHash $dst).Hash) {
-                    Write-Dim "  unchanged  job '$name'"
                     continue
                 }
                 # Never overwrite the user's job, never prompt — seed into ~/.slife/
@@ -882,7 +879,7 @@ try {
                 # *.py scan can't load it as a duplicate job.
                 $copy = Join-Path "$env:USERPROFILE\.slife" ("{0}.{1}{2}" -f [IO.Path]::GetFileNameWithoutExtension($name), $version, [IO.Path]::GetExtension($name))
                 Copy-Item -Force $job.FullName $copy
-                Write-Warn "  kept job '$jobsDst\$name' (possibly edited); new default seeded to '$copy' (apply: Copy-Item '$copy' '$jobsDst\$name')"
+                Write-Warn "  kept job '$jobsDst\$name' (possibly customized); new default seeded to '$copy' (apply: Copy-Item '$copy' '$jobsDst\$name')"
             } else {
                 Copy-Item $job.FullName $dst -Force
                 Write-Dim "  seeded job '$jobsDst\$name'"

@@ -787,9 +787,8 @@ for _name in slife.json5 local_embed.json5 mcp-plugin.json5 sharefile.json5; do
     esac
     mkdir -p "$(dirname "$_target")" 2>/dev/null || true
     if [ -e "$_target" ]; then
-        # Same content as the bundled default — nothing to do.
+        # Same content as the bundled default — do nothing, silently.
         if cmp -s "$_src" "$_target" 2>/dev/null; then
-            echo -e "  ${GRAY}unchanged  $_target${NC}"
             continue
         fi
         # The user may have customized the live file — never overwrite it,
@@ -825,9 +824,8 @@ if [ -d "$SKILLS_SRC" ]; then
         _name="$(basename "$_skill")"
         _dst="$SKILLS_DST/$_name"
         if [ -d "$_dst" ]; then
-            # Same content as the bundled default — nothing to do.
+            # Same content as the bundled default — do nothing, silently.
             if diff -rq "$_skill" "$_dst" >/dev/null 2>&1; then
-                echo -e "  ${GRAY}unchanged  skill '$SKILLS_DST/$_name'${NC}"
                 continue
             fi
             # Never overwrite the user's skill, never prompt — seed into ~/.slife/
@@ -865,9 +863,8 @@ if [ -d "$JOBS_SRC" ]; then
         _name="$(basename "$_job")"
         _dst="$JOBS_DST/$_name"
         if [ -f "$_dst" ]; then
-            # Same content as the bundled default — nothing to do.
+            # Same content as the bundled default — do nothing, silently.
             if diff -q "$_job" "$_dst" >/dev/null 2>&1; then
-                echo -e "  ${GRAY}unchanged  job '$JOBS_DST/$_name'${NC}"
                 continue
             fi
             # Never overwrite the user's job, never prompt — seed into ~/.slife/ as
@@ -875,7 +872,7 @@ if [ -d "$JOBS_SRC" ]; then
             # scan can't load it as a duplicate job.
             _copy="$HOME/.slife/${_name%.*}.$VERSION.${_name##*.}"
             if cp -f "$_job" "$_copy" 2>/dev/null; then
-                echo -e "  ${YELLOW}kept job '$JOBS_DST/$_name' (possibly edited); new default seeded to '$_copy' (apply: cp '$_copy' '$JOBS_DST/$_name')${NC}"
+                echo -e "  ${YELLOW}kept job '$JOBS_DST/$_name' (possibly customized); new default seeded to '$_copy' (apply: cp '$_copy' '$JOBS_DST/$_name')${NC}"
             else
                 echo -e "  ${RED}⚠ could not write '$_copy'${NC}"
             fi
