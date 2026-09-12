@@ -86,7 +86,7 @@ Naming rules the table normalises:
   e.g. `SLIFE_MCP_GATEWAY_PORT`, `SLIFE_JOB_CODING_PORT`.  This is the key the
   parent publishes and subagents read to share a plugin.
 - system-health check function: `health_check_name(name)` →
-  `check_<name>` with dashes→underscores (e.g. `check_mcp_gateway_gateway`).
+  `check_<name>` (e.g. `check_mcp_gateway`).
 - reserved (mcp child): `mcp_child_reserved_names()` = every built-in plugin
   name — an external server registered through the gateway may not take one.
 
