@@ -605,6 +605,17 @@ if [ -d "$SLIFE_TOOL_DIR" ] && [ ! -x "$SLIFE_TOOL_DIR/bin/python3" ]; then
     rm -rf "$SLIFE_TOOL_DIR"
 fi
 
+# uv tool install refuses to overwrite an existing executable in ~/.local/bin
+# without --force, so a stale shim left behind by a previous (failed) install
+# aborts the reinstall with "Executable already exists: credstore".  Remove
+# them — uv recreates both during install.
+for _shim in "$HOME/.local/bin/slife" "$HOME/.local/bin/credstore"; do
+    if [ -e "$_shim" ] || [ -L "$_shim" ]; then
+        rm -f "$_shim"
+        echo -e "  ${GRAY}Removed stale tool shim: $_shim${NC}"
+    fi
+done
+
 # Clean up old venv artifacts if migrating from a previous install
 # that placed the venv inside ~/.slife/.  User data is preserved.
 if [ -f "$HOME/.slife/pyvenv.cfg" ]; then
