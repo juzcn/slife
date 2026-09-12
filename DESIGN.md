@@ -582,7 +582,7 @@ Per-turn token consumption is queryable via **`turn_token_usage`** (`rowid`, `si
 
 ### Search
 
-Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN), B-tree on `created_at` (time range).
+Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN), B-tree on `created_at` (time range). All `since`/`until` search bounds share one grammar via `slife/timeutil.normalize_time_bound`: an ISO datetime/date or the relative words `today` / `yesterday` / `tomorrow` / `now` (offset-aware inputs convert to local time). A bare-date `until` advances a day against a **timestamp** column (`created_at`), but not against a date-only column (memfiles `diary_list`).
 
 | Mode | Best for |
 |------|----------|

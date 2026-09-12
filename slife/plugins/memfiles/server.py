@@ -682,8 +682,10 @@ async def diary_list(
     """List diary entries, newest first.
 
     Args:
-        since: Lower bound, YYYY-MM-DD (omit for no lower bound).
-        until: Upper bound, YYYY-MM-DD (omit for no upper bound).
+        since: Lower bound — ISO datetime/date or today/yesterday/tomorrow
+            (omit for no lower bound).
+        until: Upper bound — ISO datetime/date or today/yesterday/tomorrow
+            (omit for no upper bound).
         limit: Maximum entries to return.
         offset: Skip this many entries (for paging).
     """

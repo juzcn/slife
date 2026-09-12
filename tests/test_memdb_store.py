@@ -4,7 +4,6 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import struct
-from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +14,6 @@ import pytest
 from slife.plugins.memdb.store import (
     SessionStore,
     _char_limit_for_tokens,
-    _normalize_time_param,
     _now,
     _serialize_f32,
     _split_chunks_to_token_limit,
@@ -156,70 +154,6 @@ class TestToFts5Query:
     def test_pure_operator_token_skipped(self):
         assert _to_fts5_query("(") == '""'
         assert _to_fts5_query("-") == '""'
-
-
-class TestNormalizeTimeParam:
-    """Tests for _normalize_time_param."""
-
-    def test_relative_yesterday(self):
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
-        assert _normalize_time_param("yesterday", "since") == yesterday
-
-    def test_relative_today(self):
-        today = date.today().isoformat()
-        assert _normalize_time_param("today", "since") == today
-
-    def test_relative_tomorrow(self):
-        tomorrow = (date.today() + timedelta(days=1)).isoformat()
-        assert _normalize_time_param("tomorrow", "since") == tomorrow
-
-    def test_relative_now(self):
-        result = _normalize_time_param("now", "since")
-        assert "T" in result  # Full ISO datetime
-
-    def test_case_insensitive(self):
-        today = date.today().isoformat()
-        assert _normalize_time_param("TODAY", "since") == today
-        assert _normalize_time_param("Yesterday", "since") == (date.today() - timedelta(days=1)).isoformat()
-
-    def test_whitespace_stripped(self):
-        today = date.today().isoformat()
-        assert _normalize_time_param("  today  ", "since") == today
-
-    def test_iso_string_passthrough_since(self):
-        """Offset-aware datetimes are normalized to the local offset (same
-        instant) so they compare correctly against local created_at."""
-        import datetime as _dt
-        expected = _dt.datetime.fromisoformat(
-            "2026-07-20T14:39:19+08:00"
-        ).astimezone().isoformat(timespec="seconds")
-        assert _normalize_time_param("2026-07-20T14:39:19+08:00", "since") == expected
-
-    def test_utc_z_datetime_normalized_to_local(self):
-        """A UTC ('Z') datetime is converted to local so a lexicographic
-        comparison against local created_at doesn't misorder the offset."""
-        import datetime as _dt
-        result = _normalize_time_param("2026-07-20T06:39:19Z", "since")
-        assert result != "2026-07-20T06:39:19Z"
-        assert _dt.datetime.fromisoformat(result) == _dt.datetime.fromisoformat(
-            "2026-07-20T06:39:19Z"
-        )
-
-    def test_date_only_since_passthrough(self):
-        """Bare-date since works: created_at >= '2026-07-20' includes all records on that day."""
-        assert _normalize_time_param("2026-07-20", "since") == "2026-07-20"
-
-    def test_date_only_until_advances_day(self):
-        """Bare-date until must advance one day so records on that day are included."""
-        assert _normalize_time_param("2026-07-20", "until") == "2026-07-21"
-
-    def test_datetime_until_passthrough(self):
-        """Full datetime until is left alone — the caller specified the time explicitly."""
-        assert _normalize_time_param("2026-07-20T23:59:59", "until") == "2026-07-20T23:59:59"
-
-    def test_invalid_date_passthrough(self):
-        """Garbage input passes through unchanged so the SQL can reject it."""
-        assert _normalize_time_param("not-a-date", "since") == "not-a-date"
 
 
 class TestSplitSql:

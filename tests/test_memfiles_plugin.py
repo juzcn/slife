@@ -686,6 +686,37 @@ class TestMemfilesStore:
             await store.close()
 
     @pytest.mark.asyncio
+    async def test_list_diary_range_grammar(self, tmp_path):
+        """since/until follow the shared grammar: ISO datetimes and relative
+        words are reduced to the date-only column."""
+        from datetime import date as _date
+        store = await _real_store(tmp_path)
+        try:
+            await store.upsert_diary("2026-08-14", "setup day", "")
+            await store.upsert_diary("2026-08-15", "refactor day", "dev")
+            today = _date.today().isoformat()
+            await store.upsert_diary(today, "today's entry", "")
+
+            # ISO datetime bounds reduce to their date part
+            days = await store.list_diary(
+                since="2026-08-14T00:00:00+08:00",
+                until="2026-08-15T23:59:59Z",
+            )
+            assert [d["date"] for d in days["entries"]] == ["2026-08-15", "2026-08-14"]
+            assert days["total"] == 2
+
+            # relative words resolve against today's calendar
+            todays = await store.list_diary(since="today")
+            assert [d["date"] for d in todays["entries"]] == [today]
+
+            # a date-only until stays on the day — no +1-day drift on a
+            # date-only column
+            day = await store.list_diary(until="2026-08-14")
+            assert [d["date"] for d in day["entries"]] == ["2026-08-14"]
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
     async def test_list_files(self, tmp_path):
         store = await _real_store(tmp_path)
         try:

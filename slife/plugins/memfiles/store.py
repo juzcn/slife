@@ -34,6 +34,7 @@ from slife.plugins.memdb.store import (
     _split_sql,
     _to_fts5_query,
 )
+from slife.timeutil import normalize_time_bound
 
 logger = logging.getLogger(__name__)
 
@@ -757,6 +758,11 @@ class MemfilesStore:
     ) -> dict:
         """List diary entries, newest first, optionally within a date range.
 
+        ``since``/``until`` filter the date-only ``date`` column; bounds
+        accept an ISO date/datetime or a relative word (``today`` /
+        ``yesterday`` / ``tomorrow``), reduced to ``YYYY-MM-DD`` via
+        :func:`~slife.timeutil.normalize_time_bound`.
+
         Returns ``{"entries": [...], "total": n}`` (total counts every row in
         the range, before ``limit``/``offset``).
         """
@@ -765,9 +771,11 @@ class MemfilesStore:
         clauses: list[str] = []
         params: list[str] = []
         if since:
+            since = normalize_time_bound(since, role="since", granularity="date")
             clauses.append("date >= ?")
             params.append(since)
         if until:
+            until = normalize_time_bound(until, role="until", granularity="date")
             clauses.append("date <= ?")
             params.append(until)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""

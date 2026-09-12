@@ -363,8 +363,8 @@ async def turn_token_usage(
 
     Args:
         turn_id: Restrict to a single turn by its id.
-        since: Lower bound, ISO datetime.
-        until: Upper bound, ISO datetime.
+        since: Lower bound — ISO datetime/date or today/yesterday/tomorrow.
+        until: Upper bound — ISO datetime/date or today/yesterday/tomorrow.
         limit: Maximum number of turns to return (newest first).
     """
     store = await _ensure_store()
@@ -396,8 +396,8 @@ async def turn_count(
     """Count turns.
 
     Args:
-        since: Lower bound, ISO datetime.
-        until: Upper bound, ISO datetime.
+        since: Lower bound — ISO datetime/date or today/yesterday/tomorrow.
+        until: Upper bound — ISO datetime/date or today/yesterday/tomorrow.
         query: Search text to count matches for (grep/fts5 modes).
         mode: grep or fts5 (default fts5).
     """
@@ -460,8 +460,8 @@ async def turn_search(
         query: Search text (not needed for mode="time").
         mode: grep | fts5 | hybrid (default) | time.
         limit: Maximum results.
-        since: Lower bound, ISO datetime.
-        until: Upper bound, ISO datetime.
+        since: Lower bound — ISO datetime/date or today/yesterday/tomorrow.
+        until: Upper bound — ISO datetime/date or today/yesterday/tomorrow.
     """
     store = await _ensure_store()
     # Search only READS the semantic gate — no side effects, no reindex kick.

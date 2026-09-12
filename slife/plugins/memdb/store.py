@@ -11,10 +11,12 @@ import asyncio
 import json
 import logging
 import struct
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
+
+from slife.timeutil import normalize_time_bound
 
 logger = logging.getLogger(__name__)
 
@@ -573,11 +575,11 @@ class SessionStore:
                 time_clauses = ""
                 time_params: list[str] = []
                 if since:
-                    since = _normalize_time_param(since, role="since")
+                    since = normalize_time_bound(since, role="since")
                     time_clauses += " AND d.created_at >= ?"
                     time_params.append(since)
                 if until:
-                    until = _normalize_time_param(until, role="until")
+                    until = normalize_time_bound(until, role="until")
                     time_clauses += " AND d.created_at <= ?"
                     time_params.append(until)
                 try:
@@ -602,11 +604,11 @@ class SessionStore:
                         "since": since, "until": until}
 
             if since:
-                since = _normalize_time_param(since, role="since")
+                since = normalize_time_bound(since, role="since")
                 where += " AND created_at >= ?"
                 params.append(since)
             if until:
-                until = _normalize_time_param(until, role="until")
+                until = normalize_time_bound(until, role="until")
                 where += " AND created_at <= ?"
                 params.append(until)
             row2 = await self._c.execute(
@@ -618,11 +620,11 @@ class SessionStore:
             clauses: list[str] = []
             params = []
             if since:
-                since = _normalize_time_param(since, role="since")
+                since = normalize_time_bound(since, role="since")
                 clauses.append("created_at >= ?")
                 params.append(since)
             if until:
-                until = _normalize_time_param(until, role="until")
+                until = normalize_time_bound(until, role="until")
                 clauses.append("created_at <= ?")
                 params.append(until)
             where = " AND ".join(clauses)
@@ -689,8 +691,8 @@ class SessionStore:
         summary of totals / averages across the filtered set.
 
         ``rowid`` narrows to a single turn; ``since``/``until`` filter by
-        ``created_at`` (ISO datetime, relative expressions accepted via
-        :func:`_normalize_time_param`).
+        ``created_at`` (ISO datetime/date or a relative word like ``today``,
+        normalized via :func:`~slife.timeutil.normalize_time_bound`).
         """
         clauses: list[str] = []
         params: list = []
@@ -698,11 +700,11 @@ class SessionStore:
             clauses.append("rowid = ?")
             params.append(rowid)
         if since:
-            since = _normalize_time_param(since, role="since")
+            since = normalize_time_bound(since, role="since")
             clauses.append("created_at >= ?")
             params.append(since)
         if until:
-            until = _normalize_time_param(until, role="until")
+            until = normalize_time_bound(until, role="until")
             clauses.append("created_at <= ?")
             params.append(until)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -783,11 +785,11 @@ class SessionStore:
         time_clauses = ""
         time_params: list[str] = []
         if since:
-            since = _normalize_time_param(since, role="since")
+            since = normalize_time_bound(since, role="since")
             time_clauses += " AND d.created_at >= ?"
             time_params.append(since)
         if until:
-            until = _normalize_time_param(until, role="until")
+            until = normalize_time_bound(until, role="until")
             time_clauses += " AND d.created_at <= ?"
             time_params.append(until)
         try:
@@ -838,11 +840,11 @@ class SessionStore:
             params.extend([like, like, like, like])
         time_clauses = ""
         if since:
-            since = _normalize_time_param(since, role="since")
+            since = normalize_time_bound(since, role="since")
             time_clauses += " AND created_at >= ?"
             params.append(since)
         if until:
-            until = _normalize_time_param(until, role="until")
+            until = normalize_time_bound(until, role="until")
             time_clauses += " AND created_at <= ?"
             params.append(until)
         params.append(limit)
@@ -908,10 +910,10 @@ class SessionStore:
                 r["rowid"] = rid  # merge_hybrid keys on rowid (= diary_rowid)
                 results.append(r)
         if since:
-            since = _normalize_time_param(since, role="since")
+            since = normalize_time_bound(since, role="since")
             results = [r for r in results if r.get("created_at", "") >= since]
         if until:
-            until = _normalize_time_param(until, role="until")
+            until = normalize_time_bound(until, role="until")
             results = [r for r in results if r.get("created_at", "") <= until]
         results = results[:limit]
         # Fetch user_message for the surviving turns — a second query, since
@@ -938,11 +940,11 @@ class SessionStore:
         clauses: list[str] = []
         params: list[str | int] = []
         if since:
-            since = _normalize_time_param(since, role="since")
+            since = normalize_time_bound(since, role="since")
             clauses.append("created_at >= ?")
             params.append(since)
         if until:
-            until = _normalize_time_param(until, role="until")
+            until = normalize_time_bound(until, role="until")
             clauses.append("created_at <= ?")
             params.append(until)
         if clauses:
@@ -972,11 +974,11 @@ class SessionStore:
         time_clauses = ""
         time_params: list[str] = []
         if since:
-            since = _normalize_time_param(since, role="since")
+            since = normalize_time_bound(since, role="since")
             time_clauses += " AND created_at >= ?"
             time_params.append(since)
         if until:
-            until = _normalize_time_param(until, role="until")
+            until = normalize_time_bound(until, role="until")
             time_clauses += " AND created_at <= ?"
             time_params.append(until)
         cursor = await self._c.execute(
@@ -1158,73 +1160,6 @@ class SessionStore:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
-
-
-# Relative-date patterns that LLMs may pass verbatim despite being told
-# to compute ISO datetimes.  We convert them server-side so search
-# doesn't silently return zero results.
-_RELATIVE_DATES: dict[str, str] = {
-    "today": "",
-    "yesterday": "",
-    "tomorrow": "",
-    "now": "",
-}
-
-
-def _normalize_time_param(value: str, role: str = "since") -> str:
-    """Convert relative date expressions to ISO datetimes.
-
-    LLMs sometimes pass ``"yesterday"`` or ``"today"`` literally
-    instead of computing ISO datetimes.  This normalises those
-    expressions so string-comparison against ``created_at`` works.
-
-    Additionally, when *role* is ``"until"`` and *value* is date-only
-    (10 chars, ``YYYY-MM-DD``), we advance by one day.  A bare-date
-    ``until`` would otherwise exclude all records on that day because
-    their ``created_at`` timestamps sort *after* the date-only string
-    (``"2026-07-20T14:39:19" > "2026-07-20"``).
-    """
-    today = date.today()
-
-    # Populate / refresh cached relative dates.  Refresh on calendar-date
-    # rollover — a long-running server must not serve yesterday's "today".
-    today_iso = today.isoformat()
-    if _RELATIVE_DATES["today"] != today_iso:
-        _RELATIVE_DATES["today"] = today_iso
-        _RELATIVE_DATES["yesterday"] = (today - timedelta(days=1)).isoformat()
-        _RELATIVE_DATES["tomorrow"] = (today + timedelta(days=1)).isoformat()
-        _RELATIVE_DATES["now"] = datetime.now().astimezone().isoformat(
-            timespec="seconds",
-        )
-
-    key = value.strip().lower()
-    if key in _RELATIVE_DATES:
-        value = _RELATIVE_DATES[key]
-
-    # Date-only until: advance one day so records on that day are
-    # included (created_at has a time component that sorts after
-    # the bare date).
-    if role == "until" and len(value) == 10 and "T" not in value:
-        try:
-            d = date.fromisoformat(value)
-            value = (d + timedelta(days=1)).isoformat()
-        except ValueError:
-            pass  # Not a valid ISO date; pass through unchanged
-
-    # Normalize offset-aware ISO datetimes to the local offset.  created_at
-    # is stored in local time (via _now()); the LLM may pass UTC ("Z") or a
-    # different offset, which would misorder a lexicographic comparison
-    # across the offset boundary.  A naive datetime is already local and is
-    # left unchanged.
-    if "T" in value:
-        try:
-            dt = datetime.fromisoformat(value)
-            if dt.tzinfo is not None:
-                value = dt.astimezone().isoformat(timespec="seconds")
-        except ValueError:
-            pass  # not a parseable ISO datetime; pass through unchanged
-
-    return value
 
 
 def _split_sql(sql_text: str) -> list[str]:
