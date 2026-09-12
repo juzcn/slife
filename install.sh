@@ -593,6 +593,18 @@ if uv tool list 2>/dev/null | grep -qF "slife"; then
     uv tool uninstall slife 2>/dev/null || true
 fi
 
+# `uv tool list` silently skips a corrupt / partial tool env (bin/python3
+# missing — an interrupted install), so the uninstall above can miss it —
+# yet `uv tool install` then dies on the stale directory ("Invalid
+# environment at <tools>/slife: missing Python executable").  Physically
+# remove anything that isn't a working uv tool venv; a valid venv always
+# carries bin/python3, so a healthy install is never touched.
+SLIFE_TOOL_DIR="$(uv tool dir 2>/dev/null)/slife"
+if [ -d "$SLIFE_TOOL_DIR" ] && [ ! -x "$SLIFE_TOOL_DIR/bin/python3" ]; then
+    echo -e "${YELLOW}  Removing broken slife tool environment…${NC}"
+    rm -rf "$SLIFE_TOOL_DIR"
+fi
+
 # Clean up old venv artifacts if migrating from a previous install
 # that placed the venv inside ~/.slife/.  User data is preserved.
 if [ -f "$HOME/.slife/pyvenv.cfg" ]; then
