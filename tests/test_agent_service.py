@@ -1188,6 +1188,53 @@ class TestAgentServiceA2A:
         assert posted[0].metadata.get("a2a_kind") == "task"
 
     @pytest.mark.asyncio
+    async def test_a2a_poll_stateless_message_has_no_id(self, sample_config):
+        """A stateless message is pure chat: the marker names only the sender
+        (no id, no completion) — answering is sending a message back."""
+        import json as _json
+
+        service = AgentService(sample_config)
+        mock_a2a = MagicMock()
+        mock_a2a.is_connected = True
+        calls = [0]
+
+        async def mock_call_tool(name, _):
+            if name == "__a2a_drain_incoming":
+                calls[0] += 1
+                if calls[0] == 1:
+                    return _json.dumps({
+                        "tasks": [{
+                            "source": "Jack", "content": "hi",
+                            "reply_to": "Slife/slife/tasks/result",
+                            "correlation_id": "cid-m", "kind": "message",
+                        }],
+                        "presence": [], "cancellations": [],
+                        "task_completions": [],
+                    })
+                service._plugins["a2a"].client = None  # end the loop
+                return _json.dumps({
+                    "tasks": [], "presence": [],
+                    "cancellations": [], "task_completions": [],
+                })
+            return "{}"
+
+        mock_a2a.call_tool = mock_call_tool
+        service._plugins["a2a"].client = mock_a2a
+
+        posted = []
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock(side_effect=lambda msg: posted.append(msg))
+        mock_inbox.cancel_correlation = MagicMock()
+        service.inbox = mock_inbox
+
+        await service._a2a_poll_loop(interval=0.001)
+
+        assert len(posted) == 1
+        assert posted[0].content == '[A2A:{"from": "Jack"}] hi'
+        assert posted[0].on_reply is None
+        assert posted[0].metadata.get("a2a_kind") == "message"
+
+    @pytest.mark.asyncio
     async def test_a2a_poll_frames_completion_by_kind(self, sample_config):
         """Auto-pushed completions are framed by kind: a stateless message
         reply reads "replied to your message", a task "completed async task"."""

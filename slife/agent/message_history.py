@@ -201,9 +201,11 @@ def a2a_marker(agent_name: str, task_id: str | None = None) -> str:
     ``[A2A:{"from": …, "task_id": …}] `` — ``from`` names the *sending* peer
     (never the receiver); ``task_id`` is present only for a task (a
     stateless message omits it), and that presence is how the LLM tells
-    the two apart.  The key is ``from``, not ``agent_name`` — that word in
-    the system prompt is the agent's own identity, so ``from`` keeps the
-    marker unmistakably directional.  The marker is machine-facing;
+    the two apart.  A task is completed with ``a2a_set_task_done``; a
+    stateless message is answered by sending a new message back — it has no
+    id, no completion, no "done".  The key is ``from``, not ``agent_name`` —
+    that word in the system prompt is the agent's own identity, so ``from``
+    keeps the marker unmistakably directional.  The marker is machine-facing;
     ``unwrap_info_envelope`` drops it for display (the TUI shows the
     ``A2A(<name>)> `` bubble prefix instead).
     """

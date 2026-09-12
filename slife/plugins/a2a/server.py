@@ -356,7 +356,8 @@ async def a2a_send_message(
     name="a2a_send_message_async",
     description="Send a stateless message to a remote A2A mesh peer without "
     "waiting — returns a message id; mode 'poll' disables auto-delivery "
-    "(retrieve with a2a_get_task_result).",
+    "(retrieve with a2a_get_task_result). A message is stateless: its reply "
+    "arrives as a new inbound message, never a result to retrieve.",
 )
 async def a2a_send_message_async(
     agent_name: str, text: str, mode: str = "auto",
@@ -409,7 +410,8 @@ async def a2a_list_agents() -> str:
 
 @mcp.tool(
     name="a2a_get_task_result",
-    description="Return a remote async task's result, or 'pending' if not ready.",
+    description="Return a remote async task's result, or 'pending' if not ready. "
+    "Tasks only — a stateless message has no result to retrieve.",
 )
 async def a2a_get_task_result(agent_name: str, task_id: str) -> str:
     """Return the result of an async task, or 'pending' if not ready.
@@ -598,21 +600,22 @@ async def _publish_task_result(
 
 @mcp.tool(
     name="a2a_set_task_done",
-    description="Complete an inbound A2A task you received and are answering this "
-    "turn. Its task_id is the [A2A:...] marker's task_id. Publishes the task's "
-    "final result to the sender; unknown task_ids are refused. Completing a task "
-    "is not sending a new message — it closes the task.",
+    description="Complete an inbound A2A TASK you received and are answering "
+    "this turn. Its task_id is the [A2A:...] marker's task_id. Publishes the "
+    "task's final result to the sender; unknown task_ids are refused. "
+    "Completing is not sending a new message — it closes the task. Stateless "
+    "messages have no completion: answer one by sending a message back.",
 )
 async def a2a_set_task_done(
     task_id: str, result: str, cancelled: bool = False,
 ) -> str:
-    """Mark a received A2A task as done, delivering *result* to its requester.
+    """Complete a received A2A task, delivering *result* to its requester.
 
     The semantic is a terminal state transition (completed, or cancelled with
     *cancelled* true) on the ONE inbound task named by *task_id* — not a new
-    message, and never a new task.  No task-store record is created here and
-    nothing is awaited: the task's requester resolves from the published
-    result envelope.
+    message, and never a new task.  Only a result envelope keyed by the
+    ORIGINAL task_id resolves the sender's ``a2a_get_task_result``.  No
+    task-store record is created here and nothing is awaited.
 
     Args:
         task_id: The inbound task's id (the [A2A:...] marker's ``task_id``).
@@ -631,7 +634,7 @@ async def a2a_set_task_done(
         ok = await _publish_task_result(reply_to, task_id, result, cancelled)
     except Exception as e:
         logger.warning(
-            "a2a_set_task_done_publish_failed task=%s err=%s", task_id, e,
+            "a2a_set_task_done_publish_failed id=%s err=%s", task_id, e,
         )
         return f"Error: failed to publish the result — {e}"
     # One-shot: a second completion of the same task becomes an explicit

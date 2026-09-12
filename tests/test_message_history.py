@@ -70,11 +70,11 @@ class TestUnwrapInfoEnvelope:
     def test_a2a_marker_builds_json_payload(self):
         # `from` names the SENDING peer — not `agent_name`, which is the
         # agent's own identity in the system prompt; the presence of task_id
-        # is what distinguishes a task from a message.
+        # is what distinguishes a task from a stateless message.
         assert a2a_marker("Jack", "cid-1") == (
             '[A2A:{"from": "Jack", "task_id": "cid-1"}] '
         )
-        # A stateless message omits the task id.
+        # A stateless message omits the task id — it has none to complete.
         assert a2a_marker("Jack") == '[A2A:{"from": "Jack"}] '
 
     def test_a2a_push_marker_builds_json_payload(self):
