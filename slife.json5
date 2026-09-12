@@ -305,7 +305,7 @@
       }
     }
   },
-  active_model: "deepseek/deepseek-flash",
+  active_model: "bailian_personal/deepseek-v4-flash-0731",
   job_coding_model: "bailian_personal/qwen3.6-flash",
   plugins: {
     required: [
