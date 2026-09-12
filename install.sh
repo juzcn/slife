@@ -769,6 +769,14 @@ for _name in slife.json5 local_embed.json5 mcp-plugin.json5 sharefile.json5; do
         _ask="n"
         if [ -t 0 ]; then
             read -p "  Reset $_target to the bundled default? (y/N, default: N): " _ask
+        else
+            # Piped install (curl … | bash) has no TTY stdin, so no prompt is
+            # possible — keep the user's file, but drop the updated bundled
+            # default next to it so it's one copy away, never silently stale.
+            if cp "$_src" "$_target.bundled" 2>/dev/null; then
+                echo -e "  ${YELLOW}kept $_target (possibly customized); bundled default: $_target.bundled${NC}"
+                continue
+            fi
         fi
         if [ "$_ask" = "y" ] || [ "$_ask" = "Y" ]; then
             if cp -f "$_src" "$_target" 2>/dev/null && chmod 600 "$_target" 2>/dev/null; then
@@ -807,6 +815,15 @@ if [ -d "$SKILLS_SRC" ]; then
             _ask="n"
             if [ -t 0 ]; then
                 read -p "  Overwrite skill '$SKILLS_DST/$_name' with the bundled default? (y/N, default: N): " _ask
+            else
+                # Piped install (curl … | bash) has no TTY stdin, so no prompt
+                # is possible — keep the user's skill, but drop the updated
+                # bundled default next to it, never silently stale.
+                rm -rf "$_dst.bundled" 2>/dev/null || true
+                if cp -R "$_skill" "$_dst.bundled" 2>/dev/null; then
+                    echo -e "  ${YELLOW}kept skill '$SKILLS_DST/$_name' (possibly customized); bundled default: '$SKILLS_DST/$_name.bundled'${NC}"
+                    continue
+                fi
             fi
             if [ "$_ask" = "y" ] || [ "$_ask" = "Y" ]; then
                 rm -rf "$_dst" 2>/dev/null || true
@@ -848,6 +865,14 @@ if [ -d "$JOBS_SRC" ]; then
             _ask="n"
             if [ -t 0 ]; then
                 read -p "  Overwrite job '$JOBS_DST/$_name' with the bundled default? (y/N, default: N): " _ask
+            else
+                # Piped install (curl … | bash) has no TTY stdin, so no prompt
+                # is possible — keep the user's job, but drop the updated
+                # bundled default next to it, never silently stale.
+                if cp "$_job" "$_dst.bundled" 2>/dev/null; then
+                    echo -e "  ${YELLOW}kept job '$JOBS_DST/$_name' (possibly edited); to apply the bundled default: cp '$JOBS_DST/$_name.bundled' '$JOBS_DST/$_name'${NC}"
+                    continue
+                fi
             fi
             if [ "$_ask" = "y" ] || [ "$_ask" = "Y" ]; then
                 if cp "$_job" "$_dst" 2>/dev/null; then
