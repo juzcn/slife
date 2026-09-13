@@ -158,11 +158,9 @@ class TestBuild:
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "Subagents (local worker delegation)" in result
-        assert "spawn_subagent" in result
-        assert "subagent_send_task" in result
-        assert "subagent_send_task_async" in result
-        assert "subagent_get_task_result" in result
-        assert "subagent_list_tasks" in result
+        # The worker tools exist in the registry schemas — the prompt teaches
+        # the delegation behavior, not the tool list.
+        assert "not an A2A peer" in result
         # Subagents are workers, not A2A peers — mesh tools live in section 9.
         assert "A2A = one tool family, two transports" not in result
         assert "turns are not saved" in result

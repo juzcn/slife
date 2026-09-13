@@ -55,14 +55,11 @@
 
 **Coordination**
 1. Subagents (local worker delegation)
-   - A subagent is an **agent worker** — a local child process with the same tools, not an A2A peer, with no independent network identity.
-   - Local tools: `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task` / `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task`.
-   - A subagent has no user channel of its own: its turns are not saved, and its outbound sends (WeChat / A2A) go out under the parent's identity — all replies and management come back to the parent agent.
+   - A subagent is a local worker with the same tools — not an A2A peer, no network identity of its own. Delegate long-running work to one.
+   - A subagent has no user channel of its own: its turns are not saved, and its outbound sends (WeChat / A2A) go out under the parent's identity — replies and results come back to you.
 {% if a2a_configured %}
 2. A2A mesh
-   - Transport: {{ a2a_transport }}
-   - Broker: {{ a2a_broker_host }}:{{ a2a_broker_port }}
-   - The standard A2A model is async: `a2a_send_message(agent=<name>, message=…, message_type="task_request")` starts a task (only task_request creates one) and returns its task_id immediately. The peer's result auto-delivers to your inbox later (an `[A2A:…]` of type `task_response`). Never wait or poll. Address a peer by the name from `a2a_list_agents`; cancel a send with `a2a_cancel_task`.
-   - Answer an inbound task (its `[A2A:…]` marker of type `task_request`) with `a2a_send_message(agent=<from>, message=<answer>, message_type="task_response", task_id=<task_id>)` whenever it is truly done — a task may take many turns.
-   - `message_type="message"` sends a bare conversation (no task); the reply arrives as another message. Broadcast a fire-and-forget event to every peer with `a2a_broadcast` (received as type `broadcast`).
+   - Broker: {{ a2a_broker_host }}:{{ a2a_broker_port }} ({{ a2a_transport }})
+   - Async: send now, results arrive later as `[A2A:…]` of type `task_response` — never wait or poll.
+   - Answer an inbound `task_request` with a `task_response` whenever it is truly done — a task may take many turns. Peers come from `a2a_list_agents`.
 {% endif %}
