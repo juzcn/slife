@@ -54,7 +54,7 @@ class TestBuild:
         assert "File Cabinet (memfiles)" in result
         assert "4. Annotations" in result
         assert "1. Images & multimodal" in result
-        assert "2. Credential resolution chain" in result
+        assert "2. Credentials" in result
         assert "3. Tools & skills" in result
 
     def test_agent_nameentity_is_agent_name(self, cfg):
@@ -83,13 +83,13 @@ class TestBuild:
     def test_vision_disabled(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "Vision support: disabled" in result
+        assert "Vision: disabled" in result
 
     def test_vision_enabled(self, cfg):
         from slife.agent.system_prompt import build
         cfg.active_model.supports_vision = True
         result = build(cfg)
-        assert "Vision support: enabled" in result
+        assert "Vision: enabled" in result
 
     def test_credstore_chain(self, cfg):
         from slife.agent.system_prompt import build
