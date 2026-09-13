@@ -50,7 +50,7 @@ channel message that carries no `[Schedule …]` marker at all.
 | `subagent` | local worker async completion | `[Subagent:{"subagent_name", "task_id"}]` | `Subagent(<name>)> ` | Live bubble and restore agree on this prefix. |
 | `heartbeat` | Slife itself — periodic autonomous window | `[Heartbeat]` | trigger hidden; real reply as `⚡ 自主`; status-bar beat (`●`/`·`) | Silent handler; `.` = silence. |
 | `system` | Slife itself — schedule / timer triggers | `[Schedule <name>]`, `[Timer]` | trigger hidden; reply as `📅 定时` / `⏰ timer` | `display_prefix()` is `None` — filtered from live and restored view. |
-| `a2a` | mesh peer | `[A2A:json]` (peer, +task), `[A2A-PUSH:json]` (result push) | `A2A(<peer>)> ` | Peer name may double as the persisted identity. |
+| `a2a` | mesh peer | `[A2A:json]` (from / task_id? / type) | `A2A(<peer>)> ` | One envelope for every inbound A2A message; `type` = task_request / task_response / message / broadcast. |
 
 The **system** channel is never user input: everything that rides it is a
 synthetic trigger, and its turns are filtered from the TUI by both the channel
@@ -71,8 +71,7 @@ source — the TUI strips it live and restore never renders a lone-dot reply.
 | `[Schedule <name>]` | schedule trigger (user-message side) | agent + TUI | A cron fire or `run_schedule_now` backfill; the agent dispatches via `run_schedule_now(name=…)`. First line must keep this prefix. |
 | `[Timer]` | `wait_minutes` wake (user-message side) | agent + TUI | Resume the agent after a delay. |
 | `[Wechat:json]` | WeChat input | agent | Peer + thread the reply needs. |
-| `[A2A:json]` | mesh message / task | agent | Peer (+ task) who sent it. |
-| `[A2A-PUSH:json]` | mesh result push | agent | Same as `[A2A:json]`, for auto-pushed results. |
+| `[A2A:json]` | every inbound A2A message | agent | One envelope `{from, task_id?, type}` — `type` distinguishes a task to answer (`task_request`), an auto-delivered result (`task_response`), a conversation (`message`), or an event (`broadcast`). |
 | `[Subagent:{"subagent_name", "task_id"}]` | subagent completion content | agent | Which worker, which task; unwrapped for display. |
 | `[INFO: …]` | appended to an existing message | agent | Turn footnote / trim note — see §5. |
 
@@ -117,9 +116,9 @@ boundary check is skipped entirely.
   (queue non-empty, no channel filter); `_check_new_input`'s execution pulls
   the FIRST queued message via the `extract_injectable` ToolContext hook
   (drain-rebuild, survivors stay FIFO) and returns its **bare text** — the
-  content already carries its `[A2A:…]`/`[A2A-PUSH:…]`/`[Wechat:…]` marker, so
-  no wrapper or per-kind instructions are needed (the reply protocol lives in
-  the system prompt).
+  content already carries its `[A2A:…]`/`[Wechat:…]` marker, so no wrapper or
+  per-kind instructions are needed (the reply protocol lives in the system
+  prompt).
 - **Same tool-pair mechanics as `_turn_prompt`** — assistant `tool_call` (with
   EMPTY arguments, so the message exists once in context) + tool result,
   recorded and restored.  Extraction is gated behind the same cancel guard so
@@ -127,9 +126,10 @@ boundary check is skipped entirely.
 - **Main agent only** — subagents never wire the hooks, and an inbox-absent
   tool just reports "no pending input".
 - **LLM judgment.**  An injected message is a live input the model addresses in
-  the same turn — or, for an `[A2A-PUSH:…]` result FYI, acknowledges and
-  ignores.  Tasks it chooses not to complete are covered by the sender's
-  sync-timeout auto-degrade.
+  the same turn — or, for an `[A2A:…]` of type `task_response` (result FYI) or
+  `broadcast` (event), acknowledges and ignores.  A task it chooses not to
+  complete simply ends without a result; the sender's delivery profile retries
+  the request a few times, then leaves the task pending.
 
 ---
 

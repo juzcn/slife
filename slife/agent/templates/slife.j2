@@ -29,8 +29,7 @@
    - `[INFO: {"turn_id": N, "begin": "…", "end": "…"}]` — identifies a memory turn (its id and when it happened). On restored turns and on a just-completed turn once saved; never on the in-flight turn.
    - `[INFO: N oldest turns have been removed from context]` — notifies that the N oldest complete turns were trimmed from context.
    - `[Wechat:{"peer_wechat_id": …, "context_token": …}]` — a user message from WeChat; the JSON carries what `wechat_send_message` needs to reply — send the reply with that tool.
-   {% if a2a_configured %}   - `[A2A:{"from": …, "task_id": …}]` — a task or stateless message from an A2A mesh peer; `from` names the **sender**; `task_id` present = a **task**, absent = a **stateless message**.
-   - `[A2A-PUSH:{"from": …, "task_id": …}]` — an auto-delivered A2A result from a mesh peer (async task completion or message reply); `from` names the **responding peer**. Informational — for your knowledge.
+   {% if a2a_configured %}   - `[A2A:{"from": …, "task_id": …, "type": …}]` — one envelope for every inbound A2A message; `from` names the **sender**, `type` what it is: `task_request` (a task to answer — see the mesh section), `task_response` (an auto-delivered task result from the responding peer), `message` (a bare conversation), `broadcast` (a fire-and-forget event). Informational unless type is `task_request`.
 {% endif %}   - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
    - `[Schedule <name>]` — a scheduled-task trigger for the task `<name>` (delegate it to a subagent).
 
@@ -49,7 +48,7 @@
    - `add_user_pref` records the user's standing working rules (preferences, corrections, "记下"-type directives) into `USER.md` — prompt-level behavioural rules, not cabinet notes.
    - **Job System** — reusable, deterministic tools you code yourself: one public Python function per job, registered as a native tool (name/description/schema from the function) and persisted across restarts; manage with `job-*`. Jobs run pure code — the only LLM access is their own one-shot `llm.chat` on `job_coding_model` (no system prompt or history). Load the `job-coding` skill before authoring one.
 4. Tool meta-parameters (every tool — universal, choose per call)
-   - `_timeout`: seconds for this call — omit for the harness default (≈120 s), pass a larger value for a genuinely slow tool, `0` = no timeout. Tools that enforce their OWN `timeout` parameter (execute_shell, a2a sends) treat `0`/`≤0` as their default instead — never instant. The default is a floor, not a cap.
+   - `_timeout`: seconds for this call — omit for the harness default (≈120 s), pass a larger value for a genuinely slow tool, `0` = no timeout. Tools that enforce their OWN `timeout` parameter (e.g. `execute_shell`) treat `0`/`≤0` as their default instead — never instant. The default is a floor, not a cap.
    - `_async: true`: run in the background — returns a `task_id`; poll with `check_async`, cancel with `cancel_async`.
    - `_approve: true`: ask the user to confirm before the tool runs.
 
@@ -62,6 +61,7 @@
 2. A2A mesh
    - Transport: {{ a2a_transport }}
    - Broker: {{ a2a_broker_host }}:{{ a2a_broker_port }}
-   - Answering inbound traffic: complete a **task** with `a2a_set_task_done(task_id, result)` the moment it is done — the completion is your report; answer a **stateless message** with `a2a_send_message(agent_name=<from>, text=…)`. Close each exchange with its own completion or reply.
-   - A sync `a2a_send_task` / `a2a_send_message` that times out still delivered the request; the peer's late reply will arrive in your inbox on its own.
+   - The standard A2A model is async: `a2a_send_message(agent=<name>, message=…, message_type="task_request")` starts a task (only task_request creates one) and returns its task_id immediately. The peer's result auto-delivers to your inbox later (an `[A2A:…]` of type `task_response`). Never wait or poll. Address a peer by the name from `a2a_list_agents`; cancel a send with `a2a_cancel_task`.
+   - Answer an inbound task (its `[A2A:…]` marker of type `task_request`) with `a2a_send_message(agent=<from>, message=<answer>, message_type="task_response", task_id=<task_id>)` whenever it is truly done — a task may take many turns.
+   - `message_type="message"` sends a bare conversation (no task); the reply arrives as another message. Broadcast a fire-and-forget event to every peer with `a2a_broadcast` (received as type `broadcast`).
 {% endif %}

@@ -430,7 +430,7 @@ Every local `MCPClient` connection is loopback — the harness connects only to 
 | **wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages (a failed poll backs off the next poll exponentially to 30 s and resets on the next clean poll), typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[Wechat:{...}]` (model-facing JSON carrying `peer_wechat_id` / `context_token`; the TUI strips the marker — the `Wechat>` bubble prefix already shows the channel). The model replies itself via `wechat_send_message` — no harness auto-dispatch. |
 | **memfiles** | Streamable HTTP | Private notes/diary/files/reports cabinet — see [Part 6 · The File Cabinet](#the-file-cabinet-memfiles). Owns the scheduled-task *data* tables; the schedule *tools* are native (Part 2 · Scheduled Tasks). |
 | **sharefile** | Streamable HTTP + `/share` route | Public file sharing — LLM-visible tools `share_file` / `sharefile_unshare`; internal `__check`, `__register_file`; `GET /share/{token}` serves file bytes on the same port (one port, two protocols), stat-pinned to the registered file so a share never silently serves replaced content. Shares are in-session only. Owns the pluggable tunnel (provider from `sharefile.json5`'s `active_provider`; eager start, non-blocking). |
-| **a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools (see Part 7). |
+| **a2a** | Streamable HTTP | A2A mesh over the official `a2a-over-mqtt` profile (aiomqtt v5, LWT; see [A2A-MQTT.md](A2A-MQTT.md)). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools (see Part 7). |
 | **media** | Streamable HTTP | Non-chat AI generation (image, video, TTS, ASR) from any provider. Owns the `media:` config section (plugin-read, ignored by the main `Config` parser) and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio`. Long renders use the harness's universal `_async: true` + `check_async`. Artifacts are saved to the working directory (or a `folder` passed to the tool) — work products, never memfiles cabinet files. |
 | **job-coding** | Streamable HTTP | Deterministic Jobs as MCP tools — see [Job System](#job-system-job-coding). Tools: `job-list`, `job-write`, `job-remove`, `job-run` + one tool per job. |
 
@@ -612,30 +612,51 @@ Multiple `@` may sit **adjacent without spaces** — `@a.png@b.png`, `@a.png @b.
 
 ## Part 7 · A2A — Agent-to-Agent (mesh)
 
-The A2A protocol (JSON-RPC operations `SendMessage` / `GetTask` / `CancelTask` / `SubscribeToTask`, and Message/Task/AgentCard data shapes mirroring the official a2a-python reference interface) runs over a pluggable transport **binding** — currently MQTT. The **`a2a` plugin** owns the mesh: it hosts the LLM-facing `a2a_*` tools and the `A2AClient`.
+The A2A protocol runs over the official **A2A-over-MQTT** profile — the `a2a-over-mqtt` SDK from EMQX
+(wire, topics, presence, task lifecycle), *not* a self-built binding. The **`a2a` plugin** owns the
+mesh: it hosts the LLM-facing `a2a_*` tools, drains inbound tasks/presence into the unified inbox, and
+wraps the SDK's `Responder` for out-of-band completion by the agent. The full design — topics, wire,
+QoS + retry, markers, drain schema, Windows selector-loop note — lives in **[A2A-MQTT.md](A2A-MQTT.md)**.
 
 ```
-  a2a_send_task / a2a_list_agents / …   (LLM tools, hosted in the a2a plugin)
+  a2a_send_message / a2a_cancel_task / a2a_list_agents / a2a_set_task_done / a2a_broadcast
          │
-   a2a plugin (slife.plugins.a2a)
-         │  A2AClient (official operations + data model)
-   MQTT binding (paho, LWT) — the transport
+   a2a plugin (slife.plugins.a2a.server)
+         │  A2AMesh (slife/a2a/mesh.py)
+   SDK Responder (inbound + presence)  +  thin outbound driver (sends/replies/discovery/broadcast)
 ```
 
-Only MQTT is implemented. A `transport` other than `"mqtt"` in the `a2a` config section disables A2A with a warning at config load instead of crashing startup. The LLM-facing tools: `a2a_send_task`, `a2a_send_task_async`, `a2a_send_message`, `a2a_send_message_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` — one uniform prefix. Subagents are **not** part of A2A (they are local workers; see Part 5).
+Only MQTT is implemented. A `transport` other than `"mqtt"` in the `a2a` config section disables A2A
+with a warning at config load instead of crashing startup. The LLM-facing tools are the **standard A2A
+operations** — async push model, no message/task split, nothing waits: `a2a_send_message`,
+`a2a_cancel_task`, `a2a_list_agents`, `a2a_set_task_done`, `a2a_broadcast`. One uniform prefix.
+Subagents are **not** part of A2A (they are local workers; see Part 5).
 
 ### MQTT Mesh
 
-- Topics: `Slife/<agent_name>/presence`, `Slife/<agent_name>/tasks/inbox`, `Slife/<agent_name>/tasks/result`.
-- Presence heartbeat every 15 s (configurable); peers silent for 45 s are pruned. LWT publishes `{"status":"offline"}` (QoS 1) so crashes are visible.
-- Client id is `<agent_name>-<pid>` to allow multiple processes per agent id.
-- Duplicate agent detection: after subscribing, the client listens 1.5 s for an existing presence with the same id and exits with a clear error rather than splitting the identity.
-- Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; a failed probe means the a2a plugin is not started and this is reported via `system_health`.
-- The mesh connects **eagerly** when the plugin starts so presence is announced at launch; a failed eager connect is tolerated and mesh tools attempt a lazy connect on demand.
-- Peer presence **transitions** (online/offline/timeout) reach the LLM context: the plugin queues them; `AgentService._a2a_poll_loop` drains them, and `_turn_prompt` carries only *changes* (read-once) — the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with stale state.
-- Async task results **auto-push by default** (`mode="auto"` — a peer's result arrives on `Slife/<agent>/tasks/result` → a completion enters the history: "Peer X completed async task (ID: …)"). `mode="poll"` suppresses the push; an auto-pushed result also stays retrievable via `a2a_get_task_result`, so a caller may poll it in the same turn.
-- **Stateless message tools** (`a2a_send_message` / `a2a_send_message_async`) express the A2A standard's conversational message semantics — the same `SendMessage` wire, but **not recorded in the task store** (an unrecorded corr_id makes the store writes no-ops, so `a2a_list_tasks` / `a2a_cancel_task` never see messages). The plugin tracks outbound message corr_ids → peer so an async completion is framed as "Peer X replied to your message" instead of a task completion.
-- **Channel A2A markers**: the sender's wire envelope carries `_slife.kind` (`"task"` or `"message"`). Inbound messages reach the model prefixed `[A2A:{"from": …, "task_id": …}]` — `from` names the sending peer (never the receiver); `task_id` present only for a task; auto-pushed async results use `[A2A-PUSH:…]` with the same shape. Both markers are machine-facing: the TUI shows `A2A(<peer>)>` and strips them.
+- **Standard wire**: topics `$a2a/v1/{discovery|request|reply|event}/{org}/{unit}/{agent_id}`; JSON-RPC
+  2.0 over MQTT v5 `ResponseTopic`/`CorrelationData`; retained Agent Cards with `a2a-status` presence +
+  LWT; per-task dedup and ack → artifact → terminal lifecycle; QoS 1 for discovery/request/reply, QoS 0
+  for broadcast events. Retries follow the profile (15 s first-reply, ≤ 3 attempts, exponential
+  backoff, same Task.id / new correlation). See **A2A-MQTT.md** for the exact values.
+- Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; a failed probe
+  means the a2a plugin is not started and this is reported via `system_health`.
+- The mesh connects **eagerly** when the plugin starts so presence is announced at launch; a failed
+  eager connect is tolerated and mesh tools attempt a lazy connect on demand.
+- Peer presence **transitions** (online/offline) reach the LLM context: the plugin queues them;
+  `AgentService._a2a_poll_loop` drains them, and `_turn_prompt` carries only *changes* (read-once) —
+  the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with
+  stale state.
+- Results are **always auto-delivered** (the standard push model): a peer's terminal reply is pushed
+  into the history as `[A2A-RESULT:{"from": …, "task_id": …}]` — "Peer X completed/cancelled async task
+  (ID: …)". There is no poll mode and nothing to wait on.
+- **Broadcast** is the profile's fire-and-forget *event* (QoS 0): `a2a_broadcast` publishes to the
+  unit's event topic; peers receive it as `[A2A-BROADCAST:{"from": …}]` — informational, no reply or
+  completion expected.
+- **Channel markers**: inbound tasks reach the model as `[A2A:{"from": …, "task_id": …}]` — `from` names
+  the sending peer (never the receiver), `task_id` the task being answered (`a2a_set_task_done`);
+  auto-delivered results use `[A2A-RESULT:…]`, broadcast events `[A2A-BROADCAST:…]`. All three are
+  machine-facing: the TUI shows `A2A(<peer>)>` and strips them.
 
 ### Unified Inbox
 
@@ -652,7 +673,8 @@ Messages are processed sequentially — only one AgentLoop runs at a time. Human
 
 ### Task Store
 
-Mesh tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap, terminal-first pruning). The store is **not persisted across restarts** — `a2a_list_tasks` after restart is empty by design. Worker (subagent) tasks are **not** in this store — they live in per-worker local records.
+Mesh tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap, terminal-first pruning). The store is **not persisted across restarts** — empty after restart by design (results auto-push; there is no
+task-listing tool). Worker (subagent) tasks are **not** in this store — they live in per-worker local records.
 
 ## Part 8 · UI, Config, Credentials, Health, Logging, Paths
 
@@ -841,7 +863,7 @@ slife/
     wechat/            #   WeChat messaging (server.py, client.py, config.py)
     memfiles/          #   Private notes/diary/files/reports cabinet (server.py, store.py, user_prefs.py, schema.sql)
     sharefile/         #   Public file sharing (server.py, config.py, providers.py = pluggable tunnel)
-    a2a/               #   A2A mesh (server.py + A2AClient; MQTT binding)
+    a2a/               #   A2A mesh (mesh.py — official a2a-over-mqtt profile binding; see A2A-MQTT.md)
     media/             #   Non-chat AI generation (server.py, config.py, adapters/ dashscope-aigc + openai-images)
     job_coding/        #   Deterministic jobs (server.py, runner.py, registry.py)
     mcp_gateway/       #   The MCP gateway — a built-in plugin

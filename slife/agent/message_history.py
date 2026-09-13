@@ -104,17 +104,17 @@ WECHAT_MARKER = "[WECHAT] "
 #: ``unwrap_info_envelope`` strips the marker for display.
 SUBAGENT_PREFIX = "[Subagent:"
 #: Channel markers for A2A mesh messages pushed into the agent's context.
-#: ``[A2A:…]`` prefixes an inbound peer message/task (the receiving agent
-#: reads who sent it and — for a task — its task id); ``[A2A-PUSH:…]``
-#: prefixes an auto-pushed async result.  The peer rides under the key
-#: ``from`` — deliberately NOT ``agent_name``, which in the system prompt
+#: One envelope — ``[A2A:…]`` — prefixes every inbound A2A message (task,
+#: auto-pushed result, conversation, broadcast); ``type`` in the JSON says
+#: which.  The peer rides under the key ``from`` — deliberately NOT
+#: ``agent_name``, which in the system prompt
 #: names the agent's *own* identity; a receiver can then never misread
-#: the marker as telling it who it is.  The presence or absence of
-#: ``task_id`` is what tells a task from a message.  Machine-facing — the
-#: TUI shows the ``A2A(<name>)> `` bubble prefix and
-#: ``unwrap_info_envelope`` strips them for display.
+#: the marker as telling it who it is.  ``type`` tells what the message is
+#: (``task_request`` = answer it, ``task_response`` = a pushed result,
+#: ``message`` = a conversation, ``broadcast`` = an event); ``task_id`` rides
+#: for tasks/results.  Machine-facing — the TUI shows the ``A2A(<name>)> ``
+#: bubble prefix and ``unwrap_info_envelope`` strips them for display.
 A2A_PREFIX = "[A2A:"
-A2A_PUSH_PREFIX = "[A2A-PUSH:"
 #: Runtime-only trim note: ``[INFO: <N> oldest turns have been removed from
 #: context]``.  Appended by the loop after a trim — NEVER persisted: a
 #: restored session is already the trimmed state, so a "past session was
@@ -195,43 +195,31 @@ def wechat_marker(peer_wechat_id: str, context_token: str | None = None) -> str:
     return f"{WECHAT_PREFIX}{json.dumps(payload, ensure_ascii=False)}] "
 
 
-def a2a_marker(agent_name: str, task_id: str | None = None) -> str:
-    """Content prefix for an inbound A2A peer message/task.
+def a2a_marker(
+    agent_name: str, task_id: str | None = None, type: str = "task_request",
+) -> str:
+    """Content prefix for ANY inbound A2A message — one envelope, a type field.
 
-    ``[A2A:{"from": …, "task_id": …}] `` — ``from`` names the *sending* peer
-    (never the receiver); ``task_id`` is present only for a task (a
-    stateless message omits it), and that presence is how the LLM tells
-    the two apart.  A task is completed with ``a2a_set_task_done``; a
-    stateless message is answered by sending a new message back — it has no
-    id, no completion, no "done".  The key is ``from``, not ``agent_name`` —
-    that word in the system prompt is the agent's own identity, so ``from``
-    keeps the marker unmistakably directional.  The marker is machine-facing;
-    ``unwrap_info_envelope`` drops it for display (the TUI shows the
-    ``A2A(<name>)> `` bubble prefix instead).
+    ``[A2A:{"from": …, "task_id": …, "type": …}] `` — ``from`` names the
+    *sending* peer (never the receiver).  ``type`` tells what it is:
+    ``task_request`` (an inbound task to answer, via
+    ``a2a_send_message(message_type="task_response", task_id=…)`` — it may
+    take many turns), ``task_response`` (an auto-delivered task result),
+    ``message`` (a bare conversation), ``broadcast`` (a fire-and-forget event,
+    informational).  ``task_id`` rides for tasks and results.  The key is
+    ``from``, not ``agent_name`` — that word in the system prompt is the
+    agent's own identity, so ``from`` keeps the marker unmistakably
+    directional.  The marker is machine-facing; ``unwrap_info_envelope``
+    drops it for display (the TUI shows the ``A2A(<name>)> `` bubble prefix
+    instead).
     """
-    return _a2a_payload_marker(A2A_PREFIX, agent_name, task_id)
-
-
-def a2a_push_marker(agent_name: str, task_id: str | None = None) -> str:
-    """Content prefix for an auto-pushed A2A async result.
-
-    Same shape as :func:`a2a_marker` under the ``[A2A-PUSH:…]`` envelope —
-    ``from`` names the responding peer (never the receiver) and ``task_id``
-    rides only for a task result, so the pushed message names which peer's
-    which task it belongs to.
-    """
-    return _a2a_payload_marker(A2A_PUSH_PREFIX, agent_name, task_id)
-
-
-def _a2a_payload_marker(prefix: str, agent_name: str, task_id: str | None) -> str:
-    """Shared builder — the two A2A envelopes differ only in their prefix."""
     # ``from`` — the peer's name — deliberately not ``agent_name``: that word
     # is the agent's self-identity in the system prompt, and reusing it here
     # made receivers misread the sender as themselves.
-    payload: dict[str, str] = {"from": agent_name}
+    payload: dict[str, str] = {"from": agent_name, "type": type}
     if task_id is not None:
         payload["task_id"] = task_id
-    return f"{prefix}{json.dumps(payload, ensure_ascii=False)}] "
+    return f"{A2A_PREFIX}{json.dumps(payload, ensure_ascii=False)}] "
 
 
 def subagent_marker(subagent_name: str, task_id: str | None = None) -> str:
@@ -265,8 +253,8 @@ def unwrap_info_envelope(text: str) -> str:
       ``[WECHAT] `` marker on older stored rows is dropped too);
     - a leading ``[Subagent:…]`` envelope is dropped entirely — the channel
       is already shown by the ``Subagent(<name>)> `` bubble prefix;
-    - leading ``[A2A:…]`` / ``[A2A-PUSH:…]`` envelopes are dropped entirely
-      — the channel is already shown by the ``A2A(<name>)> `` bubble prefix.
+    - a leading ``[A2A:…]`` envelope is dropped entirely — the channel is
+      already shown by the ``A2A(<name>)> `` bubble prefix.
 
     Only the *trailing* INFO envelope is unwrapped (``rfind``) — an
     annotation is always a suffix, and a user message may legitimately
@@ -276,7 +264,7 @@ def unwrap_info_envelope(text: str) -> str:
     """
     if text.startswith(WECHAT_MARKER):
         text = text[len(WECHAT_MARKER):]
-    for prefix in (WECHAT_PREFIX, SUBAGENT_PREFIX, A2A_PREFIX, A2A_PUSH_PREFIX):
+    for prefix in (WECHAT_PREFIX, SUBAGENT_PREFIX, A2A_PREFIX):
         if text.startswith(prefix):
             end = text.find("]", len(prefix))
             if end != -1:

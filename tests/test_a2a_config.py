@@ -74,20 +74,18 @@ class TestA2AConfigFromDict:
         assert cfg.broker_host == "mqtt.example.com"
         assert cfg.broker_port == 8883
 
-    def test_heartbeat_defaults(self):
+    def test_org_unit_defaults(self):
         cfg = A2AConfig.from_dict({}, agent_name="agent-1")
-        assert cfg.heartbeat_interval == 15
-        assert cfg.heartbeat_timeout == 45
-        assert cfg.task_timeout == 120
+        assert cfg.org == "default"
+        assert cfg.unit == "default"
 
-    def test_custom_heartbeat_values(self):
+    def test_custom_org_unit(self):
         cfg = A2AConfig.from_dict(
-            {"heartbeat_interval": 30, "heartbeat_timeout": 90, "task_timeout": 300},
+            {"org": "acme", "unit": "edge"},
             agent_name="agent-1",
         )
-        assert cfg.heartbeat_interval == 30
-        assert cfg.heartbeat_timeout == 90
-        assert cfg.task_timeout == 300
+        assert cfg.org == "acme"
+        assert cfg.unit == "edge"
 
     def test_broker_not_a_dict_falls_back(self):
         """When broker is not a dict, use defaults."""
@@ -155,11 +153,10 @@ class TestA2AConfigDefaults:
         assert "-" in cfg.agent_name
         assert len(cfg.agent_name) > 0
 
-    def test_default_heartbeat_values(self):
+    def test_default_org_unit(self):
         cfg = A2AConfig()
-        assert cfg.heartbeat_interval == 15
-        assert cfg.heartbeat_timeout == 45
-        assert cfg.task_timeout == 120
+        assert cfg.org == "default"
+        assert cfg.unit == "default"
 
 
 # ── AgentCard ───────────────────────────────────────────────────────────

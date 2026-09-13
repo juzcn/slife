@@ -8,7 +8,6 @@ import pytest
 from slife.agent.message_history import (
     MessageHistory,
     a2a_marker,
-    a2a_push_marker,
     subagent_marker,
     unwrap_info_envelope,
     wechat_marker,
@@ -67,32 +66,35 @@ class TestUnwrapInfoEnvelope:
             '[Wechat:{"peer_wechat_id": "wx_1"}] hello [INFO: {"turn_id": 5}]'
         ) == 'hello {"turn_id": 5}'
 
-    def test_a2a_marker_builds_json_payload(self):
-        # `from` names the SENDING peer — not `agent_name`, which is the
-        # agent's own identity in the system prompt; the presence of task_id
-        # is what distinguishes a task from a stateless message.
+    def test_a2a_marker_carries_type(self):
+        # One envelope — [A2A:{from, task_id?, type}] — a type field tells
+        # what the message is; `from` names the SENDING peer (not agent_name).
         assert a2a_marker("Jack", "cid-1") == (
-            '[A2A:{"from": "Jack", "task_id": "cid-1"}] '
+            '[A2A:{"from": "Jack", "type": "task_request", "task_id": "cid-1"}] '
         )
-        # A stateless message omits the task id — it has none to complete.
-        assert a2a_marker("Jack") == '[A2A:{"from": "Jack"}] '
-
-    def test_a2a_push_marker_builds_json_payload(self):
-        assert a2a_push_marker("peer-1", "cid-1") == (
-            '[A2A-PUSH:{"from": "peer-1", "task_id": "cid-1"}] '
+        assert a2a_marker("peer-1", "c-x", type="task_response") == (
+            '[A2A:{"from": "peer-1", "type": "task_response", "task_id": "c-x"}] '
         )
-        # A message reply carries no task id.
-        assert a2a_push_marker("peer-1") == '[A2A-PUSH:{"from": "peer-1"}] '
+        assert a2a_marker("Jack", type="message") == (
+            '[A2A:{"from": "Jack", "type": "message"}] '
+        )
+        # A broadcast event names only the publishing peer + its type.
+        assert a2a_marker("peer-9", type="broadcast") == (
+            '[A2A:{"from": "peer-9", "type": "broadcast"}] '
+        )
 
     def test_strips_leading_a2a_markers(self):
-        # Inbound and auto-pushed A2A markers are dropped for display (the
-        # channel already shows as A2A(<name>)>).
+        # Every A2A envelope is the single [A2A:…] prefix, dropped for display
+        # (the channel already shows as A2A(<name>)>).
         assert unwrap_info_envelope(
-            '[A2A:{"from": "Jack", "task_id": "cid-1"}] do X'
+            '[A2A:{"from": "Jack", "type": "task_request", "task_id": "cid-1"}] do X'
         ) == "do X"
         assert unwrap_info_envelope(
-            '[A2A-PUSH:{"from": "Jack", "task_id": "cid-1"}] the answer'
+            '[A2A:{"from": "Jack", "type": "task_response", "task_id": "cid-1"}] the answer'
         ) == "the answer"
+        assert unwrap_info_envelope(
+            '[A2A:{"from": "Jack", "type": "broadcast"}] all hands on deck'
+        ) == "all hands on deck"
         # A literal [A2A: bracket in the body survives.
         assert unwrap_info_envelope(
             '[A2A:{"from": "Jack"}] see [A2A: literally]'

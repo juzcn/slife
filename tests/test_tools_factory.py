@@ -135,6 +135,7 @@ class TestCreateToolsOverrideEdgeCases:
         assert "subagent_get_task_result" in names
         # Pure mesh tools are NOT native — they live in the a2a plugin and
         # only register when the MQTT broker is up.
-        assert "a2a_send_task" not in names
+        assert "a2a_send_message" not in names
         assert "a2a_list_agents" not in names
+        assert "a2a_cancel_task" not in names
         assert "a2a_broadcast" not in names

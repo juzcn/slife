@@ -45,35 +45,13 @@ class TestTaskRecord:
         assert rec.completed_at == 100.0
         assert rec.result == "All tests passed"
 
-    def test_to_task_official_shape(self):
-        """to_task() serializes as an official A2A Task dict."""
+    def test_created_iso(self):
+        """created_iso is a wall-clock ISO-8601 timestamp (used in feeds)."""
         rec = TaskRecord(
-            task_id="t9",
-            agent_name="agent-1",
-            task_preview="do thing",
-            status="completed",
-            transport="mqtt",
-            result="the answer",
+            task_id="t9", agent_name="agent-1", task_preview="do thing",
+            status="pending", transport="mqtt",
         )
-        task = rec.to_task()
-        assert task["id"] == "t9"
-        assert task["status"]["state"] == "completed"
-        assert task["status"]["timestamp"]  # ISO-8601 string present
-        assert task["artifacts"][0]["name"] == "result"
-        assert task["artifacts"][0]["parts"][0]["text"] == "the answer"
-        assert task["metadata"]["target"] == "agent-1"
-
-    def test_to_task_pending_maps_to_submitted(self):
-        rec = TaskRecord(
-            task_id="t10",
-            agent_name="agent-1",
-            task_preview="",
-            status="pending",
-            transport="mqtt",
-        )
-        task = rec.to_task()
-        assert task["status"]["state"] == "submitted"
-        assert task["artifacts"] == []
+        assert rec.created_iso  # non-empty ISO-8601 string
 
 
 # ── TaskStore — writes ──────────────────────────────────────────────────

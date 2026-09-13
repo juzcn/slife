@@ -1,16 +1,20 @@
 """Task store — shared A2A task-lifecycle tracking.
 
-Every A2A operation (send, result, cancel) records metadata here so that
-``a2a_list_tasks`` and ``a2a_get_task_result`` can return structured
-task state following A2A protocol semantics.
+Every A2A operation (send, result, cancel) records metadata here so the
+mesh can attribute results to their send and answer cancel/status lookups.
+Internal bookkeeping only — the wire is the official ``a2a-over-mqtt`` SDK.
 """
 
 from __future__ import annotations
 
 import time as _time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
-from slife.a2a.wire import Message, TaskState, TaskStatus, iso_now
+
+def _iso_now() -> str:
+    """Current UTC time as an ISO-8601 string (official A2A timestamps)."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 # ── Task record ─────────────────────────────────────────────────────────
 
@@ -39,49 +43,8 @@ class TaskRecord:
     result: str | None = None
     """Result text (first 2000 chars).  ``None`` while pending."""
 
-    created_iso: str = field(default_factory=iso_now)
-    """Wall-clock ISO-8601 creation time (for the official Task wire shape)."""
-
-    def to_task(self) -> dict:
-        """Serialize as an official A2A ``Task`` dict (mirrors ``a2a_pb2``).
-
-        The internal status strings map onto :class:`TaskState` values; the
-        result becomes the task's primary artifact.
-        """
-        state = {
-            "pending": TaskState.SUBMITTED.value,
-            "completed": TaskState.COMPLETED.value,
-            "failed": TaskState.FAILED.value,
-            "cancelled": TaskState.CANCELLED.value,
-        }.get(self.status, TaskState.SUBMITTED.value)
-
-        # Build the wire dataclass directly (its to_dict() is the canonical
-        # serialization) instead of a hand-rolled status dict.
-        status = TaskStatus(
-            state=state,
-            timestamp=self.created_iso,
-            message=(
-                Message.text_message(self.result, role="agent")
-                if self.result is not None else None
-            ),
-        ).to_dict()
-        artifacts: list[dict] = []
-        if self.result is not None:
-            artifacts.append({
-                "name": "result",
-                "parts": [{"type": "text", "text": self.result}],
-            })
-        return {
-            "id": self.task_id,
-            "status": status,
-            "artifacts": artifacts,
-            "history": [],
-            "metadata": {
-                "target": self.agent_name,
-                "preview": self.task_preview,
-                "transport": self.transport,
-            },
-        }
+    created_iso: str = field(default_factory=_iso_now)
+    """Wall-clock ISO-8601 creation time."""
 
 
 # ── Task store ──────────────────────────────────────────────────────────

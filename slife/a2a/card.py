@@ -1,17 +1,17 @@
-"""AgentCard — identity + liveness announcement, wire-conformant.
+"""AgentCard — slife's display/presence view of an A2A mesh agent.
 
-The card carries the slife identity/liveness fields (``agent_name``,
-``status``) plus the official A2A ``AgentCard`` fields
-(name, description, url, version, capabilities, skills) so the presence
-payload mirrors the canonical shape.  There is no separate display name —
-``agent_name`` is the identity (the ``--agent`` value); a duplicate
-``display_name`` field was pure context pollution.
+The official A2A Agent Card lives in the ``a2a-over-mqtt`` SDK
+(``build_card`` / ``parse_card``) — the wire is the SDK's, not ours.  This
+module is the slife display layer on top of it: a minimal ``AgentCard``
+(identity + online/offline status) plus the shared presence-line rendering
+used by the TUI (:mod:`slife.ui.app`) and the per-turn prompt
+(:mod:`slife.agent.system_prompt`) so neither drifts.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from slife.a2a.identity import AgentName
 
@@ -34,71 +34,23 @@ def _safe_name(value: object, limit: int = 128) -> str:
 
 @dataclass
 class AgentCard:
-    """Who is this agent and is it alive right now?"""
+    """Who is this agent and is it alive right now?
+
+    ``status`` is one of ``"online"`` / ``"offline"`` on the wire (the
+    standard ``a2a-status`` presence, mapped by the mesh).  The dataclass
+    default keeps the historic ``"idle"`` for constructed-but-unset cards.
+    """
 
     agent_name: AgentName
-    status: str = "idle"  # "idle" or "busy"
-
-    # Official A2A AgentCard fields (mirror a2a_pb2) — wire conformant.
-    protocol_version: str = "0.3.0"
-    name: str = ""
-    description: str = ""
-    url: str = ""
-    version: str = ""
-    capabilities: dict = field(
-        default_factory=lambda: {
-            "streaming": False,
-            "push_notifications": False,
-        },
-    )
-    skills: list = field(default_factory=list)
-    # Unique per-process instance marker (slife extension).  Lets a client
-    # distinguish its OWN presence echoes — it subscribes Slife/+/presence —
-    # from a genuinely same-named agent on another instance.  Empty for peers
-    # running an older slife.
-    instance: str = ""
-
-    def to_dict(self) -> dict:
-        """Serialize as the presence wire payload (official + slife fields)."""
-        d: dict = {
-            "protocolVersion": self.protocol_version,
-            "name": self.name or str(self.agent_name),
-            "description": self.description,
-            "url": self.url,
-            "version": self.version,
-            "capabilities": self.capabilities,
-            "skills": self.skills,
-        }
-        # Slife extensions — read by the peer watchdog, format_presence_line
-        # and duplicate-id detection.
-        d["agent_name"] = str(self.agent_name)
-        d["status"] = self.status
-        d["instance"] = self.instance
-        return d
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "AgentCard":
-        """Parse a presence wire payload back into an :class:`AgentCard`."""
-        return cls(
-            agent_name=AgentName(data.get("agent_name", "?")),
-            status=data.get("status", "idle"),
-            protocol_version=data.get("protocolVersion", "0.3.0"),
-            name=data.get("name", ""),
-            description=data.get("description", ""),
-            url=data.get("url", ""),
-            version=data.get("version", ""),
-            capabilities=data.get("capabilities", {}),
-            skills=data.get("skills", []),
-            instance=data.get("instance", ""),
-        )
+    status: str = "idle"  # "online" or "offline"
 
 
 def format_presence_line(card: "AgentCard", event: str) -> str | None:
     """Render a presence event exactly as the TUI shows it.
 
     Returns ``None`` for events that are not user-visible transitions
-    (``"status_change"`` — a heartbeat from an already-known peer, fired
-    every ``heartbeat_interval``) so callers can filter them out.
+    (``"status_change"`` — a heartbeat from an already-known peer) so callers
+    can filter them out.
 
     Used by both the TUI (:mod:`slife.ui.app`) and the per-turn prompt
     (:mod:`slife.agent.system_prompt`) so the two never drift.

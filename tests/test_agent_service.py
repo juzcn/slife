@@ -1143,15 +1143,15 @@ class TestAgentServiceA2A:
         mock_a2a = MagicMock()
         mock_a2a.is_connected = True
         calls = [0]
+        completed_calls = []
 
-        async def mock_call_tool(name, _):
+        async def mock_call_tool(name, arguments=None):
             if name == "__a2a_drain_incoming":
                 calls[0] += 1
                 if calls[0] == 1:
                     return _json.dumps({
                         "tasks": [{
                             "source": "Jack", "content": "do X",
-                            "reply_to": "Slife/slife/tasks/result",
                             "correlation_id": "cid-1",
                         }],
                         "presence": [], "cancellations": [],
@@ -1162,6 +1162,8 @@ class TestAgentServiceA2A:
                     "tasks": [], "presence": [],
                     "cancellations": [], "task_completions": [],
                 })
+            if name == "a2a_set_task_done":
+                completed_calls.append(arguments or {})
             return "{}"
 
         mock_a2a.call_tool = mock_call_tool
@@ -1177,20 +1179,21 @@ class TestAgentServiceA2A:
 
         assert len(posted) == 1
         assert posted[0].content == (
-            '[A2A:{"from": "Jack", "task_id": "cid-1"}] '
+            '[A2A:{"from": "Jack", "type": "task_request", "task_id": "cid-1"}] '
             "do X"
         )
         assert posted[0].correlation_id == "cid-1"
-        # Explicit-completion protocol: no auto-dispatch closure rides the
-        # message — the model completes the task via a2a_set_task_done.  The
-        # wire kind rides metadata so the mid-turn injector can frame it.
+        # Completion is the model's explicit job (a task may take many turns):
+        # no harness auto-dispatch rides the message; the model answers with
+        # a2a_send_message(message_type="task_response", task_id=…).
         assert posted[0].on_reply is None
+        # The wire kind rides metadata so the mid-turn injector can frame it.
         assert posted[0].metadata.get("a2a_kind") == "task"
 
     @pytest.mark.asyncio
-    async def test_a2a_poll_stateless_message_has_no_id(self, sample_config):
-        """A stateless message is pure chat: the marker names only the sender
-        (no id, no completion) — answering is sending a message back."""
+    async def test_a2a_poll_broadcast_event_has_no_task_id(self, sample_config):
+        """A fire-and-forget broadcast event is passive: the marker names only
+        the sender (no id, no completion) — informational input, not a task."""
         import json as _json
 
         service = AgentService(sample_config)
@@ -1203,17 +1206,16 @@ class TestAgentServiceA2A:
                 calls[0] += 1
                 if calls[0] == 1:
                     return _json.dumps({
-                        "tasks": [{
-                            "source": "Jack", "content": "hi",
-                            "reply_to": "Slife/slife/tasks/result",
-                            "correlation_id": "cid-m", "kind": "message",
+                        "tasks": [],
+                        "events": [{
+                            "source": "Jack", "content": "all hands on deck",
                         }],
                         "presence": [], "cancellations": [],
                         "task_completions": [],
                     })
                 service._plugins["a2a"].client = None  # end the loop
                 return _json.dumps({
-                    "tasks": [], "presence": [],
+                    "tasks": [], "events": [], "presence": [],
                     "cancellations": [], "task_completions": [],
                 })
             return "{}"
@@ -1230,14 +1232,14 @@ class TestAgentServiceA2A:
         await service._a2a_poll_loop(interval=0.001)
 
         assert len(posted) == 1
-        assert posted[0].content == '[A2A:{"from": "Jack"}] hi'
+        assert posted[0].content == '[A2A:{"from": "Jack", "type": "broadcast"}] all hands on deck'
         assert posted[0].on_reply is None
-        assert posted[0].metadata.get("a2a_kind") == "message"
+        assert posted[0].metadata.get("a2a_kind") == "event"
 
     @pytest.mark.asyncio
-    async def test_a2a_poll_frames_completion_by_kind(self, sample_config):
-        """Auto-pushed completions are framed by kind: a stateless message
-        reply reads "replied to your message", a task "completed async task"."""
+    async def test_a2a_poll_frames_completion(self, sample_config):
+        """Auto-pushed completions are always task frames; a cancelled
+        completion still pushes even with an empty result."""
         import json as _json
 
         service = AgentService(sample_config)
@@ -1253,11 +1255,11 @@ class TestAgentServiceA2A:
                         "tasks": [], "presence": [], "cancellations": [],
                         "task_completions": [
                             {"corr_id": "c-task", "result": "the answer",
-                             "cancelled": False, "peer": "peer-1",
-                             "kind": "task"},
-                            {"corr_id": "c-msg", "result": "hi",
-                             "cancelled": False, "peer": "peer-2",
-                             "kind": "message"},
+                             "cancelled": False, "peer": "peer-1"},
+                            {"corr_id": "c-cancel", "result": "",
+                             "cancelled": True, "peer": "peer-3"},
+                            {"corr_id": "c-empty", "result": "",
+                             "cancelled": False, "peer": "peer-4"},
                         ],
                     })
                 service._plugins["a2a"].client = None  # end the loop
@@ -1281,13 +1283,15 @@ class TestAgentServiceA2A:
         contents = [m.content for m in posted]
         assert len(contents) == 2
         assert (
-            '[A2A-PUSH:{"from": "peer-1", "task_id": "c-task"}] '
+            '[A2A:{"from": "peer-1", "type": "task_response", "task_id": "c-task"}] '
             "Peer **peer-1** completed async task (ID: `c-task`):\n\nthe answer"
         ) in contents
         assert (
-            '[A2A-PUSH:{"from": "peer-2"}] '
-            "Peer **peer-2** replied to your message:\n\nhi"
+            '[A2A:{"from": "peer-3", "type": "task_response", "task_id": "c-cancel"}] '
+            "Peer **peer-3** cancelled async task (ID: `c-cancel`):\n\n"
         ) in contents
+        # A completed task with an empty result carries no information — dropped.
+        assert "c-empty" not in "".join(contents)
 
 
 # ── AgentService subagent ───────────────────────────────────────────────────

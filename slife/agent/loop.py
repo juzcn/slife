@@ -1039,8 +1039,8 @@ class AgentLoop:
             # ``wait_for(..., timeout=0)`` fires INSTANTLY (execute_shell)
             # — the opposite of the prompt's "0 = no timeout" (B2/B3).
             # Normalise ≤0 to "omit the arg" so the tool's own default
-            # governs — the contract the a2a tools already document
-            # ("≤0 = default") — and never forward the instant-kill zero.
+            # governs — the contract these tools document ("≤0 = default") —
+            # and never forward the instant-kill zero.
             tool = self.tool_registry.get(tc.name)
             prop_keys = getattr(tool, 'parameters', {}).get("properties", {})
             has_native_timeout = "timeout" in prop_keys
@@ -1065,8 +1065,8 @@ class AgentLoop:
 
             # ── Bare `timeout` alias ─────────────────────────────
             # LLMs routinely append a bare ``timeout`` arg to tools whose
-            # schema defines no such parameter (a2a sends, subagent sends,
-            # plugin proxies) — the server's input validation then rejects
+            # schema defines no such parameter (subagent sends, plugin
+            # proxies) — the server's input validation then rejects
             # the WHOLE call with "Unexpected keyword argument" and the
             # turn dies.  Read it as the per-call bound instead: pop it so
             # it never reaches the tool, and let the wait_for logic below

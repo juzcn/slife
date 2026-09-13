@@ -663,7 +663,7 @@ class CheckNewInputTool(Tool):
     tool itself pulls the FIRST queued message — AgentService binds the
     Inbox's ``extract_injectable`` onto the shared tool context — and returns
     the message's bare text.  The content already carries its
-    [A2A:…]/[A2A-PUSH:…]/[Wechat:…] marker, so the model reads the source and
+    [A2A:…]/[Wechat:…] marker, so the model reads the source and
     task id without any wrapper.  The message is consumed once and never runs
     as its own turn.
     """

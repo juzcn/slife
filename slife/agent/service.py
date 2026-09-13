@@ -2217,16 +2217,17 @@ class AgentService:
         """Drain inbound a2a tasks/presence from the plugin into the inbox.
 
         The harness stays a thin client: it only drains the plugin's
-        ``__a2a_drain_incoming`` and feeds the unified inbox.  Replies are the
-        model's job — an inbound task is completed with ``a2a_set_task_done``,
-        a stateless message is answered with ``a2a_send_message`` — the
-        harness no longer auto-dispatches the turn's final text out (the
-        WeChat precedent).
+        ``__a2a_drain_incoming`` and feeds the unified inbox.  Completion is
+        the model's job, controlled through the message type: an inbound task
+        (every inbound A2A exchange is a task) is answered by sending a
+        ``message_type="task_response"`` message with the task_id — never a
+        one-turn harness dispatch, because a task may need many turns.  The
+        harness no longer auto-dispatches the turn's final text out.
         """
         import json as _json
         from slife.a2a.identity import AgentName, AgentMessage, Channel
         from slife.a2a.card import AgentCard, format_presence_line
-        from slife.agent.message_history import a2a_marker, a2a_push_marker
+        from slife.agent.message_history import a2a_marker
 
         logger.info("a2a_poll_loop_start interval=%.1fs", interval)
 
@@ -2247,33 +2248,37 @@ class AgentService:
                         self.inbox.cancel_correlation(cid)
 
                 for ev in data.get("tasks", []):
-                    # The sender knows the task_id (a2a_send_task_async returns
-                    # it); surface the same id to the receiver so it can
+                    # Every inbound A2A exchange is a task and carries its
+                    # task_id; surface the same id to the receiver so it can
                     # reference the task it is responding to instead of making
                     # one up (a reported mismatch in round-trips).
                     task_text = ev.get("content", "")
-                    corr_id = ev.get("correlation_id", "")
                     src = ev.get("source", "unknown")
                     kind = ev.get("kind", "task")
+                    task_id = ev.get("task_id") or ev.get("correlation_id") or ""
                     # The [A2A:…] marker's `from` names the sending peer —
-                    # never the receiver — and (for a task) its task id, so
-                    # the LLM can attribute the turn and reference the task it
-                    # is responding to instead of making one up (a reported
-                    # mismatch in round-trips).  The TUI drops it for display
-                    # (A2A(<name>)> bubble prefix).
-                    task_id = (corr_id or None) if kind == "task" else None
+                    # never the receiver — and its task id, so the LLM can
+                    # attribute the turn and reference the task it is
+                    # responding to instead of making one up.  Only TASK_REQUEST
+                    # creates a task: a MESSAGE conversation is task-less
+                    # (marker without task_id, no completion).  The TUI drops
+                    # it for display (A2A(<name>)> bubble prefix).
+                    marker_id = task_id or None if kind == "task" else None
+                    marker_type = "message" if kind != "task" else "task_request"
                     task_text = (
-                        f"{a2a_marker(src, task_id)}"
+                        f"{a2a_marker(src, marker_id, type=marker_type)}"
                         f"{task_text}"
                     )
                     msg = AgentMessage(
                         source=AgentName(src),
                         content=task_text,
-                        reply_to=ev.get("reply_to", ""),
-                        correlation_id=ev.get("correlation_id", ""),
-                        # Wire kind (task/message) rides the message so the
-                        # inbox / mid-turn injection can frame it right after
-                        # the queue round-trip (no marker re-parsing).
+                        correlation_id=task_id,
+                        # No on_reply: a task may take many turns and is
+                        # completed ONLY when the model sends
+                        # a2a_send_message(message_type="task_response",
+                        # task_id=…) — never by auto-dispatching this turn's
+                        # final text out (a harness-complete is wrong for
+                        # multi-turn work).
                         metadata={"a2a_kind": kind},
                         channel=Channel.a2a(src),
                     )
@@ -2282,6 +2287,21 @@ class AgentService:
                         "a2a_in source=%s task=%.80s",
                         msg.source, ev.get("content", ""),
                     )
+
+                # Fire-and-forget broadcast events — passive, no task_id, no
+                # completion: informational input the agent may act on.
+                for ev in data.get("events", []):
+                    src = ev.get("source", "unknown")
+                    content = ev.get("content", "")
+                    if not content:
+                        continue
+                    msg = AgentMessage(
+                        source=AgentName(src),
+                        content=f"{a2a_marker(src, type='broadcast')}{content}",
+                        metadata={"a2a_kind": "event"},
+                        channel=Channel.a2a(src),
+                    )
+                    await self.inbox.post(msg)
 
                 for pev in data.get("presence", []):
                     # The presence card comes off the wire from any peer —
@@ -2308,21 +2328,22 @@ class AgentService:
                     corr_id = cev.get("corr_id", "")
                     result = cev.get("result", "")
                     peer = cev.get("peer", "") or corr_id or "peer"
-                    if not result:
+                    cancelled = bool(cev.get("cancelled"))
+                    kind = cev.get("kind", "task")
+                    if not result and not cancelled:
                         continue
-                    if cev.get("kind") == "message":
-                        # Stateless message reply — the [A2A-PUSH:…] marker's
-                        # `from` names the responding peer; framed as a reply,
-                        # not a task completion (the caller sent a message).
+                    if kind == "message":
+                        # A MESSAGE conversation was answered: a bare message
+                        # reply, no task involved.
                         content = (
-                            f"{a2a_push_marker(peer)}"
+                            f"{a2a_marker(peer, type='message')}"
                             f"Peer **{peer}** replied to your message:\n\n"
                             f"{result}"
                         )
                     else:
-                        state = "cancelled" if cev.get("cancelled") else "completed"
+                        state = "cancelled" if cancelled else "completed"
                         content = (
-                            f"{a2a_push_marker(peer, corr_id or None)}"
+                            f"{a2a_marker(peer, corr_id or None, type='task_response')}"
                             f"Peer **{peer}** {state} async task "
                             f"(ID: `{corr_id}`):\n\n{result}"
                         )
@@ -2334,7 +2355,10 @@ class AgentService:
                         metadata={"a2a_kind": "push"},
                         channel=Channel.a2a(peer),
                     ))
-                    logger.debug("a2a_completion_autopushed peer=%s task=%s kind=%s", peer, corr_id, cev.get("kind", "task"))
+                    logger.debug(
+                        "a2a_completion_autopushed peer=%s task=%s",
+                        peer, corr_id,
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as e:
