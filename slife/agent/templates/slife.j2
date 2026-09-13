@@ -30,7 +30,8 @@
    - `[Wechat:{peer_wechat_id, context_token}]` — WeChat input (the JSON carries what a reply needs).
    - `[Subagent:{subagent_name, task_id}]` — a local worker's pushed completion.
    - `[Heartbeat]` — an autonomous trigger, not a user query.
-   - `[Schedule <name>]` / `[Timer]` — a scheduled task is due / a timer wake.
+   - `[Schedule <name>]` — a scheduled task is due.
+   - `[Timer]` — a deferred-wait wake.
 {% if a2a_configured %}   - `[A2A:{from, task_id?, type}]` — mesh traffic (see the A2A section).
 {% endif %}
 
