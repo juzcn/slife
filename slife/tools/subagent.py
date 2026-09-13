@@ -141,11 +141,11 @@ class SpawnSubagentTool(Tool):
 
         # The worker's name is its identity — never auto-generate an id.
         worker_name = subagent_name.strip()
-        if not worker_name:
-            return (
-                "Error: subagent_name is required — give the worker a name "
-                '(e.g. "researcher", "coder-1").'
-            )
+        if err := require_params(
+            subagent_name=worker_name,
+            _hints={"subagent_name": 'give the worker a name (e.g. "researcher", "coder-1").'},
+        ):
+            return err
 
         context_source = "cloned" if clone_context else "clean"
         context_messages = (
@@ -203,8 +203,8 @@ class StopSubagentTool(Tool):
     }
 
     async def execute(self, subagent_name: str = "", **kwargs) -> str:
-        if not subagent_name:
-            return "Error: subagent_name is required."
+        if err := require_params(subagent_name=subagent_name):
+            return err
 
         manager, hint = _manager_or_hint()
         if manager is None:

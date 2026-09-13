@@ -129,7 +129,6 @@ import socket
 import sys
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -138,10 +137,13 @@ from fastmcp.server.middleware import Middleware
 from slife.logfmt import (
     SessionFormatter,
     FILE_LOG_FORMAT,
+    log_stamp,
     resolve_log_dir,
     set_session_id,
     silence_noisy_loggers,
 )
+from slife.paths import agent_name
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +165,91 @@ def is_internal_tool(name: str) -> bool:
     (single ``_``) — see the module docstring.
     """
     return name.startswith(INTERNAL_TOOL_PREFIX)
+
+
+class SessionNotifier:
+    """Coalescing fan-out of mcp ``notifications/tools/list_changed``.
+
+    At most ONE send round is in flight; pushes that land while it runs fold
+    into a trailing-edge re-send (the notification is payload-less — hosts
+    re-list on receipt, so no ordering guarantees are assumed).  Sends run
+    in a DETACHED task, never inside a request handler: mcp 2.1.1's
+    dispatcher desyncs its cancel-scope stack when a slow ``tools/call``
+    handler writes a notification burst into its own session mid-handler —
+    the session then crashes and every later call dies with ``Session not
+    found`` (see the gateway server's docs).  One instance per server
+    process.
+
+    ``sessions`` is a zero-arg getter returning the caller's session set.
+    Servers keep the set as a module-level ``_active_sessions`` so fixtures
+    can inject or rebind it; reading through the getter honors a rebind.
+    """
+
+    def __init__(self, sessions: "Callable[[], set]") -> None:
+        self._sessions = sessions
+        self._pending = False
+        self._task: asyncio.Task | None = None
+
+    def capture(self, ctx, *, max_sessions: int = 64) -> None:
+        """Remember the caller's session so a change can notify it.
+
+        *ctx* is a FastMCP ``Context`` (duck-typed — it only needs
+        ``.session``); a request-context-less call is a no-op.
+        """
+        session = getattr(ctx, "session", None) if ctx is not None else None
+        if session is not None:
+            active = self._sessions()
+            active.add(session)
+            if len(active) > max_sessions:
+                # Past the bound, drop arbitrary entries that are already dead
+                # (attempting to send detects it); a live one re-registers on
+                # its next call.
+                active.discard(next(iter(active)))
+
+    def request_tools_changed(self) -> None:
+        """Coalesce-and-schedule ``tools/list_changed`` to all clients.
+
+        Fire-and-forget; the send runs in a detached task (see the class
+        docstring for why).  Callers MUST NOT rely on delivery ordering.
+        """
+        self._pending = True
+        if self._task is not None and not self._task.done():
+            return  # a send is scheduled/in flight — it re-checks the flag
+        self._task = asyncio.create_task(self._daemon())
+
+    async def _daemon(self) -> None:
+        """Trailing edge: re-send after the in-flight round while pushes keep
+        landing, so the freshest catalog always reaches every host."""
+        while self._pending:
+            self._pending = False
+            await self._send_all()
+
+    async def _send_all(self) -> None:
+        """One eager notification round to every known client, in this task.
+
+        Best-effort: a dead/stale session is dropped, the rest are served.
+        Sends run CONCURRENTLY, each bounded by the registry's ready.notify,
+        so one slow/backpressured client degrades only itself.
+        """
+        sessions = list(self._sessions())
+
+        async def _send_one(sess) -> None:
+            try:
+                await asyncio.wait_for(
+                    sess.send_tool_list_changed(),
+                    timeout=_timeouts.timeouts.ready.notify,
+                )
+            except Exception:
+                # Dead/stale session — drop it so a later notification skips it.
+                self._sessions().discard(sess)
+
+        await asyncio.gather(*(_send_one(s) for s in sessions))
+
+    async def flush(self) -> None:
+        """Eager-flush alias (tests/deterministic paths): one full round now,
+        in this task — no coalescing.  Production paths use
+        :meth:`request_tools_changed`."""
+        await self._send_all()
 
 
 class _WarmAfterHandshake(Middleware):
@@ -252,14 +339,14 @@ def setup_server_logging(
     if _sid:
         set_session_id(_sid)
 
-    _agent_name = os.environ.get("SLIFE_AGENT_NAME", "slife")
+    _agent_name = agent_name()
 
     stderr_fmt = logging.Formatter(
         "%(asctime)s [%(levelname)-5s] %(name)s | %(message)s",
         datefmt="%H:%M:%S",
     )
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = log_stamp()
     log_path = log_dir / f"{ts}_{_agent_name}_{service_name}.log"
 
     configure_root_logging(
@@ -444,8 +531,13 @@ def create_plugin_server(
     """
     from fastmcp import FastMCP
 
-    # "slife-memdb" → suffix="memdb", logger_name="slife_memdb"
-    service_suffix = name.split("-", 1)[-1] if "-" in name else name
+    # "slife-memdb" → suffix="memdb", logger_name="slife_memdb".  When a host
+    # spawned us it exports SLIFE_PLUGIN_NAME (the plugin's key), which wins —
+    # e.g. mcp-plugin's name-derived suffix would be "plugin", but the parent
+    # names the log after the plugin ("_mcp.log", not "_plugin.log").
+    service_suffix = os.environ.get("SLIFE_PLUGIN_NAME") or (
+        name.split("-", 1)[-1] if "-" in name else name
+    )
     logger_name = name.replace("-", "_")
 
     log_path = setup_server_logging(service_suffix)

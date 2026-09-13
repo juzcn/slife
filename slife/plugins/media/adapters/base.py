@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
-from datetime import datetime
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 import httpx2
@@ -25,6 +25,43 @@ class MediaAdapterError(Exception):
     def __init__(self, message: str, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+
+
+class _HttpClientMixin:
+    """Lazy, lock-protected httpx2 client for media HTTP adapters.
+
+    The openai-compat and dashscope adapters carried verbatim copies of this
+    (dashscope added the double-checked lock the mixin always uses); call
+    :meth:`_init_http_client` from ``__init__`` and the adapter inherits the
+    shared client plumbing.
+    """
+
+    #: Set by the concrete adapter's ``__init__`` (a ``ProviderConfig``); the
+    #: mixin reads ``api_key`` from it.
+    _config: Any
+
+    def _init_http_client(self) -> None:
+        self._client: httpx2.AsyncClient | None = None
+        self._client_lock = asyncio.Lock()
+
+    async def _ensure_client(self) -> httpx2.AsyncClient:
+        """Return the adapter's shared client, creating it on first use."""
+        if self._client is None:
+            async with self._client_lock:
+                if self._client is None:
+                    self._client = httpx2.AsyncClient(
+                        timeout=httpx2.Timeout(
+                            _timeouts.timeouts.transport.media_request,
+                            connect=_timeouts.timeouts.transport.media_connect,
+                        ),
+                        headers={"Authorization": f"Bearer {self._config.api_key}"},
+                    )
+        return self._client
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
 
 @runtime_checkable
@@ -79,10 +116,9 @@ class ArtifactSaver:
         return base
 
     def _unique_path(self, kind: str, ext: str, outputs_dir: str = "") -> Path:
-        name = (
-            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            f"_{secrets.token_hex(4)}.{ext.lstrip('.')}"
-        )
+        from slife.logfmt import log_stamp
+
+        name = f"{log_stamp()}_{secrets.token_hex(4)}.{ext.lstrip('.')}"
         return self.base_dir(kind, outputs_dir) / name
 
     async def save_url(

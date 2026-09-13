@@ -15,7 +15,6 @@ mcp-plugin keeps only what it adds: the ``ok_json`` / ``error_json``
 response envelopes and its log-dir resolver.
 """
 
-import json
 from pathlib import Path
 
 # Single binding to the shared implementation — module-level assignment
@@ -26,9 +25,11 @@ from slife import logfmt as _logfmt
 FILE_LOG_FORMAT = _logfmt.FILE_LOG_FORMAT
 SessionFormatter = _logfmt.SessionFormatter
 configure_root_logging = _logfmt.configure_root_logging
+error_json = _logfmt.error_json
 get_request_id = _logfmt.get_request_id
 get_session_id = _logfmt.get_session_id
 init_session_id = _logfmt.init_session_id
+ok_json = _logfmt.ok_json
 read_stderr_lines = _logfmt.read_stderr_lines
 sanitize_secrets = _logfmt.sanitize_secrets
 set_session_id = _logfmt.set_session_id
@@ -50,28 +51,5 @@ def resolve_log_dir() -> Path:
     return _logfmt.resolve_log_dir()
 
 
-# ── JSON response helpers ─────────────────────────────────────────────
-
-
-def ok_json(**extra: object) -> str:
-    """Render ``{"status": "ok", ...}`` — the standard success envelope.
-
-    Keys with ``None`` values are omitted.  Output is indented and safe
-    for display in TUI tool-result widgets.
-    """
-    payload: dict = {"status": "ok", **{k: v for k, v in extra.items() if v is not None}}
-    return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-def error_json(message: str, **extra: object) -> str:
-    """Render ``{"status": "error", "error": <message>, ...}``.
-
-    The *message* parameter is required — every error must explain itself.
-    Extra keys with ``None`` values are omitted.
-    """
-    payload: dict = {
-        "status": "error",
-        "error": message,
-        **{k: v for k, v in extra.items() if v is not None},
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+# ok_json / error_json — re-exported above alongside the rest of the layer;
+# the JSON response envelopes are shared with the host, not plugin-local.

@@ -23,6 +23,61 @@ from mcp.types import Implementation
 from slife.plugins.mcp_gateway import __version__
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
+
+async def close_exit_stack_bounded(
+    stack: AsyncExitStack, *, label: str = "cleanup",
+) -> None:
+    """Close an ``AsyncExitStack`` with a grace timeout and the SDK teardown swallow.
+
+    The ``streamable_http_client`` async generator from the MCP library uses
+    ``anyio.create_task_group()`` internally; when the connection fails during
+    setup its cancel-scope cleanup can raise ``BaseExceptionGroup`` or
+    ``RuntimeError`` (task mismatch) that escape a bare ``except Exception``.
+    A request hung against a not-yet-ready server can also keep ``aclose``
+    from returning promptly, so the teardown is bounded — an abandoned stack
+    is reclaimed by GC and the caller builds a fresh one.  The three-teardown
+    copies (client cleanup + the connection's reconnect paths) shared this
+    block before it lived here.
+    """
+    try:
+        await asyncio.wait_for(
+            stack.aclose(),
+            timeout=_timeouts.timeouts.grace.cleanup,
+        )
+    except asyncio.TimeoutError:
+        logger.debug("%s_aclose_timeout abandoning stack", label)
+    except RuntimeError as e:
+        if "cancel scope" in str(e):
+            logger.debug("%s_cancel_scope_suppressed err=%s", label, e)
+        else:
+            raise
+    except (Exception, BaseExceptionGroup):
+        pass
+
+
+def make_local_http_client(headers: dict | None = None) -> httpx2.AsyncClient:
+    """Build the gateway's httpx2 client — the shared timeout tuple, proxy-free.
+
+    Local plugin servers only — never route localhost through the OS proxy
+    (a Windows system proxy like 127.0.0.1:7890 would 502 the local MCP
+    session), so ``trust_env=False`` keeps the client proxy-free.  Read/write
+    timeouts are DELEGATED — the loop's tool budget owns the read bound (both
+    are None); only connect/pool are bounded so a dead endpoint can't hang
+    the handshake.  ``headers`` ride the session (external server auth, etc.).
+    """
+    return httpx2.AsyncClient(
+        trust_env=False,
+        timeout=httpx2.Timeout(
+            connect=_timeouts.timeouts.transport.connect,
+            # read/write are DELEGATED — the loop's tool budget owns the read
+            # bound (both are None).
+            read=_timeouts.timeouts.transport.read,
+            write=_timeouts.timeouts.transport.write,
+            pool=_timeouts.timeouts.transport.pool,
+        ),
+        headers=headers,
+    )
+
 logger = logging.getLogger(__name__)
 
 # True once the loop-level cancel-scope exception handler is installed.  A
@@ -216,27 +271,14 @@ class MCPClient:
                 async with asyncio.timeout(_timeouts.timeouts.ready.connect_attempt):
                     self._exit_stack = AsyncExitStack()
                     if self._http_client is None:
-                        # Local plugin servers only — never route localhost
-                        # through the OS proxy (a Windows system proxy like
-                        # 127.0.0.1:7890 would 502 the local MCP session).
-                        # trust_env=False keeps this client proxy-free; a
+                        # Shared construction (timeouts + proxy-free): a
                         # provided client is owned by us (the SDK does not
                         # manage its lifecycle), so it is closed in _cleanup.
-                        # mcp ≥2.0's transport is built on `httpx2` and
-                        # types its http_client against it — the older `httpx`
+                        # mcp ≥2.0's transport is built on `httpx2` and types
+                        # its http_client against it — the older `httpx`
                         # distribution would only duck-type-fly.  Use httpx2
                         # so the injected client matches the SDK's contract.
-                        self._http_client = httpx2.AsyncClient(
-                            trust_env=False,
-                            timeout=httpx2.Timeout(
-                                connect=_timeouts.timeouts.transport.connect,
-                                # read/write are DELEGATED — the loop's tool
-                                # budget owns the read bound (both are None).
-                                read=_timeouts.timeouts.transport.read,
-                                write=_timeouts.timeouts.transport.write,
-                                pool=_timeouts.timeouts.transport.pool,
-                            ),
-                        )
+                        self._http_client = make_local_http_client()
                     # mcp ≤2.0 yielded ``(read, write, get_session_id)``; mcp
                     # 2.1 dropped the session-id callback → a 2-tuple.  We
                     # never consumed it, so unpack the current shape only.
@@ -364,25 +406,7 @@ class MCPClient:
         garbage collection and crash the process.
         """
         if self._exit_stack:
-            try:
-                # Bounded teardown: a request hung against a not-yet-ready
-                # server can keep the SDK transport's aclose from returning
-                # promptly.  Time it out so the connect retry loop always
-                # makes progress; the abandoned stack is reclaimed by GC and
-                # the next attempt builds a fresh one.
-                await asyncio.wait_for(
-                    self._exit_stack.aclose(),
-                    timeout=_timeouts.timeouts.grace.cleanup,
-                )
-            except asyncio.TimeoutError:
-                logger.debug("cleanup_aclose_timeout abandoning stack")
-            except RuntimeError as e:
-                if "cancel scope" in str(e):
-                    logger.debug("cleanup_cancel_scope_suppressed err=%s", e)
-                else:
-                    raise
-            except (Exception, BaseExceptionGroup):
-                pass
+            await close_exit_stack_bounded(self._exit_stack)
             # Give pending generator-finalisation callbacks a chance to run
             # in the current task instead of during GC.
             try:

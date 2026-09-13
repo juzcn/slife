@@ -16,7 +16,7 @@ import json
 import logging
 from typing import ClassVar
 
-from slife.tools.base import Tool, _MemfilesClientMixin, make_params
+from slife.tools.base import Tool, _MemfilesClientMixin, make_params, require_params
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +46,8 @@ class AddUserPrefTool(_MemfilesClientMixin, Tool):
     )
 
     async def execute(self, preference: str = "", **kwargs) -> str:
-        if not (preference or "").strip():
-            return "Error: preference is required."
+        if err := require_params(preference=(preference or "").strip()):
+            return err
         raw = await self._call("__user_pref_append", {"preference": preference})
         if not isinstance(raw, str):
             return "Error: unexpected memfiles plugin response."

@@ -20,7 +20,6 @@ Code reuse is via memdb helpers: ``_chunk_text``, ``_split_chunks_to_token_limit
 import asyncio
 import logging
 import re
-from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
@@ -31,19 +30,22 @@ from slife.plugins.memdb.store import (
     _clamp_limit,
     _contains_cjk,
     _like_escape,
+    _not_vec0_create,
     _serialize_f32,
-    _split_sql,
     _to_fts5_query,
+    _vec0_create,
+    in_placeholders,
+    run_schema,
 )
-from slife.timeutil import normalize_time_bound
+from slife.timeutil import normalize_time_bound, now_local_seconds
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_EMBEDDING_DIM = 1536
 
-
-def _now() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+#: Local ISO-seconds timestamp — the shared helper under the store's name
+#: (memdb aliases it the same way).
+_now = now_local_seconds
 
 
 def _slugify(text: str) -> str:
@@ -217,26 +219,15 @@ class MemfilesStore:
             logger.warning("memfiles_vec_unavailable err=%s", e)
 
     async def _run_schema(self) -> None:
-        schema_path = Path(__file__).parent / "schema.sql"
-        schema_sql = schema_path.read_text(encoding="utf-8")
-        schema_sql = schema_sql.replace("float[1536]", f"float[{self._embedding_dim}]")
-        for stmt in _split_sql(schema_sql):
-            stmt = stmt.strip()
-            if not stmt:
-                continue
-            # Skip only actual vec0 CREATE statements, not any fragment whose
-            # leading comment merely mentions "vec0" (the header comment does).
-            if (
-                self._embedding_dim <= 0
-                and "CREATE VIRTUAL TABLE" in stmt
-                and "vec0" in stmt
-            ):
-                continue
-            try:
-                await self._c.execute(stmt)
-            except Exception as e:
-                logger.debug("memfiles_schema_stmt_error err=%s stmt=%.80s", e, stmt)
-        await self._c.commit()
+        # Shared statement-by-statement executor (vec0 tables hang in
+        # executescript).  Skip only actual vec0 CREATE statements when no
+        # embedding backend — not any fragment whose leading comment merely
+        # mentions "vec0" (the header comment does) — see _not_vec0_create.
+        keep = None if self._embedding_dim > 0 else _not_vec0_create
+        await run_schema(
+            self._c, Path(__file__).parent / "schema.sql",
+            self._embedding_dim, keep=keep, log_prefix="memfiles_schema",
+        )
         await self._maybe_migrate_vec_dimension()
 
     async def _maybe_migrate_vec_dimension(self) -> None:
@@ -292,18 +283,11 @@ class MemfilesStore:
 
     async def _run_schema_recreate_vec(self) -> None:
         """Re-create only the vec0 tables after a dimension migration."""
-        schema_path = Path(__file__).parent / "schema.sql"
-        schema_sql = schema_path.read_text(encoding="utf-8")
-        schema_sql = schema_sql.replace("float[1536]", f"float[{self._embedding_dim}]")
-        for stmt in _split_sql(schema_sql):
-            stmt = stmt.strip()
-            if not stmt or "CREATE VIRTUAL TABLE" not in stmt or "vec0" not in stmt:
-                continue
-            try:
-                await self._c.execute(stmt)
-            except Exception as e:
-                logger.debug("memfiles_vec_recreate_error err=%s stmt=%.80s", e, stmt)
-        await self._c.commit()
+        await run_schema(
+            self._c, Path(__file__).parent / "schema.sql",
+            self._embedding_dim, keep=_vec0_create,
+            log_prefix="memfiles_vec_recreate",
+        )
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -1090,7 +1074,7 @@ class MemfilesStore:
                 break
         if hits:
             ids = [h["doc_id"] for h in hits]
-            ph = ",".join("?" * len(ids))
+            ph = in_placeholders(len(ids))
             cur = await self._c.execute(
                 f"SELECT id, {spec['file_col']} AS file_path "
                 f"FROM {spec['table']} WHERE id IN ({ph})",

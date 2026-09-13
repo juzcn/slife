@@ -23,7 +23,7 @@ from pathlib import Path
 
 import httpx2
 
-from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError
+from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError, _HttpClientMixin
 from slife.plugins.media.config import ProviderConfig
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
@@ -43,34 +43,11 @@ _IMAGE_FIELD_KEY = "image_field"
 _DEFAULT_IMAGE_FIELD = "image_url"
 
 
-class DashScopeAIGCAdapter:
+class DashScopeAIGCAdapter(_HttpClientMixin):
     def __init__(self, config: ProviderConfig):
         self._config = config
-        self._client: httpx2.AsyncClient | None = None
-        self._client_lock = asyncio.Lock()
+        self._init_http_client()
         self._saver = ArtifactSaver()
-
-    # ── HTTP plumbing ────────────────────────────────────────────────
-
-    async def _ensure_client(self) -> httpx2.AsyncClient:
-        if self._client is None:
-            async with self._client_lock:
-                if self._client is None:
-                    self._client = httpx2.AsyncClient(
-                        timeout=httpx2.Timeout(
-                        _timeouts.timeouts.transport.media_request,
-                        connect=_timeouts.timeouts.transport.media_connect,
-                    ),
-                        headers={
-                            "Authorization": f"Bearer {self._config.api_key}",
-                        },
-                    )
-        return self._client
-
-    async def close(self) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
 
 
     # Canonical MIME types for audio inputs.  ``mimetypes.guess_type()`` is

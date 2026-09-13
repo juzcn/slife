@@ -42,7 +42,7 @@ from slife.health import get_report as get_startup_records
 from slife.plugins.spec import PLUGIN_SPECS, health_check_name
 from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 from slife.paths import get_data_dir
-from slife.tools.base import Tool, make_params
+from slife.tools.base import Tool, make_params, require_params
 from slife.ui.i18n import t
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
@@ -1324,8 +1324,8 @@ class NotifyUserTool(Tool):
     }
 
     async def execute(self, title: str = "", message: str = "", **kwargs) -> str:
-        if not message:
-            return "Error: message is required."
+        if err := require_params(message=message):
+            return err
 
         # Default title is the localized app name — the LLM may pass its own.
         if not title:

@@ -15,13 +15,11 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
-from typing import Any
 
 from fastmcp.server.context import Context
 from fastmcp.server.middleware import Middleware
 
 from slife.plugins.mcp_gateway import config as plugin_config
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.plugins.spec import mcp_child_reserved_names
 from slife.plugins.mcp_gateway.connection import ConnectionPool, ServerConfig, ServerStatus
 from slife.plugins.mcp_gateway.logging import error_json, ok_json
@@ -33,6 +31,7 @@ from slife.plugins.mcp_gateway.search import (
 from slife.plugins.mcp_gateway.semantic import SemanticManager
 from slife.plugins.mcp_gateway.server_runtime import create_plugin_server
 from slife.plugins.mcp_gateway.store import ToolStore
+from slife.server_utils import SessionNotifier, warm_after_handshake
 
 
 @asynccontextmanager
@@ -150,35 +149,6 @@ class _CaptureClientEmbeddings(Middleware):
         return await call_next(context)
 
 
-class _WarmSemanticAfterHandshake(Middleware):
-    """Run the semantic warm-up after the first ``tools/list``.
-
-    Post-handshake by design: the embedding endpoint may arrive with the
-    ``initialize`` clientInfo, which is only known once the client has
-    initialised — warming from the lifespan would embed blind.  Mirrors the
-    memdb/memfiles pattern (warm the index in the background, never gate
-    readiness on it).
-    """
-
-    def __init__(self, delay: float = 0.25):
-        self._delay = delay
-        self._started = False
-
-    async def on_list_tools(self, context, call_next):
-        result = await call_next(context)
-        if not self._started:
-            self._started = True
-            asyncio.get_running_loop().create_task(self._go())
-        return result
-
-    async def _go(self) -> None:
-        await asyncio.sleep(self._delay)
-        try:
-            await _warm_semantic()
-        except Exception:
-            logger.debug("semantic_warm_failed", exc_info=True)
-
-
 mcp, _log_path, logger = create_plugin_server(
     "mcp-plugin",
     instructions=(
@@ -189,7 +159,12 @@ mcp, _log_path, logger = create_plugin_server(
     lifespan=_mcp_lifespan,
 )
 mcp.add_middleware(_CaptureClientEmbeddings())
-mcp.add_middleware(_WarmSemanticAfterHandshake())
+# Post-handshake semantic warm-up — the embedding endpoint may arrive with
+# the initialize clientInfo, only known once the client has initialised, so
+# warming runs in the background after the first tools/list (the shared
+# warm_after_handshake middleware; its default delay is 5s, the gateway
+# tightens it because cold SDK imports are usually already done at that point).
+warm_after_handshake(mcp, lambda: _warm_semantic(), delay=0.25, name="semantic")
 
 # ── Global state ─────────────────────────────────────────────────────
 
@@ -198,87 +173,43 @@ mcp.add_middleware(_WarmSemanticAfterHandshake())
 # reachable inside a request context (FastMCP's request_context raises
 # LookupError in background tasks), so tools that run on the request path
 # stash their session here for later use by the reconnect hook.
-_active_sessions: set[Any] = set()
+_active_sessions: set = set()
 #: Bound on tracked sessions.  A client that connects and disconnects cleanly
 #: (a send that never raises) would otherwise leak a session entry forever,
 #: and every entry widens the notification fan-out.  Past the bound an
 #: arbitrary entry is dropped — a dead one is reaped, a live one re-registers
 #: on its next tool call.
 _MAX_TRACKED_SESSIONS = 64
-#: Per-session deadline for tools/list_changed notifications
-#: (developer-owned — registry ready.notify).
-#: Coalescing state: at most ONE send is in flight, and pushes that land while
-#: it runs fold into a trailing-edge re-send (notification carries no payload —
-#: a host re-lists on receipt anyway).
-_notify_pending = False
-_notify_task: asyncio.Task | None = None
+#: Coalescing fan-out lives in :class:`slife.server_utils.SessionNotifier`;
+#: the module keeps the session set + the tested wrapper names.
+_notifier = SessionNotifier(lambda: _active_sessions)
 
 
 def _capture_session(ctx: Context | None) -> None:
     """Remember the caller's ServerSession for background notifications."""
-    if ctx is not None and ctx.session is not None:
-        _active_sessions.add(ctx.session)
-        if len(_active_sessions) > _MAX_TRACKED_SESSIONS:
-            _active_sessions.discard(next(iter(_active_sessions)))
+    _notifier.capture(ctx, max_sessions=_MAX_TRACKED_SESSIONS)
 
 
 def _request_tools_changed() -> None:
     """Coalesce-and-schedule ``notifications/tools/list_changed`` to all clients.
 
-    Fire-and-forget, and the send runs in a DETACHED task — never inside a
-    request handler's task/scope.  That split exists because the dispatcher in
-    mcp 2.1.1 desyncs its cancel-scope stack when a slow ``tools/call`` handler
-    (e.g. ``mcp_set_enabled`` (re)connecting a server) writes a burst of
-    notifications into its own session mid-handler — the session then crashes
-    and every later call dies with ``Session not found``.  Coalescing also
+    Fire-and-forget — the send runs in a DETACHED task.  That split exists
+    because the dispatcher in mcp 2.1.1 desyncs its cancel-scope stack when a
+    slow ``tools/call`` handler (e.g. ``mcp_set_enabled`` (re)connecting a
+    server) writes a burst of notifications into its own session mid-handler —
+    the session then crashes and every later call dies with ``Session not
+    found``; full rationale lives on :class:`SessionNotifier`.  Coalescing also
     collapses the dozen-plus pushes one enable used to fan out into a single
-    send.  Because it is detached and fire-and-forget, callers MUST NOT rely on
-    delivery ordering; hosts re-list on receipt.
+    send.  Callers MUST NOT rely on delivery ordering; hosts re-list on receipt.
     """
-    global _notify_pending, _notify_task
-    _notify_pending = True
-    if _notify_task is not None and not _notify_task.done():
-        return  # a send is scheduled/in flight — it re-checks the flag
-    _notify_task = asyncio.create_task(_notify_daemon())
-
-
-async def _notify_daemon() -> None:
-    """Trailing edge: while pushes keep landing, re-send after the in-flight
-    round so the freshest catalog always reaches every host, at most one send
-    in flight."""
-    global _notify_pending
-    while _notify_pending:
-        _notify_pending = False
-        await _notify_send_all()
-
-
-async def _notify_send_all() -> None:
-    """One eager notification round to every known client, in this task.
-
-    Best-effort: a dead/stale session is dropped; the rest are still served.
-    Sends run CONCURRENTLY (gather), each bounded by the registry's ready.notify,
-    so one slow/backpressured client degrades only itself (F4).
-    """
-    sessions = list(_active_sessions)
-
-    async def _send_one(sess) -> None:
-        try:
-            await asyncio.wait_for(
-                sess.send_tool_list_changed(),
-                timeout=_timeouts.timeouts.ready.notify,
-            )
-        except Exception:
-            # Dead/stale session — drop it so a later notification skips it.
-            _active_sessions.discard(sess)
-
-    await asyncio.gather(*(_send_one(s) for s in sessions))
+    _notifier.request_tools_changed()
 
 
 async def _notify_tools_changed() -> None:
     """Eager-flush alias kept for tests/…: run one full notification round
     now, in this task (deterministic delivery — no coalescing).  Production
     notification paths should use :func:`_request_tools_changed`."""
-    await _notify_send_all()
+    await _notifier.flush()
 
 
 # ── Tool catalog (in-memory) ────────────────────────────────────────────

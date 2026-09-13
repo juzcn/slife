@@ -238,6 +238,17 @@ class _ConfigPathMixin:
     def __init__(self, config_path: Path | None = None):
         self._config_path = config_path or get_config_path()
 
+    def _require_config(self) -> str | None:
+        """Require a config path before a read-only config tool runs.
+
+        Returns ``None`` when ``_config_path`` is available, else the shared
+        "config path not available" error.  Every config-reading tool spelled
+        this guard out inline before it moved here.
+        """
+        if not self._config_path:
+            return "Error: config path not available."
+        return None
+
     @classmethod
     def from_config(cls, cfg: dict, config: "Config | None", ctx: "ToolContext | None" = None):  # pyright: ignore[reportIncompatibleMethodOverride]
         path = config._path if config else None

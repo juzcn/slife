@@ -82,6 +82,27 @@ def get_logs_dir() -> Path:
     return get_data_dir() / "logs"
 
 
+def agent_name() -> str:
+    """The current agent identity (``SLIFE_AGENT_NAME``; default ``"slife"``).
+
+    One helper for the per-process bootstrap line every plugin child and the
+    main process previously spelled out inline.
+    """
+    return os.environ.get("SLIFE_AGENT_NAME", "slife")
+
+
+def get_memdb_db_path(agent_name: str = "slife") -> Path:
+    """Path to the memory-database file (``.db``).
+
+    ``SLIFE_MEMDB_DB`` wins when set (a test/dev override), else the
+    standard per-agent database under the data dir.
+    """
+    env_path = os.environ.get("SLIFE_MEMDB_DB")
+    if env_path:
+        return Path(env_path)
+    return get_db_path(agent_name)
+
+
 def get_db_path(agent_name: str = "slife") -> Path:
     """Path to the SQLite memory database for *agent_name*.
 

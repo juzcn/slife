@@ -41,6 +41,7 @@ import time as _time
 from datetime import datetime
 
 from slife.agent.system_prompt import render_template
+from slife.timeutil import now_local_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -538,8 +539,7 @@ async def fire_task_now(service, name: str, due_at: str = "",
     if not task:
         return f"Scheduled task not found: {name}"
 
-    due_iso = due_at.strip() or datetime.now().astimezone().isoformat(
-        timespec="seconds")
+    due_iso = due_at.strip() or now_local_seconds()
     await _call(client, "__scheduled_record_run",
                 {"task_id": task["id"], "due_at": due_iso})
 

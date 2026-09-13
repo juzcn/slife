@@ -36,6 +36,7 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
+from slife.plugins.mcp_gateway.client import close_exit_stack_bounded, make_local_http_client
 from mcp.types import (
     TextContent,
     ImageContent,
@@ -357,31 +358,23 @@ class MCPServerConnection:
             # client, so build one lazily here (with the OAuth/resolved
             # headers riding along); the SSE-success path never allocates it.
             if self._exit_stack is not None:
+                # Lenient on the fallback: whatever aclose raises (the SDK's
+                # task-group teardown, or a plain error from the failed SSE
+                # attempt) must not abort the Streamable HTTP retry.  The
+                # strict helper already swallows timeout/cancel-scope/
+                # ExceptionGroup; a remaining RuntimeError is swallowed here.
                 try:
-                    await asyncio.wait_for(
-                        self._exit_stack.aclose(),
-                        timeout=_timeouts.timeouts.grace.cleanup,
-                    )
-                except (asyncio.TimeoutError, RuntimeError, BaseExceptionGroup):
+                    await close_exit_stack_bounded(self._exit_stack, label="sse_fallback")
+                except RuntimeError:
                     pass
                 self._exit_stack = AsyncExitStack()
             if self._http_client is None:
-                # No read/write timeout of our own — enforcement lives in the
-                # agent loop's tool_timeout (per the timeout architecture).
-                # Only connect/pool are bounded so a dead endpoint can't hang
-                # the handshake; ping carries its own wait_for (probe_endpoint).
-                self._http_client = httpx2.AsyncClient(
-                    headers=headers,
-                    timeout=httpx2.Timeout(
-                        connect=_timeouts.timeouts.transport.connect,
-                        # read/write are DELEGATED — the loop's tool budget
-                        # owns the read bound (both are None).
-                        read=_timeouts.timeouts.transport.read,
-                        write=_timeouts.timeouts.transport.write,
-                        pool=_timeouts.timeouts.transport.pool,
-                    ),
-                    trust_env=False,
-                )
+                # Shared construction (timeouts + proxy-free).  No read/write
+                # timeout of our own — enforcement lives in the agent loop's
+                # tool_timeout (per the timeout architecture).  Only
+                # connect/pool are bounded so a dead endpoint can't hang the
+                # handshake; ping carries its own wait_for (probe_endpoint).
+                self._http_client = make_local_http_client(headers=headers)
             read_stream, write_stream = await self._exit_stack.enter_async_context(
                 streamable_http_client(url, http_client=self._http_client),
             )
@@ -840,22 +833,7 @@ class MCPServerConnection:
         self._notify_tasks.clear()
 
         if self._exit_stack is not None:
-            try:
-                # Bounded teardown: a request hung against a not-yet-ready
-                # server can keep aclose() from returning promptly.
-                await asyncio.wait_for(
-                    self._exit_stack.aclose(),
-                    timeout=_timeouts.timeouts.grace.cleanup,
-                )
-            except asyncio.TimeoutError:
-                logger.debug("cleanup_aclose_timeout abandoning stack")
-            except RuntimeError as e:
-                if "cancel scope" in str(e):
-                    logger.debug("cleanup_cancel_scope_suppressed err=%s", e)
-                else:
-                    raise
-            except (Exception, BaseExceptionGroup):
-                pass
+            await close_exit_stack_bounded(self._exit_stack)
             self._exit_stack = None
         self._session = None
         # stdio stderr capture: stop the drain and release the temp file (the

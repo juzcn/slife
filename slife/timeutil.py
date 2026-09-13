@@ -57,9 +57,7 @@ def normalize_time_bound(
         _RELATIVE_DATES["today"] = today_iso
         _RELATIVE_DATES["yesterday"] = (today - timedelta(days=1)).isoformat()
         _RELATIVE_DATES["tomorrow"] = (today + timedelta(days=1)).isoformat()
-        _RELATIVE_DATES["now"] = datetime.now().astimezone().isoformat(
-            timespec="seconds",
-        )
+        _RELATIVE_DATES["now"] = now_local_seconds()
 
     key = value.strip().lower()
     if key in _RELATIVE_DATES:
@@ -91,8 +89,23 @@ def normalize_time_bound(
         try:
             dt = datetime.fromisoformat(value)
             if dt.tzinfo is not None:
-                value = dt.astimezone().isoformat(timespec="seconds")
+                value = local_iso_seconds(dt)
         except ValueError:
             pass  # not a parseable ISO datetime; pass through unchanged
 
     return value
+
+
+def now_local_seconds() -> str:
+    """Current wall clock as a local ISO timestamp, seconds precision.
+
+    Slife's stored-timestamp convention (see the module docstring):
+    local time, ``YYYY-MM-DDTHH:MM:SS+HH:MM``.  Every store's ``_now``
+    spelled this out inline before it moved here.
+    """
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def local_iso_seconds(dt: datetime) -> str:
+    """Normalize a datetime to the local-ISO-seconds convention."""
+    return dt.astimezone().isoformat(timespec="seconds")

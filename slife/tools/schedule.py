@@ -119,8 +119,8 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
         timezone: str = "", enabled: bool = True, **kwargs,
     ) -> str:
         name = (name or "").strip()
-        if not name:
-            return "Error: name is required."
+        if err := require_params(name=name):
+            return err
         if not _SAFE_TASK_NAME_RE.match(name):
             return (
                 f"Error: name {name!r} is not a valid task/worker name — it is "
@@ -170,8 +170,8 @@ class ScheduledTaskRemoveTool(_ScheduleMixin, Tool):
     )
 
     async def execute(self, name: str = "", **kwargs) -> str:
-        if not (name or "").strip():
-            return "Error: name is required."
+        if err := require_params(name=(name or "").strip()):
+            return err
         return self._format(await self._call("__scheduled_task_remove", {"name": name}))
 
 

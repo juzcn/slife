@@ -56,19 +56,17 @@ async def _read_bounded(stream, head: int = _STREAM_HEAD, tail: int = _STREAM_TA
     return bytes(head_buf), bytes(tail_buf), total - retained
 
 
-def _merge_bounded(head: bytes, tail: bytes, dropped: int) -> str:
+def _merge_text(
+    head: bytes, tail: bytes, dropped: int, *, codec: str | None = None,
+) -> str:
     """Decode a bounded head+tail pair into one output string, marking the
     dropped middle explicitly inside the tool result (the tool-result policy
-    requires truncation to be visible, not silent)."""
-    text = (head + tail).decode(_shell_output_codec(), errors="replace")
-    if dropped > 0:
-        text += f"\n… (truncated: {dropped} bytes of streamed output not retained)"
-    return text
-
-
-def _merge_utf8(head: bytes, tail: bytes, dropped: int) -> str:
-    """Decode a bounded head+tail pair as UTF-8 with the dropped-middle marker."""
-    text = (head + tail).decode("utf-8", errors="replace")
+    requires truncation to be visible, not silent).  *codec* ``None`` picks
+    the shell output codec (OEM on Windows); script streams pass ``"utf-8"``.
+    """
+    if codec is None:
+        codec = _shell_output_codec()
+    text = (head + tail).decode(codec, errors="replace")
     if dropped > 0:
         text += f"\n… (truncated: {dropped} bytes of streamed output not retained)"
     return text
@@ -86,6 +84,66 @@ async def _read_stdout_stderr(process):
         _read_bounded(process.stderr),
     )
     return out_h, out_t, out_d, err_h, err_t, err_d
+
+
+class _CapturedRun:
+    """Result of :func:`_run_captured` — merged bounded streams + exit code."""
+
+    __slots__ = ("stdout", "stderr", "returncode")
+
+    def __init__(self, stdout: str, stderr: str, returncode: int | None) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+async def _run_captured(
+    argv: list[str],
+    *,
+    timeout: float | None = None,
+    codec: str | None = None,
+) -> _CapturedRun:
+    """Spawn *argv* and read both pipes with the shared bounded head+tail spine.
+
+    The three execution tools used to spell this outline out individually:
+    spawn in its own process group, stream with a read-side memory bound
+    (never ``communicate()``'s buffer-everything), and kill the WHOLE tree on
+    timeout OR cancel so no child (yt-dlp/ffmpeg mid-download, uv mid-install)
+    survives as an orphan writing to the console/TUI.  ``TimeoutError`` /
+    ``CancelledError`` are re-raised AFTER the kill; each caller renders its
+    own message.
+
+    Args:
+        argv: Command vector (spawned via ``create_subprocess_exec``).
+        timeout: Optional overall bound on the stream read (``wait_for``);
+                 ``None`` relies on the loop's tool-timeout cancelling the read.
+        codec: Stream decode codec — ``None`` → the shell output codec
+               (:func:`_shell_output_codec`), ``"utf-8"`` for scripts.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        # Own process group on POSIX so timeout/cancel can kill the whole
+        # tree (sh + children, a mid-install uv) — see kill_process_tree.
+        start_new_session=True,
+    )
+    try:
+        read = _read_stdout_stderr(proc)
+        if timeout is not None:
+            read = asyncio.wait_for(read, timeout=timeout)
+        out_h, out_t, out_d, err_h, err_t, err_d = await read
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        # Kill the whole tree — a bare process.kill() only kills the shell
+        # and orphans children that keep writing to the console.
+        await kill_process_tree(proc)
+        raise
+    return _CapturedRun(
+        stdout=_merge_text(out_h, out_t, out_d, codec=codec),
+        stderr=_merge_text(err_h, err_t, err_d, codec=codec),
+        returncode=proc.returncode,
+    )
 
 
 def _shell_argv(command: str) -> list[str]:
@@ -195,46 +253,27 @@ class ShellTool(Tool):
         # Run the detected shell (not COMSPEC=cmd.exe on Windows) so the
         # command executes in the same shell the system prompt reports.
         argv = _shell_argv(command)
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            # Own process group on POSIX so a timeout can kill the whole
-            # tree (sh + children like yt-dlp/ffmpeg) — see _kill_process_tree.
-            start_new_session=True,
-        )
         try:
-            # Stream the pipes with a read-side memory bound instead of
-            # communicate()'s buffer-everything — a large dump must not grow
-            # the process unboundedly (F7).  Reading both streams concurrently
-            # (gather) so neither pipe fills while we wait on the other.
-            stdout_head, stdout_tail, stdout_dropped, \
-                stderr_head, stderr_tail, stderr_dropped = await asyncio.wait_for(
-                    _read_stdout_stderr(process), timeout=timeout,
-                )
-            output = _merge_bounded(stdout_head, stdout_tail, stdout_dropped)
-            err_output = _merge_bounded(stderr_head, stderr_tail, stderr_dropped)
+            # Shared spine: spawn in its own group, bounded stream read, and
+            # tree-kill on timeout/cancel (see _run_captured).  Shell output
+            # keeps the OEM codec — the default when no codec is passed.
+            run = await _run_captured(argv, timeout=timeout)
         except asyncio.TimeoutError:
-            # Kill the whole tree — a bare process.kill() only kills the
-            # shell and orphans yt-dlp/ffmpeg, which keep writing to the
-            # console and garble the TUI.
-            await kill_process_tree(process)
             logger.warning("shell_timeout timeout=%ds cmd=%.200s", timeout, sanitize_secrets(command))
             return f"Error: Command timed out after {timeout}s"
 
-        result = output
-        if err_output:
-            result += f"\n[stderr]\n{err_output}"
+        result = run.stdout
+        if run.stderr:
+            result += f"\n[stderr]\n{run.stderr}"
         if not result.strip():
-            result = f"Command completed with exit code {process.returncode} (no output)"
-        elif process.returncode:
+            result = f"Command completed with exit code {run.returncode} (no output)"
+        elif run.returncode:
             # Non-zero exit WITH output — surface the code so the LLM can tell
             # the difference (F7); the plain-output shape silently hid it.
-            result += f"\n[exit {process.returncode}]"
+            result += f"\n[exit {run.returncode}]"
 
         logger.debug("shell_done exit=%d out_len=%d err_len=%d",
-                     process.returncode or 0, len(output), len(err_output))
+                     run.returncode or 0, len(run.stdout), len(run.stderr))
         return result
 
 
@@ -296,32 +335,17 @@ class RunPythonScriptTool(Tool):
                 argv.append(args)
             logger.debug("run_python_script argv=%s", sanitize_secrets(str(argv)))
 
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            # Own process group on POSIX so cancel/timeout can kill the
-            # whole tree — see _kill_process_tree.
-            start_new_session=True,
-        )
-        try:
-            out_h, out_t, out_d, err_h, err_t, err_d = await _read_stdout_stderr(proc)
-        except asyncio.CancelledError:
-            # The loop's tool-timeout cancels the read — kill the child tree
-            # so the running script (e.g. a yt-dlp download) doesn't survive
-            # as an orphan writing to the console.
-            await kill_process_tree(proc)
-            raise
-        # UTF-8 decode for the script stream (the script codec, not the shell
-        # OEM codec) — head+tail with the dropped middle reported.
-        out = _merge_utf8(out_h, out_t, out_d).strip()
-        err = _merge_utf8(err_h, err_t, err_d).strip()
+        # The shared spine handles spawn, the bounded read, and the tree-kill on
+        # the loop's tool-timeout cancel (see _run_captured).  Script streams
+        # decode as UTF-8 (the script codec, not the shell OEM codec).
+        run = await _run_captured(argv, codec="utf-8")
+        out = run.stdout.strip()
+        err = run.stderr.strip()
 
-        if proc.returncode != 0:
+        if run.returncode != 0:
             if out:
                 return out
-            return f"Error (exit {proc.returncode}): {err}" if err else f"Error (exit {proc.returncode})"
+            return f"Error (exit {run.returncode}): {err}" if err else f"Error (exit {run.returncode})"
         return out if out else f"Script completed with no output. stderr: {err}" if err else "Script completed with no output."
 
 
@@ -356,32 +380,21 @@ class InstallPythonPackageTool(Tool):
         # The `--` separator ends uv's option parsing: a package spec that
         # begins with `-` (e.g. "--index-url https://attacker") would otherwise
         # be consumed as a uv flag and redirect the install to a hostile index.
-        proc = await asyncio.create_subprocess_exec(
-            "uv", "pip", "install", "--python", sys.executable, "--", *packages,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            # Own process group so timeout/cancel can kill the whole tree —
-            # otherwise a mid-install uv process survives as an orphan.
-            start_new_session=True,
-        )
         try:
-            out_h, out_t, out_d, err_h, err_t, err_d = await asyncio.wait_for(
-                _read_stdout_stderr(proc),
+            run = await _run_captured(
+                ["uv", "pip", "install", "--python", sys.executable, "--", *packages],
                 timeout=_timeouts.timeouts.work.pip_install,
+                codec="utf-8",
             )
         except asyncio.TimeoutError:
-            await kill_process_tree(proc)
             logger.warning("pip_install_timeout packages=%s", packages)
             return f"Error: pip install timed out after {_timeouts.timeouts.work.pip_install:g}s"
-        except asyncio.CancelledError:
-            await kill_process_tree(proc)
-            raise
-        out = _merge_utf8(out_h, out_t, out_d).strip()
-        err = _merge_utf8(err_h, err_t, err_d).strip()
+        out = run.stdout.strip()
+        err = run.stderr.strip()
 
-        if proc.returncode == 0:
+        if run.returncode == 0:
             logger.info("pip_install_done packages=%s", packages)
             return out or f"✓ Installed: {', '.join(packages)}"
         else:
             logger.warning("pip_install_failed packages=%s err=%s", packages, err)
-            return f"Error installing {', '.join(packages)}:\n{err}" if err else f"Error installing {', '.join(packages)} (exit {proc.returncode})"
+            return f"Error installing {', '.join(packages)}:\n{err}" if err else f"Error installing {', '.join(packages)} (exit {run.returncode})"

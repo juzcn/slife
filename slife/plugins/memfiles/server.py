@@ -58,6 +58,7 @@ from slife.plugins.memdb.semantic import SemanticManager
 from slife.plugins.memfiles.store import MemfilesStore, _slugify, _unique_path
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.plugins.memfiles.user_prefs import append_preference, user_prefs_path
+from slife.tools.base import require_params
 from slife.server_utils import (
     create_plugin_server,
     run_plugin_server,
@@ -892,10 +893,11 @@ async def __scheduled_task_upsert(
     description="Internal: delete a scheduled task and its run history by name (reports kept).",
 )
 async def __scheduled_task_remove(name: str) -> str:
-    if not name.strip():
-        return "Error: name is required."
+    name = name.strip()
+    if err := require_params(name=name):
+        return err
     store = await _ensure_store()
-    removed = await store.remove_scheduled_task(name.strip())
+    removed = await store.remove_scheduled_task(name)
     if not removed:
         return f"Scheduled task not found: {name}"
     return f"Scheduled task '{name}' removed (its run history was cleared; reports are kept)."

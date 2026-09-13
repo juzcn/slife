@@ -20,7 +20,6 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from slife.paths import get_data_dir
 from slife.plugins.memdb.store import SessionStore, _clamp_limit
 from slife.plugins.memdb.search import (
     SCORE_BAND_HINT, annotate_scores, merge_hybrid,
@@ -106,15 +105,12 @@ def _rename_rowid_to_turn_id(entries: list[dict]) -> None:
 def _get_db_path() -> Path:
     """Return the database path for the current agent.
 
-    Uses ``SLIFE_DATA_DIR`` (set by the main process) so dev and
-    production environments each get their own location.
+    ``SLIFE_MEMDB_DB`` override, else the per-agent ``<agent>.db`` under the
+    data dir — both resolved by the single :func:`slife.paths.get_memdb_db_path`.
     """
-    agent_name = os.environ.get("SLIFE_AGENT_NAME", "slife")
-    env_path = os.environ.get("SLIFE_MEMDB_DB")
-    if env_path:
-        return Path(env_path)
-    data_dir = get_data_dir()
-    return data_dir / f"{agent_name}.db"
+    from slife.paths import get_memdb_db_path
+
+    return get_memdb_db_path()
 
 
 def _get_init_lock() -> asyncio.Lock:

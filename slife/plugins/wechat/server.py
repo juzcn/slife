@@ -103,7 +103,8 @@ def _render_qr_ascii(content: str) -> str:
 # ── Global state ─────────────────────────────────────────────────────────
 
 _client = WechatClawbotClient()
-_agent_name: str = os.environ.get("SLIFE_AGENT_NAME", "slife")
+from slife.paths import agent_name as _get_agent_name
+_agent_name: str = _get_agent_name()
 from slife.paths import get_data_dir as _get_data_dir
 _work_dir: Path = _get_data_dir()
 

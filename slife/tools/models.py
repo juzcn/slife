@@ -105,8 +105,8 @@ class ListModelsTool(_ConfigPathMixin, Tool):
     }
 
     async def execute(self, **_kwargs) -> str:
-        if not self._config_path:
-            return "Error: config path not available."
+        if err := self._require_config():
+            return err
         raw = read_config(self._config_path)
         providers = raw.get(_MODELS_KEY, {}).get("providers", {})
         if not isinstance(providers, dict) or not providers:
@@ -218,8 +218,8 @@ class SetModelTool(_ModelConfigTool):
 
     @config_write_locked
     async def execute(self, **kwargs) -> str:
-        if not self._config_path:
-            return "Error: config path not available."
+        if err := self._require_config():
+            return err
 
         raw = read_config(self._config_path)
         providers = _providers_section(raw)
@@ -332,8 +332,8 @@ class RemoveModelTool(_ModelConfigTool):
 
     @config_write_locked
     async def execute(self, **kwargs) -> str:
-        if not self._config_path:
-            return "Error: config path not available."
+        if err := self._require_config():
+            return err
 
         ref = kwargs["ref"]
         if "/" not in ref:
@@ -410,8 +410,8 @@ class SwitchModelTool(_ModelConfigTool):
 
     @config_write_locked
     async def execute(self, **kwargs) -> str:
-        if not self._config_path:
-            return "Error: config path not available."
+        if err := self._require_config():
+            return err
 
         ref = kwargs["ref"]
         raw = read_config(self._config_path)

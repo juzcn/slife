@@ -1916,14 +1916,9 @@ class AgentService:
 
     def _get_memory_db_path(self) -> Path | None:
         """Return the memory database path."""
-        import os
-        from slife.paths import get_data_dir
+        from slife.paths import get_memdb_db_path
 
-        env_path = os.environ.get("SLIFE_MEMDB_DB")
-        if env_path:
-            return Path(env_path)
-        agent_name = os.environ.get("SLIFE_AGENT_NAME", "slife")
-        return get_data_dir() / f"{agent_name}.db"
+        return get_memdb_db_path()
 
     # ── Autonomous heartbeat ──────────────────────────────────────────
 

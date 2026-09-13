@@ -6,10 +6,9 @@ focused on ``main()``.
 
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
 
-from slife.logfmt import SessionFormatter, FILE_LOG_FORMAT, resolve_log_dir
+from slife.logfmt import SessionFormatter, FILE_LOG_FORMAT, log_stamp, resolve_log_dir
 
 logger = logging.getLogger("slife")
 
@@ -22,7 +21,7 @@ def _session_log_path(agent_name: str = "slife") -> Path:
     """
     log_dir = resolve_log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = log_stamp()
     return log_dir / f"{ts}_{agent_name}.log"
 
 

@@ -207,8 +207,11 @@ llm = _LLMProxy()
 # names are probed at authoring time via the host's ``mcp_list_tools``).
 
 #: Host env var the generic spawn publishes for a plugin's port
-#: (``plugin_port_env("mcp-gateway")`` — uppercase, dashes→underscores).
-_GATEWAY_PORT_ENV = "SLIFE_MCP_GATEWAY_PORT"
+#: (via ``plugin_port_env("mcp-gateway")`` — uppercase, dashes→underscores).
+def _gateway_port_env() -> str:
+    from slife.agent.plugins import plugin_port_env
+
+    return plugin_port_env("mcp-gateway")
 
 #: Per-process gateway connection state.  Nothing is established until the
 #: first ``mcp.call``; the host push re-points it on gateway restart.
@@ -312,7 +315,7 @@ class _GatewayProxy:
 
             port, source = _gateway_port, _gateway_port_source
             if not port:
-                env_port = os.environ.get(_GATEWAY_PORT_ENV)
+                env_port = os.environ.get(_gateway_port_env())
                 if env_port and env_port.strip():
                     port, source = env_port.strip(), "env"
             if not port:

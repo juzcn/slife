@@ -30,11 +30,11 @@ import json
 import logging
 import math
 import struct
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+from slife.timeutil import now_local_seconds
 
 from slife.plugins.memdb.store import (
     _clamp_limit,
@@ -43,13 +43,16 @@ from slife.plugins.memdb.store import (
     _serialize_f32,
     _split_sql,
     _to_fts5_query,
+    in_placeholders,
 )
 
 logger = logging.getLogger(__name__)
 
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+#: Local ISO-seconds timestamp — the shared helper under the store's name.
+#: Was UTC + full microsecond precision, silently drifting from the
+#: local-seconds convention every sibling store's ``_now`` uses (timestamps
+#: in one timebase sort/compare correctly); unified here.
+_now = now_local_seconds
 
 
 def _deserialize_f32(blob: bytes) -> list[float]:
@@ -298,7 +301,7 @@ class ToolStore:
                     )
             # Remove tools this server no longer advertises.
             if names:
-                ph = ",".join("?" * len(names))
+                ph = in_placeholders(len(names))
                 cursor = await self._c.execute(
                     f"DELETE FROM tools WHERE server = ? AND name NOT IN ({ph})",
                     (server, *names),

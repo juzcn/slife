@@ -248,13 +248,10 @@ class MCPWrapperProcess:
         # Check if the child process already died
         returncode = self._process.returncode
         if returncode is not None:
-            stderr_tail = ""
-            if self._process.stderr:
-                try:
-                    remaining = await self._process.stderr.read()
-                    stderr_tail = remaining.decode("utf-8", errors="replace")[-2000:]
-                except Exception:
-                    pass
+            # Bounded tail — same helper the start-failure path uses.  The
+            # child is confirmed dead, so readline hits EOF immediately and
+            # the per-line timeout never fires.
+            stderr_tail = await self._read_stderr_tail()
             raise RuntimeError(
                 f"Plugin child process (pid={self._process.pid}) exited "
                 f"with code {returncode} before Streamable HTTP connection. "

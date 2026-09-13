@@ -124,8 +124,8 @@ class ListEmbeddingsTool(_ConfigPathMixin, Tool):
     }
 
     async def execute(self, **_kwargs) -> str:
-        if not self._config_path:
-            return "Error: config path not available."
+        if err := self._require_config():
+            return err
         raw = read_config(self._config_path)
         emb = raw.get(_EMBEDDINGS_KEY, {})
         if not isinstance(emb, dict):
@@ -194,8 +194,8 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
 
     @config_write_locked
     async def execute(self, **kwargs) -> str:
-        if not self._config_path:
-            return "Error: config path not available."
+        if err := self._require_config():
+            return err
 
         raw = read_config(self._config_path)
         emb = _embeddings_section(raw)
@@ -258,8 +258,8 @@ class SwitchEmbeddingsTool(_EmbeddingsConfigTool):
 
     @config_write_locked
     async def execute(self, **kwargs) -> str:
-        if not self._config_path:
-            return "Error: config path not available."
+        if err := self._require_config():
+            return err
 
         pid = kwargs["provider"]
         raw = read_config(self._config_path)
@@ -302,8 +302,8 @@ class RemoveEmbeddingsTool(_EmbeddingsConfigTool):
 
     @config_write_locked
     async def execute(self, **kwargs) -> str:
-        if not self._config_path:
-            return "Error: config path not available."
+        if err := self._require_config():
+            return err
 
         pid = kwargs["provider"]
         raw = read_config(self._config_path)
@@ -350,8 +350,8 @@ class EnableEmbeddingsTool(_EmbeddingsConfigTool):
 
     @config_write_locked
     async def execute(self, **kwargs) -> str:
-        if not self._config_path:
-            return "Error: config path not available."
+        if err := self._require_config():
+            return err
 
         enabled = bool(kwargs["enabled"])
         raw = read_config(self._config_path)

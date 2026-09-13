@@ -156,21 +156,36 @@ def make_params(**fields: dict) -> dict:
 # ── Validation helpers ────────────────────────────────────────────
 
 
-def require_params(**params: object) -> str | None:
+def require_params(
+    _hints: dict[str, str] | None = None, **params: object,
+) -> str | None:
     """Validate that all named parameters are non-empty.
 
-    Returns an error message string if any parameter is falsy,
-    or ``None`` if all are valid.
+    Returns an error message string if any parameter is falsy, or ``None``
+    if all are valid.
 
-    Usage::
+    ``_hints`` maps a missing parameter to an appended guidance clause, so a
+    caller keeps one message shape while explaining what is expected::
 
-        if err := require_params(agent_name=agent_name, task=task):
+        if err := require_params(subagent_name=name,
+                                 _hints={"subagent_name": "e.g. \"coder-1\""}):
             return err
+        # "Error: subagent_name is required. — e.g. "coder-1""
+
+    A single missing param reads ``"Error: <name> is required."``; several
+    read ``"Error: <a> and <b> are required."``.  This is the one message
+    shape every tool uses — no module spells the guard out as its own string.
     """
     missing = [k for k, v in params.items() if not v]
-    if missing:
-        return f"Error: {' and '.join(missing)} required."
-    return None
+    if not missing:
+        return None
+    if len(missing) == 1:
+        name = missing[0]
+        hint = _hints.get(name) if _hints else None
+        if hint:
+            return f"Error: {name} is required — {hint}"
+        return f"Error: {name} is required."
+    return f"Error: {' and '.join(missing)} are required."
 
 
 class Tool(ABC):

@@ -27,7 +27,6 @@ Usage::
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from contextlib import asynccontextmanager
@@ -37,8 +36,7 @@ from fastmcp.server.context import Context
 
 from slife.plugins.job_coding import registry, runner
 from slife.paths import get_jobs_dir
-from slife.server_utils import create_plugin_server, run_plugin_server
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.server_utils import SessionNotifier, create_plugin_server, run_plugin_server
 
 #: Job names that would collide with this plugin's own tools.
 _RESERVED_NAMES = frozenset({
@@ -58,71 +56,31 @@ _active_sessions: set = set()  # client sessions to notify on tool-set change
 #: widens the fan-out.  Past the bound a dead entry is reaped, a live one
 #: re-registers on its next tool call.
 _MAX_TRACKED_SESSIONS = 64
-#: Per-session deadline for tools/list_changed notifications
-#: (developer-owned — registry ready.notify).
-#: Coalescing state: at most ONE send in flight; pushes that land while it
-#: runs fold into a trailing-edge re-send.
-_notify_pending = False
-_notify_task: asyncio.Task | None = None
+#: Coalescing fan-out lives in :class:`slife.server_utils.SessionNotifier`;
+#: the module keeps the session set + the tested wrapper names.
+_notifier = SessionNotifier(lambda: _active_sessions)
 
 
 def _capture_session(ctx: Context | None) -> None:
     """Remember the caller's session for background notifications."""
-    if ctx is not None and ctx.session is not None:
-        _active_sessions.add(ctx.session)
-        if len(_active_sessions) > _MAX_TRACKED_SESSIONS:
-            _active_sessions.discard(next(iter(_active_sessions)))
+    _notifier.capture(ctx, max_sessions=_MAX_TRACKED_SESSIONS)
 
 
 def _request_tools_changed() -> None:
     """Coalesce-and-schedule ``notifications/tools/list_changed`` to all clients.
 
-    Fire-and-forget, sent from a DETACHED task — never inside a request
-    handler's task/scope, where mcp 2.1.1's dispatcher desyncs its
-    cancel-scope stack under a notification burst and crashes the session.
+    Fire-and-forget — the send runs in a DETACHED task (the mcp 2.1.1
+    dispatcher cancel-scope rationale lives on :class:`SessionNotifier`).
     A listening harness re-syncs its tool registry on receipt.
     """
-    global _notify_pending, _notify_task
-    _notify_pending = True
-    if _notify_task is not None and not _notify_task.done():
-        return  # a send is scheduled/in flight — it re-checks the flag
-    _notify_task = asyncio.create_task(_notify_daemon())
-
-
-async def _notify_daemon() -> None:
-    """Trailing edge: re-send after the in-flight round while pushes keep
-    landing, so the freshest catalog always reaches every host."""
-    global _notify_pending
-    while _notify_pending:
-        _notify_pending = False
-        await _notify_send_all()
-
-
-async def _notify_send_all() -> None:
-    """One eager notification round to every known client, in this task.
-
-    Best-effort: a dead/stale session is dropped, the rest are served.
-    Sends run CONCURRENTLY, each bounded by the registry's ready.notify.
-    """
-    sessions = list(_active_sessions)
-
-    async def _send_one(sess) -> None:
-        try:
-            await asyncio.wait_for(
-                sess.send_tool_list_changed(),
-                timeout=_timeouts.timeouts.ready.notify,
-            )
-        except Exception:
-            _active_sessions.discard(sess)
-
-    await asyncio.gather(*(_send_one(s) for s in sessions))
+    _notifier.request_tools_changed()
 
 
 async def _notify_tools_changed() -> None:
     """Eager-flush alias kept for tests/…: run one full notification round
     now, in this task (deterministic delivery — no coalescing).  Production
     notification paths should use :func:`_request_tools_changed`."""
-    await _notify_send_all()
+    await _notifier.flush()
 
 
 def _get_llm_client():

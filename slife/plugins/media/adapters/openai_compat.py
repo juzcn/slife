@@ -14,34 +14,17 @@ from pathlib import Path
 
 import httpx2
 
-from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError
+from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError, _HttpClientMixin
 from slife.plugins.media.config import ProviderConfig
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
 
-class OpenAICompatAdapter:
+class OpenAICompatAdapter(_HttpClientMixin):
     def __init__(self, config: ProviderConfig):
         self._config = config
-        self._client: httpx2.AsyncClient | None = None
+        self._init_http_client()
         self._saver = ArtifactSaver()
-
-    async def _ensure_client(self) -> httpx2.AsyncClient:
-        if self._client is None:
-            self._client = httpx2.AsyncClient(
-                timeout=httpx2.Timeout(
-                    _timeouts.timeouts.transport.media_request,
-                    connect=_timeouts.timeouts.transport.media_connect,
-                ),
-                headers={"Authorization": f"Bearer {self._config.api_key}"},
-            )
-        return self._client
-
-    async def close(self) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
 
     async def generate_image(
         self, *, model: str, prompt: str, size: str = "",

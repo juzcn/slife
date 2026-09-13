@@ -161,14 +161,13 @@ def main(config_path: str | None = None):
     # heuristic is a fallback for credential-named keys whose value matched no
     # known shape (short secret, arbitrary token).
     if config.env:
-        from slife.logfmt import sanitize_secrets
+        from slife.logfmt import mask_value, sanitize_secrets
         for key, value in config.env.items():
             s = sanitize_secrets(str(value))
             if s == str(value) and any(
                 hint in key.upper() for hint in ("KEY", "SECRET", "TOKEN", "PASSWORD")
             ):
-                masked = str(value)[:4] + "…" + str(value)[-4:] if len(str(value)) > 8 else "***"
-                s = masked
+                s = mask_value(str(value))
             logger.debug("env %s=%s", key, s)
 
     active = config.active_model

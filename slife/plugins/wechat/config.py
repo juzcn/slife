@@ -22,9 +22,6 @@ Config format::
     }
 """
 
-import os
-import tempfile
-
 import json5
 import logging
 from pathlib import Path
@@ -35,23 +32,17 @@ DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
 
 
 def _atomic_write_json5(path: Path, data: dict) -> None:
-    """Write *data* to *path* atomically (temp file + rename).
+    """Write *data* to *path* atomically.
 
     A cursor write must never be able to leave the session file half-written
     — readers see either the old or the new content, never a torn mix.
+    Delegates to the shared atomic writer (temp file in the parent dir +
+    ``os.replace``, fsync, mode-preserve) so this plugin stops carrying a
+    weaker copy of the same guarantee.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".wechat_cfg_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json5.dumps(data, indent=2))
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    from slife.tools._config_io import write_config
+
+    write_config(path, data)
 
 
 def _config_path(user: str, work_dir: Path | None = None) -> Path:

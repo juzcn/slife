@@ -464,7 +464,8 @@ def main() -> None:
     global _PLUGIN_PORT
     sock, port = bind_free_port()
     _PLUGIN_PORT = port
-    os.environ["SLIFE_SHAREFILE_PORT"] = str(port)
+    from slife.agent.plugins import plugin_port_env
+    os.environ[plugin_port_env("sharefile")] = str(port)
 
     logger.info("sharefile_start log=%s port=%s", _log_path, port)
 

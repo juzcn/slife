@@ -194,6 +194,27 @@ def format_turn_ts(dt: datetime | None = None) -> str:
     return now.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def log_stamp() -> str:
+    """Timestamp for log/media file names: ``YYYYMMDD_HHMMSS`` local.
+
+    One source for the file-naming convention ``SessionFormatter.formatTime``
+    cross-references — bootstrap, server_utils and the media adapters all
+    stamped it inline before this helper.
+    """
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def mask_value(value: str) -> str:
+    """Mask a secret for display: first and last 4 chars, ``***`` when short.
+
+    Display-side sibling of :func:`sanitize_secrets` — e.g. a credential
+    whose value matched no known shape but whose key names it a secret.
+    """
+    if len(value) > 8:
+        return f"{value[:4]}…{value[-4:]}"
+    return "***"
+
+
 @contextmanager
 def elapsed(
     operation: str,

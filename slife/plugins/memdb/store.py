@@ -11,22 +11,22 @@ import asyncio
 import json
 import logging
 import struct
-from datetime import datetime
+from collections.abc import Callable
 from pathlib import Path
 
 import aiosqlite
 import sqlparse
 
-from slife.timeutil import normalize_time_bound
+from slife.timeutil import normalize_time_bound, now_local_seconds
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_EMBEDDING_DIM = 1536
 
-
-def _now() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+#: Local ISO-seconds timestamp — the shared helper under the store's name
+#: (memfiles/mcp_gateway stores alias it the same way).
+_now = now_local_seconds
 
 
 def _serialize_f32(vector: list[float]) -> bytes:
@@ -187,28 +187,15 @@ class SessionStore:
             logger.warning("vec_unavailable err=%s — semantic search disabled (keyword only)", e)
 
     async def _run_schema(self) -> None:
-        schema_path = Path(__file__).parent / "schema.sql"
-        schema_sql = schema_path.read_text(encoding="utf-8")
-        schema_sql = schema_sql.replace("float[1536]", f"float[{self._embedding_dim}]")
-        # Execute each statement individually — vec0 virtual tables
-        # can hang in aiosqlite's executescript.
-        for stmt in _split_sql(schema_sql):
-            stmt = stmt.strip()
-            if not stmt:
-                continue
-            # vec0 rejects float[0] — skip the semantic table when
-            # no embedding backend is configured.
-            if self._embedding_dim <= 0 and "vec0" in stmt:
-                logger.debug("schema_skip_vec0 dim=%d reason=no_embedding_backend", self._embedding_dim)
-                continue
-            try:
-                await self._c.execute(stmt)
-            except Exception as e:
-                # A failed CREATE TRIGGER / FTS / vec0 statement leaves the
-                # index missing with no production signal — log it loudly
-                # (DEBUG would silently hide a structurally broken DB).
-                logger.error("schema_stmt_error err=%s stmt=%.80s", e, stmt)
-        await self._c.commit()
+        # Statement-by-statement execution is shared (vec0 tables hang in
+        # aiosqlite's executescript — see run_schema).  vec0 rejects
+        # float[0], so the semantic table is skipped when no embedding
+        # backend is configured.
+        keep = None if self._embedding_dim > 0 else _not_vec0_create
+        await run_schema(
+            self._c, Path(__file__).parent / "schema.sql",
+            self._embedding_dim, keep=keep,
+        )
 
         # Detect and fix embedding dimension mismatch after model change.
         # CREATE TABLE IF NOT EXISTS won't alter a vec0 table whose
@@ -314,23 +301,13 @@ class SessionStore:
         await self._c.execute("DROP TABLE IF EXISTS diary_semantic")
         await self._c.commit()
 
-        # Recreate with the correct dimension.
-        schema_path = Path(__file__).parent / "schema.sql"
-        schema_sql = schema_path.read_text(encoding="utf-8")
-        schema_sql = schema_sql.replace(
-            "float[1536]", f"float[{self._embedding_dim}]",
+        # Recreate with the correct dimension — only the vec0 CREATE statement.
+        await run_schema(
+            self._c, Path(__file__).parent / "schema.sql",
+            self._embedding_dim,
+            keep=lambda stmt: "diary_semantic" in stmt,
+            log_prefix="vec_recreate",
         )
-        for stmt in _split_sql(schema_sql):
-            stmt = stmt.strip()
-            if not stmt or "diary_semantic" not in stmt:
-                continue
-            try:
-                await self._c.execute(stmt)
-            except Exception as e:
-                logger.debug(
-                    "vec_recreate_error err=%s stmt=%.80s", e, stmt,
-                )
-        await self._c.commit()
 
         # Persist the new model identity.
         if model_identity:
@@ -460,7 +437,7 @@ class SessionStore:
             # identity string.  The table itself is created on existing DBs
             # by setup() → _run_schema (CREATE IF NOT EXISTS).
             ids = [r["rowid"] for r in rows]
-            placeholders = ",".join("?" * len(ids))
+            placeholders = in_placeholders(len(ids))
             cur = await self._c.execute(
                 "SELECT turn_id, data FROM turn_channel "
                 f"WHERE turn_id IN ({placeholders})",
@@ -939,7 +916,7 @@ class SessionStore:
         # the KNN query must not join the diary table.
         if results:
             rowids = [r["diary_rowid"] for r in results]
-            ph = ",".join("?" * len(rowids))
+            ph = in_placeholders(len(rowids))
             cur = await self._c.execute(
                 f"SELECT rowid, user_message FROM diary WHERE rowid IN ({ph})",
                 rowids,
@@ -1179,6 +1156,67 @@ class SessionStore:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
+
+
+def in_placeholders(count: int) -> str:
+    """SQL ``IN (?, ?, …)`` placeholder text for *count* items.
+
+    Every store hand-rolled ``",".join("?" * n)`` before this helper —
+    one spelling for the four ``WHERE x IN (…)`` call sites.
+    """
+    return ",".join("?" * count)
+
+
+def _vec0_create(stmt: str) -> bool:
+    """True for an actual vec0 ``CREATE VIRTUAL TABLE`` statement.
+
+    Requires ``CREATE VIRTUAL TABLE``, not just "vec0" anywhere — the schema
+    header comment mentions vec0 and would otherwise be wrongly skipped.
+    """
+    return "CREATE VIRTUAL TABLE" in stmt and "vec0" in stmt
+
+
+def _not_vec0_create(stmt: str) -> bool:
+    """Inverse of :func:`_vec0_create` — everything except vec0 creates."""
+    return not _vec0_create(stmt)
+
+
+async def run_schema(
+    conn,
+    schema_path: Path,
+    embedding_dim: int,
+    *,
+    keep: Callable[[str], bool] | None = None,
+    log_prefix: str = "schema",
+) -> None:
+    """Execute a store's ``schema.sql`` statement-by-statement.
+
+    ``sqlite3.executescript`` can't be used — vec0 virtual tables hang in
+    aiosqlite's executescript — so every statement runs individually, with
+    the ``float[1536]`` embedding-dimension placeholder substituted first.
+    ``keep`` triages each trimmed statement: a store skips vec0 creates when
+    no embedding backend is configured (dim ≤ 0) via :func:`_not_vec0_create`,
+    or keeps ONLY them via :func:`_vec0_create` for a migration recreate.
+
+    Shared by memdb and memfiles — the four hand-rolled copies of this loop
+    (each schema run + the recreate runs) lived in the two stores.
+    """
+    schema_sql = schema_path.read_text(encoding="utf-8")
+    schema_sql = schema_sql.replace("float[1536]", f"float[{embedding_dim}]")
+    for stmt in _split_sql(schema_sql):
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        if keep is not None and not keep(stmt):
+            continue
+        try:
+            await conn.execute(stmt)
+        except Exception as e:
+            # A failed CREATE TRIGGER / FTS / vec0 statement leaves the index
+            # missing with no production signal — log it loudly (DEBUG would
+            # silently hide a structurally broken DB).
+            logger.error("%s_stmt_error err=%s stmt=%.80s", log_prefix, e, stmt)
+    await conn.commit()
 
 
 def _split_sql(sql_text: str) -> list[str]:
