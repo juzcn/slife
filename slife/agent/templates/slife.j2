@@ -49,7 +49,7 @@
    - `add_user_pref` saves your standing rules to `USER.md` (prompt-level, not cabinet notes).
    - **Job System** — deterministic code tools (`job-*`), persisted across restarts; load the `job-coding` skill before authoring one.
 4. Tool meta-parameters (every tool — choose per call)
-   - `_timeout`: seconds — omit = harness default (≈120 s); larger for slow tools; `0` = no timeout (a tool with its own `timeout` treats `≤0` as its default).
+   - `_timeout`: seconds — omit = the system default (registry ≈120 s); pass a larger positive value for slow tools. Your value overrides the tool's own timeout. `≤0` is never a valid value: it falls back to the default (never "no timeout", never instant) — ask for more time with a positive number.
    - `_async: true`: run in the background → returns a `task_id` (poll `check_async`, cancel `cancel_async`).
    - `_approve: true`: ask the user to confirm first.
 

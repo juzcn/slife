@@ -117,13 +117,13 @@ _MAX_QUEUED = 200  # keep at most 200 pending messages
 # re-sends recent messages until the sync buffer advances) if seen within the
 # window — a genuine repeat message sent later (e.g. "收到" twice minutes
 # apart) is NOT dropped.  ``cachetools.TTLCache`` does the exact bookkeeping a
-# hand-rolled ``dict[key] -> monotonic`` window did: entries die 30 s after
-# (re)insertion, `in` is the window check, and maxsize caps memory like the
-# old size-pruning loop.
-_seen_keys: TTLCache[str, bool, float] = TTLCache[str, bool, float](
-    maxsize=_MAX_QUEUED * 3, ttl=30.0,
-)
+# hand-rolled ``dict[key] -> monotonic`` window did: entries die
+# ``_DEDUP_WINDOW`` seconds after (re)insertion, `in` is the window check, and
+# maxsize caps memory like the old size-pruning loop.
 _DEDUP_WINDOW = 30.0  # seconds — re-deliveries arrive well within this
+_seen_keys: TTLCache[str, bool, float] = TTLCache[str, bool, float](
+    maxsize=_MAX_QUEUED * 3, ttl=_DEDUP_WINDOW,
+)
 
 # Last get_updates_buf written to the session file — persist only on change.
 _persisted_sync_buf: str = ""

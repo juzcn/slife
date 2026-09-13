@@ -307,7 +307,7 @@ class TestSubagentSendTaskTool:
             tool = SubagentSendTaskTool()
             result = await tool.execute(subagent_name="sub-1", task="do X")
         assert result == "done result"
-        mock_mgr.send_task.assert_awaited_once_with("sub-1", "do X")
+        mock_mgr.send_task.assert_awaited_once_with("sub-1", "do X", timeout=None)
 
     @pytest.mark.asyncio
     async def test_send_timeout_reports_preempted(self):

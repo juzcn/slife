@@ -95,7 +95,7 @@ def test_from_config_api_key_placeholder_resolves_from_env(tmp_path, monkeypatch
 def test_from_config_api_key_placeholder_unresolved_is_empty(tmp_path, monkeypatch):
     # Hermetic: no env var, and never fall through to the real keyring lookup.
     monkeypatch.delenv("NO_SUCH_EMBED_KEY_EVER", raising=False)
-    monkeypatch.setattr(plugin_config, "_try_credstore_lookup", lambda key: None)
+    monkeypatch.setattr("slife.config._try_credstore_lookup", lambda key: None)
     c = EmbeddingClient.from_plugin_config(
         override=_override(api_key="${NO_SUCH_EMBED_KEY_EVER}"),
     )

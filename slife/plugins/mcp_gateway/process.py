@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from slife.plugins.mcp_gateway.client import MCPClient
 
-from slife.plugins.mcp_gateway.logging import get_session_id, sanitize_secrets
+from slife.logfmt import get_session_id, sanitize_secrets
 from slife.platform import terminate_process
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
@@ -334,7 +334,7 @@ class MCPWrapperProcess:
         WARNING and muted during the TUI).
         """
         import re
-        from slife.plugins.mcp_gateway.logging import read_stderr_lines
+        from slife.logfmt import read_stderr_lines
 
         # Matches the child's structured logger output:
         # "HH:MM:SS [LEVEL] logger_name ..."

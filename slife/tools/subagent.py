@@ -243,6 +243,11 @@ class SubagentSendTaskTool(Tool):
     parameters: ClassVar[dict] = make_params(
         subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
         task={"type": "string", "description": "Self-contained task for the worker."},
+        timeout={
+            "type": "integer",
+            "description": "Worker task timeout in seconds. Omit to use the default (registry work.task_budget); only a positive integer overrides, 0/negative fall back to the default.",
+            "default": 0,
+        },
     )
 
     async def execute(self, subagent_name: str = "", task: str = "", **kwargs) -> str:
@@ -251,6 +256,11 @@ class SubagentSendTaskTool(Tool):
         manager, hint = _manager_or_hint()
         if manager is None:
             return hint
+        # Per-call timeout override — only a positive int overrides; the LLM
+        # omits the param to use the worker default (registry work.task_budget,
+        # resolved at call time on the worker).  None / 0 / negative → default.
+        _t = kwargs.get("timeout")
+        timeout_override = _t if isinstance(_t, int) and not isinstance(_t, bool) and _t > 0 else None
 
         # The worker processes tasks serially.  When busy, queue the task as
         # async and tell the caller — never make it resend.
@@ -270,7 +280,7 @@ class SubagentSendTaskTool(Tool):
             )
 
         try:
-            return await manager.send_task(subagent_name, task)
+            return await manager.send_task(subagent_name, task, timeout=timeout_override)
         except TimeoutError:
             return (
                 f"Timed out waiting for task to '{subagent_name}' after the worker "

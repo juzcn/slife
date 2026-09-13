@@ -386,10 +386,7 @@ class Config:
         if self.a2a_config is None:
             self.a2a_config = A2AConfig()
         if self.subagent_config is None:
-            self.subagent_config = {
-                "max_subagents": 5,
-                "task_timeout": _timeouts.timeouts.work.task_budget,
-            }
+            self.subagent_config = {"max_subagents": 5}
 
     # ── Serialization (for subagent inheritance) ────────────────────
 
@@ -560,19 +557,14 @@ class Config:
     def _load_subagent_config(raw: dict) -> dict:
         """Extract subagent config with defaults from parsed JSON5.
 
-        ``task_timeout`` is DEVELOPER-OWNED (registry work.task_budget) — the
-        user key is ignored.  Only ``max_subagents`` remains user-configurable.
+        The task bound is owned by the timeout registry (work.task_budget) —
+        any ``task_timeout`` in JSON5 is ignored.  Only ``max_subagents``
+        remains user-configurable.
         """
         sub_raw = raw.get("subagent")
         if isinstance(sub_raw, dict):
-            return {
-                "max_subagents": sub_raw.get("max_subagents", 5),
-                "task_timeout": _timeouts.timeouts.work.task_budget,
-            }
-        return {
-            "max_subagents": 5,
-            "task_timeout": _timeouts.timeouts.work.task_budget,
-        }
+            return {"max_subagents": sub_raw.get("max_subagents", 5)}
+        return {"max_subagents": 5}
 
     @staticmethod
     def _parse_models_section(models_section) -> tuple[list[ModelConfig], int]:
@@ -924,9 +916,8 @@ class Config:
         # Subagent -- always available (no enabled flag), local stdin/stdout workers
         subagent_config = cls._load_subagent_config(raw)
         logger.debug(
-            "subagent_config max_subagents=%d task_timeout=%d",
+            "subagent_config max_subagents=%d",
             subagent_config["max_subagents"],
-            subagent_config["task_timeout"],
         )
 
         # CLI tools — managed section, no config class

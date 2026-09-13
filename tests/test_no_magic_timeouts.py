@@ -6,7 +6,9 @@ Scans ``slife/**/*.py`` and fails on:
     ``asyncio.timeout`` (the cancel-on-timeout primitives),
   * a module-level float assigned to a *TIMEOUT-style name (the old
     scattered-constant pattern),
-  * ``deadline — X = <expr> + <numeric literal>`` assignments.
+  * ``deadline — X = <expr> + <numeric literal>`` assignments,
+  * a numeric default on a timeout/deadline-named *function argument* (the
+    def-time-default pattern: ``deadline_s: float = 1200.0``).
 
 Anything that must stay literal is either covered by the allowlist below or
 carries a ``# noqa-timeout`` comment on the same line (deliberate sync
@@ -121,6 +123,26 @@ def _collect(path: Path):
             findings.append(
                 f"{rel}:{node.lineno} {node.targets[0].id} + literal — resource deadline must read timeouts.<role>.<key>"
             )
+        # 5) numeric default on a timeout/deadline-named function argument —
+        #    the def-time default pattern.  args.defaults align with the LAST
+        #    positional args; kwonly defaults pair 1:1 with kwonlyargs.  The
+        #    name match is case-insensitive so ``deadline_s`` is caught.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            pos_defaults = ([None] * (len(args.args) - len(args.defaults))
+                            + list(args.defaults))
+            arg_defs = list(zip(args.args, pos_defaults)) \
+                + list(zip(args.kwonlyargs, args.kw_defaults))
+            for arg, default in arg_defs:
+                if default is None:
+                    continue
+                if numeric(default) and _NAME_BANNED.search(arg.arg.upper()):
+                    if _has_noqa(_source_line(path, node)):
+                        continue
+                    findings.append(
+                        f"{rel}:{node.lineno} def {node.name}(... {arg.arg}={default.value!r})"
+                        f" — numeric timeout default; use None + call-time registry lookup"
+                    )
     return findings
 
 

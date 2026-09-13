@@ -48,18 +48,15 @@ def _clamp_limit(limit: int) -> int:
 
 
 async def _fetch_all_bounded(cursor) -> list:
-    """Fetch a heavy read's rows under the registry's storage.query_cap.
+    """Fetch a heavy read's rows with no inner timeout.
 
-    SQLite executes SELECTs lazily at fetch time — this is where a runaway
-    FTS5 MATCH or vec0 KNN scan would otherwise block the shared executor
-    forever (a failure mode that WOULD stall every memdb tool call).  Reads
-    only: writes are never wrapped here — cancelling between multi-statement
-    write statements could split a transaction.  On expiry it surfaces
-    ``asyncio.TimeoutError``; callers (search gate, drainer) treat it as
-    transient.
+    DB reads are NOT timed out by design: reads never mutate, so a cancel
+    cannot split a transaction, and the calling tool's overall bound at the
+    loop still applies.  Writes are never wrapped here for the same reason —
+    cancelling between multi-statement write statements could split a
+    transaction.
     """
-    async with asyncio.timeout(_timeouts.timeouts.storage.query_cap):
-        return await cursor.fetchall()
+    return await cursor.fetchall()
 
 
 def _like_escape(pattern: str) -> str:

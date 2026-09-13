@@ -84,7 +84,7 @@ class MediaAdapter(Protocol):
     async def generate_video(
         self, *, model: str, prompt: str, image: str | Path | None = None,
         outputs_dir: str = "", extra_params: dict | None = None,
-        deadline_s: float = 1200.0,
+        deadline_s: float | None = None,  # None = registry transport.media_deadline
     ) -> str: ...
 
     async def text_to_speech(

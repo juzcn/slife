@@ -1042,8 +1042,13 @@ class AgentLoop:
             approve_requested = bool(actual_args.pop("_approve", False))
 
             # ── Native timeout mapping ───────────────────────────
-            # Tools with a native ``timeout`` parameter (e.g.
-            # execute_shell) handle their own timeout internally.
+            # Precedence (TIMEOUT.md → Tool-execution precedence): the
+            # agent's positive ``timeout`` overrides ALL defaults — it lands
+            # in the tool parameter (native) or becomes the wait_for bound
+            # (non-native).  Omission → the tool's own registry value (native)
+            # or work.tool_budget (non-native).  Tools with a native
+            # ``timeout`` parameter (e.g. execute_shell) handle their own
+            # timeout internally.
             # Map _timeout → timeout and let the tool drive — no
             # asyncio.wait_for wrapper.  ``_timeout`` of 0 or negative
             # (or sub-second, which truncates to 0) can NOT mean "no
@@ -1158,15 +1163,15 @@ class AgentLoop:
                 # permanent _tasks entry.  Native-timeout tools still enforce
                 # their own deadline — no double timer.
                 if not has_native_timeout:
-                    if inline_timeout is not None:
-                        effective_timeout = (
-                            float(inline_timeout)
-                            if float(inline_timeout) > 0 else 0.0
-                        )
+                    # ≤0 is never a valid override and never means "no
+                    # timeout": it falls back to the tool-chain default
+                    # (work.tool_budget).  TIMEOUT.md → Tool-execution
+                    # precedence.
+                    if inline_timeout is not None and float(inline_timeout) > 0:
+                        effective_timeout = float(inline_timeout)
                     else:
                         effective_timeout = self.tool_timeout
-                    if effective_timeout > 0:
-                        coro = asyncio.wait_for(coro, timeout=effective_timeout)
+                    coro = asyncio.wait_for(coro, timeout=effective_timeout)
 
                 task_id = schedule_async(coro)
                 result = (
@@ -1199,17 +1204,17 @@ class AgentLoop:
                     )
             else:
                 # ── Agent Loop timeout: wrap with asyncio.wait_for ──
-                if inline_timeout is not None:
-                    effective_timeout = float(inline_timeout) if float(inline_timeout) > 0 else 0.0
+                # ≤0 / missing is never "no timeout" (and never an instant
+                # kill): fall back to the tool-chain default.  TIMEOUT.md →
+                # Tool-execution precedence.
+                if inline_timeout is not None and float(inline_timeout) > 0:
+                    effective_timeout = float(inline_timeout)
                 else:
                     effective_timeout = self.tool_timeout
 
                 try:
                     coro = self.tool_registry.execute(tc.name, **actual_args)
-                    if effective_timeout > 0:
-                        result = await asyncio.wait_for(coro, timeout=effective_timeout)
-                    else:
-                        result = await coro
+                    result = await asyncio.wait_for(coro, timeout=effective_timeout)
                 except asyncio.TimeoutError:
                     result = (
                         f"Error: Tool '{tc.name}' timed out "

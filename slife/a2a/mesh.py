@@ -683,7 +683,14 @@ class A2AMesh:
             for corr, tid in list(self._corr_to_task.items()):
                 if tid == send.task_id and corr != send.task_id:
                     self._corr_to_task.pop(corr, None)
-            task = asyncio.current_task()
+            # Bookkeeping must also survive GC of an unawaited coroutine when
+            # the loop is already closed: asyncio.current_task() then raises
+            # RuntimeError ("no running event loop"), which would turn the
+            # GeneratorExit into an unraisable-exception warning.
+            try:
+                task = asyncio.current_task()
+            except RuntimeError:
+                task = None
             if task is not None:
                 send.loops.discard(task)
 

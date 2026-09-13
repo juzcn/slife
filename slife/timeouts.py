@@ -34,7 +34,7 @@ class Work:
     tool_budget: float = 120.0    # loop wait_for wrap for tools w/o native `timeout`/`_timeout`
     task_budget: float = 120.0    # subagent task bound + subagent stream cap
     stall: float = 120.0          # LLM stream inactivity watchdog (resets per chunk)
-    shell: float = 30.0           # execute_shell default timeout
+    shell: float = 120.0          # execute_shell default timeout — generous backstop: the agent's injected timeout overrides it, so this base must not preempt longer work
     pip_install: float = 120.0    # pip_install tool deadline
     save_memory: float = 10.0     # memdb save_turn / advance_context_start bound
 
@@ -83,6 +83,7 @@ class Transport:
     media_download: float = 300.0
     media_request: float = 180.0
     media_connect: float = 30.0
+    media_deadline: float = 1200.0  # dashscope/mcp media generate_video poll deadline (per call)
     wechat_poll: float = 120.0
     url_download: float = 30.0
     qr_deadline: float = 600.0
@@ -97,7 +98,6 @@ class Stream:
 @dataclass
 class Storage:
     sqlite_busy: float = 5.0
-    query_cap: float = 10.0
     filelock: float = 10.0
 
 

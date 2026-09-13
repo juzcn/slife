@@ -10,6 +10,7 @@ import asyncio
 import base64
 import locale
 import logging
+import math
 import os
 import sys
 
@@ -210,12 +211,12 @@ class ShellTool(Tool):
 
     name = "execute_shell"
     category = "Execution"
-    description = "Run a shell command. Returns stdout + stderr. Default timeout 30s."
+    description = "Run a shell command. Returns stdout + stderr. Default timeout from the registry (work.shell)."
     parameters = {
         "type": "object",
         "properties": {
             "command": {"type": "string", "description": "Shell command to execute."},
-            "timeout": {"type": "integer", "description": "Timeout in seconds. Default 30; ≤0 = default (never instant)."},
+            "timeout": {"type": "integer", "description": "Timeout in seconds. Omit to use the default (registry work.shell); ≤0 = default (never instant)."},
         },
         "required": ["command"],
     }
@@ -224,7 +225,11 @@ class ShellTool(Tool):
         # Call-time lookup (registry work.shell); ≤0 means "the tool default"
         # — the same contract the loop's `_timeout` mapping enforces.
         if timeout is None or timeout <= 0:
-            timeout = int(_timeouts.timeouts.work.shell)
+            # Registry value may be fractional (allowed; only >= 0 required) —
+            # ceil so 30.5 → 31, and floor at 1 so a sub-1.0 or vanished
+            # (0) value can't reach ``wait_for`` as timeout=0 → instant
+            # TimeoutError on every call.
+            timeout = max(1, math.ceil(_timeouts.timeouts.work.shell))
         self.timeout: int = timeout
 
     @classmethod
@@ -367,6 +372,10 @@ class InstallPythonPackageTool(Tool):
                 "items": {"type": "string"},
                 "description": "Package specs, e.g. ['requests', 'beautifulsoup4>=4.12'].",
             },
+            "timeout": {
+                "type": "integer",
+                "description": "Install deadline in seconds. Omit to use the default (registry work.pip_install); only a positive integer overrides, <=0 falls back to the default",
+            },
         },
         "required": ["packages"],
     }
@@ -380,15 +389,18 @@ class InstallPythonPackageTool(Tool):
         # The `--` separator ends uv's option parsing: a package spec that
         # begins with `-` (e.g. "--index-url https://attacker") would otherwise
         # be consumed as a uv flag and redirect the install to a hostile index.
+        t = kwargs.get("timeout")
+        timeout = t if isinstance(t, int) and not isinstance(t, bool) and t > 0 else None
+        timeout = timeout or _timeouts.timeouts.work.pip_install
         try:
             run = await _run_captured(
                 ["uv", "pip", "install", "--python", sys.executable, "--", *packages],
-                timeout=_timeouts.timeouts.work.pip_install,
+                timeout=timeout,
                 codec="utf-8",
             )
         except asyncio.TimeoutError:
             logger.warning("pip_install_timeout packages=%s", packages)
-            return f"Error: pip install timed out after {_timeouts.timeouts.work.pip_install:g}s"
+            return f"Error: pip install timed out after {timeout:g}s"
         out = run.stdout.strip()
         err = run.stderr.strip()
 

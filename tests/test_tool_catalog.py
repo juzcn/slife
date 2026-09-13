@@ -29,7 +29,7 @@ def restore_root_logger():
 def _import_mcp_server():
     sys.modules.pop("slife.plugins.mcp_gateway.server", None)
     with patch(
-        "slife.plugins.mcp_gateway.server_runtime.setup_server_logging",
+        "slife.server_utils.setup_server_logging",
         return_value=Path("unused.log"),
     ):
         return importlib.import_module("slife.plugins.mcp_gateway.server")

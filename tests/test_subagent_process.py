@@ -25,14 +25,14 @@ from slife.subagent.process import (
 def _mock_config(**overrides):
     """Build a minimal mock Config for SubagentProcess / SubagentManager tests."""
     cfg = Mock()
-    cfg.subagent_config = {"max_subagents": 5, "task_timeout": 120}
+    cfg.subagent_config = {"max_subagents": 5}
     cfg._path = None
     cfg.to_dict = Mock(return_value={
         "models": [], "active_model_ref": "", "tools": [],
         "max_iterations": 30, "agent_name": "slife",
         "mcp_config": None, "memdb_config": None,
         "wechat_config": None, "a2a_config": None,
-        "subagent_config": {"max_subagents": 5, "task_timeout": 120},
+        "subagent_config": {"max_subagents": 5},
     })
     for k, v in overrides.items():
         setattr(cfg, k, v)
@@ -387,16 +387,16 @@ class TestSubagentManagerInit:
         assert manager._config is cfg
 
     def test_custom_max_subagents(self):
-        cfg = _mock_config(subagent_config={"max_subagents": 3, "task_timeout": 60})
+        cfg = _mock_config(subagent_config={"max_subagents": 3})
         manager = SubagentManager(cfg)
         assert manager._max == 3
-        assert manager._timeout == 60
+        assert not hasattr(manager, "_timeout")
 
     def test_defaults_from_config(self):
         cfg = _mock_config()
         manager = SubagentManager(cfg)
         assert manager._max == 5
-        assert manager._timeout == 120
+        assert not hasattr(manager, "_timeout")
 
 
 class TestSubagentManagerList:
@@ -486,7 +486,9 @@ class TestSubagentManagerSendTask:
 
         result = await manager.send_task("sub-1", "do something")
         assert result == "task result"
-        mock_proc.send_task.assert_called_once_with("do something", 120)
+        # None passes through — the worker resolves the registry default
+        # (work.task_budget) at call time.
+        mock_proc.send_task.assert_called_once_with("do something", None)
 
     @pytest.mark.asyncio
     async def test_send_task_custom_timeout(self):

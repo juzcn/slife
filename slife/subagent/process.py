@@ -20,6 +20,8 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from cachetools import FIFOCache
+
 from slife.platform import terminate_process
 from slife.fifoset import FifoSet
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
@@ -88,7 +90,7 @@ class SubagentProcess:
         self._stderr_task: asyncio.Task | None = None
         self._stdin_lock = asyncio.Lock()
         self._pending: dict[str, asyncio.Future[str]] = {}
-        self._async_results: dict[str, str] = {}
+        self._async_results: FIFOCache[str, str] = FIFOCache(maxsize=_MAX_ASYNC_RESULTS)
         self._ready = asyncio.Event()
         # Local worker task records — rpc_id → {task_id, agent_name, preview,
         # status, result}.  Kept separate from the A2A task store: worker
@@ -439,10 +441,8 @@ class SubagentProcess:
 
     def _store_async_result(self, rpc_id: str, result: str) -> None:
         """Store a worker result for get_task_result, bounded."""
+        # FIFOCache evicts the oldest-inserted result at maxsize.
         self._async_results[rpc_id] = result
-        if len(self._async_results) > _MAX_ASYNC_RESULTS:
-            # dict preserves insertion order — evict the oldest.
-            self._async_results.pop(next(iter(self._async_results)))
 
     def _record_update(self, rpc_id: str, status: str, result: str | None) -> None:
         """Update a worker task record on completion / failure."""
@@ -661,9 +661,6 @@ class SubagentManager:
         self._config = config
         sc = config.subagent_config or {}
         self._max = sc.get("max_subagents", 5)
-        # task_timeout is developer-owned — registry work.task_budget is the
-        # fallback if a stale config dict lacks the key.
-        self._timeout = sc.get("task_timeout", _timeouts.timeouts.work.task_budget)
         # Callback invoked when a subagent task completes:
         #   async def cb(agent_name: str, task_id: str, result: str) -> None
         self.on_task_complete: "Callable | None" = None
@@ -706,7 +703,7 @@ class SubagentManager:
     async def send_task(self, agent_name: str, task: str, timeout: float | None = None) -> str:
         if (proc := self._subagents.get(agent_name)) is None:
             raise ValueError(f"Subagent '{agent_name}' not found")
-        return await proc.send_task(task, timeout or self._timeout)
+        return await proc.send_task(task, timeout)
 
     async def send_task_async(
         self, agent_name: str, task: str, mode: str = "auto",

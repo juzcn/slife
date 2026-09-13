@@ -543,7 +543,7 @@ class TestConfigSubagentDefault:
             },
         }))
         config = Config.from_json5(str(cfg_path))
-        assert config.subagent_config == {"max_subagents": 5, "task_timeout": 120}
+        assert config.subagent_config == {"max_subagents": 5}
 
     def test_custom_values(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
@@ -559,7 +559,7 @@ class TestConfigSubagentDefault:
         # task_timeout is developer-owned (registry work.task_budget) — the
         # user key is ignored, only max_subagents stays user-configurable.
         config = Config.from_json5(str(cfg_path))
-        assert config.subagent_config == {"max_subagents": 3, "task_timeout": 120}
+        assert config.subagent_config == {"max_subagents": 3}
 
     def test_non_dict_uses_defaults(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
@@ -573,7 +573,7 @@ class TestConfigSubagentDefault:
             "subagent": "not-a-dict",
         }))
         config = Config.from_json5(str(cfg_path))
-        assert config.subagent_config == {"max_subagents": 5, "task_timeout": 120}
+        assert config.subagent_config == {"max_subagents": 5}
 
     def test_user_timeout_keys_ignored_registry_wins(self, tmp_path, monkeypatch):
         """agent.tool_timeout / subagent.task_timeout are developer-owned now.
@@ -594,13 +594,13 @@ class TestConfigSubagentDefault:
         }))
         config = Config.from_json5(str(cfg_path))
         assert config.tool_timeout == 120.0
-        assert config.subagent_config["task_timeout"] == 120
-        assert config.subagent_config["max_subagents"] == 7  # still user-configurable
+        assert "task_timeout" not in config.subagent_config  # stale subagent key is ignored
+        assert config.subagent_config == {"max_subagents": 7}  # still user-configurable
 
     def test_bare_config_uses_direct_registry_no_defaults_shift(self):
         config = Config(models=[], active_model_ref="", tools=[])
         assert config.tool_timeout == 120.0
-        assert config.subagent_config == {"max_subagents": 5, "task_timeout": 120}
+        assert config.subagent_config == {"max_subagents": 5}
 
 
 class TestConfigA2A:

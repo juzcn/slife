@@ -237,7 +237,7 @@ async def generate_image(
 async def generate_video(
     prompt: str, model: str = "", image: str = "",
     resolution: str = "", ratio: str = "", duration: int = 0,
-    folder: str = "",
+    folder: str = "", timeout: float | None = None,
 ) -> str:
     """Generate a video from a text prompt.
 
@@ -249,6 +249,7 @@ async def generate_video(
         ratio: Aspect ratio, e.g. '16:9', '9:16', '1:1'.
         duration: Video duration in seconds.
         folder: Output folder (default: working dir).
+        timeout: generation poll deadline in seconds; omit for the registry default (transport.media_deadline)
     """
     try:
         cfg = _ensure_config()
@@ -266,12 +267,14 @@ async def generate_video(
             params["ratio"] = ratio
         if duration > 0:
             params["duration"] = duration
+        deadline_s = timeout if timeout is not None and float(timeout) > 0 else None
         result = await adapter.generate_video(
             model=entry.model,
             prompt=prompt,
             image=_resolve_image_input(image),
             outputs_dir=_resolve_output_dir(folder),
             extra_params=params,
+            deadline_s=deadline_s,
         )
         logger.info("media_video_generated provider=%s model=%s path=%s",
                     pid, entry.model, result)

@@ -63,7 +63,9 @@ class TestCreateToolsFromConfig:
         registry = create_tools_from_config(None)
         tool = registry.get("execute_shell")
         assert tool is not None
-        assert tool.timeout == 30  # type: ignore[attr-defined]
+        import slife.timeouts as _timeouts
+
+        assert tool.timeout == _timeouts.timeouts.work.shell  # type: ignore[attr-defined]
 
     def test_disable_tool(self):
         """Tool can be disabled with enabled: false."""

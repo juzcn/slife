@@ -71,10 +71,10 @@ def resolve_config_path() -> Path:
 # ── Secret resolution (os.environ → credstore → literal) ───────────────
 # One shared chain: the parser (``slife.env.parse_env_ref``), the lenient
 # resolver (``slife.env.resolve_secret_value``) and the credstore hook
-# (``slife.config._try_credstore_lookup``).  mcp-plugin keeps its own thin
-# names (patched by tests / used by connection.py) but delegates — the
-# plugin's old ``\w+``-only regex silently lost dotted/hyphenated refs that
-# the host resolver accepted.
+# (``slife.config._try_credstore_lookup``) — the plugin uses the host
+# resolver directly (``_resolve_secret`` / ``_resolve_embedded_refs`` are
+# thin delegates).  The plugin's old ``\w+``-only regex silently lost
+# dotted/hyphenated refs that the host resolver accepted.
 
 
 def _is_env_ref(value: str) -> bool:
@@ -82,17 +82,6 @@ def _is_env_ref(value: str) -> bool:
     from slife.env import parse_env_ref
 
     return parse_env_ref(value) is not None
-
-
-def _try_credstore_lookup(key: str) -> str | None:
-    """Look up an env-var name in the credential store (credstore).
-
-    The env var name IS the credential-store key — e.g. ``GITHUB_TOKEN``.
-    Delegate: the canonical implementation lives in ``slife.config``.
-    """
-    from slife.config import _try_credstore_lookup as _host_lookup
-
-    return _host_lookup(key)
 
 
 def _resolve_embedded_refs(value: str) -> str:

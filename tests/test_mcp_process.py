@@ -320,7 +320,7 @@ class TestMCPWrapperProcessLogStderr:
 
         # read_stderr_lines is imported inside _log_stderr via:
         #   from slife.logfmt import read_stderr_lines
-        with patch("slife.plugins.mcp_gateway.logging.read_stderr_lines") as mock_read:
+        with patch("slife.logfmt.read_stderr_lines") as mock_read:
             async def _gen():
                 yield "error: something went wrong"
 
@@ -336,7 +336,7 @@ class TestMCPWrapperProcessLogStderr:
         mock_proc.stderr = MagicMock()
         wp._process = mock_proc
 
-        with patch("slife.plugins.mcp_gateway.logging.read_stderr_lines") as mock_read:
+        with patch("slife.logfmt.read_stderr_lines") as mock_read:
             async def _gen():
                 yield "╭── FastMCP ──────"
                 yield "│    Serving on http://localhost:8000     │"
@@ -354,7 +354,7 @@ class TestMCPWrapperProcessLogStderr:
         mock_proc.stderr = MagicMock()
         wp._process = mock_proc
 
-        with patch("slife.plugins.mcp_gateway.logging.read_stderr_lines") as mock_read:
+        with patch("slife.logfmt.read_stderr_lines") as mock_read:
             async def _gen():
                 yield "12:34:56 [INFO] slife_mcp some log message"
                 yield "12:34:57 [WARNING] slife_mcp another log"
@@ -372,7 +372,7 @@ class TestMCPWrapperProcessLogStderr:
         mock_proc.stderr = MagicMock()
         wp._process = mock_proc
 
-        with patch("slife.plugins.mcp_gateway.logging.read_stderr_lines") as mock_read:
+        with patch("slife.logfmt.read_stderr_lines") as mock_read:
             async def _gen():
                 yield '  File "/some/path.py", line 42, in <module>'
                 yield '    raise ValueError("boom")'
@@ -390,7 +390,7 @@ class TestMCPWrapperProcessLogStderr:
         mock_proc.stderr = MagicMock()
         wp._process = mock_proc
 
-        with patch("slife.plugins.mcp_gateway.logging.read_stderr_lines") as mock_read:
+        with patch("slife.logfmt.read_stderr_lines") as mock_read:
             async def _gen():
                 yield ""
                 yield "  "

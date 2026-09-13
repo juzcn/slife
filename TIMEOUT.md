@@ -58,7 +58,7 @@ checked by pyright, not ad-hoc parsing.
 | `grace` | teardown / kill escalation ladder | `gentle`, `force`, `cleanup`, `shutdown`, `tunnel_kill` |
 | `transport` | HTTP / wire client phases | `connect`, `pool`, `read`(null=delegated), `write`(null), `oauth`, `poll_oauth`, `embed`, `embed_api`, `media_*`, `wechat_poll`, `url_download`, `qr_deadline` |
 | `stream` | LLM stream retry ladder | `retries`, `retry_base_delay` |
-| `storage` | bounded DB / lock waits | `sqlite_busy`, `query_cap`, `filelock` |
+| `storage` | bounded lock / busy waits (DB reads are unbounded by design) | `sqlite_busy`, `filelock` |
 | `deliver` | A2A / mesh delivery windows | `mqtt_connect`, `reply_first`, `keepalive`, `retry_delay` |
 
 **Load-time invariants** (`slife/timeouts.py:validate`) — violating any of
@@ -91,6 +91,57 @@ async with asyncio.timeout(_timeouts.timeouts.ready.connect_attempt):
   `ready.signal` (=== 60, deliberately different from `work.tool_budget`).
 - `slife/timeouts.py` imports nothing from `slife.*` — `config.py` imports
   it; a cycle would break both.
+
+## Tool-execution precedence — one value per tool call
+
+Every tool call has exactly **one effective timeout `T`**, decided once:
+
+1. **The agent injects a positive value** (the `_timeout` meta-parameter or the
+   tool's `timeout` argument) → `T` = agent value.  **The agent's timeout
+   overrides ALL system defaults** — this is the rule.  `0` / negative /
+   missing are NOT overrides; they mean "use the default" and normalize to
+   `None` on the tool side — and never "no timeout": there is no unbounded
+   escape; a call that must run long gets a large positive value instead.
+2. **The agent omits** → the tool-execution default:
+   - a tool **with** a native `timeout` parameter keeps its own registry value
+     (`execute_shell` → `work.shell`, `subagent_send_task` →
+     `work.task_budget`) — the value stays in the parameter and the tool is
+     the single enforcer;
+   - a tool **without** a native `timeout` parameter gets the loop's
+     `work.tool_budget` via `asyncio.wait_for(T)`.
+
+Enforcement is exactly **one timer per call** (no double timer, no
+divergent deadlines):
+- native-`timeout` tools are never wrapped by the loop — `T` lands in the
+  parameter and the tool enforces it (`subagent_send_task` → `send_task` →
+  `wait_for` on the worker RPC);
+- non-native tools get the loop's `wait_for(T)` and never see the value (they
+  have no parameter to hold it).
+
+`subagent_send_task` declares a native `timeout` parameter **because of this
+rule**: an injected value flows to the worker and overrides `work.task_budget`
+for that one call; omission resolves to `work.task_budget` at call time.
+
+**A tool's own run-timeout is a BACKSTOP, never an operative bound for a call
+that carries an effective `T`.**  Because the agent's value overrides the
+tool's, the tool-side defaults must be designed GENEROUS — a tight native
+default would preempt the injected value before it acts (the exact subagent
+double-timer failure this model removes: an inner 120s timer clamped an
+injected 300s).  When in doubt, prefer a generous backstop for the tool-chain
+budgets and let the injected value (or a `_timeout`) be the precise bound.
+
+**If a native tool has an internal run-timeout, it MUST expose it as a
+``timeout`` parameter** (default = its registry value).  Only an exposed
+parameter lets the agent's override reach the tool — a hidden inner timer
+would silently clamp the injected value (the same double-timer).  Tools that
+have no internal deadline have nothing to expose (`install_python_package`
+and `generate_video` exist precisely because they DO).
+
+**DB reads are never time-bounded.**  A read may take as long as it needs —
+a slow query is not a failure.  There is no read timeout on SQLite reads
+(`storage.query_cap` is gone); locking waits stay bounded by
+`storage.sqlite_busy` / `storage.filelock`, and the *calling tool call* still
+carries its own deadline at the loop.
 
 ## What intentionally stays local (not timeouts)
 
@@ -153,10 +204,9 @@ proposed a deeper mechanism.  Rejected as too aggressive:
 
 ## What this change fixed
 
-Bugs: unbounded SQLite reads now bounded (`storage.query_cap`;
-`storage.sqlite_busy` on every connect); the config `filelock` no longer
-blocks forever (`storage.filelock`, raises `ConfigLockTimeout`); memdb search
-paths can no longer stall every memdb tool call.
+Bugs: `storage.sqlite_busy` bounds the connect busy-wait; the config
+`filelock` no longer blocks forever (`storage.filelock`, raises
+`ConfigLockTimeout`).
 
 Inconsistencies: probe trio 5/5/15 → one `ready.probe_endpoint` (5); the
 triplicated `_NOTIFY_TIMEOUT = 5.0` → one `ready.notify`; kill ladders

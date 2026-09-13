@@ -22,14 +22,14 @@ from fastmcp.server.middleware import Middleware
 from slife.plugins.mcp_gateway import config as plugin_config
 from slife.plugins.spec import mcp_child_reserved_names
 from slife.plugins.mcp_gateway.connection import ConnectionPool, ServerConfig, ServerStatus
-from slife.plugins.mcp_gateway.logging import error_json, ok_json
+from slife.logfmt import error_json, ok_json
 from slife.plugins.mcp_gateway.search import (
     SCORE_BAND_HINT,
     annotate_scores,
     merge_hybrid,
 )
 from slife.plugins.mcp_gateway.semantic import SemanticManager
-from slife.plugins.mcp_gateway.server_runtime import create_plugin_server
+from slife.server_utils import create_plugin_server
 from slife.plugins.mcp_gateway.store import ToolStore
 from slife.server_utils import SessionNotifier, warm_after_handshake
 
@@ -948,7 +948,7 @@ def main():
     """Run the mcp-plugin wrapper server on Streamable HTTP transport."""
     import argparse
 
-    from slife.plugins.mcp_gateway.server_runtime import run_plugin_server, shutdown_server_logging
+    from slife.server_utils import run_plugin_server, shutdown_server_logging
 
     parser = argparse.ArgumentParser(prog="mcp-plugin-server")
     parser.add_argument(

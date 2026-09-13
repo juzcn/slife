@@ -317,7 +317,7 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
     async def generate_video(
         self, *, model: str, prompt: str, image: str | Path | None = None,
         outputs_dir: str = "", extra_params: dict | None = None,
-        deadline_s: float = 1200.0,
+        deadline_s: float | None = None,
     ) -> str:
         params = dict(extra_params or {})
         image_field = str(params.pop(_IMAGE_FIELD_KEY, _DEFAULT_IMAGE_FIELD))
@@ -326,7 +326,10 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
         if ref is not None:
             input_data[image_field] = ref
         task_id = await self._async_submit(model, input_data, params)
-        output = await self._async_poll(task_id, deadline_s)
+        # Call-time registry lookup (patchable): None = registry default.
+        limit = deadline_s if deadline_s is not None \
+            else _timeouts.timeouts.transport.media_deadline
+        output = await self._async_poll(task_id, limit)
         url = output.get("video_url")
         if not url:
             results = output.get("results") or []

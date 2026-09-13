@@ -66,8 +66,10 @@ class TestShellConstruction:
     """Tests for ShellTool.__init__."""
 
     def test_default_timeout(self):
+        import slife.timeouts as _timeouts
+
         tool = ShellTool()
-        assert tool.timeout == 30
+        assert tool.timeout == _timeouts.timeouts.work.shell
 
     def test_custom_timeout(self):
         tool = ShellTool(timeout=60)

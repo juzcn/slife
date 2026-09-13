@@ -295,7 +295,7 @@ class MCPServerConnection:
         # Raw unbuffered layer — sees each poll's on-disk bytes directly.
         raw = getattr(dump, "raw", dump)
         position = 0
-        from slife.plugins.mcp_gateway.logging import sanitize_secrets
+        from slife.logfmt import sanitize_secrets
         try:
             while True:
                 await asyncio.sleep(_STDERR_POLL_INTERVAL)

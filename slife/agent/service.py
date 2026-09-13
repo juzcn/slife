@@ -240,7 +240,7 @@ class AgentService:
         # provider or hanging on a silent stall.  The main agent keeps the
         # module defaults (retry transient transport errors, no stream cap).
         subagent_stream_timeout = (
-            (config.subagent_config or {}).get("task_timeout", 120)
+            _timeouts.timeouts.work.task_budget
             if is_subagent else None
         )
         self.agent_loop = AgentLoop(
