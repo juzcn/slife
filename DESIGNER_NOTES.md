@@ -77,63 +77,52 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 5. 设计特点
 
-5.1 All are plugins design, plugin is a standard http streamable MCP with additional plugin contract。
+- 有最新的、官方的、标准的、流行的package，一定要使用，不要重复造轮子。
 
-5.2 Sessionless：没有session概念，agent重启使用退出时的上下文。
+- All are plugins design, plugin is a standard http streamable MCP with additional plugin contract。
 
-5.3 Turn-based：会话和持久化都是以turn为单位。
+- Sessionless：没有session概念，agent重启使用退出时的上下文。
 
-5.4 Meta arguments: 所有Function tool都注入timeout, async， approve 参数，由agent运行时选择。
+- Turn-based：会话和持久化都是以turn为单位。
 
-5.5 Dynamic Prompt: 动态提示词通过_sys_note工具对注入，保护缓存命中，并进入会话历史，让agent能够记住。
+- Meta arguments: 所有Function tool都注入timeout, async， approve 参数，由agent运行时选择。
 
-5.6 Marker: 通过在原始user和assitant消息中追加Marker来注入需要大模型知道的信息。
+- Turn Prompt: 通过auto invoke _turn_prompt 工具，注入每轮loop所需要的附加提示词。
 
-5.7 Silence Contract:大模型保持静默的契约是输出".".
+- Marker: 通过在原始user和assitant消息中追加Marker来注入需要大模型知道的信息。
 
-5.8 Heartbeat: 默认每30分钟，注入一条心跳Marker user消息。
+- Channel: AgentLoop Inbox的来源， Inbox 进入AgentLoop有两个模式，排队和允许插队。插队是通过 auto invoke _check_new_input tool实现的， tool返回新的一条user message。 模式可配置。
 
-5.9 Schedule: 定时任务也采用用心跳机制。到触发时间，注入一条心跳任务的user消息。
+- Silence Contract:大模型保持静默的契约是输出".".
 
-5.10 Multiagents: 多agent依赖mosquitto消息中间件，以A2A标准为蓝本实现。 
+- Heartbeat: 默认每30分钟，注入一条心跳Marker user消息。
 
-5.11 Progressive disclosure: 外部mcp 默认autoload=false, 使用渐进式披露，tool-search, tool-load
+- Schedule: 定时任务也采用用心跳机制。到触发时间，注入一条心跳任务的user消息。
 
-5.12 Unified Context: Agent通过Inbox管理输入，维护一个会话上下文和历史。
+- Multiagents: 多agent依赖mosquitto消息中间件，以A2A标准为蓝本实现。 
 
-5.13 Channel: 定义为注入Inbox的来源：System(心跳、定时任务)、Humain（TUI 输入）、Wechat、Subagent（异步结果推送）、Agent（结果推送，非标准a2a模式）。
+- Progressive disclosure: 外部mcp 默认autoload=false, 使用渐进式披露，tool-search, tool-load
 
-5.14 轻量级的job systems: job-coding plugin, 相对于native tools, 它可以用到外接mcp服务的全部能力，可以调用大模型做编排。
+- 轻量级的job systems: job-coding plugin, 相对于native tools, 它可以用到外接mcp服务的全部能力，可以调用大模型做编排。
 
-5.15 每个agent有大模型或人工可以修改的提示词部分USER.md，它相当于一个常驻记忆，反映用户使用偏好和要求。 启动是追加到系统提示词尾部，作为提示词的一部分。不应频繁修改破坏缓存命中。
+- 每个agent有大模型或人工可以修改的提示词部分USER.md，它相当于一个常驻记忆，反映用户使用偏好和要求。 启动是追加到系统提示词尾部，作为提示词的一部分。不应频繁修改破坏缓存命中。
 
-5.16 plugin, native tools and jobs are auto discorvered
+- plugin, native tools and jobs are auto discorvered
 
-5.17 Installation: 一键安装：从源码安装，避免pypi库的版本冲突；自动安装所有依赖，开箱即用，但语义功能需独立安装和配置。
+- Installation: 一键安装：从源码安装，避免pypi库的版本冲突；自动安装所有依赖，开箱即用，但语义功能需独立安装和配置。
 
-6. To do list
+6. Context Harnessing
 
-6.1 启动时（用户手改了大模型设置）或更换大模型时，上下文窗口可能变大或变小，怎么处理？
-
-6.2 forget 和 recall：目前forget只有两个简单机制，大模型调用的clear context，另一个是harness调用的trim。recall是一个混合检索，以工具结果的形式注入到上下文。是否可以有个工具，在内存中更新自己的上下文，包括系统提示词、消息历史、工具列表。当大模型觉得当前的任务需要重新整理一下上下文？下一个迭代生效。副作用是影响缓存命中。有效可能不经济。排查一下现在的recall工具是否排除当前上下文？
-
-目前的状况比较棘手，每次重启恢复退出时的上下文，单调增长到
-
-6.3 共享代码库？现在项目里有重复的functions，增大代码量和维护量，是否值得？
-
-6.4 多wechat接入
-
-7. Context Harnessing
-
-7.1 Tool Pair
+6.1 Tool Pair
 
 _turn_prompt: Turn的提示词，每一轮开始，自动调用_turn_prompt， 用tool pair message注入到上下文，工具结果 turn_prompt.j2, 进入记忆。目的是让大模型在每轮开始知道更新的系统状态信息。 user → [attach_image pair] → _turn_prompt pair → LLM.
 
-7.2 Context Marker
+6.2 Context Marker
 
 - slife 启动时，在每一个恢复的Turn的user message开头注入 [Turn:json] , 不进入记忆。目的是让agent知道上下文中每个Turn的id。
 - slife 当上下文达到80%上限。系统移除历史turns，使之降到20%（靠估算）。在assitant message尾部追加 [Turn: ... removed]，不进入记忆。目的是让大模型知道发生了截断，上下文中移除了多少Turns. trailing footnote. 
-7.3 Channel and Markers
+
+6.3 Channel and Markers
 
 Channel 是指Agent Loop Inbox的来源，TUI是默认的、正常的channel。
 
@@ -154,3 +143,20 @@ Channel 是指Agent Loop Inbox的来源，TUI是默认的、正常的channel。
 定时任务触发执行注入 schedule_trigger.j2，没有Marker，TUI 过滤这条user message， assistant message 显示 定时。
 
 定时任务结束的回复，是Subagent的回复, 按照Subagent channel 方式。
+
+7. A2A over MQTT
+
+
+
+
+8. To do list
+
+8.1 启动时（用户手改了大模型设置）或更换大模型时，上下文窗口可能变大或变小，怎么处理？
+
+8.2 forget 和 recall：目前forget只有两个简单机制，大模型调用的clear context，另一个是harness调用的trim。recall是一个混合检索，以工具结果的形式注入到上下文。是否可以有个工具，在内存中更新自己的上下文，包括系统提示词、消息历史、工具列表。当大模型觉得当前的任务需要重新整理一下上下文？下一个迭代生效。副作用是影响缓存命中。有效可能不经济。排查一下现在的recall工具是否排除当前上下文？
+
+目前的状况比较棘手，每次重启恢复退出时的上下文，单调增长到
+
+8.3 共享代码库？现在项目里有重复的functions，增大代码量和维护量，是否值得？
+
+8.4 多wechat接入
