@@ -98,11 +98,11 @@ async def run_headless() -> None:
         with elapsed("config_load", logger, level=logging.INFO, source="SLIFE_CONFIG"):
             config = Config.from_dict(_json.loads(_config_json))
     else:
-        # Standalone mode: read config from file (fallback).
-        import sys as _sys
-        _config_path = next(
-            (a for a in _sys.argv[1:] if not a.startswith("-")), "slife.json5",
-        )
+        # Standalone mode: read config from file (fallback).  The shared
+        # CLI scanner skips flag values (--agent <id>, --lang <en|zh>), so
+        # those can never be misread as a config path.
+        from slife.config import parse_cli_config_path
+        _config_path = parse_cli_config_path(sys.argv) or "slife.json5"
         with elapsed("config_load", logger, level=logging.INFO, path=_config_path):
             config = Config.from_json5(_config_path)
 

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from pathlib import Path
 
 from slife.tools._config_io import (
@@ -70,40 +69,37 @@ def resolve_config_path() -> Path:
 # every slife config writer.  Secret resolution follows below.
 
 # ── Secret resolution (os.environ → credstore → literal) ───────────────
-
-_ENV_REF = re.compile(r"\$\{(\w+)\}")
+# One shared chain: the parser (``slife.env.parse_env_ref``), the lenient
+# resolver (``slife.env.resolve_secret_value``) and the credstore hook
+# (``slife.config._try_credstore_lookup``).  mcp-plugin keeps its own thin
+# names (patched by tests / used by connection.py) but delegates — the
+# plugin's old ``\w+``-only regex silently lost dotted/hyphenated refs that
+# the host resolver accepted.
 
 
 def _is_env_ref(value: str) -> bool:
     """True if *value* is a pure ``${VAR}`` reference (no surrounding text)."""
-    return bool(_ENV_REF.fullmatch(value))
+    from slife.env import parse_env_ref
+
+    return parse_env_ref(value) is not None
 
 
 def _try_credstore_lookup(key: str) -> str | None:
     """Look up an env-var name in the credential store (credstore).
 
     The env var name IS the credential-store key — e.g. ``GITHUB_TOKEN``.
-    Returns the credential value, or None if not found / unavailable.
+    Delegate: the canonical implementation lives in ``slife.config``.
     """
-    try:
-        from credstore import get_credential
-        return get_credential(key)
-    except Exception:
-        return None
+    from slife.config import _try_credstore_lookup as _host_lookup
+
+    return _host_lookup(key)
 
 
 def _resolve_embedded_refs(value: str) -> str:
     """Resolve embedded ``${VAR}`` refs through os.environ → credstore."""
-    def _replace(m: re.Match) -> str:
-        var = m.group(1)
-        env_val = os.environ.get(var)
-        if env_val:
-            return env_val
-        cred_val = _try_credstore_lookup(var)
-        if cred_val:
-            return cred_val
-        return m.group(0)  # unresolved — leave as-is
-    return _ENV_REF.sub(_replace, value)
+    from slife.env import resolve_secret_value
+
+    return resolve_secret_value(value)
 
 
 def _resolve_secret(value: str) -> str:
@@ -112,15 +108,9 @@ def _resolve_secret(value: str) -> str:
     1. ``${VAR}`` → os.environ → credstore
     2. plaintext → as-is
     """
-    if value.startswith("${") and value.endswith("}"):
-        var_name = value[2:-1]
-        env_val = os.environ.get(var_name)
-        if env_val:
-            return env_val
-        cred_val = _try_credstore_lookup(var_name)
-        if cred_val:
-            return cred_val
-    return value
+    from slife.config import _resolve_secret as _host_resolve_secret
+
+    return _host_resolve_secret(value)
 
 
 # ── Module-level current path + raw accessors ──────────────────────────

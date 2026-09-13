@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from croniter import croniter
 
-__all__ = ["ScheduleError", "next_run", "is_valid"]
+__all__ = ["ScheduleError", "next_run", "previous_run", "is_valid"]
 
 
 class ScheduleError(ValueError):
@@ -59,6 +59,41 @@ def next_run(
         return croniter(expr, ref, day_or=True).get_next(datetime)
     except Exception as e:  # croniter raises CroniterBadDateError etc.
         raise ScheduleError(f"no next run for {expr!r}: {e}") from e
+
+
+def previous_run(
+    expr: str,
+    before: datetime,
+    tz: str | None = None,
+    *,
+    strict: bool = True,
+) -> datetime:
+    """Return the latest trigger time strictly before ``before`` (tz-aware).
+
+    The exact reverse of :func:`next_run` — ``get_prev`` instead of
+    ``get_next``.  Callers that want the last fire at-or-before a time run
+    this once and, when *before* itself may be a fire, compare the result
+    against ``next_run(previous_run(...))``.
+
+    Args:
+        expr: 5-field cron expression (``minute hour dom month dow``).
+        before: reference time; naive is treated as system local.
+        tz: Optional IANA timezone name.  When set, triggers are computed
+            in that zone; otherwise in the system local zone.
+        strict: When True (default), cross-field validation is applied.
+
+    Raises:
+        ScheduleError: For an invalid expression (like :func:`next_run`).
+    """
+    if not is_valid(expr, strict=strict):
+        raise ScheduleError(f"invalid cron expression {expr!r}")
+    ref = _as_aware(before)
+    if tz:
+        ref = ref.astimezone(ZoneInfo(tz))
+    try:
+        return croniter(expr, ref, day_or=True).get_prev(datetime)
+    except Exception as e:
+        raise ScheduleError(f"no previous run for {expr!r}: {e}") from e
 
 
 def is_valid(expr: str, *, strict: bool = False) -> bool:

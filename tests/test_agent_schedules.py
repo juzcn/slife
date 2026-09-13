@@ -85,6 +85,30 @@ def test_latest_fire_single_and_multi():
     ) is None
 
 
+def test_latest_fire_long_downtime_not_capped():
+    """The old bounded forward-stepping loop (5000 steps) returned None for a
+    per-minute schedule with >~3.5 days of downtime, silently unclassifying
+    the fire.  ``croniter.get_prev`` has no step bound — the newest fire in
+    ``(anchor, now]`` must always come back."""
+    anchor = _aware(2026, 8, 20, 9, 0)
+    now = _aware(2026, 9, 10, 9, 30)  # 21 days later — 20k+ missed minutes
+    latest = S._latest_fire_at_or_before("* * * * *", anchor, now, None)
+    assert latest is not None
+    assert anchor < latest <= now
+
+
+def test_latest_fire_now_at_fire_time_returns_now():
+    """A fire exactly at *now* is the newest fire in ``(anchor, now]`` —
+    get_prev is strict-before, so the boundary must be closed explicitly."""
+    anchor = _aware(2026, 8, 24, 9, 0)
+    now = _aware(2026, 8, 25, 9, 0)  # exactly the 9am fire
+    assert S._latest_fire_at_or_before("0 9 * * *", anchor, now, None) == now
+    # ...but only when *now* is strictly after the anchor (fire == anchor is excluded)
+    assert S._latest_fire_at_or_before(
+        "0 9 * * *", now, _aware(2026, 8, 25, 9, 0), None,
+    ) is None
+
+
 # ── _classify ────────────────────────────────────────────────────────
 
 def _task(schedule="0 9 * * *", last_run_due=None, created_at=None, **kw):

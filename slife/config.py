@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
-from slife.env import resolve_env
+from slife.env import parse_env_ref, resolve_env, resolve_secret_value
 from slife.a2a.config import A2AConfig
 import slife.timeouts as _timeouts  # module ref (not the instance) — reload-safe, patchable
 
@@ -48,27 +48,11 @@ def _resolve_secret(value: str, *, accept_keyring_uri: bool = False) -> str:
         if is_keyring_uri(value):
             return resolve_uri(value)
 
-    # ${VAR} reference (pure form).
-    if value.startswith("${") and value.endswith("}"):
-        var_name = value[2:-1]
-        if ":-" not in var_name:
-            env_val = os.environ.get(var_name)
-            if env_val:
-                return env_val
-            cred_val = _try_credstore_lookup(var_name)
-            if cred_val:
-                return cred_val
-            return value
-        # ${VAR:-default} — env.resolve_env implements the shared chain
-        # (env → credstore → literal default); reuse it so the two
-        # resolvers can't drift.  resolve_env raises on an unresolvable ref
-        # without a default; lenient callers keep the literal instead.
-        from slife.env import resolve_env
-        try:
-            return resolve_env(value)
-        except KeyError:
-            return value
-
+    # ${VAR} / ${VAR:-default} (pure reference) — the shared lenient chain
+    # (env → credstore → literal default).  ``parse_env_ref`` is the one
+    # parser, so this and the mcp-plugin resolver can't drift.
+    if parse_env_ref(value) is not None:
+        return resolve_secret_value(value)
     return value
 
 _T = TypeVar("_T")
@@ -693,8 +677,9 @@ class Config:
             return (bool(exists_credential(key_name)), str(key_name))
 
         # ${VAR} reference
-        if api_key_raw.startswith("${") and api_key_raw.endswith("}"):
-            var_name = api_key_raw[2:-1]
+        ref = parse_env_ref(api_key_raw)
+        if ref is not None:
+            var_name = ref[0]
             if os.environ.get(var_name) or exists_credential(var_name):
                 return True, ""
             return False, var_name
@@ -812,8 +797,9 @@ class Config:
                 logger.info("env_from_credstore key=%s", key)
                 continue
             # 3. Config value is a ${VAR} reference
-            if str_value.startswith("${") and str_value.endswith("}"):
-                var_name = str_value[2:-1]
+            ref = parse_env_ref(str_value)
+            if ref is not None:
+                var_name = ref[0]
                 if var_name != key:
                     cred_value = _try_credstore_lookup(var_name)
                     if cred_value:

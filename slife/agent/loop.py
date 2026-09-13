@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from cachetools import FIFOCache
+
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.logfmt import sanitize_secrets
 from slife.agent.message_history import MessageHistory
@@ -351,7 +353,11 @@ class AgentLoop:
         # usage, read by _turn_prompt, the TUI status bar, and the turn
         # save.  _last_usage is kept only as the restore-time estimate
         # slot (primed by restore_session).
-        self._usage_by_history: dict[int, TokenUsage] = {}
+        # FIFO eviction past _MAX_USAGE_CACHE replaces the manual
+        # ``pop(next(iter(...)))`` oldest-entry drop.
+        self._usage_by_history: FIFOCache[int, TokenUsage] = FIFOCache(
+            maxsize=_MAX_USAGE_CACHE,
+        )
         self._last_usage = TokenUsage()
         # Track stable fields — only emit in the turn prompt when they change.
         self._last_cwd: str = ""
@@ -931,15 +937,13 @@ class AgentLoop:
         # Remember the last API call's usage on the shared history — every
         # inbox message runs against the main agent's one context.
         if stream_usage.total_tokens > 0:
+            # The cache is FIFO-capacity: one entry per history (id), evicting
+            # the oldest past _MAX_USAGE_CACHE.  A heartbeat fires every 60s and
+            # each A2A remote turn uses a fresh one-shot history, so without the
+            # cap the cache grows without bound; evicting also makes an
+            # id()-reused history miss (fresh estimate) instead of reading a
+            # stale unrelated usage.
             self._usage_by_history[id(history)] = stream_usage
-            if len(self._usage_by_history) > _MAX_USAGE_CACHE:
-                # Drop the oldest entry (dict preserves insertion order) — a
-                # heartbeat fires every 60s and each A2A remote turn uses a
-                # fresh one-shot history, so the cache would otherwise
-                # grow without bound.  Evicting also makes an id()-reused
-                # history miss (fresh estimate) instead of reading a
-                # stale unrelated usage.
-                self._usage_by_history.pop(next(iter(self._usage_by_history)))
 
         return _StreamResult(
             content="".join(content_parts),

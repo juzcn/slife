@@ -30,6 +30,7 @@ import asyncio
 import json
 import os
 import sys
+from collections import deque
 from contextlib import asynccontextmanager
 
 from slife.a2a.card import AgentCard
@@ -78,12 +79,20 @@ mcp, _log_path, logger = create_plugin_server(
 # ── Lazy client init (FastMCP lazy-init rule) ──────────────────────
 _client: A2AMesh | None = None
 _connect_lock = asyncio.Lock()
-_inbound_tasks: list[dict] = []
-_inbound_events: list[dict] = []
-_presence_events: list[dict] = []
-_cancellations: list[dict] = []
-_task_completions: list[dict] = []
 _MAX_QUEUED = 500
+
+
+def _make_queue() -> "deque[dict]":
+    """A bounded FIFO — ``append`` drops the oldest entry past ``_MAX_QUEUED``
+    (deque overflow eviction instead of a manual ``pop(0)`` keep-below loop)."""
+    return deque(maxlen=_MAX_QUEUED)
+
+
+_inbound_tasks = _make_queue()
+_inbound_events = _make_queue()
+_presence_events = _make_queue()
+_cancellations = _make_queue()
+_task_completions = _make_queue()
 
 
 def _load_config() -> A2AConfig:
@@ -132,12 +141,11 @@ def _wire_callbacks(client: A2AMesh) -> None:
 # ── Inbound queueing (drained by the harness) ──────────────────────
 
 
-def _enqueue(collection: list[dict], kind: str, entry: dict) -> None:
+def _enqueue(collection: "deque[dict]", kind: str, entry: dict) -> None:
     """Append bounded FIFO — drop the oldest rather than block the mesh."""
     if len(collection) >= _MAX_QUEUED:
         logger.warning("a2a_inbound_overflow dropped=1 type=%s", kind)
-        collection.pop(0)
-    collection.append(entry)
+    collection.append(entry)  # deque(maxlen=_MAX_QUEUED) evicts the oldest
 
 
 def _on_inbound_task(

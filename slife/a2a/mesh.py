@@ -32,6 +32,7 @@ import random
 import uuid
 
 import aiomqtt
+from cachetools import FIFOCache
 from a2a_over_mqtt import (
     A2ARequest,
     MqttConfig,
@@ -320,7 +321,11 @@ class A2AMesh:
         self._tasks: list[asyncio.Task] = []
         self._peers: dict[str, _PresencePeer] = {}
         self._pending: dict[str, str] = {}  # corr → last artifact text
-        self._sends: dict[str, _OutboundSend] = {}  # task_id → delivery state
+        # FIFO-capacity: evicts the oldest tracked send past _MAX_TRACKED_SENDS
+        # (replaces the manual ``pop(next(iter(...)))`` oldest drop).
+        self._sends: FIFOCache[str, _OutboundSend] = FIFOCache(
+            maxsize=_MAX_TRACKED_SENDS,
+        )  # task_id → delivery state
         self._corr_to_task: dict[str, str] = {}  # correlation → task_id
 
         # Harness callbacks — replaced by the plugin before connect().
@@ -708,12 +713,7 @@ class A2AMesh:
         send = _OutboundSend(
             task_id, agent, session, request.to_json(), record=record,
         )
-        if len(self._sends) >= _MAX_TRACKED_SENDS:
-            # Evict the oldest tracked send (delivery loop keeps running on the
-            # send object it captured, but its replies can no longer route).
-            oldest = next(iter(self._sends))
-            self._sends.pop(oldest, None)
-        self._sends[task_id] = send
+        self._sends[task_id] = send  # FIFOCache evicts the oldest past the cap
         loop = asyncio.create_task(self._deliver(send))
         send.loops.add(loop)
         # First attempt — correlation == the public task_id.

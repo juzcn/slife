@@ -11,6 +11,42 @@ from typing import Any
 _ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::-([^}]*))?\}")
 
 
+def parse_env_ref(value: str) -> tuple[str, str | None] | None:
+    """Parse a pure ``${VAR}`` or ``${VAR:-default}`` reference.
+
+    Returns ``(var, default_or_None)``, or None when *value* is not a pure
+    reference (plaintext, or a ref embedded in surrounding text).  The one
+    shared parser — nobody re-slices ``[2:-1]`` or re-writes the regex, so
+    the variant implementations (config vs mcp-plugin) cannot drift (e.g. a
+    ``\\w+``-only regex losing dotted/hyphenated names).
+    """
+    m = _ENV_PATTERN.fullmatch(value)
+    if m is None:
+        return None
+    return m.group(1), m.group(2)
+
+
+def resolve_secret_value(value: str) -> str:
+    """Resolve ``${VAR}`` / ``${VAR:-default}`` refs in *value*, leniently.
+
+    Resolution order is shell env → credstore → literal default (the
+    documented chain); an unbound ref with no default stays as its literal
+    text.  Works for both pure refs and refs embedded in a larger string.
+    Never raises — callers that need strictness use :func:`resolve_env`.
+    """
+    def _replace(m: re.Match) -> str:
+        var = m.group(1)
+        env_val = os.environ.get(var)
+        if env_val is None:
+            from slife.config import _try_credstore_lookup
+            env_val = _try_credstore_lookup(var)
+        if env_val is not None:
+            return env_val
+        default = m.group(2)
+        return default if default is not None else m.group(0)
+    return _ENV_PATTERN.sub(_replace, value)
+
+
 def resolve_env(value: Any) -> Any:
     """Resolve ``${ENV_VAR}`` and ``${ENV_VAR:-default}`` references recursively.
 

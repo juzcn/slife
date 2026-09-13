@@ -80,9 +80,6 @@ POLL_INTERVAL = 30
 #: freshly due (fire it); older than this it was missed while slife was down.
 MISS_GRACE = 120
 
-#: Bound on stepping through fires when hunting the newest missed one.
-_MAX_FIRE_STEPS = 5000
-
 #: Scheduled-task worker names dispatched this session — used to reword the
 #: completion notification (hide the subagent) and to target recycling.
 _SCHEDULE_WORKERS: set[str] = set()
@@ -168,25 +165,33 @@ def _latest_fire_at_or_before(
 ) -> datetime | None:
     """Return the newest fire time in ``(anchor, now]``, or None.
 
-    Steps :func:`slife.schedules.next_run` forward from *anchor* until it
-    passes *now*.  Cheap in the common case (the anchor is the last run, so
-    one step reaches the current fire); bounded by ``_MAX_FIRE_STEPS`` for
-    pathological long downtimes.
+    ``croniter.get_prev`` (via :func:`slife.schedules.previous_run`) locates
+    the last fire strictly before *now* in one call — no forward stepping,
+    so a long downtime can never exhaust a step bound and silently drop the
+    fire (the old loop capped at 5000 steps, i.e. ~3.5 days of per-minute
+    downtime).  ``get_prev`` is strict-before, so the one case it cannot see
+    — *now* itself being a fire — is covered by an exact boundary test: the
+    next fire after ``prev`` equals *now* iff *now* is a trigger time (a
+    cron fire only lands ``:00.000``, which ``now.microsecond == 0``
+    requires).
     """
-    from slife.schedules import ScheduleError, next_run
+    from slife.schedules import ScheduleError, next_run, previous_run
 
-    latest = None
-    cur = anchor
-    for _ in range(_MAX_FIRE_STEPS):
-        try:
-            nxt = next_run(schedule, cur, tz=tz)
-        except ScheduleError:
-            break
-        if nxt > now:
-            break
-        latest = nxt
-        cur = nxt
-    return latest
+    try:
+        prev = previous_run(schedule, now, tz=tz)
+    except ScheduleError:
+        return None
+    if prev is not None:
+        # ``now`` itself may be a fire strictly after the anchor — prefer it
+        # over ``prev`` whenever it is (the older fire would mis-classify a
+        # just-due run).  A cron fire only lands ``:00.000``, so the
+        # ``microsecond == 0`` gate makes the ``next_run(prev) == now`` probe
+        # exact: it is True iff *now* is a trigger time.
+        if now.microsecond == 0 and next_run(schedule, prev, tz=tz) == now:
+            return now if now > anchor else None
+        if prev > anchor:
+            return prev
+    return None
 
 
 def _classify(task: dict, now: datetime):

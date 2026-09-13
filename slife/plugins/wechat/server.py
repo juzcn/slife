@@ -20,6 +20,8 @@ from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from cachetools import TTLCache
+
 from slife.plugins.wechat.client import WechatClawbotClient, BASE_URL
 from slife.plugins.wechat.config import (
     load_wechat_config,
@@ -108,14 +110,19 @@ _work_dir: Path = _get_data_dir()
 # Background polling
 _poll_task: asyncio.Task | None = None
 _pending: deque[dict] = deque()
-# Dedup key → last-seen monotonic time.  A windowed set: a repeated key is
-# only a "re-delivery" (WeChat re-sends recent messages until the sync buffer
-# advances) if seen within the window — a genuine repeat message sent later
-# (e.g. "收到" twice minutes apart) is NOT dropped.  The old forever-set
-# dropped every same-text repeat after the first, across polls.
-_seen_keys: dict[str, float] = {}
-_DEDUP_WINDOW = 30.0  # seconds — re-deliveries arrive well within this
 _MAX_QUEUED = 200  # keep at most 200 pending messages
+
+# Windowed re-delivery dedup.  A repeated key is only a "re-delivery" (WeChat
+# re-sends recent messages until the sync buffer advances) if seen within the
+# window — a genuine repeat message sent later (e.g. "收到" twice minutes
+# apart) is NOT dropped.  ``cachetools.TTLCache`` does the exact bookkeeping a
+# hand-rolled ``dict[key] -> monotonic`` window did: entries die 30 s after
+# (re)insertion, `in` is the window check, and maxsize caps memory like the
+# old size-pruning loop.
+_seen_keys: TTLCache[str, bool, float] = TTLCache[str, bool, float](
+    maxsize=_MAX_QUEUED * 3, ttl=30.0,
+)
+_DEDUP_WINDOW = 30.0  # seconds — re-deliveries arrive well within this
 
 # Last get_updates_buf written to the session file — persist only on change.
 _persisted_sync_buf: str = ""
@@ -196,16 +203,10 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
                     continue
 
                 key = _msg_key(m, text)
-                now = time.monotonic()
-                last_seen = _seen_keys.get(key)
-                if (
-                    last_seen is not None
-                    and now - last_seen <= _DEDUP_WINDOW
-                    and key not in batch_seen
-                ):
+                if key in _seen_keys and key not in batch_seen:
                     continue  # true re-delivery seen within the window
                 batch_seen.add(key)
-                _seen_keys[key] = now
+                _seen_keys[key] = True
 
                 from_id = m.get("from_user_id", "")
                 ctx_token = m.get("context_token", "")
@@ -227,11 +228,6 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
             # Trim if too many queued
             while len(_pending) > _MAX_QUEUED:
                 _pending.popleft()
-            while len(_seen_keys) > _MAX_QUEUED * 3:
-                # Keep the map from growing unbounded — dict preserves
-                # insertion order, so the oldest entries are first.
-                for k in list(_seen_keys)[:_MAX_QUEUED]:
-                    _seen_keys.pop(k, None)
 
             if new_count:
                 logger.debug("poll_new msgs=%d queued=%d", new_count, len(_pending))
