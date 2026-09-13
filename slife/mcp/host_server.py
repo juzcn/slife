@@ -43,6 +43,7 @@ from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
 from slife.server_utils import INTERNAL_TOOL_PREFIX, bind_free_port
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 if TYPE_CHECKING:
     from slife.tools.registry import ToolRegistry
@@ -85,8 +86,7 @@ _active_sessions: set = set()
 #: failed send.  Real deployments see a handful of consumers.
 _MAX_TRACKED_SESSIONS = 64
 #: Per-session deadline for tools/list_changed notifications — a stuck client
-#: must not stall the whole fan-out.
-_NOTIFY_TIMEOUT = 5.0
+#: must not stall the whole fan-out (developer-owned — registry ready.notify).
 
 
 def _capture_session(ctx: Context | None) -> None:
@@ -138,7 +138,7 @@ async def _notify_send_all() -> None:
     """One eager notification round to every known client, in this task.
 
     Best-effort: a dead/stale session is dropped, the rest are served.
-    Sends run CONCURRENTLY, each bounded by :data:`_NOTIFY_TIMEOUT`, so one
+    Sends run CONCURRENTLY, each bounded by the registry's ready.notify, so one
     slow/backpressured client degrades only itself.
     """
     sessions = list(_active_sessions)
@@ -146,7 +146,8 @@ async def _notify_send_all() -> None:
     async def _send_one(sess) -> None:
         try:
             await asyncio.wait_for(
-                sess.send_tool_list_changed(), timeout=_NOTIFY_TIMEOUT,
+                sess.send_tool_list_changed(),
+                timeout=_timeouts.timeouts.ready.notify,
             )
         except Exception:
             _active_sessions.discard(sess)

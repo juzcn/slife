@@ -29,6 +29,7 @@ from slife.plugins.wechat.config import (
 )
 from slife.server_utils import create_plugin_server
 from slife.logfmt import error_json
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
 
@@ -394,7 +395,7 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
     global _client, _qr_status, _qr_content, _qr_error
 
     _qr_status = "waiting"
-    deadline = asyncio.get_event_loop().time() + 600
+    deadline = asyncio.get_event_loop().time() + _timeouts.timeouts.transport.qr_deadline
 
     while asyncio.get_event_loop().time() < deadline:
         try:

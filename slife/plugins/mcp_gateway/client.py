@@ -21,6 +21,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Implementation
 
 from slife.plugins.mcp_gateway import __version__
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -78,18 +79,18 @@ def _install_cancel_scope_exception_handler() -> None:
 # only initialize() was wrapped, so a hang in transport setup (e.g. memfiles'
 # eager ngrok tunnel delaying the app past the port signal) left the spawn
 # pending forever.
-_CONNECT_ATTEMPT_TIMEOUT = 10.0
+# Per-attempt connect bound is developer-owned (registry ready.connect_attempt).
 # Max time to wait for the SDK transport to tear down after a failed attempt.
 # A request hung against a not-yet-ready server may keep aclose() from
 # returning promptly; the connect retry must progress rather than block on it.
-_CLEANUP_TIMEOUT = 2.0
+# (registry grace.cleanup).
 # Retry window: server prints port signal BEFORE uvicorn starts listening
 # (and memfiles' eager ngrok tunnel can delay readiness by another ~2s), so
 # the client may need a few attempts before the socket accepts and responds.
 # WSL's slower plugin lifespans make the window wider still — a plugin whose
 # startup takes ~10s (e.g. mcp auto-connecting a slow catalog) needs the band
-# to outlast it, bounded above by the 30 s spawn guard in the harness.
-_CONNECT_RETRY_DELAY = 0.5
+# to outlast it, bounded above by the spawn guard in the harness (a count,
+# the registry's ready.connect_retry_delay governs the band).
 _CONNECT_RETRY_ATTEMPTS = 20  # up to ~10 s of slow-start plugins (WSL)
 
 
@@ -158,8 +159,10 @@ def _is_external_cancel() -> bool:
 class MCPClient:
     """MCP client for connecting to Slife plugin servers via Streamable HTTP."""
 
-    def __init__(self, tool_timeout: float = 60.0,
+    def __init__(self, tool_timeout: float | None = None,
                  client_info_extra: dict | None = None):
+        if tool_timeout is None:
+            tool_timeout = _timeouts.timeouts.work.tool_budget  # call-time lookup
         self._session: ClientSession | None = None
         self._connected: bool = False
         self._exit_stack: AsyncExitStack | None = None
@@ -210,7 +213,7 @@ class MCPClient:
                 # tunnel delays lifespan startup) would otherwise leave the
                 # streamable_http_client enter pending forever, with no
                 # timeout to surface it into the retry loop.
-                async with asyncio.timeout(_CONNECT_ATTEMPT_TIMEOUT):
+                async with asyncio.timeout(_timeouts.timeouts.ready.connect_attempt):
                     self._exit_stack = AsyncExitStack()
                     if self._http_client is None:
                         # Local plugin servers only — never route localhost
@@ -226,7 +229,12 @@ class MCPClient:
                         self._http_client = httpx2.AsyncClient(
                             trust_env=False,
                             timeout=httpx2.Timeout(
-                                connect=10.0, read=None, write=None, pool=10.0,
+                                connect=_timeouts.timeouts.transport.connect,
+                                # read/write are DELEGATED — the loop's tool
+                                # budget owns the read bound (both are None).
+                                read=_timeouts.timeouts.transport.read,
+                                write=_timeouts.timeouts.transport.write,
+                                pool=_timeouts.timeouts.transport.pool,
                             ),
                         )
                     # mcp ≤2.0 yielded ``(read, write, get_session_id)``; mcp
@@ -274,7 +282,7 @@ class MCPClient:
                 # connect — fall through to the retry path.
                 last_err = exc
                 if attempt < _CONNECT_RETRY_ATTEMPTS - 1:
-                    await asyncio.sleep(_CONNECT_RETRY_DELAY)
+                    await asyncio.sleep(_timeouts.timeouts.ready.connect_retry_delay)
                     continue
             except Exception as e:
                 last_err = e
@@ -282,7 +290,7 @@ class MCPClient:
                 if not _is_retryable_connect_error(e):
                     raise
                 if attempt < _CONNECT_RETRY_ATTEMPTS - 1:
-                    await asyncio.sleep(_CONNECT_RETRY_DELAY)
+                    await asyncio.sleep(_timeouts.timeouts.ready.connect_retry_delay)
 
         if not self._session:
             raise ConnectionError(
@@ -363,7 +371,8 @@ class MCPClient:
                 # makes progress; the abandoned stack is reclaimed by GC and
                 # the next attempt builds a fresh one.
                 await asyncio.wait_for(
-                    self._exit_stack.aclose(), timeout=_CLEANUP_TIMEOUT,
+                    self._exit_stack.aclose(),
+                    timeout=_timeouts.timeouts.grace.cleanup,
                 )
             except asyncio.TimeoutError:
                 logger.debug("cleanup_aclose_timeout abandoning stack")
@@ -407,7 +416,9 @@ class MCPClient:
         # in under 15s even with hundreds of tools.  Cap the timeout
         # so a stuck SSE session on a subagent doesn't outlive the
         # parent's 30s spawn timeout.
-        list_timeout = min(self._tool_timeout, 20.0)
+        list_timeout = min(
+            self._tool_timeout, _timeouts.timeouts.ready.list_tools,
+        )
         try:
             # asyncio.timeout, not asyncio.wait_for: a stuck SSE session on
             # Windows/Proactor can defeat wait_for's cancellation (the inner

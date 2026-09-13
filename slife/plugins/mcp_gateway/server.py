@@ -21,6 +21,7 @@ from fastmcp.server.context import Context
 from fastmcp.server.middleware import Middleware
 
 from slife.plugins.mcp_gateway import config as plugin_config
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.plugins.spec import mcp_child_reserved_names
 from slife.plugins.mcp_gateway.connection import ConnectionPool, ServerConfig, ServerStatus
 from slife.plugins.mcp_gateway.logging import error_json, ok_json
@@ -204,8 +205,8 @@ _active_sessions: set[Any] = set()
 #: arbitrary entry is dropped — a dead one is reaped, a live one re-registers
 #: on its next tool call.
 _MAX_TRACKED_SESSIONS = 64
-#: Per-session deadline for tools/list_changed notifications.
-_NOTIFY_TIMEOUT = 5.0
+#: Per-session deadline for tools/list_changed notifications
+#: (developer-owned — registry ready.notify).
 #: Coalescing state: at most ONE send is in flight, and pushes that land while
 #: it runs fold into a trailing-edge re-send (notification carries no payload —
 #: a host re-lists on receipt anyway).
@@ -255,7 +256,7 @@ async def _notify_send_all() -> None:
     """One eager notification round to every known client, in this task.
 
     Best-effort: a dead/stale session is dropped; the rest are still served.
-    Sends run CONCURRENTLY (gather), each bounded by :data:`_NOTIFY_TIMEOUT`,
+    Sends run CONCURRENTLY (gather), each bounded by the registry's ready.notify,
     so one slow/backpressured client degrades only itself (F4).
     """
     sessions = list(_active_sessions)
@@ -263,7 +264,8 @@ async def _notify_send_all() -> None:
     async def _send_one(sess) -> None:
         try:
             await asyncio.wait_for(
-                sess.send_tool_list_changed(), timeout=_NOTIFY_TIMEOUT,
+                sess.send_tool_list_changed(),
+                timeout=_timeouts.timeouts.ready.notify,
             )
         except Exception:
             # Dead/stale session — drop it so a later notification skips it.

@@ -44,6 +44,7 @@ from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 from slife.paths import get_data_dir
 from slife.tools.base import Tool, make_params
 from slife.ui.i18n import t
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -339,8 +340,7 @@ async def check_memfiles(client=None) -> list[dict]:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-
-_PROBE_TIMEOUT = 5.0
+# Endpoint probe deadline is developer-owned (registry ready.probe_endpoint).
 
 
 async def check_local_embed(base_url: str = "") -> list[dict]:
@@ -377,7 +377,7 @@ async def check_local_embed(base_url: str = "") -> list[dict]:
                 headers["Authorization"] = f"Bearer {api_key}"
         base_url = base_url.rstrip("/")
         async with httpx2.AsyncClient(
-            timeout=httpx2.Timeout(_PROBE_TIMEOUT),
+            timeout=httpx2.Timeout(_timeouts.timeouts.ready.probe_endpoint),
         ) as http:
             resp = await http.get(f"{base_url}/models", headers=headers)
             resp.raise_for_status()

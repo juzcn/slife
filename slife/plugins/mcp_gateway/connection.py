@@ -44,12 +44,15 @@ from mcp.types import (
 from slife.plugins.mcp_gateway import __version__
 from slife.plugins.mcp_gateway.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
 from slife.platform import resolve_command
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
 # ── Health check / reconnect ────────────────────────────────────────────
+# Cadence (health ping period) and the hand-rolled reconnect backoff profile
+# stay local — they are pacing, not per-await budgets.  The ping *deadline*
+# is developer-owned (registry ready.probe_endpoint).
 _HEALTH_CHECK_INTERVAL = 30.0      # seconds between health pings
-_HEALTH_PING_TIMEOUT = 5.0         # a ping must answer within this window
 _RECONNECT_BACKOFF_INITIAL = 5.0   # first reconnect retry delay (s)
 _RECONNECT_BACKOFF_MAX = 60.0      # cap on exponential backoff (s)
 _RECONNECT_BACKOFF_MULTIPLIER = 2.0
@@ -58,11 +61,11 @@ _RECONNECT_BACKOFF_MULTIPLIER = 2.0
 # cannot answer for while it is still coming up).  Once ``CONNECTED``, the
 # protocol period carries no client timer (per the timeout architecture);
 # a server that stops answering is the health monitor's concern.
-_CONNECT_STARTUP_TIMEOUT = 120.0
+# Value is developer-owned (registry ready.connect_startup).
 # Max time to tear down the SDK transport (AsyncExitStack.aclose()) after a
 # failed/cancelled connect — a request hung against a not-yet-ready server
 # can keep aclose() from returning promptly; the retry must progress.
-_CLEANUP_TIMEOUT = 2.0
+# (registry grace.cleanup).
 
 # stdio stderr capture: poll interval for the errlog-file drain task, and how
 # many lines of the tail connect()'s error path may read back.
@@ -356,7 +359,8 @@ class MCPServerConnection:
             if self._exit_stack is not None:
                 try:
                     await asyncio.wait_for(
-                        self._exit_stack.aclose(), timeout=_CLEANUP_TIMEOUT,
+                        self._exit_stack.aclose(),
+                        timeout=_timeouts.timeouts.grace.cleanup,
                     )
                 except (asyncio.TimeoutError, RuntimeError, BaseExceptionGroup):
                     pass
@@ -365,11 +369,16 @@ class MCPServerConnection:
                 # No read/write timeout of our own — enforcement lives in the
                 # agent loop's tool_timeout (per the timeout architecture).
                 # Only connect/pool are bounded so a dead endpoint can't hang
-                # the handshake; ping carries its own 5s wait_for.
+                # the handshake; ping carries its own wait_for (probe_endpoint).
                 self._http_client = httpx2.AsyncClient(
                     headers=headers,
                     timeout=httpx2.Timeout(
-                        connect=10.0, read=None, write=None, pool=10.0,
+                        connect=_timeouts.timeouts.transport.connect,
+                        # read/write are DELEGATED — the loop's tool budget
+                        # owns the read bound (both are None).
+                        read=_timeouts.timeouts.transport.read,
+                        write=_timeouts.timeouts.transport.write,
+                        pool=_timeouts.timeouts.transport.pool,
                     ),
                     trust_env=False,
                 )
@@ -449,7 +458,7 @@ class MCPServerConnection:
                 # + socket/SSE setup).  asyncio.timeout, not wait_for: on
                 # Windows/Proactor a stuck transport op can defeat wait_for's
                 # cancellation and block past the deadline.
-                async with asyncio.timeout(_CONNECT_STARTUP_TIMEOUT):
+                async with asyncio.timeout(_timeouts.timeouts.ready.connect_startup):
                     if transport == "stdio":
                         await self._connect_stdio()
                     else:
@@ -567,7 +576,7 @@ class MCPServerConnection:
                     "uvx", "--from", "mcp-server-fetch", "python", "-c",
                     "import readabilipy, os; print(os.path.dirname(readabilipy.__file__))",
                 ],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30,  # noqa-timeout — one-off dep bring-up (sync subprocess, not asyncio)
             )
             if result.returncode != 0:
                 return
@@ -587,7 +596,7 @@ class MCPServerConnection:
             npm_cmd = ["cmd", "/c", "npm", "install"]
             install = _subprocess.run(
                 npm_cmd, cwd=jsdir,
-                capture_output=True, text=True, timeout=60,
+                capture_output=True, text=True, timeout=60,  # noqa-timeout — one-off dep bring-up (sync subprocess, not asyncio)
             )
             if install.returncode == 0:
                 logger.info("fetch_npm_installed jsdir=%s", jsdir)
@@ -604,8 +613,14 @@ class MCPServerConnection:
     def list_tools(self) -> list[dict]:
         return list(self._tools_cache)
 
-    async def ping(self, timeout: float = _HEALTH_PING_TIMEOUT) -> bool:
-        """Return True if the server answers an MCP ping (SDK send_ping)."""
+    async def ping(self, timeout: float | None = None) -> bool:
+        """Return True if the server answers an MCP ping (SDK send_ping).
+
+        ``timeout`` defaults to the registry's ready.probe_endpoint; a caller
+        may pass a shorter bound explicitly.
+        """
+        if timeout is None:
+            timeout = _timeouts.timeouts.ready.probe_endpoint
         if self._status != ServerStatus.CONNECTED or self._session is None:
             return False
         try:
@@ -829,7 +844,8 @@ class MCPServerConnection:
                 # Bounded teardown: a request hung against a not-yet-ready
                 # server can keep aclose() from returning promptly.
                 await asyncio.wait_for(
-                    self._exit_stack.aclose(), timeout=_CLEANUP_TIMEOUT,
+                    self._exit_stack.aclose(),
+                    timeout=_timeouts.timeouts.grace.cleanup,
                 )
             except asyncio.TimeoutError:
                 logger.debug("cleanup_aclose_timeout abandoning stack")

@@ -7,6 +7,7 @@ import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 import httpx2
 
@@ -92,7 +93,10 @@ class ArtifactSaver:
             ext = Path(url.split("?")[0]).suffix.lstrip(".") or "bin"
         try:
             async with httpx2.AsyncClient(
-                timeout=httpx2.Timeout(300.0, connect=30.0),
+                timeout=httpx2.Timeout(
+                        _timeouts.timeouts.transport.media_download,
+                        connect=_timeouts.timeouts.transport.media_connect,
+                    ),
                 follow_redirects=True,
             ) as client:
                 resp = await client.get(url)

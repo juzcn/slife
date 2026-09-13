@@ -16,6 +16,7 @@ import sys
 from slife.platform import _resolve_skill_script, kill_process_tree
 from slife.logfmt import sanitize_secrets
 from slife.tools.base import Tool
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -161,12 +162,19 @@ class ShellTool(Tool):
         "required": ["command"],
     }
 
-    def __init__(self, timeout: int = 30):
-        self.timeout = timeout
+    def __init__(self, timeout: int | None = None):
+        # Call-time lookup (registry work.shell); ≤0 means "the tool default"
+        # — the same contract the loop's `_timeout` mapping enforces.
+        if timeout is None or timeout <= 0:
+            timeout = int(_timeouts.timeouts.work.shell)
+        self.timeout: int = timeout
 
     @classmethod
     def from_config(cls, cfg, config, ctx=None):
-        tool = cls(timeout=cfg.get("timeout", 30))
+        # ``cfg.get("timeout")`` is the per-tool USER override (slife.json5
+        # tools section); absent → registry default via the ctor.
+        raw = cfg.get("timeout")
+        tool = cls(timeout=int(raw) if raw is not None else None)
         if ctx is not None:
             object.__setattr__(tool, "_ctx", ctx)
         return tool
@@ -358,12 +366,13 @@ class InstallPythonPackageTool(Tool):
         )
         try:
             out_h, out_t, out_d, err_h, err_t, err_d = await asyncio.wait_for(
-                _read_stdout_stderr(proc), timeout=120,
+                _read_stdout_stderr(proc),
+                timeout=_timeouts.timeouts.work.pip_install,
             )
         except asyncio.TimeoutError:
             await kill_process_tree(proc)
             logger.warning("pip_install_timeout packages=%s", packages)
-            return f"Error: pip install timed out after 120s"
+            return f"Error: pip install timed out after {_timeouts.timeouts.work.pip_install:g}s"
         except asyncio.CancelledError:
             await kill_process_tree(proc)
             raise

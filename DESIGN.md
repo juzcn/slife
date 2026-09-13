@@ -15,6 +15,7 @@
 * [Part 8 · UI, Config, Credentials, Health, Logging, Paths](#part-8--ui-config-credentials-health-logging-paths)
 * [Part 9 · Project Structure](#part-9--project-structure)
 * [Appendix A · Design Decisions & Hard-Won Lessons](#appendix-a--design-decisions--hard-won-lessons)
+* [TIMEOUT.md](TIMEOUT.md) — the timeout registry model (values, ownership, gates)
 
 ---
 
@@ -164,12 +165,12 @@ User Input → MessageHistory.add_user_message()        (secrets sanitized)
 - **Streaming**: thinking and text tokens delivered in real time via `AgentEventHandler` callbacks.
 - **Tool accumulation**: tool-call deltas accumulated across chunks, executed as a batch.
 - **Concurrent execution**: all calls in a batch run via `asyncio.gather`; approval dialogs serialize behind a lock.
-- **Tool timeout**: single enforcement point — `asyncio.wait_for()` wraps every call (default 120 s, `agent.tool_timeout`) as a **fallback** only — the LLM passes a per-call `_timeout`, and tools with a native `timeout` parameter (`execute_shell`) receive it directly instead of a double wrap. A bare `timeout` argument on a tool whose schema has none is also consumed and enforced (LLMs routinely append one), exactly like `_timeout`.
+- **Tool timeout**: single enforcement point — `asyncio.wait_for()` wraps every call (default = the developer-owned registry's `work.tool_budget`, 120 s; the `agent.tool_timeout` user key is no longer read) as a **fallback** only — the LLM passes a per-call `_timeout`, and tools with a native `timeout` parameter (`execute_shell`) receive it directly instead of a double wrap. A bare `timeout` argument on a tool whose schema has none is also consumed and enforced (LLMs routinely append one), exactly like `_timeout`.
 - **Background execution**: per-call `_async: true` schedules the tool as a background task and returns a task id immediately; poll with `check_async`, cancel with `cancel_async`. The async runner **sanitizes at storage time** (secrets are scrubbed the moment the task finishes, not when polled), and a **failed** async task surfaces with the `Error:` prefix — the same `is_error` contract as a synchronous call. Results are pruned past a bound (`_MAX_ASYNC_TASKS = 100`), so a very old poll can answer "Task not found".
 - **Iteration limit**: `max_iterations` (default 30) prevents infinite loops; **0 = unlimited**. The cap is checked **live each iteration** (not fixed at `run()` start), so a mid-turn `set_max_iterations` applies **immediately** to the running turn and to the next. Hitting the cap returns a cancelled result and notifies the handler via `on_max_iterations` — the TUI shows `✗ Agent exceeded maximum of N iterations`.
 - **Cancellation**: `Esc` sets a cancel event; checked before each iteration, after each stream, and before each tool batch.
-- **LLM stream failure contract (one contract, every source)**: transient transport failures — `httpx.TransportError`, the SDKs' `*APIConnectionError` / `*APITimeoutError`, and the loop's own `StreamStallError` (below) — are retried by `_process_stream` with bounded linear backoff (`_LLM_STREAM_MAX_RETRIES` = 2 ⇒ 3 attempts at `0.5 s × attempt`), so the main agent, subagents, heartbeat, WeChat and A2A share a single resilience contract. Bad-request / content-filter / auth errors are **not** retried here (SDK + inbox concern). Exhaustion raises `RuntimeError("LLM stream failed after N attempts: …")` with a **non-empty** detail (`str(e) or type(e).__name__`). The history is kept intact on transient failures; only content-policy / bad-request errors roll back.
-- **Stall watchdog (`stream_stall_timeout`)**: `_consume_stream` wraps every `anext()` in an `asyncio.timeout` that **resets on each chunk** — a provider that answers `200 OK` and then sends nothing (Bailian did exactly this: zero bytes for ~7 min before dropping the connection) is cut after the default 120 s (`_LLM_STREAM_STALL_TIMEOUT`) with `StreamStallError`, which the retry ladder handles like any other transient failure. A slow-but-live generation is never cut — this is an *inactivity* timer, not a *total* one (the "timer at the owner, no total" rule). The separate opt-in `stream_timeout` remains a **total** per-call cap (subagents inherit the agent `task_timeout`).
+- **LLM stream failure contract (one contract, every source)**: transient transport failures — `httpx.TransportError`, the SDKs' `*APIConnectionError` / `*APITimeoutError`, and the loop's own `StreamStallError` (below) — are retried by `_process_stream` with bounded linear backoff (registry `stream.retries` = 2 ⇒ 3 attempts at `stream.retry_base_delay` × attempt), so the main agent, subagents, heartbeat, WeChat and A2A share a single resilience contract. Bad-request / content-filter / auth errors are **not** retried here (SDK + inbox concern). Exhaustion raises `RuntimeError("LLM stream failed after N attempts: …")` with a **non-empty** detail (`str(e) or type(e).__name__`). The history is kept intact on transient failures; only content-policy / bad-request errors roll back.
+- **Stall watchdog (`stream_stall_timeout`)**: `_consume_stream` wraps every `anext()` in an `asyncio.timeout` that **resets on each chunk** — a provider that answers `200 OK` and then sends nothing (Bailian did exactly this: zero bytes for ~7 min before dropping the connection) is cut after the registry's `work.stall` (120 s) with `StreamStallError`, which the retry ladder handles like any other transient failure. A slow-but-live generation is never cut — this is an *inactivity* timer, not a *total* one (the "timer at the owner, no total" rule). The separate opt-in `stream_timeout` remains a **total** per-call cap (subagents inherit the registry's `work.task_budget`).
 - **Turn consistency**: one function — `MessageHistory._ensure_turn_consistent()` — enforces two idempotent invariants before a history is persisted (and again on load), so it is always well-formed when it next reaches the wire:
   1. **No orphaned tool_calls** — an assistant `tool_call` whose result never arrived (an interrupted turn) gets a synthetic `(Tool execution interrupted)` result right after it.
   2. **Alternating roles** — a history ending on a `user`/`tool` message (a tool result is a `user` role on the Anthropic wire, which rejects two consecutive users with a 400) gets a closing assistant message (`"(Turn interrupted)"`).
@@ -349,7 +350,9 @@ Every tool returns a single string (`async execute(**kwargs) -> str`). The failu
 
 ### Timeout Architecture
 
-Single enforcement point at the Agent Loop level. The three meta-parameters (`_timeout`, `_async`, `_approve`) are a **system-prompt contract** (slife.j2, "Tool meta-parameters"): any tool call may carry them, and `_execute_tools` pops them before dispatch.
+**Values are developer-owned and centralized — and they are code.** Every timeout value reads at call time from the typed dataclass defaults of **`slife/timeouts.py`** (exposed as `_timeouts.timeouts.<role>.<key>`); there is no external config file and no second seat for a value. The registry is developer-only (no runtime tool/user/seed reads it) and structurally invalid edits fail loudly at import — the model rules, the role table, the load-time invariants, the "no hardcoded timeout" review gate and the rejected alternatives are all written down in **[TIMEOUT.md](TIMEOUT.md)**. The one sanctioned "total" deadline in the system is the tool-call budget (`work.tool_budget`); there is no turn deadline.
+
+Enforcement is still single-pointed at the Agent Loop level. The three meta-parameters (`_timeout`, `_async`, `_approve`) are a **system-prompt contract** (slife.j2, "Tool meta-parameters"): any tool call may carry them, and `_execute_tools` pops them before dispatch.
 
 - Tools **without** a native `timeout` parameter → `asyncio.wait_for(timeout=…)` (default 120 s).
 - Tools **with** a native `timeout` (`execute_shell`) → mapped to the native argument, no double-wrap.
@@ -398,7 +401,7 @@ Processes communicate through environment variables:
 
 **Readiness** follows the MCP standard: a plugin is ready when its `initialize` handshake completes — the server only answers it after its own initialization (FastMCP lifespan) succeeded, during which the plugin establishes its own serving capacity. There is no `__ready` probe tool. The lifespan stays **handshake-fast**: heavyweight startup (e.g. a plugin's semantic index, the job-coding LLM client) is deferred to `warm_after_handshake`, which runs **after the first `tools/list`** (a short delay, then fire-and-forget) — never inside the lifespan. External/subordinate dependencies never gate readiness: they are uncontrollable, self-heal at runtime, and are surfaced separately via status tools.
 
-**Required plugins.** `plugins.required` in `slife.json5` (empty by default; the shipped config sets `["memdb", "memfiles"]`) are core: failing to become ready **aborts startup** with an error instead of limping on. The spawn hang-guard is bounded by `PLUGIN_SPAWN_TIMEOUT` = **60 s** (a 30 s cap previously misfired on slow machines). The service opens for user input only once every plugin spawn has converged (ready / skipped / failed), so input can never race ahead of plugin startup.
+**Required plugins.** `plugins.required` in `slife.json5` (empty by default; the shipped config sets `["memdb", "memfiles"]`) are core: failing to become ready **aborts startup** with an error instead of limping on. The spawn hang-guard is bounded by the registry's `ready.plugin_start` = **60 s** (a 30 s cap previously misfired on slow machines). The service opens for user input only once every plugin spawn has converged (ready / skipped / failed), so input can never race ahead of plugin startup.
 
 **Watchdog (auto-restart).** Each plugin runs with a watchdog background task that monitors the child process and auto-restarts it on unexpected exit:
 
@@ -483,7 +486,7 @@ A job that needs an **external capability** reaches it through the `mcp` handle:
 Local child-process workers, always available — no config toggle. A subagent (agent worker) is **not** an A2A peer: no network identity, no presence, and no mesh tooling of its own.
 
 - **headless.py**: Slife without TUI, worker-scoped JSON-RPC 2.0 over stdin/stdout — request methods `worker/send`, `worker/cancel`, `worker/plugin_restart`, `context` (cloned parent history), `shutdown`; notifications `worker/complete`, `worker/progress`; a `{ready: true}` result signals startup. Pure UTF-8 on stdout to dodge GBK.
-- **SubagentManager**: spawn/stop/list lifecycle. **Names are explicit — a worker's name is its identity**; `spawn_subagent` requires a `subagent_name` (a short safe identifier) and never auto-generates one. `max_subagents` default 5, `task_timeout` default 120 s.
+- **SubagentManager**: spawn/stop/list lifecycle. **Names are explicit — a worker's name is its identity**; `spawn_subagent` requires a `subagent_name` (a short safe identifier) and never auto-generates one. `max_subagents` default 5; the task budget is developer-owned (registry `work.task_budget`).
 - **Serial processing + visibility**: a worker runs one task at a time. A sync `subagent_send_task` to a busy worker is automatically queued as async and reported (never a silent timeout, never a resend). `subagent_list_tasks` lists worker tasks across workers.
 - **Async delivery mode**: `subagent_send_task_async` takes `mode="auto"` (default — the result auto-pushes to the parent's inbox, starting a new turn; **it also stays retrievable** via `subagent_get_task_result`) or `mode="poll"` (no push — retrieve explicitly). The mode is chosen at send time so the caller's intent is explicit.
 - **Shared plugins**: subagents connect to the main agent's plugin servers (mcp-gateway / memdb / wechat / a2a / memfiles) via inherited ports — no isolation; they can send but never drain the inbound queue (all replies and management belong to the main agent).
@@ -757,13 +760,14 @@ Known shapes: `sk-*`, `ghp_*`, `ya29.*`, `pypi-*`, `Authorization: Bearer` token
 | `env` | `${VAR}` references, applied to the environment at startup |
 | `models.providers` / `active_model` | LLM providers (api_key, base_url, api, models[]) + the active `"provider/model"` ref |
 | `job_coding_model` | Top-level provider/model ref for jobs (plugin-read, independent of `active_model`) |
-| `agent` | `max_iterations`, `tool_timeout`, `context_floor`, `context_ceiling`, `tool_result_ceiling`, `memory_tool_result_chars`, `heartbeat_interval` |
+| `agent` | `max_iterations`, `context_floor`, `context_ceiling`, `tool_result_ceiling`, `memory_tool_result_chars`, `heartbeat_interval` |
 | `tools` | Per-tool overrides (timeout, enabled) |
 | `embeddings` | First-class embeddings config: `providers` (OpenAI-compatible endpoints), `active_model` (bare provider id), `enabled` — shared by memdb/memfiles + the gateway's tool catalog (host passes the active endpoint via handshake) |
 | `wechat` | `enabled` toggle |
 | `media` | Non-chat generation config (plugin-read, ignored by the main `Config` parser) |
-| `a2a` | Transport binding, broker host/port, heartbeat, task_timeout |
-| `subagent` | `max_subagents`, `task_timeout` |
+| `a2a` | Transport binding, broker host/port |
+| `subagent` | `max_subagents` (the timeout is developer-owned — see `timeouts` row) |
+| `timeouts` | **Not a user section.** Every timeout value is a developer-owned constant in **`slife/timeouts.py`** (the module is the registry — see [TIMEOUT.md](TIMEOUT.md)); there is no `timeouts` section in `slife.json5` and `agent.tool_timeout` / `subagent.task_timeout` are no longer read from it |
 | `cli_tools` | External CLI tool definitions (read by the CLI tools directly) |
 | `plugins.required` | Required plugins (empty by default; the shipped config requires `memdb`, `memfiles`) |
 
@@ -955,7 +959,7 @@ A subagent hang traced to a single 315 KB anthropic SDK DEBUG line: it blew past
 
 ### A.9 The 60-second spawn hang-guard
 
-A 30 s cap on required-plugin spawns previously misfired on slow machines and aborted startup on a healthy install. The bounded guard is now `PLUGIN_SPAWN_TIMEOUT` = 60 s with heavyweight init deferred past handshake (Part 5). When tuning a startup timeout, the question is: *does the fast path finish on the slowest supported machine?*
+A 30 s cap on required-plugin spawns previously misfired on slow machines and aborted startup on a healthy install. The bounded guard is now the registry's `ready.plugin_start` = 60 s with heavyweight init deferred past handshake (Part 5). When tuning a startup timeout, the question is: *does the fast path finish on the slowest supported machine?*
 
 ### A.10 Model-picker bindings: priority, sync, and post-layout scroll
 

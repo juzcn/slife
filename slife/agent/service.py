@@ -41,6 +41,7 @@ from slife.a2a.identity import HUMAN
 from slife.tools.factory import create_tools_from_config
 from slife.mcp.tool_adapter import create_proxy_tools
 from slife.platform import terminate_process_sync
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.server_utils import is_internal_tool
 # The harness composes the TUI's user-facing text, so it localizes it too
 # (same as slife/tools/system.py) — the TUI only renders what it is handed.
@@ -68,9 +69,9 @@ _on_model_switched: list[Callable[[str], None]] = []
 # harness's one-time probe must not race a still-running attempt: a failed
 # start retries up to 3× with 2s/4s backoff (~9s before it concludes).  The
 # harness probes __check until the plugin reports a terminal state, bounded
-# by these constants, and surfaces "tunnel down" only once.
-_TUNNEL_SETTLE_TIMEOUT = 20.0  # seconds — max wait for the eager attempt
-_TUNNEL_PROBE_INTERVAL = 1.0   # seconds — between __check probes
+# by the registry's ready.tunnel_settle (dev-owned), and surfaces "tunnel
+# down" only once.
+_TUNNEL_PROBE_INTERVAL = 1.0  # seconds — cadence between __check probes (not a budget)
 
 
 def _short_reason(reason: str, limit: int = 140) -> str:
@@ -599,15 +600,13 @@ class AgentService:
         failed) the ``_startup_settled`` event fires — the service is then
         open for user input.
         """
-        from slife.agent.plugins import PLUGIN_SPAWN_TIMEOUT
-
         self._startup_plugins.add(name)
         try:
             # Hang guard on the spawn await — convergence must fire even for
             # a stuck child, so the service can still open.  Not a
             # readiness deadline: the normal path settles as fast as the
             # real spawn, no timing guess involved.
-            async with asyncio.timeout(PLUGIN_SPAWN_TIMEOUT):
+            async with asyncio.timeout(_timeouts.timeouts.ready.plugin_start):
                 return await self._start_plugin_server_impl(name, module)
         finally:
             self._startup_plugins.discard(name)
@@ -871,10 +870,10 @@ class AgentService:
         The plugin eager-starts the tunnel on a background task, so a single
         probe at ready-time would race and misread ``starting`` as down.  We
         follow the attempt to its terminal state (``active`` / ``failed``),
-        bounded by ``_TUNNEL_SETTLE_TIMEOUT`` — an unresolved state within
-        the window stays silent rather than guessing.
+        bounded by the registry's ``ready.tunnel_settle`` — an unresolved
+        state within the window stays silent rather than guessing.
         """
-        deadline = _time.monotonic() + _TUNNEL_SETTLE_TIMEOUT
+        deadline = _time.monotonic() + _timeouts.timeouts.ready.tunnel_settle
         while True:
             try:
                 raw = await client.call_tool("__check")
@@ -1431,7 +1430,11 @@ class AgentService:
             for name in list(mgr._subagents.keys()):
                 proc = mgr._subagents.get(name)
                 if proc is not None and proc._process is not None:
-                    terminate_process_sync(proc._process, timeout=2.0, label=f"subagent-{name}")
+                    terminate_process_sync(
+                        proc._process,
+                        timeout=_timeouts.timeouts.grace.cleanup,
+                        label=f"subagent-{name}",
+                    )
 
     # ── Memory lifecycle ──────────────────────────────────────────────
 
@@ -1670,7 +1673,7 @@ class AgentService:
                     "__memory_save_turn",
                     save_args,
                 ),
-                timeout=10.0,
+                timeout=_timeouts.timeouts.work.save_memory,
             )
         except asyncio.TimeoutError:
             # The save is a fast insert (embedding is deferred to the memdb
@@ -1904,7 +1907,7 @@ class AgentService:
                 client.call_tool(
                     "__memory_context_start_advance", {"count": count},
                 ),
-                timeout=10.0,
+                timeout=_timeouts.timeouts.work.save_memory,
             )
             return True
         except Exception:

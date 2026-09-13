@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from slife.platform import terminate_process
 from slife.fifoset import FifoSet
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 # A subagent_name is rendered into the child's system prompt identity line and
 # into its log filename — restrict it to a safe identifier so an injected
@@ -176,8 +177,8 @@ class SubagentProcess:
         # finishing its own boot (plugin connects etc.), meanwhile stderr is
         # at DEBUG.  With no reader yet, a build-up of >~64 KB of stderr
         # blocks the child, which then never reads stdin, which blocks our
-        # drain() below — both stuck until the 30s _ready timeout kills it.
-        # (Same class as the prior stderr relay pipe-wedge.)  Do NOT call
+        # drain() below — both stuck until the registry's ready.spawn timeout
+        # kills it.  (Same class as the prior stderr relay pipe-wedge.)  Do NOT call
         # _read_one() concurrently: two readline() calls on the same
         # StreamReader cause "readuntil() called while another coroutine
         # is already waiting for incoming data".
@@ -195,12 +196,15 @@ class SubagentProcess:
             ) + "\n"
             proc.stdin.write(ctx_msg.encode())
             await proc.stdin.drain()
+        ready_spawn = _timeouts.timeouts.ready.spawn  # call-time lookup
         try:
-            await asyncio.wait_for(self._ready.wait(), timeout=30.0)
+            await asyncio.wait_for(self._ready.wait(), timeout=ready_spawn)
             logger.info("ready name=%s", self._name)
         except asyncio.TimeoutError:
             await self._stop_process()
-            raise RuntimeError(f"Subagent '{self._name}' not ready within 30s")
+            raise RuntimeError(
+                f"Subagent '{self._name}' not ready within {ready_spawn:g}s"
+            )
         except Exception:
             await self._stop_process()
             raise
@@ -290,7 +294,9 @@ class SubagentProcess:
                 self._name, method, exc_info=True,
             )
 
-    async def send_task(self, task: str, timeout: float = 120.0) -> str:
+    async def send_task(self, task: str, timeout: float | None = None) -> str:
+        if timeout is None:
+            timeout = _timeouts.timeouts.work.task_budget  # call-time lookup
         if not self.is_running or not self._process or not self._process.stdin:
             raise RuntimeError(f"Subagent '{self._name}' not running")
         if not self.is_ready:
@@ -655,7 +661,9 @@ class SubagentManager:
         self._config = config
         sc = config.subagent_config or {}
         self._max = sc.get("max_subagents", 5)
-        self._timeout = sc.get("task_timeout", 120)
+        # task_timeout is developer-owned — registry work.task_budget is the
+        # fallback if a stale config dict lacks the key.
+        self._timeout = sc.get("task_timeout", _timeouts.timeouts.work.task_budget)
         # Callback invoked when a subagent task completes:
         #   async def cb(agent_name: str, task_id: str, result: str) -> None
         self.on_task_complete: "Callable | None" = None

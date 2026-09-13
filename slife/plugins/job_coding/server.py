@@ -38,6 +38,7 @@ from fastmcp.server.context import Context
 from slife.plugins.job_coding import registry, runner
 from slife.paths import get_jobs_dir
 from slife.server_utils import create_plugin_server, run_plugin_server
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 #: Job names that would collide with this plugin's own tools.
 _RESERVED_NAMES = frozenset({
@@ -57,8 +58,8 @@ _active_sessions: set = set()  # client sessions to notify on tool-set change
 #: widens the fan-out.  Past the bound a dead entry is reaped, a live one
 #: re-registers on its next tool call.
 _MAX_TRACKED_SESSIONS = 64
-#: Per-session deadline for tools/list_changed notifications.
-_NOTIFY_TIMEOUT = 5.0
+#: Per-session deadline for tools/list_changed notifications
+#: (developer-owned — registry ready.notify).
 #: Coalescing state: at most ONE send in flight; pushes that land while it
 #: runs fold into a trailing-edge re-send.
 _notify_pending = False
@@ -101,14 +102,15 @@ async def _notify_send_all() -> None:
     """One eager notification round to every known client, in this task.
 
     Best-effort: a dead/stale session is dropped, the rest are served.
-    Sends run CONCURRENTLY, each bounded by :data:`_NOTIFY_TIMEOUT`.
+    Sends run CONCURRENTLY, each bounded by the registry's ready.notify.
     """
     sessions = list(_active_sessions)
 
     async def _send_one(sess) -> None:
         try:
             await asyncio.wait_for(
-                sess.send_tool_list_changed(), timeout=_NOTIFY_TIMEOUT,
+                sess.send_tool_list_changed(),
+                timeout=_timeouts.timeouts.ready.notify,
             )
         except Exception:
             _active_sessions.discard(sess)

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from slife.plugins.mcp_gateway.client import MCPClient
 from slife.platform import terminate_process_sync
 from slife.plugins.spec import PLUGIN_SPECS, PluginSpec, spec_for
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 if TYPE_CHECKING:
     from slife.agent.service import AgentService
@@ -41,11 +42,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── Watchdog constants ────────────────────────────────────────────────────
+# ── Watchdog ──────────────────────────────────────────────────────────────
 
-_WATCHDOG_BACKOFF_INITIAL: float = 1.0
-_WATCHDOG_BACKOFF_MAX: float = 30.0
-_WATCHDOG_BACKOFF_MULTIPLIER: float = 2.0
+#: Restart-count bound (a count, not a duration — stays local).
 _WATCHDOG_MAX_RESTARTS: int = 5
 
 #: Hang guard for a plugin spawn — NOT a readiness mechanism.  It only
@@ -62,7 +61,7 @@ _WATCHDOG_MAX_RESTARTS: int = 5
 #: triple it.  The guard exists for a *hung* child, not a *slow* one —
 #: a 30s cap misfired on a slow machine and aborted a required plugin
 #: (memdb/memfiles) that was still making progress.
-PLUGIN_SPAWN_TIMEOUT: float = 60.0
+#: Value is developer-owned (registry timeouts.ready.plugin_start).
 
 #: A restarted child is only considered *stable* once it has stayed up this
 #: long.  The watchdog resets its consecutive-failure counter / backoff only
@@ -70,8 +69,8 @@ PLUGIN_SPAWN_TIMEOUT: float = 60.0
 #: child that comes up, passes the handshake and dies a second later would
 #: reset the counter every cycle and restart forever (a ~1s boot-loop that
 #: `_max_restarts` never trips).  Equal to the spawn hang-guard: a child
-#: dying within the spawn window never "stabilised".
-_WATCHDOG_STABLE_UPTIME: float = PLUGIN_SPAWN_TIMEOUT
+#: dying within the spawn window never "stabilised".  Value is the registry's
+#: ready.spawn (dev-owned).
 
 
 def plugin_port_env(name: str) -> str:
@@ -243,9 +242,9 @@ class PluginLifecycle:
         after *max_restarts* consecutive failures.  Each restart is bounded
         by the spawn hang-guard (a child stuck before its lifespan serves is
         a failed attempt, never a block).  The consecutive-failure counter is
-        reset only when a restarted child proves stable (runs ≥
-        ``_WATCHDOG_STABLE_UPTIME``) before its next exit — so a ~1s
-        boot-loop trips ``_max_restarts`` instead of restarting forever.
+        reset only when a restarted child proves stable (runs ≥ the registry's
+        ``ready.spawn``) before its next exit — so a ~1s boot-loop trips
+        ``_max_restarts`` instead of restarting forever.
 
         Idempotent — if a watchdog is already running it returns
         immediately.
@@ -284,14 +283,14 @@ class PluginLifecycle:
         plugins started without a ``restart_cb``, e.g. memdb.
 
         """
-        backoff = _WATCHDOG_BACKOFF_INITIAL
+        backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
 
         while not self._stopping:
             # ── Wait for a live child to exit ─────────────────────────
             # Anchor the moment a watched child started (only set when a live
             # process is actually waited on below) — the exit path uses it to
-            # tell a stable run (≥ _WATCHDOG_STABLE_UPTIME) from a ~1s boot-loop
-            # when deciding whether to reset the consecutive-failure counters.
+            # tell a stable run (≥ the registry's ready.spawn) from a ~1s
+            # boot-loop when deciding whether to reset the counters.
             wait_started = _time.monotonic()
             process = self.process
             if process is not None:
@@ -390,9 +389,9 @@ class PluginLifecycle:
             # counters and backoff.  A child that died sooner (a boot-loop)
             # keeps its failure counted, so `_max_restarts` eventually trips
             # instead of being reset every cycle (B2).
-            if (_time.monotonic() - wait_started) >= _WATCHDOG_STABLE_UPTIME:
+            if (_time.monotonic() - wait_started) >= _timeouts.timeouts.ready.spawn:
                 self._restart_count = 0
-                backoff = _WATCHDOG_BACKOFF_INITIAL
+                backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
 
             # ── Give up after max consecutive failures ───────────────
             if self._restart_count >= self._max_restarts:
@@ -438,7 +437,7 @@ class PluginLifecycle:
                 # the initial spawn: a child stuck before its lifespan serves
                 # must not block the watchdog forever — a timeout is a failed
                 # attempt (backoff), exactly like a raised restart.
-                async with asyncio.timeout(PLUGIN_SPAWN_TIMEOUT):
+                async with asyncio.timeout(_timeouts.timeouts.ready.plugin_start):
                     # The guard above guarantees at least one of
                     # restart_cb / _module; when restart_cb is absent, _module
                     # is set (so the fallback can restart the plugin).
@@ -473,8 +472,8 @@ class PluginLifecycle:
                 )
             except Exception:
                 backoff = min(
-                    backoff * _WATCHDOG_BACKOFF_MULTIPLIER,
-                    _WATCHDOG_BACKOFF_MAX,
+                    backoff * _timeouts.timeouts.ready.watchdog_backoff_multiplier,
+                    _timeouts.timeouts.ready.watchdog_backoff_max,
                 )
                 logger.exception(
                     "%s_watchdog_restart_failed backoff=%.1fs",

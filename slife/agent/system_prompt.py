@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from jinja2 import Environment, FileSystemLoader
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.paths import (
     get_config_path,
     get_data_dir,
@@ -208,7 +209,9 @@ def _memory_start_time(agent_name: str) -> str:
             return ""
         import sqlite3
 
-        con = sqlite3.connect(str(db_path), timeout=2)
+        con = sqlite3.connect(
+            str(db_path), timeout=_timeouts.timeouts.storage.sqlite_busy,
+        )
         try:
             row = con.execute("SELECT MIN(created_at) FROM diary").fetchone()
             return row[0] if row and row[0] else ""

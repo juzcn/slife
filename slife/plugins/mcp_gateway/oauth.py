@@ -25,6 +25,7 @@ import time as _time
 from dataclasses import dataclass
 
 import httpx2
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +84,9 @@ def _emit_user_message(text: str, marker: str = _OAUTH_MARKER) -> None:
 # credstore key prefix for OAuth tokens
 _TOKEN_KEY_PREFIX = "mcp_oauth_"
 
-# Polling config
+# Polling config (cadence stays local; the total poll window is
+# developer-owned — registry transport.poll_oauth).
 _POLL_INTERVAL = 5.0  # seconds between token endpoint polls
-_POLL_TIMEOUT = 300.0  # 5 minutes total before giving up
 
 
 @dataclass
@@ -213,7 +214,7 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
     if client_secret:
         body["client_secret"] = client_secret
 
-    async with httpx2.AsyncClient(timeout=httpx2.Timeout(30.0)) as http:
+    async with httpx2.AsyncClient(timeout=httpx2.Timeout(_timeouts.timeouts.transport.oauth)) as http:
         try:
             resp = await http.post(
                 device_auth_url,
@@ -275,12 +276,14 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
     if client_secret:
         poll_body["client_secret"] = client_secret
 
-    deadline = _time.monotonic() + min(expires_in, _POLL_TIMEOUT)
+    deadline = _time.monotonic() + min(
+        expires_in, _timeouts.timeouts.transport.poll_oauth,
+    )
 
     # The device-code POST above used its own short-lived client (now closed).
     # Polling must run on a fresh client owned by this function — reusing the
     # closed one raises RuntimeError on the first poll and wedges connect().
-    http = httpx2.AsyncClient(timeout=httpx2.Timeout(30.0))
+    http = httpx2.AsyncClient(timeout=httpx2.Timeout(_timeouts.timeouts.transport.oauth))
     try:
         return await _poll_token(
             http, server_name, token_url, poll_body, deadline, poll_interval,
@@ -413,7 +416,7 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
     if client_secret:
         body["client_secret"] = client_secret
 
-    async with httpx2.AsyncClient(timeout=httpx2.Timeout(30.0)) as http:
+    async with httpx2.AsyncClient(timeout=httpx2.Timeout(_timeouts.timeouts.transport.oauth)) as http:
         try:
             resp = await http.post(
                 token_url,

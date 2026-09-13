@@ -322,7 +322,7 @@ class TestResponseBackoff:
         mesh = _make_mesh()
         send = _OutboundSend("t1", "peer-1", "s1", '{"payload":true}')
         with patch.object(mesh, "_publish_attempt", new=AsyncMock()) as pub:
-            with patch("slife.a2a.mesh._REPLY_FIRST_TIMEOUT_S", 0.01):
+            with patch("slife.timeouts.timeouts.deliver.reply_first", 0.01):
                 with patch("slife.a2a.mesh._backoff_delay", return_value=0.01):
                     await mesh._deliver(send)
         # Initial attempt (in send_message) + 2 retries = 3 total; retries here.
@@ -336,7 +336,7 @@ class TestResponseBackoff:
         send = _OutboundSend("t1", "peer-1", "s1", "x")
         send.delivered = True
         with patch.object(mesh, "_publish_attempt", new=AsyncMock()) as pub:
-            with patch("slife.a2a.mesh._REPLY_FIRST_TIMEOUT_S", 0.01):
+            with patch("slife.timeouts.timeouts.deliver.reply_first", 0.01):
                 await mesh._deliver(send)
         pub.assert_not_awaited()
 
@@ -417,7 +417,7 @@ class TestWorkingKeepalive:
         """A slow inbound task keeps the standard stream alive with periodic
         ``working`` updates (a peer's 30 s stream_idle_timeout would otherwise
         fire while the harness is still thinking)."""
-        monkeypatch.setattr("slife.a2a.mesh._WORKING_KEEPALIVE_S", 0.01)
+        monkeypatch.setattr("slife.timeouts.timeouts.deliver.keepalive", 0.01)
         mesh = _make_mesh()
         stream = AsyncMock()
         task = asyncio.create_task(mesh._responder.on_request(

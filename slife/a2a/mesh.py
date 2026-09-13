@@ -49,11 +49,10 @@ from slife.a2a.card import AgentCard
 from slife.a2a.config import A2AConfig
 from slife.a2a.identity import AgentName
 from slife.a2a.task_store import get_store
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
-_CONNECT_TIMEOUT = 15.0
-_RETRY_DELAY = 1.0
 _MAX_INFLIGHT = 16
 #: Standard TASK_RESPONSE continuity for inbound tasks: the SDK emits the
 #: "submitted" ack, then a long harness turn (LLM thinking, often > 30 s) would
@@ -61,15 +60,14 @@ _MAX_INFLIGHT = 16
 #: stream_idle_timeout (30 s) — the peer would time out the stream even though
 #: we are still working.  Emit a "working" status update every interval until
 #: the completion bridge resolves, short enough that any idle-keeping requester
-#: resets on each ping.
-_WORKING_KEEPALIVE_S = 25.0
+#: resets on each ping.  Interval is developer-owned (registry deliver.keepalive).
 
 # A2A-over-MQTT requester retry profile (the profile's standard defaults,
 # implemented by the SDK's Requester — mirrored here for the push model):
-# first reply within 15 s, retry with exponential backoff 1000/2000/4000 ms
-# ± 20 % jitter, at most 3 attempts.  Retries reuse the same Task.id +
+# first reply within 15 s (registry deliver.reply_first), retry with
+# exponential backoff 1000/2000/4000 ms ± 20 % jitter (a list — the SDK's
+# shape, kept verbatim), at most 3 attempts.  Retries reuse the same Task.id +
 # context_id (same payload) and generate a fresh Correlation Data.
-_REPLY_FIRST_TIMEOUT_S = 15.0
 _MAX_ATTEMPTS = 3
 _BACKOFF_BASE_S = [1.0, 2.0, 4.0]
 _JITTER_FACTOR = 0.2
@@ -158,12 +156,12 @@ class MeshResponder(Responder):
         self._completion[task_id] = waiter
 
         # TASK_RESPONSE continuity: keep the standard stream alive while the
-        # harness works on the turn (see _WORKING_KEEPALIVE_S).  Stops the
-        # moment the outcome resolves; a dead connection just ends the pings.
+        # harness works on the turn (see registry deliver.keepalive).  Stops
+        # the moment the outcome resolves; a dead connection just ends the pings.
         async def _keepalive() -> None:
             try:
                 while waiter.outcome is None:
-                    await asyncio.sleep(_WORKING_KEEPALIVE_S)
+                    await asyncio.sleep(_timeouts.timeouts.deliver.keepalive)
                     if waiter.outcome is not None:
                         return
                     try:
@@ -365,7 +363,7 @@ class A2AMesh:
         self._tasks.append(asyncio.create_task(self._run_responder()))
         self._tasks.append(asyncio.create_task(self._run_outbound()))
         try:
-            await asyncio.wait_for(self._ready.wait(), timeout=_CONNECT_TIMEOUT)
+            await asyncio.wait_for(self._ready.wait(), timeout=_timeouts.timeouts.deliver.mqtt_connect)
             # The SDK responder subscribes its request topic BEFORE publishing
             # the retained online card — so our own online card sighted on the
             # discovery wildcard means inbound delivery is live.  Without this
@@ -373,7 +371,7 @@ class A2AMesh:
             # the responder subscribed (recovered only by the 15 s delivery
             # retry).
             await asyncio.wait_for(
-                self._responder_ready.wait(), timeout=_CONNECT_TIMEOUT,
+                self._responder_ready.wait(), timeout=_timeouts.timeouts.deliver.mqtt_connect,
             )
         except asyncio.TimeoutError:
             await self.disconnect()
@@ -414,10 +412,10 @@ class A2AMesh:
                     break
                 logger.warning(
                     "a2a_responder_disconnected err=%s retry=%.1fs", e,
-                    _RETRY_DELAY,
+                    _timeouts.timeouts.deliver.retry_delay,
                 )
                 try:
-                    await asyncio.sleep(_RETRY_DELAY)
+                    await asyncio.sleep(_timeouts.timeouts.deliver.retry_delay)
                 except asyncio.CancelledError:
                     raise
 
@@ -470,14 +468,14 @@ class A2AMesh:
                     break
                 logger.debug(
                     "a2a_outbound_disconnected err=%s retry=%.1fs", e,
-                    _RETRY_DELAY,
+                    _timeouts.timeouts.deliver.retry_delay,
                 )
             finally:
                 self._connected = False
                 self._outbound = None
             if not self._closing:
                 try:
-                    await asyncio.sleep(_RETRY_DELAY)
+                    await asyncio.sleep(_timeouts.timeouts.deliver.retry_delay)
                 except asyncio.CancelledError:
                     raise
 
@@ -641,7 +639,7 @@ class A2AMesh:
         """
         try:
             try:
-                await asyncio.sleep(_REPLY_FIRST_TIMEOUT_S)
+                await asyncio.sleep(_timeouts.timeouts.deliver.reply_first)
             except asyncio.CancelledError:
                 raise
             while not (self._closing or send.delivered):
@@ -668,7 +666,7 @@ class A2AMesh:
                     send.attempts,
                 )
                 try:
-                    await asyncio.sleep(_REPLY_FIRST_TIMEOUT_S)
+                    await asyncio.sleep(_timeouts.timeouts.deliver.reply_first)
                 except asyncio.CancelledError:
                     raise
         except asyncio.CancelledError:

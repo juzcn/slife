@@ -17,6 +17,7 @@ from slife.agent.message_history import MessageHistory
 from slife.platform import detect_current_shell
 from slife.tools.registry import ToolRegistry
 from slife.logfmt import format_turn_ts, request_scope, elapsed
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class AgentCancelled(Exception):
 #: built-in max_retries only covers request-establishment errors, not body-read
 #: failures during stream iteration — so we retry here, at the contract layer,
 #: for every turn source (main agent, subagents, heartbeat, WeChat, A2A).
-_LLM_STREAM_MAX_RETRIES = 2  # total attempts = 3
+#: Attempts / base delay are developer-owned (registry timeouts.stream.*).
 
 #: Caps on the per-session caches.  Heartbeat / A2A one-shot histories add
 #: a usage entry keyed by ``id(history)`` every turn and the context-date
@@ -41,7 +42,6 @@ _LLM_STREAM_MAX_RETRIES = 2  # total attempts = 3
 #: session (or a huge context window that never trims) grows them forever.
 _MAX_USAGE_CACHE = 1000
 _MAX_CONTEXT_DATES = 5000
-_LLM_STREAM_RETRY_BASE_DELAY = 0.5  # seconds, linear backoff: 0.5 * attempt
 
 #: Inactivity watchdog on LLM streaming: a stream that produces no chunk
 #: for this many seconds is declared "stalled" — the provider accepted the
@@ -51,7 +51,7 @@ _LLM_STREAM_RETRY_BASE_DELAY = 0.5  # seconds, linear backoff: 0.5 * attempt
 #: one stream call — this resets on every chunk, so a slow-but-live
 #: generation is never cut; only a truly dead stream is.  A stall routes
 #: through the same retry ladder as any other transient transport failure.
-_LLM_STREAM_STALL_TIMEOUT = 120.0
+#: Value is developer-owned (registry timeouts.work.stall).
 
 
 class StreamStallError(TimeoutError):
@@ -262,7 +262,7 @@ class AgentLoop:
         tool_registry: ToolRegistry,
         max_iterations: int = 30,
         max_tool_result_chars: int = 0,
-        tool_timeout: float = 120.0,
+        tool_timeout: float | None = None,  # None = registry work.tool_budget
         context_window: int = 0,
         context_ceiling: float = 0.8,
         context_floor: float = 0.2,
@@ -282,7 +282,11 @@ class AgentLoop:
         self.tool_registry = tool_registry
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
-        self.tool_timeout = tool_timeout
+        self.tool_timeout = (
+            tool_timeout
+            if tool_timeout is not None
+            else _timeouts.timeouts.work.tool_budget
+        )
         self.context_window = context_window
         self.context_ceiling = context_ceiling
         self.context_floor = context_floor
@@ -298,7 +302,7 @@ class AgentLoop:
         self.stream_max_retries = (
             stream_max_retries
             if stream_max_retries is not None
-            else _LLM_STREAM_MAX_RETRIES
+            else _timeouts.timeouts.stream.retries
         )
         #: Inactivity watchdog on LLM streaming: seconds of silence before
         #: a stream is declared stalled (reset on every chunk).  ``None``
@@ -307,7 +311,7 @@ class AgentLoop:
         #: generation streams on, only a dead stream is cut (the TUI would
         #: otherwise sit on "processing" forever with no error visible).
         self.stream_stall_timeout = (
-            _LLM_STREAM_STALL_TIMEOUT
+            _timeouts.timeouts.work.stall
             if stream_stall_timeout is None
             else stream_stall_timeout
         )
@@ -849,6 +853,11 @@ class AgentLoop:
         while True:
             attempts += 1
             try:
+                # No SDK-level timeout here BY DESIGN: the anthropic/openai
+                # clients carry no timeout kwarg of ours, and the real bound
+                # is owned two layers up — the loop's per-chunk stall
+                # watchdog (registry work.stall) and the tool budget — so a
+                # live-but-slow generation is never cut by a transport clock.
                 stream_iter = self.llm_client.chat_stream(
                     messages=history.to_openai_messages(
                         thinking_enabled=self.llm_client.model_config.thinking_enabled,
@@ -917,7 +926,7 @@ class AgentLoop:
                 )
                 if self._cancel_event.is_set():
                     raise AgentCancelled()
-                await asyncio.sleep(_LLM_STREAM_RETRY_BASE_DELAY * attempts)
+                await asyncio.sleep(_timeouts.timeouts.stream.retry_base_delay * attempts)
 
         # Remember the last API call's usage on the shared history — every
         # inbox message runs against the main agent's one context.

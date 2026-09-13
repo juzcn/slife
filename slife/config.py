@@ -21,6 +21,7 @@ from typing import Any, TypeVar
 
 from slife.env import resolve_env
 from slife.a2a.config import A2AConfig
+import slife.timeouts as _timeouts  # module ref (not the instance) — reload-safe, patchable
 
 logger = logging.getLogger(__name__)
 
@@ -363,7 +364,12 @@ class Config:
     # reproducible — re-run the tool to retrieve the full version.
     memory_tool_result_chars: int = 8000
     agent_name: str = "slife"
-    tool_timeout: float = 120.0  # seconds, 0 to disable — fallback wrap for tools w/o native timeout/`_timeout`
+    # The tool-call budget — the ONLY sanctioned "total" deadline in the
+    # system, injected through the prompt meta-parameters (`_timeout` /
+    # `tool_timeout`).  DEVELOPER-OWNED: the user config key is ignored and
+    # ``None`` resolves to the registry's work.tool_budget at construction
+    # (call-time lookup, see __post_init__ — no def-time value capture).
+    tool_timeout: float | None = None
     heartbeat_interval: int = 1800  # seconds — autonomous idle heartbeat period
     # Mid-turn input preemption: when True (default) a new inbound message may
     # cut into the running turn at the next safe iteration boundary; when
@@ -383,6 +389,10 @@ class Config:
     _path: Path | None = None
 
     def __post_init__(self):
+        # Resolve the tool budget at construction — call-time registry lookup,
+        # so a patched registry is honored by bare Config() too.
+        if self.tool_timeout is None:
+            self.tool_timeout = _timeouts.timeouts.work.tool_budget
         if self.memdb_config is None:
             self.memdb_config = MemdbConfig()
         if self.embeddings_config is None:
@@ -392,7 +402,10 @@ class Config:
         if self.a2a_config is None:
             self.a2a_config = A2AConfig()
         if self.subagent_config is None:
-            self.subagent_config = {"max_subagents": 5, "task_timeout": 120}
+            self.subagent_config = {
+                "max_subagents": 5,
+                "task_timeout": _timeouts.timeouts.work.task_budget,
+            }
 
     # ── Serialization (for subagent inheritance) ────────────────────
 
@@ -453,7 +466,7 @@ class Config:
             tools=data.get("tools", []),
             env=data.get("env"),
             max_iterations=data.get("max_iterations", 30),
-            tool_timeout=data.get("tool_timeout", 120.0),
+            tool_timeout=data.get("tool_timeout"),
             heartbeat_interval=data.get("heartbeat_interval", 1800),
             cutin_enabled=data.get("cutin_enabled", True),
             context_floor=data.get("context_floor", 0.2),
@@ -561,14 +574,21 @@ class Config:
 
     @staticmethod
     def _load_subagent_config(raw: dict) -> dict:
-        """Extract subagent config with defaults from parsed JSON5."""
+        """Extract subagent config with defaults from parsed JSON5.
+
+        ``task_timeout`` is DEVELOPER-OWNED (registry work.task_budget) — the
+        user key is ignored.  Only ``max_subagents`` remains user-configurable.
+        """
         sub_raw = raw.get("subagent")
         if isinstance(sub_raw, dict):
             return {
                 "max_subagents": sub_raw.get("max_subagents", 5),
-                "task_timeout": sub_raw.get("task_timeout", 120),
+                "task_timeout": _timeouts.timeouts.work.task_budget,
             }
-        return {"max_subagents": 5, "task_timeout": 120}
+        return {
+            "max_subagents": 5,
+            "task_timeout": _timeouts.timeouts.work.task_budget,
+        }
 
     @staticmethod
     def _parse_models_section(models_section) -> tuple[list[ModelConfig], int]:
@@ -859,7 +879,11 @@ class Config:
         # Agent
         agent = _parse_section(raw, "agent", dict, {})
         max_iterations = agent.get("max_iterations", 30)
-        tool_timeout = agent.get("tool_timeout", 120.0)
+        # tool_timeout is DEVELOPER-OWNED (registry work.tool_budget) — the
+        # user config key is ignored (``None`` resolves in __post_init__).
+        # This is the ONE sanctioned "total" deadline in the system (the
+        # tool-call budget), tuned by developers.
+        tool_timeout = None
         heartbeat_interval = agent.get("heartbeat_interval", 1800)
         cutin_enabled = agent.get("cutin_enabled", True)
         context_floor = agent.get("context_floor", 0.2)

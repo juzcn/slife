@@ -68,7 +68,7 @@ class TestMCPClientDisconnect:
         client._exit_stack = stack
         client._session = object()
 
-        with patch("slife.plugins.mcp_gateway.client._CLEANUP_TIMEOUT", 0.2):
+        with patch("slife.timeouts.timeouts.grace.cleanup", 0.2):
             await client._cleanup()
 
         # The hung stack was abandoned; state cleared for the next attempt.
@@ -404,8 +404,8 @@ class TestMCPClientConnect:
                 mock_sc.return_value = mock_sc_ctx
 
                 with (
-                    patch("slife.plugins.mcp_gateway.client._CONNECT_ATTEMPT_TIMEOUT", 0.2),
-                    patch("slife.plugins.mcp_gateway.client._CONNECT_RETRY_DELAY", 0.01),
+                    patch("slife.timeouts.timeouts.ready.connect_attempt", 0.2),
+                    patch("slife.timeouts.timeouts.ready.connect_retry_delay", 0.01),
                     patch("slife.plugins.mcp_gateway.client.asyncio.sleep", AsyncMock()),
                 ):
                     await client.connect("http://127.0.0.1:1234/mcp")

@@ -17,6 +17,7 @@ from pathlib import Path
 import aiosqlite
 
 from slife.timeutil import normalize_time_bound
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,21 @@ def _clamp_limit(limit: int) -> int:
     if limit is None or limit < 1:
         return 20
     return min(limit, _MAX_SEARCH_LIMIT)
+
+
+async def _fetch_all_bounded(cursor) -> list:
+    """Fetch a heavy read's rows under the registry's storage.query_cap.
+
+    SQLite executes SELECTs lazily at fetch time — this is where a runaway
+    FTS5 MATCH or vec0 KNN scan would otherwise block the shared executor
+    forever (a failure mode that WOULD stall every memdb tool call).  Reads
+    only: writes are never wrapped here — cancelling between multi-statement
+    write statements could split a transaction.  On expiry it surfaces
+    ``asyncio.TimeoutError``; callers (search gate, drainer) treat it as
+    transient.
+    """
+    async with asyncio.timeout(_timeouts.timeouts.storage.query_cap):
+        return await cursor.fetchall()
 
 
 def _like_escape(pattern: str) -> str:
@@ -88,7 +104,9 @@ class SessionStore:
         self._embedding_dim = embedding_dim
         self._embedding_model = embedding_model
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = await aiosqlite.connect(str(self._db_path))
+        self._conn = await aiosqlite.connect(
+            str(self._db_path), timeout=_timeouts.timeouts.storage.sqlite_busy,
+        )
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
@@ -802,7 +820,7 @@ class SessionStore:
                    ORDER BY rank LIMIT ?""",
                 (fts_query, *time_params, limit),
             )
-            results = [dict(row) for row in await cursor.fetchall()]
+            results = [dict(row) for row in await _fetch_all_bounded(cursor)]
             logger.debug("search_keyword query=%s hits=%s", query, len(results))
             return results
         except aiosqlite.OperationalError as e:
@@ -858,7 +876,7 @@ class SessionStore:
                ORDER BY rowid DESC LIMIT ?""",
             params,
         )
-        results = [dict(row) for row in await cursor.fetchall()]
+        results = [dict(row) for row in await _fetch_all_bounded(cursor)]
         logger.debug("search_like_cjk pattern=%s hits=%s", pattern[:80], len(results))
         return results
 
@@ -902,7 +920,7 @@ class SessionStore:
         # Deduplicate by diary_rowid — keep best (lowest) distance per turn
         seen: set[int] = set()
         results: list[dict] = []
-        for row in await cursor.fetchall():
+        for row in await _fetch_all_bounded(cursor):
             r = dict(row)
             rid = r.get("diary_rowid")
             if rid is not None and rid not in seen:
@@ -925,7 +943,7 @@ class SessionStore:
                 f"SELECT rowid, user_message FROM diary WHERE rowid IN ({ph})",
                 rowids,
             )
-            msgs = {r["rowid"]: r["user_message"] for r in await cur.fetchall()}
+            msgs = {r["rowid"]: r["user_message"] for r in await _fetch_all_bounded(cur)}
             for r in results:
                 r["user_message"] = msgs.get(r["diary_rowid"], "")
         logger.debug("search_semantic hits=%s", len(results))
@@ -957,7 +975,7 @@ class SessionStore:
                FROM diary {where} ORDER BY created_at DESC LIMIT ?""",
             params,
         )
-        results = [dict(row) for row in await cursor.fetchall()]
+        results = [dict(row) for row in await _fetch_all_bounded(cursor)]
         logger.debug("search_time since=%s until=%s hits=%s", since, until, len(results))
         return results
 
@@ -990,7 +1008,7 @@ class SessionStore:
                ORDER BY rowid DESC LIMIT ?""",
             (pattern, like_pattern, like_pattern, *time_params, limit),
         )
-        results = [dict(row) for row in await cursor.fetchall()]
+        results = [dict(row) for row in await _fetch_all_bounded(cursor)]
         logger.debug("search_grep pattern=%s hits=%s", pattern[:80], len(results))
         return results
 

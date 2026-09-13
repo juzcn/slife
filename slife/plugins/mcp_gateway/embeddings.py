@@ -22,11 +22,9 @@ import httpx2
 
 from slife.plugins.memdb.embeddings import _guess_max_tokens  # shared token-limit guess
 from slife.plugins.mcp_gateway.config import _resolve_secret
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
-
-_PROBE_TIMEOUT = 15.0
-_EMBED_TIMEOUT = 60.0
 
 
 def _looks_like_placeholder(value: str) -> bool:
@@ -168,7 +166,7 @@ class EmbeddingClient:
                         headers["Authorization"] = f"Bearer {self._api_key}"
                     client_kwargs: dict = {
                         "headers": headers,
-                        "timeout": httpx2.Timeout(_EMBED_TIMEOUT),
+                        "timeout": httpx2.Timeout(_timeouts.timeouts.transport.embed),
                     }
                     if self._transport is not None:
                         client_kwargs["transport"] = self._transport
@@ -180,14 +178,17 @@ class EmbeddingClient:
             await self._client.aclose()
             self._client = None
 
-    async def probe_available(self, timeout: float = 5.0) -> bool:
+    async def probe_available(self, timeout: float | None = None) -> bool:
         """Cheap availability probe — ``GET {base_url}/models``, short timeout.
 
+        ``timeout`` defaults to the registry's ready.probe_endpoint (5s).
         Unlike :meth:`load`, this never runs an embed or waits long: it only
         checks the endpoint answers at all, so callers (e.g. ``mcp-plugin
         build``) can auto-degrade fast when embeddings is unconfigured or
         misconfigured instead of stalling on a dead ``base_url``.
         """
+        if timeout is None:
+            timeout = _timeouts.timeouts.ready.probe_endpoint  # call-time lookup
         if not self.available:
             return False
         try:

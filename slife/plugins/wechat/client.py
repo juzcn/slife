@@ -18,6 +18,7 @@ import time
 from urllib.parse import quote
 
 import aiohttp
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger("slife_wechat")
 
@@ -408,7 +409,9 @@ class WechatClawbotClient:
 
     async def _api_get(self, path: str, base_url: str = "") -> dict:
         url = f"{base_url or self._base_url}/{path}"
-        timeout = aiohttp.ClientTimeout(total=120)
+        timeout = aiohttp.ClientTimeout(
+            total=_timeouts.timeouts.transport.wechat_poll,
+        )
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(
                 url, headers=_make_headers(self._bot_token),
@@ -424,7 +427,9 @@ class WechatClawbotClient:
         self, path: str, body: dict, base_url: str = "",
     ) -> dict:
         url = f"{base_url or self._base_url}/{path}"
-        timeout = aiohttp.ClientTimeout(total=120)
+        timeout = aiohttp.ClientTimeout(
+            total=_timeouts.timeouts.transport.wechat_poll,
+        )
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 url, json=body, headers=_make_headers(self._bot_token),

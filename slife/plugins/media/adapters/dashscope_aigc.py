@@ -25,6 +25,7 @@ import httpx2
 
 from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError
 from slife.plugins.media.config import ProviderConfig
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ _VIDEO_PATH = "/services/aigc/video-generation/video-synthesis"
 _TTS_PATH = "/services/audio/tts/SpeechSynthesizer"
 
 #: Poll cadence for async tasks (Aliyun's own examples use 15 s).
-_POLL_INTERVAL_S = 15.0
+_POLL_INTERVAL = 15.0
 
 #: Model params may carry this key to override the input field name that
 #: carries the reference image (dashscope i2v models vary: image_url /
@@ -56,7 +57,10 @@ class DashScopeAIGCAdapter:
             async with self._client_lock:
                 if self._client is None:
                     self._client = httpx2.AsyncClient(
-                        timeout=httpx2.Timeout(180.0, connect=30.0),
+                        timeout=httpx2.Timeout(
+                        _timeouts.timeouts.transport.media_request,
+                        connect=_timeouts.timeouts.transport.media_connect,
+                    ),
                         headers={
                             "Authorization": f"Bearer {self._config.api_key}",
                         },
@@ -235,7 +239,7 @@ class DashScopeAIGCAdapter:
                     f"Generation task failed (status={status}): "
                     f"{output.get('message') or output.get('code') or 'no detail'}"
                 )
-            await asyncio.sleep(_POLL_INTERVAL_S)
+            await asyncio.sleep(_POLL_INTERVAL)
 
     # ── Local-file upload (two-step OSS) ─────────────────────────────
 
@@ -268,7 +272,10 @@ class DashScopeAIGCAdapter:
                 form[dst] = str(data[src])
         try:
             async with httpx2.AsyncClient(
-                timeout=httpx2.Timeout(300.0, connect=30.0),
+                timeout=httpx2.Timeout(
+                    _timeouts.timeouts.transport.media_download,
+                    connect=_timeouts.timeouts.transport.media_connect,
+                ),
             ) as upload_client:
                 with open(file_path, "rb") as f:
                     resp = await upload_client.post(

@@ -46,6 +46,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -63,17 +64,16 @@ KNOWN_PROVIDERS = frozenset({"ngrok", "localhost.run", "cloudflare"})
 _TUNNEL_URL_ENV = "SLIFE_SHAREFILE_URL"
 
 _MAX_RETRIES = 3
-_RETRY_DELAY = 2.0  # seconds
-_HEALTH_INTERVAL = 30.0  # seconds between liveness probes
+_HEALTH_INTERVAL = 30.0  # seconds between liveness probes (cadence, stays local)
 
 #: A start attempt stuck longer than this is considered dead (its daemon thread
 #: is hung in credstore/forward) — a fresh attempt may supersede it.  The stale
 #: thread is harmless: daemon threads die with the process.
-_TUNNEL_START_TIMEOUT = 45.0
-
+#: (developer-owned — registry ready.tunnel_start).
 #: How long to wait for a CLI child to print its public URL.  cloudflared in
 #: particular can take a while to negotiate and print its banner.
-_START_TIMEOUT = 30.0
+#: (developer-owned — registry ready.tunnel_read_url).
+#: Retry pacing between start attempts (registry ready.sharefile_retry_delay).
 
 #: Output lines kept for the failure message when a CLI child dies early.
 _TAIL_LINES = 20
@@ -286,12 +286,12 @@ class _TunnelProviderBase:
         with self._start_lock:
             if self._starting:
                 elapsed = time.monotonic() - (self._starting_at or time.monotonic())
-                if elapsed < _TUNNEL_START_TIMEOUT:
+                if elapsed < _timeouts.timeouts.ready.tunnel_start:
                     logger.debug("tunnel_start_already_in_progress")
                     raise RuntimeError("Tunnel start already in progress")
                 logger.warning(
                     "tunnel_start_stale_superseded elapsed=%.0fs timeout=%.0fs",
-                    elapsed, _TUNNEL_START_TIMEOUT,
+                    elapsed, _timeouts.timeouts.ready.tunnel_start,
                 )
             self._start_gen += 1
             gen = self._start_gen
@@ -334,7 +334,7 @@ class _TunnelProviderBase:
                 last_error = e
                 self._after_failed_attempt()
                 if n < _MAX_RETRIES:
-                    delay = _RETRY_DELAY * n
+                    delay = _timeouts.timeouts.ready.sharefile_retry_delay * n
                     logger.warning(
                         "tunnel_retry provider=%s attempt=%d/%d delay=%.1fs err=%s",
                         self.label, n, _MAX_RETRIES, delay, e,
@@ -396,7 +396,7 @@ class _TunnelProviderBase:
         """
         from slife.threads import run_daemon
 
-        await asyncio.sleep(_RETRY_DELAY)  # let the daemon-thread handshake finish
+        await asyncio.sleep(_timeouts.timeouts.ready.sharefile_retry_delay)  # let the daemon-thread handshake finish
 
         while True:
             if self._public_url is not None:
@@ -420,7 +420,7 @@ class _TunnelProviderBase:
                     "tunnel_restart_failed provider=%s port=%s err=%s retries=%d",
                     self.label, port, e, self._monitor_retries,
                 )
-                await asyncio.sleep(_RETRY_DELAY)
+                await asyncio.sleep(_timeouts.timeouts.ready.sharefile_retry_delay)
                 continue
             if self._public_url is not None:
                 self._monitor_retries = 0
@@ -605,7 +605,7 @@ class _CliTunnelProvider(_TunnelProviderBase):
         )
         self._reader.start()
 
-        deadline = time.monotonic() + _START_TIMEOUT
+        deadline = time.monotonic() + _timeouts.timeouts.ready.tunnel_read_url
         while not self._url_event.wait(0.25):
             if proc.poll() is not None:
                 raise RuntimeError(
@@ -618,7 +618,7 @@ class _CliTunnelProvider(_TunnelProviderBase):
                 )
             if time.monotonic() > deadline:
                 raise RuntimeError(
-                    f"timed out after {_START_TIMEOUT:.0f}s waiting for the "
+                    f"timed out after {_timeouts.timeouts.ready.tunnel_read_url:.0f}s waiting for the "
                     f"{self.label} tunnel URL:{self._tail()}"
                 )
 
@@ -667,12 +667,12 @@ class _CliTunnelProvider(_TunnelProviderBase):
             if proc.poll() is None:
                 proc.terminate()
                 try:
-                    proc.wait(timeout=5)
+                    proc.wait(timeout=_timeouts.timeouts.grace.tunnel_kill)
                 except subprocess.TimeoutExpired:
                     logger.warning("tunnel_kill_escalated provider=%s", self.label)
                     proc.kill()
                     try:
-                        proc.wait(timeout=5)
+                        proc.wait(timeout=_timeouts.timeouts.grace.tunnel_kill)
                     except subprocess.TimeoutExpired:
                         pass
             if proc.stdout is not None:

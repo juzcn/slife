@@ -17,6 +17,7 @@ import logging
 import threading
 from pathlib import Path
 from typing import Any
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,8 @@ _DEFAULT_MAX_TOKENS = 8192
 #: WITH retries — a blackholed / unreachable endpoint would stall the semantic
 #: warm-up (and the drainer) for ~20 minutes.  A short timeout + no retries
 #: makes an unavailable backend degrade fast (keyword search still works).
-_API_TIMEOUT = 10.0
+#: The deadline is developer-owned (registry transport.embed_api); retries
+#: stay disabled (a count, not a duration).
 _API_MAX_RETRIES = 0
 
 
@@ -544,7 +546,7 @@ class EmbeddingClient:
                     if self._client is None:
                         kwargs: dict = {
                             "api_key": getattr(self, "_api_key", ""),
-                            "timeout": _API_TIMEOUT,
+                            "timeout": _timeouts.timeouts.transport.embed_api,
                             "max_retries": _API_MAX_RETRIES,
                         }
                         if base_url:
@@ -769,7 +771,7 @@ class EmbeddingClient:
                 if self._client is None:  # double-checked under the lock
                     kwargs: dict = {
                         "api_key": self._api_key,
-                        "timeout": _API_TIMEOUT,
+                        "timeout": _timeouts.timeouts.transport.embed_api,
                         "max_retries": _API_MAX_RETRIES,
                     }
                     if self._base_url:

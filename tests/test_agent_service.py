@@ -2287,7 +2287,7 @@ class TestSharefileTunnelWatch:
         })
 
         with patch("asyncio.sleep", new=AsyncMock()), \
-             patch("slife.agent.service._TUNNEL_SETTLE_TIMEOUT", 0.0):
+             patch("slife.timeouts.timeouts.ready.tunnel_settle", 0.0):
             await service._check_sharefile_tunnel(client)
 
         cb.assert_not_called()

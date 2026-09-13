@@ -103,7 +103,7 @@ def check_external_deps() -> None:
 
     if node_path:
         try:
-            r = _sp.run(["node", "--version"], capture_output=True, text=True, timeout=5)
+            r = _sp.run(["node", "--version"], capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
             if r.returncode == 0:
                 record("node", "ok", key="version", value=r.stdout.strip(),
                         hint="Node.js found — fetch MCP can use Readability.js for article extraction.")
@@ -123,7 +123,7 @@ def check_external_deps() -> None:
             # which can block on the npm cache lock while many npx servers are
             # warming up concurrently, causing spurious timeouts at startup.
             npm_cmd = ["cmd", "/c", "npm", "--version"] if _sys.platform == "win32" else ["npm", "--version"]
-            r = _sp.run(npm_cmd, capture_output=True, text=True, timeout=5)
+            r = _sp.run(npm_cmd, capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
             if r.returncode == 0:
                 record("npm", "ok", key="version", value=(r.stdout.strip() or "?"),
                         hint="npm found.")
@@ -143,7 +143,7 @@ def check_external_deps() -> None:
     if bun_path:
         try:
             bun_cmd = ["cmd", "/c", "bun", "--version"] if _sys.platform == "win32" else ["bun", "--version"]
-            r = _sp.run(bun_cmd, capture_output=True, text=True, timeout=5)
+            r = _sp.run(bun_cmd, capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
             if r.returncode == 0:
                 record("bun", "ok", key="version", value=r.stdout.strip(),
                         hint="bun found — JavaScript/TypeScript MCP servers can run via bunx.")
@@ -162,7 +162,7 @@ def check_external_deps() -> None:
     uv_path = _shutil.which("uv")
     if uv_path:
         try:
-            r = _sp.run(["uv", "--version"], capture_output=True, text=True, timeout=5)
+            r = _sp.run(["uv", "--version"], capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
             if r.returncode == 0:
                 record("uv", "ok", key="version", value=r.stdout.strip(),
                         hint="uv found — MCP servers can be spawned via uvx.")

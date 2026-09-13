@@ -17,6 +17,7 @@ import pytest
 
 from slife.plugins.sharefile import providers as tmod
 from slife.plugins.sharefile.providers import NgrokTunnel, _read_auth_token
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 
 # ── NgrokTunnel ───────────────────────────────────────────────────────────────
@@ -225,7 +226,7 @@ class TestNgrokTunnelStart:
             tunnel.start(8080)
 
     def test_stale_start_is_superseded(self):
-        """A start stuck past _TUNNEL_START_TIMEOUT is superseded, not rejected.
+        """A start stuck past ready.tunnel_start is superseded, not rejected.
 
         Guards against the permanent wedge: a hung daemon thread leaves
         _starting=True forever, so every later start would raise "already
@@ -233,7 +234,7 @@ class TestNgrokTunnelStart:
         """
         tunnel = NgrokTunnel()
         tunnel._starting = True
-        tunnel._starting_at = time.monotonic() - tmod._TUNNEL_START_TIMEOUT - 10
+        tunnel._starting_at = time.monotonic() - _timeouts.timeouts.ready.tunnel_start - 10
         with patch.object(tunnel, "_do_start", return_value="https://fresh.ngrok.io") as mock_do:
             url = tunnel.start(8080)
         assert url == "https://fresh.ngrok.io"
@@ -246,7 +247,7 @@ class TestNgrokTunnelStart:
         """After a superseded start, a fresh concurrent start is guarded again."""
         tunnel = NgrokTunnel()
         tunnel._starting = True
-        tunnel._starting_at = time.monotonic() - tmod._TUNNEL_START_TIMEOUT - 10
+        tunnel._starting_at = time.monotonic() - _timeouts.timeouts.ready.tunnel_start - 10
         with patch.object(tunnel, "_do_start", return_value="https://fresh.ngrok.io"):
             tunnel.start(8080)
         # A second start while a *new* attempt is in flight must be rejected.

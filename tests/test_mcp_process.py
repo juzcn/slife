@@ -298,8 +298,10 @@ class TestMCPWrapperProcessStop:
             mock_term.return_value = None  # terminate_process returns None
             await wp.stop()
 
+            # Kill-ladder values come from the registry (grace.gentle/force) —
+            # the per-wrapper 1s/2s override was folded into the canonical ladder.
             mock_term.assert_called_once_with(
-                mock_proc, graceful_timeout=1.0, force_timeout=2.0, label="mcp_wrapper",
+                mock_proc, label="mcp_wrapper",
             )
             assert wp._running is False
             assert wp._process is None

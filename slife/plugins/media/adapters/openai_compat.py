@@ -16,6 +16,7 @@ import httpx2
 
 from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError
 from slife.plugins.media.config import ProviderConfig
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,10 @@ class OpenAICompatAdapter:
     async def _ensure_client(self) -> httpx2.AsyncClient:
         if self._client is None:
             self._client = httpx2.AsyncClient(
-                timeout=httpx2.Timeout(180.0, connect=30.0),
+                timeout=httpx2.Timeout(
+                    _timeouts.timeouts.transport.media_request,
+                    connect=_timeouts.timeouts.transport.media_connect,
+                ),
                 headers={"Authorization": f"Bearer {self._config.api_key}"},
             )
         return self._client

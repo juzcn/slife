@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 from slife.plugins.mcp_gateway.logging import get_session_id, sanitize_secrets
 from slife.platform import terminate_process
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ _DEFAULT_SERVER_MODULE = "slife.plugins.mcp_gateway.server"
 #: generous (60s, matching the harness's spawn hang-guard): it bounds a *hung*
 #: child, not a *slow* one — N concurrent children cold-importing heavy deps
 #: on a slow machine can exceed 30s before the lifespan even finishes.
-PORT_SIGNAL_TIMEOUT: float = 60.0
+#: Value is developer-owned (registry timeouts.ready.signal).
 
 # stderr markers emitted by the OAuth device flow inside the gateway child
 # (slife.plugins.mcp_gateway.oauth) — the gateway's stdout is closed after the port
@@ -161,7 +162,8 @@ class MCPWrapperProcess:
             for _ in range(max_lines):
                 try:
                     line = await asyncio.wait_for(
-                        self._process.stderr.readline(), timeout=1.0,
+                        self._process.stderr.readline(),
+                        timeout=_timeouts.timeouts.ready.stderr_line,
                     )
                 except asyncio.TimeoutError:
                     break
@@ -177,22 +179,23 @@ class MCPWrapperProcess:
         """Read the port-discovery JSON line from child stdout."""
         assert self._process and self._process.stdout
 
+        signal_timeout = _timeouts.timeouts.ready.signal  # call-time lookup
         try:
             # Generous, aligned with the harness's spawn hang-guard
-            # (PLUGIN_SPAWN_TIMEOUT): a child's cold import of its heavy
-            # deps + a marginally slower lifespan finish can exceed 30s while
-            # N children spawn at once on a slow machine (job-coding sits
-            # ~20s in import alone).  The port read bounds a *hung* child,
-            # not a *slow* one — a 30s cap misfired and aborted a plugin
-            # that was still making progress.
+            # (registry ready.plugin_start): a child's cold import of its
+            # heavy deps + a marginally slower lifespan finish can exceed 30s
+            # while N children spawn at once on a slow machine (job-coding
+            # sits ~20s in import alone).  The port read bounds a *hung*
+            # child, not a *slow* one — a 30s cap misfired and aborted a
+            # plugin that was still making progress.
             line = await asyncio.wait_for(
-                self._process.stdout.readline(), timeout=PORT_SIGNAL_TIMEOUT,
+                self._process.stdout.readline(), timeout=signal_timeout,
             )
         except asyncio.TimeoutError:
             stderr_tail = await self._read_stderr_tail()
             raise RuntimeError(
                 f"Plugin process (pid={self._process.pid}) did not send "
-                f"port signal within {PORT_SIGNAL_TIMEOUT:.0f}s. "
+                f"port signal within {signal_timeout:.0f}s. "
                 f"stderr:\n{stderr_tail}"
             )
 
@@ -214,7 +217,7 @@ class MCPWrapperProcess:
         logger.info("wrapper_port pid=%s port=%s", self._process.pid, self._port)
 
     async def create_client(
-        self, tool_timeout: float = 60.0,
+        self, tool_timeout: float | None = None,
         client_info_extra: dict | None = None,
     ) -> "MCPClient":
         """Create an MCPClient connected to the plugin's Streamable HTTP endpoint.
@@ -224,7 +227,14 @@ class MCPWrapperProcess:
         its own params (e.g. the active embedding endpoint) to the server.
         Disconnecting the client does NOT stop the process — call stop()
         separately to terminate the plugin.
+
+        The bare default for ``tool_timeout`` is the registry's ready.signal
+        (=== 60s, deliberately kept separate from work.tool_budget — the
+        service path always passes an explicit value; callers that don't get
+        the child-window bound they had before).
         """
+        if tool_timeout is None:
+            tool_timeout = _timeouts.timeouts.ready.signal
         from slife.plugins.mcp_gateway.client import MCPClient
 
         if not self._process or not self._running:
@@ -297,10 +307,9 @@ class MCPWrapperProcess:
         await asyncio.sleep(0)
 
         logger.info("wrapper_stop pid=%s", self._process.pid)
-        await terminate_process(
-            self._process, graceful_timeout=1.0, force_timeout=2.0,
-            label="mcp_wrapper",
-        )
+        # Kill ladder values come from the registry (grace.gentle/force) —
+        # the per-wrapper 1s/2s override was folded into the canonical ladder.
+        await terminate_process(self._process, label="mcp_wrapper")
         logger.info(
             "wrapper_killed pid=%s",
             self._process.pid if self._process else "?",

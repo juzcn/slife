@@ -244,7 +244,7 @@ class TestStart:
         assert "ssh client not found" in status["reason"]
 
     def test_child_exiting_early_reports_its_output(self, monkeypatch):
-        monkeypatch.setattr(providers, "_RETRY_DELAY", 0.0)
+        monkeypatch.setattr("slife.timeouts.timeouts.ready.sharefile_retry_delay", 0.0)
         _install_fake_popen(
             monkeypatch,
             lambda: _LinesStdout(["Permission denied (publickey).\n"]),
@@ -259,8 +259,8 @@ class TestStart:
         assert "Permission denied" in reason  # the tail explains the failure
 
     def test_silence_times_out_instead_of_hanging(self, monkeypatch):
-        monkeypatch.setattr(providers, "_RETRY_DELAY", 0.0)
-        monkeypatch.setattr(providers, "_START_TIMEOUT", 0.3)
+        monkeypatch.setattr("slife.timeouts.timeouts.ready.sharefile_retry_delay", 0.0)
+        monkeypatch.setattr("slife.timeouts.timeouts.ready.tunnel_read_url", 0.3)
         _install_fake_popen(monkeypatch, _SilentStdout())
         tunnel = providers.LocalhostRunTunnel()
         with pytest.raises(RuntimeError, match="timed out"):

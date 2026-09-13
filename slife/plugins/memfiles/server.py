@@ -56,6 +56,7 @@ from slife.paths import get_memfiles_dir
 from slife.plugins.memdb.search import SCORE_BAND_HINT, annotate_scores
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.plugins.memfiles.store import MemfilesStore, _slugify, _unique_path
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.plugins.memfiles.user_prefs import append_preference, user_prefs_path
 from slife.server_utils import (
     create_plugin_server,
@@ -434,7 +435,9 @@ async def url_save(
                     return f"Error: refusing URL — {err}"
                 async with session.get(
                     current,
-                    timeout=aiohttp.ClientTimeout(total=30),
+                    timeout=aiohttp.ClientTimeout(
+                        total=_timeouts.timeouts.transport.url_download,
+                    ),
                     allow_redirects=False,
                 ) as resp:
                     if resp.status in (301, 302, 303, 307, 308):

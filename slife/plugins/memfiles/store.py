@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 from slife.plugins.memdb.search import merge_hybrid
 from slife.plugins.memdb.store import (
@@ -165,7 +166,9 @@ class MemfilesStore:
         self._embedding_dim = embedding_dim
         self._embedding_model = embedding_model
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = await aiosqlite.connect(str(self._db_path))
+        self._conn = await aiosqlite.connect(
+            str(self._db_path), timeout=_timeouts.timeouts.storage.sqlite_busy,
+        )
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")

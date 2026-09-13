@@ -375,7 +375,7 @@ class TestProcessStream:
 
         with (
             patch.object(llm, "chat_stream", side_effect=flaky_stream),
-            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+            patch("slife.timeouts.timeouts.stream.retry_base_delay", 0),
         ):
             result = await loop._process_stream(history, None)
 
@@ -398,7 +398,7 @@ class TestProcessStream:
 
         with (
             patch.object(llm, "chat_stream", side_effect=failing_stream),
-            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+            patch("slife.timeouts.timeouts.stream.retry_base_delay", 0),
         ):
             with pytest.raises(ValueError):
                 await loop._process_stream(history, None)
@@ -427,7 +427,7 @@ class TestProcessStream:
 
         with (
             patch.object(llm, "chat_stream", side_effect=flaky_stream),
-            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+            patch("slife.timeouts.timeouts.stream.retry_base_delay", 0),
         ):
             result = await loop._process_stream(history, handler)
 
@@ -454,7 +454,7 @@ class TestProcessStream:
 
         with (
             patch.object(llm, "chat_stream", side_effect=always_fails),
-            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+            patch("slife.timeouts.timeouts.stream.retry_base_delay", 0),
         ):
             with pytest.raises(RuntimeError, match="LLM stream failed after 3 attempts"):
                 await loop._process_stream(history, None)
@@ -499,7 +499,7 @@ class TestProcessStream:
 
         with (
             patch.object(llm, "chat_stream", side_effect=flaky_stream),
-            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+            patch("slife.timeouts.timeouts.stream.retry_base_delay", 0),
         ):
             with pytest.raises(
                 RuntimeError, match="LLM stream failed after 1 attempts",
@@ -587,7 +587,7 @@ class TestProcessStream:
 
         with (
             patch.object(llm, "chat_stream", side_effect=silent_then_clean),
-            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+            patch("slife.timeouts.timeouts.stream.retry_base_delay", 0),
         ):
             result = await loop._process_stream(history, None)
 
@@ -634,7 +634,7 @@ class TestProcessStream:
 
         with (
             patch.object(llm, "chat_stream", side_effect=empty_err_stream),
-            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+            patch("slife.timeouts.timeouts.stream.retry_base_delay", 0),
         ):
             with pytest.raises(RuntimeError, match="ReadError"):
                 await loop._process_stream(history, None)

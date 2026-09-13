@@ -14,6 +14,7 @@ from textual.widgets import Static, TextArea
 from slife.config import Config
 from slife.a2a.card import _safe_name, format_presence_line
 from slife.agent.service import AgentService, MemoryDatabaseError
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.agent.plugins import PluginStartStatus
 from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
@@ -534,7 +535,7 @@ class SlifeApp(App):
 
         async def _stop_one(name: str, coro) -> None:
             try:
-                await asyncio.wait_for(coro, timeout=3.0)
+                await asyncio.wait_for(coro, timeout=_timeouts.timeouts.grace.shutdown)
             except asyncio.TimeoutError:
                 logger.warning("shutdown_timeout service=%s", name)
             except Exception:

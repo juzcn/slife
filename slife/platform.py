@@ -13,6 +13,7 @@ import platform as _platform
 IS_WINDOWS = sys.platform == "win32"
 
 from slife.threads import run_daemon
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -211,11 +212,14 @@ def _close_pipe_transports(process: asyncio.subprocess.Process) -> None:
 async def terminate_process(
     process: asyncio.subprocess.Process,
     *,
-    graceful_timeout: float = 3.0,
-    force_timeout: float = 5.0,
+    graceful_timeout: float | None = None,
+    force_timeout: float | None = None,
     label: str = "",
 ) -> None:
     """Gracefully terminate an asyncio subprocess with escalating force.
+
+    ``graceful_timeout`` / ``force_timeout`` default to the registry's
+    grace.gentle / grace.force (call-time lookup).
 
     1. Close stdin to signal EOF.
     2. Send SIGTERM / ``terminate()``.
@@ -228,6 +232,10 @@ async def terminate_process(
 
     Swallows ``ProcessLookupError`` (already exited) and logs otherwise.
     """
+    if graceful_timeout is None:
+        graceful_timeout = _timeouts.timeouts.grace.gentle
+    if force_timeout is None:
+        force_timeout = _timeouts.timeouts.grace.force
     if process is None:
         return
     try:
@@ -272,10 +280,12 @@ async def terminate_process(
 def terminate_process_sync(
     process: asyncio.subprocess.Process,
     *,
-    timeout: float = 3.0,
+    timeout: float | None = None,
     label: str = "",
 ) -> None:
     """Synchronous best-effort child process termination.
+
+    ``timeout`` defaults to the registry's grace.gentle (call-time lookup).
 
     Crash-path version of :func:`terminate_process` for ``finally`` blocks
     where no event loop is running — ``await process.wait(...)`` and
@@ -289,6 +299,8 @@ def terminate_process_sync(
 
     Best-effort: never raises; terminate/kill errors are logged at debug.
     """
+    if timeout is None:
+        timeout = _timeouts.timeouts.grace.gentle  # call-time lookup
     if process is None or process.returncode is not None:
         return
     tag = f"label={label} " if label else ""
@@ -350,18 +362,18 @@ def desktop_notify(title: str, message: str) -> None:
                  f"$n.BalloonTipText = '{_ps_quote(message)}'; "
                  f"$n.Visible = $true; "
                  f"$n.ShowBalloonTip(5000);"],
-                capture_output=True, timeout=10,
+                capture_output=True, timeout=10,  # noqa-timeout — desktop notify, sync + best-effort (never fails the caller)
             )
         elif system == "Darwin":
             _subprocess.run(
                 ["osascript", "-e",
                  f'display notification "{_applescript_quote(message)}" with title "{_applescript_quote(title)}"'],
-                capture_output=True, timeout=5,
+                capture_output=True, timeout=5,  # noqa-timeout — desktop notify, sync + best-effort
             )
         else:
             _subprocess.run(
                 ["notify-send", title, message],
-                capture_output=True, timeout=5,
+                capture_output=True, timeout=5,  # noqa-timeout — desktop notify, sync + best-effort
             )
     except Exception:
         # Desktop notification is best-effort — never let it fail the caller

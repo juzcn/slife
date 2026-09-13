@@ -17,6 +17,7 @@ from pathlib import Path
 import filelock
 
 from slife.paths import get_config_path
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -50,6 +51,15 @@ class ConfigParseError(ValueError):
     normal first-run state).  A mutating caller that proceeded past a parse
     error would write back an empty dict via ``os.replace`` and destroy the
     whole config — so the parse failure must be surfaced, not swallowed.
+    """
+
+
+class ConfigLockTimeout(TimeoutError):
+    """Raised when the cross-process config lock is not acquired in time.
+
+    The lock wait is bounded by the registry's storage.filelock (was blocking
+    forever on a stale ``<path>.lock``).  A timeout fails the read-modify-write
+    loudly instead of hanging the caller.
     """
 
 
@@ -182,9 +192,18 @@ def config_read_modify_write(path: Path):
     write that follows the read is the only one in flight (F8).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    lock = filelock.FileLock(path.with_suffix(path.suffix + ".lock"))
-    with lock:
-        yield
+    lock = filelock.FileLock(
+        path.with_suffix(path.suffix + ".lock"),
+        timeout=_timeouts.timeouts.storage.filelock,  # bounded (was blocking forever)
+    )
+    try:
+        with lock:
+            yield
+    except filelock.Timeout as e:
+        raise ConfigLockTimeout(
+            f"Could not acquire config lock for {path} within "
+            f"{_timeouts.timeouts.storage.filelock:g}s"
+        ) from e
 
 
 def format_source_info(source: object) -> str:

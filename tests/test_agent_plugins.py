@@ -479,8 +479,8 @@ class TestWatchdogRestart:
         """A failed restart backs off and retries instead of killing the watchdog."""
         import slife.agent.plugins as plugin_mod
 
-        monkeypatch.setattr(plugin_mod, "_WATCHDOG_BACKOFF_INITIAL", 0.01)
-        monkeypatch.setattr(plugin_mod, "_WATCHDOG_BACKOFF_MULTIPLIER", 2.0)
+        monkeypatch.setattr("slife.timeouts.timeouts.ready.watchdog_backoff_initial", 0.01)
+        monkeypatch.setattr("slife.timeouts.timeouts.ready.watchdog_backoff_multiplier", 2.0)
 
         new_proc = self._living_process()
         lifecycle.process = self._dead_process()
@@ -578,14 +578,14 @@ class TestWatchdogRestart:
                                                          monkeypatch):
         """B1 regression: a restart_cb that never returns (child stuck before
         its lifespan serves) must not block the watchdog forever.  Each
-        restart attempt is bounded by PLUGIN_SPAWN_TIMEOUT, treated as a
+        restart attempt is bounded by the registry's ready.plugin_start, treated as a
         failed attempt (backoff), and the watchdog gives up at
         `_max_restarts`."""
         import slife.agent.plugins as plugin_mod
 
-        monkeypatch.setattr(plugin_mod, "PLUGIN_SPAWN_TIMEOUT", 0.02)
-        monkeypatch.setattr(plugin_mod, "_WATCHDOG_BACKOFF_INITIAL", 0.005)
-        monkeypatch.setattr(plugin_mod, "_WATCHDOG_BACKOFF_MULTIPLIER", 1.0)
+        monkeypatch.setattr("slife.timeouts.timeouts.ready.plugin_start", 0.02)
+        monkeypatch.setattr("slife.timeouts.timeouts.ready.watchdog_backoff_initial", 0.005)
+        monkeypatch.setattr("slife.timeouts.timeouts.ready.watchdog_backoff_multiplier", 1.0)
         lifecycle._max_restarts = 3
         lifecycle.process = self._dead_process()
         # A restart callback that never completes — the hang the timeout must

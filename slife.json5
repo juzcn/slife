@@ -319,14 +319,10 @@
     broker: {
       host: "localhost",
       port: 1883
-    },
-    heartbeat_interval: 15,
-    heartbeat_timeout: 45,
-    task_timeout: 120
+    }
   },
   subagent: {
-    max_subagents: 5,
-    task_timeout: 120
+    max_subagents: 5
   },
   cli_tools: {
     "yt-dlp": {
