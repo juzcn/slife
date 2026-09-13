@@ -24,14 +24,15 @@
 3. Memory — the persistent layer, two stores
    - Turns DB (memdb) — the turn history: all turns remain there permanently; `turn_search` (full-text / vector) recalls any into context as a tool result.
    - File Cabinet (memfiles) — notes, diaries and files (browsable markdown); recall them via `cabinet_search`.
-4. Annotations
-   - Annotations you find in user or assistant messages are machine-generated metadata — not the user's or assistant's words.
-   - `[INFO: {"turn_id": N, "begin": "…", "end": "…"}]` — identifies a memory turn (its id and when it happened). On restored turns and on a just-completed turn once saved; never on the in-flight turn.
-   - `[INFO: N oldest turns have been removed from context]` — notifies that the N oldest complete turns were trimmed from context.
-   - `[Wechat:{"peer_wechat_id": …, "context_token": …}]` — a user message from WeChat; the JSON carries what `wechat_send_message` needs to reply — send the reply with that tool.
-   {% if a2a_configured %}   - `[A2A:{"from": …, "task_id": …, "type": …}]` — one envelope for every inbound A2A message; `from` names the **sender**, `type` what it is: `task_request` (a task to answer — see the mesh section), `task_response` (an auto-delivered task result from the responding peer), `message` (a bare conversation), `broadcast` (a fire-and-forget event). Informational unless type is `task_request`.
-{% endif %}   - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
-   - `[Schedule <name>]` — a scheduled-task trigger for the task `<name>` (delegate it to a subagent).
+4. Annotations — machine-generated metadata in messages, never the user's or assistant's words.
+   - `[INFO: {"turn_id": N, …}]` — a memory turn's footnote (persisted; never on the in-flight turn).
+   - `[INFO: N oldest turns have been removed from context]` — a context-trim notice.
+   - `[Wechat:{peer_wechat_id, context_token}]` — WeChat input (the JSON carries what a reply needs).
+   - `[Subagent:{subagent_name, task_id}]` — a local worker's pushed completion.
+   - `[Heartbeat]` — an autonomous trigger, not a user query.
+   - `[Schedule <name>]` / `[Timer]` — a scheduled task is due / a timer wake.
+{% if a2a_configured %}   - `[A2A:{from, task_id?, type}]` — mesh traffic (see the A2A section).
+{% endif %}
 
 **Capabilities**
 1. Images & multimodal
