@@ -99,7 +99,7 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 - Schedule: 定时任务也采用用心跳机制。到触发时间，注入一条心跳任务的user消息。
 
-- Multiagents: 多agent依赖mosquitto消息中间件，以A2A标准为蓝本实现。 
+- Multiagents: 多agent依赖mosquitto消息中间件，以A2A标准为蓝本实现。 完全异步。
 
 - Progressive disclosure: 外部mcp 默认autoload=false, 使用渐进式披露，tool-search, tool-load
 
