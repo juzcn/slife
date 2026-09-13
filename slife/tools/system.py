@@ -38,6 +38,7 @@ from typing import ClassVar
 
 import httpx2
 
+from slife.env import is_env_ref
 from slife.health import get_report as get_startup_records
 from slife.plugins.spec import PLUGIN_SPECS, health_check_name
 from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
@@ -373,7 +374,7 @@ async def check_local_embed(base_url: str = "") -> list[dict]:
             # ignores it.  An unresolvable placeholder is never sent as a token.
             from slife.config import _resolve_secret
             api_key = _resolve_secret(api_key, accept_keyring_uri=True)
-            if not (api_key.startswith("${") and api_key.endswith("}")):
+            if not is_env_ref(api_key):
                 headers["Authorization"] = f"Bearer {api_key}"
         base_url = base_url.rstrip("/")
         async with httpx2.AsyncClient(

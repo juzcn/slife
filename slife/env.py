@@ -26,6 +26,11 @@ def parse_env_ref(value: str) -> tuple[str, str | None] | None:
     return m.group(1), m.group(2)
 
 
+def is_env_ref(value: str) -> bool:
+    """True if *value* is a pure ``${VAR}`` / ``${VAR:-default}`` reference."""
+    return parse_env_ref(value) is not None
+
+
 def resolve_secret_value(value: str) -> str:
     """Resolve ``${VAR}`` / ``${VAR:-default}`` refs in *value*, leniently.
 
@@ -37,10 +42,10 @@ def resolve_secret_value(value: str) -> str:
     def _replace(m: re.Match) -> str:
         var = m.group(1)
         env_val = os.environ.get(var)
-        if env_val is None:
+        if not env_val:
             from slife.config import _try_credstore_lookup
             env_val = _try_credstore_lookup(var)
-        if env_val is not None:
+        if env_val:
             return env_val
         default = m.group(2)
         return default if default is not None else m.group(0)

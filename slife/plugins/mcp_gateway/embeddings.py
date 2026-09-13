@@ -20,16 +20,12 @@ import logging
 
 import httpx2
 
+from slife.env import is_env_ref
 from slife.plugins.memdb.embeddings import _guess_max_tokens  # shared token-limit guess
 from slife.plugins.mcp_gateway.config import _resolve_secret
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
-
-
-def _looks_like_placeholder(value: str) -> bool:
-    """True if *value* is an unresolved ``${VAR}`` placeholder."""
-    return value.startswith("${") and value.endswith("}")
 
 
 class EmbeddingClient:
@@ -81,7 +77,7 @@ class EmbeddingClient:
         emb = None
         if override is not None and isinstance(override, dict):
             base_url = str(override.get("base_url", ""))
-            if base_url and not _looks_like_placeholder(base_url):
+            if base_url and not is_env_ref(base_url):
                 emb = {
                     "base_url": base_url,
                     "model": str(override.get("model", "")),
@@ -92,12 +88,12 @@ class EmbeddingClient:
         base_url = str(emb.get("base_url", ""))
         model = str(emb.get("model", ""))
         api_key = str(emb.get("api_key", ""))
-        if _looks_like_placeholder(api_key):
+        if is_env_ref(api_key):
             # ${VAR} → shell env → credstore; unresolvable ⇒ no auth header
             # (a literal "Bearer ${VAR}" is never worth sending).
             resolved = _resolve_secret(api_key)
-            api_key = "" if _looks_like_placeholder(resolved) else resolved
-        enabled = bool(base_url) and not _looks_like_placeholder(base_url)
+            api_key = "" if is_env_ref(resolved) else resolved
+        enabled = bool(base_url) and not is_env_ref(base_url)
         return cls(
             model=model, api_key=api_key, base_url=base_url,
             dim_known=bool(model), enabled=enabled,

@@ -188,6 +188,22 @@ class TestConfigFromJSON5:
         assert config.models[0].api_key == "env-key"
         assert config.active_model_ref == "deepseek/deepseek-v4-flash"
 
+    def test_empty_env_var_degrades_to_credstore(self, monkeypatch):
+        """Regression: a set-but-empty ``KEY=`` falls through to credstore.
+
+        ``resolve_secret_value`` used ``is None`` to detect an unset var, so an
+        exported-but-empty ``KEY=`` was returned verbatim and the stored secret
+        was never consulted — a provider configured ``api_key: "${KEY}"`` sent
+        an empty credential instead of the secret (or the ``${KEY}`` literal).
+        """
+        from slife.env import resolve_secret_value
+
+        monkeypatch.setenv("KEY", "")
+        monkeypatch.setattr("slife.config._try_credstore_lookup", lambda key: "SECRET")
+        assert resolve_secret_value("${KEY}") == "SECRET"
+        monkeypatch.setattr("slife.config._try_credstore_lookup", lambda key: None)
+        assert resolve_secret_value("${KEY}") == "${KEY}"
+
     def test_list_style_models(self, tmp_path):
         """Config with models as a flat list."""
         cfg_path = tmp_path / "slife.json5"

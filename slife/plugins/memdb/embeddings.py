@@ -17,6 +17,7 @@ import logging
 import threading
 from pathlib import Path
 from typing import Any
+from slife.env import is_env_ref
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
@@ -91,16 +92,6 @@ def _check_runtime(backend: str) -> bool:
         return True
     except ImportError:
         return False
-
-
-def _looks_like_placeholder(value: str) -> bool:
-    """True if *value* is an unresolved ``${VAR}`` or ``${VAR:-default}`` placeholder.
-
-    The install template ships with ``api_key: "${DEEPSEEK_API_KEY}"`` —
-    these are NOT real API keys and should be skipped when probing
-    provider configs for an embedding backend.
-    """
-    return value.startswith("${") and value.endswith("}")
 
 
 class EmbeddingClient:
@@ -294,7 +285,7 @@ class EmbeddingClient:
         # Skip still-unresolved ${VAR} placeholders — they are NOT real API
         # keys.  A ref that even credstore can't resolve must not be sent as
         # a Bearer token (the install template ships with one).
-        if api_key and _looks_like_placeholder(api_key):
+        if api_key and is_env_ref(api_key):
             api_key = ""
 
         if not base_url:
