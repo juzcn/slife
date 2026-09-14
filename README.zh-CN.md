@@ -504,8 +504,8 @@ uv pip install --python "$(uv tool dir)/slife" sentence-transformers        # sl
 Slife 是一个代码库、几份文档，按读者拆分：
 
 * **[DESIGN.md](DESIGN.md)** — 面向代码开发者的架构与实现：agent loop、上下文工程、工具系统、插件架构、MCP 网关、记忆、A2A。
-* **[PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md)** — 插件系统的权威规范（中央 `PluginSpec` 表、registry、统一生命周期），给所有写插件的人。
-* **[CONTEXT_HARNESSING.md](CONTEXT_HARNESSING.md)** — Slife 每轮如何策划模型上下文：渠道、标记、`_turn_prompt` harness 工具对。
+* **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)** — 插件系统的权威规范（中央 `PluginSpec` 表、registry、统一生命周期），给所有写插件的人。
+* **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)** — Slife 每轮如何策划模型上下文：渠道、标记、`_turn_prompt` harness 工具对。
 
 ```bash
 git clone https://github.com/juzcn/slife.git

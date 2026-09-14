@@ -1,6 +1,6 @@
 # Slife Design
 
-> Developer documentation for the Slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md). For plugin authors, [PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md) is the authoritative plugin spec; for how the model context is curated each turn, [CONTEXT_HARNESSING.md](CONTEXT_HARNESSING.md) is authoritative. This document is written for people who work on the code, and it assumes you have read the README.
+> Developer documentation for the Slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md). For plugin authors, [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) is the authoritative plugin spec; for how the model context is curated each turn, [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) is authoritative. This document is written for people who work on the code, and it assumes you have read the README.
 
 ## Contents
 
@@ -15,7 +15,7 @@
 * [Part 8 · UI, Config, Credentials, Health, Logging, Paths](#part-8--ui-config-credentials-health-logging-paths)
 * [Part 9 · Project Structure](#part-9--project-structure)
 * [Appendix A · Design Decisions & Hard-Won Lessons](#appendix-a--design-decisions--hard-won-lessons)
-* [TIMEOUT.md](TIMEOUT.md) — the timeout registry model (values, ownership, gates)
+* [TIMEOUT.md](docs/TIMEOUT.md) — the timeout registry model (values, ownership, gates)
 
 ---
 
@@ -29,14 +29,14 @@ The sections are layered — orientation first, then the deep mechanics, then re
 | Working on the agent loop / context / prompts | **Part 2** |
 | Adding an LLM backend or dealing with wire formats | **Part 3** |
 | Adding or changing a native tool | **Part 4** |
-| Writing or debugging a plugin, the MCP gateway, jobs, subagents | **Part 5** + [PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md) |
+| Writing or debugging a plugin, the MCP gateway, jobs, subagents | **Part 5** + [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) + [SUBAGENT.md](docs/SUBAGENT.md) |
 | Working on memory, search, embeddings, session restore | **Part 6** |
 | Working on the A2A mesh | **Part 7** |
 | Touching the TUI, config, credentials, health, logging, paths | **Part 8** |
 | Looking for a file or module | **Part 9** |
 | Asking "why is it designed this way?" or debugging a hard-to-see regression | **Appendix A** + the relevant part |
 
-**Authority and freshness.** Where this document and a dedicated spec disagree, the dedicated spec and the code win: [PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md) is the authoritative statement of the plugin system; [CONTEXT_HARNESSING.md](CONTEXT_HARNESSING.md) is the authoritative statement of context injection (channels, markers, the `_turn_prompt` harness tool-pair) and the deep companion to Part 2's *Context Injection* section. This document is kept current with the code; if a sentence names something that no longer exists, file a fix.
+**Authority and freshness.** Where this document and a dedicated spec disagree, the dedicated spec and the code win: [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) is the authoritative statement of the plugin system; [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) is the authoritative statement of context injection (channels, markers, the `_turn_prompt` harness tool-pair) and the deep companion to Part 2's *Context Injection* section; [SUBAGENT.md](docs/SUBAGENT.md) is the authoritative statement of the subagent (agent-worker) model and the deep companion to Part 5's *Subagents* section; [A2A-MQTT.md](docs/A2A-MQTT.md) is the authoritative statement of the A2A mesh (topics, wire, markers, drain — Part 7's deep companion); [TIMEOUT.md](docs/TIMEOUT.md) is the timeout registry model (values, ownership, gates). This document is kept current with the code; if a sentence names something that no longer exists, file a fix.
 
 **Terminology** is defined where it first matters; a quick glossary of the load-bearing terms (also used in the README):
 
@@ -58,7 +58,7 @@ The sections are layered — orientation first, then the deep mechanics, then re
 
 ### What Slife is
 
-A single Textual TUI around a streaming function-calling loop. The LLM picks from a unified tool registry — native tools, built-in plugin tools, and external MCP tools are indistinguishable at the call site (all OpenAI function definitions). Every turn is persisted unconditionally to SQLite; the context the model sees is engineered explicitly (see [Part 2](#part-2--the-agent) and [CONTEXT_HARNESSING.md](CONTEXT_HARNESSING.md)). Plugins — including the MCP gateway to external servers — are independent child processes over Streamable HTTP, declared spec-driven and driven by one uniform lifecycle.
+A single Textual TUI around a streaming function-calling loop. The LLM picks from a unified tool registry — native tools, built-in plugin tools, and external MCP tools are indistinguishable at the call site (all OpenAI function definitions). Every turn is persisted unconditionally to SQLite; the context the model sees is engineered explicitly (see [Part 2](#part-2--the-agent) and [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)). Plugins — including the MCP gateway to external servers — are independent child processes over Streamable HTTP, declared spec-driven and driven by one uniform lifecycle.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -129,16 +129,7 @@ Two audiences, two languages. The model input reads uniformly in English; the hu
 
 ### Context injection — a preview of the taxonomy
 
-The system introduces information into the context on its own initiative in three ways, distinguished by *what* is injected and *whether it persists*. Two orthogonal notions run through them (authoritatively described in [CONTEXT_HARNESSING.md](CONTEXT_HARNESSING.md)):
-
-- **Channel** — the sender identity, recoverable from the message alone, persisted with the turn, by default **not** part of the LLM context.
-- **Marker** — machine-generated notation an injection carries (`[Heartbeat]`, `[Schedule <name>]`, the `[INFO: …]` footnote/trim note).
-
-The three forms:
-
-1. **A marker-carrying synthetic user message — persistent.** `[Heartbeat]` and `[Schedule <name>]` triggers are posted to the inbox as normal turns and saved like any turn.
-2. **A harness tool-pair — persistent.** `_turn_prompt` is auto-invoked once per turn and contributes a normal assistant `tool_call` + result to the history.
-3. **A marker appended to an existing message — not persisted content.** The turn footnote (`[INFO: {"turn_id": N, …}]`) and the trim note decorate messages already present.
+The system introduces information into the context on its own initiative via three orthogonal notions, distinguished by *what* is injected and *whether it persists*: **channels** (the sender identity, by default not part of the LLM context), **markers** (machine-generated notation an injection carries), and a **harness tool-pair** (`_turn_prompt` / `_check_new_input`). Each mechanism — the channel table with per-channel TUI display, the marker shapes, the harness pair, and the decorations appended to existing messages — is bound precisely in **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)**; the load-bearing terms are in the glossary above.
 
 ---
 
@@ -165,11 +156,11 @@ User Input → MessageHistory.add_user_message()        (secrets sanitized)
 - **Streaming**: thinking and text tokens delivered in real time via `AgentEventHandler` callbacks.
 - **Tool accumulation**: tool-call deltas accumulated across chunks, executed as a batch.
 - **Concurrent execution**: all calls in a batch run via `asyncio.gather`; approval dialogs serialize behind a lock.
-- **Tool timeout**: single enforcement point — `asyncio.wait_for()` wraps every call (default = the developer-owned registry's `work.tool_budget`, 120 s; the `agent.tool_timeout` user key is no longer read) as a **fallback** only — the LLM passes a per-call `_timeout`, and tools with a native `timeout` parameter (`execute_shell`, `subagent_send_task`) receive it directly instead of a double wrap. A bare `timeout` argument on a tool whose schema has none is also consumed and enforced (LLMs routinely append one), exactly like `_timeout`. **The agent's timeout overrides ALL defaults** — the tool's own run timeout is only a generously-sized backstop, so it never preempts the effective value (TIMEOUT.md → *Tool-execution precedence*). `≤0` never means "no timeout": it falls back to the default.
+- **Tool timeout**: single enforcement point — `asyncio.wait_for()` wraps every call (default = the developer-owned registry's `work.tool_budget`, 120 s; the `agent.tool_timeout` user key is no longer read) as a **fallback** only — the LLM passes a per-call `_timeout`, and tools with a native `timeout` parameter (`execute_shell`, `subagent_send_task`) receive it directly instead of a double wrap. A bare `timeout` argument on a tool whose schema has none is also consumed and enforced (LLMs routinely append one), exactly like `_timeout`. **The agent's timeout overrides ALL defaults** — the tool's own run timeout is only a generously-sized backstop, so it never preempts the effective value (docs/TIMEOUT.md → *Tool-execution precedence*). `≤0` never means "no timeout": it falls back to the default.
 - **Background execution**: per-call `_async: true` schedules the tool as a background task and returns a task id immediately; poll with `check_async`, cancel with `cancel_async`. The async runner **sanitizes at storage time** (secrets are scrubbed the moment the task finishes, not when polled), and a **failed** async task surfaces with the `Error:` prefix — the same `is_error` contract as a synchronous call. Results are pruned past a bound (`_MAX_ASYNC_TASKS = 100`), so a very old poll can answer "Task not found".
 - **Iteration limit**: `max_iterations` (default 30) prevents infinite loops; **0 = unlimited**. The cap is checked **live each iteration** (not fixed at `run()` start), so a mid-turn `set_max_iterations` applies **immediately** to the running turn and to the next. Hitting the cap returns a cancelled result and notifies the handler via `on_max_iterations` — the TUI shows `✗ Agent exceeded maximum of N iterations`.
 - **Cancellation**: `Esc` sets a cancel event; checked before each iteration, after each stream, and before each tool batch.
-- **LLM stream failure contract (one contract, every source)**: transient transport failures — `httpx.TransportError`, the SDKs' `*APIConnectionError` / `*APITimeoutError`, and the loop's own `StreamStallError` (below) — are retried by `_process_stream` with bounded linear backoff (registry `stream.retries` = 2 ⇒ 3 attempts at `stream.retry_base_delay` × attempt), so the main agent, subagents, heartbeat, WeChat and A2A share a single resilience contract. Bad-request / content-filter / auth errors are **not** retried here (SDK + inbox concern). Exhaustion raises `RuntimeError("LLM stream failed after N attempts: …")` with a **non-empty** detail (`str(e) or type(e).__name__`). The history is kept intact on transient failures; only content-policy / bad-request errors roll back.
+- **LLM stream failure contract (one contract, every source)**: transient transport failures — `httpx.TransportError`, the SDKs' `*APIConnectionError` / `*APITimeoutError`, and the loop's own `StreamStallError` (below) — are retried by `_process_stream` with bounded linear backoff (registry `stream.retries` = 2 ⇒ 3 attempts at `stream.retry_base_delay` × attempt), so the main agent, heartbeat, WeChat and A2A share a single resilience contract — subagents deliberately do **not**: they run `stream_max_retries=0` (fail-fast, no user to wait on), so a worker surfaces every stream error as an `Error:` result instead of retrying (see *Part 5 · Subagents* / [SUBAGENT.md](docs/SUBAGENT.md)). Bad-request / content-filter / auth errors are **not** retried here (SDK + inbox concern). Exhaustion raises `RuntimeError("LLM stream failed after N attempts: …")` with a **non-empty** detail (`str(e) or type(e).__name__`). The history is kept intact on transient failures; only content-policy / bad-request errors roll back.
 - **Stall watchdog (`stream_stall_timeout`)**: `_consume_stream` wraps every `anext()` in an `asyncio.timeout` that **resets on each chunk** — a provider that answers `200 OK` and then sends nothing (Bailian did exactly this: zero bytes for ~7 min before dropping the connection) is cut after the registry's `work.stall` (120 s) with `StreamStallError`, which the retry ladder handles like any other transient failure. A slow-but-live generation is never cut — this is an *inactivity* timer, not a *total* one (the "timer at the owner, no total" rule). The separate opt-in `stream_timeout` remains a **total** per-call cap (subagents inherit the registry's `work.task_budget`).
 - **Turn consistency**: one function — `MessageHistory._ensure_turn_consistent()` — enforces two idempotent invariants before a history is persisted (and again on load), so it is always well-formed when it next reaches the wire:
   1. **No orphaned tool_calls** — an assistant `tool_call` whose result never arrived (an interrupted turn) gets a synthetic `(Tool execution interrupted)` result right after it.
@@ -240,7 +231,7 @@ The system prompt additionally forbids nothing by list — it relies on scaffold
 The agent is otherwise purely user-driven. A heartbeat gives it a periodic **autonomous window** (a precondition for emergent self-initiated behavior): while idle, every `agent.heartbeat_interval` seconds (default 60, shipped template 1800) the service posts a `[Heartbeat]` message to the inbox, which runs as a **normal agent-loop turn** (own history via the heartbeat source, saved to the diary like any turn).
 
 - **Reply contract** (also in the system prompt): real content if the agent has something worth proactively saying, otherwise exactly `.` — never empty, satisfying the user→assistant role alternation.
-- **TUI filtering** (live + restore): heartbeat turns are recognised by the `[Heartbeat]` mark and filtered — the trigger is never shown, and a real reply renders as `⚡ 自主`. More generally, a bare `.` reply is **silence** from any event. The status bar shows the last beat (`●` act / `·` quiet).
+- **TUI filtering** (live + restore): heartbeat turns are recognised by the `[Heartbeat]` mark and filtered — the trigger is never shown, and a real reply renders as `⚡ 自主` (the TUI's zh-locale "autonomous" label). More generally, a bare `.` reply is **silence** from any event. The status bar shows the last beat (`●` act / `·` quiet).
 - **Main agent only**: subagents never start the heartbeat loop — they are task-driven workers.
 - The heartbeat history is separate (source `heartbeat`), so autonomous reflections persist without polluting the human history.
 
@@ -257,7 +248,7 @@ Tools: `scheduled_task_set` / `scheduled_task_remove` / `scheduled_task_list`, `
 
 ### Context Injection
 
-> The authoritative description of channels, markers, and the `_turn_prompt` harness tool-pair is [CONTEXT_HARNESSING.md](CONTEXT_HARNESSING.md); the condensed overview is in [Part 1 · Context injection](#context-injection--a-preview-of-the-taxonomy). Context trimming is internal and announced by the trim note, not by a harness pair.
+> The authoritative description of channels, markers, and the `_turn_prompt` harness tool-pair is [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md); the condensed overview is in [Part 1 · Context injection](#context-injection--a-preview-of-the-taxonomy). Context trimming is internal and announced by the trim note, not by a harness pair.
 
 ## Part 3 · LLM Backends & Model Management
 
@@ -350,15 +341,7 @@ Every tool returns a single string (`async execute(**kwargs) -> str`). The failu
 
 ### Timeout Architecture
 
-**Values are developer-owned and centralized — and they are code.** Every timeout value reads at call time from the typed dataclass defaults of **`slife/timeouts.py`** (exposed as `_timeouts.timeouts.<role>.<key>`); there is no external config file and no second seat for a value. The registry is developer-only (no runtime tool/user/seed reads it) and structurally invalid edits fail loudly at import — the model rules, the role table, the load-time invariants, the "no hardcoded timeout" review gate and the rejected alternatives are all written down in **[TIMEOUT.md](TIMEOUT.md)**. The one sanctioned "total" deadline in the system is the tool-call budget (`work.tool_budget`); there is no turn deadline.
-
-Enforcement is still single-pointed at the Agent Loop level. The three meta-parameters (`_timeout`, `_async`, `_approve`) are a **system-prompt contract** (slife.j2, "Tool meta-parameters"): any tool call may carry them, and `_execute_tools` pops them before dispatch.
-
-- Tools **without** a native `timeout` parameter → `asyncio.wait_for(timeout=…)` (default 120 s).
-- Tools **with** a native `timeout` (`execute_shell`) → mapped to the native argument, no double-wrap.
-- **Bare `timeout` alias** — LLMs routinely append a schema-less `timeout` arg to tools that define no such parameter; the loop pops it and enforces it as the per-call bound, exactly like `_timeout`.
-
-`_async: true` (background, poll with `check_async`) and `_approve: true` (inline approval) are described in [Agent Loop](#agent-loop) — background tasks without a native timeout still get the loop's bound, and a background task's `_timeout` is honored.
+**One registry model, and the values are code.** Every timeout value reads at call time from the typed dataclass defaults of **`slife/timeouts.py`** (exposed as `_timeouts.timeouts.<role>.<key>`) — developer-owned, no user-facing config section, no second seat; structurally invalid edits fail loudly at import. Enforcement is single-pointed at the Agent Loop: the `_timeout` meta-parameter, `asyncio.wait_for` around every call, and native `timeout` parameters (plus a bare schema-less `timeout` alias) map to the same bound. The only sanctioned "total" deadline in the system is the tool-call budget (`work.tool_budget`); there is no turn deadline. The five model rules, the role table, the load-time invariants, the *Tool-execution precedence*, the "no hardcoded timeout" review gate, and the rejected alternatives are documented in **[TIMEOUT.md](docs/TIMEOUT.md)**. Background (`_async`) enforcement is covered under *Agent Loop · Background execution*.
 
 ### Approval Gate
 
@@ -379,15 +362,13 @@ Picker rules (hard-won, kept with the code):
 
 ## Part 5 · Plugins & the MCP Gateway
 
-Eight internal plugins run as independent child processes: mcp-gateway, memdb, wechat, memfiles, sharefile, a2a, media, and job-coding. Every plugin is declared by one row in the central plugin spec (`slife/plugins/spec.py`) and driven by the same uniform lifecycle (spawn → MCP-handshake readiness → watchdog → health); the authoritative contract is [PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md). There is **no `plugins.external` mechanism** — third-party capability enters only as a standard MCP server in `mcp-plugin.json5`, connected by the internal **mcp-gateway** plugin. `local-embed` is **not** a plugin: a standalone daemon (started manually, like Mosquitto) serving OpenAI-compatible `/v1/embeddings`. Communication is **Streamable HTTP** (MCP protocol) for all plugins; the sharefile plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`).
+Eight internal plugins run as independent child processes (mcp-gateway, memdb, wechat, memfiles, sharefile, a2a, media, job-coding). Every plugin is declared by one row in the central plugin spec (`slife/plugins/spec.py`) and driven by one uniform lifecycle (spawn → MCP-handshake readiness → watchdog → health); the authoritative contract — the spec table, the registry, readiness, the lifecycle, health, and the child-process `server.py` shape — is **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)**. There is **no `plugins.external` mechanism** — third-party capability enters only as a standard MCP server in `mcp-plugin.json5`, connected by the internal **mcp-gateway** plugin. `local-embed` is **not** a plugin: a standalone daemon (started manually, like Mosquitto) serving OpenAI-compatible `/v1/embeddings`. Communication is **Streamable HTTP** (MCP protocol) for all plugins; the sharefile plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`).
 
 **WSL note:** Custom env vars set via `create_subprocess_exec(env=…)` are NOT forwarded to Windows `.exe` processes through WSL interop (`WSLENV` is only read by the WSL `/init` at session start). Therefore **all MCP server runtimes on WSL must be Linux-native binaries** — the install script enforces this by detecting `/mnt/*` paths.
 
 ### The spec and the uniform lifecycle
 
-Plugins are **spec-driven**: the `PluginSpec` table in `slife/plugins/spec.py` is the single source of truth (`name`, module to spawn, the `ctx_field` that carries its client, gateway/host flags, health-check name, reserved internal names), and `AgentService._plugins` derives the registry from it. Adding a plugin is one `PluginSpec` row plus its `server.py` package — no name-keyed harness tables. Auto-discovered third-party plugins (a package in `slife.plugins.*` with a `server.py` and no spec row) get a generic spec and the same lifecycle. The two public names with hyphens are `mcp-gateway` and `job-coding` (packages `mcp_gateway` / `job_coding`).
-
-The uniform start chain: `start_plugin_server` → spawn the child with the inherited session env plus `SLIFE_PLUGIN_NAME` and its published port → MCP-handshake readiness (`initialize`, which the server only answers after its FastMCP lifespan succeeded) → `_after_ready_*` hook if the spec declares one → arm the watchdog. There are no per-plugin start methods left — every plugin routes through the spec.
+Plugins are **spec-driven**: `PluginSpec` rows in `slife/plugins/spec.py` are the single source of truth, and every plugin routes through one uniform start chain (`start_plugin_server` → spawn the child with the inherited session env plus `SLIFE_PLUGIN_NAME` and its published port → MCP-handshake readiness → `_after_ready_*` hook → arm the watchdog) — no per-plugin start methods remain. Adding a plugin is one spec row plus a `server.py` package; auto-discovered third-party packages get a generic row and the same lifecycle. The two public names with hyphens are `mcp-gateway` and `job-coding` (packages `mcp_gateway` / `job_coding`). The full mechanism — the spec table, the registry-as-runtime-truth, readiness, lifecycle, watchdog, stop — is in **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)**; what follows keeps the DESIGN-level operational detail (env handoff, readiness rules, watchdog tuning).
 
 Processes communicate through environment variables:
 
@@ -433,7 +414,7 @@ Every local `MCPClient` connection is loopback — the harness connects only to 
 | **wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages (a failed poll backs off the next poll exponentially to 30 s and resets on the next clean poll), typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[Wechat:{...}]` (model-facing JSON carrying `peer_wechat_id` / `context_token`; the TUI strips the marker — the `Wechat>` bubble prefix already shows the channel). The model replies itself via `wechat_send_message` — no harness auto-dispatch. |
 | **memfiles** | Streamable HTTP | Private notes/diary/files/reports cabinet — see [Part 6 · The File Cabinet](#the-file-cabinet-memfiles). Owns the scheduled-task *data* tables; the schedule *tools* are native (Part 2 · Scheduled Tasks). |
 | **sharefile** | Streamable HTTP + `/share` route | Public file sharing — LLM-visible tools `share_file` / `sharefile_unshare`; internal `__check`, `__register_file`; `GET /share/{token}` serves file bytes on the same port (one port, two protocols), stat-pinned to the registered file so a share never silently serves replaced content. Shares are in-session only. Owns the pluggable tunnel (provider from `sharefile.json5`'s `active_provider`; eager start, non-blocking). |
-| **a2a** | Streamable HTTP | A2A mesh over the official `a2a-over-mqtt` profile (aiomqtt v5, LWT; see [A2A-MQTT.md](A2A-MQTT.md)). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools (see Part 7). |
+| **a2a** | Streamable HTTP | A2A mesh over the official `a2a-over-mqtt` profile (aiomqtt v5, LWT; see [A2A-MQTT.md](docs/A2A-MQTT.md)). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools (see Part 7). |
 | **media** | Streamable HTTP | Non-chat AI generation (image, video, TTS, ASR) from any provider. Owns the `media:` config section (plugin-read, ignored by the main `Config` parser) and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio`. Long renders use the harness's universal `_async: true` + `check_async`. Artifacts are saved to the working directory (or a `folder` passed to the tool) — work products, never memfiles cabinet files. |
 | **job-coding** | Streamable HTTP | Deterministic Jobs as MCP tools — see [Job System](#job-system-job-coding). Tools: `job-list`, `job-write`, `job-remove`, `job-run` + one tool per job. |
 
@@ -471,7 +452,7 @@ All state changes persist to `mcp-plugin.json5` (self-hosted by the gateway). Se
 
 ### Job System (job-coding)
 
-DESIGNER_NOTES §6.7 — *"大模型越聪明，越需要一个 Job System"*. A **Job** is a plain public function in `<data_dir>/jobs/*.py` (dev: `<project>/jobs/` — the repo's committed `jobs/` holds the bundled `translate`/`summarize`/`total_tokens` samples; prod: `~/.slife/jobs/`, seeded from those by the installers). Following standard MCP tool norms, the function's `__name__`, docstring, and typed signature become the job tool's name, description, and parameters schema. **The files are the source of truth — there is no job-config file**: a restart (or the watchdog) re-scans the directory and re-registers the tools. Creating/editing a job is *coding*: the `job-coding` skill in `skills/` is the authoring guide.
+DESIGNER_NOTES §6.7 — *"The smarter the model, the more it needs a Job System"*. A **Job** is a plain public function in `<data_dir>/jobs/*.py` (dev: `<project>/jobs/` — the repo's committed `jobs/` holds the bundled `translate`/`summarize`/`total_tokens` samples; prod: `~/.slife/jobs/`, seeded from those by the installers). Following standard MCP tool norms, the function's `__name__`, docstring, and typed signature become the job tool's name, description, and parameters schema. **The files are the source of truth — there is no job-config file**: a restart (or the watchdog) re-scans the directory and re-registers the tools. Creating/editing a job is *coding*: the `job-coding` skill in `skills/` is the authoring guide.
 
 Execution is deterministic: the tool calls the job function with exactly its declared arguments; the only LLM access is an explicit `llm.chat(system=…, user=…, model=…)` one-shot on `job_coding_model` — a **top-level** `"provider/model"` ref in slife.json5 that reuses `models.providers` and is independent of `active_model`. It should name a *different* (usually smaller/faster) model: a nested one-shot job call neither churns the agent loop's prompt-cache prefix nor competes for its quota. Jobs that call `llm` are `async def`; pure-computation jobs stay plain `def` (the runner runs sync jobs on a **daemon thread** via `slife.threads.run_daemon` — never `asyncio.to_thread`, whose default-executor workers are joined at exit and would wedge plugin shutdown on a hung blocking job; the runner captures `contextvars.copy_context()` so a sync job's `llm` client stays visible). No system prompt, no conversation history, no agent loop ever reaches a job's model — a structural guarantee.
 
@@ -483,9 +464,9 @@ A job that needs an **external capability** reaches it through the `mcp` handle:
 
 ### Subagents (local workers, not A2A)
 
-Local child-process workers, always available — no config toggle. A subagent (agent worker) is **not** an A2A peer: no network identity, no presence, and no mesh tooling of its own.
+Local child-process workers, always available — no config toggle. A subagent (agent worker) is **not** an A2A peer: no network identity, no presence, and no mesh tooling of its own. The full design — the headless process protocol, the one-turn-per-task model, the harness-owned result delivery, and the failure/timeout semantics — lives in **[SUBAGENT.md](docs/SUBAGENT.md)**, the authoritative statement of the worker model.
 
-- **headless.py**: Slife without TUI, worker-scoped JSON-RPC 2.0 over stdin/stdout — request methods `worker/send`, `worker/cancel`, `worker/plugin_restart`, `context` (cloned parent history), `shutdown`; notifications `worker/complete`, `worker/progress`; a `{ready: true}` result signals startup. Pure UTF-8 on stdout to dodge GBK.
+- **headless.py**: Slife without TUI, worker-scoped JSON-RPC 2.0 over stdin/stdout — request methods `worker/send`, `worker/cancel`, `worker/plugin_restart`, `context` (cloned parent history), `shutdown`; notification `worker/complete` (the parent also parses a reserved `worker/progress`); a `{ready: true}` result signals startup. Pure UTF-8 on stdout to dodge GBK.
 - **SubagentManager**: spawn/stop/list lifecycle. **Names are explicit — a worker's name is its identity**; `spawn_subagent` requires a `subagent_name` (a short safe identifier) and never auto-generates one. `max_subagents` default 5; the task budget is developer-owned (registry `work.task_budget`).
 - **Serial processing + visibility**: a worker runs one task at a time. A sync `subagent_send_task` to a busy worker is automatically queued as async and reported (never a silent timeout, never a resend). `subagent_list_tasks` lists worker tasks across workers.
 - **Async delivery mode**: `subagent_send_task_async` takes `mode="auto"` (default — the result auto-pushes to the parent's inbox, starting a new turn; **it also stays retrievable** via `subagent_get_task_result`) or `mode="poll"` (no push — retrieve explicitly). The mode is chosen at send time so the caller's intent is explicit.
@@ -615,33 +596,13 @@ Multiple `@` may sit **adjacent without spaces** — `@a.png@b.png`, `@a.png @b.
 
 ## Part 7 · A2A — Agent-to-Agent (mesh)
 
-The A2A protocol runs over the official **A2A-over-MQTT** profile — the `a2a-over-mqtt` SDK from EMQX
-(wire, topics, presence, task lifecycle), *not* a self-built binding. The **`a2a` plugin** owns the
-mesh: it hosts the LLM-facing `a2a_*` tools, drains inbound tasks/presence into the unified inbox, and
-wraps the SDK's `Responder` for out-of-band completion by the agent. The full design — topics, wire,
-QoS + retry, markers, drain schema, Windows selector-loop note — lives in **[A2A-MQTT.md](A2A-MQTT.md)**.
+The A2A protocol runs over the official **A2A-over-MQTT** profile — the `a2a-over-mqtt` SDK from EMQX — *not* a self-built binding. The **`a2a` plugin** owns the mesh: it hosts the LLM-facing `a2a_*` tools, drains inbound tasks and presence into the unified inbox, and wraps the SDK's `Responder` for out-of-band completion by the agent. The topics, wire, QoS + retry, markers, drain schema, tool surface, and the Windows selector-loop note are specified in **[A2A-MQTT.md](docs/A2A-MQTT.md)**.
 
-```
-  a2a_send_message / a2a_cancel_task / a2a_list_agents / a2a_set_task_done / a2a_broadcast
-         │
-   a2a plugin (slife.plugins.a2a.server)
-         │  A2AMesh (slife/a2a/mesh.py)
-   SDK Responder (inbound + presence)  +  thin outbound driver (sends/replies/discovery/broadcast)
-```
-
-Only MQTT is implemented. A `transport` other than `"mqtt"` in the `a2a` config section disables A2A
-with a warning at config load instead of crashing startup. The LLM-facing tools are the **standard A2A
-operations** — async push model, no message/task split, nothing waits: `a2a_send_message`,
-`a2a_cancel_task`, `a2a_list_agents`, `a2a_set_task_done`, `a2a_broadcast`. One uniform prefix.
-Subagents are **not** part of A2A (they are local workers; see Part 5).
+Only MQTT is implemented. A `transport` other than `"mqtt"` in the `a2a` config section disables A2A with a warning at config load instead of crashing startup. The LLM-facing tools are the **standard A2A operations** — async push model, no message/task split, nothing waits: `a2a_send_message`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_set_task_done`, `a2a_broadcast`. One uniform prefix. Subagents are **not** part of A2A (they are local workers; the worker model is [SUBAGENT.md](docs/SUBAGENT.md)).
 
 ### MQTT Mesh
 
-- **Standard wire**: topics `$a2a/v1/{discovery|request|reply|event}/{org}/{unit}/{agent_id}`; JSON-RPC
-  2.0 over MQTT v5 `ResponseTopic`/`CorrelationData`; retained Agent Cards with `a2a-status` presence +
-  LWT; per-task dedup and ack → artifact → terminal lifecycle; QoS 1 for discovery/request/reply, QoS 0
-  for broadcast events. Retries follow the profile (15 s first-reply, ≤ 3 attempts, exponential
-  backoff, same Task.id / new correlation). See **A2A-MQTT.md** for the exact values.
+- **Standard wire.** The topics (`$a2a/v1/…`), JSON-RPC 2.0 over MQTT v5 (`ResponseTopic`/`CorrelationData`), retained Agent Cards with `a2a-status` presence + LWT, per-task dedup and ack → artifact → terminal, the QoS rules (1 for discovery/request/reply, 0 for broadcast), the requester retry ladder (15 s first-reply, ≤ 3 attempts), and all three marker payloads (`[A2A:…]`, `[A2A-RESULT:…]`, `[A2A-BROADCAST:…]`) are specified in **[A2A-MQTT.md](docs/A2A-MQTT.md)**.
 - Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; a failed probe
   means the a2a plugin is not started and this is reported via `system_health`.
 - The mesh connects **eagerly** when the plugin starts so presence is announced at launch; a failed
@@ -653,13 +614,6 @@ Subagents are **not** part of A2A (they are local workers; see Part 5).
 - Results are **always auto-delivered** (the standard push model): a peer's terminal reply is pushed
   into the history as `[A2A-RESULT:{"from": …, "task_id": …}]` — "Peer X completed/cancelled async task
   (ID: …)". There is no poll mode and nothing to wait on.
-- **Broadcast** is the profile's fire-and-forget *event* (QoS 0): `a2a_broadcast` publishes to the
-  unit's event topic; peers receive it as `[A2A-BROADCAST:{"from": …}]` — informational, no reply or
-  completion expected.
-- **Channel markers**: inbound tasks reach the model as `[A2A:{"from": …, "task_id": …}]` — `from` names
-  the sending peer (never the receiver), `task_id` the task being answered (`a2a_set_task_done`);
-  auto-delivered results use `[A2A-RESULT:…]`, broadcast events `[A2A-BROADCAST:…]`. All three are
-  machine-facing: the TUI shows `A2A(<peer>)>` and strips them.
 
 ### Unified Inbox
 
@@ -767,7 +721,7 @@ Known shapes: `sk-*`, `ghp_*`, `ya29.*`, `pypi-*`, `Authorization: Bearer` token
 | `media` | Non-chat generation config (plugin-read, ignored by the main `Config` parser) |
 | `a2a` | Transport binding, broker host/port |
 | `subagent` | `max_subagents` (the timeout is developer-owned — see `timeouts` row) |
-| `timeouts` | **Not a user section.** Every timeout value is a developer-owned constant in **`slife/timeouts.py`** (the module is the registry — see [TIMEOUT.md](TIMEOUT.md)); there is no `timeouts` section in `slife.json5` and `agent.tool_timeout` / `subagent.task_timeout` are no longer read from it |
+| `timeouts` | **Not a user section.** Every timeout value is a developer-owned constant in **`slife/timeouts.py`** (the module is the registry — see [TIMEOUT.md](docs/TIMEOUT.md)); there is no `timeouts` section in `slife.json5` and `agent.tool_timeout` / `subagent.task_timeout` are no longer read from it |
 | `cli_tools` | External CLI tool definitions (read by the CLI tools directly) |
 | `plugins.required` | Required plugins (empty by default; the shipped config requires `memdb`, `memfiles`) |
 
@@ -867,7 +821,7 @@ slife/
     wechat/            #   WeChat messaging (server.py, client.py, config.py)
     memfiles/          #   Private notes/diary/files/reports cabinet (server.py, store.py, user_prefs.py, schema.sql)
     sharefile/         #   Public file sharing (server.py, config.py, providers.py = pluggable tunnel)
-    a2a/               #   A2A mesh (mesh.py — official a2a-over-mqtt profile binding; see A2A-MQTT.md)
+    a2a/               #   A2A mesh (mesh.py — official a2a-over-mqtt profile binding; see docs/A2A-MQTT.md)
     media/             #   Non-chat AI generation (server.py, config.py, adapters/ dashscope-aigc + openai-images)
     job_coding/        #   Deterministic jobs (server.py, runner.py, registry.py)
     mcp_gateway/       #   The MCP gateway — a built-in plugin
@@ -884,7 +838,7 @@ slife/
   mcp/                 # Host-process MCP infra
     host_server.py     #   slife-as-plugin — in-process FastMCP exposing the live ToolRegistry
     tool_adapter.py    #   MCPProxyTool (bridges MCP → Tool ABC, ProxyRoute dispatch)
-  subagent/            # Local workers (agent workers, not A2A)
+  subagent/            # Local workers (agent workers, not A2A; see docs/SUBAGENT.md)
     headless.py        #   Headless worker-scoped JSON-RPC process
     identity.py        #   SUBAGENT unified-inbox source sentinel
     process.py         #   SubagentProcess + SubagentManager

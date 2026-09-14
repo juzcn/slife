@@ -27,7 +27,7 @@ options support ``${VAR}`` / ``${VAR:-default}``, resolved through
 
 A config that is missing, unparseable, or names an unknown provider degrades to
 ``ngrok`` rather than raising: a tunnel provider is a *subordinate* dependency
-(PLUGIN_CONTRACT.md) — it must never keep the plugin from loading.
+(docs/PLUGIN_CONTRACT.md) — it must never keep the plugin from loading.
 """
 
 from __future__ import annotations

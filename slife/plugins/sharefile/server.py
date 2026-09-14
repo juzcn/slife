@@ -53,7 +53,7 @@ _PLUGIN_PORT: int = 0
 # sharefile.json5's ``active_provider`` (ngrok by default, or "localhost.run").
 # A missing / unreadable / unknown-provider config degrades to ngrok instead of
 # failing: the tunnel is a subordinate dependency and never gates readiness
-# (PLUGIN_CONTRACT.md).
+# (docs/PLUGIN_CONTRACT.md).
 _sharefile_config = load_sharefile_config()
 _tunnel = create_provider(
     _sharefile_config.active_provider,

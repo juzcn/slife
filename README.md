@@ -334,7 +334,7 @@ All internal plugins run with a **watchdog** that auto-restarts them on crash (e
 
 The A2A protocol runs over the official **A2A-over-MQTT** profile — the `a2a-over-mqtt` SDK from EMQX (topics, JSON-RPC wire, presence, task lifecycle) — so multiple agents — on the same machine or different ones — discover each other, delegate tasks, and push results:
 
-- **Mesh tools** (standard A2A operations, one uniform `a2a_` prefix): `a2a_send_message` (async — returns a task_id immediately, the result auto-pushes later), `a2a_cancel_task`, `a2a_list_agents`, `a2a_set_task_done`, `a2a_broadcast` (fire-and-forget event). Inbound tasks reach the model as `[A2A:{"from": …, "task_id": …}]` (`from` names the sending peer — never the receiver), auto-delivered results as `[A2A-RESULT:…]`, broadcast events as `[A2A-BROADCAST:…]`; the TUI shows `A2A(<peer>)>`. The `a2a` plugin only starts when the MQTT broker is reachable. Design details: **[A2A-MQTT.md](A2A-MQTT.md)**.
+- **Mesh tools** (standard A2A operations, one uniform `a2a_` prefix): `a2a_send_message` (async — returns a task_id immediately, the result auto-pushes later), `a2a_cancel_task`, `a2a_list_agents`, `a2a_set_task_done`, `a2a_broadcast` (fire-and-forget event). Inbound tasks reach the model as `[A2A:{"from": …, "task_id": …}]` (`from` names the sending peer — never the receiver), auto-delivered results as `[A2A-RESULT:…]`, broadcast events as `[A2A-BROADCAST:…]`; the TUI shows `A2A(<peer>)>`. The `a2a` plugin only starts when the MQTT broker is reachable. Design details: **[A2A-MQTT.md](docs/A2A-MQTT.md)**.
 - **Subagents are local workers, not A2A peers**: `spawn_subagent` / `subagent_send_task` / `subagent_get_task_result` / … create child-process workers that share your plugins and run one task at a time (a sync send to a busy worker is auto-queued as async). Async results auto-push to your chat (`mode="auto"`, default) or stay pollable-only (`mode="poll"`). Subagents never drain your inbox — all replies and management belong to the main agent.
 
 All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
@@ -491,9 +491,9 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 Slife is one codebase, a few docs, split by audience:
 
 * **[DESIGN.md](DESIGN.md)** — architecture & implementation for people working on the code: the agent loop, context engineering, tool system, plugin architecture, MCP gateway, memory, A2A.
-* **[A2A-MQTT.md](A2A-MQTT.md)** — the adopted A2A-over-MQTT design: the official SDK, topics/wire/QoS/retry, the mesh driver, the standard tool surface, markers, drain schema.
-* **[PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md)** — the authoritative spec of the plugin system (central `PluginSpec` table, the registry, the uniform lifecycle) for anyone writing a plugin.
-* **[CONTEXT_HARNESSING.md](CONTEXT_HARNESSING.md)** — how Slife curates the model context each turn: channels, markers, the `_turn_prompt` harness tool-pair.
+* **[A2A-MQTT.md](docs/A2A-MQTT.md)** — the adopted A2A-over-MQTT design: the official SDK, topics/wire/QoS/retry, the mesh driver, the standard tool surface, markers, drain schema.
+* **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)** — the authoritative spec of the plugin system (central `PluginSpec` table, the registry, the uniform lifecycle) for anyone writing a plugin.
+* **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)** — how Slife curates the model context each turn: channels, markers, the `_turn_prompt` harness tool-pair.
 
 ```bash
 git clone https://github.com/juzcn/slife.git
