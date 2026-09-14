@@ -11,7 +11,7 @@ Server entries hold: ``command/args/env/url/headers/auth/description/enabled/sou
 plus ``os_paths``.
 ``env`` and ``auth.client_id``/``client_secret`` support ``${VAR}``
 references resolved through **os.environ → credstore → literal**.  REST APIs
-are ordinary ``npx anyapi-mcp-server`` entries tagged
+are ordinary ``uvx mcp-openapi-proxy`` entries tagged
 ``source.type == "rest_api"``.
 
 The top-level ``embeddings`` section is the **fallback** embedding config: a
@@ -260,35 +260,44 @@ def _dict_copy(value):
     return dict(value) if isinstance(value, dict) else value
 
 
-# ── REST-API helpers (rest_apis are ordinary npx anyapi server entries) ─
+# ── REST-API helpers (rest APIs are ordinary uvx mcp-openapi-proxy entries) ─
+# mcp-openapi-proxy (PyPI) takes NO CLI args — everything rides env vars.
+# Low-Level Mode (the proxy's default; OPENAPI_SIMPLE_MODE is left unset)
+# exposes one typed MCP tool per OpenAPI endpoint.  The rest_api_set params
+# map 1:1 onto its env: spec_url → OPENAPI_SPEC_URL, base_url →
+# SERVER_URL_OVERRIDE, api_key → API_KEY (sent as a Bearer auth header by
+# default, matching the old ``Authorization: Bearer`` header).
 
-_ANYAPI_MARKER = "anyapi-mcp-server"
+OPENAPI_PROXY_COMMAND = "uvx"
+OPENAPI_PROXY_MARKER = "mcp-openapi-proxy"
+SPEC_URL_ENV = "OPENAPI_SPEC_URL"
+BASE_URL_ENV = "SERVER_URL_OVERRIDE"
+API_KEY_ENV = "API_KEY"
 
 
 def build_rest_api_entry(
-    name: str,
     spec_url: str,
     base_url: str,
     api_key: str = "",
     description: str = "",
     source: dict | None = None,
 ) -> dict:
-    """Build a server entry that serves *name* via ``npx anyapi-mcp-server``.
+    """Build a ``uvx mcp-openapi-proxy`` server entry for a REST API.
 
-    The api_key is referenced as ``Authorization: Bearer ${<api_key>}`` so
+    Tool prefixing is the gateway's job (``<server_name>__tool`` from the
+    config entry name) — the proxy needs no name of its own.  The api_key
+    is referenced as ``${<api_key>}`` in the proxy's ``API_KEY`` env var so
     the secret itself stays in the credential store (credstore), never in
     the config file.
     """
-    args = [
-        "-y", _ANYAPI_MARKER,
-        "--name", name,
-        "--spec", spec_url,
-        "--base-url", base_url,
-    ]
+    env = {SPEC_URL_ENV: spec_url, BASE_URL_ENV: base_url}
     if api_key:
-        args.append("--header")
-        args.append(f"Authorization: Bearer ${{{api_key}}}")
-    entry: dict = {"command": "npx", "args": args}
+        env[API_KEY_ENV] = f"${{{api_key}}}"
+    entry: dict = {
+        "command": OPENAPI_PROXY_COMMAND,
+        "args": [OPENAPI_PROXY_MARKER],
+        "env": env,
+    }
     if description:
         entry["description"] = description
     src = {"type": "rest_api", **(source or {})}
@@ -308,7 +317,7 @@ def save_rest_api(
 ) -> bool:
     """Persist a REST API as a server entry. Returns True when written."""
     entry = build_rest_api_entry(
-        name, spec_url, base_url, api_key, description, source,
+        spec_url, base_url, api_key, description, source,
     )
     add_server_entry(name, entry)
     logger.info("mcp_config_save_rest_api name=%s spec=%s", name, spec_url)
@@ -331,9 +340,12 @@ def _is_rest_api_entry(entry: object) -> bool:
         return True
     command = entry.get("command")
     args = entry.get("args")
+    env = entry.get("env")
+    # Shape fallback for hand-edited entries that lost their source tag.
     if (
-        isinstance(command, str) and command == "npx"
-        and isinstance(args, list) and _ANYAPI_MARKER in args
+        command == OPENAPI_PROXY_COMMAND
+        and isinstance(args, list) and OPENAPI_PROXY_MARKER in args
+        and isinstance(env, dict) and SPEC_URL_ENV in env
     ):
         return True
     return False
@@ -348,19 +360,19 @@ def list_rest_apis() -> dict:
     }
 
 
-def parse_anyapi_args(entry: dict) -> dict:
-    """Re-parse ``--spec/--base-url/--header`` from an anyapi arg vector."""
+def parse_rest_api_entry(entry: dict) -> dict:
+    """Read ``spec_url/base_url/api_key`` back from a rest-api entry's env."""
+    from slife.env import parse_env_ref
+
     result = {"spec_url": "", "base_url": "", "api_key": ""}
-    args = entry.get("args") if isinstance(entry, dict) else []
-    if not isinstance(args, list):
+    env = entry.get("env") if isinstance(entry, dict) else None
+    if not isinstance(env, dict):
         return result
-    for i, arg in enumerate(args):
-        if arg == "--spec" and i + 1 < len(args):
-            result["spec_url"] = str(args[i + 1])
-        elif arg == "--base-url" and i + 1 < len(args):
-            result["base_url"] = str(args[i + 1])
-        elif arg == "--header" and i + 1 < len(args):
-            header = str(args[i + 1])
-            if header.startswith("Authorization: Bearer ${") and header.endswith("}"):
-                result["api_key"] = header[len("Authorization: Bearer ${"):-1]
+    result["spec_url"] = str(env.get(SPEC_URL_ENV, ""))
+    result["base_url"] = str(env.get(BASE_URL_ENV, ""))
+    key_ref = env.get(API_KEY_ENV, "")
+    if isinstance(key_ref, str):
+        parsed = parse_env_ref(key_ref)
+        if parsed is not None:
+            result["api_key"] = parsed[0]
     return result

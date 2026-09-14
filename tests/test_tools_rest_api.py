@@ -1,7 +1,7 @@
 """Tests for slife.tools.rest_api — RestApiSetTool et al.
 
 REST API definitions now live in mcp-plugin.json5 (owned by mcp-plugin) as
-ordinary ``npx anyapi-mcp-server`` server entries tagged
+ordinary ``uvx mcp-openapi-proxy`` server entries tagged
 ``source.type == "rest_api"``.  These tests exercise the tools against a
 throwaway config file located via ``$MCP_PLUGIN_FILE``.
 """
@@ -40,13 +40,18 @@ def mcp_config_path(tmp_path, monkeypatch):
 
 def _entry(spec_url: str, base_url: str, *, api_key: str = "", description: str = "",
            enabled: bool = True) -> dict:
-    args = [
-        "-y", "anyapi-mcp-server",
-        "--name", "x", "--spec", spec_url, "--base-url", base_url,
-    ]
+    env = {
+        "OPENAPI_SPEC_URL": spec_url,
+        "SERVER_URL_OVERRIDE": base_url,
+    }
     if api_key:
-        args += ["--header", f"Authorization: Bearer ${{{api_key}}}"]
-    entry: dict = {"command": "npx", "args": args, "source": {"type": "rest_api"}}
+        env["API_KEY"] = f"${{{api_key}}}"
+    entry: dict = {
+        "command": "uvx",
+        "args": ["mcp-openapi-proxy"],
+        "env": env,
+        "source": {"type": "rest_api"},
+    }
     if description:
         entry["description"] = description
     if not enabled:
@@ -141,7 +146,7 @@ class TestRestApiSetTool:
 
     @pytest.mark.asyncio
     async def test_add_new_api(self, mcp_config_path):
-        """Adding a new REST API writes an anyapi server entry and succeeds."""
+        """Adding a new REST API writes a uvx mcp-openapi-proxy entry."""
         tool = RestApiSetTool(config_path=mcp_config_path)
         result = await tool.execute(
             name="github",
@@ -155,8 +160,11 @@ class TestRestApiSetTool:
         servers = _entries_from_file(mcp_config_path)
         assert "github" in servers
         entry = servers["github"]
-        assert entry["command"] == "npx"
-        assert "anyapi-mcp-server" in entry["args"]
+        assert entry["command"] == "uvx"
+        assert entry["args"] == ["mcp-openapi-proxy"]
+        assert entry["env"]["OPENAPI_SPEC_URL"] == "https://api.github.com/openapi.json"
+        assert entry["env"]["SERVER_URL_OVERRIDE"] == "https://api.github.com"
+        assert "API_KEY" not in entry["env"]  # no auth for a public API
         assert entry["source"]["type"] == "rest_api"
 
     @pytest.mark.asyncio
@@ -172,8 +180,7 @@ class TestRestApiSetTool:
         assert "[OK]" in result
 
         servers = _entries_from_file(mcp_config_path)
-        header = servers["protected"]["args"][-1]
-        assert header == "Authorization: Bearer ${MY_TOKEN}"
+        assert servers["protected"]["env"]["API_KEY"] == "${MY_TOKEN}"
         assert "MY_TOKEN" not in json5.dumps(servers["protected"]).replace("MY_TOKEN}", "")
 
     @pytest.mark.asyncio

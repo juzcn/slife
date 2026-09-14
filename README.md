@@ -243,7 +243,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | embeddings | `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_enable` |
 | mcp | `mcp_tool_load` |
 
-**Managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts; `model_set` **merges** into the existing entry, so a field-focused change can't silently strip a model's `reasoning`/`input`/`compat`.
+**Managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts; `model_set` **merges** into the existing entry, so a field-focused change can't silently strip a model's `reasoning`/`input`/`compat`. `rest_api_set` registers an OpenAPI-described external API as one server backed by `mcp-openapi-proxy` (Low-Level Mode, the default) — every spec endpoint becomes a typed `{name}__{endpoint}` tool.
 
 **Plugin tools** — built-in plugins register under bare names (`[<server>]` description prefix); external MCP servers appear as `{server}__{tool}`:
 

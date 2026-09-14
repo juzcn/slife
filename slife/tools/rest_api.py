@@ -1,9 +1,9 @@
-"""REST API management — register external APIs backed by anyapi-mcp-server.
+"""REST API management — register external APIs backed by mcp-openapi-proxy.
 
 rest_api_set / rest_api_remove / rest_api_list / rest_api_set_enabled.
 
 Server definitions live in ``mcp-plugin.json5`` (owned by the mcp plugin,
-resolved via ``$MCP_PLUGIN_FILE``); REST APIs are ordinary ``command: npx``
+resolved via ``$MCP_PLUGIN_FILE``); REST APIs are ordinary ``command: uvx``
 server entries tagged ``source.type == "rest_api"``.  This module is the
 sLife-side face: it re-points persistence to :mod:`slife.plugins.mcp_gateway.config`
 and keeps a live ``mcp_set``-style warm-up through the mcp plugin so an API
@@ -24,10 +24,10 @@ logger = logging.getLogger(__name__)
 def _validate_http_url(url: str, what: str) -> str:
     """Require *url* to be an ``http(s)`` URL with a host.
 
-    ``spec_url`` / ``base_url`` are handed to ``anyapi-mcp-server``, which
-    fetches them — an LLM-supplied ``file://`` or internal-host URL would
-    otherwise be an SSRF vector.  (Private IPs are intentionally allowed:
-    local APIs are a legitimate use.)
+    ``spec_url`` / ``base_url`` are handed to ``mcp-openapi-proxy`` via its
+    env vars, and the child fetches the spec — an LLM-supplied ``file://``
+    or internal-host URL would otherwise be an SSRF vector.  (Private IPs
+    are intentionally allowed: local APIs are a legitimate use.)
     """
     try:
         parsed = urlparse(url)
@@ -49,7 +49,7 @@ def _format_rest_apis(rest_apis: dict) -> str:
     for name, cfg in rest_apis.items():
         if not isinstance(cfg, dict):
             continue
-        parsed = mcp_plugin_config.parse_anyapi_args(cfg)
+        parsed = mcp_plugin_config.parse_rest_api_entry(cfg)
         spec = parsed["spec_url"]
         base = parsed["base_url"]
         api_key = parsed["api_key"]
@@ -112,8 +112,8 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
 
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
-        # Validate before persisting or spawning anyapi-mcp-server — an
-        # LLM-supplied file:// or internal URL would be fetched by the npx
+        # Validate before persisting or spawning mcp-openapi-proxy — an
+        # LLM-supplied file:// or internal URL would be fetched by the proxy
         # child.
         spec_url: str = _validate_http_url(kwargs["spec_url"], "spec_url")
         base_url: str = _validate_http_url(kwargs["base_url"], "base_url")
@@ -127,14 +127,9 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         )
         logger.info("rest_api_saved name=%s spec=%s", name, spec_url)
 
-        mcp_args = [
-            "-y", "anyapi-mcp-server",
-            "--name", name,
-            "--spec", spec_url,
-            "--base-url", base_url,
-        ]
-        if api_key:
-            mcp_args.extend(["--header", f"Authorization: Bearer ${{{api_key}}}"])
+        entry = mcp_plugin_config.build_rest_api_entry(
+            spec_url, base_url, api_key, description,
+        )
 
         action = "Updated" if is_update else "Registered"
         result_lines = [
@@ -155,8 +150,9 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
                     "mcp_set",
                     {
                         "name": name,
-                        "command": "npx",
-                        "args": mcp_args,
+                        "command": entry["command"],
+                        "args": entry["args"],
+                        "env": entry["env"],
                         "description": description,
                     },
                 )

@@ -250,7 +250,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | embeddings | `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_enable` |
 | mcp | `mcp_tool_load` |
 
-**托管类别**（Skills / CLI / REST API / Models / MCP）支持 `X_list` / `X_set` / `X_remove`（+ 有开关时 `X_set_enabled`）——所有 `X_set` 工具都是幂等 upsert；`model_set` **合并**进现有条目，因此聚焦某一字段的改动不会悄悄剥掉模型的 `reasoning`/`input`/`compat`。
+**托管类别**（Skills / CLI / REST API / Models / MCP）支持 `X_list` / `X_set` / `X_remove`（+ 有开关时 `X_set_enabled`）——所有 `X_set` 工具都是幂等 upsert；`model_set` **合并**进现有条目，因此聚焦某一字段的改动不会悄悄剥掉模型的 `reasoning`/`input`/`compat`。`rest_api_set` 把 OpenAPI 描述的外部 API 注册为一个由 `mcp-openapi-proxy`（Low-Level Mode，默认模式）支撑的 server——spec 里的每个端点成为一个带类型的 `{name}__{endpoint}` 工具。
 
 **插件工具** — 内置插件以裸名注册（`[<server>]` 描述前缀）；外部 MCP 服务器以 `{server}__{tool}` 出现：
 

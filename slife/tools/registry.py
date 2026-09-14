@@ -72,7 +72,7 @@ class ToolRegistry:
         return False
 
     def unregister_by_prefix(self, prefix: str) -> int:
-        """Remove all tools whose name starts with prefix (e.g. 'anyapi__').
+        """Remove all tools whose name starts with prefix (e.g. 'github__').
 
         Returns the number of tools removed.
         """

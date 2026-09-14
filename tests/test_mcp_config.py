@@ -54,18 +54,18 @@ class TestAddServerEntry:
     def test_with_source_stored_verbatim(self):
         """The generic upsert stores source as given — no implicit stamping."""
         cfg.add_server_entry("gh", {
-            "command": "npx",
-            "args": ["-y", "anyapi-mcp-server", "--spec", "https://example.com/api.yaml"],
+            "command": "uvx",
+            "args": ["mcp-openapi-proxy"],
             "source": {
-                "url": "https://github.com/quiloos39/anyapi-mcp-server",
+                "url": "https://example.com/api.yaml",
                 "type": "mcp_package",
-                "version": "1.2.0",
+                "version": "0.4.0",
             },
         })
         source = _raw_config()["servers"]["gh"]["source"]
-        assert source["url"] == "https://github.com/quiloos39/anyapi-mcp-server"
+        assert source["url"] == "https://example.com/api.yaml"
         assert source["type"] == "mcp_package"
-        assert source["version"] == "1.2.0"
+        assert source["version"] == "0.4.0"
         assert "fetched_at" not in source  # fetched_at is a rest-api concern
 
     def test_without_source_writes_no_source_key(self):
@@ -145,22 +145,24 @@ class TestSetServerEnabled:
 
 
 class TestRestAPI:
-    """save_rest_api — npx anyapi entry with a fetched_at-stamped source."""
+    """save_rest_api — uvx mcp-openapi-proxy entry with a fetched_at-stamped
+    source.  Spec/base/key ride the proxy's env vars (Low-Level Mode default)."""
 
     def test_save_rest_api_stamps_fetched_at(self):
         cfg.save_rest_api("gh", spec_url="https://example.com/api.yaml")
         entry = _raw_config()["servers"]["gh"]
-        assert entry["command"] == "npx"
-        assert "anyapi-mcp-server" in entry["args"]
+        assert entry["command"] == "uvx"
+        assert entry["args"] == ["mcp-openapi-proxy"]
+        assert entry["env"]["OPENAPI_SPEC_URL"] == "https://example.com/api.yaml"
+        assert "API_KEY" not in entry["env"]  # public API — no auth env
         source = entry["source"]
         assert source["type"] == "rest_api"
         assert "fetched_at" in source
 
-    def test_save_rest_api_with_api_key_header(self):
+    def test_save_rest_api_with_api_key_ref(self):
         cfg.save_rest_api("e", spec_url="https://x.example/swagger.json", api_key="KEY")
         entry = _raw_config()["servers"]["e"]
-        assert "--header" in entry["args"]
-        assert "Authorization: Bearer ${KEY}" in entry["args"]
+        assert entry["env"]["API_KEY"] == "${KEY}"
 
 
 class TestResolveConfigPath:

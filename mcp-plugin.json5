@@ -42,23 +42,16 @@
       description: "Tavily AI-optimized web search — designed for LLM agents, returns clean structured results."
     },
     github: {
-      command: "npx",
+      command: "uvx",
       args: [
-        "-y",
-        "anyapi-mcp-server",
-        "--name",
-        "github",
-        "--spec",
-        "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml",
-        "--base-url",
-        "https://api.github.com",
-        "--header",
-        "Authorization: Bearer ${GITHUB_TOKEN}"
+        "mcp-openapi-proxy"
       ],
       env: {
-        GITHUB_TOKEN: "${GITHUB_TOKEN}"
+        OPENAPI_SPEC_URL: "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml",
+        SERVER_URL_OVERRIDE: "https://api.github.com",
+        API_KEY: "${GITHUB_TOKEN}"
       },
-      description: "GitHub REST API via anyapi-mcp-server — manage repos, issues, PRs, users, and more."
+      description: "GitHub REST API via mcp-openapi-proxy — manage repos, issues, PRs, users, and more."
     },
     "duckduckgo-search": {
       command: "uvx",
@@ -274,17 +267,14 @@
       }
     },
     "mcp-registry": {
-      command: "npx",
+      command: "uvx",
       args: [
-        "-y",
-        "anyapi-mcp-server",
-        "--name",
-        "mcp-registry",
-        "--spec",
-        "https://registry.modelcontextprotocol.io/openapi.json",
-        "--base-url",
-        "https://registry.modelcontextprotocol.io"
+        "mcp-openapi-proxy"
       ],
+      env: {
+        OPENAPI_SPEC_URL: "https://registry.modelcontextprotocol.io/openapi.json",
+        SERVER_URL_OVERRIDE: "https://registry.modelcontextprotocol.io"
+      },
       description: "A community driven registry service for Model Context Protocol (MCP) servers. Provides APIs to list/search MCP servers, view server details, versions, and server.json metadata.",
       source: {
         type: "rest_api",

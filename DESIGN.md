@@ -725,7 +725,7 @@ Known shapes: `sk-*`, `ghp_*`, `ya29.*`, `pypi-*`, `Authorization: Bearer` token
 | `cli_tools` | External CLI tool definitions (read by the CLI tools directly) |
 | `plugins.required` | Required plugins (empty by default; the shipped config requires `memdb`, `memfiles`) |
 
-External MCP server configs live in **`mcp-plugin.json5` → `servers`**, self-hosted by the gateway. REST-API registrations are also entries there (a server tagged `source.type == "rest_api"`); there is no top-level `rest_apis` section.
+External MCP server configs live in **`mcp-plugin.json5` → `servers`**, self-hosted by the gateway. REST-API registrations are also entries there (a server tagged `source.type == "rest_api"`); there is no top-level `rest_apis` section. Each such server is a `uvx mcp-openapi-proxy` instance in **Low-Level Mode** (the proxy's default — one typed MCP tool per OpenAPI endpoint), configured via env only: `rest_api_set` writes `OPENAPI_SPEC_URL` / `SERVER_URL_OVERRIDE`, and for a keyed API an `API_KEY` env var holding a `${VAR}` ref (resolved env → credstore; the proxy sends it as a Bearer `Authorization` header). The gateway prefixes the resulting tools as `{name}__{endpoint}`.
 
 ### Health Checks
 
