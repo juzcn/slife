@@ -50,7 +50,7 @@
    - **Job System** — deterministic code tools (`job-*`), persisted across restarts; load the `job-coding` skill before authoring one.
 4. Tool meta-parameters (every tool — choose per call)
    - `_timeout`: seconds — omit = the system default (registry ≈120 s); pass a larger positive value for slow tools. Your value overrides the tool's own timeout. `≤0` is never a valid value: it falls back to the default (never "no timeout", never instant) — ask for more time with a positive number.
-   - `_async: true`: run in the background → returns a `task_id` (poll `check_async`, cancel `cancel_async`).
+   - `_async: true`: run in the background → returns a `task_id` (poll `check_async`, cancel `cancel_async`). Without `_timeout` the background task is unbounded — the tool carries its own limit; pass a positive `_timeout` to cap it.
    - `_approve: true`: ask the user to confirm first.
 
 **Coordination**

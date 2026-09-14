@@ -875,8 +875,10 @@ class _NativeTimeoutTool:
 
 class _HungTool:
     """A Tool WITHOUT a native ``timeout`` parameter that never resolves —
-    the F3 shape: its only deadline is the loop's wait_for, so an
-    ``_async`` call must still be bounded."""
+    the async-escape shape: with no ``_timeout`` it runs BARE in the
+    background (Rule 1); with an explicit ``_timeout`` it is bounded by the
+    background wait_for (Rule 2); in the sync path a bare ``timeout`` arg or
+    the chain default still bounds it."""
     name = "hung"
     description = "Never finishes."
     parameters = {"type": "object", "properties": {}, "required": []}
@@ -887,14 +889,14 @@ class _HungTool:
 
 
 @pytest.mark.asyncio
-async def test_async_tool_without_native_timeout_is_bounded(
+async def test_async_without_timeout_escapes_chain_bound(
     sample_model_config, history,
 ):
-    """F3 regression: an ``_async: true`` call to a tool without a native
-    timeout must be bounded by the agent-loop timeout.  Previously the async
-    path scheduled a bare task, so a hung tool (e.g. a looping
-    run_python_script) held its subprocess and a permanent ``_tasks`` entry
-    forever."""
+    """Rule 1 (DESIGNER_NOTES): ``_async: true`` with NO ``_timeout`` runs
+    the tool BARE — the chain default (loop tool_timeout / work.tool_budget)
+    is deliberately NOT applied to background work.  The hung tool must still
+    be running well past the 0.2s loop bound; capping a background call is
+    the caller's job (pass ``_timeout``, or cancel_async)."""
     from slife.tools.registry import ToolRegistry
     from slife.tools.system import _tasks as async_tasks
 
@@ -903,21 +905,102 @@ async def test_async_tool_without_native_timeout_is_bounded(
     llm = LLMClient(sample_model_config)
     loop = AgentLoop(llm, registry, tool_timeout=0.2)
 
+    before = set(async_tasks.values())
     tcs = [ToolCallInfo(id="c1", name="hung", arguments={"_async": True})]
     handler = AsyncMock(spec=AgentEventHandler)
 
     await loop._execute_tools(tcs, history, handler)
     assert handler.on_tool_call.await_count == 1
 
-    # The task is bounded by the 0.2s loop timeout — it must finish (as an
-    # error result), not linger forever.  Wait up to ~2s, asserting done.
+    # Bare schedule: still alive past the loop's 0.2s tool_timeout.  Diff the
+    # task set so a done residue from other tests can't confuse the assert.
+    tasks = list(set(async_tasks.values()) - before)
+    assert len(tasks) == 1, f"expected exactly one background task, got {len(tasks)}"
+    task = tasks[0]
+    assert not task.done(), (
+        "async tool without an explicit _timeout must escape the chain bound"
+    )
+    # Clean up so the test loop doesn't leak a live 3600s task.
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_async_with_explicit_timeout_bounds(
+    sample_model_config, history,
+):
+    """Rule 2 (DESIGNER_NOTES): ``_async`` + a positive ``_timeout`` on a tool
+    WITHOUT a native ``timeout`` param wraps the background execution with
+    wait_for(agent value) — the hung tool must finish (as an error result)
+    within the bound."""
+    from slife.tools.registry import ToolRegistry
+    from slife.tools.system import _tasks as async_tasks
+
+    registry = ToolRegistry()
+    registry.register(_HungTool())
+    llm = LLMClient(sample_model_config)
+    loop = AgentLoop(llm, registry, tool_timeout=0.2)
+
+    tcs = [ToolCallInfo(
+        id="c1", name="hung",
+        arguments={"_async": True, "_timeout": 0.2},
+    )]
+    handler = AsyncMock(spec=AgentEventHandler)
+
+    await loop._execute_tools(tcs, history, handler)
+    assert handler.on_tool_call.await_count == 1
+
+    # The background task is bounded by the explicit 0.2s _timeout — it must
+    # finish (as an error result), not linger forever.  Wait up to ~2s.
     for _ in range(40):
         if all(t.done() for t in async_tasks.values()):
             break
         await asyncio.sleep(0.05)
     assert all(t.done() for t in async_tasks.values()), (
-        "async tool without a native timeout ran past the loop bound (F3)"
+        "async tool with an explicit _timeout ran past the bound"
     )
+
+
+@pytest.mark.asyncio
+async def test_async_with_explicit_timeout_maps_to_native_arg(
+    sample_model_config, history,
+):
+    """Rule 2 (DESIGNER_NOTES): ``_async`` + a positive ``_timeout`` on a tool
+    WITH a native ``timeout`` parameter assigns the agent value to the
+    ``timeout`` arg — the tool enforces it itself, no wait_for double timer."""
+    from slife.tools.registry import ToolRegistry
+    from slife.tools.system import _tasks as async_tasks
+
+    tool = _NativeTimeoutTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    llm = LLMClient(sample_model_config)
+    loop = AgentLoop(llm, registry)
+
+    before = set(async_tasks.values())
+    tcs = [ToolCallInfo(
+        id="c1", name="native_timed",
+        arguments={"_async": True, "_timeout": 7},
+    )]
+    handler = AsyncMock(spec=AgentEventHandler)
+
+    await loop._execute_tools(tcs, history, handler)
+    assert handler.on_tool_call.await_count == 1
+
+    # The tool runs in the background and receives the assigned value.
+    for _ in range(20):
+        if tool.received is not None:
+            break
+        await asyncio.sleep(0.05)
+    assert tool.received == 7, (
+        f"expected the agent _timeout assigned to the native arg, got {tool.received!r}"
+    )
+    # Clean up the completed background task.
+    for t in set(async_tasks.values()) - before:
+        t.cancel()
 
 
 # ── AgentLoop.run ─────────────────────────────────────────────────────

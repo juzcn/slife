@@ -144,10 +144,17 @@ Channel 是指Agent Loop Inbox的来源，TUI是默认的、正常的channel。
 
 定时任务结束的回复，是Subagent的回复, 按照Subagent channel 方式。
 
-7. A2A over MQTT
+7. Design Points  
 
+- A2A over MQTT: 集成a2a-over-mqtt标准库。支持task resquest, task response, message 和 broadcast消息类型，异步通信。
 
+- Timeout，集中配置timeout，分类管理。原则只在阻塞点配置timeout，不配置timeout总量。唯一例外是在AgentLoop的工具执行中，配置了统一的timeout，避免tool 执行阻塞。同时允许agent选择配置工具执行的timeout。规则如下：
+    1、工具执行timeout override 工具自身timeout: 如果agent没有选择配置timemout，则工具执行timeout生效，如果tool本身有timeout参数，则用工具执行timeout值赋值工具自身的timeout参数，使其自洽；否则工具执行timout兜底。
+    2、agent选择配置的timemout override all：agent的timeout替代统一配置的工具执行timeout，并规则1处理后续。
 
+- Async：允许大模型选择工具异步执行。选择了异步，系统先判断用户有没有选择approve，如果有先执行approve会话。 agent设了async，没设timeout， 就异步执行tool，不用看tool有没有timeout参数；如果slife 设了async，并同时设了timout，则看一下tool有没有timout参数，有的话用agent的timeout去赋值，没有话给异步执行加上timeout约束。
+
+- Subagent：我们的设计是deliberately opionated。一个独立进程的headless agent，一个worker，没有人格，既可以空上下文执行，也可以fork agent的上下文，拥有主agent的所有能力。一个task是一个子agent的一个turn，可以同步也可以异步，没有持久化，没有错误处理。所以task的结果推送是harness的，而不是子agent使用工具推送回来。另外， subagent 也执行 _turn_prompt 和 trim， 无用也无害。
 
 8. To do list
 
@@ -160,3 +167,8 @@ Channel 是指Agent Loop Inbox的来源，TUI是默认的、正常的channel。
 8.3 共享代码库？现在项目里有重复的functions，增大代码量和维护量，是否值得？
 
 8.4 多wechat接入
+
+8.5 统一的tool system：现在的状况是主进程的built-in tools
+
+8.6 Job system 的重新思考
+

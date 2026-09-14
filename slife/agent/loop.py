@@ -1042,7 +1042,7 @@ class AgentLoop:
             approve_requested = bool(actual_args.pop("_approve", False))
 
             # ── Native timeout mapping ───────────────────────────
-            # Precedence (TIMEOUT.md → Tool-execution precedence): the
+            # Precedence (docs/TIMEOUT.md → Tool-execution precedence): the
             # agent's positive ``timeout`` overrides ALL defaults — it lands
             # in the tool parameter (native) or becomes the wait_for bound
             # (non-native).  Omission → the tool's own registry value (native)
@@ -1155,23 +1155,18 @@ class AgentLoop:
                 else:
                     coro = self.tool_registry.execute(tc.name, **actual_args)
 
-                # A tool WITHOUT a native ``timeout`` parameter gets the
-                # agent-loop bound even in the background: _async previously
-                # scheduled a bare task, so e.g. run_python_script (whose
-                # only deadline is the sync wait_for) ran forever when
-                # invoked with _async: true, holding a subprocess and a
-                # permanent _tasks entry.  Native-timeout tools still enforce
-                # their own deadline — no double timer.
+                # Backgrounded calls are the _async escape hatch: without an
+                # explicit agent `_timeout` the tool runs BARE — the chain
+                # default (work.tool_budget) never applies to background
+                # work; a tool that needs a bound carries its own (native
+                # timeout param or internal deadline).  With a positive
+                # `_timeout`, the Rule-2 mapping binds: non-native tools get
+                # wait_for(agent value); native tools already received it via
+                # the `timeout` arg mapped above (they self-enforce — no
+                # double timer).
                 if not has_native_timeout:
-                    # ≤0 is never a valid override and never means "no
-                    # timeout": it falls back to the tool-chain default
-                    # (work.tool_budget).  TIMEOUT.md → Tool-execution
-                    # precedence.
                     if inline_timeout is not None and float(inline_timeout) > 0:
-                        effective_timeout = float(inline_timeout)
-                    else:
-                        effective_timeout = self.tool_timeout
-                    coro = asyncio.wait_for(coro, timeout=effective_timeout)
+                        coro = asyncio.wait_for(coro, timeout=float(inline_timeout))
 
                 task_id = schedule_async(coro)
                 result = (
@@ -1205,7 +1200,7 @@ class AgentLoop:
             else:
                 # ── Agent Loop timeout: wrap with asyncio.wait_for ──
                 # ≤0 / missing is never "no timeout" (and never an instant
-                # kill): fall back to the tool-chain default.  TIMEOUT.md →
+                # kill): fall back to the tool-chain default.  docs/TIMEOUT.md →
                 # Tool-execution precedence.
                 if inline_timeout is not None and float(inline_timeout) > 0:
                     effective_timeout = float(inline_timeout)

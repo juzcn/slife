@@ -101,7 +101,9 @@ Every tool call has exactly **one effective timeout `T`**, decided once:
    overrides ALL system defaults** — this is the rule.  `0` / negative /
    missing are NOT overrides; they mean "use the default" and normalize to
    `None` on the tool side — and never "no timeout": there is no unbounded
-   escape; a call that must run long gets a large positive value instead.
+   escape for in-turn tool calls; a call that must run long gets a large
+   positive value instead.  (The one exception is a backgrounded `_async: true`
+   call with no injected timeout — it runs bare, below.)
 2. **The agent omits** → the tool-execution default:
    - a tool **with** a native `timeout` parameter keeps its own registry value
      (`execute_shell` → `work.shell`, `subagent_send_task` →
@@ -117,6 +119,18 @@ divergent deadlines):
   `wait_for` on the worker RPC);
 - non-native tools get the loop's `wait_for(T)` and never see the value (they
   have no parameter to hold it).
+
+**Backgrounded calls (`_async: true`) are the exception to rule 2's
+fallback.**  A background call with a positive injected `_timeout` follows the
+same mapping — native `timeout` → the arg (tool enforces), non-native → the
+loop's `wait_for(T)`.  Without an injected timeout the call is scheduled BARE:
+the chain default (`work.tool_budget`) is deliberately NOT applied to
+background work — async exists to escape the in-turn budget, so its agent-loop
+bound never governs background execution.  A tool offered for async therefore
+carries its own bound when it needs one (a native `timeout` parameter or an
+internal deadline — the media adapters' poll deadline).  `run_python_script`
+currently has neither: its bare async usage is unbounded by design, and the
+agent caps it with a positive `_timeout` or cancels via `cancel_async`.
 
 `subagent_send_task` declares a native `timeout` parameter **because of this
 rule**: an injected value flows to the worker and overrides `work.task_budget`
