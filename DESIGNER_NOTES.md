@@ -183,25 +183,27 @@ Channel 是指Agent Loop Inbox的来源，TUI是默认的、正常的channel。
 - rest-api 是用 mcp-openapi-proxy 实现，某种意义上一个rest api 对应一个mcp server.
 - 所以builin tools, mcp tools, jobs, rest-api本质上都是function tools，都需要加载到agent loop的tool lists 中。
 - skill 需要通过工具将SKILL.md 加载到上下文中 （当前的工具名叫 open skill）
-- cli不需要任何加载动作，因为大模型用shell调用。
+- cli需要加载usage。(这个字段现在还没有)
 
 重构方向：
 
-配置数据用tools.json5, 每类工具一个section， 每个配置可以设置disable，默认false。把slife.json5的工具配置全部移到tools.json5, 把 mcp-plugin.json5也全部移过来，不再用 mcp-plugin.json5。运行时用tools.db。tools.db中两张表：
+AgentRegistry运行时用tools.db。tools.db中两张表：
 
-- AgentRegistry 用 tools.db实现，它包含以下字段：name，description, category, source_kind, source_id, usage,  usage, last loaded:
+- ServerRegistry , 它包含 category：MCP | REST-API，server name, description, status: CONNECTED | DISCONNECTED | ENABLED | DISABLED | ERROR
 
-name ： 工具名，来自mcp的工具带 <mcp>__前缀, required
+- AgentRegistry 用 tools.db实现，它包含以下字段：name，description, category, source_kind, source_id, usage,  last loaded:
+
+name ： 工具名，来自mcp的工具带 <mcp_server>__前缀, required。
 description: required
 category：Builin | Job | MCP | REST-API | SKILL | CLI
-source：null | null | null | <mcp-server> | <mcp-server> | NULL | NULL
-usage: Tool def(name,description, schema)|Tool def|Tool def|Tool def|SKILL.md|usage
+source：null | null | null | <mcp-server> | <mcp-server> | null | null
+usage: Tool def(name,description, schema)|Tool def|Tool def|Tool def|SKILL.md|null
+
 status: loaded | unloaded | error | disabled    
 last-loaded: <Time> | null
 
 emddings over usage, hybrid search
 
-- ServerRegistry , 它包含 category：MCP | REST-API，server name, description, status: CONNECTED | DISCONNECTED | ENABLED | DISABLED | ERROR
 
 工具集：
 
