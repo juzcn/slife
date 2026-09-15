@@ -183,7 +183,6 @@ Channel 是指Agent Loop Inbox的来源，TUI是默认的、正常的channel。
 - rest-api 是用 mcp-openapi-proxy 实现，某种意义上一个rest api 对应一个mcp server.
 - 所以builin tools, mcp tools, jobs, rest-api本质上都是function tools，都需要加载到agent loop的tool lists 中。
 - skill 需要通过工具将SKILL.md 加载到上下文中 （当前的工具名叫 open skill）
-- cli需要加载usage。(这个字段现在还没有)
 
 重构方向：
 
@@ -197,7 +196,7 @@ name ： 工具名，来自mcp的工具带 <mcp_server>__前缀, required。
 description: required
 category：Builin | Job | MCP | REST-API | SKILL | CLI
 source：null | null | null | <mcp-server> | <mcp-server> | null | null
-usage: Tool def(name,description, schema)|Tool def|Tool def|Tool def|SKILL.md|null
+schema: Tool def(name,description, schema)|Tool def|Tool def|Tool def|SKILL.md|null
 
 status: loaded | unloaded | error | disabled | null
 loaded unloaded只针对function tool，即 builin, mcp, job, rest-api，对于skill和cli都为null
@@ -209,44 +208,61 @@ emddings over usage, hybrid search
 
 系统元工具， 属于builtin，始终loaded， 不可配置和更改。
 
-mcp-search， by category，  all或MCP或REST-API， 默认all
+- Search mcp:
 
-mcp connect
-rest-api connect
-mcp disconnect
-rest-api disconnect
+1 mcp-search， by category， by scope: FTSS 搜索， name and description.
+category 为空时， 所有category;默认值为空，category mcp 或 rest-api
+status：为空时，搜索所有状态的， scope=NOT_CONNECTED, 只搜索status非Connected, scope的默认值为 NOT_CONNECTED。
 
-mcp enable/disable
-rest-api enable/disable
+- Connect 和 disconnet mcp/restapi 
 
-tool search： hybrid search, 可以按category搜索也可以全部, scope:默认unloaded，可以选择loaded，或者all
+2 mcp connect
+3 rest-api connect
+4 mcp disconnect
+5 rest-api disconnect
 
-tool load：if not already loaded, - Builin，Job， MCP， REST-API， inject to llm tool list， 对于skill，cli 工具输出usage 
+- Enable 和 Disable mcp/rest-api
 
-系统每次重启检查，tools.db， eager connect 状态为CONNECTED的服务器，如果连接错误，则更新tools.db 的mcp或restapi相关工具状态为error。
+6 mcp enable/disable
+7 rest-api enable/disable
 
-- 设置最大loaded tool 阈值，动态管理
+- Search tool
 
-每一轮当loaded 工具数超过阈值，则unloaded loaded时间最旧的tool, 同时检查涉及的服务器是否还有loaded tool, 如果没有自动断连该服务器。
+8 tool search： hybrid search, 参数category和scope.
+category 为空时， 所有category;默认值为空.
+status：为空时，搜索所有状态的， status=status, 只搜索status的tool, 默认值是unloaded.
 
-api-id
+9 tool load：if not already loaded, - only Builtin，Job， MCP， REST-API， inject to llm tool list.
 
-CREATE TABLE tool (
-  id            TEXT PRIMARY KEY,
-  name          TEXT NOT NULL,
-  description   TEXT,
-  category      TEXT NOT NULL,
-  source_id     TEXT,
+10 skill load: 将SKILL.md加载到工具输出中。
 
-  usage         TEXT,            -- skill/mcp/rest 有内容；cli/function 为 null
-  content_hash  TEXT,
+运行时逻辑
 
-  loaded        INTEGER,         -- NULL / 0 / 1
-  loaded_at     INTEGER,
+- 系统重启，只eager connect 状态为CONNECTED的mcp server和restpai server， 并在需要时更新 tools.db 的 TOOLRegistry, 1）新工具则增加 2）没有的删除 3）description变化的，更新 description，更新schema。连接失败，更新 server 和 tool 状态为error. schema更新了就需要重新embedding.
 
-  version       TEXT,
-  tags          TEXT
-);
+每轮Agent Loop重建上下文时，从AgentRegistry中取状态为loaded 工具，和schema，注入到tool list.
+
+- 设置最大loaded function tool的阈值，动态管理，配置到tools.json5, 默认值为100
+
+创建harness 工具， _unload_function_tool
+
+每一轮当loaded 工具数超过阈值，则调用 _unload_function_tool，把loaded时间最旧的tool 从tool list中移除, 将其状态重设为unloaded, 同时检查涉及的服务器是否还有loaded tool, 如果没有自动断连该服务器。
+
+- 为builtin function tool 配置preload，tool search 和 tool load必须配置为true，其它工具可以用户自配置。
+
+做完以后的几件事项：
+
+- whitelist是什么意思？
+- 
+- 确认 tools.db 是 toolregsitry是唯一真相，agent和subagent都没有创建内存副本或其它副本。
+- 创建 TOOL_SYSTEM.md 设计文档，更新DESIGN.md
+- 注入到Loop中的tool schema，是从db中读的，而不是重新从mcp中读或tools code中读的。
+- cli set remove, skill set remove, rest api set remove. job create or update or remove 都能动态更新tools.db，remove 该清理的都清理干净，特别是server 连接。
+- watch dog 
+- 把所有出现mcp-plugin的地方改为 mcp-gateway
+- 更新两个安装脚本， seed tools.json5
+- 确认新安装的slife，带着seeded tools.json5 能与空db 自洽，也能和已有db自洽。
+
 
 
 8.6 Job system 的重新思考
