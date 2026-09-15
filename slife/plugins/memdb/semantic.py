@@ -115,8 +115,12 @@ class SemanticManager:
     async def _embed_doc(self, embedder: Any, doc: dict) -> bool:
         """Embed one unembedded document; return True when committed.
 
-        memdb/memfiles chunk long documents and store per-chunk vectors;
-        the gateway's documents are short tool schemas embedded whole.
+        Every document goes through the ONE shared chunker — memdb turns,
+        memfiles cabinet docs, and the host catalog's tool schemas alike.
+        A short document (a small tool schema) simply yields a single chunk;
+        a long one is split on paragraph boundaries and then hard-split to
+        the model's token limit, so an oversized schema can never ride as one
+        chunk and stall the drainer on a provider rejection.
         """
         from slife.plugins.memdb.store import (
             _chunk_text, _split_chunks_to_token_limit,

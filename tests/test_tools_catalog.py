@@ -293,6 +293,39 @@ async def test_drainer_roundtrip_and_model_meta(store):
     assert await store.count_unembedded() == 1  # svcA__search needs re-embedding
 
 
+# ── Chunking: one shared chunker for tool schemas too ───────────────
+
+def test_tool_schema_chunks_through_the_shared_chunker():
+    """A tool schema is embedded through the SAME chunker as memdb turns and
+    memfiles docs, so an oversized schema is hard-split rather than riding as
+    one chunk the provider rejects — a rejection that left the tool
+    permanently unembedded and the semantic gate locked off."""
+    from slife.plugins.memdb.store import (
+        _chunk_text, _split_chunks_to_token_limit,
+    )
+
+    # _flatten_schema's shape for a big tool: a long, newline-free,
+    # escape-dense params line (the worst case for token density).
+    huge = "name: big__tool\nA big tool\nparams: " + "; ".join(
+        f'p{i}: {{"type":"object","description":"param number {i}"}}'
+        for i in range(600)
+    )
+    chunks = _split_chunks_to_token_limit(_chunk_text(huge), 8192)
+    assert len(chunks) > 1                        # split, not kept whole
+    assert all(len(c) <= 8192 for c in chunks)    # 1 char/token floor
+    assert "param number 599" in "".join(chunks)  # nothing dropped
+
+
+def test_catalog_semantic_inherits_the_memdb_embed_path():
+    """The catalog's SemanticManager must not reimplement embedding — it
+    inherits memdb's ``_embed_doc`` (the one chunker), so the tool catalog
+    and the memdb/memfiles indexes can never drift apart."""
+    from slife.plugins.memdb.semantic import SemanticManager as MemdbSM
+    from slife.tools.semantic import SemanticManager as CatalogSM
+
+    assert CatalogSM._embed_doc is MemdbSM._embed_doc
+
+
 # ── Pragmas / schema version / helper sanity ────────────────────────
 
 @pytest.mark.asyncio

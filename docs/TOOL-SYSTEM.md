@@ -91,6 +91,8 @@ Only `builtin | job | mcp | rest-api` participate in the load state (the §8.5 s
 
 Chunked vector rows for semantic search (one tool → several chunks; closest-chunk aggregation). The drainer re-embeds on schema change; stale-width vectors are skipped at query time.
 
+**Chunking is the one shared chunker — not a catalog-specific one.** The catalog's `SemanticManager` (`slife/tools/semantic.py`) subclasses memdb's and inherits `_embed_doc`, so a tool schema is embedded through the *same* path as a memdb turn or a memfiles doc: `_chunk_text` splits on paragraph boundaries (`CHUNK_SIZE_CHARS`, one line of overlap), then `_split_chunks_to_token_limit` hard-splits anything still over the model's `max_tokens` at a **1 char/token floor**, and each chunk is embedded in its own request. That floor exists for exactly this shape: a large schema flattens to a long, newline-free, escape-dense params line that tokenizes at 1–2 chars/token — without the split it rode as one chunk, the provider rejected it (bge-m3's 8192 cap), and the tool stayed unembedded forever with the semantic gate locked off. A small schema simply yields a single chunk.
+
 ### Effective status
 
 A tool's *effective* status is the raw `tool.status` **joined against its server row** — this is what the refusal matrix and the `tool_search` status filter use:
