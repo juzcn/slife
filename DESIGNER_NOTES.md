@@ -199,15 +199,17 @@ category：Builin | Job | MCP | REST-API | SKILL | CLI
 source：null | null | null | <mcp-server> | <mcp-server> | null | null
 usage: Tool def(name,description, schema)|Tool def|Tool def|Tool def|SKILL.md|null
 
-status: loaded | unloaded | error | disabled    
+status: loaded | unloaded | error | disabled | null
+loaded unloaded只针对function tool，即 builin, mcp, job, rest-api，对于skill和cli都为null
+
 last-loaded: <Time> | null
+只针对function tool。
 
 emddings over usage, hybrid search
 
+系统元工具， 属于builtin，始终loaded， 不可配置和更改。
 
-工具集：
-
-mcp-search (category all, MCP, REST-API)
+mcp-search， by category，  all或MCP或REST-API， 默认all
 
 mcp connect
 rest-api connect
