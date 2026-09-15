@@ -361,6 +361,30 @@ async def test_job_write_updates_and_rolls_back(srv):
 
 
 @pytest.mark.asyncio
+async def test_job_write_unregisters_removed_sibling_functions(srv):
+    """Rewriting a multi-function job file must drop functions that
+    disappeared from it — a stale job otherwise stays registered forever,
+    executing the OLD function object (ghost tool)."""
+    await srv.job_write(
+        name="multi",
+        code=(
+            "def multi(x: int) -> int:\n    return x + 1\n\n"
+            "def sibling(y: str) -> str:\n    return y"
+        ),
+    )
+    assert "multi" in srv._registry and "sibling" in srv._registry
+
+    out = await srv.job_write(
+        name="multi",
+        code="def multi(x: int) -> int:\n    return x + 10",
+    )
+    assert "updated" in out
+    assert "sibling" not in srv._registry  # the ghost is gone
+    assert "multi" in srv._registry
+    assert await srv.job_run(job="multi", params='{"x": 1}') == "11"
+
+
+@pytest.mark.asyncio
 async def test_job_remove_unregisters(srv, tmp_path):
     await srv.job_write(
         name="shout",

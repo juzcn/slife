@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from slife.schedules import ScheduleError, is_valid, next_run
+from slife.schedules import ScheduleError, is_valid, next_run, previous_run
 
 
 # ── Validation ──────────────────────────────────────────────────────
@@ -47,6 +47,16 @@ def test_next_run_raises_on_bad_expr():
         next_run("60 * * * *", datetime(2026, 1, 1))
     with pytest.raises(ScheduleError):
         next_run("0 9 31 2 *", datetime(2026, 1, 1), strict=True)
+
+
+def test_bad_timezone_raises_schedule_error():
+    """An unknown IANA timezone (or missing tzdata) surfaces as the lone
+    ScheduleError contract — NOT a raw ZoneInfoNotFoundError, which would
+    escape the scheduler's except-ScheduleError guard."""
+    with pytest.raises(ScheduleError):
+        next_run("0 9 * * *", datetime(2026, 1, 1), tz="Not/ARealZone")
+    with pytest.raises(ScheduleError):
+        previous_run("0 9 * * *", datetime(2026, 1, 1), tz="Not/ARealZone")
 
 
 # ── Next-run computation ────────────────────────────────────────────

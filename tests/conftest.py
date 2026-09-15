@@ -81,7 +81,6 @@ _MCP_ISOLATED_MODULES = frozenset({
     "test_mcp_process",
     "test_mcp_server",
     "test_schema_flatten",
-    "test_store",
     "test_tool_catalog",
 })
 

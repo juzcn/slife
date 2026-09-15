@@ -109,13 +109,20 @@ class MCPProxyTool(Tool):
         server_prefix = f"[{self._server}] "
         object.__setattr__(self, "description", server_prefix + desc)
 
-        schema = tool_info.get("inputSchema", {})
-        # Ensure valid JSON Schema object type
+        schema = tool_info.get("inputSchema") or {}
+        # Ensure valid JSON Schema object type.  A server that sends a
+        # non-dict inputSchema (None, a list) must degrade to an empty object
+        # schema — NOT crash the proxy constructor with AttributeError on
+        # schema.get (defensive: the gateway always sends a dict today).
         if not isinstance(schema, dict) or schema.get("type") != "object":
             schema = {
                 "type": "object",
-                "properties": schema.get("properties", {}),
-                "required": schema.get("required", []),
+                "properties": (
+                    schema.get("properties", {}) if isinstance(schema, dict) else {}
+                ),
+                "required": (
+                    schema.get("required", []) if isinstance(schema, dict) else []
+                ),
             }
         object.__setattr__(self, "parameters", schema)
 

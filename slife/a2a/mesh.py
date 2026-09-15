@@ -73,6 +73,12 @@ _MAX_ATTEMPTS = 3
 _BACKOFF_BASE_S = [1.0, 2.0, 4.0]
 _JITTER_FACTOR = 0.2
 _MAX_TRACKED_SENDS = 500  # delivery-tracking cap (mirrors the task store)
+#: Cap on correlation→task routing entries.  Retry correlations are popped
+#: by ``_deliver``'s finally; the PRIMARY mapping survives for late-routing
+#: by design ("never abandon a result") but must still be bounded — a long
+#: session (or sends evicted from the capped ``_sends`` cache before their
+#: reply) would otherwise grow ``_corr_to_task`` without limit.
+_MAX_CORR_ENTRIES = 2 * _MAX_TRACKED_SENDS
 
 
 def _backoff_delay(attempt: int) -> float:
@@ -605,8 +611,11 @@ class A2AMesh:
             self.on_task_completion(
                 task_id, result, cancelled, record.agent_name, "task",
             )
-        # Terminal reply → the send is finished; stop tracking its delivery.
+        # Terminal reply → the send is finished; stop tracking its delivery AND
+# drop the routing entry for this correlation (it never needs to route
+# again — keeps the primary mapping from accumulating across a session).
         self._sends.pop(task_id, None)
+        self._corr_to_task.pop(corr, None)
 
     # ── Outbound operations (LLM-facing, via the plugin) ────────────────
 
@@ -625,6 +634,11 @@ class A2AMesh:
         """One requester-profile attempt — fresh Correlation Data, same
         payload + session response topic."""
         self._corr_to_task[corr] = send.task_id
+        if len(self._corr_to_task) > _MAX_CORR_ENTRIES:
+            # FIFO bound: drop the oldest routing entry (a send whose reply
+            # may never come, or one already evicted from the capped _sends
+            # cache) instead of growing without limit.
+            self._corr_to_task.pop(next(iter(self._corr_to_task)), None)
         props = make_properties(
             response_topic=self._topics.reply(self.agent_name, send.session),
             correlation_data=corr,

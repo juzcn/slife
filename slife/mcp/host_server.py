@@ -174,21 +174,23 @@ async def _host_catalog_facts(catalog: "ToolCatalogService") -> dict:
         facts["tools"] = len(await store.scan_effective())
         facts["servers"] = len(await store.list_server_names())
         facts["loaded"] = await store.count_loaded()
+
+        sem = getattr(catalog, "semantic_manager", None)
+        emb = sem.embedder if sem is not None else None
+        facts["semantic"] = {
+            "configured": bool(emb is not None and emb.available),
+            "available": bool(emb is not None and emb.available),
+            "semantic_ready": bool(sem is not None and sem.semantic_ready),
+            "state": sem.state if sem is not None else "disabled",
+            "reason": getattr(sem, "reason", None) or "",
+            "model": emb.model if emb is not None else "",
+            "dimension": emb.dimension if emb is not None else 0,
+            "unembedded": await sem.unembedded() if sem is not None else 0,
+        }
     except Exception as e:
-        facts["error"] = f"catalog unavailable: {e}"
-        return facts
-    sem = getattr(catalog, "semantic_manager", None)
-    emb = sem.embedder if sem is not None else None
-    facts["semantic"] = {
-        "configured": bool(emb is not None and emb.available),
-        "available": bool(emb is not None and emb.available),
-        "semantic_ready": bool(sem is not None and sem.semantic_ready),
-        "state": sem.state if sem is not None else "disabled",
-        "reason": getattr(sem, "reason", None) or "",
-        "model": emb.model if emb is not None else "",
-        "dimension": emb.dimension if emb is not None else 0,
-        "unembedded": await sem.unembedded() if sem is not None else 0,
-    }
+        # "Never raises" — a broken catalog OR a broken semantic surface both
+        # report an error field instead of crashing the probe.
+        facts["error"] = f"catalog probe failed: {e}"
     return facts
 
 
@@ -317,8 +319,8 @@ def start_host_server(
         # watchdog doesn't cover it — self-heal here instead: an unexpected
         # death of the serve task is logged and the same server rebinds with
         # backoff (the plugin-induced restart symmetry: the host is also a
-        # plugin).  Port stays stable (same socket).  A clean stop (shutdown)
-        # returns; cancellation propagates.
+        # plugin).  A clean stop (shutdown) returns; cancellation propagates.
+        nonlocal sockets, port
         backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
         while True:
             try:
@@ -335,6 +337,15 @@ def start_host_server(
                     backoff * _timeouts.timeouts.ready.watchdog_backoff_multiplier,
                     _timeouts.timeouts.ready.watchdog_backoff_max,
                 )
+                # The failed run may have closed the pre-bound socket — reusing
+                # it would fail every retry identically and the "self-heal"
+                # would spin forever, permanently dead.  Bind a fresh socket
+                # each retry (the new port is re-published by the caller's
+                # healthy-port path, so holdouts on the old port were already
+                # pointed at a dead server).
+                if sockets is not None:
+                    sock, port = bind_free_port(host)
+                    sockets = [sock]
 
     task = asyncio.create_task(_serve())
     sid = id(server)

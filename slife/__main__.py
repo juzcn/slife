@@ -12,10 +12,13 @@ def _has_headless_flag(argv: list[str]) -> bool:
 
 if __name__ == "__main__":
     if _has_headless_flag(sys.argv):
-        # Headless mode: run without TUI (for subagent processes)
+        # Headless mode: run without TUI (for subagent processes).
+        # Pass the FULL argv (program name included) — the headless CLI
+        # scanner (parse_cli_config_path) slices argv[1:] itself, so a
+        # pre-stripped list would double-strip a positional config path.
         from slife.subagent.headless import main as headless_main
-        # Filter out --headless flag, pass remaining args to headless parser
+
         headless_argv = [a for a in sys.argv if a != "--headless"]
-        headless_main(headless_argv[1:])
+        headless_main(headless_argv)
     else:
         main()

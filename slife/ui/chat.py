@@ -104,12 +104,6 @@ class ChatView(VerticalScroll):
         if self._autoscroll:
             self.scroll_end(animate=False)
 
-    def _follow_after_refresh(self) -> None:
-        """Deferred :meth:`_follow` — used after mounting a widget whose
-        full height is only known once it has been laid out (images)."""
-        if self._autoscroll:
-            self.call_after_refresh(self.scroll_end, animate=False)
-
     async def _on_key(self, event: Key) -> None:
         """Redirect printable keys to the input field."""
         if event.is_printable:

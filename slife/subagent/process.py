@@ -170,34 +170,44 @@ class SubagentProcess:
         # a2a plugin owns the main agent's identity.
         # Subagents connect to the main agent's shared plugin servers
         # (MCP / memdb / wechat) via inherited ports — no isolation.
-        self._process = await asyncio.create_subprocess_exec(
-            *cmd, stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
-        self._running = True
-        # Start the stdout/stderr readers BEFORE writing the (potentially
-        # large) cloned context to stdin: the child only reads stdin after
-        # finishing its own boot (plugin connects etc.), meanwhile stderr is
-        # at DEBUG.  With no reader yet, a build-up of >~64 KB of stderr
-        # blocks the child, which then never reads stdin, which blocks our
-        # drain() below — both stuck until the registry's ready.spawn timeout
-        # kills it.  (Same class as the prior stderr relay pipe-wedge.)  Do NOT call
-        # _read_one() concurrently: two readline() calls on the same
-        # StreamReader cause "readuntil() called while another coroutine
-        # is already waiting for incoming data".
-        self._stdout_task = asyncio.create_task(self._read_stdout())
-        self._stderr_task = asyncio.create_task(self._read_stderr())
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *cmd, stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
+            self._running = True
+            # Start the stdout/stderr readers BEFORE writing the (potentially
+            # large) cloned context to stdin: the child only reads stdin after
+            # finishing its own boot (plugin connects etc.), meanwhile stderr is
+            # at DEBUG.  With no reader yet, a build-up of >~64 KB of stderr
+            # blocks the child, which then never reads stdin, which blocks our
+            # drain() below — both stuck until the registry's ready.spawn timeout
+            # kills it.  (Same class as the prior stderr relay pipe-wedge.)  Do NOT call
+            # _read_one() concurrently: two readline() calls on the same
+            # StreamReader cause "readuntil() called while another coroutine
+            # is already waiting for incoming data".
+            self._stdout_task = asyncio.create_task(self._read_stdout())
+            self._stderr_task = asyncio.create_task(self._read_stderr())
 
-        # Cloned context rides the stdin JSON-RPC channel (env is limited to
-        # ~32 KB on Windows — too small for a conversation).
-        proc = self._process
-        if self._context_messages and proc is not None and proc.stdin is not None:
-            ctx_msg = json.dumps(
-                {"jsonrpc": "2.0", "method": "context",
-                 "params": {"messages": self._context_messages}, "id": None},
-                ensure_ascii=False,
-            ) + "\n"
-            proc.stdin.write(ctx_msg.encode())
-            await proc.stdin.drain()
+            # Cloned context rides the stdin JSON-RPC channel (env is limited to
+            # ~32 KB on Windows — too small for a conversation).
+            proc = self._process
+            if self._context_messages and proc is not None and proc.stdin is not None:
+                ctx_msg = json.dumps(
+                    {"jsonrpc": "2.0", "method": "context",
+                     "params": {"messages": self._context_messages}, "id": None},
+                    ensure_ascii=False,
+                ) + "\n"
+                proc.stdin.write(ctx_msg.encode())
+                await proc.stdin.drain()
+        except BaseException:
+            # A spawn failure (deleted venv, AV block) or a drain failure
+            # (child died mid-boot) must NOT leak the 0600 config file
+            # carrying plaintext api_keys, nor orphan a spawned child.
+            if self._process is not None and self._running:
+                await self._stop_process()
+            else:
+                self._cleanup_config_file()
+            raise
         ready_spawn = _timeouts.timeouts.ready.spawn  # call-time lookup
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=ready_spawn)

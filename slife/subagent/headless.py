@@ -64,7 +64,13 @@ def _notify(method: str, params: dict | None = None) -> None:
     sys.stdout.buffer.flush()
 
 
-async def run_headless() -> None:
+async def run_headless(argv: list[str] | None = None) -> None:
+    # ``argv`` carries the FULL command line (program name included) — the
+    # shared CLI scanner (``parse_cli_config_path``) slices ``argv[1:]``
+    # itself.  Callers MUST pass ``sys.argv`` as-is (a stripped argv would
+    # double-strip and mis-read a positional config path).
+    if argv is None:
+        argv = sys.argv
     global _log_path
     from slife.config import Config
     from slife.agent.service import AgentService
@@ -102,7 +108,7 @@ async def run_headless() -> None:
         # CLI scanner skips flag values (--agent <id>, --lang <en|zh>), so
         # those can never be misread as a config path.
         from slife.config import parse_cli_config_path
-        _config_path = parse_cli_config_path(sys.argv) or "slife.json5"
+        _config_path = parse_cli_config_path(argv) or "slife.json5"
         with elapsed("config_load", logger, level=logging.INFO, path=_config_path):
             config = Config.from_json5(_config_path)
 
@@ -225,10 +231,22 @@ async def run_headless() -> None:
                 req = json.loads(line.decode("utf-8", errors="replace"))
             except json.JSONDecodeError:
                 continue
+            if not isinstance(req, dict):
+                # Valid JSON but not a request object (42, [...]) — one such
+                # line must never tear down the whole worker (only JSONDecode
+                # was guarded before this; an AttributeError on req.get
+                # escaped and killed every pending task).
+                logger.warning(
+                    "subagent_stdin_non_object_discarded type=%s",
+                    type(req).__name__,
+                )
+                continue
 
             method = req.get("method", "")
             rpc_id = req.get("id")
-            params = req.get("params", {})
+            params = req.get("params")
+            if not isinstance(params, dict):
+                params = {}
 
             if method == "shutdown":
                 logger.info("subagent_shutdown requested task_count=%d", request_count)
@@ -332,8 +350,10 @@ async def run_headless() -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    asyncio.run(run_headless())
+    asyncio.run(run_headless(argv))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    # Full argv (program name included) — ``run_headless`` → the CLI scanner
+    # expects it and slices ``argv[1:]`` itself.
+    main(sys.argv)

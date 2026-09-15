@@ -40,13 +40,21 @@ async def kill_process_tree(process: asyncio.subprocess.Process) -> None:
     if process is None:
         return
     if os.name == "nt":
-        await run_daemon(
-            lambda: _subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-                stdout=_subprocess.DEVNULL,
-                stderr=_subprocess.DEVNULL,
-            ),
-        )
+        def _taskkill() -> None:
+            """Best-effort tree kill — bounded (a wedged taskkill must not
+            block the caller forever) and error-swallowing (a missing
+            taskkill or an already-dead pid is not a cleanup failure)."""
+            try:
+                _subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    stdout=_subprocess.DEVNULL,
+                    stderr=_subprocess.DEVNULL,
+                    timeout=_timeouts.timeouts.grace.force,
+                )
+            except (OSError, _subprocess.TimeoutExpired) as e:
+                logger.debug("taskkill_failed pid=%s err=%s", process.pid, e)
+
+        await run_daemon(_taskkill)
     else:
         try:
             pgid = os.getpgid(process.pid)

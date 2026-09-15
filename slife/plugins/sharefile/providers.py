@@ -303,11 +303,30 @@ class _TunnelProviderBase:
             # attempt has concluded.
             self._failed = True
             url = self._do_start(port)
-            self._public_url = url
-            os.environ[_TUNNEL_URL_ENV] = url
-            self._failed = False
-            self._failure_reason = ""
-            logger.info("tunnel_started provider=%s port=%s url=%s", self.label, port, url)
+            # Only the CURRENT owner may publish the URL.  A superseded
+            # attempt (its start crossed ready.tunnel_start and a newer one
+            # took over) must NOT overwrite the newer tunnel's URL — the
+            # tracked URL would point at a duplicate/stale attempt while the
+            # monitor tears down "the current" one, leaking a tunnel and
+            # flapping the share.  The superseded thread also leaves the
+            # newer owner's _failed/_starting state alone.
+            with self._start_lock:
+                if self._start_gen != gen:
+                    logger.warning(
+                        "tunnel_start_superseded_after_established "
+                        "provider=%s url=%s — not publishing (a newer start "
+                        "owns the tunnel)",
+                        self.label, url,
+                    )
+                    return self._public_url or ""
+                self._public_url = url
+                os.environ[_TUNNEL_URL_ENV] = url
+                self._failed = False
+                self._failure_reason = ""
+            logger.info(
+                "tunnel_started provider=%s port=%s url=%s",
+                self.label, port, url,
+            )
             return url
         except Exception as e:
             self._failure_reason = str(e)  # factual last-failure message

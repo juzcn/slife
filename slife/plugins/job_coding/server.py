@@ -148,6 +148,19 @@ def _load_file(path: Path) -> str:
             f"Error: {path.name} defines no public job functions "
             "(module-level function with a non-underscore name)"
         )
+    # A file can define MANY public functions; functions removed from it
+    # must not linger as ghost tools (the old function object stays callable
+    # forever otherwise).  Unregister this file's previously-registered jobs
+    # that the new content no longer defines — the job_write rollback path
+    # re-loads the previous content and re-registers them, so a failed write
+    # still restores exactly.
+    resolved = str(path.resolve())
+    current_names = {j.name for j in jobs}
+    for name in list(_registry):
+        if name in current_names:
+            continue
+        if str(_registry[name].path.resolve()) == resolved:
+            _unregister_tool(name)
     for job in jobs:
         if job.name in _RESERVED_NAMES:
             return f"Error: job '{job.name}' collides with a reserved name"

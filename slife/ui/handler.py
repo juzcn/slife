@@ -170,6 +170,11 @@ class TUIHandler:
             ):
                 self._silent_dot = True
                 return
+            # Real content follows the leading "." — it is NOT a bare-silence
+            # reply, so clear the marker (it was only meaningful while the
+            # whole message looked like "."; without this the completed reply
+            # would be discarded at finalize).
+            self._silent_dot = False
             self._current_assistant.append_text(chunk)
             self._chat_view.scroll_end(animate=False)
 

@@ -54,7 +54,13 @@ def next_run(
         raise ScheduleError(f"invalid cron expression {expr!r}")
     ref = _as_aware(after)
     if tz:
-        ref = ref.astimezone(ZoneInfo(tz))
+        try:
+            ref = ref.astimezone(ZoneInfo(tz))
+        except Exception as e:
+            # Unknown IANA zone / missing tzdata must surface as the lone
+            # ScheduleError contract — a raw ZoneInfoNotFoundError would
+            # escape every callsite that catches only ScheduleError.
+            raise ScheduleError(f"invalid timezone {tz!r}: {e}") from e
     try:
         return croniter(expr, ref, day_or=True).get_next(datetime)
     except Exception as e:  # croniter raises CroniterBadDateError etc.
@@ -89,7 +95,10 @@ def previous_run(
         raise ScheduleError(f"invalid cron expression {expr!r}")
     ref = _as_aware(before)
     if tz:
-        ref = ref.astimezone(ZoneInfo(tz))
+        try:
+            ref = ref.astimezone(ZoneInfo(tz))
+        except Exception as e:
+            raise ScheduleError(f"invalid timezone {tz!r}: {e}") from e
     try:
         return croniter(expr, ref, day_or=True).get_prev(datetime)
     except Exception as e:

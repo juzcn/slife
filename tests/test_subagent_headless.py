@@ -153,12 +153,14 @@ class TestMain:
             with patch("slife.subagent.headless.run_headless") as mock_rh:
                 main([])
                 mock_run.assert_called_once()
-                mock_rh.assert_called_once_with()
+                mock_rh.assert_called_once_with([])
 
-    def test_main_with_args_ignored(self):
-        """Config comes from SLIFE_CONFIG env var — CLI args are ignored."""
+    def test_main_forwards_argv(self):
+        """main() forwards the FULL argv (program name included) —
+        ``parse_cli_config_path`` slices argv[1:] itself, so a stripped
+        argv would double-strip a positional config path."""
         with patch("slife.subagent.headless.asyncio.run") as mock_run:
             with patch("slife.subagent.headless.run_headless") as mock_rh:
-                main(["somefile.json5", "--debug"])
+                main(["prog", "somefile.json5", "--debug"])
                 mock_run.assert_called_once()
-                mock_rh.assert_called_once_with()
+                mock_rh.assert_called_once_with(["prog", "somefile.json5", "--debug"])

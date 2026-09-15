@@ -339,12 +339,7 @@ def _copy_to_clipboard(text: str) -> None:
     """
     try:
         if IS_WINDOWS:
-            subprocess.run(
-                ["clip"],
-                input=text.encode("utf-8"),
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                check=False,
-            )
+            _copy_via_powershell(text)
         elif sys.platform == "darwin":
             subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=False)
         elif _IS_WSL:
@@ -364,3 +359,46 @@ def _copy_to_clipboard(text: str) -> None:
                     continue
     except Exception:
         pass
+
+
+def _copy_via_powershell(text: str) -> None:
+    """Copy UTF-8 text on Windows via PowerShell's ``Set-Clipboard``.
+
+    ``clip.exe`` decodes its piped stdin with the console/ANSI codepage, not
+    UTF-8 — on a Chinese/Japanese Windows (codepage 936/950) non-ASCII text
+    copies as mojibake.  Writing the text to a UTF-8 temp file and letting
+    PowerShell read it back (``-Encoding UTF8``) keeps the clipboard bytes
+    correct regardless of the system codepage.
+    """
+    import tempfile
+
+    import slife.timeouts as _tmo  # call-time lookup
+
+    path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", suffix=".txt", delete=False,
+        ) as f:
+            f.write(text)
+            path = f.name
+        subprocess.run(
+            [
+                "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                f"Set-Clipboard -Value (Get-Content -Raw -Encoding UTF8 "
+                f"'{path}')",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            check=False,
+            timeout=_tmo.timeouts.grace.force,
+        )
+    except Exception:
+        # Best-effort — a clipboard failure must never break Ctrl+Y.
+        pass
+    finally:
+        if path is not None:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass

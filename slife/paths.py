@@ -138,16 +138,6 @@ def get_db_path(agent_name: str = "slife") -> Path:
     return get_data_dir() / f"{agent}.db"
 
 
-def get_venv_python() -> str:
-    """Return the Python executable path for the current venv.
-
-    In production this is the slife tool's isolated venv Python
-    (e.g. ``~/.uv/tools/slife/Scripts/python.exe``).
-    In dev it's whatever ``sys.executable`` points to.
-    """
-    return sys.executable
-
-
 def get_skills_dir() -> Path:
     """Directory containing skill subdirectories.
 

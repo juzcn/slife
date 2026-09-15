@@ -22,6 +22,11 @@ from slife.ui.i18n import t
 from slife.ui.restore import restore_session
 from slife.ui.tool_display import ToolCallWidget
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from slife.ui.model_picker import ModelPicker
+
 logger = logging.getLogger(__name__)
 
 # ── Status bar ─────────────────────────────────────────────────────
@@ -345,6 +350,7 @@ class SlifeApp(App):
         # would stack a second picker and leak the first's await-task.
         self._model_picker_open = False
         self._model_picker_future: "asyncio.Future | None" = None
+        self._model_picker_widget: "ModelPicker | None" = None  # for dismissal styling
 
         # Fatal startup failure (memory DB broken, required plugin failed).
         # Stored so main() can surface it to the terminal AFTER the TUI has
@@ -667,6 +673,7 @@ class SlifeApp(App):
         picker.focus()
         self._model_picker_open = True
         self._model_picker_future = future
+        self._model_picker_widget = picker
 
         asyncio.create_task(self._finish_model_switch(chat_view, future))
 
@@ -681,14 +688,27 @@ class SlifeApp(App):
         fut = self._model_picker_future
         if fut is not None and not fut.done():
             fut.set_result(None)
+        # The picker widget itself must leave its undecided state too —
+        # otherwise a frozen full picker row stays embedded in the chat for
+        # the rest of the session.  dismiss() re-renders it to the ✗ Canceled
+        # status line (the same visual the normal Esc path shows) without
+        # re-resolving the now-done future.
+        widget = self._model_picker_widget
+        if widget is not None:
+            try:
+                widget.dismiss()
+            except Exception:
+                logger.debug("model_picker_dismiss_failed", exc_info=True)
         self._model_picker_open = False
         self._model_picker_future = None
+        self._model_picker_widget = None
 
     async def _finish_model_switch(self, chat_view, future) -> None:
         """Apply the picker's decision off the key-event handler."""
         model = await future
         self._model_picker_open = False
         self._model_picker_future = None
+        self._model_picker_widget = None
         self.query_one("#user-input").focus()
         if model is None:
             return  # canceled — the picker already shows the status

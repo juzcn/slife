@@ -100,6 +100,21 @@ class ModelPicker(Static):
         self._future.set_result(model)
         self.update(self._build_content())
 
+    def dismiss(self) -> None:
+        """Terminate an undecided picker without touching its future.
+
+        Used when an approval prompt steals focus while the picker is open:
+        the caller already resolved the future (None = cancel), so the widget
+        must NOT re-set it (an already-done Future raises).  It re-renders to
+        the same ✗ Canceled status line the normal Esc path shows instead of
+        staying frozen in the full undecided picker state.
+        """
+        if self._decided:
+            return
+        self._decided = True
+        self._choice = None
+        self.update(self._build_content())
+
     # ── Rendering ──────────────────────────────────────────────────
 
     def _build_content(self) -> Content:

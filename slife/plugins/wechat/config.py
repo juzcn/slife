@@ -78,6 +78,7 @@ def load_wechat_config(
         "base_url": raw.get("base_url", DEFAULT_BASE_URL),
         "saved_at": raw.get("saved_at", 0),
         "ilink_user_id": raw.get("ilink_user_id", ""),
+        "ilink_bot_id": raw.get("ilink_bot_id", ""),
         "get_updates_buf": raw.get("get_updates_buf", "") or "",
     }
 
@@ -88,7 +89,7 @@ def save_wechat_config(
     """Save (or update) WeChat session config for *user* (atomic write).
 
     *session* should contain ``bot_token``, ``base_url``, ``saved_at`` and
-    optionally ``ilink_user_id`` and ``get_updates_buf``.
+    optionally ``ilink_user_id``, ``ilink_bot_id`` and ``get_updates_buf``.
     """
     path = _config_path(user, work_dir)
 
@@ -100,6 +101,9 @@ def save_wechat_config(
     ilink_user_id = session.get("ilink_user_id", "")
     if ilink_user_id:
         data["ilink_user_id"] = ilink_user_id
+    ilink_bot_id = session.get("ilink_bot_id", "")
+    if ilink_bot_id:
+        data["ilink_bot_id"] = ilink_bot_id
     get_updates_buf = session.get("get_updates_buf", "")
     if get_updates_buf:
         data["get_updates_buf"] = get_updates_buf

@@ -334,10 +334,18 @@ class TestEmbeddingClientFromConfig:
         assert client.backend == ""
         assert client.available is False
 
-    def test_json5_not_installed(self):
-        with patch("slife.plugins.memdb.embeddings.json5", create=True, side_effect=ImportError):
-            # This simulates json5 not being available
-            pass
+    def test_json5_not_installed(self, monkeypatch):
+        """from_config degrades to an unavailable client when json5 is
+        missing — the ``import json5`` inside the loader raises ImportError
+        (simulated via sys.modules; a patched module attribute would NOT
+        intercept the function-level import)."""
+        import sys
+
+        monkeypatch.setitem(sys.modules, "json5", None)
+        client = EmbeddingClient.from_config("/fake/config.json5")
+        assert client.available is False
+        assert client._api_key == ""
+        assert client.backend == ""
 
 
 class TestEmbeddingClientEmbed:
