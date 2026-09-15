@@ -1,4 +1,4 @@
-"""MCP on-demand tool loading — ``mcp_tool_load`` (legacy alias of ``tool_load``).
+"""MCP tool loading — ``mcp_tool_load`` (legacy alias of ``tool_load``).
 
 Kept registered so old callers and subagents keep working during the wrapper
 retirement; executes by delegating to the unified :class:`~slife.tools.meta_tools.ToolLoadTool`.
@@ -18,7 +18,7 @@ class McpToolLoadTool(Tool):
     category = "mcp"
     description = (
         "Load an external MCP tool by full_name '{server}__{tool}' into the "
-        "LLM's tool list (find it with mcp_tool_search)."
+        "LLM's tool list (find it with mcp_search). Delegates to tool_load."
     )
     parameters = {
         "type": "object",

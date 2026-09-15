@@ -242,7 +242,8 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image` (feed images to a vision model), `_turn_prompt` (per-turn prompt, auto-invoked), `_check_new_input` (mid-turn input, auto-invoked) |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | embeddings | `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_enable` |
-| mcp | `mcp_tool_load` |
+| mcp | `mcp_tool_load` (legacy alias) |
+| ToolSystem | `tool_search` (catalog search across all six categories), `tool_load`, `skill_load`, `_unload_function_tool` (self-service unload) |
 
 **Managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts; `model_set` **merges** into the existing entry, so a field-focused change can't silently strip a model's `reasoning`/`input`/`compat`. `rest_api_set` registers an OpenAPI-described external API as one server backed by `mcp-openapi-proxy` (Low-Level Mode, the default) — every spec endpoint becomes a typed `{name}__{endpoint}` tool.
 
@@ -250,7 +251,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 
 | Server | Tools |
 |--------|-------|
-| `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`, `mcp_tool_search` |
+| `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`, `mcp_connect`, `mcp_disconnect`, `mcp_search` |
 | `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `report_save`, `report_list`, `report_read` |
@@ -259,7 +260,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + one tool per registered job (e.g. `translate`) |
 
-**External MCP servers are loaded on demand.** Third-party capability enters only as a standard MCP server in `tools.json5` (any stdio / SSE / Streamable HTTP server works — no Slife SDK required). The LLM discovers a tool with `mcp_tool_search` (a hybrid keyword/semantic search over the gateway's live tool catalog) and loads it with `mcp_tool_load(full_name)` — a server with `auto_load: true` keeps the older wholesale registration. Enable/disable is server-granular (`mcp_set_enabled`). The catalog is rebuilt live from connections on every (re)connect, so it always reflects exactly what the runtime can use — no offline rebuild step exists.
+**One catalog for every tool, managed by a threshold.** Third-party capability enters only as a standard MCP server in `tools.json5` (`mcp` + `rest-api` sections — any stdio / SSE / Streamable HTTP server works, no Slife SDK required). All six categories live in one shared `tools.db`; the model discovers across all of them with `tool_search` (grep / keyword / semantic hybrid, with category + status filters), then loads a specific tool with `tool_load(full_name)` — per-tool, not per-server, so one large server injects only the tools actually used. The injected tool list is capped by a threshold (default 100, tunable in `tools.json5`); the harness evicts least-recently-used tools at turn boundaries and a server with `autoload: true` keeps wholesale registration. Server connect/disconnect is server-granular (`mcp_connect`/`mcp_disconnect`/`mcp_set_enabled`), and only previously-connected servers eager-connect at boot. The catalog is synced live from the connections on every (re)connect — no offline rebuild step. Full design: **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
 
 **Windows execution.** `execute_shell` runs in the detected shell — PowerShell or cmd (the same value the system prompt reports, so the LLM's syntax actually executes) — and its output is decoded with the system code page (GBK/cp936 on Chinese Windows). `run_python_script` forces the child Python to UTF-8 (`-X utf8`) so non-ASCII output can't crash the child.
 
@@ -495,6 +496,7 @@ Slife is one codebase, a few docs, split by audience:
 * **[A2A-MQTT.md](docs/A2A-MQTT.md)** — the adopted A2A-over-MQTT design: the official SDK, topics/wire/QoS/retry, the mesh driver, the standard tool surface, markers, drain schema.
 * **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)** — the authoritative spec of the plugin system (central `PluginSpec` table, the registry, the uniform lifecycle) for anyone writing a plugin.
 * **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)** — how Slife curates the model context each turn: channels, markers, the `_turn_prompt` harness tool-pair.
+* **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** — the unified tool catalog: the six `tools.json5` category sections, `tools.db`, the load/unload threshold, `tool_search`/`tool_load`, per-turn injection, and the MCP reconcile.
 
 ```bash
 git clone https://github.com/juzcn/slife.git

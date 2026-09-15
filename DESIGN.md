@@ -16,6 +16,7 @@
 * [Part 9 · Project Structure](#part-9--project-structure)
 * [Appendix A · Design Decisions & Hard-Won Lessons](#appendix-a--design-decisions--hard-won-lessons)
 * [TIMEOUT.md](docs/TIMEOUT.md) — the timeout registry model (values, ownership, gates)
+* [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md) — the unified tool catalog: tools.json5 sections, tools.db, load/unload threshold, search, injection, MCP reconcile
 
 ---
 
@@ -308,7 +309,7 @@ Model switches fire callbacks that rebuild the LLM client, update loop parameter
 
 `execute_shell` runs commands in the **detected shell** — `detect_current_shell()`: PowerShell / cmd on native Windows, `$SHELL` on POSIX incl. WSL — the **same value the system prompt reports**, so the LLM's shell syntax actually executes. Output is decoded with the system code page (GBK/cp936 on zh-CN Windows); `run_python_script` forces the child Python to UTF-8 via `-X utf8`.
 
-Three tool tiers exist, indistinguishable to the LLM: **native** tools (own names), **built-in plugin** tools (bare names, `[<server>]` description prefix), and **external MCP server** tools (`{server}__{tool}`, loaded on demand). The naming rules are fixed; the developer-facing mechanism is described below.
+Three tool tiers exist, indistinguishable to the LLM: **native** tools (own names), **built-in plugin** tools (bare names, `[<server>]` description prefix), and **external MCP server** tools (`{server}__{tool}`, discovered with `tool_search` and loaded per-tool with `tool_load`). The naming rules are fixed; the load/unload machinery is [the Unified Tool Catalog](#tool-categories-the-unified-catalog--managed-surfaces).
 
 ### Schema Authoring
 
@@ -327,13 +328,13 @@ There is a deliberate asymmetry: tool schemas sent to the LLM carry **business p
 
 The current inventory — 60 native classes in 12 categories (~59 LLM-visible with the shipped config's `install_python_package: enabled: false`), plus the built-in plugin tools by server — is enumerated in the [README](README.md#tools). It is a *reference*, not a duplicate: the mechanism lives here, the catalog lives there.
 
-### Tool Categories & Managed Surfaces
+### Tool Categories, the Unified Catalog & Managed Surfaces
 
-All tools are unified under `Tool` and registered in a single `ToolRegistry`. **Managed categories** (Skills / CLI / REST API / Models / MCP / embeddings) support a standard **`X_list` / `X_set` / `X_remove`** surface (plus `X_set_enabled` where a toggle applies). `X_set` is an idempotent upsert — add + update in one call. Config uses the `config_env_*` prefix (no `config_list`); Models substitutes `model_switch` for `X_set_enabled`; embeddings tools are `embeddings_model_*` + `embeddings_enable`.
+**The catalog is the load/unload model.** Every function tool (builtin / job / mcp / rest-api) and every skill / cli entry is a row in one shared `tools.db`. Function tools carry a `loaded / unloaded` state; **skill and cli rows carry no state** (they are always available). State never lives in the registry — `ToolRegistry` is only the execution pool of materialized instances. The system is configured by the six category sections of `tools.json5` (plus the `tool_load` policy section), seeded at boot, injected per-turn from the catalog's `schema` column, and trimmed by a threshold that evicts the least-recently-used tools with the whitelist and `preload` carved out. Discovery is one `tool_search` (grep / keyword / hybrid across all six categories, with category and status filters); loading is one `tool_load`, which for `mcp`/`rest-api` rows also materializes the execution proxy. The full design — the db schema, the effective-status join, the per-turn snapshot, the eviction order, the boot sequence, and the `_sync_mcp_proxies` reconcile — is **[docs/TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**; this section keeps only what no other document covers.
 
-### Registry
+**Managed categories** (Skills / CLI / REST API / Models / MCP / embeddings) support a standard **`X_list` / `X_set` / `X_remove`** surface (plus `X_set_enabled` where a toggle applies). `X_set` is an idempotent upsert — add + update in one call. Config uses the `config_env_*` prefix (no `config_list`); Models substitutes `model_switch` for `X_set_enabled`; embeddings tools are `embeddings_model_*` + `embeddings_enable`.
 
-`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. Dynamic tools — built-in plugin tools and the MCP wrapper's own tools — are registered at runtime as `MCPProxyTool` instances under their **bare names**; external MCP server tools are named `"{server}__{tool}"`. Internal plugin tools (`__`) are filtered out before registration. External MCP tools are **on-demand**: registered only for an `auto_load` server, or individually when the model loads one with `mcp_tool_load`; a `tools/list_changed` reconcile (`_sync_mcp_proxies`) unregisters any loaded proxy whose tool vanished, server disconnected, or was disabled.
+**The registry is the execution pool.** A name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. Dynamic tools — built-in plugin tools and the MCP wrapper's own tools — are registered at runtime as `MCPProxyTool` instances under their **bare names**; external MCP server tools are named `"{server}__{tool}"`. Internal plugin tools (`__`) are filtered out before registration. A call to an evicted/disabled tool gets an actionable hint ("not loaded — use tool_search + tool_load" / "is disabled") from the catalog's effective-status join. External MCP tools are on-demand by default: their **rows** (not proxies) are mirrored at reconcile time, and a proxy materializes on `tool_load`. Servers with `autoload: true` keep the wholesale registration.
 
 ### Tool Result & Error Signaling
 
