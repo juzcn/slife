@@ -45,7 +45,7 @@ def _require_credstore():
         except ImportError as exc:
             raise RuntimeError(
                 "OAuth token storage requires the optional 'credstore' extra — "
-                "install with: uv tool install --python 3.13 'mcp-plugin[credstore]'"
+                "install with: uv tool install --python 3.13 'mcp-gateway[credstore]'"
             ) from exc
         _CREDSTORE = credstore
     return _CREDSTORE

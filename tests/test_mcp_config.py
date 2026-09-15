@@ -207,7 +207,7 @@ class TestResolveConfigPath:
 
     The mcp gateway is a built-in slife plugin: the default config path is
     ``<slife data dir>/tools.json5`` (``slife.paths.get_data_dir``), not a
-    ``~/.mcp-plugin/`` standalone location.
+    ``~/.mcp-gateway/`` standalone location.
     """
 
     def test_data_dir_default(self, tmp_path, monkeypatch):

@@ -1,4 +1,4 @@
-"""Minimal user-facing strings for mcp_plugin (slife-free).
+"""Minimal user-facing strings for mcp_gateway (slife-free).
 
 The standalone plugin ships a single hardcoded EN string — the OAuth
 notification title that slife's ``ui.i18n`` used to provide.  Kept as a

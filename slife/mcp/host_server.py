@@ -43,8 +43,10 @@ from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
 from slife.server_utils import INTERNAL_TOOL_PREFIX, SessionNotifier, bind_free_port
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 if TYPE_CHECKING:
+    from slife.tools.catalog_service import ToolCatalogService
     from slife.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -114,13 +116,20 @@ async def _notify_tools_changed() -> None:
     await _notifier.flush()
 
 
-def build_registry_mcp(registry: "ToolRegistry", instructions: str = "") -> FastMCP:
+def build_registry_mcp(
+    registry: "ToolRegistry",
+    catalog: "ToolCatalogService | None" = None,
+    instructions: str = "",
+) -> FastMCP:
     """Build the in-process FastMCP server exposing *registry*.
 
     Returns an unstarted ``FastMCP`` with the current registry synced and a
     ``__check`` internal tool.  Start it with :func:`start_host_server` (an
     asyncio task); it is NOT a child plugin, so ``run_plugin_server`` is
-    deliberately not used.
+    deliberately not used.  When *catalog* is given (the main agent's shared
+    tools.db service), ``__check`` also reports the unified tool catalog's
+    live facts — the host-as-plugin is the catalog owner, so its harness
+    probe carries the catalog view (tool/server counts + semantic index).
     """
     server = FastMCP(
         "slife",
@@ -133,19 +142,54 @@ def build_registry_mcp(registry: "ToolRegistry", instructions: str = "") -> Fast
 
     @server.tool(
         name="__check",
-        description=("slife live facts: exposed tool count. Internal — "
-                     "harness probe, never exposed to the LLM."),
+        description=("slife live facts: exposed tools + unified tool catalog. "
+                     "Internal — harness probe, never exposed to the LLM."),
     )
     async def __check(ctx: Context | None = None) -> str:
         _capture_session(ctx)
         exposed = [t.name for t in registry.list_tools() if is_exposed(t)]
-        return json.dumps({
+        payload = {
             "exposed_count": len(exposed),
             "exposed_tools": sorted(exposed),
-        }, ensure_ascii=False)
+        }
+        if catalog is not None:
+            payload["catalog"] = await _host_catalog_facts(catalog)
+        return json.dumps(payload, ensure_ascii=False)
 
     _sync_registry(server, registry)
     return server
+
+
+async def _host_catalog_facts(catalog: "ToolCatalogService") -> dict:
+    """Live facts for the host-as-plugin ``__check`` catalog block.
+
+    Mirrors the memdb-style semantic surface so a harness/consumer probe can
+    tell the unified catalog's readiness from its degradation — counts are raw
+    facts, the semantic index reports configured/available/state ready/reason.
+    Never raises — a broken catalog reports an ``error`` field, not a crash.
+    """
+    facts: dict = {}
+    try:
+        store = catalog.store
+        facts["tools"] = len(await store.scan_effective())
+        facts["servers"] = len(await store.list_server_names())
+        facts["loaded"] = await store.count_loaded()
+    except Exception as e:
+        facts["error"] = f"catalog unavailable: {e}"
+        return facts
+    sem = getattr(catalog, "semantic_manager", None)
+    emb = sem.embedder if sem is not None else None
+    facts["semantic"] = {
+        "configured": bool(emb is not None and emb.available),
+        "available": bool(emb is not None and emb.available),
+        "semantic_ready": bool(sem is not None and sem.semantic_ready),
+        "state": sem.state if sem is not None else "disabled",
+        "reason": getattr(sem, "reason", None) or "",
+        "model": emb.model if emb is not None else "",
+        "dimension": emb.dimension if emb is not None else 0,
+        "unembedded": await sem.unembedded() if sem is not None else 0,
+    }
+    return facts
 
 
 def _current_exposed(server: FastMCP) -> set[str]:
@@ -214,9 +258,28 @@ def _sync_registry(server: FastMCP, registry: "ToolRegistry") -> None:
 _started_servers: set[int] = set()
 
 
+async def _serve_host(server, host: str, sockets, port: int) -> None:
+    """Serve one Streamable-HTTP run of *server* (blocking until it stops)."""
+    if sockets is not None:
+        await server.run_async(
+            transport="streamable-http",
+            host=host,
+            sockets=sockets,
+            show_banner=False,
+        )
+    else:
+        await server.run_async(
+            transport="streamable-http",
+            host=host,
+            port=port,
+            show_banner=False,
+        )
+
+
 def start_host_server(
     registry: "ToolRegistry",
     *,
+    catalog: "ToolCatalogService | None" = None,
     port: int = 0,
     host: str = "127.0.0.1",
     instructions: str = "",
@@ -239,7 +302,7 @@ def start_host_server(
     to the registry's change listener so a live tool-set mutation pushes
     ``notifications/tools/list_changed`` to connected consumers.
     """
-    server = build_registry_mcp(registry, instructions)
+    server = build_registry_mcp(registry, catalog=catalog, instructions=instructions)
 
     # Bind a free socket up front (race-free — no gap between port discovery
     # and serve) unless an explicit port was requested.  Mirror of the plugin
@@ -250,20 +313,28 @@ def start_host_server(
         sockets = [sock]
 
     async def _serve() -> None:
-        if sockets is not None:
-            await server.run_async(
-                transport="streamable-http",
-                host=host,
-                sockets=sockets,
-                show_banner=False,
-            )
-        else:
-            await server.run_async(
-                transport="streamable-http",
-                host=host,
-                port=port,
-                show_banner=False,
-            )
+        # The host-as-plugin runs IN the main process, so the child-process
+        # watchdog doesn't cover it — self-heal here instead: an unexpected
+        # death of the serve task is logged and the same server rebinds with
+        # backoff (the plugin-induced restart symmetry: the host is also a
+        # plugin).  Port stays stable (same socket).  A clean stop (shutdown)
+        # returns; cancellation propagates.
+        backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
+        while True:
+            try:
+                await _serve_host(server, host, sockets, port)
+                return  # clean stop (shutdown path)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "host_server_serve_died — respawning in %.0fs", backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(
+                    backoff * _timeouts.timeouts.ready.watchdog_backoff_multiplier,
+                    _timeouts.timeouts.ready.watchdog_backoff_max,
+                )
 
     task = asyncio.create_task(_serve())
     sid = id(server)

@@ -793,14 +793,7 @@ try {
     # default is seeded into ~/.slife/ as <name>.<version>.<ext> — never
     # overwritten, never prompted; the user applies or discards it.
     Write-Step "[4c] Setting up configs (out-of-the-box defaults)..."
-    # tools.json5 replaced mcp-plugin.json5 — lift an existing live config
-    # once so an upgrade keeps its MCP server entries (never overwritten).
-    $legacyMcp = "$env:USERPROFILE\.slife\mcp-plugin.json5"
-    $newTools = "$env:USERPROFILE\.slife\tools.json5"
-    if ((Test-Path $legacyMcp) -and (-not (Test-Path $newTools))) {
-        Copy-Item $legacyMcp $newTools
-    }
-    $seedPairs = @(
+        $seedPairs = @(
         @("slife.json5", "$env:USERPROFILE\.slife\slife.json5"),
         @("local_embed.json5", "$env:USERPROFILE\.local-embed\local_embed.json5"),
         @("tools.json5", "$env:USERPROFILE\.slife\tools.json5"),
@@ -823,6 +816,24 @@ try {
         } else {
             Copy-Item $src $pair[1] -Force
             Write-Dim "  seeded $($pair[1])"
+        }
+    }
+
+    # tools.json5 upgrade merge (DESIGNER_NOTES §8.5): a live config that
+    # predates the unified tool system may lack the new top-level sections
+    # (tool_load).  The generic seed above only copies/versioned-copies the
+    # file — never touch a live server list.  Here we INSERT the missing
+    # default section in place (before the closing brace) so the seeded
+    # config stays self-consistent with the tool-load threshold manager.
+    $newTools = "$env:USERPROFILE\.slife\tools.json5"
+    if (Test-Path $newTools) {
+        $toolsRaw = [IO.File]::ReadAllText($newTools)
+        # top-level key = line starts with ≤3 spaces then "tool_load":
+        if ($toolsRaw -notmatch '(?m)^\s{0,3}"?tool_load"?\s*:') {
+            $patched = $toolsRaw -replace '(\n\})\s*$', ",`n  tool_load: { threshold: 100, preload: [] },`n`$1"
+            $noBom = New-Object System.Text.UTF8Encoding($false)
+            [IO.File]::WriteAllText($newTools, $patched, $noBom)
+            Write-Warn "  upgraded tools.json5 — added the tool_load section (threshold 100)"
         }
     }
 

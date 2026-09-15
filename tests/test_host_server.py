@@ -17,12 +17,14 @@ import pytest; pytestmark = pytest.mark.unit
 
 import asyncio
 import inspect
+from unittest.mock import patch
 
 import pytest
 
 from fastmcp import FastMCP
 from fastmcp.tools.function_tool import FunctionTool
 
+import slife.timeouts as _timeouts
 from slife.tools.registry import ToolRegistry
 from slife.mcp.host_server import (
     build_registry_mcp,
@@ -150,6 +152,97 @@ class TestBuildRegistryMcp:
         comp = next(c for c in mcp.local_provider._components.values()
                     if isinstance(c, FunctionTool) and c.name == "__check")
         assert comp is not None
+
+    @pytest.mark.asyncio
+    async def test_check_reports_catalog_facts(self, tmp_path):
+        """The host-as-plugin's __check carries the unified tool catalog's live
+        facts (the host owns tools.db) — a harness/consumer probe gets the
+        catalog view without a bespoke check."""
+        import json as _json
+
+        from slife.tools.base import Tool
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+
+        class _Shell(Tool):
+            name = "execute_shell"
+            description = "run a shell command"
+            parameters = {"type": "object", "properties": {}, "required": []}
+
+            async def execute(self, **kwargs) -> str:
+                return "ok"
+
+        store = CatalogStore(tmp_path / "tools.db")
+        await store.open()
+        svc = ToolCatalogService(store, write_owner=True)
+        await svc.seed_inventory([_Shell()])
+
+        reg = _registry()
+        mcp = build_registry_mcp(reg, catalog=svc)
+        comp = next(c for c in mcp.local_provider._components.values()
+                    if isinstance(c, FunctionTool) and c.name == "__check")
+        payload = _json.loads(await comp.fn())
+        assert payload["catalog"]["tools"] == 1
+        assert payload["catalog"]["loaded"] == 1
+        assert payload["catalog"]["servers"] == 0
+        # no embedding endpoint configured → semantic disabled (keyword-only)
+        sem = payload["catalog"]["semantic"]
+        assert sem["configured"] is False
+        assert sem["semantic_ready"] is False
+        assert sem["state"] == "disabled"
+        await store.close()
+
+        # without a catalog, __check keeps the registry-only shape
+        mcp2 = build_registry_mcp(reg)
+        comp2 = next(c for c in mcp2.local_provider._components.values()
+                     if isinstance(c, FunctionTool) and c.name == "__check")
+        p2 = _json.loads(await comp2.fn())
+        assert "exposed_count" in p2 and "catalog" not in p2
+
+    @pytest.mark.asyncio
+    async def test_serve_self_heals_on_unexpected_death(self):
+        """The host-as-plugin runs in-process, so the child watchdog doesn't
+        cover it — the serve task self-heals: an unexpected death is logged and
+        the same server rebinds with backoff (clean stop after recovery)."""
+        reg = _registry()
+        calls = {"n": 0}
+
+        async def _flaky(server, host, sockets, port):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return None  # second run completes cleanly → loop returns
+
+        with patch("slife.mcp.host_server._serve_host", _flaky), \
+             patch(
+                 "slife.mcp.host_server.bind_free_port",
+                 return_value=(object(), 9876),
+             ), \
+             patch.object(_timeouts.timeouts.ready, "watchdog_backoff_initial", 0.0):
+            _, task, _stop, port = start_host_server(reg)
+            await asyncio.wait_for(task, timeout=5)
+            assert calls["n"] == 2
+            assert port == 9876
+
+    @pytest.mark.asyncio
+    async def test_serve_cancellation_stops(self):
+        """A running serve task cancels cleanly (the shutdown path — no
+        endless respawn on the graceful stop)."""
+        reg = _registry()
+
+        async def _never_returns(server, host, sockets, port):
+            await asyncio.Event().wait()  # serve until told to stop
+
+        with patch("slife.mcp.host_server._serve_host", _never_returns), \
+             patch(
+                 "slife.mcp.host_server.bind_free_port",
+                 return_value=(object(), 9877),
+             ):
+            _, task, _stop, port = start_host_server(reg)
+            await asyncio.sleep(0)  # let the task reach serve
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
 
 # ── Multi-tool routing (A1 regression) ──────────────────────────────────

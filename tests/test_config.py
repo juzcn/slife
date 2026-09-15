@@ -986,23 +986,3 @@ class TestSeedFirstRunConfig:
         assert (data / "slife.json5").exists()
         assert not (data / "tools.json5").exists()
         assert (home / ".local-embed" / "local_embed.json5").exists()
-
-    def test_legacy_mcp_plugin_config_lifted_to_tools(self, tmp_path, monkeypatch):
-        """A data dir holding the pre-rename mcp-plugin.json5 is lifted once."""
-        monkeypatch.setenv("KEY", "sk-test")
-        monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
-        home = self._home(tmp_path, monkeypatch)
-        data = tmp_path / "data"
-        cfg_path = data / "slife.json5"
-        cfg_path.parent.mkdir()
-        cfg_path.write_text(json5.dumps({"models": {"providers": {"d": {
-            "api_key": "${KEY}", "base_url": "https://example.com",
-            "models": [{"model": "m", "name": "M"}],
-        }}}}))
-        (data / "mcp-plugin.json5").write_text(
-            '{ servers: {"mine": {"command": "npx"}} }'
-        )
-        Config.from_json5(str(cfg_path))
-        lifted = json5.loads((data / "tools.json5").read_text(encoding="utf-8"))
-        assert lifted == {"servers": {"mine": {"command": "npx"}}}
-        assert not (data / "mcp-plugin.json5").exists()

@@ -1,18 +1,22 @@
-"""Tool catalog tools — mcp_tool_search / __mcp_get_tool and the
-__mcp_call_tool disabled guard."""
+"""Wrapper execution gate tests — __mcp_call_tool's per-mcp disabled guard,
+plus the shared hybrid-score annotator (moved with the catalog).
+
+The wrapper's search/load surface (mcp_tool_search / __mcp_get_tool / the
+in-memory ToolStore) was retired with the unified host catalog — search is
+tested host-side (``test_tools_meta`` / ``test_tools_catalog``).
+"""
 
 import importlib
 import json
 import logging
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
 
-from slife.plugins.mcp_gateway.connection import ServerStatus
-from slife.plugins.mcp_gateway.store import ToolStore
+from slife.plugins.mcp_gateway.connection import ServerConfig, ServerStatus
 
 
 @pytest.fixture
@@ -38,7 +42,8 @@ def _import_mcp_server():
 class _FakeConn:
     status = ServerStatus.CONNECTED
 
-    def __init__(self, tools):
+    def __init__(self, tools, enabled=True):
+        self.config = ServerConfig(name="x", command="x", enabled=enabled)
         self._tools = tools
 
     def list_tools(self):
@@ -58,186 +63,57 @@ class _FakePool:
 
     async def call_tool(self, server, tool_name, arguments):
         self.calls.append((server, tool_name))
-        return f'[fake] {server}__{tool_name} ok'
+        return f"[fake] {server}__{tool_name} ok"
 
 
-@pytest_asyncio.fixture
-async def srv(restore_root_logger):
-    """Server module with a real in-memory store + fake pool of two servers.
-
-    ``svcC`` is an auto_load server — its tools synced but never discoverable
-    via ``mcp_tool_search`` (only present to exercise the visibility filter).
-    """
+@pytest.mark.asyncio
+async def test_call_tool_refuses_disabled_server(restore_root_logger):
     s = _import_mcp_server()
-    store = ToolStore()
-    await store.open()
-    await store.sync_server("svcA", [
-        {"name": "search", "description": "github repository search",
-         "inputSchema": {"type": "object",
-                         "properties": {"repo": {"type": "string",
-                                                 "description": "repo name"}}}},
-        {"name": "list", "description": "list issues",
-         "inputSchema": {"type": "object", "properties": {}}},
-    ])
-    await store.sync_server("svcB", [
-        {"name": "search", "description": "search the web",
-         "inputSchema": {"type": "object", "properties": {}}},
-    ])
-    await store.sync_server("svcC", [
-        {"name": "search", "description": "autoload tool",
-         "inputSchema": {"type": "object", "properties": {}}},
-    ], auto_load=True)
-    s._store = store
     pool = _FakePool()
     pool._connections = {
-        "svcA": _FakeConn([
-            {"name": "search", "description": "github repository search",
-             "inputSchema": {"type": "object", "properties": {}}},
-            {"name": "list", "description": "list issues",
-             "inputSchema": {"type": "object", "properties": {}}},
-        ]),
-        "svcB": _FakeConn([
-            {"name": "search", "description": "search the web",
-             "inputSchema": {"type": "object", "properties": {}}},
-        ]),
+        "svcA": _FakeConn([{"name": "search"}], enabled=False),
     }
     with patch.object(s, "_pool", pool):
-        yield s, store
-    await store.close()
-
-
-@pytest.mark.asyncio
-async def test_tool_search_hybrid_returns_distinct_full_names(srv):
-    s, _store = srv
-    raw = await s.mcp_tool_search("search", mode="hybrid")
-    data = json.loads(raw)
-    assert data["status"] == "ok"
-    names = {r["full_name"] for r in data["results"]}
-    # Same bare name across two servers → two distinct catalog entries.
-    assert "svcA__search" in names and "svcB__search" in names
-
-
-@pytest.mark.asyncio
-async def test_tool_search_finds_tool_by_schema_content(restore_root_logger):
-    """A query matching only a parameter embedded in the schema surfaces the
-    tool: the schema column is FTS5-indexed, and the semantic vector is
-    schema-sourced (semantic unavailable here → keyword-only fallback still
-    hits through the schema text)."""
-    s = _import_mcp_server()
-    store = ToolStore()
-    await store.open()
-    await store.sync_server("svcD", [
-        {"name": "query_logs", "description": "generic log accessor",
-         "inputSchema": {"type": "object", "properties": {
-             "window": {"type": "object", "description": "time window",
-                        "properties": {"start": {"type": "string"}}}}}},
-    ])
-    await store.sync_server("svcE", [
-        {"name": "query_logs", "description": "generic log accessor",
-         "inputSchema": {"type": "object", "properties": {
-             "max": {"type": "integer", "description": "max entries"}}}},
-    ])
-    s._store = store
-    with patch.object(s, "_pool", _FakePool()):
-        raw = await s.mcp_tool_search("time window", mode="hybrid")
-    data = json.loads(raw)
-    assert data["status"] == "ok"
-    names = {r["full_name"] for r in data["results"]}
-    assert "svcD__query_logs" in names and "svcE__query_logs" not in names
-    await store.close()
-
-
-@pytest.mark.asyncio
-async def test_tool_search_server_filter(srv):
-    s, _store = srv
-    raw = await s.mcp_tool_search("search", server="svcB")
-    data = json.loads(raw)
-    assert [r["full_name"] for r in data["results"]] == ["svcB__search"]
-
-
-@pytest.mark.asyncio
-async def test_tool_search_hides_auto_load_servers(srv):
-    """Per-mcp: auto_load servers' tools (already in the toolset) never
-    surface in tool_search — only enabled, on-demand servers' tools do."""
-    s, _store = srv
-    raw = await s.mcp_tool_search("search", mode="hybrid")
-    data = json.loads(raw)
-    names = {r["full_name"] for r in data["results"]}
-    assert "svcA__search" in names and "svcB__search" in names
-    assert "svcC__search" not in names
-
-
-@pytest.mark.asyncio
-async def test_call_tool_refuses_disabled_server(srv):
-    s, store = srv
-    await store.set_server_enabled("svcA", False)
-    raw = await s.__mcp_call_tool("svcA", "search", "{}")
+        raw = await s.__mcp_call_tool("svcA", "search", "{}")
     data = json.loads(raw)
     assert data["status"] == "error"
     assert "disabled" in data["error"]
 
 
 @pytest.mark.asyncio
-async def test_call_tool_allows_enabled(srv):
-    s, _store = srv
-    raw = await s.__mcp_call_tool("svcA", "list", "{}")
-    assert raw == "[fake] svcA__list ok"
-
-
-@pytest.mark.asyncio
-async def test_call_tool_passes_when_no_store(restore_root_logger):
+async def test_call_tool_allows_enabled(restore_root_logger):
     s = _import_mcp_server()
     pool = _FakePool()
-    pool._connections = {"svcA": _FakeConn([{"name": "list"}])}
-    with (
-        patch.object(s, "_pool", pool),
-        patch.object(s, "_ensure_store", AsyncMock(return_value=None)),  # DB failed to open
-    ):
-        # No store → default-enabled, call proceeds.
+    pool._connections = {"svcA": _FakeConn([{"name": "list"}], enabled=True)}
+    with patch.object(s, "_pool", pool):
         raw = await s.__mcp_call_tool("svcA", "list", "{}")
     assert raw == "[fake] svcA__list ok"
 
 
 @pytest.mark.asyncio
-async def test_get_tool_returns_schema_and_server_state(srv):
-    s, store = srv
-    raw = await s.__mcp_get_tool("svcA__search")
-    data = json.loads(raw)
-    assert data["status"] == "ok"
-    assert data["server"] == "svcA"
-    assert data["name"] == "search"
-    assert data["enabled"] is True
-    assert data["auto_load"] is False
-    assert isinstance(data["inputSchema"], dict)
-
-    # Per-mcp: the enabled flag is the SERVER's, not the tool's.
-    await store.set_server_enabled("svcA", False)
-    data = json.loads(await s.__mcp_get_tool("svcA__search"))
-    assert data["enabled"] is False
-
-
-@pytest.mark.asyncio
-async def test_get_tool_unknown(srv):
-    s, _store = srv
-    raw = await s.__mcp_get_tool("svcA__nonexistent")
-    assert json.loads(raw)["status"] == "error"
-    raw = await s.__mcp_get_tool("svcZ__search")  # server not connected
-    assert json.loads(raw)["status"] == "error"
+async def test_call_tool_passes_when_server_not_registered(restore_root_logger):
+    """An unregistered server name (reconcile hasn't seen it) is default —
+    no catalog gate anymore, the pool config decides; an unknown name is
+    allowed through to the pool which will raise if truly absent."""
+    s = _import_mcp_server()
+    pool = _FakePool()
+    with patch.object(s, "_pool", pool):
+        raw = await s.__mcp_call_tool("ghost", "list", "{}")
+    assert raw == "[fake] ghost__list ok"
 
 
 class TestAnnotateScores:
-    """annotate_scores 0–1 normalizes the semantic distance (the MCP
-    plugin's copy of the slife-side contract: cosine distance → true
-    cosine similarity)."""
+    """annotate_scores 0–1 normalizes the cosine distance — the shared score
+    contract (now hosted with the catalog)."""
 
     def test_cosine_maps_to_cosine_similarity(self):
-        from slife.plugins.mcp_gateway.search import annotate_scores
+        from slife.tools.catalog_search import annotate_scores
         assert annotate_scores([{"distance": 0.0}])[0]["similarity"] == 1.0
         assert annotate_scores([{"distance": 0.3}])[0]["similarity"] == 0.7
         # Opposite vectors (cosine distance > 1) clip to 0.
         assert annotate_scores([{"distance": 1.3}])[0]["similarity"] == 0.0
 
     def test_keyword_only_results_untouched(self):
-        from slife.plugins.mcp_gateway.search import annotate_scores
+        from slife.tools.catalog_search import annotate_scores
         results = annotate_scores([{"full_name": "a", "distance": None}])
         assert "similarity" not in results[0]

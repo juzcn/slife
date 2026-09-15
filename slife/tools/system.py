@@ -521,53 +521,18 @@ def _diagnose_mcp_server(server: dict) -> dict:
     }
 
 
-def _diagnose_mcp_semantic(sem: dict) -> dict:
-    """Health entry for the wrapper's semantic-index status (memdb-style).
-
-    ``sem`` is the ``semantic`` block of the wrapper ``__check`` payload:
-    configured/available (embedder), semantic_ready (gate), state, reason,
-    model/dimension/unembedded.  Reports ok only when the gate is ready;
-    anything warm-up-shaped (not started / building / stalled / unavailable)
-    is a warning so the harness can tell readiness from degradation without
-    an LLM round-trip.  Mirrors the memdb embedding health entry.
-    """
-    model = sem.get("model") or "?"
-    dim = sem.get("dimension") or 0
-    state = sem.get("state", "not_started")
-    reason = sem.get("reason") or ""
-    comp = {"component": "mcp_semantic", "key": "semantic"}
-    if sem.get("configured") is False or sem.get("available") is False:
-        return {
-            **comp, "level": "warning", "value": "unavailable",
-            "hint": reason or (
-                "Semantic tool search unavailable — no embeddings endpoint. "
-                "Keyword/grep (fts5) tool search still works."
-            ),
-        }
-    if sem.get("semantic_ready"):
-        return {
-            **comp, "level": "ok", "value": "ready",
-            "hint": f"Semantic tool search ready ({model}, dim={dim}).",
-        }
-    return {
-        **comp, "level": "warning", "value": state,
-        "hint": reason or "Semantic tool index building.",
-    }
-
-
 async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
     """Check MCP wrapper health + diagnose external MCP server(s).
 
-    Calls the wrapper's harness ``__check`` for the raw live
-    server state, then applies :func:`_diagnose_mcp_server` to each entry to
-    produce health-check records with an appropriate level and remediation hint.
+    Calls the wrapper's harness ``__check`` for the raw live server state,
+    then applies :func:`_diagnose_mcp_server` to each entry to produce
+    health-check records with an appropriate level and remediation hint.
 
     The status report is authoritative: an enabled server whose state is
-    ``running`` reports ok.  Note: external tools are on-demand by default
-    (loaded via ``mcp_tool_load``) — ``running`` means the server is reachable
-    and its tools are discoverable via ``mcp_tool_search``, not that they are
-    all registered; loaded proxies are validated on every ``tools/list_changed``
-    (see :meth:`slife.agent.service.AgentService._sync_mcp_proxies`).
+    ``running`` reports ok.  External tools load on demand via the shared
+    catalog (``tool_search`` / ``tool_load`` — the unified tool system); the
+    catalog's own health (db + semantic index) is reported by
+    :func:`check_tool_catalog`, not here.
 
     Args:
         server: Optional server name to check alone.  Empty (default)
@@ -594,23 +559,14 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
 
         raw = await client.call_tool("__check")
         data = json.loads(raw)
-
-        # Current wrapper shape: {"servers": [...], "semantic": {...}}.
-        # An older/standalone wrapper returns a bare server list — handle both.
-        semantic = None
-        if isinstance(data, dict):
-            semantic = data.get("semantic")
-            data = data.get("servers") or []
+        data = data.get("servers") if isinstance(data, dict) else None
 
         if not isinstance(data, list) or len(data) == 0:
             if server:
                 return _not_found(server)
-            records = [{"component": "mcp_servers", "level": "ok",
-                        "key": "status", "value": "none",
-                        "hint": "No external MCP servers configured."}]
-            if semantic is not None:
-                records.append(_diagnose_mcp_semantic(semantic))
-            return records
+            return [{"component": "mcp_servers", "level": "ok",
+                     "key": "status", "value": "none",
+                     "hint": "No external MCP servers configured."}]
 
         if server:
             matched = [s for s in data if s.get("name") == server]
@@ -619,8 +575,6 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
             data = matched
 
         records = [_diagnose_mcp_server(s) for s in data]
-        if semantic is not None:
-            records.append(_diagnose_mcp_semantic(semantic))
         return records
 
     except Exception as e:

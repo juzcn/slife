@@ -127,30 +127,12 @@ class PluginBehavior:
 def client_info_extra_for(name: str) -> dict | None:
     """Initialize host extras passed to a plugin connection.
 
-    The mechanism is uniform — every plugin connects as a Streamable MCP
-    server through the same path, and host params ride in the standard
-    ``initialize`` request (mcp ≥2.0 carries them in the session's
-    ``capabilities.extensions`` map — identifier → settings — per the
-    official SDK; the old ``clientInfo.other`` smuggling was dropped from
-    the wire models).  The *content* is per-plugin and lives in this one
-    mapping: today only the mcp gateway consumes host params (the active
-    embedding endpoint, so its tool catalog embeds against the agent's
-    endpoint), a future plugin adds its own entry.
+    Retired with the mcp gateway's in-memory catalog: the wrapper no longer
+    consumes host params (the embedding-handshake producer was its only
+    consumer; embedding moved to the host's shared catalog).  Kept as a
+    return-None hook so a future plugin can reintroduce a per-plugin entry
+    without re-wiring the generic ``client_info_extra`` plumbing.
     """
-    spec = PLUGIN_SPECS.get(name)
-    if spec is None or not spec.host_params:
-        return None
-    try:
-        from slife.plugins.memdb.embedding_config import get_active_endpoint
-        ep = get_active_endpoint()
-        if ep.get("base_url"):
-            return {"embeddings": {
-                "base_url": ep["base_url"],
-                "api_key": ep.get("api_key", ""),
-                "model": ep.get("model", ""),
-            }}
-    except Exception:
-        logger.debug("mcp_client_info_extra_failed", exc_info=True)
     return None
 
 
@@ -355,6 +337,17 @@ class PluginLifecycle:
                     logger.debug(
                         "%s_watchdog_proxy_unregister_error", self.name,
                         exc_info=True,
+                    )
+
+                # The gateway's death means every external server it managed
+                # is unreachable — reflect that in the shared catalog so the
+                # joined tool list drops them immediately (the restart's
+                # reconcile restores).  Best-effort.
+                try:
+                    await self._service.on_plugin_child_exit(self.name)
+                except Exception:
+                    logger.debug(
+                        "%s_watchdog_catalog_mark_error", self.name, exc_info=True,
                     )
 
                 # ── Tear down the dead client, don't just drop it ─────

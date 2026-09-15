@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from slife.agent.message_history import MessageHistory
     from slife.config import Config
+    from slife.tools.catalog_service import ToolCatalogService
     from slife.tools.registry import ToolRegistry
 
 
@@ -30,6 +31,12 @@ class ToolContext:
     registry: ToolRegistry | None = None
     """The live :class:`ToolRegistry` (needed by ``list_native_tools``, model
     switching, etc.)"""
+
+    catalog: "ToolCatalogService | None" = None
+    """The unified tool catalog service (shared tools.db) — used by the
+    tool-system meta tools (``tool_search`` / ``tool_load`` /
+    ``_unload_function_tool``) and the loop's loaded-snapshot inspection.
+    None when the catalog failed to open (best-effort)."""
 
     config: Config | None = None
     """The parsed :class:`Config` (needed by REST API / CLI tools, etc.)"""

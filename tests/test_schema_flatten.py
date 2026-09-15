@@ -1,8 +1,8 @@
-"""Unit tests for store._flatten_schema — schema-column → semantic doc text."""
+"""Unit tests for catalog._flatten_schema — schema-column → semantic doc text."""
 
 import json
 
-from slife.plugins.mcp_gateway.store import _flatten_schema
+from slife.tools.catalog import _flatten_schema
 
 
 def _to_json(schema: dict) -> str:

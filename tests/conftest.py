@@ -1,5 +1,6 @@
 """Shared test fixtures and mocks for the Slife test suite."""
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -41,6 +42,25 @@ def _pin_ui_language():
     set_language("en")
     yield
     set_language("en")
+
+
+# ── tools catalog isolation ─────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tools_db(tmp_path):
+    """Point the unified tool catalog at a throwaway db for every test.
+
+    ``AgentService.start_inbox`` → ``_init_catalog`` opens the catalog db;
+    without this override, dev-mode tests resolve it to ``<CWD>/tools.db``
+    in the repo root (dev-mode data dir = CWD).  Per-test function scope: a
+    shared file across many open writable WAL connections would stall writers
+    on the 30s busy_timeout.
+    """
+    path = tmp_path / "tools.db"
+    os.environ["SLIFE_TOOLS_DB"] = str(path)
+    yield path
+    os.environ.pop("SLIFE_TOOLS_DB", None)
 
 
 # ── tools config isolation ──────────────────────────────────────────────

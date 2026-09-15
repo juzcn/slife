@@ -774,12 +774,6 @@ fi
 # version simply refreshes the copy.
 echo -e "${YELLOW}[4c] Setting up configs (out-of-the-box defaults)…${NC}"
 SEED_DIR="$TMP_DIR/slife-main"
-# tools.json5 replaced mcp-plugin.json5 — lift an existing live config once
-# so an upgrade keeps its MCP server entries instead of re-seeding defaults.
-if [ -f "$HOME/.slife/mcp-plugin.json5" ] && [ ! -e "$HOME/.slife/tools.json5" ]; then
-    cp -f "$HOME/.slife/mcp-plugin.json5" "$HOME/.slife/tools.json5" \
-        && chmod 600 "$HOME/.slife/tools.json5"
-fi
 for _name in slife.json5 local_embed.json5 tools.json5 sharefile.json5; do
     _src="$SEED_DIR/$_name"
     [ -f "$_src" ] || continue   # older main snapshots may lack the seeds
@@ -815,6 +809,18 @@ for _name in slife.json5 local_embed.json5 tools.json5 sharefile.json5; do
         fi
     fi
 done
+
+# tools.json5 upgrade merge (DESIGNER_NOTES §8.5): a live config that predates
+# the unified tool system may lack the new top-level sections (tool_load).  The
+# generic seed above only copies/versioned-copies the file — it never touches a
+# live server list.  Here we INSERT the missing default section in place
+# (before the closing brace) so the seeded config stays self-consistent with
+# the tool-load threshold manager.
+_TOOLS="$HOME/.slife/tools.json5"
+if [ -f "$_TOOLS" ] && ! grep -qE '^[[:space:]]{0,3}["'"'"']?tool_load["'"'"']?[[:space:]]*:' "$_TOOLS"; then
+    perl -0pi -e 's/(\n\})\s*$/,\n  tool_load: { threshold: 100, preload: [] },\n\1/' "$_TOOLS" \
+        && echo -e "  ${YELLOW}upgraded tools.json5 — added the tool_load section (threshold 100)${NC}"
+fi
 
 # Skills: copy the bundled skills into ~/.slife/skills/.  A skill that
 # doesn't exist yet is copied as-is; an existing skill of the SAME NAME is

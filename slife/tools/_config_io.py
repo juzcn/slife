@@ -124,7 +124,7 @@ def write_config(path: Path, raw: dict) -> None:
     reader never sees a truncated/interleaved file and a crash mid-write
     can't corrupt the config. The lock serializes writers in
     this process; atomic replace is the cross-process guarantee.  Creates
-    the parent directory on first write (the mcp-plugin fork's behaviour —
+    the parent directory on first write (the mcp-gateway fork's behaviour —
     both config paths sit in a data dir that may not exist yet).
 
     Note: ``json5.dumps`` emits plain JSON, so a tool write strips any

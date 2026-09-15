@@ -108,10 +108,7 @@ class TestMcpSetEnabled:
         conn.list_tools.return_value = []
         pool = MagicMock()
         pool.get_server.return_value = conn
-        with (
-            patch.object(srv, "_pool", pool),
-            patch.object(srv, "_ensure_store", AsyncMock(return_value=None)),
-        ):
+        with patch.object(srv, "_pool", pool):
             result = await srv.mcp_set_enabled(name="live", enabled=True)
         parsed = _json.loads(result)
         assert parsed["status"] == "connected"
@@ -128,7 +125,6 @@ class TestMcpSetEnabled:
         pool.disconnect_server = AsyncMock()
         with (
             patch.object(srv, "_pool", pool),
-            patch.object(srv, "_ensure_store", AsyncMock(return_value=None)),
             patch.object(srv.plugin_config, "set_server_enabled", return_value=True) as persist,
         ):
             result = await srv.mcp_set_enabled(name="live", enabled=False)
@@ -153,7 +149,6 @@ class TestMcpSetEnabled:
         pool.get_server.return_value = conn
         with (
             patch.object(srv, "_pool", pool),
-            patch.object(srv, "_ensure_store", AsyncMock(return_value=None)),
             patch.object(srv.plugin_config, "set_server_enabled", return_value=True) as persist,
         ):
             result = await srv.mcp_set_enabled(name="live", enabled=True)
@@ -200,10 +195,11 @@ class TestAddServerToolRegistration:
             "mcp_remove",
             "mcp_list",
             "mcp_list_tools",
-            "mcp_tool_search",
+            "mcp_connect",
+            "mcp_disconnect",
+            "mcp_search",
             "__mcp_call_tool",
             "__check",
-            "__mcp_get_tool",
         }
 
     @pytest.mark.asyncio
@@ -295,11 +291,10 @@ class TestWrapperNotifyToolsChanged:
 
 
 class TestMCPListToolsSingleRead:
-    """mcp_list_tools — per-mcp source branching.
+    """mcp_list_tools — always-live single read (the wrapper owns no catalog).
 
-    ``auto_load=false`` (on-demand) servers list via the built-in MCP
-    ``tools/list`` (live ``list_all_tools``); ``auto_load`` servers list the
-    in-memory catalog (the registration view).
+    The shared host tools.db is fed by the agent's reconcile calling this
+    tool on connect; the wrapper itself returns the live MCP ``tools/list``.
     """
 
     @staticmethod
@@ -318,16 +313,8 @@ class TestMCPListToolsSingleRead:
         else:
             pool.list_all_tools.return_value = live or []
 
-        targets = [patch.object(srv, "_pool", pool)]
-        if autoload:
-            fake_store = AsyncMock()
-            fake_store.list_tools_by_server.return_value = []
-            targets.append(
-                patch.object(srv, "_ensure_store", AsyncMock(return_value=fake_store))
-            )
         with contextlib.ExitStack() as stack:
-            for t in targets:
-                stack.enter_context(t)
+            stack.enter_context(patch.object(srv, "_pool", pool))
             raw = await srv.mcp_list_tools(server="fs")
         return _json.loads(raw)
 
@@ -337,7 +324,7 @@ class TestMCPListToolsSingleRead:
 
     @pytest.mark.asyncio
     async def test_connected_lists_live_tools(self, restore_root_logger):
-        """auto_load=false → the live built-in MCP tools/list is the source."""
+        """The live built-in MCP tools/list is ALWAYS the source now."""
         srv = _import_mcp_server()
         live = [self._live("a", "read a"), self._live("b", "read b")]
         out = await self._list(srv, live=live)
@@ -348,59 +335,17 @@ class TestMCPListToolsSingleRead:
         assert out["tools"] == live
         assert out["tool_count"] == 2
         assert "tools/list" in out["note"]
-        assert "hint" not in out
 
     @pytest.mark.asyncio
-    async def test_autoload_lists_catalog(self, restore_root_logger):
-        """auto_load=true → the catalog (registration view), not a live read."""
+    async def test_autoload_is_live_too(self, restore_root_logger):
+        """auto_load servers list live as well — the wrapper no longer keeps a
+        catalog branch; the host reconcile decides load semantics."""
         srv = _import_mcp_server()
-        out = await self._list(srv, autoload=True)
+        live = [self._live("a")]
+        out = await self._list(srv, live=live, autoload=True)
 
-        assert out["status"] == "ok"
-        assert out["connected"] is True
-        assert out["source"] == "catalog"
-        assert out["tools"] == []
-        assert out["tool_count"] == 0
-
-    @pytest.mark.asyncio
-    async def test_autoload_recovers_inputSchema_from_catalog(self, restore_root_logger):
-        """auto_load catalog rows must recover their stored inputSchema — an
-        empty one would register the proxy with no parameters."""
-        import contextlib
-        import json as _json
-
-        srv = _import_mcp_server()
-        conn = MagicMock()
-        conn.status = ServerStatus.CONNECTED
-        conn.config = ServerConfig(name="fs", command="x", auto_load=True)
-        pool = MagicMock()
-        pool.get_server.return_value = conn
-        fake_store = AsyncMock()
-        fake_store.list_tools_by_server.return_value = [{
-            "name": "search",
-            "description": "search things",
-            "server": "fs",
-            "full_name": "fs__search",
-            "input_schema": _json.dumps({
-                "name": "search",
-                "description": "search things",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {"q": {"type": "string"}},
-                },
-            }),
-        }]
-
-        with contextlib.ExitStack() as stack:
-            stack.enter_context(patch.object(srv, "_pool", pool))
-            stack.enter_context(
-                patch.object(srv, "_ensure_store", AsyncMock(return_value=fake_store))
-            )
-            raw = await srv.mcp_list_tools(server="fs")
-        out = _json.loads(raw)
-
-        assert out["source"] == "catalog"
-        assert out["tools"][0]["inputSchema"]["properties"]["q"]["type"] == "string"
+        assert out["source"] == "live"
+        assert out["tools"] == live
 
     @pytest.mark.asyncio
     async def test_connected_empty_tools(self, restore_root_logger):
@@ -430,70 +375,80 @@ class TestMCPListToolsSingleRead:
         assert "pool boom" in out["error"]
 
 
-class TestCaptureClientEmbeddings:
-    """The initialize middleware stores ``capabilities.extensions["embeddings"]``
-    (mcp ≥2.0 handshake params) for the semantic warm-up."""
+class TestEagerSetFromDb:
+    """The wrapper derives its startup eager-connect set from the shared
+    catalog's persisted ``server.runtime`` (a direct file read — the boot
+    ordering leaves no handshake channel available)."""
 
-    def test_captures_embeddings_from_initialize(self, restore_root_logger):
-        import asyncio as _asyncio
-        from types import SimpleNamespace
+    @staticmethod
+    def _write_db(path, servers):
+        import sqlite3
 
-        from mcp.types import (
-            ClientCapabilities,
-            Implementation,
-            InitializeRequest,
-            InitializeRequestParams,
-        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS server ("
+                "name TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '', "
+                "enabled INTEGER NOT NULL DEFAULT 1, runtime TEXT, "
+                "error_reason TEXT, last_runtime TEXT)"
+            )
+            for name, runtime in servers:
+                conn.execute(
+                    "INSERT OR REPLACE INTO server(name, runtime) VALUES (?, ?)",
+                    (name, runtime),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_absent_db_returns_none(self, restore_root_logger, tmp_path, monkeypatch):
+        monkeypatch.setenv("SLIFE_TOOLS_DB", str(tmp_path / "none.db"))  # never written
+        srv = _import_mcp_server()
+        assert srv._eager_set_from_db() is None
+
+    def test_reads_connected_only(self, restore_root_logger, tmp_path, monkeypatch):
+        db = tmp_path / "tools.db"
+        self._write_db(db, [
+            ("good", "CONNECTED"),       # eager
+            ("fresh", None),             # no CONNECTED record → not eager
+            ("bad", "ERROR"),            # previously failed → not eager
+            ("down", "DISCONNECTED"),    # manually dropped → not eager
+        ])
+        monkeypatch.setenv("SLIFE_TOOLS_DB", str(db))
+        srv = _import_mcp_server()
+        assert srv._eager_set_from_db() == {"good"}
+
+    @pytest.mark.asyncio
+    async def test_auto_connect_skips_non_eager(self, restore_root_logger, tmp_path, monkeypatch):
+        db = tmp_path / "tools.db"
+        self._write_db(db, [("good", "CONNECTED"), ("bad", "ERROR")])
+        monkeypatch.setenv("SLIFE_TOOLS_DB", str(db))
 
         srv = _import_mcp_server()
-        req = InitializeRequest(
-            params=InitializeRequestParams(
-                protocolVersion="2025-06-18",
-                capabilities=ClientCapabilities(extensions={
-                    "embeddings": {"base_url": "http://host.example/v1"},
-                }),
-                clientInfo=Implementation(name="slife", version="0.1.0"),
+        pool = MagicMock()
+        pool.add_server = AsyncMock()
+        fake_config = MagicMock()
+        fake_config.load_config.return_value = {
+            "servers": {
+                "good": {"command": "echo"},
+                "bad": {"command": "echo"},
+            },
+        }
+        fake_config.resolve_server_config.side_effect = (
+            lambda name, entry: ServerConfig(
+                name=name, command="echo", enabled=entry.get("enabled", True),
             )
         )
-        mw = srv._CaptureClientEmbeddings()
-        context = SimpleNamespace(message=req)
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv, "plugin_config", fake_config),
+        ):
+            await srv._auto_connect_configured()
 
-        async def call_next(ctx):
-            return None
-
-        srv._client_embeddings = None
-        _asyncio.run(mw.on_initialize(context, call_next))
-        assert srv._client_embeddings == {"base_url": "http://host.example/v1"}
-        srv._client_embeddings = None
-
-    def test_no_embeddings_keeps_fallback(self, restore_root_logger):
-        import asyncio as _asyncio
-        from types import SimpleNamespace
-
-        from mcp.types import (
-            ClientCapabilities,
-            Implementation,
-            InitializeRequest,
-            InitializeRequestParams,
-        )
-
-        srv = _import_mcp_server()
-        req = InitializeRequest(
-            params=InitializeRequestParams(
-                protocolVersion="2025-06-18",
-                capabilities=ClientCapabilities(),
-                clientInfo=Implementation(name="other", version="1.0"),
-            )
-        )
-        mw = srv._CaptureClientEmbeddings()
-        context = SimpleNamespace(message=req)
-
-        async def call_next(ctx):
-            return None
-
-        srv._client_embeddings = None
-        _asyncio.run(mw.on_initialize(context, call_next))
-        assert srv._client_embeddings is None
+        calls = {c[0][0].name: c.kwargs for c in pool.add_server.await_args_list}
+        assert calls["good"] == {}                      # connected eagerly
+        assert calls["bad"] == {"connect": False}       # ERROR stays disconnected
 
 
 class TestSessionCapture:

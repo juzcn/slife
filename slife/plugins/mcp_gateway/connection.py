@@ -398,7 +398,7 @@ class MCPServerConnection:
         return ClientSession(
             read_stream, write_stream,
             message_handler=self._handle_notification,
-            client_info=_Impl(name="mcp-plugin", version=__version__),
+            client_info=_Impl(name="mcp-gateway", version=__version__),
         )
 
     async def _handle_notification(self, message) -> None:
@@ -871,16 +871,22 @@ class ConnectionPool:
         # a tools/list_changed notification so the agent re-syncs.
         self._on_connected = on_connected
 
-    async def add_server(self, config: ServerConfig) -> MCPServerConnection:
+    async def add_server(
+    self, config: ServerConfig, *, connect: bool | None = None,
+) -> MCPServerConnection:
         if config.name in self._connections:
             logger.info("mcp_replace server=%s", config.name)
             await self.remove_server(config.name)
         conn = MCPServerConnection(config=config, on_connected=self._on_connected)
         self._connections[config.name] = conn
-        if config.enabled:
+        # ``connect`` overrides the config default: the host's startup
+        # eager-connect set registers enabled-but-skipped servers as
+        # DISCONNECTED (no connect attempt) until mcp_connect wakes them.
+        should_connect = config.enabled if connect is None else connect
+        if should_connect:
             await conn.connect()
         else:
-            logger.info("mcp_server_disabled name=%s", config.name)
+            logger.info("mcp_server_not_connected name=%s enabled=%s", config.name, config.enabled)
         return conn
 
     async def remove_server(self, name: str) -> None:
@@ -892,13 +898,28 @@ class ConnectionPool:
     async def disconnect_server(self, name: str) -> None:
         """Disconnect a server without removing it from the pool.
 
-        Keeps the server config in the pool (with enabled=False) so it can
-        be re-enabled later without re-adding from config.
+        Keeps the server config in the pool so it can be re-enabled later
+        without re-adding from config.
         """
         conn = self._connections.get(name)
         if conn is None:
             return
         await conn.disconnect()
+
+    async def connect_server(self, name: str) -> None:
+        """Force a fresh connect attempt on a registered server (mcp_connect).
+
+        A server in DISCONNECTED/FAILED state is re-tried now rather than
+        waiting for the health monitor's backoff; a fresh ``connect()`` clears
+        its stuck error/backoff and (on success) fires the host's
+        list_changed reconcile.  No-op if already CONNECTED.
+        """
+        conn = self._connections.get(name)
+        if conn is None:
+            return
+        if conn.status == ServerStatus.CONNECTED:
+            return
+        await conn.connect()
 
     def get_server(self, name: str) -> MCPServerConnection | None:
         return self._connections.get(name)
@@ -927,6 +948,7 @@ class ConnectionPool:
                 "enabled": conn.config.enabled,
                 "auto_load": conn.config.auto_load,
                 "description": conn.config.description,
+                "source": conn.config.source,
             }
             for name, conn in self._connections.items()
         ]
@@ -946,6 +968,7 @@ class ConnectionPool:
                 "args": conn.config.args,
                 "url": conn.config.url,
                 "description": conn.config.description,
+                "source": conn.config.source,
             }
             for name, conn in self._connections.items()
         ]

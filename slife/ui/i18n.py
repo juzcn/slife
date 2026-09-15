@@ -270,6 +270,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "⏳ starting…",
         "zh": "⏳ 启动中…",
     },
+    "status_tool_sync": {
+        "en": "⟳ syncing tool registry…",
+        "zh": "⟳ 工具注册表同步中",
+    },
     "status_processing": {
         "en": "⏳ processing",
         "zh": "⏳ 处理中",

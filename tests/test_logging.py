@@ -1,9 +1,9 @@
 """Tests for slife.logfmt — log-dir resolution contract.
 
-mcp-plugin is a built-in slife plugin, so its log directory resolves like
+mcp-gateway is a built-in slife plugin, so its log directory resolves like
 every other built-in plugin's: ``SLIFE_LOG_DIR`` when the host exported it
 (the per-session log then lands next to the main session log), else
-``<slife data dir>/logs``.  There is no ``~/.mcp-plugin/logs`` standalone
+``<slife data dir>/logs``.  There is no ``~/.mcp-gateway/logs`` standalone
 location and no ``MCP_PLUGIN_LOG_DIR`` override.
 """
 
@@ -23,7 +23,7 @@ class TestResolveLogDir:
         monkeypatch.setenv("MCP_PLUGIN_LOG_DIR", str(tmp_path / "old" / "logs"))
         assert resolve_log_dir() == tmp_path / "slife" / "logs"
 
-    def test_mcp_plugin_log_dir_is_ignored(self, monkeypatch, tmp_path):
+    def test_mcp_gateway_log_dir_is_ignored(self, monkeypatch, tmp_path):
         """The folded plugin has no MCP_PLUGIN_LOG_DIR override."""
         monkeypatch.delenv("SLIFE_LOG_DIR", raising=False)
         monkeypatch.setenv("MCP_PLUGIN_LOG_DIR", str(tmp_path / "custom" / "logs"))

@@ -129,6 +129,7 @@ def build_turn_prompt(
     presence_events: list[tuple[float, str]] | None = None,
     schedule_status: list[dict] | None = None,
     restarted: bool = False,
+    tools_evicted: list[str] | None = None,
 ) -> str:
     """Render the turn prompt injected at the start of each turn.
 
@@ -153,6 +154,10 @@ def build_turn_prompt(
 
     *restarted* is the "system restarted" flag — set once by the loop on
     the first turn after a session restore.
+
+    *tools_evicted* lists tools the threshold eviction unloaded at this
+    turn's boundary — the model needs to know they left its tool list (and
+    how to reload them).  Only passed when non-empty.
     """
     now = datetime.now().astimezone()
     last_usage_pct = (
@@ -184,6 +189,7 @@ def build_turn_prompt(
         presence_events=rendered_presence,
         schedule_status=rendered_schedule,
         restarted=restarted,
+        tools_evicted=tools_evicted or [],
     ).strip()
 
 

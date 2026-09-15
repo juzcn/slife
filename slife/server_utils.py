@@ -533,7 +533,7 @@ def create_plugin_server(
 
     # "slife-memdb" → suffix="memdb", logger_name="slife_memdb".  When a host
     # spawned us it exports SLIFE_PLUGIN_NAME (the plugin's key), which wins —
-    # e.g. mcp-plugin's name-derived suffix would be "plugin", but the parent
+    # e.g. mcp-gateway's name-derived suffix would be "plugin", but the parent
     # names the log after the plugin ("_mcp.log", not "_plugin.log").
     service_suffix = os.environ.get("SLIFE_PLUGIN_NAME") or (
         name.split("-", 1)[-1] if "-" in name else name

@@ -9,7 +9,7 @@ import os
 import time as _time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, AbstractSet, Protocol
 
 from cachetools import FIFOCache
 
@@ -21,7 +21,36 @@ from slife.tools.registry import ToolRegistry
 from slife.logfmt import format_turn_ts, request_scope, elapsed
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
+if TYPE_CHECKING:
+    from slife.tools.catalog_service import ToolCatalogService
+
 logger = logging.getLogger(__name__)
+
+
+def _function_from_schema(name: str, schema_json: str | None) -> dict | None:
+    """An OpenAI function definition from the catalog's ``schema`` column.
+
+    The column stores the compact tool descriptor ``{name, description,
+    inputSchema}``.  Returns None when absent/unparseable so the caller falls
+    back to the materialized instance.
+    """
+    if not schema_json:
+        return None
+    try:
+        desc = json.loads(schema_json)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(desc, dict):
+        return None
+    return {
+        "type": "function",
+        "function": {
+            "name": desc.get("name") or name,
+            "description": desc.get("description") or "",
+            "parameters": desc.get("inputSchema")
+                          or {"type": "object", "properties": {}},
+        },
+    }
 
 
 class AgentCancelled(Exception):
@@ -279,9 +308,21 @@ class AgentLoop:
         stream_timeout: float | None = None,
         stream_max_retries: int | None = None,
         stream_stall_timeout: float | None = None,
+        tool_catalog: "ToolCatalogService | None" = None,
+        load_threshold: int = 100,
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
+        #: Shared tool catalog — the per-turn injection snapshot and the
+        #: turn-boundary eviction consult it.  None (no catalog) keeps the
+        #: historical all-registered injection with no eviction.
+        self.tool_catalog = tool_catalog
+        self.load_threshold = load_threshold if load_threshold and load_threshold > 0 else 100
+        #: Tool names injectable THIS turn (frozen; re-read at the next run).
+        #: None ⇒ fall back to the whole registry (no catalog).
+        self._turn_snapshot: AbstractSet[str] | None = None
+        #: Tools evicted at this turn's boundary (footnote in _turn_prompt).
+        self._evicted_this_turn: list[str] = []
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
         self.tool_timeout = (
@@ -673,6 +714,9 @@ class AgentLoop:
         # presence_events are NOT drained here — _auto_invoke reads them only
         # when the prompt is actually recorded, so a cancelled turn doesn't lose
         # them.
+        if self._evicted_this_turn:
+            kwargs["tools_evicted"] = list(self._evicted_this_turn)
+            self._evicted_this_turn = []  # consumed — reset for the next turn
         return kwargs
 
     async def _auto_invoke(
@@ -820,6 +864,65 @@ class AgentLoop:
             if chunk.usage:
                 stream_usage = chunk.usage
 
+    async def _tools_for_request(self) -> list[dict]:
+        """The OpenAI function list for the NEXT LLM request.
+
+        Schemas are read from the CATALOG DB (the ``schema`` column — the
+        single source: natives' descriptors are seeded from their defs at
+        session start, mcp/rest-api rows from the reconcile), NOT from tool
+        code or a live MCP fetch.  A row that is missing or lacks a schema
+        (e.g. a meta tool not yet mirrored while its gateway is down) falls
+        back to the materialized instance.  No catalog → the whole registry
+        (the historical behavior).
+        """
+        if self.tool_catalog is None:
+            return self.tool_registry.to_openai_functions(projection=self._turn_snapshot)
+        if self._turn_snapshot is None:
+            return self.tool_registry.to_openai_functions()
+        try:
+            rows = await self.tool_catalog.store.rows_for_names(self._turn_snapshot)
+        except Exception:
+            logger.exception("tools_schema_read_failed — falling back to instances")
+            return self.tool_registry.to_openai_functions(projection=self._turn_snapshot)
+        by_name = {r["name"]: r["schema"] for r in rows}
+        result: list[dict] = []
+        for tool in self.tool_registry.list_tools():
+            if tool.name not in self._turn_snapshot:
+                continue
+            func = _function_from_schema(tool.name, by_name.get(tool.name))
+            result.append(func if func is not None else tool.to_openai_function())
+        return result
+
+    async def _refresh_turn_snapshot(self) -> None:
+        """Read the catalog's loaded set once per turn (freeze for the turn).
+
+        Best-effort: a catalog hiccup degrades to the whole registry for the
+        sequence, so a transient db error never folds the tool list.
+        """
+        if self.tool_catalog is None:
+            self._turn_snapshot = None
+            return
+        try:
+            self._turn_snapshot = await self.tool_catalog.snapshot_loaded()
+        except Exception:
+            logger.exception("turn_snapshot_failed — injecting full registry")
+            self._turn_snapshot = None
+
+    async def _maybe_evict(self) -> list[str]:
+        """Turn-boundary threshold eviction (harness-side LRU squeeze).
+
+        ONLY the catalog's write owner (the main agent) evicts; a subagent
+        worker inherits the shared budget and never squeezes it.  Returns
+        the evicted names for the turn-prompt footnote.
+        """
+        if self.tool_catalog is None:
+            return []
+        try:
+            return await self.tool_catalog.evict_to_threshold()
+        except Exception:
+            logger.exception("turn_evict_failed")
+            return []
+
     async def _process_stream(
         self,
         history: MessageHistory,
@@ -856,6 +959,10 @@ class AgentLoop:
         # One-element holder so `emitted_any` survives a mid-stream raise —
         # the retry path needs to know partial output was already shown.
         emitted: list[bool] = [False]
+        # The tool list is computed ONCE per stream — every retry attempt sends
+        # the identical list (a changing tools array would defeat the prompt
+        # cache prefix AND silently reorder tools the model may call mid-turn).
+        request_tools = await self._tools_for_request()
         while True:
             attempts += 1
             try:
@@ -872,7 +979,14 @@ class AgentLoop:
                     # meta-params (`_timeout`/`_async`/`_approve`) are a
                     # system-prompt contract (slife.j2), not per-tool schema
                     # fields — that saves ~3 params × 60 tools per request.
-                    tools=self.tool_registry.to_openai_functions(),
+                    #
+                    # With a catalog, only this turn's loaded snapshot is
+                    # injected, and the schemas come FROM THE CATALOG DB
+                    # (stability within the turn keeps the tool-list prefix of
+                    # the prompt cache intact); without one the historical
+                    # all-registered list is sent.  Computed once OUTSIDE the
+                    # retry loop so every attempt sends byte-identical tools.
+                    tools=request_tools,
                     cancel_event=self._cancel_event,
                 )
                 if self.stream_timeout is not None:
@@ -1339,6 +1453,19 @@ class AgentLoop:
                         # huge window that never trims must not grow the list
                         # without bound.
                         del self._context_turn_dates[_MAX_CONTEXT_DATES:]
+
+                # Threshold eviction BEFORE the snapshot: the oldest-by-LRU loaded
+                # tools over the budget leave the tool list for this turn,
+                # and the footnote tells the model.  Never mid-turn — the
+                # injected list stays stable within a turn.
+                self._evicted_this_turn = await self._maybe_evict()
+
+                # Tool-list snapshot for THIS turn: read the catalog's loaded
+                # set before the loop iterates (and before _turn_prompt, so
+                # eviction changes — if any — are visible to the injector and
+                # to both cache prefixes).  Frozen for the whole turn: retries
+                # and mid-turn loads never silently reorder the tool list.
+                await self._refresh_turn_snapshot()
 
                 # Context usage is computed ONCE and shared: _turn_prompt
                 # reports it as the usage %, and the TUI status bar.

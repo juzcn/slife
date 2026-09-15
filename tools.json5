@@ -333,5 +333,13 @@
       }
     }
   },
-  skill: {}
+  skill: {},
+
+  // Unified tool-system knobs (DESIGNER_NOTES §8.5) — the loaded-function-tool
+  // threshold the turn-boundary LRU eviction enforces, and an optional explicit
+  // preload list (extra names seeded `loaded` at session start).
+  tool_load: {
+    threshold: 100,
+    preload: []
+  }
 }

@@ -79,6 +79,18 @@ def get_tools_config_path() -> Path:
     return get_data_dir() / "tools.json5"
 
 
+def get_tools_db_path() -> Path:
+    """Path to the unified tool-catalog database (``tools.db``).
+
+    ``SLIFE_TOOLS_DB`` wins when set (a test/dev override — mirrors
+    ``SLIFE_MEMDB_DB``), else ``<data_dir>/tools.db``.
+    """
+    env_path = os.environ.get("SLIFE_TOOLS_DB")
+    if env_path:
+        return Path(env_path)
+    return get_data_dir() / "tools.db"
+
+
 def get_logs_dir() -> Path:
     """Directory for per-session log files.
 

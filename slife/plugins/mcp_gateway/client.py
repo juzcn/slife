@@ -230,7 +230,7 @@ class MCPClient:
         # Extra host params the server should see: carried on the standard
         # ``initialize`` request in ``capabilities.extensions`` (mcp ≥2.0;
         # the ``clientInfo.other`` slot was dropped) — e.g. the host's active
-        # embedding endpoint when connecting to the mcp-plugin wrapper.
+        # embedding endpoint when connecting to the mcp-gateway wrapper.
         self._client_info_extra = client_info_extra
         # Optional async callback(method, params) invoked for server-initiated
         # notifications (e.g. ``notifications/tools/list_changed``).  Must

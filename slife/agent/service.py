@@ -21,7 +21,7 @@ from collections import deque
 from datetime import datetime
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
@@ -38,6 +38,9 @@ from slife.agent.plugins import (
 )
 from slife.plugins.spec import PLUGIN_SPECS
 from slife.a2a.identity import HUMAN
+
+if TYPE_CHECKING:
+    from slife.tools.catalog_service import ToolCatalogService
 from slife.tools.factory import create_tools_from_config
 from slife.mcp.tool_adapter import create_proxy_tools
 from slife.platform import terminate_process_sync
@@ -217,6 +220,17 @@ class AgentService:
         )
         # Backfill the registry reference (created by the factory)
         self._tool_ctx.registry = self.tool_registry
+        #: Shared tool catalog (SE tools.db) — opened async in
+        #: :meth:`_init_catalog` (start_inbox).  Best-effort: None on failure
+        #: degrades the loop to today's all-registered injection.
+        self._catalog: "ToolCatalogService | None" = None
+        #: TUI hook: called with True/False around the blocking startup
+        #: tools.json5 → db sync (the status bar shows "工具注册表同步中").
+        self._on_catalog_sync: Callable[[bool], None] | None = None
+        #: Host-side semantic drainer over the catalog (main agent only).
+        self._catalog_semantic = None
+        self._catalog_semantic_task: asyncio.Task | None = None
+        self._tool_load_threshold = getattr(config, "tool_load_threshold", 100) or 100
         self.llm_client = LLMClient(config.active_model)
         # Max tool result = tool_result_ceiling × context_window × 3 chars/token
         max_tool_result_chars = int(
@@ -261,6 +275,8 @@ class AgentService:
             advance_context_start=self.advance_context_start,
             stream_timeout=subagent_stream_timeout,
             stream_max_retries=0 if is_subagent else None,
+            tool_catalog=self._catalog,
+            load_threshold=self._tool_load_threshold,
         )
         self.message_history = MessageHistory(
             system_prompt=build_system_prompt(self.config),
@@ -839,6 +855,8 @@ class AgentService:
         for stale in old_names - new_names:
             self.tool_registry.unregister(stale)
         lifecycle.registered_tools = new_names
+        if not self.is_subagent:
+            await self._mirror_plugin_tools_catalog(name, tagged)
         logger.debug(
             "plugin_tools_resync name=%s added=%d removed=%d total=%d",
             name, len(new_names - old_names), len(old_names - new_names),
@@ -1102,20 +1120,22 @@ class AgentService:
             logger.debug("mcp_tools_changed_sync_failed", exc_info=True)
 
     async def _sync_mcp_proxies(self) -> None:
-        """Reconcile external MCP tool proxies (on-demand model).
+        """Reconcile external MCP proxies + mirror server runtime into the catalog.
 
         Reads the configured server list LIVE from the wrapper (``mcp_list``),
-        so neither slife nor subagents need tools.json5.  Two jobs:
+        so neither slife nor subagents need tools.json5:
 
-        1. Servers with ``auto_load: true`` get their tools bulk-registered
-           (full-diff, unchanged — ``_discover_and_register_external_tools``).
-        2. Every OTHER loaded EXTERNAL proxy (an on-demand ``mcp_tool_load``)
-           is validated via ``__mcp_get_tool`` — if the tool vanished, its
-           server disconnected, or it was disabled, the proxy is unregistered.
-
-        This is the ONLY tool-maintenance path for non-auto_load servers:
-        external tools are on-demand by default and there is no bulk
-        registration for them.
+        1. Mirror ``server`` rows (runtime/enabled/error from ``__check``)
+           into the shared catalog — main agent only (the shared db is the
+           worker's read view).  These rows drive the effective-status join.
+        2. ``auto_load`` servers' tools bulk-registered via
+           ``_discover_and_register_external_tools`` (full-diff, which also
+           upserts catalog tool rows + re-embeds on schema change).
+        3. On-demand EXTERNAL proxies are NOT unregistered on disconnect /
+           disable anymore — the catalog's effective-status join hides them
+           (DESIGNER NOTES §8.5 state model).  They leave the registry only
+           when their server is REMOVED from config (or on ``mcp_remove`` →
+           ``_unregister_external_server_tools``).
         """
         from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 
@@ -1133,56 +1153,170 @@ class AgentService:
             except Exception as e:
                 logger.debug("mcp_reconcile_list_failed err=%s", e)
                 servers = []
+
+            configured: set[str] = set()
             auto_servers: set[str] = set()
             if isinstance(servers, list):
                 for s in servers:
-                    if (
-                        isinstance(s, dict)
-                        and s.get("enabled") is not False
-                        and s.get("auto_load") is True
-                        and s.get("name")
-                    ):
+                    if not (isinstance(s, dict) and s.get("name")):
+                        continue
+                    configured.add(s["name"])
+                    if s.get("enabled") is not False and s.get("auto_load") is True:
                         auto_servers.add(s["name"])
 
+            # 1 — mirror server rows (main owner writes; workers read).
+            if not self.is_subagent and self._catalog is not None:
+                await self._mirror_mcp_server_rows(client)
+
+            # 2 — auto_load servers: full-diff register + catalog upsert.
             for name in auto_servers:
                 try:
                     await self._discover_and_register_external_tools(server_name=name)
                 except Exception:
                     logger.debug("mcp_auto_load_sync_failed server=%s", name, exc_info=True)
 
-            # Validate on-demand proxies (those not owned by an auto_load
-            # server — the full-diff path owns auto_load tools).
+            # 3 — a proxy whose server left the CONFIG is dropped; a merely
+            # disconnected/disabled server keeps it (the join hides it).
             for tool in list(self.tool_registry.list_tools()):
                 if not (isinstance(tool, MCPProxyTool) and tool._route == ProxyRoute.EXTERNAL):
                     continue
-                if getattr(tool, "_server", "") in auto_servers:
+                if getattr(tool, "_server", "") in configured:
                     continue
-                try:
-                    raw = await client.call_tool("__mcp_get_tool", {"full_name": tool.name})
-                    data = json.loads(raw)
-                except Exception:
-                    data = {"status": "error"}
-                if data.get("status") != "ok" or data.get("enabled") is not True:
-                    if self.tool_registry.unregister(tool.name):
-                        logger.debug("mcp_proxy_reconciled_unload full_name=%s", tool.name)
+                if self.tool_registry.unregister(tool.name):
+                    logger.debug("mcp_proxy_server_removed full_name=%s", tool.name)
         finally:
             self._mcp_reconciling = False
+
+    async def on_plugin_child_exit(self, name: str) -> None:
+        """A plugin child exited (its watchdog is about to restart it).
+
+        If it was the mcp gateway, every external server it managed is now
+        unreachable — mark their catalog rows DISCONNECTED so the effective-
+        status join drops their tools from injection immediately (the
+        restart's reconcile restores).  Best-effort.
+        """
+        if name != "mcp-gateway":
+            return
+        catalog = self._catalog
+        if catalog is None or self.is_subagent:
+            return
+        try:
+            await catalog.mark_all_servers_down()
+        except Exception as e:
+            logger.debug("catalog_gateway_down_mark_failed err=%s", e)
+
+    async def _mirror_mcp_server_rows(self, client) -> None:
+        """Upsert catalog ``server`` rows from the wrapper's live ``__check``."""
+        catalog = self._catalog
+        if catalog is None:
+            return
+        try:
+            raw = await client.call_tool("__check")
+            data = json.loads(raw)
+            servers = data.get("servers") if isinstance(data, dict) else None
+            if not isinstance(servers, list):
+                return
+        except Exception as e:
+            logger.debug("mcp_reconcile_check_failed err=%s", e)
+            return
+
+        # wrapper status → catalog runtime (ServerStatus enum values).
+        runtime_map = {
+            "connected": "CONNECTED",
+            "connecting": "CONNECTING",
+            "disconnected": "DISCONNECTED",
+            "failed": "ERROR",
+        }
+        for s in servers:
+            name = s.get("name")
+            if not name:
+                continue
+            status = str(s.get("status", "disconnected")).lower()
+            runtime = runtime_map.get(status, "DISCONNECTED")
+            reason = ""
+            if s.get("needs_user_auth"):
+                runtime = "ERROR"
+                reason = "needs oauth re-authorization"
+            elif s.get("error"):
+                reason = str(s["error"])
+            src = s.get("source")
+            source_json = json.dumps(src, ensure_ascii=False) if isinstance(src, dict) else None
+            try:
+                await catalog.sync_server_status(
+                    name,
+                    description=s.get("description", ""),
+                    enabled=s.get("enabled", True) is not False,
+                    runtime=runtime,
+                    error_reason=reason,
+                    source=source_json,
+                )
+            except Exception as se:
+                # one server's db write failing (e.g. a transient lock) must
+                # never crash the reconcile loop — the next pass retries.
+                logger.debug("catalog_server_mirror_failed server=%s err=%s", name, se)
+
+    async def _upsert_external_catalog_rows(
+        self, server_name: str, tools: list[dict], *, loaded: bool,
+    ) -> None:
+        """Upsert a server's tool rows into the shared catalog.
+
+        ``category`` is ``rest-api`` when the mirrored provenance says so
+        (``source.type == "rest_api"``), else ``mcp``.  A schema text change
+        drops the stale embedding (the drainer re-embeds); ``on_saved`` is the
+        caller's job so a batch wakes the drainer once.
+        """
+        catalog = self._catalog
+        if catalog is None:
+            return
+        category = await catalog.server_category(server_name)
+        for t in tools:
+            tname = t.get("name")
+            if not tname:
+                continue
+            full_name = t.get("full_name") or f"{server_name}__{tname}"
+            descriptor = json.dumps(
+                {
+                    "name": tname,
+                    "description": t.get("description", "") or "",
+                    "inputSchema": t.get("inputSchema", {"type": "object", "properties": {}}),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            await catalog.upsert_external_tool(
+                full_name,
+                server=server_name,
+                description=t.get("description", "") or "",
+                schema=descriptor,
+                category=category,
+                loaded=loaded,
+            )
 
     async def _register_external_server_tools(self, name: str = "", **kwargs) -> None:
         """mcp_set / mcp_set_enabled connected a server — reconcile proxies.
 
-        (Persistence happens inside mcp-plugin; this only touches the registry.)
+        (Persistence happens inside mcp-gateway; this only touches the registry.)
         """
         if name:
             await self._sync_mcp_proxies()
 
     async def _unregister_external_server_tools(self, name: str = "", **kwargs) -> None:
-        """mcp_remove / mcp_set_enabled disabled a server — drop its tools."""
+        """mcp_remove removed a server from config — drop its proxies AND its
+        catalog rows.
+
+        This is the ONLY catalog-deletion path for a server (disable keeps
+        rows — the effective-status join expresses it; DESIGNER NOTES §8.5).
+        """
         if not name:
             return
         removed = self.tool_registry.unregister_by_prefix(f"{name}__")
         if removed:
             logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
+        if not self.is_subagent and self._catalog is not None:
+            try:
+                await self._catalog.store.remove_server(name)
+            except Exception as e:
+                logger.debug("catalog_server_remove_failed server=%s err=%s", name, e)
 
     async def _notify_subagents_plugin_restart(self, name: str, port: int) -> None:
         """Tell every live subagent a plugin restarted on a new port.
@@ -1291,10 +1425,51 @@ class AgentService:
         self._plugins[name].registered_tools = new_names
         for tool in proxy_tools:
             self.tool_registry.register(tool)
+        if not self.is_subagent:
+            await self._mirror_plugin_tools_catalog(name, tagged)
         logger.debug(
             "%s_tools_registered count=%d removed=%d", name, len(proxy_tools),
             len(old_names - new_names),
         )
+
+    async def _mirror_plugin_tools_catalog(self, name: str, tagged: list[dict]) -> None:
+        """Mirror a plugin's bare-name tools into the shared catalog.
+
+        The job-coding plugin's proxies are the ``job`` category, every other
+        built-in plugin tool is ``builtin``.  Stateless proxies stay
+        registered, so their catalog status is ``loaded`` (they inject like
+        natives).  Best-effort.
+        """
+        if self._catalog is None:
+            return
+        import slife.tools.catalog_service as _cs
+
+        cat = "job" if name == _cs.JOB_PLUGIN_NAME else "builtin"
+        disabled = (
+            self.config.disabled_jobs
+            if cat == "job" else self.config.disabled_skills
+        )
+        for t in tagged:
+            try:
+                descriptor = json.dumps(
+                    {
+                        "name": t.get("name", ""),
+                        "description": t.get("description", "") or "",
+                        "inputSchema": t.get("inputSchema", {"type": "object", "properties": {}}),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                await self._catalog.store.upsert_tool(
+                    t["name"],
+                    description=t.get("description", "") or "",
+                    category=cat,
+                    schema=descriptor,
+                    enabled=t["name"] not in disabled,
+                    status="loaded",
+                )
+            except Exception as e:
+                logger.debug("plugin_catalog_upsert_failed name=%s tool=%s err=%s", name, t.get("name"), e)
 
     # ── MCP tool discovery & registration ────────────────────────────
 
@@ -1359,6 +1534,17 @@ class AgentService:
                 hint=f"MCP server '{server_name}' connected.",
                 replace=True,
             )
+
+            # Upsert this server's tool rows into the shared catalog (the
+            # unified search/load surface).  Schema change → re-embed; the
+            # host semantic drainer is woken below.
+            if not self.is_subagent and self._catalog is not None:
+                await self._upsert_external_catalog_rows(
+                    server_name, external, loaded=True,
+                )
+                if self._catalog_semantic is not None:
+                    self._catalog_semantic.on_saved()
+
             logger.debug(
                 "mcp_tools_registered server=%s count=%d",
                 server_name, len(proxy_tools),
@@ -1397,6 +1583,37 @@ class AgentService:
             *(lc.stop() for lc in list(self._plugins.values())),
             return_exceptions=True,
         )
+        # Close the shared catalog AFTER the plugin clients (a late reconcile
+        # must never write a closed db).  Mandatory: an unclosed aiosqlite
+        # connection keeps its non-daemon worker thread alive and BLOCKS
+        # interpreter exit (pytest hangs after a green run).
+        await self.close_catalog()
+
+    async def close_catalog(self) -> None:
+        """Teardown the shared tool catalog: drop the semantic drainer + close
+        the db connection.  Idempotent; no-op when never opened."""
+        if self._catalog_semantic_task is not None and not self._catalog_semantic_task.done():
+            self._catalog_semantic_task.cancel()
+            try:
+                await self._catalog_semantic_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._catalog_semantic_task = None
+        if self._catalog_semantic is not None:
+            try:
+                await self._catalog_semantic.close()
+            except Exception as e:
+                logger.debug("catalog_semantic_close_error err=%s", e)
+            self._catalog_semantic = None
+        if self._catalog is not None:
+            try:
+                await self._catalog.store.close()
+            except Exception as e:
+                logger.debug("catalog_close_error err=%s", e)
+            self._catalog = None
+            self._tool_ctx.catalog = None
+            if self.agent_loop is not None:
+                self.agent_loop.tool_catalog = None
 
     def kill_child_processes(self) -> None:
         """Synchronous best-effort child process cleanup.
@@ -2093,12 +2310,103 @@ class AgentService:
         """True once every attempted plugin spawn has converged."""
         return self._startup_settled.is_set()
 
+    async def _init_catalog(self) -> None:
+        """Open the shared tools.db + build the catalog service, best-effort.
+
+        Runs once per process — main agent and subagent workers all open the
+        same file (WAL: concurrent readers, one writer at a time).  Startup
+        seed (the session default "all registered loaded") and eviction
+        policy are main-owner only (``write_owner``); a subagent worker
+        reads the same shared state and can flip load status but never
+        reseeds or evicts.  Failure degrades to no catalog: the loop injects
+        the whole registry as today, no eviction, no unified search.
+        """
+        if self._catalog is not None:
+            return
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+        from slife.paths import get_tools_db_path
+
+        try:
+            store = CatalogStore(get_tools_db_path())
+            await store.open()
+            svc = ToolCatalogService(
+                store,
+                threshold=self._tool_load_threshold,
+                write_owner=not self.is_subagent,
+            )
+            await svc.session_start()
+            # Session seed from everything currently registered (natives +
+            # built-in plugin tools).  External mcp/rest-api rows are seeded
+            # by the reconcile extension as their servers connect.
+            await svc.seed_inventory(self.tool_registry.list_tools())
+            self._catalog = svc
+            self._tool_ctx.catalog = svc
+            self.tool_registry.set_catalog(svc)
+            # tools.json5 IS the authoritative config — mirror its mcp/rest-api
+            # sections into the db (hand-edits and agent-tool edits alike).
+            # BLOCKING by design: the TUI shows "工具注册表同步中" while it runs
+            # and startup stays gated until the registry is coherent.
+            if not self.is_subagent:
+                cb = self._on_catalog_sync
+                if cb is not None:
+                    try:
+                        cb(True)
+                    except Exception:
+                        logger.debug("catalog_sync_status_failed", exc_info=True)
+                try:
+                    await self._sync_catalog_from_config()
+                finally:
+                    if cb is not None:
+                        try:
+                            cb(False)
+                        except Exception:
+                            logger.debug("catalog_sync_status_failed", exc_info=True)
+            # The loop was built in __init__ before the catalog existed.
+            self.agent_loop.tool_catalog = svc
+            self.agent_loop.load_threshold = self._tool_load_threshold
+            # Host semantic drainer — the single embedding maintainer (the
+            # retired wrapper no longer drains).  Background task so a slow
+            # endpoint never blocks start_inbox; the reconcile kicks it via
+            # on_saved when mcp rows land.
+            if not self.is_subagent:
+                from slife.tools.semantic import SemanticManager
+                self._catalog_semantic = SemanticManager(store)
+                svc.semantic_manager = self._catalog_semantic
+                self._catalog_semantic_task = asyncio.create_task(
+                    self._catalog_semantic.start(),
+                    name="catalog-semantic",
+                )
+            logger.info("catalog_initialized subagent=%s", self.is_subagent)
+        except Exception:
+            logger.exception("catalog_init_failed — continuing without catalog")
+
+    async def _sync_catalog_from_config(self) -> None:
+        """Startup db ← tools.json5 sync — tools.json5 IS the authority.
+
+        Covers BOTH hand-edits and agent-tool edits to the mcp/rest-api
+        sections: mirror server rows (enabled + category from the config) and
+        purge rows for servers removed from the config.  Blocking by design —
+        the TUI shows "工具注册表同步中" while it runs.  The live wrapper
+        reconcile refines runtime/tool rows afterwards.  Best-effort.
+        """
+        catalog = self._catalog
+        if catalog is None or self.is_subagent:
+            return
+        try:
+            from slife.plugins.mcp_gateway import config as _cfg
+            await catalog.sync_config_servers(dict(_cfg.servers()))
+        except Exception as e:
+            logger.debug("catalog_config_sync_failed err=%s", e)
+            self._catalog = None
+
     async def start_inbox(self) -> None:
         """Start the inbox background processor.
 
         Called during app startup before A2A/WeChat so the queue is
         ready to accept messages from any input channel.
         """
+        await self._init_catalog()
         if self._inbox_task is not None:
             return
         self._inbox_task = asyncio.create_task(self.inbox.run())
@@ -2116,6 +2424,7 @@ class AgentService:
                 # logged, and published for consumers.
                 server, task, _stop, host_port = start_host_server(
                     self.tool_registry,
+                    catalog=self._catalog,
                 )
                 self._host_server = (server, task, _stop, host_port)
                 os.environ["SLIFE_HOST_PORT"] = str(host_port)

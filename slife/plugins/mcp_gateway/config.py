@@ -24,7 +24,7 @@ are ordinary ``uvx mcp-openapi-proxy`` entries tagged
 The top-level ``embeddings`` section is the **fallback** embedding config: a
 connecting host may pass its own endpoint via the standard ``initialize``
 handshake's ``clientInfo``, which wins when present (see
-:mod:`mcp_plugin.embeddings`).
+:mod:`mcp_gateway.embeddings`).
 """
 
 from __future__ import annotations
@@ -303,7 +303,7 @@ def _load_raw() -> dict:
 
 
 def resolve_server_config(name: str, raw_entry: dict):
-    """Build a :class:`~mcp_plugin.connection.ServerConfig` from a raw entry.
+    """Build a :class:`~mcp_gateway.connection.ServerConfig` from a raw entry.
 
     Resolves ``${VAR}`` refs in ``env`` and ``auth.client_*`` fields.
     Args/url/headers keep their embedded refs — the connection layer

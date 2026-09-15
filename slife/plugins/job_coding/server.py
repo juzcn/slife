@@ -18,7 +18,7 @@ its declared arguments; the only LLM access is the job's own explicit
 conversation history, no agent loop.
 
 After any tool-set mutation the plugin pushes the standard MCP
-``notifications/tools/list_changed`` to connected clients (the mcp-plugin
+``notifications/tools/list_changed`` to connected clients (the mcp-gateway
 pattern), so a harness re-syncs its registry without a restart.
 
 Usage::

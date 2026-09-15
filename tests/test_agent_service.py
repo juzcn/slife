@@ -103,7 +103,7 @@ class TestAgentServiceClear:
 
 
 class TestAgentServiceMCPEnrichment:
-    """The retained MCP enrichment adapter — mcp-plugin self-hosts config,
+    """The retained MCP enrichment adapter — mcp-gateway self-hosts config,
     auto-connect and reconnection; this is the harness-side glue that wires
     the wrapper client and harvests the external servers' tools."""
 
@@ -177,8 +177,10 @@ class TestAgentServiceMCPEnrichment:
         mock_reg.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_sync_proxies_reconcile_drops_disabled_loaded_proxy(self, sample_config):
-        """An on-demand-loaded proxy whose tool is disabled is unregistered."""
+    async def test_sync_proxies_reconcile_keeps_disabled_loaded_proxy(self, sample_config):
+        """A configured server's on-demand-loaded proxy is KEPT even when its
+        server is disabled — the catalog's effective-status join hides it
+        (disable ≠ remove; remove is the only unregister path)."""
         from slife.mcp.tool_adapter import create_proxy_tools
 
         service = AgentService(sample_config)
@@ -187,38 +189,7 @@ class TestAgentServiceMCPEnrichment:
 
         async def fake_call_tool(name, arguments=None):
             if name == "mcp_list":
-                return _json.dumps([{"name": "foo", "enabled": True, "auto_load": False}])
-            if name == "__mcp_get_tool":
-                return _json.dumps({"status": "ok", "enabled": False})
-            raise AssertionError(f"unexpected tool call: {name} {arguments}")
-
-        client.call_tool = fake_call_tool
-        service._plugins["mcp-gateway"].client = client
-        proxy = create_proxy_tools(client, [
-            {"server": "foo", "name": "t1", "description": "",
-             "inputSchema": {"type": "object", "properties": {}}},
-        ])[0]
-        service.tool_registry.register(proxy)
-
-        await service._sync_mcp_proxies()
-
-        names = {t.name for t in service.tool_registry.list_tools()}
-        assert "foo__t1" not in names
-
-    @pytest.mark.asyncio
-    async def test_sync_proxies_reconcile_keeps_enabled_loaded_proxy(self, sample_config):
-        """An enabled on-demand-loaded proxy survives the reconcile."""
-        from slife.mcp.tool_adapter import create_proxy_tools
-
-        service = AgentService(sample_config)
-        client = AsyncMock()
-        client.is_connected = True
-
-        async def fake_call_tool(name, arguments=None):
-            if name == "mcp_list":
-                return _json.dumps([{"name": "foo", "enabled": True, "auto_load": False}])
-            if name == "__mcp_get_tool":
-                return _json.dumps({"status": "ok", "enabled": True})
+                return _json.dumps([{"name": "foo", "enabled": False, "auto_load": False}])
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
         client.call_tool = fake_call_tool
@@ -233,6 +204,61 @@ class TestAgentServiceMCPEnrichment:
 
         names = {t.name for t in service.tool_registry.list_tools()}
         assert "foo__t1" in names
+
+    @pytest.mark.asyncio
+    async def test_sync_proxies_reconcile_keeps_enabled_loaded_proxy(self, sample_config):
+        """An enabled on-demand-loaded proxy survives the reconcile."""
+        from slife.mcp.tool_adapter import create_proxy_tools
+
+        service = AgentService(sample_config)
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def fake_call_tool(name, arguments=None):
+            if name == "mcp_list":
+                return _json.dumps([{"name": "foo", "enabled": True, "auto_load": False}])
+            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+        client.call_tool = fake_call_tool
+        service._plugins["mcp-gateway"].client = client
+        proxy = create_proxy_tools(client, [
+            {"server": "foo", "name": "t1", "description": "",
+             "inputSchema": {"type": "object", "properties": {}}},
+        ])[0]
+        service.tool_registry.register(proxy)
+
+        await service._sync_mcp_proxies()
+
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "foo__t1" in names
+
+    @pytest.mark.asyncio
+    async def test_sync_proxies_reconcile_drops_removed_server_proxy(self, sample_config):
+        """A proxy whose server left the CONFIG is unregistered — removal is
+        the only unregister path (mcp_remove)."""
+        from slife.mcp.tool_adapter import create_proxy_tools
+
+        service = AgentService(sample_config)
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def fake_call_tool(name, arguments=None):
+            if name == "mcp_list":
+                return _json.dumps([])  # "foo" no longer configured
+            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+        client.call_tool = fake_call_tool
+        service._plugins["mcp-gateway"].client = client
+        proxy = create_proxy_tools(client, [
+            {"server": "foo", "name": "t1", "description": "",
+             "inputSchema": {"type": "object", "properties": {}}},
+        ])[0]
+        service.tool_registry.register(proxy)
+
+        await service._sync_mcp_proxies()
+
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "foo__t1" not in names
 
 
 class TestAgentServiceMCPDiscovery:
@@ -1545,6 +1571,9 @@ class TestAgentServiceInbox:
             await service.start_inbox()
 
         assert service._inbox_task is not None
+        # start_inbox opened the shared catalog — close it so the aiosqlite
+        # worker thread doesn't keep the pytest process alive past the end.
+        await service.close_catalog()
 
     @pytest.mark.asyncio
     async def test_stop_inbox_cancels_task(self, sample_config):

@@ -664,7 +664,11 @@ class TestCheckMcpFunction:
 
     @staticmethod
     def _client(payload):
-        return _FakeMcpClient(payload)
+        # the wrapper's __check now returns {"servers": [...]} only — semantic
+        # moved host-side with the retired in-memory store
+        if isinstance(payload, dict):
+            return _FakeMcpClient(payload)
+        return _FakeMcpClient({"servers": payload})
 
     @staticmethod
     def _server(name, state="running"):
@@ -727,42 +731,10 @@ class TestCheckMcpFunction:
         assert entries[0]["level"] == "warning"
 
     @pytest.mark.asyncio
-    async def test_semantic_missing_surfaces_warning(self):
-        """The wrapper's __check semantic block, when unavailable, becomes a
-        health warning alongside the per-server records (memdb-style)."""
-        payload = {
-            "servers": [self._server("fs")],
-            "semantic": {"configured": True, "available": False,
-                         "semantic_ready": False, "state": "unavailable",
-                         "model": "bge-m3", "dimension": 1024,
-                         "reason": "embeddings endpoint unreachable"},
-        }
-        entries = await check_mcp_gateway(client=self._client(payload))
-        assert [e["key"] for e in entries] == ["fs", "semantic"]
-        sem = entries[-1]
-        assert sem["level"] == "warning"
-        assert sem["value"] == "unavailable"
-        assert "endpoint unreachable" in sem["hint"]
-
-    @pytest.mark.asyncio
-    async def test_semantic_ready_reports_ok(self):
-        payload = {
-            "servers": [],
-            "semantic": {"configured": True, "available": True,
-                         "semantic_ready": True, "state": "ready",
-                         "model": "bge-m3", "dimension": 1024},
-        }
-        entries = await check_mcp_gateway(client=self._client(payload))
-        sem = next(e for e in entries if e["key"] == "semantic")
-        assert sem["level"] == "ok"
-        assert sem["value"] == "ready"
-        assert "bge-m3" in sem["hint"]
-
-    @pytest.mark.asyncio
-    async def test_legacy_bare_list_payload_still_works(self):
-        """A wrapper that returns a bare server list (no semantic block)
-        keeps the old per-server-only behavior."""
-        payload = [self._server("fs")]
+    async def test_servers_only_payload(self):
+        """The wrapper's __check returns servers only — semantic moved to the
+        host-as-plugin __check (the host owns the retired catalog's index)."""
+        payload = {"servers": [self._server("fs")]}
         entries = await check_mcp_gateway(client=self._client(payload))
         assert [e["key"] for e in entries] == ["fs"]
 

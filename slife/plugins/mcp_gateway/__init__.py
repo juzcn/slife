@@ -1,4 +1,4 @@
-"""mcp_plugin — standalone MCP gateway.
+"""mcp_gateway — standalone MCP gateway.
 
 Persistent connections to external MCP servers (stdio, SSE, streamable HTTP),
 OAuth 2.0 device-code flow, and a management CLI.  Ships with Slife as its MCP

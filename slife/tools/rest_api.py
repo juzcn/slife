@@ -13,7 +13,7 @@ connects immediately.
 import logging
 from urllib.parse import urlparse
 
-from slife.plugins.mcp_gateway import config as mcp_plugin_config
+from slife.plugins.mcp_gateway import config as mcp_gateway_config
 
 from slife.tools._config_io import _ConfigPathMixin, format_source_info
 from slife.tools.base import Tool
@@ -49,7 +49,7 @@ def _format_rest_apis(rest_apis: dict) -> str:
     for name, cfg in rest_apis.items():
         if not isinstance(cfg, dict):
             continue
-        parsed = mcp_plugin_config.parse_rest_api_entry(cfg)
+        parsed = mcp_gateway_config.parse_rest_api_entry(cfg)
         spec = parsed["spec_url"]
         base = parsed["base_url"]
         api_key = parsed["api_key"]
@@ -73,7 +73,7 @@ def get_rest_apis_summary(config_path) -> str:
     The config path is resolved by the gateway ($TOOLS_FILE), so
     *config_path* is accepted for signature compatibility and ignored.
     """
-    return _format_rest_apis(mcp_plugin_config.list_rest_apis())
+    return _format_rest_apis(mcp_gateway_config.list_rest_apis())
 
 
 class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
@@ -120,14 +120,14 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         api_key: str = kwargs.get("api_key", "")
         description: str = kwargs.get("description", "")
 
-        is_update = name in mcp_plugin_config.list_rest_apis()
-        mcp_plugin_config.save_rest_api(
+        is_update = name in mcp_gateway_config.list_rest_apis()
+        mcp_gateway_config.save_rest_api(
             name=name, spec_url=spec_url, base_url=base_url,
             api_key=api_key, description=description,
         )
         logger.info("rest_api_saved name=%s spec=%s", name, spec_url)
 
-        entry = mcp_plugin_config.build_rest_api_entry(
+        entry = mcp_gateway_config.build_rest_api_entry(
             spec_url, base_url, api_key, description,
         )
 
@@ -186,7 +186,7 @@ class RestApiRemoveTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompati
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
 
-        if not mcp_plugin_config.remove_rest_api(name):
+        if not mcp_gateway_config.remove_rest_api(name):
             return f"REST API '{name}' is not registered."
         logger.info("rest_api_removed name=%s", name)
 
@@ -212,7 +212,7 @@ class RestApiListTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibl
     }
 
     async def execute(self, **kwargs) -> str:
-        return _format_rest_apis(mcp_plugin_config.list_rest_apis())
+        return _format_rest_apis(mcp_gateway_config.list_rest_apis())
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -237,9 +237,9 @@ class RestApiSetEnabledTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIn
         name: str = kwargs["name"]
         enabled: bool = kwargs["enabled"]
 
-        if name not in mcp_plugin_config.list_rest_apis():
+        if name not in mcp_gateway_config.list_rest_apis():
             return f"'{name}' not found in rest_apis."
-        mcp_plugin_config.set_server_enabled(name, enabled)
+        mcp_gateway_config.set_server_enabled(name, enabled)
 
         ctx = getattr(self, "_ctx", None)
         mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
@@ -252,3 +252,74 @@ class RestApiSetEnabledTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIn
         state = "enabled" if enabled else "disabled"
         logger.info("rest_api_set_enabled name=%s enabled=%s", name, enabled)
         return f"[OK] REST API '{name}' {state}."
+
+
+class RestApiConnectTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
+    """Connect (or re-enable + connect) a REST API.
+
+    A REST API is a distinct management family from MCP (DESIGNER NOTES §8.5):
+    today it rides the mcp-openapi-proxy gateway, but the LLM-facing surface
+    stays REST-API-shaped so a proxy-free transport later needs no tool
+    change.  Delegates to the gateway's connect machinery under the hood.
+    """
+
+    name = "rest_api_connect"
+    category = "REST API"
+    description = (
+        "Connect (or re-enable + connect) a REST API by name. For one left "
+        "ERROR/DISCONNECTED, forces a fresh connect attempt now."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "API name, from rest_api_list."},
+        },
+        "required": ["name"],
+    }
+
+    async def execute(self, **kwargs) -> str:
+        name: str = kwargs["name"]
+        if name not in mcp_gateway_config.list_rest_apis():
+            return f"'{name}' is not a registered REST API."
+        ctx = getattr(self, "_ctx", None)
+        mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
+        if mcp is None:
+            return (f"REST API '{name}': MCP gateway client not ready — "
+                    f"it reconnects automatically; use rest_api_set_enabled to force.")
+        try:
+            raw = await mcp.call_tool("mcp_connect", {"server": name})  # type: ignore[union-attr]
+        except Exception as e:
+            logger.warning("rest_api_connect_failed name=%s err=%s", name, e)
+            return f"REST API '{name}' connect failed: {e}"
+        return raw
+
+
+class RestApiDisconnectTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
+    """Disconnect a REST API now (runtime only — stays enabled in config)."""
+
+    name = "rest_api_disconnect"
+    category = "REST API"
+    description = (
+        "Disconnect a REST API now (runtime only — stays enabled in config; "
+        "a later rest_api_connect reconnects)."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "API name, from rest_api_list."},
+        },
+        "required": ["name"],
+    }
+
+    async def execute(self, **kwargs) -> str:
+        name: str = kwargs["name"]
+        ctx = getattr(self, "_ctx", None)
+        mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
+        if mcp is None:
+            return f"REST API '{name}': MCP gateway client not ready."
+        try:
+            raw = await mcp.call_tool("mcp_disconnect", {"server": name})  # type: ignore[union-attr]
+        except Exception as e:
+            logger.warning("rest_api_disconnect_failed name=%s err=%s", name, e)
+            return f"REST API '{name}' disconnect failed: {e}"
+        return raw

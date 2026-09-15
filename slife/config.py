@@ -162,6 +162,22 @@ def _as_name_set(value) -> frozenset[str]:
     return frozenset(v for v in value if isinstance(v, str))
 
 
+def _disabled_names(section: list) -> frozenset[str]:
+    """Names with ``enabled: false`` in a ``[{name, enabled}]`` section list.
+
+    Every tools.json5 category section carries the same enable/disable
+    policy; this extracts the disabled names (never raises on a malformed
+    entry).
+    """
+    out: set[str] = set()
+    for entry in section:
+        if isinstance(entry, dict) and entry.get("enabled") is False:
+            name = entry.get("name")
+            if isinstance(name, str) and name:
+                out.add(name)
+    return frozenset(out)
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a single LLM model."""
@@ -370,6 +386,15 @@ class Config:
     # optional (failure warns and the session continues).
     plugins_required: frozenset[str] = field(default_factory=frozenset)
     cli_tools: dict = field(default_factory=dict)
+    #: Unified tool-system knobs from tools.json5's ``tool_load`` section —
+    #: the loaded-function-tool threshold (default 100) and an optional
+    #: explicit preload list (extra names seeded loaded at session start).
+    tool_load_threshold: int = 100
+    tool_load_preload: frozenset[str] = field(default_factory=frozenset)
+    #: Per-entry ``enabled: false`` names from the tools.json5 ``job`` /
+    #: ``skill`` sections (hidden from the catalog seed).
+    disabled_jobs: frozenset[str] = field(default_factory=frozenset)
+    disabled_skills: frozenset[str] = field(default_factory=frozenset)
     _path: Path | None = None
     _tools_path: Path | None = None  # tools.json5 sibling — set by from_json5
 
@@ -739,18 +764,6 @@ class Config:
             target = path.parent / name
             if target.exists():
                 continue
-            # tools.json5 succeeded mcp-plugin.json5 — a data dir that still
-            # holds the old file (a pre-rename install or dev checkout) is
-            # lifted once so its MCP server entries survive the rename.
-            if name == "tools.json5":
-                legacy = path.parent / "mcp-plugin.json5"
-                if legacy.exists():
-                    os.replace(legacy, target)
-                    logger.info(
-                        "config_lifted legacy=mcp-plugin.json5 to=%s", target
-                    )
-                    print(f"\n  Moved existing MCP config to: {target}")
-                    continue
             pkg = pkg_dir / name
             if not pkg.exists():
                 # slife.json5 must be present to configure anything; wheels
@@ -967,6 +980,29 @@ class Config:
 
         # CLI tools — the tools.json5 ``cli`` section (managed, no config class)
         cli_tools = _parse_section(tools_raw, "cli", dict, {})
+        # ``job`` / ``skill`` sections — a per-entry ``enabled`` list so every
+        # json5 category section carries the same enable/disable policy
+        # (functional consumption lives in the catalog seed/catalog-service;
+        # here they are parsed + overlay names so a disabled entry is hidden).
+        job_overrides = _parse_section(tools_raw, "job", list, [])
+        skill_overrides = _parse_section(tools_raw, "skill", list, [])
+        disabled_jobs = _disabled_names(job_overrides)
+        disabled_skills = _disabled_names(skill_overrides)
+        # Tool-system knobs — tools.json5 ``tool_load`` section:
+        #   tool_load: {threshold: 100, preload: ["foo"]}
+        tool_load_section = _parse_section(tools_raw, "tool_load", dict, {})
+        try:
+            tool_load_threshold = int(
+                tool_load_section.get("threshold", 100) or 100
+            )
+            if tool_load_threshold <= 0:
+                tool_load_threshold = 100
+        except (TypeError, ValueError):
+            tool_load_threshold = 100
+        _preload_raw = tool_load_section.get("preload", [])
+        tool_load_preload = frozenset(
+            p for p in _preload_raw if isinstance(p, str) and p.strip()
+        ) if isinstance(_preload_raw, (list, tuple)) else frozenset()
 
         plugins_section = _parse_section(raw, "plugins", dict, {})
         # Required (core) plugins — named in ``plugins.required``.  A
@@ -1006,6 +1042,10 @@ class Config:
             subagent_config=subagent_config,
             plugins_required=plugins_required,
             cli_tools=cli_tools,
+            tool_load_threshold=tool_load_threshold,
+            tool_load_preload=tool_load_preload,
+            disabled_jobs=disabled_jobs,
+            disabled_skills=disabled_skills,
         )
         config._path = path
         config._tools_path = tools_path

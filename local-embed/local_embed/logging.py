@@ -47,7 +47,7 @@ def resolve_log_dir() -> Path:
     """Return the directory for local-embed's per-session log file.
 
     ``SLIFE_LOG_DIR`` when the host (slife) exported it, else the standalone
-    default ``~/.local-embed/logs`` (mirrors mcp-plugin).
+    default ``~/.local-embed/logs`` (mirrors mcp-gateway).
     """
     override = os.getenv("SLIFE_LOG_DIR")
     if override:

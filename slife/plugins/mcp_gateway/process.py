@@ -51,7 +51,7 @@ class MCPWrapperProcess:
     """Manages the plugin child process lifecycle.
 
     Usage:
-        wrapper = MCPWrapperProcess(args=["-m", "mcp_plugin.server"])
+        wrapper = MCPWrapperProcess(args=["-m", "slife.plugins.mcp_gateway.server"])
         await wrapper.start()
         client = await wrapper.create_client()
         # ... use client ...
@@ -68,7 +68,7 @@ class MCPWrapperProcess:
         Args:
             command: Executable to run (default: sys.executable).
             args: Command args. If None, defaults to
-                  ``['-m', 'mcp_plugin.server']``.
+                  ``['-m', 'slife.plugins.mcp_gateway.server']``.
         """
         self._command = command if command is not None else sys.executable
         if args is not None:
@@ -360,7 +360,7 @@ class MCPWrapperProcess:
                 continue
 
             # OAuth device-flow instructions from the gateway child
-            # (mcp_plugin.oauth).  The full box is relayed at WARNING for the
+            # (slife.plugins.mcp_gateway.oauth).  The full box is relayed at WARNING for the
             # session log (the console is capped below WARNING, so it never
             # prints to the terminal — in the TUI that box was garbled
             # anyway); the compact URL+code line fires the desktop
@@ -391,5 +391,5 @@ class MCPWrapperProcess:
             # Only relay lines that don't match any filter.
             # All at DEBUG — never reaches the terminal.  The wrapper's stderr
             # can echo config/env values, so mask secrets before logging
-            # (this relay bypasses mcp_plugin.logging.drain_stderr's sanitizer).
+            # (drain_stderr.drain_stderr's sanitizer).
             logger.debug("[wrapper] %s", sanitize_secrets(text))

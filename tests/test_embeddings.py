@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 
 from slife.plugins.mcp_gateway import config as plugin_config
-from slife.plugins.mcp_gateway.embeddings import EmbeddingClient
+from slife.tools.semantic import EmbeddingClient
 
 
 def _make_transport(models=None, embeddings_dim=3):
@@ -43,10 +43,7 @@ async def client():
     await c.close()
 
 
-# ── from_plugin_config availability (host override only) ────────────────
-#
-# tools.json5 carries no ``embeddings`` section anymore — the sole
-# config source is the host-passed override (initialize clientInfo).
+# ── from_endpoint availability (the host's active embeddings endpoint) ───
 
 
 def _override(**kw) -> dict:
@@ -58,46 +55,40 @@ def _override(**kw) -> dict:
     }
 
 
-def test_from_config_absent_not_available(tmp_path):
-    plugin_config.set_config_path(tmp_path / "tools.json5")
-    plugin_config.write_config(tmp_path / "tools.json5", {"servers": {}})
-    c = EmbeddingClient.from_plugin_config(config_path=str(tmp_path / "tools.json5"))
+def test_from_endpoint_absent_not_available():
+    c = EmbeddingClient.from_endpoint(None)
     assert c.available is False
 
 
-def test_from_config_no_override_ignores_json5(tmp_path):
-    """A json5 ``embeddings`` section (if any) no longer configures the client."""
-    cfg = {"servers": {}, "embeddings": {"base_url": "http://127.0.0.1:17347/v1", "model": "bge-m3"}}
-    path = tmp_path / "tools.json5"
-    plugin_config.write_config(path, cfg)
-    c = EmbeddingClient.from_plugin_config(config_path=str(path), override=None)
+def test_from_endpoint_empty_dict_not_available():
+    c = EmbeddingClient.from_endpoint({})
     assert c.available is False
 
 
-def test_from_config_override_available(tmp_path):
-    c = EmbeddingClient.from_plugin_config(override=_override())
+def test_from_endpoint_available():
+    c = EmbeddingClient.from_endpoint(_override())
     assert c.available is True
     assert c.model == "bge-m3"
 
 
-def test_from_config_placeholder_not_available(tmp_path):
-    c = EmbeddingClient.from_plugin_config(override=_override(base_url="${LOCAL_EMBED_URL}"))
+def test_from_endpoint_placeholder_not_available():
+    c = EmbeddingClient.from_endpoint(_override(base_url="${LOCAL_EMBED_URL}"))
     assert c.available is False
 
 
-def test_from_config_api_key_placeholder_resolves_from_env(tmp_path, monkeypatch):
+def test_from_endpoint_api_key_placeholder_resolves_from_env(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBED_API_KEY", "sk-test")
-    c = EmbeddingClient.from_plugin_config(override=_override(api_key="${EMBED_API_KEY}"))
+    c = EmbeddingClient.from_endpoint(_override(api_key="${EMBED_API_KEY}"))
     assert c.available is True
     assert c.api_key == "sk-test"
 
 
-def test_from_config_api_key_placeholder_unresolved_is_empty(tmp_path, monkeypatch):
+def test_from_endpoint_api_key_placeholder_unresolved_is_empty(tmp_path, monkeypatch):
     # Hermetic: no env var, and never fall through to the real keyring lookup.
     monkeypatch.delenv("NO_SUCH_EMBED_KEY_EVER", raising=False)
     monkeypatch.setattr("slife.config._try_credstore_lookup", lambda key: None)
-    c = EmbeddingClient.from_plugin_config(
-        override=_override(api_key="${NO_SUCH_EMBED_KEY_EVER}"),
+    c = EmbeddingClient.from_endpoint(
+        _override(api_key="${NO_SUCH_EMBED_KEY_EVER}"),
     )
     assert c.available is True          # base_url real → client available
     assert c.api_key == ""              # placeholder ⇒ no auth header
@@ -114,7 +105,7 @@ async def test_api_key_placeholder_resolved_value_sent_as_bearer(tmp_path, monke
             return httpx2.Response(200, json={"data": [{"id": "bge-m3", "dimension": 3}]})
         return httpx2.Response(404, json={"error": "not found"})
 
-    c = EmbeddingClient.from_plugin_config(override=_override(api_key="${EMBED_API_KEY}"))
+    c = EmbeddingClient.from_endpoint(_override(api_key="${EMBED_API_KEY}"))
     c._transport = httpx2.MockTransport(handler)  # test hook, see EmbeddingClient.__init__
     assert await c.load() is True
     assert seen["authorization"] == "Bearer sk-test"
@@ -212,14 +203,14 @@ def test_resolve_server_config_auto_load():
     assert cfg2.auto_load is False
 
 
-# ── Host-provided override (initialize clientInfo) precedence ────────────
+# ── from_endpoint precedence (the only embedding source now) ─────────────
 
 
-def test_from_plugin_config_override_wins(tmp_path):
-    """The host-passed embedding endpoint (initialize clientInfo) is used."""
-    c = EmbeddingClient.from_plugin_config(
-        override={"base_url": "http://host.example/v1",
-                  "model": "bge-m3", "api_key": "k"},
+def test_from_endpoint_override_wins(tmp_path):
+    """The host's active endpoint configures the client."""
+    c = EmbeddingClient.from_endpoint(
+        {"base_url": "http://host.example/v1",
+         "model": "bge-m3", "api_key": "k"},
     )
     assert c.available
     assert c.base_url == "http://host.example/v1"
@@ -227,58 +218,9 @@ def test_from_plugin_config_override_wins(tmp_path):
     assert c.api_key == "k"
 
 
-def test_from_plugin_config_no_override_disabled(tmp_path):
-    """No host override → no embedding backend (semantic off)."""
-    cfg = tmp_path / "tools.json5"
-    cfg.write_text(
-        json.dumps({"embeddings": {"base_url": "http://own.example/v1",
-                                   "model": "own-model"}}),
-        encoding="utf-8",
-    )
-    c = EmbeddingClient.from_plugin_config(config_path=str(cfg), override=None)
+def test_from_endpoint_placeholder_disabled(tmp_path):
+    """A placeholder base_url is never "passed" — disabled."""
+    c = EmbeddingClient.from_endpoint({"base_url": "${UNRESOLVED_EMB}"})
     assert not c.available
-
-
-def test_from_plugin_config_unusable_override_disabled(tmp_path):
-    """A placeholder/empty override base_url is not "passed" — disabled."""
-    cfg = tmp_path / "tools.json5"
-    cfg.write_text(
-        json.dumps({"embeddings": {"base_url": "http://own.example/v1"}}),
-        encoding="utf-8",
-    )
-    c = EmbeddingClient.from_plugin_config(
-        config_path=str(cfg),
-        override={"base_url": "${UNRESOLVED_EMB}"},
-    )
-    assert not c.available
-
-
-def test_from_plugin_config_no_usable_config_disabled(tmp_path):
-    cfg = tmp_path / "tools.json5"
-    cfg.write_text(json.dumps({}), encoding="utf-8")
-    c = EmbeddingClient.from_plugin_config(config_path=str(cfg), override=None)
-    assert not c.available
-
-
-def test_extensions_capability_roundtrips():
-    """Host extras ride in ``capabilities.extensions`` and survive the SDK
-    model round-trip (mcp ≥2.0 — ``clientInfo.other`` was dropped).
-
-    The mcp gateway handshakes its embedding endpoint to the wrapper via the
-    standard ``capabilities.extensions`` map (identifier → settings); this
-    locks the server's ability to read them back from the initialize params.
-    """
-    from mcp.types import ClientCapabilities
-
-    caps = ClientCapabilities(extensions={
-        "embeddings": {
-            "base_url": "http://host.example/v1", "api_key": "", "model": "",
-        },
-    })
-    assert caps.extensions["embeddings"]["base_url"] == "http://host.example/v1"
-    dumped = caps.model_dump(by_alias=True)
-    assert dumped["extensions"]["embeddings"]["base_url"] == "http://host.example/v1"
-    parsed = ClientCapabilities.model_validate(dumped)
-    assert parsed.extensions["embeddings"]["base_url"] == "http://host.example/v1"
 
 

@@ -1,35 +1,44 @@
-"""Embedding client — OpenAI-compatible HTTP backend only (httpx2, no openai).
+"""Host-side semantic search for the unified tool catalog (tools.db).
 
-Embeddings go straight over ``httpx2`` to any OpenAI-compatible
-``/v1/embeddings`` endpoint — the deployment uses a local embedding daemon
-(e.g. ``local-embed`` at ``http://127.0.0.1:17347/v1``).
+The memdb ``SemanticManager`` (gate + embedder + event-driven drainer) is
+the one implementation used by every semantic index in slife; this module
+adapts it to the host catalog's store (``CatalogStore``'s drainer
+contract + ``meta`` table) and builds its embedder from the HOST's active
+embedding endpoint (``get_active_endpoint`` — the top-level ``embeddings``
+section of slife.json5), the way memdb/memfiles do in their own processes.
 
-Config comes from the **host only**: the connecting client passes its active
-embedding endpoint via the MCP ``initialize`` handshake's ``clientInfo``
-(slife sends slife.json5's top-level ``embeddings`` — there is no
-``embeddings`` section in tools.json5 anymore).  A usable ``base_url``
-(non-empty, not a placeholder) ⇒ the client is available (semantic search
-runs); absent / placeholder ``base_url`` ⇒ unavailable (keyword/grep
-fallback).  ``api_key`` may be empty (no auth header), plaintext, or a
-``${VAR}`` placeholder resolved at construction via shell env → credstore
-(an unresolvable placeholder degrades to empty).
+Only the main process starts this manager: it is the single embedding
+maintainer (the retired mcp-gateway wrapper no longer drains its own
+store).  ``EmbeddingClient`` is the api-only OpenAI-compatible client that
+formerly lived in the mcp plugin — moved here verbatim (httpx2).
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
 
 import httpx2
 
+from slife.config import _resolve_secret
 from slife.env import is_env_ref
 from slife.plugins.memdb.embeddings import _guess_max_tokens  # shared token-limit guess
-from slife.plugins.mcp_gateway.config import _resolve_secret
+from slife.plugins.memdb.semantic import SemanticManager as _BaseSemanticManager
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
 
 class EmbeddingClient:
-    """OpenAI-compatible embeddings client (api backend only)."""
+    """OpenAI-compatible embeddings client (api backend only).
+
+    Config comes from the host's active endpoint (``get_active_endpoint()``
+    — the top-level ``embeddings`` section of slife.json5).  A usable
+    ``base_url`` (non-empty, not a placeholder) ⇒ available; absent /
+    placeholder ⇒ disabled (keyword/grep fallback).  An ``api_key`` that is a
+    ``${VAR}`` placeholder is resolved through shell env → credstore;
+    unresolvable placeholders degrade to empty (no ``Authorization`` header).
+    """
 
     def __init__(
         self,
@@ -54,34 +63,22 @@ class EmbeddingClient:
         self._client_init_lock = asyncio.Lock()
         self._transport = transport  # test hook (httpx2.MockTransport)
 
-    # ── Construction from plugin config ─────────────────────────────
+    # ── Construction from the host's active endpoint ───────────────
 
     @classmethod
-    def from_plugin_config(
-        cls, config_path: str | None = None, quiet: bool = True,
-        override: dict | None = None,
+    def from_endpoint(
+        cls, ep: dict | None, quiet: bool = True,
     ) -> "EmbeddingClient":
-        """Build a client from the host-provided embedding endpoint.
-
-        *override* — the host's active embedding endpoint passed via the MCP
-        ``initialize`` handshake's ``clientInfo`` — is the sole config source
-        (tools.json5 carries no ``embeddings`` section).  A usable
-        ``base_url`` (non-empty, not a placeholder) ⇒ enabled; absent or a
-        ``${VAR}`` placeholder ``base_url`` ⇒ ``enabled=False`` (semantic
-        search off, keyword/grep fallback).
-
-        An ``api_key`` that is a ``${VAR}`` placeholder is resolved through
-        shell env → credstore; unresolvable placeholders degrade to empty
-        (no ``Authorization`` header).
-        """
+        """Build from ``get_active_endpoint()``'s dict (``base_url``/``model``/
+        ``api_key``).  Missing or placeholder ``base_url`` ⇒ disabled."""
         emb = None
-        if override is not None and isinstance(override, dict):
-            base_url = str(override.get("base_url", ""))
+        if isinstance(ep, dict):
+            base_url = str(ep.get("base_url", ""))
             if base_url and not is_env_ref(base_url):
                 emb = {
                     "base_url": base_url,
-                    "model": str(override.get("model", "")),
-                    "api_key": str(override.get("api_key", "")),
+                    "model": str(ep.get("model", "")),
+                    "api_key": str(ep.get("api_key", "")),
                 }
         if not isinstance(emb, dict):
             return cls(enabled=False)
@@ -91,7 +88,7 @@ class EmbeddingClient:
         if is_env_ref(api_key):
             # ${VAR} → shell env → credstore; unresolvable ⇒ no auth header
             # (a literal "Bearer ${VAR}" is never worth sending).
-            resolved = _resolve_secret(api_key)
+            resolved = _resolve_secret(api_key, accept_keyring_uri=True)
             api_key = "" if is_env_ref(resolved) else resolved
         enabled = bool(base_url) and not is_env_ref(base_url)
         return cls(
@@ -127,15 +124,7 @@ class EmbeddingClient:
 
     @property
     def max_tokens(self) -> int:
-        """The model's context limit — the drainer's chunk ceiling.
-
-        Real value when captured from the endpoint's ``/v1/models`` listing,
-        else a best-effort per-family guess (like memdb/memfiles).  The
-        gateway's :meth:`~slife.plugins.mcp_gateway.semantic.SemanticManager`
-        inherits the shared chunking ``_embed_doc``, which hard-splits any
-        schema beyond this many tokens instead of letting the endpoint reject
-        the request (and stall the index forever).
-        """
+        """The model's context limit — the drainer's chunk ceiling."""
         return self._max_tokens
 
     @max_tokens.setter
@@ -179,9 +168,8 @@ class EmbeddingClient:
 
         ``timeout`` defaults to the registry's ready.probe_endpoint (5s).
         Unlike :meth:`load`, this never runs an embed or waits long: it only
-        checks the endpoint answers at all, so callers (e.g. ``mcp-plugin
-        build``) can auto-degrade fast when embeddings is unconfigured or
-        misconfigured instead of stalling on a dead ``base_url``.
+        checks the endpoint answers at all, so callers can auto-degrade fast
+        when embeddings is unconfigured or misconfigured.
         """
         if timeout is None:
             timeout = _timeouts.timeouts.ready.probe_endpoint  # call-time lookup
@@ -221,11 +209,7 @@ class EmbeddingClient:
             return False
 
     async def _discover_model(self) -> bool:
-        """GET ``{base_url}/models`` to pin the model + dimension.
-
-        Configured model wins (its dimension picked up if reported); else the
-        first entry — a standard OpenAI backend has no ``active`` marker.
-        """
+        """GET ``{base_url}/models`` to pin the model + dimension."""
         if not self._base_url:
             return False
         try:
@@ -316,3 +300,54 @@ class EmbeddingClient:
         if not result:
             return None
         return result[0]
+
+
+class SemanticManager(_BaseSemanticManager):
+    """The semantic-search actor for the unified tool catalog (host-side).
+
+    Hooks differ from memdb/memfiles only in the store's model identity
+    contract (the catalog drops stale vectors via its ``meta``/``drop``
+    contract instead of an in-place vec0 migration) and the embedder source
+    (the host's active endpoint).  Chunking of long schemas is inherited.
+    """
+
+    def __init__(self, store, config_path: str | None = None):
+        super().__init__(store, config_path=config_path)
+
+    # ── hook overrides ──────────────────────────────────────────────
+
+    def _new_embedder(self):
+        from slife.plugins.memdb.embedding_config import get_active_endpoint
+        ep = get_active_endpoint()
+        return EmbeddingClient.from_endpoint(ep)
+
+    def _start_enabled(self) -> bool:
+        emb = self._new_embedder()
+        return bool(emb is not None and emb.available)
+
+    async def _on_model_selected(self, embedder) -> None:
+        """Record the model identity and drop vectors that live in a
+        different vector space (the catalog's meta/drop contract)."""
+        model_id = f"api:{embedder.model}"
+        stored_model = await self._store.get_meta("embedding_model")
+        if stored_model is not None and stored_model != model_id:
+            logger.info(
+                "embedding_model_changed old=%s new=%s — dropping old vectors",
+                stored_model, model_id,
+            )
+            await self._store.drop_embeddings()
+        await self._store.set_meta("embedding_model", model_id)
+
+    def _unavailable_reason(self, embedder) -> str:
+        if not embedder.base_url:
+            return (
+                "no embedding endpoint configured — add an 'embeddings' "
+                "section to slife.json5 to enable semantic tool search"
+            )
+        return (
+            "api backend unavailable — base_url is a placeholder or unreachable. "
+            "Check the 'embeddings' section in slife.json5."
+        )
+
+
+__all__ = ["EmbeddingClient", "SemanticManager"]

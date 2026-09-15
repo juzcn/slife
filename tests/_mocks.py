@@ -1,4 +1,4 @@
-"""Shared mock doubles for mcp_plugin tests (excluded from pytest collection
+"""Shared mock doubles for mcp_gateway tests (excluded from pytest collection
 by the leading underscore convention, mirroring credstore/tests/_mocks.py).
 """
 

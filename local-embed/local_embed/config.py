@@ -1,6 +1,6 @@
 """local-embed config — load ``local_embed.json5``, path resolution.
 
-Path precedence (mirrors mcp-plugin / credstore):
+Path precedence (mirrors mcp-gateway / credstore):
   1. ``$LOCAL_EMBED_FILE`` — a host (slife) exports this =
      ``<dir of slife.json5>/local_embed.json5`` before it launches the
      plugin child, so the config sits next to the host's config
@@ -52,7 +52,7 @@ Single-model convenience (still supported) — ``backend`` / ``model`` /
     { backend: "gguf", model: "bge-m3", gguf_path: "…", device: "" }
 
 Reads are read-only at runtime — local-embed has no config-mutating tools
-(mirrors mcp-plugin's self-hosted config, minus the persistence).
+(mirrors mcp-gateway's self-hosted config, minus the persistence).
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ def default_config_path() -> Path:
 def resolve_config_path() -> Path:
     """Return the local_embed.json5 path for this process.
 
-    Precedence (mirrors mcp-plugin's ``resolve_config_path``):
+    Precedence (mirrors mcp-gateway's ``resolve_config_path``):
     ``$LOCAL_EMBED_FILE`` > slife project root (dev) > standalone default.
     """
     env = os.environ.get("LOCAL_EMBED_FILE")
