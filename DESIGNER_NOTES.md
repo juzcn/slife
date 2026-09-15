@@ -168,20 +168,81 @@ Channel 是指Agent Loop Inbox的来源，TUI是默认的、正常的channel。
 
 8.4 多wechat接入
 
-8.5 统一的tool system：现在的状况是主进程的built-in tools, cli, restapi, skill和独立进程的mcp-gateway，job-coding。其中一个技术约束是，built-in tools必须留在主进程，否则会有跨plugin的难点和损耗。mcp tools有search和load, cli，restapi 和 skill都没有，目前resapi是借助一个mcp 服务来实现的，不是原生实现。名词上也有困惑， tool一般是只是openai function tool。怎么统一的命名统一的工具系统？
+8.5 Tool System 重构
 
-系统重构的方向：
+存在的问题：
 
-系统叫ToolHub， 统一注册所有工具，1）工具类型 native， job， mcp， rest api， cli， skill 工具名， 2）描述， 3）usage（有schema的用schema，skill用skill.md, 其它为空） 4）状态 loaded 或 unloaded  ， load是指load usage，usage为空的默认为loaded，其它都默认为unloaded。5）restapi工具有endpoint字段，工具数据库 toolhub.db， 内存数据库，总是最新，只保留enable的，disable的工具不入库。
+- tool search 只能搜索mcp tool, 不能搜索其它类型的tool
+- mcp eager connect, ready耗时，对于不用的mcp，浪费资源
+- tool loading 没有统一的机制，原生tool默认全部load，mcp tool只能以mcp为单位，粒度太大，会导致上下文中tool schemas爆炸。
 
-工具配置文件 toolhub.json5，都有enable 字段， mcp是在mcp server层面，要么mcp的工具都enable，要么都disable。mcp和skill有autoload字段，如果autoload=true。注册时的工具为loaded。
+重构的目标，统一Tool System，统一的search 和 load(针对需要load的)，对系统所有的function tools load的tool用阈值管理。动态load 和 unload，避免上下文中tool schema爆炸。
 
-运行中切换enable和disable，则要更新 db。
+分析：
+- 目前tool的类别包括，builin, mcp, job, rest-api, cli，skill 6种 tools
+- rest-api 是用 mcp-openapi-proxy 实现，某种意义上一个rest api 对应一个mcp server.
+- 所以builin tools, mcp tools, jobs, rest-api本质上都是function tools，都需要加载到agent loop的tool lists 中。
+- skill 需要通过工具将SKILL.md 加载到上下文中 （当前的工具名叫 open skill）
+- cli不需要任何加载动作，因为大模型用shell调用。
 
-统一工具  tool search 返回工具信息，默认只search unloaded tool, tool load 
+重构方向：
 
-所有工具都是自发现注册
+配置数据用tools.json5, 每类工具一个section， 每个配置可以设置disable，默认false。把slife.json5的工具配置全部移到tools.json5, 把 mcp-plugin.json5也全部移过来，不再用 mcp-plugin.json5。运行时用tools.db。tools.db中两张表：
 
+- AgentRegistry 用 tools.db实现，它包含以下字段：name，description, category, source_kind, source_id, usage,  usage, last loaded:
+
+name ： 工具名，来自mcp的工具带 <mcp>__前缀, required
+description: required
+category：Builin | Job | MCP | REST-API | SKILL | CLI
+source：null | null | null | <mcp-server> | <mcp-server> | NULL | NULL
+usage: Tool def(name,description, schema)|Tool def|Tool def|Tool def|SKILL.md|usage
+status: loaded | unloaded | error | disabled    
+last-loaded: <Time> | null
+
+emddings over usage, hybrid search
+
+- ServerRegistry , 它包含 category：MCP | REST-API，server name, description, status: CONNECTED | DISCONNECTED | ENABLED | DISABLED | ERROR
+
+工具集：
+
+mcp-search (category all, MCP, REST-API)
+
+mcp connect
+rest-api connect
+mcp disconnect
+rest-api disconnect
+
+mcp enable/disable
+rest-api enable/disable
+
+tool search： hybrid search, 可以按category搜索也可以全部, scope:默认unloaded，可以选择loaded，或者all
+
+tool load：if not already loaded, - Builin，Job， MCP， REST-API， inject to llm tool list， 对于skill，cli 工具输出usage 
+
+系统每次重启检查，tools.db， eager connect 状态为CONNECTED的服务器，如果连接错误，则更新tools.db 的mcp或restapi相关工具状态为error。
+
+- 设置最大loaded tool 阈值，动态管理
+
+每一轮当loaded 工具数超过阈值，则unloaded loaded时间最旧的tool, 同时检查涉及的服务器是否还有loaded tool, 如果没有自动断连该服务器。
+
+api-id
+
+CREATE TABLE tool (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  description   TEXT,
+  category      TEXT NOT NULL,
+  source_id     TEXT,
+
+  usage         TEXT,            -- skill/mcp/rest 有内容；cli/function 为 null
+  content_hash  TEXT,
+
+  loaded        INTEGER,         -- NULL / 0 / 1
+  loaded_at     INTEGER,
+
+  version       TEXT,
+  tags          TEXT
+);
 
 
 8.6 Job system 的重新思考
