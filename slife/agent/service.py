@@ -866,6 +866,7 @@ class AgentService:
         lifecycle.registered_tools = new_names
         if not self.is_subagent:
             await self._mirror_plugin_tools_catalog(name, tagged)
+            await self._purge_plugin_tool_rows(name, old_names - new_names)
         logger.debug(
             "plugin_tools_resync name=%s added=%d removed=%d total=%d",
             name, len(new_names - old_names), len(old_names - new_names),
@@ -1208,6 +1209,23 @@ class AgentService:
                     continue
                 if self.tool_registry.unregister(tool.name):
                     logger.debug("mcp_proxy_server_removed full_name=%s", tool.name)
+
+            # 3b — live catalog cleanup: a server that left BOTH the live
+            # pool AND tools.json5 config must lose its rows NOW (the §8.5
+            # "remove 清理干净" contract — otherwise rest_api_remove /
+            # mcp_remove leave stale rows until the next startup's
+            # sync_config_servers purge).  Comparing against tools.json5
+            # (the authority) rather than the pool keeps a transient empty
+            # pool or a gateway restart from wiping configured servers' rows.
+            if not self.is_subagent and self._catalog is not None:
+                try:
+                    from slife.plugins.mcp_gateway import config as _gw_cfg
+                    config_names = set(_gw_cfg.servers())
+                    cat_names = set(await self._catalog.store.list_server_names())
+                    for server in sorted(cat_names - config_names):
+                        await self._catalog.store.remove_server(server)
+                except Exception as e:
+                    logger.debug("catalog_live_purge_failed err=%s", e)
         finally:
             self._mcp_reconciling = False
 
@@ -1483,6 +1501,7 @@ class AgentService:
             self.tool_registry.register(tool)
         if not self.is_subagent:
             await self._mirror_plugin_tools_catalog(name, tagged)
+            await self._purge_plugin_tool_rows(name, old_names - new_names)
         logger.debug(
             "%s_tools_registered count=%d removed=%d", name, len(proxy_tools),
             len(old_names - new_names),
@@ -1530,6 +1549,26 @@ class AgentService:
                 )
             except Exception as e:
                 logger.debug("plugin_catalog_upsert_failed name=%s tool=%s err=%s", name, t.get("name"), e)
+
+    async def _purge_plugin_tool_rows(self, name: str, removed) -> None:
+        """Delete catalog rows for plugin tools that no longer exist.
+
+        ``_mirror_plugin_tools_catalog`` is upsert-only — a job file removed
+        or a plugin dropping a tool would otherwise leave a stale ``job``/
+        ``builtin`` row that tool_search keeps returning (§8.5 "remove 清理
+        干净"). Best-effort; a remove failure is logged, never fatal.
+        """
+        removed = set(removed or ())
+        if not removed or self.is_subagent or self._catalog is None:
+            return
+        for tool_name in removed:
+            try:
+                await self._catalog.store.remove_tool(tool_name)
+            except Exception as e:
+                logger.debug(
+                    "plugin_catalog_row_remove_failed name=%s tool=%s err=%s",
+                    name, tool_name, e,
+                )
 
     # ── MCP tool discovery & registration ────────────────────────────
 

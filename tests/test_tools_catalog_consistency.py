@@ -422,3 +422,61 @@ async def test_config_removal_deletes_server_rows(_isolate):
     # disabling is NOT removal — other servers remain
     assert await store.get_tool("serper__search") is not None
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_purges_config_removed_server_rows(_isolate, sample_config):
+    """A server that left tools.json5 loses its catalog rows on the next
+    reconcile — the LIVE cleanup `mcp_remove` / `rest_api_remove` need, so
+    stale rows don't linger until the next startup purge (§8.5 "remove
+    清理干净").  Comparing against the CONFIG (not the live pool) keeps a
+    transient empty pool / gateway restart from wiping configured servers."""
+    from unittest.mock import AsyncMock
+
+    from slife.agent.service import AgentService
+
+    store = CatalogStore(_isolate / "tools.db")
+    await store.open()
+    try:
+        svc = ToolCatalogService(store, write_owner=True)
+        await svc.seed_inventory([_NativeShell()])
+        await _reconcile(svc, {
+            "filesystem": "DISCONNECTED",
+            "serper": "CONNECTED",
+            "weather": "CONNECTED",
+        })
+        # a server present in the CATALOG but no longer in tools.json5
+        await store.upsert_server("gone", enabled=True, runtime="CONNECTED")
+        await store.upsert_tool(
+            "gone__x", category="mcp", source_id="gone", status="loaded",
+        )
+
+        # sample_config carries an api_key — AgentService builds an LLMClient.
+        service = AgentService(sample_config)
+        service._catalog = svc
+        service._catalog_semantic = None
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def fake_call_tool(name, arguments=None):
+            if name == "mcp_list":
+                return json.dumps([])      # empty pool — nothing live to mirror
+            if name == "__check":
+                return json.dumps({"servers": []})
+            raise AssertionError(f"unexpected tool call: {name}")
+
+        client.call_tool = fake_call_tool
+        service._plugins["mcp-gateway"].client = client
+
+        await service._sync_mcp_proxies()
+
+        # the config-removed server is purged, rows and all
+        assert await store.get_server("gone") is None
+        assert await store.get_tool("gone__x") is None
+        # configured servers survive an empty pool (a restart, not a removal)
+        assert await store.get_server("serper") is not None
+        assert await store.get_tool("serper__search") is not None
+    finally:
+        # An unclosed aiosqlite connection keeps its thread alive and hangs
+        # pytest at exit — close on the failure path too.
+        await store.close()

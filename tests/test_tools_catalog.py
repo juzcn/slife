@@ -2,7 +2,6 @@
 status, LRU, search, drainer contract, WAL cross-process pragmas)."""
 
 import asyncio
-import json
 
 import pytest
 import pytest_asyncio
@@ -153,11 +152,26 @@ async def test_remove_server_cascades_tools(store):
     assert hits == []
 
 
+@pytest.mark.asyncio
+async def test_remove_tool_deletes_single_row(store):
+    """A vanished non-server tool (a removed job, a dropped plugin tool) must
+    lose its row — the mirror is upsert-only, so without this it lingers and
+    tool_search keeps returning a tool that no longer exists."""
+    await store.upsert_tool("job_a", category="job", status="loaded")
+    await store.upsert_tool("job_b", category="job", status="loaded")
+
+    await store.remove_tool("job_a")
+
+    assert await store.get_tool("job_a") is None
+    assert await store.get_tool("job_b") is not None   # only the one removed
+    assert await store.search_keyword("job_a") == []   # FTS trigger fired
+
+
 # ── LRU eviction ────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_evict_lru_orders_by_last_loaded_and_skips_protected(store):
-    for idx, name in enumerate(["t1", "t2", "t3", "t4"]):
+    for name in ("t1", "t2", "t3", "t4"):
         await store.upsert_tool(name, category="builtin", enabled=True, status="loaded")
     # bump in a defined order: t2 oldest, then t3, t1, t4 newest
     for name in ("t2", "t3", "t1", "t4"):
@@ -286,13 +300,16 @@ async def test_wal_pragmas_and_user_version(tmp_path):
     store = CatalogStore(tmp_path / "tools.db")
     await store.open()
     cursor = await store._c.execute("PRAGMA journal_mode")
-    assert (await cursor.fetchone())[0].lower() == "wal"
+    row = await cursor.fetchone()
+    assert row is not None and row[0].lower() == "wal"
     import slife.timeouts as _timeouts
     cursor = await store._c.execute("PRAGMA busy_timeout")
     expected_ms = int(_timeouts.timeouts.storage.sqlite_busy * 1000)
-    assert (await cursor.fetchone())[0] == expected_ms
+    row = await cursor.fetchone()
+    assert row is not None and row[0] == expected_ms
     cursor = await store._c.execute("PRAGMA user_version")
-    assert (await cursor.fetchone())[0] == 1
+    row = await cursor.fetchone()
+    assert row is not None and row[0] == 1
     await store.close()
 
 

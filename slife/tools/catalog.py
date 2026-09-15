@@ -380,6 +380,21 @@ class CatalogStore:
         logger.info("catalog_server_removed server=%s tools=%d", server, count)
         return count
 
+    async def remove_tool(self, name: str) -> None:
+        """Delete a single tool row plus its embedding chunks.
+
+        Used when a non-server tool disappears at runtime (a job file
+        removed, a plugin dropping a tool) — the §8.5 "remove 清理干净"
+        contract: a vanished tool must not linger as a stale catalog row
+        that tool_search keeps returning.
+        """
+        async with self._write_lock:
+            await self._c.execute("DELETE FROM tool WHERE name = ?", (name,))
+            await self._c.execute(
+                "DELETE FROM tool_embeddings WHERE name = ?", (name,),
+            )
+            await self._c.commit()
+
     async def session_start(self) -> None:
         """Snapshot current runtimes into ``last_runtime`` — the eager-connect
         set for the NEXT session is whatever was live at THIS session's start."""

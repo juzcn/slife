@@ -174,61 +174,74 @@ class TestAgentServiceMCPEnrichment:
         from slife.tools.catalog import CatalogStore
         from slife.tools.catalog_service import ToolCatalogService
 
-        service = AgentService(sample_config)
         store = CatalogStore(tmp_path / "tools.db")
         await store.open()
-        svc = ToolCatalogService(store, write_owner=True)
-        await svc.session_start()
-        service._catalog = svc
-        service._catalog_semantic = None
+        try:
+            svc = ToolCatalogService(store, write_owner=True)
+            await svc.session_start()
 
-        client = AsyncMock()
-        client.is_connected = True
+            service = AgentService(sample_config)
+            service._catalog = svc
+            service._catalog_semantic = None
 
-        async def fake_call_tool(name, arguments=None):
-            if name == "mcp_list":
-                return _json.dumps([
-                    {"name": "ondemand", "enabled": True, "auto_load": False},
-                ])
-            if name == "__check":
-                return _json.dumps({"servers": [
-                    {"name": "ondemand", "status": "connected"},
-                ]})
-            if name == "mcp_list_tools":
-                return _json.dumps({
-                    "server": "ondemand", "connected": True,
-                    "tools": [
-                        {"name": "search", "description": "Search stuff",
-                         "inputSchema": {"type": "object",
-                                         "properties": {"q": {"type": "string"}}}},
-                    ],
-                    "tool_count": 1,
-                })
-            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+            client = AsyncMock()
+            client.is_connected = True
 
-        client.call_tool = fake_call_tool
-        service._plugins["mcp-gateway"].client = client
+            async def fake_call_tool(name, arguments=None):
+                if name == "mcp_list":
+                    return _json.dumps([
+                        {"name": "ondemand", "enabled": True, "auto_load": False},
+                    ])
+                if name == "__check":
+                    return _json.dumps({"servers": [
+                        {"name": "ondemand", "status": "connected"},
+                    ]})
+                if name == "mcp_list_tools":
+                    return _json.dumps({
+                        "server": "ondemand", "connected": True,
+                        "tools": [
+                            {"name": "search", "description": "Search stuff",
+                             "inputSchema": {"type": "object",
+                                             "properties": {"q": {"type": "string"}}}},
+                        ],
+                        "tool_count": 1,
+                    })
+                raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
-        await service._sync_mcp_proxies()
+            client.call_tool = fake_call_tool
+            service._plugins["mcp-gateway"].client = client
 
-        # No proxy materialized at reconcile time...
-        names = {t.name for t in service.tool_registry.list_tools()}
-        assert "ondemand__search" not in names
+            # The reconcile also purges catalog servers that left tools.json5 —
+            # pin the gateway config view to the mocked pool so this test's
+            # "ondemand" server counts as configured (no TOOLS_FILE isolation
+            # here, so the real repo config would otherwise read as the truth).
+            with patch(
+                "slife.plugins.mcp_gateway.config.servers",
+                return_value={"ondemand": {}},
+            ):
+                await service._sync_mcp_proxies()
 
-        # ... but the row is in the catalog and discoverable via tool_load's
-        # row source (unloaded status — the on-demand state).
-        row = await store.get_tool("ondemand__search")
-        assert row is not None
-        assert row["category"] == "mcp"
-        assert row["status"] == "unloaded"
-        assert row["schema"]
+                # No proxy materialized at reconcile time...
+                names = {t.name for t in service.tool_registry.list_tools()}
+                assert "ondemand__search" not in names
 
-        # A reloaded row (tool_load flips loaded) survives the next reconcile:
-        # upsert_tool only applies status to a NEW row.
-        await store.set_status("ondemand__search", "loaded", bump=True)
-        await service._sync_mcp_proxies()
-        assert (await store.get_tool("ondemand__search"))["status"] == "loaded"
-        await store.close()
+                # ... but the row is in the catalog and discoverable via
+                # tool_load's row source (unloaded — the on-demand state).
+                row = await store.get_tool("ondemand__search")
+                assert row is not None
+                assert row["category"] == "mcp"
+                assert row["status"] == "unloaded"
+                assert row["schema"]
+
+                # A reloaded row (tool_load flips loaded) survives the next
+                # reconcile: upsert_tool only applies status to a NEW row.
+                await store.set_status("ondemand__search", "loaded", bump=True)
+                await service._sync_mcp_proxies()
+                assert (await store.get_tool("ondemand__search"))["status"] == "loaded"
+        finally:
+            # An unclosed aiosqlite connection keeps its thread alive and
+            # hangs pytest at exit — close on the failure path too.
+            await store.close()
 
     @pytest.mark.asyncio
     async def test_sync_proxies_noop_when_disconnected(self, sample_config):
