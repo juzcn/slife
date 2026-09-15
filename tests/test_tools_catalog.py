@@ -9,8 +9,8 @@ import pytest_asyncio
 from slife.tools.catalog import (
     CatalogStore,
     EFF_DISABLED,
+    EFF_ERROR,
     EFF_NA,
-    EFF_UNAVAILABLE,
     _compact_schema,
     _cosine_distance,
     _deserialize_f32,
@@ -44,28 +44,21 @@ async def _set_embedding(store, name, vec, *, model="test-model"):
 # ── Upserts / effective status ──────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_upsert_tool_and_server_effective_truth_table(store):
-    # mcp tool: enabled comes from the server join
-    await store.upsert_server(
-        "svcA", runtime="CONNECTED", enabled=True,
-    )
+async def test_upsert_tool_and_effective_truth_table(store):
+    # An external tool's effective status is its OWN status — a connected
+    # server's row is `loaded` until something marks it otherwise.
     await store.upsert_tool(
         "svcA__search", category="mcp", source_id="svcA",
         schema=_descriptor("search", "full-text search", None),
         status="loaded",
     )
-    # rest-api tool on a server that is up but disabled → DISABLED (config wins)
-    await store.upsert_server("apiB", runtime="CONNECTED", enabled=False)
-    await store.upsert_tool(
-        "apiB__users", category="rest-api", source_id="apiB",
-        status="loaded",
-    )
-    # mcp tool on a server that is enabled but NOT connected → UNAVAILABLE
-    await store.upsert_server("svcC", runtime="DISCONNECTED", enabled=True)
+    # …and an unusable server's rows carry `error` (written by the reconcile,
+    # never derived: there is no server table left to join).
     await store.upsert_tool(
         "svcC__ping", category="mcp", source_id="svcC", status="loaded",
     )
-    # builtin disabled by config → DISABLED; enabled → loaded
+    await store.mark_source_error("svcC")
+    # builtin disabled by config → DISABLED; enabled → loaded/unloaded
     await store.upsert_tool("native_a", category="builtin", enabled=False, status="loaded")
     await store.upsert_tool("native_b", category="builtin", enabled=True, status="unloaded")
     # skill/cli → n/a (no load state)
@@ -74,17 +67,53 @@ async def test_upsert_tool_and_server_effective_truth_table(store):
 
     eff = {r["name"]: r["eff"] for r in await store.scan_effective()}
     assert eff["svcA__search"] == "loaded"
-    assert eff["apiB__users"] == EFF_DISABLED
-    assert eff["svcC__ping"] == EFF_UNAVAILABLE
+    assert eff["svcC__ping"] == EFF_ERROR
     assert eff["native_a"] == EFF_DISABLED
     assert eff["native_b"] == "unloaded"
     assert eff["skill-xyz"] == EFF_NA
     assert eff["cli-foo"] == EFF_NA
 
-    # loaded_names() only yields server-up ∧ enabled locals that are loaded
-    # (native_a is config-disabled → eff DISABLED despite status='loaded')
+    # loaded_names() yields exactly the loaded rows that are not config-disabled
+    # (native_a is disabled despite status='loaded'; svcC__ping is `error`)
     assert set(await store.loaded_names()) == {"svcA__search"}
     assert await store.count_loaded() == 1
+
+
+@pytest.mark.asyncio
+async def test_mark_and_reset_source_error(store):
+    """The connect/disconnect cycle as the store sees it."""
+    for name, status in (("svcA__x", "loaded"), ("svcA__y", "unloaded")):
+        await store.upsert_tool(name, category="mcp", source_id="svcA", status=status)
+
+    marked = await store.mark_source_error("svcA")
+    assert marked == 2
+    assert await store.loaded_names() == []
+
+    # A reconnect clears the mark ONLY on error rows — the unloaded one keeps
+    # its state, and a user-loaded row would keep `loaded`.
+    cleared = await store.reset_source_status("svcA", "unloaded")
+    assert cleared == 2
+    assert (await store.get_tool("svcA__y"))["status"] == "unloaded"
+
+    # A row the user loaded keeps its state across a blip.
+    await store.set_status("svcA__x", "loaded")
+    await store.mark_source_error("svcA")
+    assert await store.loaded_names() == []
+    await store.reset_source_status("svcA", "unloaded")
+    assert (await store.get_tool("svcA__x"))["status"] == "unloaded"   # was error → reset
+
+
+@pytest.mark.asyncio
+async def test_mark_all_external_error_spares_local_rows(store):
+    await store.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="loaded")
+    await store.upsert_tool("native", category="builtin", enabled=True, status="loaded")
+
+    marked = await store.mark_all_external_error()
+
+    assert marked == 1
+    assert (await store.get_tool("svcA__x"))["status"] == "error"
+    assert (await store.get_tool("native"))["status"] == "loaded"
+    assert set(await store.loaded_names()) == {"native"}
 
 
 @pytest.mark.asyncio
@@ -126,30 +155,54 @@ async def test_upsert_schema_change_drops_embedding(store):
 
 
 @pytest.mark.asyncio
-async def test_session_start_snapshots_last_runtime(store):
-    await store.upsert_server("svcA", runtime="CONNECTED")
-    await store.upsert_server("svcB", runtime="ERROR", error_reason="boom")
-    # a new session starts: the CURRENT runtimes become the eager-connect set
-    await store.session_start()
-    assert (await store.get_server("svcA"))["last_runtime"] == "CONNECTED"
-    assert (await store.get_server("svcB"))["last_runtime"] == "ERROR"
-    # mid-session runtime flips don't touch the snapshot
-    await store.upsert_server("svcA", runtime="DISCONNECTED")
-    assert (await store.get_server("svcA"))["last_runtime"] == "CONNECTED"
-    assert (await store.get_server("svcA"))["runtime"] == "DISCONNECTED"
+async def test_purge_source_drops_its_tools(store):
+    """A server that left the config owns no rows."""
+    await store.upsert_tool("svcA__a", category="mcp", source_id="svcA", status="loaded")
+    await store.upsert_tool("svcA__b", category="mcp", source_id="svcA", status="loaded")
+    await store.upsert_tool("svcB__c", category="mcp", source_id="svcB", status="loaded")
+
+    assert await store.purge_source("svcA") == 2
+
+    assert await store.get_tool("svcA__a") is None
+    assert await store.get_tool("svcB__c") is not None      # other servers untouched
+    # FTS row gone too (delete trigger)
+    assert await store.search_keyword("svcA__a") == []
+    assert await store.list_source_ids() == {"svcB"}
 
 
 @pytest.mark.asyncio
-async def test_remove_server_cascades_tools(store):
-    await store.upsert_server("svcA", runtime="CONNECTED")
-    await store.upsert_tool("svcA__a", category="mcp", source_id="svcA", status="loaded")
-    await store.upsert_tool("svcA__b", category="mcp", source_id="svcA", status="loaded")
-    assert await store.remove_server("svcA") == 2
-    assert await store.get_server("svcA") is None
-    assert await store.get_tool("svcA__a") is None
-    # FTS row gone too (delete trigger)
-    hits = await store.search_keyword("svcA__a")
-    assert hits == []
+async def test_purge_missing_sources_keeps_the_configured_set(store):
+    for sid in ("keep", "gone"):
+        await store.upsert_tool(f"{sid}__x", category="mcp", source_id=sid, status="unloaded")
+
+    purged = await store.purge_missing_sources({"keep"})
+
+    assert purged == {"gone"}
+    assert await store.list_source_ids() == {"keep"}
+
+
+@pytest.mark.asyncio
+async def test_migration_drops_the_retired_server_table(tmp_path):
+    """An existing db from the previous schema loses `server` on open."""
+    import aiosqlite
+
+    path = tmp_path / "tools.db"
+    conn = await aiosqlite.connect(str(path))
+    await conn.execute("CREATE TABLE server (name TEXT PRIMARY KEY, runtime TEXT)")
+    await conn.execute("INSERT INTO server(name, runtime) VALUES ('svcA', 'CONNECTED')")
+    await conn.execute("PRAGMA user_version = 1")
+    await conn.commit()
+    await conn.close()
+
+    store = CatalogStore(path)
+    await store.open()
+    cur = await store._c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='server'",
+    )
+    assert await cur.fetchone() is None                    # table is gone
+    cur = await store._c.execute("PRAGMA user_version")
+    assert (await cur.fetchone())[0] == 2
+    await store.close()
 
 
 @pytest.mark.asyncio
@@ -342,7 +395,7 @@ async def test_wal_pragmas_and_user_version(tmp_path):
     assert row is not None and row[0] == expected_ms
     cursor = await store._c.execute("PRAGMA user_version")
     row = await cursor.fetchone()
-    assert row is not None and row[0] == 1
+    assert row is not None and row[0] == 2
     await store.close()
 
 

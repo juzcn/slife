@@ -7,13 +7,13 @@
 --  兜底 SQLITE_BUSY。无运行时 DDL 迁移：schema 版本走 PRAGMA user_version，
 --  真需要迁移时在 _config_io 的跨进程 filelock 下重建新库。
 --
---  tool.status 只存三态 loaded|unloaded|NULL（skill/cli 无 load 概念）；
---  error/disabled 不落库 —— 是查询时 join server 状态导出的 effective。
+--  tool.status 存 loaded|unloaded|error|NULL（skill/cli 无 load 概念）；
+--  error = 该 server 此刻不可用（未连上/掉线/连接失败/网关子进程死亡），由 host 写。
 --  FTS5（关键词）+ BLOB 向量（语义，over schema 文本）混合检索。
 -- ═══════════════════════════════════════════════════════════════
 
 
--- 工具目录。mcp/rest-api 的 enabled 为 NULL（由 server.enabled join），
+-- 工具目录。mcp/rest-api 的 enabled 为 NULL（可用性改由 status='error' 表达），
 -- 其余类别的 enabled 来自各 json5 section。status 会话内可翻转。
 CREATE TABLE IF NOT EXISTS tool (
     name        TEXT PRIMARY KEY,            -- mcp: '{server}__{tool}'；否则裸名
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS tool (
     source_id   TEXT,                        -- 仅 mcp/rest-api：所属 server 名
     schema      TEXT,                        -- Tool def JSON | SKILL.md 文本 | NULL(cli)
     enabled     INTEGER,                     -- 0/1（builtin/job/skill/cli）；NULL（mcp/rest-api，join server）
-    status      TEXT,                        -- 'loaded'|'unloaded'（function tool）；skill/cli NULL
+    status      TEXT,                        -- 'loaded'|'unloaded'|'error'（function tool）；skill/cli NULL
     last_loaded TEXT                         -- 本地 ISO，LRU evict 排序
 );
 CREATE INDEX IF NOT EXISTS idx_tool_status ON tool(status);
@@ -31,18 +31,10 @@ CREATE INDEX IF NOT EXISTS idx_tool_source ON tool(source_id);
 CREATE INDEX IF NOT EXISTS idx_tool_category ON tool(category);
 
 
--- 服务级元数据（mcp/rest-api）：enabled 是 tools.json5 的镜像（host 不直接翻转，
--- enable/disable 走 wrapper 的 mcp_set_enabled → 配置持久化 → 重连/reconcile）。
--- runtime 是 wrapper 连接池状态的镜像（重连/backoff 的控制在 wrapper）。
-CREATE TABLE IF NOT EXISTS server (
-    name         TEXT PRIMARY KEY,
-    description  TEXT NOT NULL DEFAULT '',
-    enabled      INTEGER NOT NULL DEFAULT 1,
-    runtime      TEXT,                       -- CONNECTED | CONNECTING | DISCONNECTED | ERROR
-    error_reason TEXT,
-    last_runtime TEXT,                       -- 上次终态，供重启 eager-connect 集
-    source       TEXT                        -- provenance dict JSON (source.type ⇒ rest-api)
-);
+-- 没有 server 表：哪些 server 该连由 tools.json5 的 enabled 决定，此刻谁活着由
+-- 网关的 pool（mcp_list / __check）回答，这个库只把结果记在 tool 行上 ——
+-- 服务器不可用（未连上 / 掉线 / 连接失败 / 网关子进程死亡）时，它的 tool 行
+-- status 置 'error'；连上后由镜像重置回该类默认（autoload→loaded，否则 unloaded）。
 
 
 -- ── 关键词搜索（FTS5 external-content，列取 tool 的前缀列，顺序一致）──
@@ -94,4 +86,4 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;

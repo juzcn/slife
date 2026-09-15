@@ -16,9 +16,11 @@ import logging
 from typing import TYPE_CHECKING
 
 from slife.tools.catalog import (
+    STATUS_LOADED,
+    STATUS_UNLOADED,
     CatalogStore,
     EFF_DISABLED,
-    EFF_UNAVAILABLE,
+    EFF_ERROR,
     FUNCTION_CATEGORIES,
 )
 from slife.tools.whitelist import ALWAYS_LOADED, is_meta_tool
@@ -105,18 +107,16 @@ class ToolCatalogService:
 
     # ── Session lifecycle ──────────────────────────────────────────
 
-    async def session_start(self) -> None:
-        """Snapshot server runtimes (eager-connect set) — main owner only."""
-        if not self.write_owner:
-            return
-        await self._store.session_start()
-
     async def seed_inventory(self, tools: list["Tool"]) -> None:
-        """Reseed session state: every registered function tool starts loaded.
+        """Reconcile the registered tool set into the catalog.
 
-        Mirrors today's behavior (all registered = all injected).  Rows are
-        upserted (status preserved on update) then force-set ``loaded`` — the
-        session's default; the turn-boundary eviction later trims by LRU.
+        A NEW row gets the session default: ``loaded`` for the always-loaded
+        set (the harness pair + the meta tools, plus anything listed under
+        ``tool_load.preload``), ``unloaded`` for everything else — discovery
+        alone never puts a tool into the injection set.  An EXISTING row keeps
+        its state: this sync mirrors WHICH tools are registered, it never
+        overrides what the model (or a previous session) decided to load.
+
         Main-owner only (a subagent worker never reseeds).
         """
         if not self.write_owner:
@@ -133,11 +133,16 @@ class ToolCatalogService:
                 source_id=getattr(tool, "server", None) if external else None,
                 schema=tool_descriptor(tool),
                 enabled=None if external else True,
-                status="loaded",   # session default — eviction trims by LRU
+                # Only a brand-new row sees this — upsert_tool applies status
+                # on INSERT alone, which is exactly the keep-existing rule.
+                status=self.default_status(name),
             )
-            # Force the session default even on an existing row from a prior
-            # session whose status may say otherwise.
-            await self._store.set_status(name, "loaded")
+
+    def default_status(self, name: str) -> str:
+        """What a NEW catalog row starts as: always-loaded → loaded, else unloaded."""
+        if is_meta_tool(name) or name in self.preload:
+            return STATUS_LOADED
+        return STATUS_UNLOADED
 
     # ── Injection snapshot ─────────────────────────────────────────
 
@@ -159,9 +164,9 @@ class ToolCatalogService:
         """Flip a function tool to ``loaded``; returns (ok, message).
 
         Refusal matrix uses the derived effective status — DISABLED
-        (config) and UNAVAILABLE (server not up) each get their own hint.
-        The caller materializes an execution instance for server-backed
-        tools (the proxy) after a successful flip.
+        (config) and ERROR (the tool's server is not up) each get their own
+        hint.  The caller materializes an execution instance for
+        server-backed tools (the proxy) after a successful flip.
         """
         row = await self._store.get_tool(name)
         if row is None:
@@ -177,11 +182,13 @@ class ToolCatalogService:
         eff = await self._store.get_effective(name)
         if eff == EFF_DISABLED:
             return False, f"Error: tool '{name}' is disabled — enable it first."
-        if eff == EFF_UNAVAILABLE:
+        if eff == EFF_ERROR:
             server = row.get("source_id") or "?"
             return False, (
                 f"Error: tool '{name}' is unavailable — server '{server}' is "
-                f"not connected. Use mcp_connect first."
+                f"not up right now (its tools are marked error). Check it with "
+                f"mcp_list (or rest_api_list): it reconnects on its own, or "
+                f"re-enable it with the matching *_set_enabled."
             )
         if eff == "loaded":
             return True, f"tool '{name}' is already loaded."
@@ -263,9 +270,14 @@ class ToolCatalogService:
         description: str,
         schema: str,
         category: str = "mcp",
-        loaded: bool = False,
     ) -> bool:
-        """Upsert a server-backed tool row (schema-change detection → re-embed)."""
+        """Upsert a server-backed tool row (schema-change detection → re-embed).
+
+        A newly seen tool lands ``unloaded`` (and always will — an external
+        name is never in the whitelist), while an existing row keeps whatever
+        the model decided.  ``tool_load`` is the only way into the injection
+        set.
+        """
         return await self._store.upsert_tool(
             name,
             description=description,
@@ -273,82 +285,61 @@ class ToolCatalogService:
             source_id=server,
             schema=schema,
             enabled=None,
-            status="loaded" if loaded else "unloaded",
+            status=self.default_status(name),
         )
 
-    async def sync_server_status(
-        self, name: str, *, description: str = "", enabled: bool = True,
-        runtime: str = "DISCONNECTED", error_reason: str = "",
-        source: str | None = None,
-    ) -> None:
-        """Mirror a server's runtime/enabled (and provenance) into the table."""
-        await self._store.upsert_server(
-            name, description=description, enabled=enabled,
-            runtime=runtime, error_reason=error_reason, source=source,
-        )
+    async def mark_source_error(self, source: str) -> int:
+        """Mark one server's tools ``error`` — the server is unusable.
 
-    async def mark_all_servers_down(self) -> int:
-        """The gateway child died — every external server it managed is
-        unreachable.  Mark all server rows DISCONNECTED so the effective-status
-        join drops their tools from injection immediately; the restart
-        reconcile restores."""
+        The single verdict for every unavailable case: not yet connected at
+        startup, disconnected, a failed connect, or a dead gateway child.
+        ``error`` is a state of its own, so the row still says the tool
+        belongs to a server that is simply not up.
+        """
         if not self.write_owner:
             return 0
-        return await self._store.mark_all_servers_down()
+        return await self._store.mark_source_error(source)
 
-    async def sync_config_servers(self, servers: dict) -> list[str]:
-        """db ← tools.json5 at startup — tools.json5 IS the authoritative config.
+    async def mark_all_external_error(self) -> int:
+        """Mark EVERY external tool ``error`` — nothing is live right now.
 
-        Covers BOTH hand-edits and agent-tool edits to the mcp/rest-api
-        sections: every configured server gets a mirror row (enabled + source
-        from the config, runtime preserved from the persisted row or
-        DISCONNECTED), and catalog rows for servers no longer configured are
-        purged (cascade deletes their tool rows).  Returns the config-removed
-        names.  Main-owner only.
+        Used both at catalog init (no server has connected yet) and when the
+        gateway child dies (all of its servers are unreachable at once).
         """
         if not self.write_owner:
-            return []
-        configured: set[str] = set()
-        for name, entry in servers.items():
-            if not isinstance(name, str) or not isinstance(entry, dict):
-                continue
-            configured.add(name)
-            existing = await self._store.get_server(name)
-            src = entry.get("source")
-            source_json = json.dumps(src) if isinstance(src, dict) else None
-            await self._store.upsert_server(
-                name,
-                description=str(entry.get("description", "") or ""),
-                enabled=entry.get("enabled", True) is not False,
-                runtime=(existing or {}).get("runtime") or "DISCONNECTED",
-                error_reason=(existing or {}).get("error_reason") or "",
-                source=source_json,
-            )
-        current = await self._store.list_server_names()
-        purged: list[str] = []
-        for name in sorted(current - configured):
-            await self._store.remove_server(name)
-            purged.append(name)
-        if purged:
-            logger.info("catalog_sync_purged_config_removed servers=%r", purged)
-        return purged
+            return 0
+        return await self._store.mark_all_external_error()
 
-    async def server_category(self, name: str) -> str:
-        """A server-backed tool's catalog category (``mcp`` vs ``rest-api``).
+    async def mark_server_connected(self, source: str) -> int:
+        """A server (re)connected — its ``error`` tools become ``unloaded``.
 
-        Derived from the mirrored provenance dict:
-        ``source.type == "rest_api"`` ⇒ ``rest-api``, else ``mcp``.
+        Only ``error`` rows move: a tool the user had loaded keeps that state
+        across a reconnect, because the reconnect clears the error mark
+        rather than resetting the whole server.
         """
-        row = await self._store.get_server(name)
-        source = (row or {}).get("source")
-        if source:
-            try:
-                s = json.loads(source)
-                if isinstance(s, dict) and s.get("type") == "rest_api":
-                    return "rest-api"
-            except (ValueError, TypeError):
-                pass
-        return "mcp"
+        if not self.write_owner:
+            return 0
+        return await self._store.reset_source_status(source, STATUS_UNLOADED)
+
+    async def purge_source(self, source: str) -> int:
+        """Drop every row of a server that left the config (main-owner only)."""
+        if not self.write_owner:
+            return 0
+        return await self._store.purge_source(source)
+
+    async def purge_unconfigured_sources(self, configured: "set[str]") -> "set[str]":
+        """Purge the rows of every server NOT in *configured* (main-owner only).
+
+        The mirror image of the removed ``sync_config_servers``: tools.json5
+        is still the authority, but it is now compared against the servers
+        that actually OWN tool rows instead of against a server table.
+        """
+        if not self.write_owner:
+            return set()
+        purged = await self._store.purge_missing_sources(configured)
+        if purged:
+            logger.info("catalog_purged_config_removed servers=%r", sorted(purged))
+        return purged
 
 
 def _tool_name(tool: "Tool") -> str:

@@ -36,7 +36,12 @@ from fastmcp.server.context import Context
 
 from slife.plugins.job_coding import registry, runner
 from slife.paths import get_jobs_dir
-from slife.server_utils import SessionNotifier, create_plugin_server, run_plugin_server
+from slife.server_utils import (
+    ToolsChangedNotifier,
+    create_plugin_server,
+    run_plugin_server,
+    tools_changed_bus,
+)
 
 #: Job names that would collide with this plugin's own tools.
 _RESERVED_NAMES = frozenset({
@@ -51,35 +56,26 @@ _jobs_dir: Path = get_jobs_dir()
 _registry: dict[str, registry.Job] = {}
 _llm_client = None            # LLMClient for job llm.chat (lazy)
 _llm_model_ref = "?"          # diagnostic: model ref resolved at boot
-_active_sessions: set = set()  # client sessions to notify on tool-set change
-#: Bound on tracked sessions — a stalled entry otherwise leaks forever and
-#: widens the fan-out.  Past the bound a dead entry is reaped, a live one
-#: re-registers on its next tool call.
-_MAX_TRACKED_SESSIONS = 64
-#: Coalescing fan-out lives in :class:`slife.server_utils.SessionNotifier`;
-#: the module keeps the session set + the tested wrapper names.
-_notifier = SessionNotifier(lambda: _active_sessions)
-
-
-def _capture_session(ctx: Context | None) -> None:
-    """Remember the caller's session for background notifications."""
-    _notifier.capture(ctx, max_sessions=_MAX_TRACKED_SESSIONS)
+#: Fan-out of ``tools/list_changed`` to this server's listen subscribers
+#: (:class:`slife.server_utils.ToolsChangedNotifier`) — a job write/delete
+#: changes the exposed tool set, and the modern era delivers that to the
+#: streams a client opened with ``subscriptions/listen``.
+#: Bound to the server below (``create_plugin_server`` runs after this).
+_notifier = ToolsChangedNotifier()
 
 
 def _request_tools_changed() -> None:
-    """Coalesce-and-schedule ``notifications/tools/list_changed`` to all clients.
+    """Publish ``tools/list_changed`` to the listen subscribers.
 
-    Fire-and-forget — the send runs in a DETACHED task (the mcp 2.1.1
-    dispatcher cancel-scope rationale lives on :class:`SessionNotifier`).
-    A listening harness re-syncs its tool registry on receipt.
+    Fire-and-forget — the publish is scheduled as a DETACHED task.  A
+    listening harness re-syncs its tool registry on receipt.
     """
     _notifier.request_tools_changed()
 
 
 async def _notify_tools_changed() -> None:
-    """Eager-flush alias kept for tests/…: run one full notification round
-    now, in this task (deterministic delivery — no coalescing).  Production
-    notification paths should use :func:`_request_tools_changed`."""
+    """Eager-flush alias kept for tests/…: publish in this task (deterministic
+    delivery).  Production paths should use :func:`_request_tools_changed`."""
     await _notifier.flush()
 
 
@@ -230,6 +226,10 @@ mcp, _log_path, logger = create_plugin_server(
     ),
     lifespan=_job_lifespan,
 )
+# The server exists only now — bind the notifier to its subscription bus so
+# a job write/delete reaches the listen subscribers (`tools_changed_bus` also
+# registers the listen handler, which fastmcp does not).
+_notifier.bind(tools_changed_bus(mcp))
 
 
 # ── Execution ─────────────────────────────────────────────────────────
@@ -289,7 +289,6 @@ def _write_job_file(path: Path, code: str) -> None:
 )
 async def job_list(ctx: Context | None = None) -> str:
     """List all currently-registered jobs."""
-    _capture_session(ctx)
     return json.dumps(
         {"jobs": _job_status(), "count": len(_registry)},
         ensure_ascii=False, indent=2,
@@ -304,7 +303,6 @@ async def job_list(ctx: Context | None = None) -> str:
 )
 async def job_run(job: str, params: str = "{}", ctx: Context | None = None) -> str:
     """Execute a job deterministically with the given JSON arguments."""
-    _capture_session(ctx)
     entry = _registry.get(job)
     if entry is None:
         return (
@@ -330,7 +328,6 @@ async def job_run(job: str, params: str = "{}", ctx: Context | None = None) -> s
 async def job_write(name: str, code: str, ctx: Context | None = None) -> str:
     """Write a job's code: creates <name>.py (or replaces it) and registers
     the tool now (persists across restart); a broken write rolls back."""
-    _capture_session(ctx)
     err = _validate_name(name)
     if err:
         return err
@@ -377,7 +374,6 @@ async def job_write(name: str, code: str, ctx: Context | None = None) -> str:
 )
 async def job_remove(name: str, ctx: Context | None = None) -> str:
     """Delete a job file and unregister its tool."""
-    _capture_session(ctx)
     if name not in _registry:
         return f"Error: unknown job '{name}'"
     path = _jobs_dir / f"{name}.py"
@@ -411,7 +407,6 @@ async def __set_mcp_gateway_port(port: int, ctx: Context | None = None) -> str:
     Args:
         port: The gateway's Streamable HTTP port (0/None clears).
     """
-    _capture_session(ctx)
     await runner.mcp.set_port(port)
     return json.dumps(
         {"port": str(port), "source": runner.mcp.port_source},

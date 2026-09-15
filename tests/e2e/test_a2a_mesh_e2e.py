@@ -16,6 +16,7 @@ Run with mosquitto up:
 """
 
 import asyncio
+import logging
 import sys
 
 import aiomqtt
@@ -27,6 +28,8 @@ from slife.a2a.mesh import A2AMesh
 from slife.a2a.task_store import clear_store
 
 pytestmark = pytest.mark.e2e
+
+logger = logging.getLogger(__name__)
 
 BROKER_HOST = "localhost"
 BROKER_PORT = 1883
@@ -47,7 +50,9 @@ async def _clear_retained(agent: str) -> None:
                 b"", qos=1, retain=True,
             )
     except Exception:
-        pass
+        # NOT swallowed: a silent failure here is how a stale retained card
+        # outlives the run and greets every later slife session as a live peer.
+        logger.warning("e2e_retained_clear_failed agent=%s", agent, exc_info=True)
 
 
 async def _finish_meshes(a: A2AMesh, b: A2AMesh) -> None:
@@ -102,6 +107,33 @@ def _fresh_store():
     clear_store()
     yield
     clear_store()
+
+
+def _clear_retained_sync(agent: str) -> None:
+    """Blocking form of :func:`_clear_retained` (the fixture below is sync)."""
+    try:
+        _with_selector_loop(lambda: _clear_retained(agent))
+    except Exception:
+        logger.warning("e2e_retained_clear_failed agent=%s", agent, exc_info=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_stale_presence_cards():
+    """Clear the two fixed e2e identities' retained cards around EVERY scenario.
+
+    The broker is shared and retained cards outlive the process, so a run that
+    was interrupted (Ctrl-C, a hard kill) leaves `e2e-a` / `e2e-b` advertising
+    themselves as online.  A stale retained *online* card is indistinguishable
+    from a live peer — the mesh announces it — so those leftovers surface as
+    phantom "⚡ e2e-a online" lines in every later slife session, not just in
+    this suite.  Clearing BEFORE the run too makes the suite self-healing: it
+    always removes whatever the previous crashed run left behind.
+    """
+    for agent in ("e2e-a", "e2e-b"):
+        _clear_retained_sync(agent)
+    yield
+    for agent in ("e2e-a", "e2e-b"):
+        _clear_retained_sync(agent)
 
 
 async def _scenario_task_round_trip():

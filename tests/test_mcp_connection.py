@@ -347,9 +347,28 @@ class TestMCPServerConnectionHTTP:
     The previous raw JSON-RPC ``_request_http``/SSE-detection implementation
     was consolidated onto the mcp SDK transports (``sse_client`` /
     ``streamable_http_client`` + ``ClientSession``).  These tests exercise the
-    SDK-wired path: connect() drives the session's initialize/list_tools, and
-    the transport fallback logic still resolves config.url/headers.
+    SDK-wired path: connect() negotiates the peer's protocol era, then
+    list_tools, and the transport fallback logic still resolves
+    config.url/headers.
     """
+
+    @pytest.fixture(autouse=True)
+    def era_stub(self):
+        """Stub the era glue — a mocked session cannot run the SDK probe.
+
+        The stub reports LEGACY, so no listen supervisor is spawned (that
+        path has its own test below); the negotiation itself is exercised in
+        ``tests/test_mcp_era.py``.
+        """
+        negotiate = AsyncMock(return_value="2025-11-25")
+        with (
+            patch("slife.plugins.mcp_gateway.connection.negotiate_era", negotiate),
+            patch(
+                "slife.plugins.mcp_gateway.connection.peer_era",
+                MagicMock(return_value="legacy"),
+            ),
+        ):
+            yield negotiate
 
     @staticmethod
     def _mock_session(tools=None, initialize_result=None):
@@ -363,8 +382,8 @@ class TestMCPServerConnectionHTTP:
         return session
 
     @pytest.mark.asyncio
-    async def test_connect_runs_handshake_and_discovers_tools(self):
-        """connect() drives the SDK session's initialize + list_tools."""
+    async def test_connect_runs_handshake_and_discovers_tools(self, era_stub):
+        """connect() negotiates the peer's protocol era + list_tools."""
         from mcp.types import Tool
         from mcp.types import TextContent
 
@@ -384,11 +403,42 @@ class TestMCPServerConnectionHTTP:
             with patch.object(conn, "_health_monitor", new=AsyncMock()):
                 await conn.connect()
 
-        session.initialize.assert_awaited_once()
         session.list_tools.assert_awaited_once()
         assert conn.status == ServerStatus.CONNECTED
         assert conn.tool_count == 1
         assert conn.list_tools()[0]["name"] == "tool1"
+
+    @pytest.mark.asyncio
+    async def test_modern_peer_opens_a_listen_watch(self):
+        """A modern external server gets a listen stream — at that era the
+        session channel carries no change notification at all."""
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+        conn._session = self._mock_session()
+
+        async def _already_connected():
+            return
+
+        conn._connect_http = _already_connected
+        watch = AsyncMock()
+        with (
+            patch(
+                "slife.plugins.mcp_gateway.connection.negotiate_era",
+                AsyncMock(return_value="2026-07-28"),
+            ),
+            patch(
+                "slife.plugins.mcp_gateway.connection.peer_era",
+                MagicMock(return_value="modern"),
+            ),
+            patch("slife.plugins.mcp_gateway.connection.watch_tools_changed", watch),
+            patch.object(conn, "_health_monitor", new=AsyncMock()),
+        ):
+            await conn.connect()
+            assert conn._watch_task is not None
+            watch.assert_called_once()
+            await conn._cleanup_resources()      # stops the supervisor
+
+        assert conn._watch_task is None
 
     @pytest.mark.asyncio
     async def test_call_tool_via_session(self):

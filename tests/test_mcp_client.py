@@ -16,6 +16,25 @@ from slife.plugins.mcp_gateway.client import MCPClient
 # ── MCPClient ───────────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def era_stub():
+    """Stub the protocol-era glue (its own tests cover the real behaviour).
+
+    ``connect()`` negotiates the peer's era instead of calling
+    ``session.initialize()``, so the connect tests need that seam replaced —
+    a mocked session cannot run the SDK's ``server/discover`` probe.  The
+    stub reports a LEGACY peer: no listen supervisor is spawned (that path
+    has its own test below).
+    """
+    negotiate = AsyncMock(return_value="2025-11-25")
+    peer_era = MagicMock(return_value="legacy")
+    with (
+        patch("slife.plugins.mcp_gateway.client.negotiate_era", negotiate),
+        patch("slife.plugins.mcp_gateway.client.peer_era", peer_era),
+    ):
+        yield negotiate
+
+
 class TestMCPClientProperties:
     """Tests for MCPClient properties and initial state."""
 
@@ -246,7 +265,7 @@ class TestMCPClientConnect:
     """Tests for connect() (Streamable HTTP transport with retry)."""
 
     @pytest.mark.asyncio
-    async def test_connect_sets_state(self):
+    async def test_connect_sets_state(self, era_stub):
         client = MCPClient()
 
         mock_session = MagicMock()
@@ -275,7 +294,10 @@ class TestMCPClientConnect:
                 assert client.is_connected is True
                 assert client._session is mock_session
                 assert client._exit_stack is not None
-                mock_session.initialize.assert_awaited_once()
+                # The era is negotiated (probe → adopt modern, or the legacy
+                # handshake) — never a bare initialize() call.
+                era_stub.assert_awaited_once_with(mock_session)
+                assert client._era == "2025-11-25"
 
     @pytest.mark.asyncio
     async def test_connect_passes_proxy_free_http_client(self):

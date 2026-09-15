@@ -29,16 +29,15 @@ HARNESS_WHITELIST: frozenset[str] = frozenset({
     "attach_image",
 })
 
-#: The tool-system meta surface — the 11 tools from DESIGNER_NOTES §8.5:
-#: server management (mcp AND rest-api as separate families), search/load,
-#: and the self-service unloader.
+#: The tool-system meta surface — DESIGNER_NOTES §8.5, minus the retired
+#: connect/disconnect pairs and `mcp_search`: server management (mcp AND
+#: rest-api as separate families) is one on/off switch per family, plus
+#: search/load and the self-service unloader.  A "connect" had nothing left to
+#: establish once the modern protocol removed the session, and a server-level
+#: search lost its subject once the server registry went away — see
+#: docs/TOOL-SYSTEM.md.
 META_WHITELIST: frozenset[str] = frozenset({
-    "mcp_search",
-    "mcp_connect",
-    "mcp_disconnect",
     "mcp_set_enabled",
-    "rest_api_connect",
-    "rest_api_disconnect",
     "rest_api_set_enabled",
     "tool_search",
     "tool_load",

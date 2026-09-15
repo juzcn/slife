@@ -62,27 +62,31 @@ async def db(tmp_path):
 # ── Seed / snapshot ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_seed_marks_registered_loaded_and_snapshot_unions_whitelist(db):
-    svc = ToolCatalogService(db, write_owner=True)
-    await svc.seed_inventory([_Native(), _NativeB()])
+async def test_seed_defaults_new_rows_unloaded_except_whitelist(db):
+    """Discovery alone never injects: a NEW row is unloaded unless it is
+    always-loaded (the whitelist) — or listed under ``tool_load.preload``."""
+    svc = ToolCatalogService(db, write_owner=True, preload=("native_b",))
+    await svc.seed_inventory([_Native(), _NativeB(), _TurnPromptStub()])
 
-    names = await db.loaded_names()
-    assert names == ["native_a", "native_b"]
+    loaded = set(await db.loaded_names())
+    assert loaded == {"native_b", "_turn_prompt"}   # the preload + the whitelist
     snap = await svc.snapshot_loaded()
-    assert {"native_a", "native_b"} <= snap
-    assert META_WHITELIST <= snap  # always injectable regardless of status
+    assert "native_b" in snap
+    assert "native_a" not in snap                        # not loaded by seeding
+    assert META_WHITELIST <= snap                        # always injectable
 
 
 @pytest.mark.asyncio
 async def test_seed_preserves_user_unload_across_re_seed(db):
     svc = ToolCatalogService(db, write_owner=True)
     await svc.seed_inventory([_Native()])
-    await svc.unload_tool("native_a")
-    # a later seed re-upserts the row but the stored status is preserved?
-    # NOTE: seed force-sets loaded (session default).  This asserts the
-    # documented semantics: a RE-SEED within the same session re-loads.
+    ok, _ = await svc.load_tool("native_a")              # the model loads it
+    assert ok
+    await svc.unload_tool("native_a")                    # …and unloads it again
+    # A later seed re-upserts the row but must NOT reset the state: the sync
+    # mirrors WHICH tools are registered, never what the model decided.
     await svc.seed_inventory([_Native()])
-    assert await db.get_effective("native_a") == "loaded"
+    assert await db.get_effective("native_a") == "unloaded"
 
 
 # ── Load / unload matrix ───────────────────────────────────────────
@@ -104,7 +108,9 @@ async def test_load_unload_refusal_matrix(db):
     await db.upsert_tool("skill-xyz", category="skill")
     ok, msg = await svc.load_tool("skill-xyz")
     assert not ok and "no load/unload state" in msg
-    # already loaded
+    # loaded by the model (seeding left it unloaded)
+    ok, msg = await svc.load_tool("native_a")
+    assert ok and "Loaded" in msg
     ok, msg = await svc.load_tool("native_a")
     assert ok and "already loaded" in msg
     # unload → reload
@@ -123,12 +129,13 @@ async def test_load_refuses_disabled_and_unavailable(db):
     ok, msg = await svc.load_tool("native_dis")
     assert not ok and "disabled" in msg
 
-    await db.upsert_server("svcA", runtime="DISCONNECTED", enabled=True)
-    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="unloaded")
+    # An external tool whose server is down carries `error` on its own row.
+    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="error")
     ok, msg = await svc.load_tool("svcA__x")
-    assert not ok and "not connected" in msg
+    # The refusal points at the ONE lifecycle knob that exists now (there is
+    # no mcp_connect to suggest — the modern protocol has no session to open).
+    assert not ok and "not up" in msg and "mcp_list" in msg
 
-    await db.upsert_server("svcB", runtime="CONNECTED", enabled=True)
     await db.upsert_tool("svcB__x", category="mcp", source_id="svcB", status="unloaded")
     ok, msg = await svc.load_tool("svcB__x")
     assert ok
@@ -192,10 +199,14 @@ async def test_injected_schema_comes_from_catalog_not_instance(db):
 
 @pytest.mark.asyncio
 async def test_evict_to_threshold_respects_whitelist_and_owner(db):
-    svc = ToolCatalogService(db, threshold=2, write_owner=True)
+    svc = ToolCatalogService(
+        db, threshold=2, write_owner=True, preload=("native_a",),
+    )
     await svc.seed_inventory([_Native(), _NativeB(), _NativeC()])
-    names = await db.loaded_names()
-    assert len(names) == 3
+    for name in ("native_b", "native_c"):        # the model loads the rest
+        ok, _ = await svc.load_tool(name)
+        assert ok
+    assert len(await db.loaded_names()) == 3
 
     evicted = await svc.evict_to_threshold()
     assert len(evicted) == 1
@@ -226,9 +237,12 @@ async def test_registry_execute_hints_with_catalog(db):
     assert "not loaded" in await registry.execute("native_a")
     assert "tool_search" in await registry.execute("native_a")
     # 3. catalog-known but not in the pool → different hint
-    await db.upsert_server("svcA", runtime="CONNECTED", enabled=True)
     await db.upsert_tool("svcA__gh", category="mcp", source_id="svcA", status="unloaded")
     assert "known but not loaded" in await registry.execute("svcA__gh")
+    # 3b. its server is down → the row says `error`, and the gate names that
+    # rather than pretending the tool is merely unloaded.
+    await db.mark_source_error("svcA")
+    assert "not up" in await registry.execute("svcA__gh")
     # 4. unknown everywhere → historical string
     assert await registry.execute("nope") == "Error: Unknown tool 'nope'"
 
@@ -251,6 +265,9 @@ async def test_worker_reads_shared_loaded_set_and_can_flip_status(tmp_path):
     await agent_store.open()
     agent = ToolCatalogService(agent_store, write_owner=True)
     await agent.seed_inventory([_Native(), _NativeB()])
+    for name in ("native_a", "native_b"):
+        ok, _ = await agent.load_tool(name)
+        assert ok
 
     worker_store = CatalogStore(path)  # second process opening the same file
     await worker_store.open()
@@ -261,7 +278,7 @@ async def test_worker_reads_shared_loaded_set_and_can_flip_status(tmp_path):
     assert "native_a" in snap and "native_b" in snap
 
     # worker may load/unload (shared mechanism) — but never reseeds/evicts
-    ok, _ = await worker.load_tool("native_b")   # already loaded → ok no-op
+    ok, _ = await worker.load_tool("native_b")   # flips it in the shared db
     assert ok
     assert await worker.evict_to_threshold() == []  # policy is agent's
 

@@ -20,6 +20,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Implementation
 
+from slife.mcp.era import negotiate_era, peer_era, watch_tools_changed
 from slife.plugins.mcp_gateway import __version__
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
@@ -220,6 +221,12 @@ class MCPClient:
             tool_timeout = _timeouts.timeouts.work.tool_budget  # call-time lookup
         self._session: ClientSession | None = None
         self._connected: bool = False
+        #: The protocol version the era negotiation adopted (None before
+        #: connect) — modern means session-less requests, per-request `_meta`.
+        self._era: str | None = None
+        #: Supervisor for the `subscriptions/listen` stream a modern peer
+        #: needs (see watch_tools_changed); None on legacy links.
+        self._watch_task: asyncio.Task | None = None
         self._exit_stack: AsyncExitStack | None = None
         self._http_client: httpx2.AsyncClient | None = None
         self._tool_timeout = tool_timeout
@@ -304,7 +311,12 @@ class MCPClient:
                             ),
                         ),
                     )
-                    await self._session.initialize()
+                    # Era negotiation, not a handshake: our own plugin servers
+                    # answer `server/discover`, so the link comes up modern
+                    # (2026-07-28 — no session, per-request `_meta`); a peer
+                    # that answers as legacy still gets the initialize
+                    # handshake.  See slife/mcp/era.py.
+                    self._era = await negotiate_era(self._session)
                 break  # success
             except asyncio.CancelledError as exc:
                 await self._cleanup()
@@ -342,9 +354,35 @@ class MCPClient:
 
         self._connected = True
         logger.info(
-            "mcp_client_connected transport=%s url=%s attempts=%d",
+            "mcp_client_connected transport=%s url=%s attempts=%d era=%s "
+            "protocol=%s",
             "streamable-http", url, attempt + 1,
+            peer_era(self._session), self._era,
         )
+        # A modern peer delivers `tools/list_changed` ONLY on a listen stream
+        # it is asked for (the session channel is gone at that era), so keep
+        # one open.  A legacy peer keeps its session channel — no stream to
+        # open (and asking would only earn a ListenNotSupportedError).
+        if peer_era(self._session) == "modern":
+            self._watch_task = asyncio.create_task(
+                watch_tools_changed(self._session, self._forward_tools_changed),
+                name="mcp-listen",
+            )
+
+    async def _forward_tools_changed(self) -> None:
+        """Feed a listen-stream event into the existing notification handler.
+
+        The listen stream carries a bare level trigger, so this reuses the
+        exact contract the session channel used (`on_notification(method,
+        params)`) — every wiring site stays unchanged, only the trigger moves.
+        """
+        handler = self.on_notification
+        if handler is None:
+            return
+        try:
+            await handler("notifications/tools/list_changed", {})
+        except Exception:
+            logger.debug("mcp_listen_handler_failed", exc_info=True)
 
     async def _handle_server_message(self, message: Any) -> None:
         """Dispatch server-initiated notifications to ``on_notification``.
@@ -405,6 +443,18 @@ class MCPClient:
         pending generator finalisation callbacks so they don't fire during
         garbage collection and crash the process.
         """
+        # Stop the listen supervisor FIRST: its stream lives on the session
+        # this stack owns, and a re-listen racing the teardown would surface
+        # as a spurious error from a dead transport.
+        if self._watch_task is not None and not self._watch_task.done():
+            self._watch_task.cancel()
+            try:
+                await self._watch_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("mcp_listen_stop_failed", exc_info=True)
+        self._watch_task = None
         if self._exit_stack:
             await close_exit_stack_bounded(self._exit_stack)
             # Give pending generator-finalisation callbacks a chance to run

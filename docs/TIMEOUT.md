@@ -54,7 +54,7 @@ checked by pyright, not ad-hoc parsing.
 | Role | Holds | Example keys |
 |---|---|---|
 | `work` | per-tool-call execution budgets (the tool chain) | `tool_budget`, `task_budget`, `stall`, `shell`, `pip_install`, `save_memory` |
-| `ready` | startup / spawn / connect / liveness windows | `plugin_start`, `spawn`, `connect_attempt`, `connect_startup`, `signal`, `stderr_line`, `notify`, `probe_broker`, `probe_endpoint`, `tunnel_*`, `list_tools`, `watchdog_backoff_*` |
+| `ready` | startup / spawn / connect / liveness windows | `plugin_start`, `spawn`, `connect_attempt`, `connect_startup`, `signal`, `stderr_line`, `relisten`, `probe_broker`, `probe_endpoint`, `tunnel_*`, `list_tools`, `watchdog_backoff_*` |
 | `grace` | teardown / kill escalation ladder | `gentle`, `force`, `cleanup`, `shutdown`, `tunnel_kill` |
 | `transport` | HTTP / wire client phases | `connect`, `pool`, `read`(null=delegated), `write`(null), `oauth`, `poll_oauth`, `embed`, `embed_api`, `media_*`, `wechat_poll`, `url_download`, `qr_deadline` |
 | `stream` | LLM stream retry ladder | `retries`, `retry_base_delay` |
@@ -67,7 +67,7 @@ these fails startup with a named error:
 1. every value is finite and ≥ 0 (`transport.read/write` may be `null`;
    `stream.retries` must be an int);
 2. `grace.gentle ≤ grace.force` (the kill ladder escalates);
-3. `ready.notify ≤ ready.connect_attempt ≤ ready.spawn` (nested budgets nest);
+3. `ready.relisten ≤ ready.connect_attempt ≤ ready.spawn` (nested budgets nest);
 4. `ready.connect_startup ≥ ready.spawn`;
 5. `work.stall > 0`.
 
@@ -223,7 +223,9 @@ Bugs: `storage.sqlite_busy` bounds the connect busy-wait; the config
 `ConfigLockTimeout`).
 
 Inconsistencies: probe trio 5/5/15 → one `ready.probe_endpoint` (5); the
-triplicated `_NOTIFY_TIMEOUT = 5.0` → one `ready.notify`; kill ladders
+triplicated `_NOTIFY_TIMEOUT = 5.0` → `ready.notify`, retired with the
+session-based notifier and replaced by `ready.relisten` (the backoff before
+a dropped `subscriptions/listen` stream is reopened); kill ladders
 3/5 vs 1/2 vs 2.0 → one `grace.gentle/force`; oauth `30.0`×3, wechat
 `120`×2, media `180/300` → named transport keys; subagent ready `30`
 → `ready.spawn` (60, aligned with the plugin hang-guard).

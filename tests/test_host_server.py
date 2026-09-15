@@ -183,8 +183,13 @@ class TestBuildRegistryMcp:
                     if isinstance(c, FunctionTool) and c.name == "__check")
         payload = _json.loads(await comp.fn())
         assert payload["catalog"]["tools"] == 1
+        # Seeding registers a row but does NOT load it — only the whitelist is
+        # born loaded — so the fact reads 0 until something loads it.
+        assert payload["catalog"]["loaded"] == 0
+        assert payload["catalog"]["servers"] == 0     # no external rows yet
+        await svc.load_tool("execute_shell")
+        payload = _json.loads(await comp.fn())
         assert payload["catalog"]["loaded"] == 1
-        assert payload["catalog"]["servers"] == 0
         # no embedding endpoint configured → semantic disabled (keyword-only)
         sem = payload["catalog"]["semantic"]
         assert sem["configured"] is False

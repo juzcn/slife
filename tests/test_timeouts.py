@@ -44,7 +44,7 @@ def test_every_role_has_exactly_its_known_fields():
     }
     assert {f.name for f in fields(Timeouts().ready)} >= {
         "plugin_start", "spawn", "connect_attempt", "connect_startup",
-        "signal", "stderr_line", "notify", "probe_broker", "probe_endpoint",
+        "signal", "stderr_line", "relisten", "probe_broker", "probe_endpoint",
     }
     for role in ROLES:
         assert role in Timeouts().__dict__
@@ -93,8 +93,8 @@ def test_invariant_gentle_le_force():
 
 
 def test_invariant_nested_ready_budgets():
-    with pytest.raises(TimeoutConfigError, match="ready.notify"):
-        _mutated(**{"ready.notify": 70, "ready.spawn": 60})
+    with pytest.raises(TimeoutConfigError, match="ready.relisten"):
+        _mutated(**{"ready.relisten": 70, "ready.spawn": 60})
 
 
 def test_invariant_connect_startup_ge_spawn():

@@ -205,9 +205,6 @@ class TestAddServerToolRegistration:
             "mcp_remove",
             "mcp_list",
             "mcp_list_tools",
-            "mcp_connect",
-            "mcp_disconnect",
-            "mcp_search",
             "__mcp_call_tool",
             "__check",
         }
@@ -246,7 +243,12 @@ class TestAddServerToolRegistration:
 
 
 class TestWrapperNotifyToolsChanged:
-    """Reconnect notifications: session capture + tools/list_changed broadcast."""
+    """Reconnect notifications: publish on the server's subscription bus.
+
+    The session-set notifier is gone — at the modern era a change event
+    reaches clients only through a ``subscriptions/listen`` stream, so the
+    wrapper publishes an event and ``ListenHandler`` fans it out.
+    """
 
     @pytest.mark.asyncio
     async def test_pool_is_wired_to_notify(self, restore_root_logger):
@@ -254,50 +256,38 @@ class TestWrapperNotifyToolsChanged:
         # The pool fires on_connected(server_name) → catalog sync + notify.
         assert srv._pool._on_connected is srv._on_connected
 
-    def test_capture_session_accumulates(self, restore_root_logger):
+    @pytest.mark.asyncio
+    async def test_notify_publishes_tools_changed(self, restore_root_logger):
         srv = _import_mcp_server()
-        srv._active_sessions.clear()
-        fake_ctx = MagicMock()
-        fake_ctx.session = object()
-        srv._capture_session(fake_ctx)
-        assert len(srv._active_sessions) == 1
-        srv._capture_session(fake_ctx)  # idempotent for the same session
-        assert len(srv._active_sessions) == 1
-        srv._capture_session(None)  # no request context → no-op
-        assert len(srv._active_sessions) == 1
+        bus = MagicMock()
+        bus.publish = AsyncMock()
+        with patch.object(srv._notifier, "_bus", bus):
+            await srv._notify_tools_changed()
+
+        bus.publish.assert_awaited_once()
+        event = bus.publish.await_args.args[0]
+        assert type(event).__name__ == "ToolsListChanged"
 
     @pytest.mark.asyncio
-    async def test_notify_no_sessions_is_noop(self, restore_root_logger):
+    async def test_publish_without_a_bus_is_a_noop(self, restore_root_logger):
         srv = _import_mcp_server()
-        srv._active_sessions.clear()
-        await srv._notify_tools_changed()  # must not raise
+        with patch.object(srv._notifier, "_bus", None):
+            await srv._notify_tools_changed()  # must not raise
 
     @pytest.mark.asyncio
-    async def test_notify_drops_dead_sessions(self, restore_root_logger):
+    async def test_publish_failure_never_propagates(self, restore_root_logger):
+        """A bus fault must not take down the caller (a tool handler)."""
         srv = _import_mcp_server()
-        alive = MagicMock()
-        alive.send_tool_list_changed = AsyncMock()
-        dead = MagicMock()
-        dead.send_tool_list_changed = AsyncMock(side_effect=RuntimeError("gone"))
-        srv._active_sessions = {alive, dead}
+        bus = MagicMock()
+        bus.publish = AsyncMock(side_effect=RuntimeError("bus gone"))
+        with patch.object(srv._notifier, "_bus", bus):
+            await srv._notify_tools_changed()  # must not raise
 
-        await srv._notify_tools_changed()
-
-        alive.send_tool_list_changed.assert_awaited_once()
-        dead.send_tool_list_changed.assert_awaited_once()
-        # The dead session was dropped; the alive one is kept for next time.
-        assert srv._active_sessions == {alive}
-
-    @pytest.mark.asyncio
-    async def test_notify_calls_send_tool_list_changed(self, restore_root_logger):
+    def test_listen_handler_is_registered_on_import(self, restore_root_logger):
+        """fastmcp never registers `subscriptions/listen` — this module does,
+        and without it a modern client's change notifications have no path."""
         srv = _import_mcp_server()
-        sess = MagicMock()
-        sess.send_tool_list_changed = AsyncMock()
-        srv._active_sessions = {sess}
-
-        await srv._notify_tools_changed()
-
-        sess.send_tool_list_changed.assert_awaited_once()
+        assert "subscriptions/listen" in srv.mcp._mcp_server._request_handlers
 
 
 class TestMCPListToolsSingleRead:
@@ -385,59 +375,17 @@ class TestMCPListToolsSingleRead:
         assert "pool boom" in out["error"]
 
 
-class TestEagerSetFromDb:
-    """The wrapper derives its startup eager-connect set from the shared
-    catalog's persisted ``server.runtime`` (a direct file read — the boot
-    ordering leaves no handshake channel available)."""
+class TestBootConnectsEveryEnabled:
+    """Startup is decided by tools.json5 alone: enabled ⇒ connect now.
 
-    @staticmethod
-    def _write_db(path, servers):
-        import sqlite3
-
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(path))
-        try:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS server ("
-                "name TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '', "
-                "enabled INTEGER NOT NULL DEFAULT 1, runtime TEXT, "
-                "error_reason TEXT, last_runtime TEXT)"
-            )
-            for name, runtime in servers:
-                # last_runtime mirrors the persisted runtime — the snapshot a
-                # prior ``session_start`` wrote; the eager set reads it.
-                conn.execute(
-                    "INSERT OR REPLACE INTO server(name, runtime, last_runtime)"
-                    " VALUES (?, ?, ?)",
-                    (name, runtime, runtime),
-                )
-            conn.commit()
-        finally:
-            conn.close()
-
-    def test_absent_db_returns_none(self, restore_root_logger, tmp_path, monkeypatch):
-        monkeypatch.setenv("SLIFE_TOOLS_DB", str(tmp_path / "none.db"))  # never written
-        srv = _import_mcp_server()
-        assert srv._eager_set_from_db() is None
-
-    def test_reads_connected_only(self, restore_root_logger, tmp_path, monkeypatch):
-        db = tmp_path / "tools.db"
-        self._write_db(db, [
-            ("good", "CONNECTED"),       # eager
-            ("fresh", None),             # no CONNECTED record → not eager
-            ("bad", "ERROR"),            # previously failed → not eager
-            ("down", "DISCONNECTED"),    # manually dropped → not eager
-        ])
-        monkeypatch.setenv("SLIFE_TOOLS_DB", str(db))
-        srv = _import_mcp_server()
-        assert srv._eager_set_from_db() == {"good"}
+    Nothing is remembered between sessions — no db, no snapshot — so a server
+    that was down when the user quit is retried at the next boot like any
+    other, and a disabled one is merely registered (``mcp_list`` must still
+    list the same set as the config).
+    """
 
     @pytest.mark.asyncio
-    async def test_auto_connect_skips_non_eager(self, restore_root_logger, tmp_path, monkeypatch):
-        db = tmp_path / "tools.db"
-        self._write_db(db, [("good", "CONNECTED"), ("bad", "ERROR")])
-        monkeypatch.setenv("SLIFE_TOOLS_DB", str(db))
-
+    async def test_connects_enabled_and_registers_disabled(self, restore_root_logger):
         srv = _import_mcp_server()
         pool = MagicMock()
         pool.add_server = AsyncMock()
@@ -445,8 +393,8 @@ class TestEagerSetFromDb:
         fake_config.load_config.return_value = {
             "mcp": {
                 "servers": {
-                    "good": {"command": "echo"},
-                    "bad": {"command": "echo"},
+                    "up": {"command": "echo"},
+                    "off": {"command": "echo", "enabled": False},
                 },
             },
         }
@@ -466,26 +414,55 @@ class TestEagerSetFromDb:
             await srv._auto_connect_configured()
 
         calls = {c[0][0].name: c.kwargs for c in pool.add_server.await_args_list}
-        assert calls["good"] == {}                      # connected eagerly
-        assert calls["bad"] == {"connect": False}       # ERROR stays disconnected
+        assert calls["up"] == {}                       # enabled → connect
+        assert calls["off"] == {"connect": False}      # disabled → register only
 
 
-class TestSessionCapture:
-    """Request-path tools capture their caller's session so the reconnect hook
-    (``_notify_tools_changed``) can push ``tools/list_changed`` to it.  Without
-    this, an auto_load server that finishes connecting *after* the host's
-    startup sync fires a notification nobody receives, and its tools never
-    register (the "auto_load tool still needs mcp_tool_load" bug)."""
+class TestNoCatalogAccess:
+    """The wrapper must not touch tools.db at all.
+
+    Connection state lives on the catalog's tool rows (written by the HOST),
+    and which servers to bring up comes from tools.json5 — so the child has no
+    business reading (or writing) the shared catalog.
+    """
+
+    def test_wrapper_has_no_db_helpers(self, restore_root_logger):
+        srv = _import_mcp_server()
+        assert not hasattr(srv, "_eager_set_from_db")
+        assert not hasattr(srv, "_mark_server_error")
+
+    def test_wrapper_source_has_no_sqlite_or_tools_db(self, restore_root_logger):
+        import inspect
+
+        srv = _import_mcp_server()
+        src = inspect.getsource(srv)
+        assert "sqlite3" not in src
+        assert "get_tools_db_path" not in src
+
+
+class TestNotifyReachesEveryListenStream:
+    """A change event must reach *every* listener, not the last caller.
+
+    The retired mechanism remembered sessions from the request path, so a
+    server that finished connecting AFTER the host's last call had nobody to
+    notify — the "auto_load tool still needs mcp_tool_load" bug.  A bus
+    publish carries no such coupling: listeners subscribe, and the event
+    lands on all of them.
+    """
 
     @pytest.mark.asyncio
-    async def test_sync_path_tools_capture_session(self, restore_root_logger):
-        srv = _import_mcp_server()
-        srv._active_sessions.clear()
-        ctx = MagicMock()
-        ctx.session = object()
+    async def test_publish_reaches_two_listeners(self, restore_root_logger):
+        from mcp.server.subscriptions import InMemorySubscriptionBus
 
-        await srv.mcp_list(ctx=ctx)
-        assert ctx.session in srv._active_sessions
+        from slife.server_utils import ToolsChangedNotifier
 
-        await srv.mcp_list_tools(server="fs", ctx=ctx)
-        assert ctx.session in srv._active_sessions
+        bus = InMemorySubscriptionBus()
+        seen: list[object] = []
+        bus.subscribe(lambda event: seen.append(event))
+        bus.subscribe(lambda event: seen.append(event))
+
+        notifier = ToolsChangedNotifier(bus)
+        await notifier.flush()
+
+        assert len(seen) == 2
+        assert all(type(e).__name__ == "ToolsListChanged" for e in seen)

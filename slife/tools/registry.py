@@ -14,6 +14,7 @@ import time as _time
 from typing import TYPE_CHECKING, AbstractSet, Callable
 
 from slife.tools.base import Tool
+from slife.tools.catalog import EFF_ERROR
 from slife.tools.whitelist import is_meta_tool
 
 if TYPE_CHECKING:
@@ -104,6 +105,21 @@ class ToolRegistry:
         """Get a tool by name, or None if not found."""
         return self._tools.get(name)
 
+    @staticmethod
+    def _server_down_message(tool_name: str) -> str:
+        """The refusal for a tool whose server is currently unusable.
+
+        Both gates (registered-but-down, and known-to-the-catalog-only) answer
+        with this, so the model is told what is actually wrong instead of
+        being sent to ``tool_load``, which refuses for the same reason.
+        """
+        return (
+            f"Error: tool '{tool_name}' is unavailable — its server is not up "
+            f"right now (its tools are marked error). Check it with mcp_list "
+            f"(or rest_api_list): it reconnects on its own, or re-enable it "
+            f"with the matching *_set_enabled."
+        )
+
     def list_tools(self) -> list[Tool]:
         """Return all registered tools."""
         return list(self._tools.values())
@@ -144,6 +160,9 @@ class ToolRegistry:
             if self._catalog is not None:
                 eff = await self._catalog.effective_status(tool_name)
                 if eff is not None:
+                    if eff == EFF_ERROR:
+                        logger.info("tool_server_down name=%s", tool_name)
+                        return self._server_down_message(tool_name)
                     logger.info("tool_known_not_loaded name=%s eff=%s", tool_name, eff)
                     return (
                         f"Error: tool '{tool_name}' is known but not loaded — "
@@ -157,6 +176,11 @@ class ToolRegistry:
         # (except the meta whitelist, which always runs).
         if self._catalog is not None and not is_meta_tool(tool_name):
             eff = await self._catalog.effective_status(tool_name)
+            if eff == EFF_ERROR:
+                # Its server is down: saying "not loaded" would send the model
+                # to tool_load, which refuses for the same unreachable reason.
+                logger.info("tool_server_down name=%s", tool_name)
+                return self._server_down_message(tool_name)
             if eff is not None and eff != "loaded":
                 logger.info("tool_unloaded_called name=%s eff=%s", tool_name, eff)
                 return (

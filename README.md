@@ -15,7 +15,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: **57 native tools by default** across 12 categories (including the reserved harness tool `_turn_prompt`, auto-invoked each turn), **eight internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, and the MCP gateway `mcp-gateway`), the **`local-embed`** embedding daemon (started manually), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: **63 native tools by default** across 14 categories (including the reserved harness tool `_turn_prompt`, auto-invoked each turn), **eight internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, and the MCP gateway `mcp-gateway`), the **`local-embed`** embedding daemon (started manually), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -227,7 +227,7 @@ models: {
 
 All unified as OpenAI function definitions — the LLM sees no difference between native, built-in plugin, and external MCP tools. Every tool additionally accepts three meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt — Y approve / N, Esc deny).
 
-**59 native tools in 12 categories** (60 classes auto-discovered from `slife/tools/`; `install_python_package` ships disabled in the bundled config). The reserved harness tools `_turn_prompt` (per-turn prompt, once per turn) and `_check_new_input` (mid-turn message injection, at iteration boundaries in cut-in mode) are auto-invoked by the loop — the model reads their results but is told not to call them. `attach_image` is auto-invoked on `@`-attachments and refuses at call time on a vision-less model.
+**63 native tools in 14 categories** (64 classes auto-discovered from `slife/tools/`; `install_python_package` ships disabled in the bundled config). The reserved harness tools `_turn_prompt` (per-turn prompt, once per turn) and `_check_new_input` (mid-turn message injection, at iteration boundaries in cut-in mode) are auto-invoked by the loop — the model reads their results but is told not to call them. `attach_image` is auto-invoked on `@`-attachments and refuses at call time on a vision-less model.
 
 | Category | Tools |
 |----------|-------|
@@ -251,7 +251,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 
 | Server | Tools |
 |--------|-------|
-| `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`, `mcp_connect`, `mcp_disconnect`, `mcp_search` |
+| `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
 | `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `report_save`, `report_list`, `report_read` |
@@ -260,7 +260,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + one tool per registered job (e.g. `translate`) |
 
-**One catalog for every tool, managed by a threshold.** Third-party capability enters only as a standard MCP server in `tools.json5` (`mcp` + `rest-api` sections — any stdio / SSE / Streamable HTTP server works, no Slife SDK required). All six categories live in one shared `tools.db`; the model discovers across all of them with `tool_search` (grep / keyword / semantic hybrid, with category + status filters), then loads a specific tool with `tool_load(full_name)` — per-tool, not per-server, so one large server injects only the tools actually used. The injected tool list is capped by a threshold (default 100, tunable in `tools.json5`); the harness evicts least-recently-used tools at turn boundaries and a server with `autoload: true` keeps wholesale registration. Server connect/disconnect is server-granular (`mcp_connect`/`mcp_disconnect`/`mcp_set_enabled`), and only previously-connected servers eager-connect at boot. The catalog is synced live from the connections on every (re)connect — no offline rebuild step. Full design: **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
+**One catalog for every tool, managed by a threshold.** Third-party capability enters only as a standard MCP server in `tools.json5` (`mcp` + `rest-api` sections — any stdio / SSE / Streamable HTTP server works, no Slife SDK required). All six categories live in one shared `tools.db`; the model discovers across all of them with `tool_search` (grep / keyword / semantic hybrid, with category + status filters), then loads a specific tool with `tool_load(full_name)` — per-tool, not per-server, so one large server injects only the tools actually used. Nothing is injected just because it exists: a tool is born `unloaded` and only `tool_load` puts it in the tool list (the always-loaded harness/meta pair and anything under `tool_load.preload` excepted). The injected list is capped by a threshold (default 100, tunable in `tools.json5`) and the harness evicts least-recently-used tools at turn boundaries. A server's lifecycle is one switch per family (`mcp_set_enabled` / `rest_api_set_enabled`) — the modern MCP protocol has no session to open or close, so enabling connects and a tool call reconnects lazily — and **every enabled server is brought up at boot**; a server that is down has its tools marked `error`, so they never inject a dead transport. The catalog is synced live from the connections on every (re)connect — no offline rebuild step. Full design: **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
 
 **Windows execution.** `execute_shell` runs in the detected shell — PowerShell or cmd (the same value the system prompt reports, so the LLM's syntax actually executes) — and its output is decoded with the system code page (GBK/cp936 on Chinese Windows). `run_python_script` forces the child Python to UTF-8 (`-X utf8`) so non-ASCII output can't crash the child.
 

@@ -8,13 +8,17 @@ backs off the short load/unload writes.  Ops are deliberately store-shaped
 (upserts, search, LRU, embed drainer contract) — policy lives in
 :mod:`slife.tools.catalog_service`.
 
-State model (see DESIGNER_NOTES §8.5): ``tool.status`` holds only
-``loaded | unloaded | NULL`` (NULL for skill/cli — no load concept).
-``error``/``disabled`` are NEVER stored — they are derived at query time by
-joining the server row (:func:`_effective_status`).  ``server.runtime`` is
-a mirror of the mcp wrapper's connection state; the host records, it never
-reconnects.  Only writes: status flips (load/unload) and one session-start
-snapshot of ``last_runtime``; eviction is the main agent's job.
+State model (see DESIGNER_NOTES §8.5): ``tool.status`` holds
+``loaded | unloaded | error | NULL`` (NULL for skill/cli — no load concept),
+and everything the injection gate needs is ON THE ROW.  ``error`` is the
+connectivity verdict: whenever an external server is unusable — at startup
+before it connects, on a disconnect, on a failed connect, when its gateway
+child dies — the host marks that server's tools ``error``, and a successful
+(re)connect resets them to their class default.  There is deliberately no
+``server`` table: which servers to bring up lives in ``tools.json5``, what is
+live right now lives in the gateway's pool, and this db only records the
+result on the tool rows.  Writes: status flips (load/unload) and those
+connectivity marks; eviction is the main agent's job.
 """
 
 from __future__ import annotations
@@ -43,17 +47,30 @@ import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/pa
 
 logger = logging.getLogger(__name__)
 
-#: Server-backed categories — their ``enabled``/connectivity come from the
-#: ``server`` row, not the ``tool`` row.
+#: Server-backed categories — a tool whose ``source_id`` names an external
+#: server.  There is no ``server`` row to join: the tool's OWN ``status``
+#: carries the connectivity verdict (``error`` when its server is down).
 SERVER_CATEGORIES = frozenset({"mcp", "rest-api"})
 
 #: Function-tool categories — the only ones with a load/unload status.
 FUNCTION_CATEGORIES = frozenset({"builtin", "job", "mcp", "rest-api"})
 
+# The stored status values for function tools.  ``error`` is the server-down
+# verdict projected onto every tool of that server (see
+# ``ToolCatalogService.mark_source_error``): a distinct state, NOT an unload —
+# the row keeps saying "this tool belonged to a server that is not up".
+STATUS_LOADED = "loaded"
+STATUS_UNLOADED = "unloaded"
+STATUS_ERROR = "error"
+
 # Effective status labels (derived, never stored).
 EFF_DISABLED = "disabled"
-EFF_UNAVAILABLE = "unavailable"
+EFF_ERROR = "error"
 EFF_NA = "n/a"
+
+#: Schema revision this store expects (``catalog_schema.sql`` sets it; the
+#: migration in :meth:`CatalogStore._migrate` moves an older file up to it).
+SCHEMA_VERSION = 2
 
 #: Local ISO-seconds timestamp — the shared store convention.
 _now = now_local_seconds
@@ -173,44 +190,31 @@ def _flatten_schema(schema_text: str) -> str:
     return "\n".join(lines)
 
 
-def _effective_status(trow: dict, srow: dict | None) -> str:
-    """Derived effective status (never stored): DISABLED/UNAVAILABLE/loaded/unloaded.
+def _effective_status(trow: dict) -> str:
+    """Derived effective status (never stored): disabled / error / loaded /
+    unloaded / n/a.
 
-    Priority per the DESIGNER_NOTES §8.5 state model: a server-backed tool's
-    ``enabled`` cascade comes from the server row (config wins over fault);
-    a function tool's runtime state is ``loaded``/``unloaded``; skill/cli
-    rows have no load concept and report ``n/a``.
+    Everything it needs is ON THE ROW: a locally-disableable tool (builtin,
+    job, skill, cli) reports ``disabled`` when its config mirror says so, and
+    the rest is the row's own load state.  An external tool whose server went
+    down was marked ``error`` by the reconcile, so the connectivity verdict
+    arrives the same way every other fact does — no join, no server table.
     """
-    cat = trow.get("category", "")
-    if cat in SERVER_CATEGORIES:
-        if srow is None:                       # no server row — not connectable
-            return EFF_UNAVAILABLE
-        if srow.get("enabled") != 1:
-            return EFF_DISABLED
-        if srow.get("runtime") != "CONNECTED":
-            return EFF_UNAVAILABLE
-    elif trow.get("enabled") == 0:
+    if trow.get("category") not in SERVER_CATEGORIES and trow.get("enabled") == 0:
         return EFF_DISABLED
     status = trow.get("status")
     return status if status else EFF_NA
 
 
 def effective_from_row(row: dict) -> str:
-    """Effective status for a search/scan row (which carries ``s_*`` aliases)."""
-    srow = None
-    if row.get("category", "") in SERVER_CATEGORIES and "s_enabled" in row:
-        srow = {
-            "enabled": row.get("s_enabled"),
-            "runtime": row.get("s_runtime"),
-        }
-    return _effective_status(row, srow)
+    """Effective status for a search/scan row (row-only — no server aliases)."""
+    return _effective_status(row)
 
 
-# Row-join prefix used by the scan/search queries (server fields aliased).
+# Row prefix used by the scan/search queries.
 _SCAN_COLS = (
     "t.name, t.description, t.category, t.source_id, t.schema, t.enabled, "
-    "t.status, t.last_loaded, "
-    "s.enabled AS s_enabled, s.runtime AS s_runtime, s.error_reason AS s_error"
+    "t.status, t.last_loaded"
 )
 
 
@@ -246,15 +250,33 @@ class CatalogStore:
         busy_ms = int(_timeouts.timeouts.storage.sqlite_busy * 1000)
         await conn.execute(f"PRAGMA busy_timeout={busy_ms}")
         await conn.execute("PRAGMA foreign_keys=ON")
-        await conn.execute("PRAGMA user_version")
         self._conn = conn
+        await self._migrate()
         await self._run_schema()
         cursor = await self._c.execute("PRAGMA user_version")
         row = await cursor.fetchone()
         version = row[0] if row else 0
-        if version != 1:
+        if version != SCHEMA_VERSION:
             logger.warning("catalog_schema_version_unknown version=%s", version)
         logger.info("catalog_ready path=%s", self._path)
+
+    async def _migrate(self) -> None:
+        """Bring an older db up to ``SCHEMA_VERSION`` before the schema runs.
+
+        v2 dropped the ``server`` table: connection state lives on the tool
+        rows now (``status='error'`` when a server is unusable), so the
+        table is dead weight AND a stale source of truth.  ``CREATE TABLE IF
+        NOT EXISTS`` would leave it in place forever — the only place a
+        retired table can be removed is a migration step like this one.
+        """
+        cursor = await self._c.execute("PRAGMA user_version")
+        row = await cursor.fetchone()
+        version = row[0] if row else 0
+        if version >= SCHEMA_VERSION:
+            return
+        if version < 2:
+            await self._c.execute("DROP TABLE IF EXISTS server")
+            logger.info("catalog_migrated from=%s to=2 dropped=server", version)
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -328,57 +350,89 @@ class CatalogStore:
             await self._c.commit()
         return schema_changed
 
-    async def upsert_server(
-        self,
-        name: str,
-        *,
-        description: str = "",
-        enabled: bool = True,
-        runtime: str = "DISCONNECTED",
-        error_reason: str = "",
-        source: str | None = None,
-    ) -> None:
-        """Upsert the server row (runtime/error mirror of the wrapper pool).
+    async def purge_source(self, source_id: str) -> int:
+        """Delete every tool row owned by one external server.
 
-        ``enabled`` mirrors tools.json5 — the host never flips it directly
-        (enable/disable flow through the wrapper's ``mcp_set_enabled``).
-        ``last_runtime`` is owned by the session-start snapshot, not here.
-        ``source`` is the provenance dict JSON (``source.type == "rest_api"``
-        distinguishes the rest-api category).
+        The removal path (config removal, or a server disabled in
+        ``tools.json5``): a server that is off owns no rows — its tools are
+        re-mirrored when it connects again.  Returns the number of rows
+        removed; embeddings follow via the FK cascade.
         """
         async with self._write_lock:
-            await self._c.execute(
-                """INSERT INTO server(name, description, enabled, runtime,
-                                      error_reason, source)
-                   VALUES (?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(name) DO UPDATE SET
-                       description  = excluded.description,
-                       enabled      = excluded.enabled,
-                       runtime      = excluded.runtime,
-                       error_reason = excluded.error_reason,
-                       source       = excluded.source
-                """,
-                (name, description, 1 if enabled else 0, runtime, error_reason, source),
-            )
-            await self._c.commit()
-
-    async def remove_server(self, server: str) -> int:
-        """Delete the server row (tool rows cascade). Returns tools removed."""
-        async with self._write_lock:
             cursor = await self._c.execute(
-                "SELECT COUNT(*) FROM tool WHERE source_id = ?", (server,),
+                "SELECT COUNT(*) FROM tool WHERE source_id = ?", (source_id,),
             )
             row = await cursor.fetchone()
             count = row[0] if row else 0
             await self._c.execute(
-                "DELETE FROM tool WHERE source_id = ?", (server,),
+                "DELETE FROM tool WHERE source_id = ?", (source_id,),
             )
-            await self._c.execute(
-                "DELETE FROM server WHERE name = ?", (server,),
+            # Embedding chunks go with the rows (tool_embeddings.name has
+            # ON DELETE CASCADE and foreign_keys is ON).
+            await self._c.commit()
+        logger.info("catalog_source_purged source=%s tools=%d", source_id, count)
+        return count
+
+    async def purge_missing_sources(self, keep: "set[str]") -> "set[str]":
+        """Purge the rows of every server NOT in *keep*; returns what was purged."""
+        purged: set[str] = set()
+        for source_id in sorted(await self.list_source_ids() - keep):
+            await self.purge_source(source_id)
+            purged.add(source_id)
+        return purged
+
+    async def list_source_ids(self) -> "set[str]":
+        """Every server name that currently owns tool rows."""
+        cursor = await self._c.execute(
+            "SELECT DISTINCT source_id FROM tool WHERE source_id IS NOT NULL",
+        )
+        return {row[0] for row in await cursor.fetchall()}
+
+    async def mark_source_error(self, source_id: str) -> int:
+        """Mark one server's tools ``error`` — its server went down.
+
+        The verdict lives on the rows themselves now (no server table to join
+        for "is it connected"): ``error`` is a state of its own, so the row
+        does not lose the fact that it *belonged* to a live server.  Reconnecting
+        resets them (``reset_source_status``).
+        """
+        async with self._write_lock:
+            cursor = await self._c.execute(
+                "UPDATE tool SET status = ? WHERE source_id = ? AND status IS NOT NULL",
+                (STATUS_ERROR, source_id),
             )
             await self._c.commit()
-        logger.info("catalog_server_removed server=%s tools=%d", server, count)
-        return count
+        return cursor.rowcount
+
+    async def mark_all_external_error(self) -> int:
+        """Mark EVERY external tool ``error`` — the gateway child died.
+
+        All of its servers are unreachable at once, so their tools must leave
+        the injection set immediately rather than at the next reconcile.
+        """
+        async with self._write_lock:
+            placeholders = ",".join("?" * len(SERVER_CATEGORIES))
+            cursor = await self._c.execute(
+                f"UPDATE tool SET status = ? "
+                f"WHERE category IN ({placeholders}) AND status IS NOT NULL",
+                (STATUS_ERROR, *sorted(SERVER_CATEGORIES)),
+            )
+            await self._c.commit()
+        return cursor.rowcount
+
+    async def reset_source_status(self, source_id: str, status: str) -> int:
+        """Bring a server's ``error`` rows back to *status* (its class default).
+
+        Only ``error`` rows move: a row the user loaded or unloaded keeps that
+        state across a reconnect — the error mark is what a reconnect clears.
+        """
+        async with self._write_lock:
+            cursor = await self._c.execute(
+                "UPDATE tool SET status = ? WHERE source_id = ? AND status = ?",
+                (status, source_id, STATUS_ERROR),
+            )
+            await self._c.commit()
+        return cursor.rowcount
 
     async def remove_tool(self, name: str) -> None:
         """Delete a single tool row plus its embedding chunks.
@@ -393,13 +447,6 @@ class CatalogStore:
             await self._c.execute(
                 "DELETE FROM tool_embeddings WHERE name = ?", (name,),
             )
-            await self._c.commit()
-
-    async def session_start(self) -> None:
-        """Snapshot current runtimes into ``last_runtime`` — the eager-connect
-        set for the NEXT session is whatever was live at THIS session's start."""
-        async with self._write_lock:
-            await self._c.execute("UPDATE server SET last_runtime = runtime")
             await self._c.commit()
 
     # ── Status flips ───────────────────────────────────────────────
@@ -474,48 +521,20 @@ class CatalogStore:
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def get_server(self, name: str) -> dict | None:
-        cursor = await self._c.execute(
-            "SELECT name, description, enabled, runtime, error_reason, "
-            "last_runtime, source FROM server WHERE name = ?",
-            (name,),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
-
-    async def list_server_names(self) -> set[str]:
-        cursor = await self._c.execute("SELECT name FROM server")
-        return {row[0] for row in await cursor.fetchall()}
-
-    async def mark_all_servers_down(self) -> int:
-        """Set every server's runtime to DISCONNECTED — used when the gateway
-        child dies (every external server it managed is unreachable).  The
-        effective-status join then drops their tools immediately; a restart
-        reconcile restores.  Returns rows touched."""
-        async with self._write_lock:
-            cursor = await self._c.execute(
-                "UPDATE server SET runtime = 'DISCONNECTED'",
-            )
-            await self._c.commit()
-        return cursor.rowcount
-
     async def get_effective(self, name: str) -> str | None:
         """Effective status for one tool name (None if unknown)."""
         row = await self.get_tool(name)
         if row is None:
             return None
-        server = None
-        if row.get("category") in SERVER_CATEGORIES:
-            server = await self.get_server(row.get("source_id") or "")
-        return _effective_status(row, server)
+        return _effective_status(row)
 
     async def scan_effective(
         self, category: str = "",
     ) -> list[dict]:
-        """Every tool row joined with its server, annotated with effective status.
+        """Every tool row, annotated with its effective status.
 
         Returns rows: ``name/description/category/source_id/schema/status/
-        eff/source_id/runtime/enabled_eff`` — the display/search shape.
+        last_loaded/eff`` — the display/search shape.
         """
         clauses = ""
         params: list = []
@@ -523,59 +542,40 @@ class CatalogStore:
             clauses = "WHERE t.category = ?"
             params.append(category)
         cursor = await self._c.execute(
-            f"SELECT {_SCAN_COLS} FROM tool t "
-            f"LEFT JOIN server s ON s.name = t.source_id {clauses} "
+            f"SELECT {_SCAN_COLS} FROM tool t {clauses} "
             f"ORDER BY t.category, t.name",
             params,
         )
         rows = []
         for row in await cursor.fetchall():
             r = dict(row)
-            srow = None
-            if r.get("category") in SERVER_CATEGORIES:
-                srow = {
-                    "enabled": r.pop("s_enabled"),
-                    "runtime": r.pop("s_runtime"),
-                    "error_reason": r.pop("s_error"),
-                }
-            else:
-                r.pop("s_enabled", None)
-                r.pop("s_runtime", None)
-                r.pop("s_error", None)
-            r["eff"] = _effective_status(r, srow)
-            r["runtime"] = (srow or {}).get("runtime")
+            r["eff"] = _effective_status(r)
             rows.append(r)
         return rows
 
     async def loaded_names(self) -> list[str]:
-        """Injectable tool names: effective status == loaded.
+        """Injectable tool names: ``status == 'loaded'`` (and not disabled).
 
-        The join hides (a) server-backed tools whose server isn't enabled or
-        connected, and (b) config-disabled local tools — without writing any
-        status.  ``loaded`` rows are exactly the LLM tool-list names
-        (whitelist is added by the service/loop).
+        Everything is on the row now.  An external tool whose server is down
+        is not ``loaded`` — the reconcile marked it ``error`` — so it drops
+        out of the injection set without a join, exactly as the retired
+        server-row join used to arrange.
         """
         cursor = await self._c.execute(
-            """SELECT t.name FROM tool t
-               LEFT JOIN server s ON s.name = t.source_id
-               WHERE t.status = 'loaded'
-                 AND (t.category NOT IN ('mcp','rest-api')
-                      OR (s.enabled = 1 AND s.runtime = 'CONNECTED'))
-                 AND (t.category IN ('mcp','rest-api')
-                      OR t.enabled IS NULL OR t.enabled = 1)
-               ORDER BY t.name"""
+            """SELECT name FROM tool
+               WHERE status = 'loaded'
+                 AND (category IN ('mcp','rest-api')
+                      OR enabled IS NULL OR enabled = 1)
+               ORDER BY name"""
         )
         return [row[0] for row in await cursor.fetchall()]
 
     async def count_loaded(self) -> int:
         cursor = await self._c.execute(
-            """SELECT COUNT(*) FROM tool t
-               LEFT JOIN server s ON s.name = t.source_id
-               WHERE t.status = 'loaded'
-                 AND (t.category NOT IN ('mcp','rest-api')
-                      OR (s.enabled = 1 AND s.runtime = 'CONNECTED'))
-                 AND (t.category IN ('mcp','rest-api')
-                      OR t.enabled IS NULL OR t.enabled = 1)"""
+            """SELECT COUNT(*) FROM tool
+               WHERE status = 'loaded'
+                 AND (category IN ('mcp','rest-api')
+                      OR enabled IS NULL OR enabled = 1)"""
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
@@ -643,7 +643,6 @@ class CatalogStore:
                           snippet(tool_fts, 1, '…', '…', '…', 40) AS snippet, rank
                    FROM tool_fts fts
                    JOIN tool t ON fts.rowid = t.rowid
-                   LEFT JOIN server s ON s.name = t.source_id
                    WHERE tool_fts MATCH ?{clauses}
                    -- bm25 weights (fts cols: name, description, category,
                    -- source_id, schema): name dominates, schema generic JSON
@@ -688,7 +687,6 @@ class CatalogStore:
                       substr(t.description, max(0, instr(t.description, ?) - 40), 160) AS snippet,
                       0 AS rank
                FROM tool t
-               LEFT JOIN server s ON s.name = t.source_id
                WHERE {where}
                ORDER BY t.category, t.name LIMIT ?""",
             params,
@@ -715,7 +713,6 @@ class CatalogStore:
                       substr(t.description, max(0, instr(t.description, ?) - 40), 160) AS snippet,
                       0 AS rank
                FROM tool t
-               LEFT JOIN server s ON s.name = t.source_id
                WHERE (t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\'
                       OR t.category LIKE ? ESCAPE '\\' OR t.schema LIKE ? ESCAPE '\\')
                      {clauses}
@@ -742,12 +739,9 @@ class CatalogStore:
         cursor = await self._c.execute(
             f"""SELECT t.name, t.description, t.category, t.source_id, t.schema,
                       t.enabled, t.status, t.last_loaded,
-                      s.enabled AS s_enabled, s.runtime AS s_runtime,
-                      s.error_reason AS s_error,
                       te.embedding
                FROM tool_embeddings te
                JOIN tool t ON te.name = t.name
-               LEFT JOIN server s ON s.name = t.source_id
                WHERE 1=1{clauses}""",
             params,
         )

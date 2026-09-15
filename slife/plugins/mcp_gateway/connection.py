@@ -36,6 +36,7 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
+from slife.mcp.era import negotiate_era, peer_era, watch_tools_changed
 from slife.plugins.mcp_gateway.client import close_exit_stack_bounded, make_local_http_client
 from mcp.types import (
     TextContent,
@@ -131,6 +132,11 @@ class MCPServerConnection:
         self._on_connected = on_connected
         self._exit_stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
+        #: Protocol version negotiated at connect (None before) — a modern
+        #: peer is session-less and pushes changes on a listen stream only.
+        self._era: str | None = None
+        #: Supervisor for that listen stream (modern peers only).
+        self._watch_task: "asyncio.Task | None" = None
         self._http_client: httpx2.AsyncClient | None = None
         self._sse_mode: bool = False
         # stdio stderr capture: a real temp file passed as the SDK's errlog
@@ -401,19 +407,50 @@ class MCPServerConnection:
         )
 
     async def _handle_notification(self, message) -> None:
-        """Forward server notifications (tools/list_changed) to the host via
-        ``on_connected``.  Read-only path — never called from a tool call."""
+        """Forward a LEGACY peer's session-channel notifications.
+
+        Modern peers never reach here — the 2026-07-28 era forbids an
+        unrequested push, so their changes arrive on the listen stream
+        instead (:meth:`_start_tools_watch`).  Read-only path — never called
+        from a tool call.
+        """
         method = getattr(message, "method", None)
         if not isinstance(method, str):
             return
-        if method == "notifications/tools/list_changed" and self._on_connected is not None:
-            try:
-                await self._on_connected(self.config.name)
-            except Exception as exc:
-                logger.warning(
-                    "mcp_notification_handler_failed server=%s err=%s",
-                    self.config.name, exc,
-                )
+        if method == "notifications/tools/list_changed":
+            await self._notify_tools_changed()
+
+    async def _notify_tools_changed(self) -> None:
+        """An external server's tool surface changed → re-discover upstream.
+
+        Both eras funnel here (listen stream or session channel), so the host
+        sees one behaviour: ``on_connected`` → its reconcile.
+        """
+        if self._on_connected is None:
+            return
+        try:
+            await self._on_connected(self.config.name)
+        except Exception as exc:
+            logger.warning(
+                "mcp_notification_handler_failed server=%s err=%s",
+                self.config.name, exc,
+            )
+
+    def _start_tools_watch(self) -> None:
+        """Keep a ``tools/list_changed`` listen stream open (modern peers).
+
+        A no-op for a legacy peer — it raises ``ListenNotSupportedError``
+        inside the supervisor, which then returns; its notifications keep
+        riding the session channel.
+        """
+        if self._watch_task is not None and not self._watch_task.done():
+            return
+        if self._session is None:
+            return
+        self._watch_task = asyncio.create_task(
+            watch_tools_changed(self._session, self._notify_tools_changed),
+            name=f"mcp-listen:{self.config.name}",
+        )
 
     # ── Connection lifecycle ────────────────────────────────────────────
 
@@ -457,11 +494,13 @@ class MCPServerConnection:
                         await self._connect_http()
 
                     assert self._session is not None
-                    # MCP initialize handshake (SDK-managed, official params).
-                    # The SDK's initialize() already sends the standardized
-                    # InitializedNotification itself — do not send it again
-                    # here (a duplicate handshake message every connect).
-                    await self._session.initialize()
+                    # Era negotiation, not a bare handshake: an external
+                    # server may be either generation, and the SDK's `auto`
+                    # policy decides from the peer's own answer — modern peers
+                    # are adopted through `server/discover` (session-less,
+                    # per-request `_meta`), legacy peers keep the initialize
+                    # handshake.  See slife/mcp/era.py.
+                    self._era = await negotiate_era(self._session)
 
                     # Discover tools
                     tools_result = await self._session.list_tools()
@@ -495,6 +534,11 @@ class MCPServerConnection:
                 # surface appeared or changed — notify listeners so they
                 # re-discover and re-register (idempotent full-diff).
                 await self._fire_on_reconnect()
+
+                # A modern peer pushes later changes ONLY on a listen stream;
+                # a legacy one keeps the session channel (_handle_notification).
+                if peer_era(self._session) == "modern":
+                    self._start_tools_watch()
 
                 if self._health_task is None or self._health_task.done():
                     self._health_task = asyncio.create_task(self._health_monitor())
@@ -825,6 +869,18 @@ class MCPServerConnection:
         logger.info("mcp_disconnected server=%s", self.config.name)
 
     async def _cleanup_resources(self) -> None:
+        # Stop the listen supervisor first — its stream lives on the session
+        # being torn down, and a re-listen racing the teardown would surface
+        # as a spurious error from a dead transport.
+        if self._watch_task is not None and not self._watch_task.done():
+            self._watch_task.cancel()
+            try:
+                await self._watch_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("mcp_listen_stop_failed server=%s", self.config.name, exc_info=True)
+        self._watch_task = None
         if self._exit_stack is not None:
             await close_exit_stack_bounded(self._exit_stack)
             self._exit_stack = None
@@ -874,7 +930,7 @@ class ConnectionPool:
         self._connections[config.name] = conn
         # ``connect`` overrides the config default: the host's startup
         # eager-connect set registers enabled-but-skipped servers as
-        # DISCONNECTED (no connect attempt) until mcp_connect wakes them.
+        # DISCONNECTED (no connect attempt) until enabled or used.
         should_connect = config.enabled if connect is None else connect
         if should_connect:
             await conn.connect()
@@ -900,7 +956,7 @@ class ConnectionPool:
         await conn.disconnect()
 
     async def connect_server(self, name: str) -> None:
-        """Force a fresh connect attempt on a registered server (mcp_connect).
+        """Force a fresh connect attempt on a registered server.
 
         A server in DISCONNECTED/FAILED state is re-tried now rather than
         waiting for the health monitor's backoff; a fresh ``connect()`` clears

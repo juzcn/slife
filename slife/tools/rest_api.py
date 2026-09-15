@@ -221,6 +221,17 @@ class RestApiListTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibl
 
 
 class RestApiSetEnabledTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
+    """Enable or disable a REST API — the only lifecycle knob.
+
+    A REST API is a distinct management family from MCP (DESIGNER NOTES §8.5):
+    today it rides the mcp-openapi-proxy gateway, but the LLM-facing surface
+    stays REST-API-shaped so a proxy-free transport later needs no tool
+    change.  There is no connect/disconnect pair here: the modern MCP protocol
+    removed the session a "connect" established, so a server is either enabled
+    (live, reconnected lazily on use) or disabled (torn down).  The same verb
+    re-arms one left in ERROR — the enable path forces a fresh connect.
+    """
+
     name = "rest_api_set_enabled"
     category = "REST API"
     description = "Enable or disable a REST API. Connects/disconnects immediately."
@@ -252,74 +263,3 @@ class RestApiSetEnabledTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIn
         state = "enabled" if enabled else "disabled"
         logger.info("rest_api_set_enabled name=%s enabled=%s", name, enabled)
         return f"[OK] REST API '{name}' {state}."
-
-
-class RestApiConnectTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
-    """Connect (or re-enable + connect) a REST API.
-
-    A REST API is a distinct management family from MCP (DESIGNER NOTES §8.5):
-    today it rides the mcp-openapi-proxy gateway, but the LLM-facing surface
-    stays REST-API-shaped so a proxy-free transport later needs no tool
-    change.  Delegates to the gateway's connect machinery under the hood.
-    """
-
-    name = "rest_api_connect"
-    category = "REST API"
-    description = (
-        "Connect (or re-enable + connect) a REST API by name. For one left "
-        "ERROR/DISCONNECTED, forces a fresh connect attempt now."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "API name, from rest_api_list."},
-        },
-        "required": ["name"],
-    }
-
-    async def execute(self, **kwargs) -> str:
-        name: str = kwargs["name"]
-        if name not in mcp_gateway_config.list_rest_apis():
-            return f"'{name}' is not a registered REST API."
-        ctx = getattr(self, "_ctx", None)
-        mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
-        if mcp is None:
-            return (f"REST API '{name}': MCP gateway client not ready — "
-                    f"it reconnects automatically; use rest_api_set_enabled to force.")
-        try:
-            raw = await mcp.call_tool("mcp_connect", {"server": name})  # type: ignore[union-attr]
-        except Exception as e:
-            logger.warning("rest_api_connect_failed name=%s err=%s", name, e)
-            return f"REST API '{name}' connect failed: {e}"
-        return raw
-
-
-class RestApiDisconnectTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
-    """Disconnect a REST API now (runtime only — stays enabled in config)."""
-
-    name = "rest_api_disconnect"
-    category = "REST API"
-    description = (
-        "Disconnect a REST API now (runtime only — stays enabled in config; "
-        "a later rest_api_connect reconnects)."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "API name, from rest_api_list."},
-        },
-        "required": ["name"],
-    }
-
-    async def execute(self, **kwargs) -> str:
-        name: str = kwargs["name"]
-        ctx = getattr(self, "_ctx", None)
-        mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
-        if mcp is None:
-            return f"REST API '{name}': MCP gateway client not ready."
-        try:
-            raw = await mcp.call_tool("mcp_disconnect", {"server": name})  # type: ignore[union-attr]
-        except Exception as e:
-            logger.warning("rest_api_disconnect_failed name=%s err=%s", name, e)
-            return f"REST API '{name}' disconnect failed: {e}"
-        return raw

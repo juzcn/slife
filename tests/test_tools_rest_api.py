@@ -16,61 +16,12 @@ import pytest
 
 from slife.plugins.mcp_gateway import config as mcp_gateway_config
 from slife.tools.rest_api import (
-    RestApiConnectTool,
-    RestApiDisconnectTool,
     RestApiListTool,
     RestApiRemoveTool,
     RestApiSetEnabledTool,
     RestApiSetTool,
     get_rest_apis_summary,
 )
-
-
-# ── rest_api_connect / rest_api_disconnect delegate to the gateway ───────
-
-
-class _FakeMcpTx:
-    """A fake gateway client recording delegated calls."""
-
-    def __init__(self):
-        self.calls = []
-
-    async def call_tool(self, name, arguments=None):
-        self.calls.append((name, arguments))
-        return f"[ok] {name} {arguments}"
-
-
-def _register_api(name: str) -> None:
-    mcp_gateway_config.save_rest_api(
-        name=name, spec_url="https://example.com/openapi.json",
-        base_url="https://api.example.com", api_key="", description="x",
-    )
-
-
-@pytest.mark.asyncio
-async def test_rest_api_connect_refuses_unknown_then_delegates():
-    tool = RestApiConnectTool()
-
-    # An unregistered name is refused before touching the gateway.
-    object.__setattr__(tool, "_ctx", type("Ctx", (), {"mcp_client": _FakeMcpTx()})())
-    out = await tool.execute(name="nope-api")
-    assert "not a registered REST API" in out
-
-    _register_api("weather")
-    fake = _FakeMcpTx()
-    object.__setattr__(tool, "_ctx", type("Ctx", (), {"mcp_client": fake})())
-    await tool.execute(name="weather")
-    assert fake.calls == [("mcp_connect", {"server": "weather"})]
-
-
-@pytest.mark.asyncio
-async def test_rest_api_disconnect_delegates():
-    _register_api("weather")
-    fake = _FakeMcpTx()
-    tool = RestApiDisconnectTool()
-    object.__setattr__(tool, "_ctx", type("Ctx", (), {"mcp_client": fake})())
-    await tool.execute(name="weather")
-    assert fake.calls == [("mcp_disconnect", {"server": "weather"})]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────

@@ -178,7 +178,6 @@ class TestAgentServiceMCPEnrichment:
         await store.open()
         try:
             svc = ToolCatalogService(store, write_owner=True)
-            await svc.session_start()
 
             service = AgentService(sample_config)
             service._catalog = svc

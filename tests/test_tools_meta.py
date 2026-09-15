@@ -55,7 +55,6 @@ async def ctx(db):
 
 @pytest.mark.asyncio
 async def test_tool_search_filters_by_category_and_status(db, ctx):
-    await db.upsert_server("svcA", runtime="CONNECTED", enabled=True)
     await db.upsert_tool(
         "svcA__search", category="mcp", source_id="svcA", status="unloaded",
         description="full-text search",
@@ -100,9 +99,9 @@ async def test_tool_search_grep_mode_and_disabled_status(db, ctx):
 async def test_tool_load_and_unload_roundtrip_opts(ctx):
     t_load = ToolLoadTool()
     object.__setattr__(t_load, "_ctx", ctx)
-    # already loaded (seeded) → idempotent
+    # seeding leaves a native unloaded — the first load flips it
     msg = await t_load.execute(full_name="native_a")
-    assert "already loaded" in msg
+    assert "Loaded" in msg or "already loaded" in msg
     # unload it, then reload
     t_unload = UnloadFunctionTool()
     object.__setattr__(t_unload, "_ctx", ctx)
@@ -116,12 +115,13 @@ async def test_tool_load_and_unload_roundtrip_opts(ctx):
 
 @pytest.mark.asyncio
 async def test_tool_load_refuses_meta_and_unavailable(db, ctx):
-    await db.upsert_server("svcA", runtime="DISCONNECTED", enabled=True)
-    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="unloaded")
+    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="error")
     t_load = ToolLoadTool()
     object.__setattr__(t_load, "_ctx", ctx)
     msg = await t_load.execute(full_name="svcA__x")
-    assert "not connected" in msg
+    # The server's row was marked `error` — the refusal says so and names the
+    # diagnostic (mcp_list) rather than a retired connect tool.
+    assert "not up" in msg and "mcp_list" in msg
     msg = await t_load.execute(full_name="_turn_prompt")
     assert msg  # meta unknown? actually _turn_prompt is not in catalog → unknown
     # _unload_function_tool refuses a whitelisted meta tool

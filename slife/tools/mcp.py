@@ -17,8 +17,8 @@ class McpToolLoadTool(Tool):
     name = "mcp_tool_load"
     category = "mcp"
     description = (
-        "Load an external MCP tool by full_name '{server}__{tool}' into the "
-        "LLM's tool list (find it with mcp_search). Delegates to tool_load."
+        "Load an external MCP tool by full_name '{server}__{{tool}}' into the "
+        "LLM's tool list (find it with tool_search). Delegates to tool_load."
     )
     parameters = {
         "type": "object",

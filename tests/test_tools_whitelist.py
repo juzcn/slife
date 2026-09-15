@@ -1,8 +1,8 @@
 """The meta whitelist is a design contract — lock the exact tool sets.
 
 If this test needs editing, the whitelist changed deliberately (DESIGNER
-NOTES §8.5): the 11 tool-system meta tools + the 3 harness auto-invoke pairs,
-and nothing else.
+NOTES §8.5, minus the retired connect/disconnect pairs): the 6 tool-system
+meta tools + the 3 harness auto-invoke pairs, and nothing else.
 """
 
 from slife.tools.whitelist import (
@@ -13,14 +13,9 @@ from slife.tools.whitelist import (
 )
 
 
-def test_meta_whitelist_is_exactly_the_11_tools():
+def test_meta_whitelist_is_exactly_the_6_tools():
     assert META_WHITELIST == frozenset({
-        "mcp_search",
-        "mcp_connect",
-        "mcp_disconnect",
         "mcp_set_enabled",
-        "rest_api_connect",
-        "rest_api_disconnect",
         "rest_api_set_enabled",
         "tool_search",
         "tool_load",
@@ -40,13 +35,13 @@ def test_harness_whitelist_is_the_loop_pairs():
 def test_disjoint_and_covered():
     assert not (META_WHITELIST & HARNESS_WHITELIST)
     assert ALWAYS_LOADED == META_WHITELIST | HARNESS_WHITELIST
-    assert len(ALWAYS_LOADED) == 14
+    assert len(ALWAYS_LOADED) == 9
 
 
 def test_is_meta_tool_covers_both_classes():
     assert is_meta_tool("tool_load")
-    assert is_meta_tool("mcp_connect")
-    assert is_meta_tool("rest_api_disconnect")
+    assert is_meta_tool("mcp_set_enabled")
+    assert is_meta_tool("rest_api_set_enabled")
     assert is_meta_tool("_turn_prompt")
     # NOT meta — evictable/diagnostic/config-management tools.
     assert not is_meta_tool("system_health")

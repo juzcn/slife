@@ -29,15 +29,17 @@ Entry point
   one-line call that starts the server.  It handles port binding, FastMCP
   startup, and — after the app is ready (its lifespan completed) — the
   parent port signal.  The signal means *"ready to serve MCP"*, so the
-  harness's first ``initialize`` always lands on a ready server (see
+  harness's first request always lands on a ready server (see
   :func:`signal_port`).
 
-Readiness (MCP initialize handshake)
-  Readiness is defined by MCP itself: the harness's ``initialize``
-  handshake completes only when the server is up and can respond, so a
-  completed handshake IS the plugin's ready declaration — no ``__ready``
-  tool.  The lifespan must therefore stay **handshake-fast**: establish
-  only the minimum needed to serve (memdb/memfiles open their store) and
+Readiness (protocol negotiation)
+  Readiness is defined by MCP itself: the harness's connect-time era
+  negotiation (``server/discover`` on a modern peer, the ``initialize``
+  handshake on a legacy one) completes only when the server is up and can
+  respond, so a completed negotiation IS the plugin's ready declaration —
+  no ``__ready`` tool.  The lifespan must therefore stay **connect-fast**:
+  establish only the minimum needed to serve (memdb/memfiles open their
+  store) and
   nothing that could stall the loop while the wrapper is connecting — a
   GIL-holding model load, slow I/O, or long connect belongs in
   :func:`warm_after_handshake`, never in the lifespan.  A failing lifespan
@@ -130,9 +132,10 @@ import sys
 import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from fastmcp.server.middleware import Middleware
+from mcp.shared.subscriptions import ToolsListChanged
 
 from slife.logfmt import (
     SessionFormatter,
@@ -143,9 +146,11 @@ from slife.logfmt import (
     silence_noisy_loggers,
 )
 from slife.paths import agent_name
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from mcp.server.subscriptions import SubscriptionBus
 
 # ── Internal-tool marker ──────────────────────────────────────────────────
 
@@ -167,89 +172,106 @@ def is_internal_tool(name: str) -> bool:
     return name.startswith(INTERNAL_TOOL_PREFIX)
 
 
-class SessionNotifier:
-    """Coalescing fan-out of mcp ``notifications/tools/list_changed``.
+class ToolsChangedNotifier:
+    """Publish ``tools/list_changed`` to this server's listen subscribers.
 
-    At most ONE send round is in flight; pushes that land while it runs fold
-    into a trailing-edge re-send (the notification is payload-less — hosts
-    re-list on receipt, so no ordering guarantees are assumed).  Sends run
-    in a DETACHED task, never inside a request handler: mcp 2.1.1's
-    dispatcher desyncs its cancel-scope stack when a slow ``tools/call``
-    handler writes a notification burst into its own session mid-handler —
-    the session then crashes and every later call dies with ``Session not
-    found`` (see the gateway server's docs).  One instance per server
+    At the modern protocol era (2026-07-28) a change notification reaches a
+    client ONLY through a ``subscriptions/listen`` stream that the client
+    opened: the spec forbids pushing an unrequested notification, and the
+    SDK drops a bare ``ServerSession.send_tool_list_changed()`` outright
+    (``mcp/server/connection.py`` — "delivered via subscriptions/listen at
+    this era").  Publishing on a ``SubscriptionBus`` is the supported path —
+    every live listen stream picks the event up, stamped and filtered.
+
+    This replaces the retired session-set notifier, which had to remember
+    each caller's request ``session`` and fan out N network sends.  A bus
+    publish needs no per-request bookkeeping (it is equally valid from a
+    request handler and a background task), so ``capture()`` and the
+    ``_active_sessions`` sets are gone with it.  One instance per server
     process.
-
-    ``sessions`` is a zero-arg getter returning the caller's session set.
-    Servers keep the set as a module-level ``_active_sessions`` so fixtures
-    can inject or rebind it; reading through the getter honors a rebind.
     """
 
-    def __init__(self, sessions: "Callable[[], set]") -> None:
-        self._sessions = sessions
-        self._pending = False
-        self._task: asyncio.Task | None = None
+    def __init__(self, bus: "SubscriptionBus | None" = None) -> None:
+        self._bus = bus
 
-    def capture(self, ctx, *, max_sessions: int = 64) -> None:
-        """Remember the caller's session so a change can notify it.
+    def bind(self, bus: "SubscriptionBus") -> None:
+        """Attach the bus to publish on (see :func:`tools_changed_bus`).
 
-        *ctx* is a FastMCP ``Context`` (duck-typed — it only needs
-        ``.session``); a request-context-less call is a no-op.
+        For callers whose server is built after module import (the host
+        server builds its ``FastMCP`` inside ``build_registry_mcp`` and
+        job-coding builds it at the bottom of its module); a publish before
+        :meth:`bind` is a logged no-op.
         """
-        session = getattr(ctx, "session", None) if ctx is not None else None
-        if session is not None:
-            active = self._sessions()
-            active.add(session)
-            if len(active) > max_sessions:
-                # Past the bound, drop arbitrary entries that are already dead
-                # (attempting to send detects it); a live one re-registers on
-                # its next call.
-                active.discard(next(iter(active)))
+        self._bus = bus
 
     def request_tools_changed(self) -> None:
-        """Coalesce-and-schedule ``tools/list_changed`` to all clients.
+        """Schedule one publish — fire-and-forget, no ordering guarantee.
 
-        Fire-and-forget; the send runs in a detached task (see the class
-        docstring for why).  Callers MUST NOT rely on delivery ordering.
+        Detached on purpose: callers are request handlers and background
+        callbacks that must not await a fan-out, and the event is
+        payload-less (a listener re-lists on receipt).
         """
-        self._pending = True
-        if self._task is not None and not self._task.done():
-            return  # a send is scheduled/in flight — it re-checks the flag
-        self._task = asyncio.create_task(self._daemon())
+        asyncio.create_task(self.publish())
 
-    async def _daemon(self) -> None:
-        """Trailing edge: re-send after the in-flight round while pushes keep
-        landing, so the freshest catalog always reaches every host."""
-        while self._pending:
-            self._pending = False
-            await self._send_all()
+    async def publish(self) -> None:
+        """Publish one tools-list-changed event to the listen subscribers.
 
-    async def _send_all(self) -> None:
-        """One eager notification round to every known client, in this task.
-
-        Best-effort: a dead/stale session is dropped, the rest are served.
-        Sends run CONCURRENTLY, each bounded by the registry's ready.notify,
-        so one slow/backpressured client degrades only itself.
+        Best-effort: the bus fan-out is in-process, and a delivery failure
+        belongs to that stream (``ListenHandler`` ends a stream whose client
+        stopped reading, and the client re-listens — there is no replay).
         """
-        sessions = list(self._sessions())
-
-        async def _send_one(sess) -> None:
-            try:
-                await asyncio.wait_for(
-                    sess.send_tool_list_changed(),
-                    timeout=_timeouts.timeouts.ready.notify,
-                )
-            except Exception:
-                # Dead/stale session — drop it so a later notification skips it.
-                self._sessions().discard(sess)
-
-        await asyncio.gather(*(_send_one(s) for s in sessions))
+        if self._bus is None:
+            logger.debug("tools_changed_no_bus — nothing to publish to")
+            return
+        try:
+            await self._bus.publish(ToolsListChanged())
+        except Exception:
+            logger.debug("tools_changed_publish_failed", exc_info=True)
 
     async def flush(self) -> None:
-        """Eager-flush alias (tests/deterministic paths): one full round now,
-        in this task — no coalescing.  Production paths use
-        :meth:`request_tools_changed`."""
-        await self._send_all()
+        """Eager alias (tests/deterministic paths): publish in this task.
+
+        Kept so fixtures can await the round-trip deterministically; the
+        production paths use :meth:`request_tools_changed`.
+        """
+        await self.publish()
+
+
+def tools_changed_bus(server) -> "SubscriptionBus":
+    """The change-notification bus of *server*, serving ``subscriptions/listen``.
+
+    fastmcp 4.0.1 predates the 2026-07-28 change-notification model: it never
+    registers ``subscriptions/listen`` (the SDK's own ``MCPServer`` does), so
+    a client opening a listen stream gets JSON-RPC "Method not found" — and
+    without a stream a modern client has NO way to learn that a tool list
+    changed.  This closes that gap by registering the SDK's ``ListenHandler``
+    over a bus we own: the server capability advertisement follows from the
+    handler registry, so clients are told about the subscription capability
+    exactly when it is actually served.
+
+    Idempotent per server — the bus is stashed on the instance, so a second
+    call (or a module-level call plus a lazy rebind) reuses one bus and never
+    double-registers the method.
+    """
+    from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
+    from mcp_types import SubscriptionsListenRequestParams
+
+    cached = getattr(server, "_slife_subscriptions", None)
+    if cached is not None:
+        return cached
+    bus = InMemorySubscriptionBus()
+    # fastmcp's FastMCP wraps the SDK's low-level Server; the handler registry
+    # (and the capabilities derived from it) lives on that inner object.
+    inner = getattr(server, "_mcp_server", server)
+    try:
+        inner.add_request_handler(
+            "subscriptions/listen", SubscriptionsListenRequestParams, ListenHandler(bus),
+        )
+    except Exception:
+        logger.debug("listen_handler_attach_failed", exc_info=True)
+    setattr(server, "_slife_subscriptions", bus)
+    logger.debug("listen_handler_attached server=%s", getattr(server, "name", "?"))
+    return bus
 
 
 class _WarmAfterHandshake(Middleware):
@@ -285,9 +307,9 @@ def warm_after_handshake(
 ) -> None:
     """Run a heavyweight coroutine AFTER the first MCP ``tools/list``.
 
-    The plugin contract declares readiness as the MCP ``initialize``
-    handshake completing (see the module docstring) — a plugin must be
-    handshake-fast, so anything that could stall the loop while the
+    The plugin contract declares readiness as the connect-time era
+    negotiation completing (see the module docstring) — a plugin must be
+    connect-fast, so anything that could stall the loop while the
     wrapper is still connecting (a GIL-holding model load, slow I/O, long
     connects) must NOT run in the lifespan.  Use this to warm up such
     resources in the background.
@@ -468,7 +490,7 @@ def signal_port(port: int) -> None:
 
     Per the plugin loading contract, the signal is emitted only AFTER the
     MCP application is ready to serve (its lifespan has completed) — so the
-    parent's first ``initialize`` handshake always succeeds.  The signal
+    parent's first request always finds a serving server.  The signal
     means *"ready to serve MCP on this port"*, not just *"port allocated"*.
     """
     line = json.dumps({"port": port}, ensure_ascii=False)
@@ -546,7 +568,7 @@ def create_plugin_server(
     # Wrap the plugin's lifespan so the port signal is emitted only after the
     # app is ready to serve MCP (the contract: signal = "ready", see
     # ``signal_port``).  The parent connects the moment it reads the signal,
-    # so its first ``initialize`` must always succeed — signalling before the
+    # so its first request must always succeed — signalling before the
     # lifespan finished (e.g. ngrok / MQTT startup) raced the handshake and
     # hung the plugin load.
     @asynccontextmanager
@@ -622,7 +644,12 @@ def run_plugin_server(
             mcp_server.run(
                 transport="streamable-http", host=host, sockets=sockets,
                 show_banner=show_banner,
-                json_response=True,
+                # SSE mode (NOT a single JSON body per POST): the modern
+                # era's change notifications ride a `subscriptions/listen`
+                # stream, and a JSON response has nowhere to carry one —
+                # the SDK drops them ("removes the request-scoped
+                # back-channel").  See ToolsChangedNotifier.
+                json_response=False,
                 uvicorn_config={"log_config": None},
             )
         else:
@@ -630,7 +657,7 @@ def run_plugin_server(
             mcp_server.run(
                 transport="streamable-http", host=host, port=port,
                 show_banner=show_banner,
-                json_response=True,
+                json_response=False,   # see the sockets branch above
                 uvicorn_config={"log_config": None},
             )
     finally:

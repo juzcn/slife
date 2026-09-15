@@ -47,7 +47,6 @@ class StatusBar(Static):
         heartbeat: str = "",
         heartbeat_color: str = "",
         starting: bool = False,
-        tool_sync: bool = False,
         inbox_busy: bool = False,
         inbox_pending: int = 0,
     ) -> None:
@@ -66,11 +65,7 @@ class StatusBar(Static):
             color = heartbeat_color or "#d29922"
             parts.append(f"[{color}]{heartbeat}[/{color}]")
 
-        if tool_sync:
-            # tools.json5 → shared tools.db startup sync in progress (the
-            # service is not open for input yet).
-            parts.append(f"[#d29922]{t('status_tool_sync')}[/#d29922]")
-        elif starting:
+        if starting:
             # Plugin startup in progress — the service is not open for
             # input yet (input is disabled until startup converges).
             parts.append(f"[#d29922]{t('status_starting')}[/#d29922]")
@@ -382,9 +377,7 @@ class SlifeApp(App):
         # must show "⏳ 启动中…" from the first frame, not after
         # startup settles (the next update happens in
         # _open_service_when_ready, which only runs once converged).  The
-        # tool-registry sync (tools.json5 → tools.db) shows its own message.
         self._status_starting = not self.service.startup_settled
-        self.service._on_catalog_sync = self._on_catalog_sync_cb
         status.update_info(
             model=self.service.model_display_name,
             thinking=self.service.thinking_enabled,
@@ -475,18 +468,6 @@ class SlifeApp(App):
         self.run_worker(
             self._open_service_when_ready(),
             exclusive=False, group="startup-gate",
-        )
-
-    def _on_catalog_sync_cb(self, syncing: bool) -> None:
-        """Drive the status bar's "工具注册表同步中" while the startup sync runs."""
-        if not hasattr(self, "_status_starting"):
-            return
-        status = self.query_one("#status-bar", StatusBar)
-        status.update_info(
-            model=self.service.model_display_name,
-            thinking=self.service.thinking_enabled,
-            starting=self._status_starting,
-            tool_sync=syncing,
         )
 
     async def _open_service_when_ready(self) -> None:

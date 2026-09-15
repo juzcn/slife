@@ -131,9 +131,12 @@ Start/stop/watchdog/connect/health all iterate the registry — there is no
 
 ### Readiness
 
-A plugin is ready when the harness's MCP `initialize` handshake completes —
-the server only answers `initialize` after its own FastMCP lifespan finished,
-so the returned handshake *is* the ready signal (`mark_initialized`).  The
+A plugin is ready when the harness's connect-time protocol negotiation
+completes — the server only answers after its own FastMCP lifespan finished,
+so the completed negotiation *is* the ready signal (`mark_initialized`).
+That negotiation is era-dependent and the harness never configures it: a
+modern plugin (ours — the SDK answers `server/discover`) is adopted at
+2026-07-28, a legacy one gets the `initialize` handshake (`slife/mcp/era.py`).  The
 per-plugin serving requirement is encoded in the lifespan (memdb/memfiles
 require a usable store); subordinate/external dependencies (the gateway's
 external servers, sharefile's tunnel, wechat's login, media providers, a2a's
@@ -217,7 +220,7 @@ disconnects every shared client (`stop_all_plugins`).
 
 The harness hands the child its identity and its serving ports through the
 process environment (`create_subprocess_exec(env=…)`) — there is no other
-handshake channel for these:
+in-band channel for these before the first request:
 
 | Variable | Purpose |
 |----------|---------|

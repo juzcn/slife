@@ -47,7 +47,7 @@ class Ready:
     connect_startup: float = 120.0
     signal: float = 60.0
     stderr_line: float = 1.0
-    notify: float = 5.0
+    relisten: float = 1.0        # backoff before re-opening a dropped change stream
     probe_broker: float = 1.0
     probe_endpoint: float = 5.0
     tunnel_start: float = 45.0
@@ -152,8 +152,8 @@ def validate(ts: Timeouts) -> list[str]:
                 errs.append(f"timeouts.{role}.{f.name} must be finite and >= 0, got {v!r}")
     if not (0 <= ts.grace.gentle <= ts.grace.force):
         errs.append(f"invariant: grace.gentle({ts.grace.gentle}) <= grace.force({ts.grace.force})")
-    if not (ts.ready.notify <= ts.ready.connect_attempt <= ts.ready.spawn):
-        errs.append("invariant: ready.notify <= ready.connect_attempt <= ready.spawn")
+    if not (ts.ready.relisten <= ts.ready.connect_attempt <= ts.ready.spawn):
+        errs.append("invariant: ready.relisten <= ready.connect_attempt <= ready.spawn")
     if ts.ready.connect_startup < ts.ready.spawn:
         errs.append("invariant: ready.connect_startup >= ready.spawn")
     if ts.work.stall <= 0:

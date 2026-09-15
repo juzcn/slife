@@ -42,7 +42,12 @@ from typing import TYPE_CHECKING
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
-from slife.server_utils import INTERNAL_TOOL_PREFIX, SessionNotifier, bind_free_port
+from slife.server_utils import (
+    INTERNAL_TOOL_PREFIX,
+    ToolsChangedNotifier,
+    bind_free_port,
+    tools_changed_bus,
+)
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 if TYPE_CHECKING:
@@ -78,33 +83,18 @@ def is_exposed(tool) -> bool:
     return not name.startswith(INTERNAL_TOOL_PREFIX)
 
 
-#: Connected client sessions to notify on tool-set change.  Captured from the
-#: handler's injected ``Context`` — the same pattern job-coding / mcp use.
-_active_sessions: set = set()
-#: Bound on tracked sessions.  A client that connects and disconnects cleanly
-#: (send never raising) would otherwise leak a session entry forever; the
-#: bound makes the set bounded and forces a sweep of dead sessions via a
-#: failed send.  Real deployments see a handful of consumers.
-_MAX_TRACKED_SESSIONS = 64
-#: Coalescing fan-out lives in :class:`slife.server_utils.SessionNotifier`;
-#: the module keeps the session set + the tested wrapper names below.  The
-#: notifier reads the set through a getter, so a fixture rebinding
-#: ``_active_sessions`` (``srv._active_sessions = …``) is honored.
-_notifier = SessionNotifier(lambda: _active_sessions)
-
-
-def _capture_session(ctx: Context | None) -> None:
-    """Remember the caller's session so a registry change can notify it."""
-    _notifier.capture(ctx, max_sessions=_MAX_TRACKED_SESSIONS)
+#: Fan-out of ``tools/list_changed`` to this server's listen subscribers
+#: (:class:`slife.server_utils.ToolsChangedNotifier`).  The ``FastMCP``
+#: instance is built later (inside ``build_registry_mcp``), so the server is
+#: bound there; a publish before that is a logged no-op.
+_notifier = ToolsChangedNotifier()
 
 
 def _request_tools_changed() -> None:
-    """Coalesce-and-schedule ``notifications/tools/list_changed`` to all clients.
+    """Publish ``tools/list_changed`` to the listen subscribers.
 
-    Fire-and-forget — the send runs in a DETACHED task (the mcp 2.1.1
-    dispatcher cancel-scope rationale lives on :class:`SessionNotifier`).
-    Coalescing folds bursts into a single send.  Hosts re-list on receipt,
-    so no ordering guarantees are assumed.
+    Fire-and-forget — the publish is scheduled as a detached task (hosts
+    re-list on receipt, so no ordering guarantees are assumed).
     """
     _notifier.request_tools_changed()
 
@@ -139,6 +129,10 @@ def build_registry_mcp(
             "the slife instance that serves this endpoint."
         ),
     )
+    # The server exists only now — bind the notifier to its subscription bus
+    # so registry changes reach the listen subscribers (`tools_changed_bus`
+    # also registers the listen handler, which fastmcp does not).
+    _notifier.bind(tools_changed_bus(server))
 
     @server.tool(
         name="__check",
@@ -146,7 +140,6 @@ def build_registry_mcp(
                      "Internal — harness probe, never exposed to the LLM."),
     )
     async def __check(ctx: Context | None = None) -> str:
-        _capture_session(ctx)
         exposed = [t.name for t in registry.list_tools() if is_exposed(t)]
         payload = {
             "exposed_count": len(exposed),
@@ -172,7 +165,8 @@ async def _host_catalog_facts(catalog: "ToolCatalogService") -> dict:
     try:
         store = catalog.store
         facts["tools"] = len(await store.scan_effective())
-        facts["servers"] = len(await store.list_server_names())
+        # Servers are no longer a table — count the ones that own tool rows.
+        facts["servers"] = len(await store.list_source_ids())
         facts["loaded"] = await store.count_loaded()
 
         sem = getattr(catalog, "semantic_manager", None)
@@ -238,7 +232,6 @@ def _sync_registry(server: FastMCP, registry: "ToolRegistry") -> None:
         async def _run(
             _name=name, ctx: Context | None = None, **kwargs
         ):
-            _capture_session(ctx)
             return await registry.execute(_name, **kwargs)
 
         _run.__name__ = name
