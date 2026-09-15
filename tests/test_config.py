@@ -6,6 +6,7 @@ import pytest; pytestmark = pytest.mark.unit
 # pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 
 import logging
+import os
 
 import pytest
 import json5
@@ -674,6 +675,28 @@ class TestConfigEnvInjection:
         }))
         config = Config.from_json5(str(cfg_path))
         assert config.env == {"MY_TOOL_KEY": "tool-secret-123"}
+
+    def test_env_section_applies_literal_default(self, tmp_path, monkeypatch):
+        """${VAR:-default} injects the literal default when the var is
+        unset in BOTH shell and credstore — the documented lenient chain.
+        (It was previously dropped entirely, leaving the key absent.)"""
+        monkeypatch.delenv("MY_FALLBACK_KEY", raising=False)
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p": {
+                        "api_key": "sk-x",
+                        "models": [{"model": "m"}],
+                    },
+                },
+            },
+            "env": {
+                "MY_FALLBACK_KEY": "${MY_FALLBACK_KEY:-fallback-value}",
+            },
+        }))
+        Config.from_json5(str(cfg_path))
+        assert os.environ.get("MY_FALLBACK_KEY") == "fallback-value"
 
 
 class TestConfigFromJSON5EdgeCases:

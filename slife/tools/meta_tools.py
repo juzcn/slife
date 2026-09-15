@@ -273,7 +273,11 @@ class SkillLoadTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatible
         if err := require_params(skill_name=skill_name):
             return err
         text = _read_skill(self.skills_dir, skill_name)
-        if text.startswith("Skill '") and "not found" in text:
+        # Both failure shapes are NOT successes: a named skill that is absent
+        # ("Skill 'x' not found") AND a missing skills directory ("Skills
+        # directory not found: ...").  The latter used to fall through and
+        # register a PHANTOM skill row whose "schema" was the error text.
+        if text.startswith("Skill") and "not found" in text:
             return text
 
         # Register the skill as a discoverable catalog row (category=skill,

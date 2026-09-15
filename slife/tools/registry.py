@@ -167,6 +167,11 @@ class ToolRegistry:
             t0 = _time.monotonic()
             logger.debug("tool_start name=%s", tool_name)
             result = await tool.execute(**kwargs)
+            # Bump LRU recency on a real, completed use — the eviction policy
+            # orders by last_loaded, so without this a just-used tool can be
+            # the next eviction victim (alphabetical-NULL sort).
+            if self._catalog is not None:
+                await self._catalog.touch(tool_name)
             elapsed = (_time.monotonic() - t0) * 1000
             logger.debug(
                 "tool_done name=%s took_ms=%.0f result_len=%d",

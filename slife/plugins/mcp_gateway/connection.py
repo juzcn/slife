@@ -143,7 +143,6 @@ class MCPServerConnection:
         self._stderr_buffer: list[str] = []
         self._tools_cache: list[dict] = []
         self._error: str | None = None
-        self._notify_tasks: "set[asyncio.Task]" = set()  # fire-and-forget _notify posts
         self._connect_lock = asyncio.Lock()  # serializes connect()
         # Set by disconnect() so an in-flight connect aborts at its next check
         # point instead of resuming after cleanup and spawning an orphaned
@@ -826,12 +825,6 @@ class MCPServerConnection:
         logger.info("mcp_disconnected server=%s", self.config.name)
 
     async def _cleanup_resources(self) -> None:
-        # Cancel in-flight fire-and-forget notifications before closing the
-        # client — a closed client would surface unretrieved task exceptions.
-        for task in list(self._notify_tasks):
-            task.cancel()
-        self._notify_tasks.clear()
-
         if self._exit_stack is not None:
             await close_exit_stack_bounded(self._exit_stack)
             self._exit_stack = None

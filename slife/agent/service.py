@@ -42,6 +42,7 @@ from slife.a2a.identity import HUMAN
 if TYPE_CHECKING:
     from slife.tools.catalog_service import ToolCatalogService
 from slife.tools.factory import create_tools_from_config
+from slife.tools._config_io import config_read_modify_write
 from slife.mcp.tool_adapter import create_proxy_tools
 from slife.platform import terminate_process_sync
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
@@ -495,10 +496,16 @@ class AgentService:
                 f"Unknown model ref '{ref}'. "
                 f"Available: {[m.ref for m in self.config.models]}"
             )
-        raw = self.config._read_config("switch_model", ref)
-        if raw is not None:
-            raw["active_model"] = ref
-            self.config._write_config(raw)
+        # Cross-process read→mutate→write lock: the memdb child RMWs the same
+        # slife.json5 under config_read_modify_write — without the same lock a
+        # concurrent embeddings-config write clobbers this change (and vice
+        # versa).  The in-process _write_lock is not enough across processes.
+        if self.config._path is not None:
+            with config_read_modify_write(self.config._path):
+                raw = self.config._read_config("switch_model", ref)
+                if raw is not None:
+                    raw["active_model"] = ref
+                    self.config._write_config(raw)
         self.reload_active_model(ref)
         return f"Switched to {self.config.active_model.display_name}"
 
@@ -513,12 +520,14 @@ class AgentService:
         enabled = bool(enabled)
         self.config.cutin_enabled = enabled
         self.agent_loop.cutin_enabled = enabled
-        raw = self.config._read_config(
-            "set_midturn_input", self.config.agent_name,
-        )
-        if raw is not None:
-            raw.setdefault("agent", {})["cutin_enabled"] = enabled
-            self.config._write_config(raw)
+        if self.config._path is not None:
+            with config_read_modify_write(self.config._path):
+                raw = self.config._read_config(
+                    "set_midturn_input", self.config.agent_name,
+                )
+                if raw is not None:
+                    raw.setdefault("agent", {})["cutin_enabled"] = enabled
+                    self.config._write_config(raw)
         state = "on" if enabled else "off"
         return (
             f"Mid-turn input preemption turned {state} — inbound messages "
@@ -1131,6 +1140,9 @@ class AgentService:
         2. ``auto_load`` servers' tools bulk-registered via
            ``_discover_and_register_external_tools`` (full-diff, which also
            upserts catalog tool rows + re-embeds on schema change).
+        2b. On-demand (non-auto-load) servers' tool rows mirrored into the
+           catalog (``loaded=False``, no proxies) so ``tool_search`` /
+           ``tool_load`` can reach them — the on-demand load surface.
         3. On-demand EXTERNAL proxies are NOT unregistered on disconnect /
            disable anymore — the catalog's effective-status join hides them
            (DESIGNER NOTES §8.5 state model).  They leave the registry only
@@ -1174,6 +1186,18 @@ class AgentService:
                     await self._discover_and_register_external_tools(server_name=name)
                 except Exception:
                     logger.debug("mcp_auto_load_sync_failed server=%s", name, exc_info=True)
+
+            # 2b — on-demand (non-auto-load) servers: mirror their tool rows
+            # into the catalog so tool_search can find them and tool_load can
+            # materialize them.  No proxies are registered here — the caller
+            # must have a catalog and the server must be connected.
+            for name in configured:
+                if name in auto_servers:
+                    continue
+                try:
+                    await self._mirror_on_demand_server_tools(name)
+                except Exception:
+                    logger.debug("mcp_on_demand_sync_failed server=%s", name, exc_info=True)
 
             # 3 — a proxy whose server left the CONFIG is dropped; a merely
             # disconnected/disabled server keeps it (the join hides it).
@@ -1292,6 +1316,37 @@ class AgentService:
                 loaded=loaded,
             )
 
+    async def _mirror_on_demand_server_tools(self, server_name: str) -> None:
+        """Upsert a non-auto-load server's tool rows into the shared catalog.
+
+        On-demand servers register NO proxies at reconcile time (proxies are
+        materialized by ``tool_load`` from the catalog row on demand).  The
+        reconciliation feeds their rows so ``tool_search`` can discover them
+        and ``tool_load`` can materialize them — without this an on-demand
+        server's tools would never enter the catalog and would be
+        unreachable.  Only a CONNECTED server yields rows (``mcp_list_tools``
+        answers ``tools=[]`` otherwise); a disconnected server's existing
+        rows stay and the effective-status join hides them.
+        """
+        if self.is_subagent or self._catalog is None:
+            return
+        lc = self._gateway_lifecycle()
+        client = lc.client if lc is not None else None
+        if client is None or not client.is_connected:
+            return
+        tools_json = await client.call_tool(
+            "mcp_list_tools", {"server": server_name}
+        )
+        tools_data = json.loads(tools_json)
+        external = (
+            tools_data.get("tools", []) if isinstance(tools_data, dict) else []
+        )
+        if not external:
+            return
+        await self._upsert_external_catalog_rows(server_name, external, loaded=False)
+        if self._catalog_semantic is not None:
+            self._catalog_semantic.on_saved()
+
     async def _register_external_server_tools(self, name: str = "", **kwargs) -> None:
         """mcp_set / mcp_set_enabled connected a server — reconcile proxies.
 
@@ -1375,8 +1430,9 @@ class AgentService:
         await self._connect_plugin_http(name, port)
         await self._register_plugin_tools(name)
         if spec.gateway:
-            # Reconcile external {server}__{tool} proxies (auto_load + on-demand
-            # validation) — the same network the main agent's _wire_mcp_glue
+            # Reconcile external {server}__{tool} proxies — registers auto_load
+            # tools and mirrors on-demand servers' catalog rows (tool_search /
+            # tool_load surface).  Same network the main agent's _wire_mcp_glue
             # uses, mirrored for a worker sharing the gateway.
             await self._sync_mcp_proxies()
         elif spec.ctx_field is not None:
@@ -1445,9 +1501,13 @@ class AgentService:
         import slife.tools.catalog_service as _cs
 
         cat = "job" if name == _cs.JOB_PLUGIN_NAME else "builtin"
+        # Each category's disable set comes from ITS OWN section: ``job`` from
+        # the job section, ``builtin`` from the builtin section — NOT from the
+        # skill section's disabled names (a coincidental skill name must not
+        # disable a plugin tool, and builtin-section disables must apply).
         disabled = (
             self.config.disabled_jobs
-            if cat == "job" else self.config.disabled_skills
+            if cat == "job" else self.config.disabled_builtin
         )
         for t in tagged:
             try:

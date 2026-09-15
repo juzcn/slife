@@ -33,6 +33,13 @@ def _function_from_schema(name: str, schema_json: str | None) -> dict | None:
     The column stores the compact tool descriptor ``{name, description,
     inputSchema}``.  Returns None when absent/unparseable so the caller falls
     back to the materialized instance.
+
+    The caller's *name* is the REGISTRY key: for external mcp/rest-api rows
+    that is ``{server}__{tool}``, while the descriptor's ``name`` is the bare
+    server-side tool name.  The registry key MUST win — the injected function
+    name is what the model calls and what ``registry.execute`` resolves.  A
+    bare descriptor name would make every injected external call fail with
+    ``Unknown tool '<bare>'``.
     """
     if not schema_json:
         return None
@@ -45,7 +52,7 @@ def _function_from_schema(name: str, schema_json: str | None) -> dict | None:
     return {
         "type": "function",
         "function": {
-            "name": desc.get("name") or name,
+            "name": name or desc.get("name"),
             "description": desc.get("description") or "",
             "parameters": desc.get("inputSchema")
                           or {"type": "object", "properties": {}},
@@ -1153,6 +1160,18 @@ class AgentLoop:
             actual_args = dict(tc.arguments)
             is_async = actual_args.pop("_async", None)
             inline_timeout = actual_args.pop("_timeout", None)
+            # A malformed _timeout (the LLM writes natural language like
+            # "5 seconds") must degrade to "use the default" for THIS call —
+            # never raise out of the concurrent batch and kill the whole turn
+            # (raw float() conversion used to escape _execute_tools).
+            if inline_timeout is not None:
+                try:
+                    inline_timeout = float(inline_timeout)
+                except (TypeError, ValueError):
+                    logger.debug(
+                        "tool_timeout_garbage_discarded value=%r", inline_timeout,
+                    )
+                    inline_timeout = None
             approve_requested = bool(actual_args.pop("_approve", False))
 
             # ── Native timeout mapping ───────────────────────────
@@ -1178,7 +1197,7 @@ class AgentLoop:
             has_native_timeout = "timeout" in prop_keys
             if has_native_timeout:
                 if inline_timeout is not None:
-                    timeout_val = int(float(inline_timeout))
+                    timeout_val = int(inline_timeout)
                     if timeout_val > 0:
                         actual_args["timeout"] = timeout_val
                     else:
@@ -1208,7 +1227,10 @@ class AgentLoop:
             if not has_native_timeout and inline_timeout is None:
                 bare_timeout = actual_args.pop("timeout", None)
                 if bare_timeout is not None:
-                    inline_timeout = float(bare_timeout)
+                    try:
+                        inline_timeout = float(bare_timeout)
+                    except (TypeError, ValueError):
+                        inline_timeout = None  # garbage → default bound
 
             # ── Approval gate — pure model judgment ────────────────
             # The LLM decides per-call whether the operation needs user
@@ -1279,8 +1301,8 @@ class AgentLoop:
                 # the `timeout` arg mapped above (they self-enforce — no
                 # double timer).
                 if not has_native_timeout:
-                    if inline_timeout is not None and float(inline_timeout) > 0:
-                        coro = asyncio.wait_for(coro, timeout=float(inline_timeout))
+                    if inline_timeout is not None and inline_timeout > 0:
+                        coro = asyncio.wait_for(coro, timeout=inline_timeout)
 
                 task_id = schedule_async(coro)
                 result = (
@@ -1316,8 +1338,8 @@ class AgentLoop:
                 # ≤0 / missing is never "no timeout" (and never an instant
                 # kill): fall back to the tool-chain default.  docs/TIMEOUT.md →
                 # Tool-execution precedence.
-                if inline_timeout is not None and float(inline_timeout) > 0:
-                    effective_timeout = float(inline_timeout)
+                if inline_timeout is not None and inline_timeout > 0:
+                    effective_timeout = inline_timeout
                 else:
                     effective_timeout = self.tool_timeout
 

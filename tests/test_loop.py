@@ -818,6 +818,32 @@ class TestExecuteTools:
             assert handler.on_tool_result.call_args[0][2] is False
 
     @pytest.mark.asyncio
+    async def test_garbage_timeout_never_kills_the_turn(
+        self, sample_model_config, history,
+    ):
+        """A malformed _timeout / bare timeout (the LLM writes natural
+        language like "5 seconds") must degrade to the tool default for the
+        CALL — never raise ValueError out of the concurrent batch and kill
+        the whole turn."""
+        from slife.tools.registry import ToolRegistry
+
+        for args in (
+            {"_timeout": "5 seconds"}, {"_timeout": "x"},
+            {"timeout": "fast"}, {"_timeout": None},
+        ):
+            tool = _NativeTimeoutTool()
+            registry = ToolRegistry()
+            registry.register(tool)
+            loop = AgentLoop(LLMClient(sample_model_config), registry)
+            handler = AsyncMock(spec=AgentEventHandler)
+            tcs = [ToolCallInfo(id="c1", name="native_timed", arguments=dict(args))]
+            await loop._execute_tools(tcs, history, handler)  # must not raise
+            assert handler.on_tool_result.call_count == 1
+            if "_timeout" in args:
+                # garbage _timeout → normalise to "use the default"
+                assert tool.received == 30, tool.received
+
+    @pytest.mark.asyncio
     async def test_native_timeout_positive_still_mapped(
         self, sample_model_config, history,
     ):

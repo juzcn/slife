@@ -127,7 +127,17 @@ def _is_valid(cls) -> bool:
     base like ``_ModelConfigTool`` sets it to exclude itself while its
     subclasses (model_set / model_remove / model_switch) are real tools
     that must still be discovered.
+
+    Only classes defined INSIDE the ``slife.tools`` package are candidate
+    tools.  ``Tool.__subclasses__()`` reaches every subclass ever created in
+    the process — including module-level stubs from the test-suite era that
+    collide with production names (a test stub ``execute_shell`` without a
+    ``timeout`` would silently replace the real ``ShellTool`` in the registry
+    depending on import order).  Tools from plugin/adapter modules
+    (``create_proxy_tools``) are registered by their own factories.
     """
+    if not cls.__module__.startswith("slife.tools"):
+        return False
     if cls.__dict__.get("_skip_auto_register", False):
         return False
     for attr in ("name", "description", "parameters"):

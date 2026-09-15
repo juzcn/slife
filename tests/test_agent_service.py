@@ -166,6 +166,71 @@ class TestAgentServiceMCPEnrichment:
         mock_reg.assert_awaited_once_with(server_name="autol")
 
     @pytest.mark.asyncio
+    async def test_sync_proxies_mirrors_on_demand_rows_only(self, sample_config, tmp_path):
+        """An on-demand (non-auto-load) server's tools enter the CATALOG
+        (the tool_search / tool_load surface) but no proxy is registered —
+        proxies materialize via ``tool_load``.  Without this, on-demand
+        external tools were unreachable (T1a)."""
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+
+        service = AgentService(sample_config)
+        store = CatalogStore(tmp_path / "tools.db")
+        await store.open()
+        svc = ToolCatalogService(store, write_owner=True)
+        await svc.session_start()
+        service._catalog = svc
+        service._catalog_semantic = None
+
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def fake_call_tool(name, arguments=None):
+            if name == "mcp_list":
+                return _json.dumps([
+                    {"name": "ondemand", "enabled": True, "auto_load": False},
+                ])
+            if name == "__check":
+                return _json.dumps({"servers": [
+                    {"name": "ondemand", "status": "connected"},
+                ]})
+            if name == "mcp_list_tools":
+                return _json.dumps({
+                    "server": "ondemand", "connected": True,
+                    "tools": [
+                        {"name": "search", "description": "Search stuff",
+                         "inputSchema": {"type": "object",
+                                         "properties": {"q": {"type": "string"}}}},
+                    ],
+                    "tool_count": 1,
+                })
+            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+        client.call_tool = fake_call_tool
+        service._plugins["mcp-gateway"].client = client
+
+        await service._sync_mcp_proxies()
+
+        # No proxy materialized at reconcile time...
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "ondemand__search" not in names
+
+        # ... but the row is in the catalog and discoverable via tool_load's
+        # row source (unloaded status — the on-demand state).
+        row = await store.get_tool("ondemand__search")
+        assert row is not None
+        assert row["category"] == "mcp"
+        assert row["status"] == "unloaded"
+        assert row["schema"]
+
+        # A reloaded row (tool_load flips loaded) survives the next reconcile:
+        # upsert_tool only applies status to a NEW row.
+        await store.set_status("ondemand__search", "loaded", bump=True)
+        await service._sync_mcp_proxies()
+        assert (await store.get_tool("ondemand__search"))["status"] == "loaded"
+        await store.close()
+
+    @pytest.mark.asyncio
     async def test_sync_proxies_noop_when_disconnected(self, sample_config):
         """A disconnected / absent client means nothing to reconcile."""
         service = AgentService(sample_config)

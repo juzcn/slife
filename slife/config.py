@@ -395,6 +395,7 @@ class Config:
     #: ``skill`` sections (hidden from the catalog seed).
     disabled_jobs: frozenset[str] = field(default_factory=frozenset)
     disabled_skills: frozenset[str] = field(default_factory=frozenset)
+    disabled_builtin: frozenset[str] = field(default_factory=frozenset)
     _path: Path | None = None
     _tools_path: Path | None = None  # tools.json5 sibling — set by from_json5
 
@@ -823,7 +824,8 @@ class Config:
           1. Already set in shell environment → keep
           2. credstore → the canonical source for secrets
           3. ``${VAR}`` reference → resolve VAR through credstore
-             or os.environ
+             or os.environ, else the ``:-default`` literal (the same
+             lenient chain ``slife.env.resolve_secret_value`` documents)
           4. Plain config value → inject directly
         """
         for key, value in env_section.items():
@@ -841,7 +843,7 @@ class Config:
             # 3. Config value is a ${VAR} reference
             ref = parse_env_ref(str_value)
             if ref is not None:
-                var_name = ref[0]
+                var_name, default = ref[0], ref[1]
                 if var_name != key:
                     cred_value = _try_credstore_lookup(var_name)
                     if cred_value:
@@ -852,6 +854,13 @@ class Config:
                 if env_val:
                     os.environ[key] = env_val
                     logger.info("env_from_shell key=%s via=%s", key, var_name)
+                    continue
+                if default is not None:
+                    # ${VAR:-default} — the literal fallback wins when neither
+                    # shell nor credstore has the var (env.py's documented
+                    # chain).  Previously the key was dropped entirely.
+                    os.environ[key] = default
+                    logger.info("env_from_default key=%s via=%s", key, var_name)
                     continue
                 logger.warning(
                     "env_unresolved key=%s var=%s — credential not in shell or "
@@ -986,8 +995,10 @@ class Config:
         # here they are parsed + overlay names so a disabled entry is hidden).
         job_overrides = _parse_section(tools_raw, "job", list, [])
         skill_overrides = _parse_section(tools_raw, "skill", list, [])
+        builtin_overrides = _parse_section(tools_raw, "builtin", list, [])
         disabled_jobs = _disabled_names(job_overrides)
         disabled_skills = _disabled_names(skill_overrides)
+        disabled_builtin = _disabled_names(builtin_overrides)
         # Tool-system knobs — tools.json5 ``tool_load`` section:
         #   tool_load: {threshold: 100, preload: ["foo"]}
         tool_load_section = _parse_section(tools_raw, "tool_load", dict, {})
@@ -1046,6 +1057,7 @@ class Config:
             tool_load_preload=tool_load_preload,
             disabled_jobs=disabled_jobs,
             disabled_skills=disabled_skills,
+            disabled_builtin=disabled_builtin,
         )
         config._path = path
         config._tools_path = tools_path

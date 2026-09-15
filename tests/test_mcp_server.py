@@ -58,11 +58,21 @@ class TestAutoConnectConfigured:
         pool.add_server = AsyncMock()
         fake_config = MagicMock()
         fake_config.load_config.return_value = {
-            "servers": {
-                "serper": {"command": "echo"},
-                "disabled_svc": {"command": "echo", "enabled": False},
+            "mcp": {
+                "servers": {
+                    "serper": {"command": "echo"},
+                    "disabled_svc": {"command": "echo", "enabled": False},
+                },
             },
         }
+        # tools.json5 section view — the merged mcp.servers (+legacy) read
+        # the boot path must use; the test locks the section format so a
+        # regression back to the pre-restructure top-level ``servers`` key
+        # fails here.
+        fake_config._servers_dict.side_effect = (
+            lambda raw: raw.get("mcp", {}).get("servers", {})
+            or raw.get("servers", {})
+        )
         fake_config.resolve_server_config.side_effect = (
             lambda name, entry: ServerConfig(
                 name=name, command="echo", enabled=entry.get("enabled", True),
@@ -394,9 +404,12 @@ class TestEagerSetFromDb:
                 "error_reason TEXT, last_runtime TEXT)"
             )
             for name, runtime in servers:
+                # last_runtime mirrors the persisted runtime — the snapshot a
+                # prior ``session_start`` wrote; the eager set reads it.
                 conn.execute(
-                    "INSERT OR REPLACE INTO server(name, runtime) VALUES (?, ?)",
-                    (name, runtime),
+                    "INSERT OR REPLACE INTO server(name, runtime, last_runtime)"
+                    " VALUES (?, ?, ?)",
+                    (name, runtime, runtime),
                 )
             conn.commit()
         finally:
@@ -430,11 +443,17 @@ class TestEagerSetFromDb:
         pool.add_server = AsyncMock()
         fake_config = MagicMock()
         fake_config.load_config.return_value = {
-            "servers": {
-                "good": {"command": "echo"},
-                "bad": {"command": "echo"},
+            "mcp": {
+                "servers": {
+                    "good": {"command": "echo"},
+                    "bad": {"command": "echo"},
+                },
             },
         }
+        fake_config._servers_dict.side_effect = (
+            lambda raw: raw.get("mcp", {}).get("servers", {})
+            or raw.get("servers", {})
+        )
         fake_config.resolve_server_config.side_effect = (
             lambda name, entry: ServerConfig(
                 name=name, command="echo", enabled=entry.get("enabled", True),

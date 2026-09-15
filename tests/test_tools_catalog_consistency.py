@@ -249,7 +249,18 @@ async def test_restart_existing_db_eager_and_state_survival(_isolate):
     )  # serper ends the session ERROR
     await store.close()
 
-    # -- boot of session 2: wrapper reads the eager set from the db --
+    # -- host session 2: session_start snapshots runtime into last_runtime
+    #    FIRST (the real boot order — the host initializes the catalog before
+    #    the wrapper child spawns), then the wrapper reads the eager set from
+    #    that snapshot (never the live runtime mirror, which the watchdog
+    #    rewrites to DISCONNECTED on a gateway crash) --
+    store2 = CatalogStore(db)
+    await store2.open()
+    svc2 = ToolCatalogService(store2, write_owner=True)
+    await svc2.session_start()
+    assert (await store2.get_server("serper"))["last_runtime"] == "ERROR"
+    assert (await store2.get_server("weather"))["last_runtime"] == "CONNECTED"
+
     eager = _eager()
     assert isinstance(eager, set)
     # weather was CONNECTED and is eager; serper ERROR → skipped; filesystem
@@ -258,13 +269,6 @@ async def test_restart_existing_db_eager_and_state_survival(_isolate):
     assert "serper" not in eager
     assert "filesystem" not in eager
 
-    # -- host session 2: session_start snapshots runtime, seed re-loads --
-    store2 = CatalogStore(db)
-    await store2.open()
-    svc2 = ToolCatalogService(store2, write_owner=True)
-    await svc2.session_start()
-    assert (await store2.get_server("serper"))["last_runtime"] == "ERROR"
-    assert (await store2.get_server("weather"))["last_runtime"] == "CONNECTED"
     await svc2.seed_inventory([_NativeShell()])
 
     # serper ended session 1 in ERROR → its tool is UNAVAILABLE at boot

@@ -175,6 +175,18 @@ class ToolCatalogService:
         logger.info("catalog_tool_loaded name=%s", name)
         return True, f"[OK] Loaded '{name}'."
 
+    async def touch(self, name: str) -> None:
+        """Record a tool use — the LRU recency the eviction policy orders by.
+
+        Write-owner only: the worker/seeding subagent never evicts, so the
+        main agent alone feeds the order.  The registry calls this after a
+        successful ``execute`` so a just-used tool is never the first eviction
+        victim (the pre-fix behavior evicted the alphabetically-first natives).
+        """
+        if not self.write_owner:
+            return
+        await self._store.touch(name)
+
     async def unload_tool(self, name: str) -> tuple[bool, str]:
         """Flip a function tool to ``unloaded``; refuses meta/skill/cli."""
         if is_meta_tool(name):
@@ -214,7 +226,11 @@ class ToolCatalogService:
         excess = count - self.threshold
         if excess <= 0:
             return []
-        evicted = await self._store.evict_lru(excess, protected=ALWAYS_LOADED)
+        # Protected = the always-loaded carve-outs ∪ the configured preload
+        # set (tools.json5 ``tool_load: {preload: [...]}`` — an explicit
+        # "never evict these" list a user can tune).
+        protected = set(ALWAYS_LOADED) | set(self.preload)
+        evicted = await self._store.evict_lru(excess, protected=protected)
         if evicted:
             logger.info(
                 "catalog_evict_to_threshold threshold=%d evicted=%d/%d",

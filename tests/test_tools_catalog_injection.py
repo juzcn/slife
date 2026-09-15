@@ -176,6 +176,17 @@ async def test_injected_schema_comes_from_catalog_not_instance(db):
     ok = _function_from_schema("x", '{"name":"x","description":"d","inputSchema":{"type":"object"}}')
     assert ok["function"]["name"] == "x" and ok["function"]["parameters"] == {"type": "object"}
 
+    # T1b: the passed REGISTRY name wins over a bare descriptor name — an
+    # external mcp/rest-api row stores {name: <bare server tool>} while the
+    # injected function MUST advertise the full {server}__{tool} key the
+    # registry resolves (a bare name made every external call Unknown tool).
+    ext = _function_from_schema(
+        "svcA__search",
+        '{"name":"search","description":"d",'
+        '"inputSchema":{"type":"object","properties":{}}}',
+    )
+    assert ext["function"]["name"] == "svcA__search"
+
 
 # ── Eviction policy ────────────────────────────────────────────────
 

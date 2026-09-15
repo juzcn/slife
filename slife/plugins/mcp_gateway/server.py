@@ -107,12 +107,17 @@ def _eager_set_from_db() -> set[str] | None:
         conn = sqlite3.connect(str(path), timeout=_timeouts.timeouts.storage.sqlite_busy)
         try:
             # Eager-connect = a server whose PERSISTED runtime was CONNECTED
-            # (user-confirmed: with a db + json5 config present, look at
-            # CONNECTED).  A server with no CONNECTED record — new, ERROR or
+            # (user-confirmed: with a db + json5 config present, look at the
+            # ``last_runtime`` snapshot — the previous session's end state,
+            # written by ``session_start``.  The live ``runtime`` mirror is
+            # NOT used: the watchdog rewrites it to DISCONNECTED whenever the
+            # gateway child dies, which would defeat eager-connect after a
+            # crash — exactly the case ``last_runtime`` exists to survive.)
+            # A server with no CONNECTED record — new, ERROR or
             # DISCONNECTED — is registered DISCONNECTED; ``mcp_connect``
             # re-arms it.
             rows = conn.execute(
-                "SELECT name FROM server WHERE runtime = 'CONNECTED'"
+                "SELECT name FROM server WHERE last_runtime = 'CONNECTED'"
             ).fetchall()
         finally:
             conn.close()
@@ -141,7 +146,10 @@ async def _auto_connect_configured() -> None:
     except Exception as e:
         logger.warning("mcp_config_load_failed err=%s", e)
         return
-    servers = raw.get("servers", {})
+    # servers live in the mcp.servers / rest-api sections (tools.json5) —
+    # use the merged view with the legacy top-level fallback, never the
+    # raw ``servers`` key (gone since the section restructure).
+    servers = plugin_config._servers_dict(raw)
     if not isinstance(servers, dict):
         return
     configured = [
@@ -166,7 +174,15 @@ async def _auto_connect_configured() -> None:
                 # host re-arms it via mcp_connect (no health monitor started).
                 await _pool.add_server(cfg, connect=False)
                 return
-            await _pool.add_server(cfg)
+            conn = await _pool.add_server(cfg)
+            # ``add_server``'s connect() SWALLOWS connect exceptions (it lands
+            # FAILED with ``_error`` and starts a health monitor) — surface a
+            # failed auto-connect as ``runtime=ERROR`` explicitly, otherwise no
+            # tools/list_changed is emitted and the host reconcile never runs.
+            if conn.status == ServerStatus.FAILED:
+                _mark_server_error(
+                    name, getattr(conn, "_error", "") or "connect failed",
+                )
         except Exception as e:
             logger.warning("mcp_auto_connect_failed server=%s err=%s", name, e)
             _mark_server_error(name, str(e))

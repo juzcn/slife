@@ -214,13 +214,6 @@ _SCAN_COLS = (
 )
 
 
-def _to_row(dict_row: dict) -> dict:
-    """Normalize a joined row into the public shape (tool fields + server).
-    ``dict_row`` from aiosqlite row converted via ``dict()`` — here just a
-    passthrough keeping the two server fields under clear names."""
-    return dict_row
-
-
 class CatalogStore:
     """The shared catalog: SQLite file, WAL, FTS5 keyword + BLOB semantic.
 
@@ -412,6 +405,23 @@ class CatalogStore:
             )
             await self._c.commit()
         return cursor.rowcount
+
+    async def touch(self, name: str) -> None:
+        """Bump a loaded tool's ``last_loaded`` (LRU recency) on successful use.
+
+        ``evict_lru`` orders NULL-first then by ``last_loaded``; without a
+        per-use bump every seeded tool stays NULL and eviction degrades to a
+        plain alphabetical slice (never the least-recently-used).  Only
+        touched when the row is still ``loaded`` so a call made after an
+        eviction never re-arms an evicted tool.
+        """
+        async with self._write_lock:
+            await self._c.execute(
+                "UPDATE tool SET last_loaded = ?"
+                " WHERE name = ? AND status = 'loaded'",
+                (_now(), name),
+            )
+            await self._c.commit()
 
     async def set_enabled(self, name: str, enabled: bool | None) -> int:
         """Set a local category's ``enabled`` (mcp/rest-api pass None → noop)."""
@@ -717,9 +727,12 @@ class CatalogStore:
         cursor = await self._c.execute(
             f"""SELECT t.name, t.description, t.category, t.source_id, t.schema,
                       t.enabled, t.status, t.last_loaded,
+                      s.enabled AS s_enabled, s.runtime AS s_runtime,
+                      s.error_reason AS s_error,
                       te.embedding
                FROM tool_embeddings te
                JOIN tool t ON te.name = t.name
+               LEFT JOIN server s ON s.name = t.source_id
                WHERE 1=1{clauses}""",
             params,
         )
