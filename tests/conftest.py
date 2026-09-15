@@ -43,12 +43,12 @@ def _pin_ui_language():
     set_language("en")
 
 
-# ── mcp-plugin config isolation ────────────────────────────────────────
+# ── tools config isolation ──────────────────────────────────────────────
 
 
 #: Test modules that exercise ``slife.plugins.mcp_gateway`` config persistence
 #: (they lived under ``tests/mcp/`` before the folders were flattened).
-#: They must never read/write a real ``mcp-plugin.json5`` — the dev data
+#: They must never read/write a real ``tools.json5`` — the dev data
 #: dir (repo root) holds the git-tracked file — so every access is pointed
 #: at a throwaway file.
 _MCP_ISOLATED_MODULES = frozenset({
@@ -68,15 +68,15 @@ _MCP_ISOLATED_MODULES = frozenset({
 
 @pytest.fixture(autouse=True)
 def _isolate_mcp_config_path(request, tmp_path, monkeypatch):
-    """Point mcp-plugin config reads/writes at a throwaway file per test.
+    """Point gateway config reads/writes at a throwaway file per test.
 
-    Scoped to the mcp-plugin test modules (previously ``tests/mcp/*``) so
+    Scoped to the gateway test modules (previously ``tests/mcp/*``) so
     the rest of the suite keeps resolving the real data-dir config.
     """
     if request.node.fspath.purebasename not in _MCP_ISOLATED_MODULES:
         return
 
-    monkeypatch.setenv("MCP_PLUGIN_FILE", str(tmp_path / "mcp-plugin.json5"))
+    monkeypatch.setenv("TOOLS_FILE", str(tmp_path / "tools.json5"))
 
     def _reset():
         # Import lazily so it never runs against a half-built package.

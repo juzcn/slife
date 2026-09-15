@@ -68,7 +68,7 @@ packages = ["slife"]
 "skills" = "slife/skills"
 "slife.json5" = "slife/slife.json5"
 "local_embed.json5" = "slife/local_embed.json5"
-"mcp-plugin.json5" = "slife/mcp-plugin.json5"
+"tools.json5" = "slife/tools.json5"
 "sharefile.json5" = "slife/sharefile.json5"
 
 
@@ -82,7 +82,7 @@ include = [
     "/pyproject.toml",
     "/slife.json5",
     "/local_embed.json5",
-    "/mcp-plugin.json5",
+    "/tools.json5",
     "/sharefile.json5",
 ]
 

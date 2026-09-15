@@ -1,13 +1,13 @@
 """sharefile config — load ``sharefile.json5``, pick the active tunnel provider.
 
-Path precedence (mirrors mcp-plugin's resolver):
+Path precedence (mirrors the gateway's tools-config resolver):
   1. ``$SHAREFILE_FILE`` — explicit override (a test/dev escape hatch only)
   2. slife data dir — ``<data_dir>/sharefile.json5`` via
      :func:`slife.paths.get_data_dir` (production ``~/.slife/sharefile.json5``,
      the checkout root in dev).  sharefile is a built-in slife plugin, so its
      config sits next to ``slife.json5``; the harness exports **no** per-file
      env var — the plugin child inherits ``$SLIFE_DATA_DIR`` and resolves the
-     same directory itself (see ``slife/config.py`` on why MCP_PLUGIN_FILE /
+     same directory itself (see ``slife/config.py`` on why TOOLS_FILE /
      LOCAL_EMBED_FILE are deliberately not set either).
 
 Config shape::

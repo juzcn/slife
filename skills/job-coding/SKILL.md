@@ -148,14 +148,14 @@ catch it). A pure-computation job must NOT import it.
 ## The `mcp` handle — bare MCP access
 
 `from slife.plugins.job_coding import mcp` gives a job **bare MCP access**:
-any tool on any external MCP server configured in `mcp-plugin.json5`, via
+any tool on any external MCP server configured in `tools.json5`, via
 the mcp-gateway's persistent connections. No server gets spawned a second
 time, and there is **no requirement that the tool be loaded into the main
 agent's toolset** — only `autoload: true` servers' tools are; a job can
 call an *unloaded* tool directly by name.
 
 - `await mcp.call(server, tool, args=None)` — ONE bare tool call per
-  statement. `server` is the server name from `mcp-plugin.json5`
+  statement. `server` is the server name from `tools.json5`
   (e.g. `github`), `tool` the tool name without the `{server}__` prefix
   (e.g. `search_code`), `args` an optional JSON-serialisable dict matched
   to that tool's `inputSchema`.

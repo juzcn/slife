@@ -45,7 +45,7 @@ async def client():
 
 # ── from_plugin_config availability (host override only) ────────────────
 #
-# mcp-plugin.json5 carries no ``embeddings`` section anymore — the sole
+# tools.json5 carries no ``embeddings`` section anymore — the sole
 # config source is the host-passed override (initialize clientInfo).
 
 
@@ -59,16 +59,16 @@ def _override(**kw) -> dict:
 
 
 def test_from_config_absent_not_available(tmp_path):
-    plugin_config.set_config_path(tmp_path / "mcp-plugin.json5")
-    plugin_config.write_config(tmp_path / "mcp-plugin.json5", {"servers": {}})
-    c = EmbeddingClient.from_plugin_config(config_path=str(tmp_path / "mcp-plugin.json5"))
+    plugin_config.set_config_path(tmp_path / "tools.json5")
+    plugin_config.write_config(tmp_path / "tools.json5", {"servers": {}})
+    c = EmbeddingClient.from_plugin_config(config_path=str(tmp_path / "tools.json5"))
     assert c.available is False
 
 
 def test_from_config_no_override_ignores_json5(tmp_path):
     """A json5 ``embeddings`` section (if any) no longer configures the client."""
     cfg = {"servers": {}, "embeddings": {"base_url": "http://127.0.0.1:17347/v1", "model": "bge-m3"}}
-    path = tmp_path / "mcp-plugin.json5"
+    path = tmp_path / "tools.json5"
     plugin_config.write_config(path, cfg)
     c = EmbeddingClient.from_plugin_config(config_path=str(path), override=None)
     assert c.available is False
@@ -229,7 +229,7 @@ def test_from_plugin_config_override_wins(tmp_path):
 
 def test_from_plugin_config_no_override_disabled(tmp_path):
     """No host override → no embedding backend (semantic off)."""
-    cfg = tmp_path / "mcp-plugin.json5"
+    cfg = tmp_path / "tools.json5"
     cfg.write_text(
         json.dumps({"embeddings": {"base_url": "http://own.example/v1",
                                    "model": "own-model"}}),
@@ -241,7 +241,7 @@ def test_from_plugin_config_no_override_disabled(tmp_path):
 
 def test_from_plugin_config_unusable_override_disabled(tmp_path):
     """A placeholder/empty override base_url is not "passed" — disabled."""
-    cfg = tmp_path / "mcp-plugin.json5"
+    cfg = tmp_path / "tools.json5"
     cfg.write_text(
         json.dumps({"embeddings": {"base_url": "http://own.example/v1"}}),
         encoding="utf-8",
@@ -254,7 +254,7 @@ def test_from_plugin_config_unusable_override_disabled(tmp_path):
 
 
 def test_from_plugin_config_no_usable_config_disabled(tmp_path):
-    cfg = tmp_path / "mcp-plugin.json5"
+    cfg = tmp_path / "tools.json5"
     cfg.write_text(json.dumps({}), encoding="utf-8")
     c = EmbeddingClient.from_plugin_config(config_path=str(cfg), override=None)
     assert not c.available

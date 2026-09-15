@@ -20,7 +20,7 @@ a design note in `DESIGN.md` ever disagree, this document and the code win.
   spawns it as a child process (`sys.executable -m <module>`), connects over
   MCP **Streamable HTTP**, registers its tools, and supervises it.
 - The **MCP gateway** (`mcp-gateway`) is one of those child plugins.  It is the
-  *gateway to external MCP servers*: it self-hosts `mcp-plugin.json5`,
+  *gateway to external MCP servers*: it self-hosts `tools.json5`,
   connects third-party MCP servers, and re-exposes their tools as
   `{server}__{tool}` proxies.  It is the only plugin whose spec has
   `gateway=True`.
@@ -34,7 +34,7 @@ a design note in `DESIGN.md` ever disagree, this document and the code win.
   - **local-embed** — a manually-started standalone daemon serving
     OpenAI-compatible `/v1/embeddings`.
 - Third-party capability enters *only* as a standard MCP server registered in
-  `mcp-plugin.json5` through the `mcp-gateway`.  There is no
+  `tools.json5` through the `mcp-gateway`.  There is no
   `plugins.external` mechanism.
 
 ---

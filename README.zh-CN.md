@@ -70,11 +70,11 @@ credstore copy DEEPSEEK_API_KEY BAILIAN_API_KEY
 | `ssh` | 随系统提供（Windows：可选的 *OpenSSH 客户端* 功能） | `sharefile` 的 `localhost.run` 隧道 provider——**仅检测**；启用 Windows 功能需要管理员权限 |
 | `unzip`（Linux） | 包管理器 | bun 安装器依赖 |
 
-**默认安装以下内容：**`yt-dlp` 与 `browser-harness`（两者都被 `--core` 跳过）、Mosquitto 与 `cloudflared`（总是尝试）、从随包默认值铺设的**四份配置**（`slife.json5`、`mcp-plugin.json5` 和 `sharefile.json5` → `~/.slife/`，`local_embed.json5` → `~/.local-embed/`），以及随附 skills（`~/.slife/skills/`）和示例 jobs（`~/.slife/jobs/`）。
+**默认安装以下内容：**`yt-dlp` 与 `browser-harness`（两者都被 `--core` 跳过）、Mosquitto 与 `cloudflared`（总是尝试）、从随包默认值铺设的**四份配置**（`slife.json5`、`tools.json5` 和 `sharefile.json5` → `~/.slife/`，`local_embed.json5` → `~/.local-embed/`），以及随附 skills（`~/.slife/skills/`）和示例 jobs（`~/.slife/jobs/`）。
 
 如果某个运行时装不上，安装器**警告并继续**——slife 本身仍会安装，只是需要该运行时的功能不可用。举例来说，在一台比 **glibc 2.28 / libstdc++ 3.4.29** 更老的 Linux 机器上，Node 的 no-root tarball 回退方案跑不起来（安装器会报告缺失的 `GLIBC_2.28` / `GLIBCXX_3.4.xx` 符号）。受支持的路线**不是**装旧版 Node——而是装一个为你的发行版构建的 Node（例如 HPC 集群上的 `module load nodejs`，或发行版自带的包）。装好后再重跑这个安装器——它会检测到已有的 `npx` 并跳过自己的 Node 安装。
 
-如果你手工编辑 `mcp-plugin.json5`，改动会在下一次启动 wrapper 时生效——工具目录由连接实时重建，所以不存在离线重建步骤（安装后 `local-embed` 已在 PATH 上）。每个可选步骤都 **fail-open**：出错只会警告并继续，留下一个可用的核心。
+如果你手工编辑 `tools.json5`，改动会在下一次启动 wrapper 时生效——工具目录由连接实时重建，所以不存在离线重建步骤（安装后 `local-embed` 已在 PATH 上）。每个可选步骤都 **fail-open**：出错只会警告并继续，留下一个可用的核心。
 
 ### macOS / Linux / WSL
 
@@ -265,7 +265,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `translate`） |
 
-**外部 MCP 服务器按需加载。** 第三方能力只能作为 `mcp-plugin.json5` 里的标准 MCP 服务器接入（任何 stdio / SSE / Streamable HTTP 服务器都可以——无需 Slife SDK）。LLM 用 `mcp_tool_search` 发现工具（对网关的实时工具目录做混合关键词/语义搜索），并用 `mcp_tool_load(full_name)` 载入——`auto_load: true` 的服务器仍保留旧的整批注册方式。启用/禁用是服务器粒度的（`mcp_set_enabled`）。目录每次（重）连接时由连接实时重建，因此永远精确反映运行时能用什么——不存在离线重建步骤。
+**外部 MCP 服务器按需加载。** 第三方能力只能作为 `tools.json5` 里的标准 MCP 服务器接入（任何 stdio / SSE / Streamable HTTP 服务器都可以——无需 Slife SDK）。LLM 用 `mcp_tool_search` 发现工具（对网关的实时工具目录做混合关键词/语义搜索），并用 `mcp_tool_load(full_name)` 载入——`auto_load: true` 的服务器仍保留旧的整批注册方式。启用/禁用是服务器粒度的（`mcp_set_enabled`）。目录每次（重）连接时由连接实时重建，因此永远精确反映运行时能用什么——不存在离线重建步骤。
 
 **Windows 下的命令执行。** `execute_shell` 在检测到的 shell 中运行——PowerShell 或 cmd（与系统提示报告的值一致，保证 LLM 写的语法真的能执行）——并用系统代码页解码输出（中文 Windows 为 GBK/cp936）。`run_python_script` 强制子 Python 以 UTF-8 运行（`-X utf8`），这样非 ASCII 输出不会让子进程崩溃。
 
@@ -308,7 +308,7 @@ Embeddings 是 `slife.json5` 中**一级顶层的 `embeddings` 配置段**（由
 
 需要大模型的 job 通过它自己导入的 `llm` 句柄**一次性**调用（`from slife.plugins.job_coding import llm`——没有任何东西被自动注入）：一次狭窄、显式的 `llm.chat`，走 `job_coding_model`——一个独立于会话 active model 配置的模型，让 job 保持便宜、永不扰动 agent 的 prompt 缓存。任何对话历史、系统提示词、agent loop 都到不了 job。
 
-job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱动 `mcp-plugin.json5` 里配置的**任意外部 MCP server**——裸 MCP，一句一次工具调用：`await mcp.call(server, tool, args)`。调用走 mcp-gateway 的持久连接，因此任何外部 server 都绝不会被二次启动，而且能触达**主 agent 尚未加载的工具**。`mcp.call` 永不抛异常：网关不可达、server 掉线/被禁用、工具不存在，都返回一个清晰的 `Error: ...` 字符串供 job 分支判断。
+job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱动 `tools.json5` 里配置的**任意外部 MCP server**——裸 MCP，一句一次工具调用：`await mcp.call(server, tool, args)`。调用走 mcp-gateway 的持久连接，因此任何外部 server 都绝不会被二次启动，而且能触达**主 agent 尚未加载的工具**。`mcp.call` 永不抛异常：网关不可达、server 掉线/被禁用、工具不存在，都返回一个清晰的 `Error: ...` 字符串供 job 分支判断。
 
 ### 图片与视觉
 
@@ -322,7 +322,7 @@ job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱
 
 ### 插件
 
-八个内部插件各自作为独立子进程运行，每个都在中央插件 spec 中声明一行、由同一套统一生命周期驱动（spawn → MCP 握手就绪 → watchdog → health）。其中之一——**mcp-gateway**——是外部 MCP 服务器的网关：第三方能力只能作为 `mcp-plugin.json5` 里的标准 MCP 服务器接入，绝不再作为 Python 插件。
+八个内部插件各自作为独立子进程运行，每个都在中央插件 spec 中声明一行、由同一套统一生命周期驱动（spawn → MCP 握手就绪 → watchdog → health）。其中之一——**mcp-gateway**——是外部 MCP 服务器的网关：第三方能力只能作为 `tools.json5` 里的标准 MCP 服务器接入，绝不再作为 Python 插件。
 
 | 插件 | 角色 |
 |--------|------|

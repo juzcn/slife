@@ -238,7 +238,7 @@ class _GatewayProxy:
 
     Every call forwards ONE tool invocation to the mcp-gateway plugin's
     persistent connection pool (``__mcp_call_tool``), so a job can use any
-    tool on any connected server from ``mcp-plugin.json5`` — including
+    tool on any connected server from ``tools.json5`` — including
     tools never loaded into the main agent's registry.  Always returns a
     string (never raises); an unreachable gateway / disconnected or
     disabled server / unknown tool all surface as a clear error the job can

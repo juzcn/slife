@@ -4,7 +4,7 @@ This is the entry point for the mcp-plugin child process. It:
   1. Starts a FastMCP server on Streamable HTTP transport (auto-assigned port)
   2. Exposes management tools (bare names) to manage external MCP connections
   3. Maintains persistent connections to external MCP servers
-  4. Self-hosts its config: loads ``mcp-plugin.json5`` on startup and
+  4. Self-hosts its config: loads ``tools.json5`` on startup and
      persists ``mcp_set`` / ``mcp_remove`` / ``mcp_set_enabled`` through
      ``mcp_plugin.config`` — no host involvement.
 
@@ -397,7 +397,7 @@ def _persist_entry(
     auth: dict | None,
     enabled: bool = True,
 ) -> None:
-    """Persist a server entry to mcp-plugin.json5 (merge semantics).
+    """Persist a server entry to tools.json5 (merge semantics).
 
     ``enabled=True`` (the default) leaves the flag untouched — only
     ``mcp_set_enabled`` flips enable/disable; ``enabled=False`` is written
@@ -442,7 +442,7 @@ async def mcp_set(
 
     Identical config → ``already_connected``, no restart.  Changed config →
     restart.  ``enabled`` sets the initial state; use ``mcp_set_enabled`` to
-    toggle enable/disable at runtime.  Persisted to mcp-plugin.json5.
+    toggle enable/disable at runtime.  Persisted to tools.json5.
 
     Args:
         name: Unique server name (not a reserved plugin name).
@@ -923,7 +923,7 @@ async def mcp_tool_search(
                 hint = (
                     "semantic search unavailable — no embeddings endpoint "
                     "configured. Add an 'embeddings' section to "
-                    "mcp-plugin.json5; it applies at the next wrapper start."
+                    "tools.json5; it applies at the next wrapper start."
                 )
     reported_mode = mode if mode == "grep" else ("hybrid" if semantic_available else "fts5")
     results = results[:limit]

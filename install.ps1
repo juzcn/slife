@@ -67,7 +67,7 @@ try {
     Write-Host "Python            : managed by uv (3.13)"
     Write-Host "npx               : auto-install Node.js if needed (required for MCP servers)"
     Write-Host "bun               : auto-install bun if needed (required for nvidia-nim MCP)"
-    Write-Host "Configs           : seeded from bundled defaults (slife / local-embed / mcp-plugin / sharefile)"
+    Write-Host "Configs           : seeded from bundled defaults (slife / local-embed / tools / sharefile)"
     Write-Host "Full tool set     : yt-dlp, browser-harness, Mosquitto, cloudflared (SLIFE_CORE=1 to skip)"
     Write-Host "Disk space needed : ~500 MB (semantic setup adds +0.3-2 GB, user-run)"
     Write-Host ""
@@ -785,18 +785,25 @@ try {
     }
 
     # 4c. Configs: seed the git-tracked defaults out-of-the-box.  slife.json5 /
-    # local_embed.json5 / mcp-plugin.json5 / sharefile.json5 come from the
-    # downloaded source tree (now git-tracked).  slife.json5, mcp-plugin.json5
-    # and sharefile.json5 (the last two belong to built-in plugins) live in
+    # local_embed.json5 / tools.json5 / sharefile.json5 come from the
+    # downloaded source tree (now git-tracked).  slife.json5, tools.json5 and
+    # sharefile.json5 (the last two belong to built-in plugins) live in
     # ~/.slife; local_embed.json5 is local-embed's own (~/.local-embed).
     # Missing ones are copied silently; when an existing one differs, the NEW
     # default is seeded into ~/.slife/ as <name>.<version>.<ext> — never
     # overwritten, never prompted; the user applies or discards it.
     Write-Step "[4c] Setting up configs (out-of-the-box defaults)..."
+    # tools.json5 replaced mcp-plugin.json5 — lift an existing live config
+    # once so an upgrade keeps its MCP server entries (never overwritten).
+    $legacyMcp = "$env:USERPROFILE\.slife\mcp-plugin.json5"
+    $newTools = "$env:USERPROFILE\.slife\tools.json5"
+    if ((Test-Path $legacyMcp) -and (-not (Test-Path $newTools))) {
+        Copy-Item $legacyMcp $newTools
+    }
     $seedPairs = @(
         @("slife.json5", "$env:USERPROFILE\.slife\slife.json5"),
         @("local_embed.json5", "$env:USERPROFILE\.local-embed\local_embed.json5"),
-        @("mcp-plugin.json5", "$env:USERPROFILE\.slife\mcp-plugin.json5"),
+        @("tools.json5", "$env:USERPROFILE\.slife\tools.json5"),
         @("sharefile.json5", "$env:USERPROFILE\.slife\sharefile.json5")
     )
     foreach ($pair in $seedPairs) {
@@ -899,7 +906,7 @@ try {
     # removed: a first-run connect spawns every configured npx/uvx server and
     # the servers need API keys first (credstore).  The tool catalog is built
     # live from connections at slife start, so no build step exists.
-    # See "Get started" below: credstore → edit ~/.slife/mcp-plugin.json5 → slife.
+    # See "Get started" below: credstore → edit ~/.slife/tools.json5 → slife.
 
     # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."
@@ -959,7 +966,7 @@ try {
     Write-Host "Get started:" -ForegroundColor Cyan
     Write-Host "  1. Semantic search (optional) — set up per README -> Semantic Memory Search"
     Write-Host "  2. Configure secrets with credstore — credstore set-password, then credstore set <API_KEY> <value>"
-    Write-Host "  3. Configure external MCP servers — edit ~/.slife/mcp-plugin.json5 (they apply at the next slife start)"
+    Write-Host "  3. Configure external MCP servers — edit ~/.slife/tools.json5 (they apply at the next slife start)"
     Write-Host ""
     if ($coreMode) {
         Write-Host "Core install done — external MCP servers, Mosquitto" -ForegroundColor Cyan

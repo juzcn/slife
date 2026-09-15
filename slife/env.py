@@ -17,7 +17,8 @@ def parse_env_ref(value: str) -> tuple[str, str | None] | None:
     Returns ``(var, default_or_None)``, or None when *value* is not a pure
     reference (plaintext, or a ref embedded in surrounding text).  The one
     shared parser — nobody re-slices ``[2:-1]`` or re-writes the regex, so
-    the variant implementations (config vs mcp-plugin) cannot drift (e.g. a
+    the variant implementations (config vs the gateway's tools config)
+    cannot drift (e.g. a
     ``\\w+``-only regex losing dotted/hyphenated names).
     """
     m = _ENV_PATTERN.fullmatch(value)

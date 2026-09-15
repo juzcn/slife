@@ -67,11 +67,11 @@ The installer is best-effort: it uses standard paths, tries several install rout
 | `ssh` | ships with the OS (Windows: the optional *OpenSSH Client* capability) | `sharefile`'s `localhost.run` tunnel provider — **detection only**; enabling the Windows capability needs administrator |
 | `unzip` (Linux) | package manager | bun installer dependency |
 
-**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto and `cloudflared` (always attempted), the **four configs** (`slife.json5`, `mcp-plugin.json5` and `sharefile.json5` → `~/.slife/`, `local_embed.json5` → `~/.local-embed/`) seeded from bundled defaults, and the bundled skills (`~/.slife/skills/`) plus sample jobs (`~/.slife/jobs/`).
+**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto and `cloudflared` (always attempted), the **four configs** (`slife.json5`, `tools.json5` and `sharefile.json5` → `~/.slife/`, `local_embed.json5` → `~/.local-embed/`) seeded from bundled defaults, and the bundled skills (`~/.slife/skills/`) plus sample jobs (`~/.slife/jobs/`).
 
 If a runtime can't be installed, the installer **warns and continues** — slife itself still installs; only the features needing that runtime are unavailable. For example, on a Linux box older than **glibc 2.28 / libstdc++ 3.4.29**, the Node rootless tarball fallback won't run (the installer reports the missing `GLIBC_2.28` / `GLIBCXX_3.4.xx` symbols). The supported route is **not** an older Node — it's a Node built for your distro (e.g. `module load nodejs` on HPC clusters, or your distro's package). Install that, then re-run this installer — it detects an existing `npx` and skips its own Node install.
 
-If you edit `mcp-plugin.json5` by hand, the changes apply at the next wrapper start — the tool catalog is rebuilt live from connections, so no offline rebuild step exists (`local-embed` is on PATH after install). Every optional step is **fail-open**: an error warns and continues, leaving a working core.
+If you edit `tools.json5` by hand, the changes apply at the next wrapper start — the tool catalog is rebuilt live from connections, so no offline rebuild step exists (`local-embed` is on PATH after install). Every optional step is **fail-open**: an error warns and continues, leaving a working core.
 
 ### macOS / Linux / WSL
 
@@ -258,7 +258,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + one tool per registered job (e.g. `translate`) |
 
-**External MCP servers are loaded on demand.** Third-party capability enters only as a standard MCP server in `mcp-plugin.json5` (any stdio / SSE / Streamable HTTP server works — no Slife SDK required). The LLM discovers a tool with `mcp_tool_search` (a hybrid keyword/semantic search over the gateway's live tool catalog) and loads it with `mcp_tool_load(full_name)` — a server with `auto_load: true` keeps the older wholesale registration. Enable/disable is server-granular (`mcp_set_enabled`). The catalog is rebuilt live from connections on every (re)connect, so it always reflects exactly what the runtime can use — no offline rebuild step exists.
+**External MCP servers are loaded on demand.** Third-party capability enters only as a standard MCP server in `tools.json5` (any stdio / SSE / Streamable HTTP server works — no Slife SDK required). The LLM discovers a tool with `mcp_tool_search` (a hybrid keyword/semantic search over the gateway's live tool catalog) and loads it with `mcp_tool_load(full_name)` — a server with `auto_load: true` keeps the older wholesale registration. Enable/disable is server-granular (`mcp_set_enabled`). The catalog is rebuilt live from connections on every (re)connect, so it always reflects exactly what the runtime can use — no offline rebuild step exists.
 
 **Windows execution.** `execute_shell` runs in the detected shell — PowerShell or cmd (the same value the system prompt reports, so the LLM's syntax actually executes) — and its output is decoded with the system code page (GBK/cp936 on Chinese Windows). `run_python_script` forces the child Python to UTF-8 (`-X utf8`) so non-ASCII output can't crash the child.
 
@@ -301,7 +301,7 @@ For work that is well-specified and repeatable — translate, summarize, extract
 
 A job that needs the LLM calls it **once** via the `llm` handle it imports itself (`from slife.plugins.job_coding import llm` — nothing is auto-injected): a narrow, explicit `llm.chat` on `job_coding_model`, a model configured independently of the conversation's active model so jobs stay cheap and never disturb the agent's prompt cache. No conversation history, system prompt, or agent loop ever reaches a job.
 
-A job can also drive **any external MCP server** configured in `mcp-plugin.json5` through the `mcp` handle (`from slife.plugins.job_coding import mcp`) — bare MCP, one tool call per statement: `await mcp.call(server, tool, args)`. The call rides the mcp-gateway's persistent connections, so no external server is ever spawned a second time, and it reaches **tools the main agent hasn't loaded**. `mcp.call` never raises: an unreachable gateway, a disconnected or disabled server, or an unknown tool returns a clear `Error: ...` string the job can branch on.
+A job can also drive **any external MCP server** configured in `tools.json5` through the `mcp` handle (`from slife.plugins.job_coding import mcp`) — bare MCP, one tool call per statement: `await mcp.call(server, tool, args)`. The call rides the mcp-gateway's persistent connections, so no external server is ever spawned a second time, and it reaches **tools the main agent hasn't loaded**. `mcp.call` never raises: an unreachable gateway, a disconnected or disabled server, or an unknown tool returns a clear `Error: ...` string the job can branch on.
 
 ### Images & vision
 
@@ -315,7 +315,7 @@ Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs a
 
 ### Plugins
 
-Eight internal plugins run as independent child processes, each declared by one row in the central plugin spec and driven by the same uniform lifecycle (spawn → MCP-handshake readiness → watchdog → health). One of them — **mcp-gateway** — is the gateway to external MCP servers: third-party capability enters only as a standard MCP server in `mcp-plugin.json5`, never as a Python plugin.
+Eight internal plugins run as independent child processes, each declared by one row in the central plugin spec and driven by the same uniform lifecycle (spawn → MCP-handshake readiness → watchdog → health). One of them — **mcp-gateway** — is the gateway to external MCP servers: third-party capability enters only as a standard MCP server in `tools.json5`, never as a Python plugin.
 
 | Plugin | Role |
 |--------|------|

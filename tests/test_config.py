@@ -222,7 +222,7 @@ class TestConfigFromJSON5:
         """plugins.required names become the required-plugin contract set.
 
         The plugins.external mechanism was removed — only required is read
-        (externals enter via the internal mcp gateway's mcp-plugin.json5).
+        (externals enter via the internal mcp gateway's tools.json5).
         """
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.json5"
@@ -917,7 +917,7 @@ class TestSeedFirstRunConfig:
             }}},
         }))
         (pkg / "local_embed.json5").write_text('{ active_model: "x" }')
-        (pkg / "mcp-plugin.json5").write_text('{ servers: {} }')
+        (pkg / "tools.json5").write_text('{ servers: {} }')
         return pkg
 
     @staticmethod
@@ -933,10 +933,10 @@ class TestSeedFirstRunConfig:
         home = self._home(tmp_path, monkeypatch)
         data = tmp_path / "data"
         Config.from_json5(str(data / "slife.json5"))
-        # slife.json5 + mcp-plugin.json5 seed into the data dir; local_embed
+        # slife.json5 + tools.json5 seed into the data dir; local_embed
         # keeps its own ~/.local-embed (separate standalone app).
         assert (data / "slife.json5").exists()
-        assert (data / "mcp-plugin.json5").exists()
+        assert (data / "tools.json5").exists()
         assert (home / ".local-embed" / "local_embed.json5").exists()
 
     def test_existing_slife_config_not_overwritten_siblings_seeded(
@@ -955,7 +955,7 @@ class TestSeedFirstRunConfig:
         raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
         assert raw["models"]["providers"]["d"]["models"][0]["model"] == "keepme"
         assert (home / ".local-embed" / "local_embed.json5").exists()
-        assert (data / "mcp-plugin.json5").exists()
+        assert (data / "tools.json5").exists()
 
     def test_existing_data_dir_config_not_overwritten(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
@@ -968,7 +968,7 @@ class TestSeedFirstRunConfig:
             "api_key": "${KEY}", "base_url": "https://example.com",
             "models": [{"model": "m", "name": "M"}],
         }}}}))
-        mcp = data / "mcp-plugin.json5"
+        mcp = data / "tools.json5"
         mcp.write_text('{ servers: {"mine": {}} }')
         Config.from_json5(str(cfg_path))
         assert json5.loads(mcp.read_text()) == {"servers": {"mine": {}}}
@@ -976,11 +976,31 @@ class TestSeedFirstRunConfig:
     def test_missing_data_dir_config_in_package_skipped(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         pkg = self._pkg_dir(tmp_path)
-        (pkg / "mcp-plugin.json5").unlink()
+        (pkg / "tools.json5").unlink()
         monkeypatch.setattr("slife.config._PKG_DIR", pkg)
         home = self._home(tmp_path, monkeypatch)
         data = tmp_path / "data"
         Config.from_json5(str(data / "slife.json5"))
         assert (data / "slife.json5").exists()
-        assert not (data / "mcp-plugin.json5").exists()
+        assert not (data / "tools.json5").exists()
         assert (home / ".local-embed" / "local_embed.json5").exists()
+
+    def test_legacy_mcp_plugin_config_lifted_to_tools(self, tmp_path, monkeypatch):
+        """A data dir holding the pre-rename mcp-plugin.json5 is lifted once."""
+        monkeypatch.setenv("KEY", "sk-test")
+        monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
+        home = self._home(tmp_path, monkeypatch)
+        data = tmp_path / "data"
+        cfg_path = data / "slife.json5"
+        cfg_path.parent.mkdir()
+        cfg_path.write_text(json5.dumps({"models": {"providers": {"d": {
+            "api_key": "${KEY}", "base_url": "https://example.com",
+            "models": [{"model": "m", "name": "M"}],
+        }}}}))
+        (data / "mcp-plugin.json5").write_text(
+            '{ servers: {"mine": {"command": "npx"}} }'
+        )
+        Config.from_json5(str(cfg_path))
+        lifted = json5.loads((data / "tools.json5").read_text(encoding="utf-8"))
+        assert lifted == {"servers": {"mine": {"command": "npx"}}}
+        assert not (data / "mcp-plugin.json5").exists()

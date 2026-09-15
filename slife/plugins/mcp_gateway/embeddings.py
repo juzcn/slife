@@ -7,7 +7,7 @@ Embeddings go straight over ``httpx2`` to any OpenAI-compatible
 Config comes from the **host only**: the connecting client passes its active
 embedding endpoint via the MCP ``initialize`` handshake's ``clientInfo``
 (slife sends slife.json5's top-level ``embeddings`` — there is no
-``embeddings`` section in mcp-plugin.json5 anymore).  A usable ``base_url``
+``embeddings`` section in tools.json5 anymore).  A usable ``base_url``
 (non-empty, not a placeholder) ⇒ the client is available (semantic search
 runs); absent / placeholder ``base_url`` ⇒ unavailable (keyword/grep
 fallback).  ``api_key`` may be empty (no auth header), plaintext, or a
@@ -65,7 +65,7 @@ class EmbeddingClient:
 
         *override* — the host's active embedding endpoint passed via the MCP
         ``initialize`` handshake's ``clientInfo`` — is the sole config source
-        (mcp-plugin.json5 carries no ``embeddings`` section).  A usable
+        (tools.json5 carries no ``embeddings`` section).  A usable
         ``base_url`` (non-empty, not a placeholder) ⇒ enabled; absent or a
         ``${VAR}`` placeholder ``base_url`` ⇒ ``enabled=False`` (semantic
         search off, keyword/grep fallback).

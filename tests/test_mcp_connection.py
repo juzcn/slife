@@ -979,7 +979,7 @@ class TestMCPServerConnectionStdio:
 class TestMCPServerConnectionReconnectNotify:
     """on_connected fires on EVERY successful connect (first and reconnects).
 
-    The standalone server connects asynchronously from mcp-plugin.json5 on
+    The standalone server connects asynchronously from tools.json5 on
     startup — a listener (a host re-syncing its tool registry) must be told
     about first connects too.  Full-diff registration on the listener side
     keeps the extra notification idempotent.

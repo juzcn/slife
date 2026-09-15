@@ -1,9 +1,9 @@
 """Tests for slife.tools.rest_api — RestApiSetTool et al.
 
-REST API definitions now live in mcp-plugin.json5 (owned by mcp-plugin) as
+REST API definitions now live in tools.json5 (owned by the mcp gateway) as
 ordinary ``uvx mcp-openapi-proxy`` server entries tagged
 ``source.type == "rest_api"``.  These tests exercise the tools against a
-throwaway config file located via ``$MCP_PLUGIN_FILE``.
+throwaway config file located via ``$TOOLS_FILE``.
 """
 
 import pytest; pytestmark = pytest.mark.unit
@@ -29,9 +29,9 @@ from slife.tools.rest_api import (
 
 @pytest.fixture(autouse=True)
 def mcp_config_path(tmp_path, monkeypatch):
-    """Point mcp-plugin.config at a throwaway mcp-plugin.json5 per test."""
-    path = tmp_path / "mcp-plugin.json5"
-    monkeypatch.setenv("MCP_PLUGIN_FILE", str(path))
+    """Point mcp_gateway.config at a throwaway tools.json5 per test."""
+    path = tmp_path / "tools.json5"
+    monkeypatch.setenv("TOOLS_FILE", str(path))
     # Pin the resolver BEFORE the test runs — a stale _CURRENT_PATH from a
     # previous test would otherwise make reads/writes land in the wrong file.
     mcp_plugin_config.set_config_path(str(path))

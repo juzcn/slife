@@ -1037,9 +1037,9 @@ class AgentService:
             raise
 
     # ── MCP enrichment adapter ─────────────────────────────────────────
-    # mcp-plugin is an external standalone distribution that self-hosts its
-    # config (mcp-plugin.json5) and self-connects servers on startup.  This
-    # is the ONE bounded, mcp-aware integration left in the harness: expose
+    # The mcp gateway self-hosts its config (tools.json5) and self-connects
+    # servers on startup.  This is the ONE bounded, mcp-aware integration
+    # left in the harness: expose
     # the wrapper client to slife tools and register the external servers'
     # ``{server}__{tool}`` proxies as native tools.  Persistence, auto-connect
     # and reconciliation happen inside the plugin, not here.  The lifecycle
@@ -1105,7 +1105,7 @@ class AgentService:
         """Reconcile external MCP tool proxies (on-demand model).
 
         Reads the configured server list LIVE from the wrapper (``mcp_list``),
-        so neither slife nor subagents need mcp-plugin.json5.  Two jobs:
+        so neither slife nor subagents need tools.json5.  Two jobs:
 
         1. Servers with ``auto_load: true`` get their tools bulk-registered
            (full-diff, unchanged — ``_discover_and_register_external_tools``).

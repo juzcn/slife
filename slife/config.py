@@ -26,7 +26,7 @@ import slife.timeouts as _timeouts  # module ref (not the instance) — reload-s
 logger = logging.getLogger(__name__)
 
 # Package directory — carries the git-tracked seed configs (slife.json5,
-# local_embed.json5, mcp-plugin.json5) force-included into the wheel, plus the
+# local_embed.json5, tools.json5) force-included into the wheel, plus the
 # bundled skills tree.
 _PKG_DIR = Path(__file__).resolve().parent
 
@@ -50,7 +50,7 @@ def _resolve_secret(value: str, *, accept_keyring_uri: bool = False) -> str:
 
     # ${VAR} / ${VAR:-default} (pure reference) — the shared lenient chain
     # (env → credstore → literal default).  ``parse_env_ref`` is the one
-    # parser, so this and the mcp-plugin resolver can't drift.
+    # parser, so this and the gateway's tools-config resolver can't drift.
     if parse_env_ref(value) is not None:
         return resolve_secret_value(value)
     return value
@@ -687,7 +687,7 @@ class Config:
         """Seed the git-tracked default configs from the package.
 
         Copies any *missing* config among ``slife.json5`` /
-        ``mcp-plugin.json5`` from the package directory into ``path.parent``
+        ``tools.json5`` from the package directory into ``path.parent``
         (the slife data dir) — the out-of-the-box defaults for a fresh
         install, and a supplement for existing installs that lack a newly
         added config.  ``local_embed.json5`` seeds to ``~/.local-embed/``
@@ -706,18 +706,30 @@ class Config:
         pkg_dir = _PKG_DIR
 
         fresh = not path.exists()
-        # Data-dir configs — slife.json5, mcp-plugin.json5 and sharefile.json5
+        # Data-dir configs — slife.json5, tools.json5 and sharefile.json5
         # (the last two belong to built-in slife plugins) all live in the slife
         # data dir (path.parent), resolved via slife.paths.get_data_dir().
         # Seed each *missing* one from the bundled default; never overwrite.
-        for name in ("slife.json5", "mcp-plugin.json5", "sharefile.json5"):
+        for name in ("slife.json5", "tools.json5", "sharefile.json5"):
             target = path.parent / name
             if target.exists():
                 continue
+            # tools.json5 succeeded mcp-plugin.json5 — a data dir that still
+            # holds the old file (a pre-rename install or dev checkout) is
+            # lifted once so its MCP server entries survive the rename.
+            if name == "tools.json5":
+                legacy = path.parent / "mcp-plugin.json5"
+                if legacy.exists():
+                    os.replace(legacy, target)
+                    logger.info(
+                        "config_lifted legacy=mcp-plugin.json5 to=%s", target
+                    )
+                    print(f"\n  Moved existing MCP config to: {target}")
+                    continue
             pkg = pkg_dir / name
             if not pkg.exists():
                 # slife.json5 must be present to configure anything; wheels
-                # predating the git-tracked configs may lack mcp-plugin.json5.
+                # predating the git-tracked configs may lack tools.json5.
                 if name == "slife.json5":
                     raise FileNotFoundError(
                         f"Config file not found: {path}\n"
@@ -834,7 +846,7 @@ class Config:
         path = Path(path).expanduser()
         logger.debug("config_load path=%s", path)
         # Seeds missing configs from the package defaults (slife.json5 +
-        # mcp-plugin.json5 into the data dir, local_embed.json5 into
+        # tools.json5 into the data dir, local_embed.json5 into
         # ~/.local-embed); no-op for files the user already has.
         cls._seed_first_run_config(path)
 
@@ -963,10 +975,10 @@ class Config:
             cli_tools=cli_tools,
         )
         config._path = path
-        # mcp-plugin is a built-in slife plugin — it resolves mcp-plugin.json5
-        # in the same data dir as slife.json5 (via slife.paths.get_data_dir).
+        # mcp-gateway is a built-in slife plugin — it resolves tools.json5 in
+        # the same data dir as slife.json5 (via slife.paths.get_data_dir).
         # local-embed is a separate standalone app that resolves its own
-        # ~/.local-embed/local_embed.json5.  We do NOT set $MCP_PLUGIN_FILE /
+        # ~/.local-embed/local_embed.json5.  We do NOT set $TOOLS_FILE /
         # $LOCAL_EMBED_FILE — both plugins find the files the installer and
         # _seed_first_run_config (above) write.
         return config

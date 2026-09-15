@@ -1,11 +1,11 @@
-"""mcp-plugin config — load/save ``mcp-plugin.json5``, path resolution, secrets.
+"""mcp-gateway config — load/save ``tools.json5``, path resolution, secrets.
 
 Path precedence (one loader, every consumer):
-  1. ``$MCP_PLUGIN_FILE`` — explicit override (a test/dev escape hatch only)
-  2. slife data dir — ``<data_dir>/mcp-plugin.json5`` via
-     :func:`slife.paths.get_data_dir` (production ``~/.slife/mcp-plugin.json5``,
-     the checkout root in dev).  mcp-plugin is a built-in slife plugin — its
-     config lives next to ``slife.json5``, like memdb/memfiles/wechat.
+  1. ``$TOOLS_FILE`` — explicit override (a test/dev escape hatch only)
+  2. slife data dir — ``<data_dir>/tools.json5`` via
+     :func:`slife.paths.get_data_dir` (production ``~/.slife/tools.json5``,
+     the checkout root in dev).  The mcp gateway is a built-in slife plugin —
+     its config lives next to ``slife.json5``, like memdb/memfiles/wechat.
 
 Server entries hold: ``command/args/env/url/headers/auth/description/enabled/source``
 plus ``os_paths``.
@@ -39,24 +39,24 @@ logger = logging.getLogger(__name__)
 
 
 def default_config_path() -> Path:
-    """Default config path: ``<slife data dir>/mcp-plugin.json5``.
+    """Default config path: ``<slife data dir>/tools.json5``.
 
-    mcp-plugin is a built-in slife plugin — its config sits next to
+    The mcp gateway is a built-in slife plugin — its config sits next to
     ``slife.json5`` in the slife data dir (``~/.slife`` in production, the
     checkout root in dev).  ``get_data_dir()`` honours ``$SLIFE_DATA_DIR``,
     which the host exports so plugin children resolve the same directory.
     """
     from slife.paths import get_data_dir
 
-    return get_data_dir() / "mcp-plugin.json5"
+    return get_data_dir() / "tools.json5"
 
 
 def resolve_config_path() -> Path:
-    """Return the mcp-plugin.json5 path for this process.
+    """Return the tools.json5 path for this process.
 
-    ``$MCP_PLUGIN_FILE`` (test/dev override) > slife data dir default.
+    ``$TOOLS_FILE`` (test/dev override) > slife data dir default.
     """
-    env = os.environ.get("MCP_PLUGIN_FILE")
+    env = os.environ.get("TOOLS_FILE")
     if env:
         return Path(env).expanduser()
     return default_config_path()
@@ -110,7 +110,7 @@ _CURRENT_PATH: Path | None = None
 def set_config_path(path: Path | str | None = None) -> Path:
     """Pin the config path in use (e.g. from ``load_config(path)``).
 
-    With no *path*, re-resolves from ``$MCP_PLUGIN_FILE`` / the slife
+    With no *path*, re-resolves from ``$TOOLS_FILE`` / the slife
     data-dir default.
     """
     global _CURRENT_PATH
@@ -251,7 +251,7 @@ def resolve_server_config(name: str, raw_entry: dict):
         source=_dict_copy(raw_entry.get("source")),
         os_paths=bool(raw_entry.get("os_paths", False)),
         # Config key is `autoload` — a valid json5 identifier, so it needs no
-        # quotes in mcp-plugin.json5 (a dash would require quoting).
+        # quotes in tools.json5 (a dash would require quoting).
         auto_load=raw_entry.get("autoload") is True,
     )
 

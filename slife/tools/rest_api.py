@@ -2,8 +2,8 @@
 
 rest_api_set / rest_api_remove / rest_api_list / rest_api_set_enabled.
 
-Server definitions live in ``mcp-plugin.json5`` (owned by the mcp plugin,
-resolved via ``$MCP_PLUGIN_FILE``); REST APIs are ordinary ``command: uvx``
+Server definitions live in ``tools.json5`` (owned by the mcp gateway,
+resolved via ``$TOOLS_FILE``); REST APIs are ordinary ``command: uvx``
 server entries tagged ``source.type == "rest_api"``.  This module is the
 sLife-side face: it re-points persistence to :mod:`slife.plugins.mcp_gateway.config`
 and keeps a live ``mcp_set``-style warm-up through the mcp plugin so an API
@@ -68,9 +68,9 @@ def _format_rest_apis(rest_apis: dict) -> str:
 
 
 def get_rest_apis_summary(config_path) -> str:
-    """Read rest-api entries from mcp-plugin.json5 (fallback for offline use).
+    """Read rest-api entries from tools.json5 (fallback for offline use).
 
-    The config path is resolved by mcp-plugin ($MCP_PLUGIN_FILE), so
+    The config path is resolved by the gateway ($TOOLS_FILE), so
     *config_path* is accepted for signature compatibility and ignored.
     """
     return _format_rest_apis(mcp_plugin_config.list_rest_apis())

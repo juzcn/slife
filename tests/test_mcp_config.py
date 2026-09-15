@@ -1,13 +1,10 @@
 """Tests for ``slife.plugins.mcp_gateway.config`` — server-entry persistence and loading.
 
-MCP config moved out of slife into this package (slife.config lost
-``MCPConfig`` / ``Config.mcp_config`` / ``save_mcp_server`` etc. during the
-mcp-plugin extraction).  These cover the module-level persistence API —
-:func:`add_server_entry`, :func:`remove_server_entry`,
-:func:`set_server_enabled` — plus robustness to malformed config.  The
-``_isolate_config_path`` autouse fixture (conftest.py) points every read/write
-at a throwaway ``$MCP_PLUGIN_FILE``, and ``read_config`` treats a missing file
-as first run (empty dict), so tests are self-contained.
+These cover the module-level persistence API — :func:`add_server_entry`,
+:func:`remove_server_entry`, :func:`set_server_enabled` — plus robustness to
+malformed config.  The ``_isolate_config_path`` autouse fixture (conftest.py)
+points every read/write at a throwaway ``$TOOLS_FILE``, and ``read_config``
+treats a missing file as first run (empty dict), so tests are self-contained.
 """
 
 from __future__ import annotations
@@ -166,32 +163,32 @@ class TestRestAPI:
 
 
 class TestResolveConfigPath:
-    """resolve_config_path — $MCP_PLUGIN_FILE > slife data-dir default.
+    """resolve_config_path — $TOOLS_FILE > slife data-dir default.
 
-    mcp-plugin is a built-in slife plugin: the default config path is
-    ``<slife data dir>/mcp-plugin.json5`` (``slife.paths.get_data_dir``), not
-    a ``~/.mcp-plugin/`` standalone location.
+    The mcp gateway is a built-in slife plugin: the default config path is
+    ``<slife data dir>/tools.json5`` (``slife.paths.get_data_dir``), not a
+    ``~/.mcp-plugin/`` standalone location.
     """
 
     def test_data_dir_default(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MCP_PLUGIN_FILE", raising=False)
+        monkeypatch.delenv("TOOLS_FILE", raising=False)
         monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path / "data"))
         assert cfg.resolve_config_path() == (
-            tmp_path / "data" / "mcp-plugin.json5"
+            tmp_path / "data" / "tools.json5"
         )
 
     def test_production_default_under_home(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MCP_PLUGIN_FILE", raising=False)
+        monkeypatch.delenv("TOOLS_FILE", raising=False)
         monkeypatch.delenv("SLIFE_DATA_DIR", raising=False)
         monkeypatch.chdir(tmp_path)  # not the slife checkout → ~/.slife
         assert cfg.resolve_config_path() == (
-            Path.home() / ".slife" / "mcp-plugin.json5"
+            Path.home() / ".slife" / "tools.json5"
         )
 
     def test_env_wins_over_data_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("MCP_PLUGIN_FILE", str(tmp_path / "mcp-plugin.json5"))
+        monkeypatch.setenv("TOOLS_FILE", str(tmp_path / "tools.json5"))
         monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path / "other"))
-        assert cfg.resolve_config_path() == tmp_path / "mcp-plugin.json5"
+        assert cfg.resolve_config_path() == tmp_path / "tools.json5"
 
 
 class TestServersReading:

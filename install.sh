@@ -62,7 +62,7 @@ echo "npx               : auto-install Node.js if needed (required for MCP serve
 echo "bun               : auto-install bun if needed (required for nvidia-nim MCP)"
 echo "unzip             : auto-install on Linux if missing (bun installer dependency)"
 echo "rootless fallback : official tarballs → ~/.local when no root/package manager"
-echo "Configs           : seeded from bundled defaults (slife / local-embed / mcp-plugin / sharefile)"
+echo "Configs           : seeded from bundled defaults (slife / local-embed / tools / sharefile)"
 echo "Full tool set     : yt-dlp, browser-harness, Mosquitto, cloudflared (rootless — no sudo; --core to skip)"
 echo "Disk space needed : ~500 MB (semantic setup adds 0.3–2 GB, user-run)"
 echo ""
@@ -763,9 +763,9 @@ else
 fi
 
 # ── Configs: seed the git-tracked defaults out-of-the-box ───────────────
-# slife.json5 / local_embed.json5 / mcp-plugin.json5 / sharefile.json5 come
+# slife.json5 / local_embed.json5 / tools.json5 / sharefile.json5 come
 # from the downloaded source tree (now git-tracked).  slife.json5,
-# mcp-plugin.json5 and sharefile.json5 (the last two belong to built-in
+# tools.json5 and sharefile.json5 (the last two belong to built-in
 # plugins) live in ~/.slife; local_embed.json5 is local-embed's own
 # (~/.local-embed).  Missing ones are copied silently; when an existing one
 # differs from the bundled default, the NEW default is seeded into ~/.slife/
@@ -774,14 +774,20 @@ fi
 # version simply refreshes the copy.
 echo -e "${YELLOW}[4c] Setting up configs (out-of-the-box defaults)…${NC}"
 SEED_DIR="$TMP_DIR/slife-main"
-for _name in slife.json5 local_embed.json5 mcp-plugin.json5 sharefile.json5; do
+# tools.json5 replaced mcp-plugin.json5 — lift an existing live config once
+# so an upgrade keeps its MCP server entries instead of re-seeding defaults.
+if [ -f "$HOME/.slife/mcp-plugin.json5" ] && [ ! -e "$HOME/.slife/tools.json5" ]; then
+    cp -f "$HOME/.slife/mcp-plugin.json5" "$HOME/.slife/tools.json5" \
+        && chmod 600 "$HOME/.slife/tools.json5"
+fi
+for _name in slife.json5 local_embed.json5 tools.json5 sharefile.json5; do
     _src="$SEED_DIR/$_name"
     [ -f "$_src" ] || continue   # older main snapshots may lack the seeds
-    # slife.json5, mcp-plugin.json5 and sharefile.json5 sit in ~/.slife;
+    # slife.json5, tools.json5 and sharefile.json5 sit in ~/.slife;
     # local_embed.json5 in local-embed's own folder.
     case "$_name" in
         local_embed.json5) _target="$HOME/.local-embed/local_embed.json5" ;;
-        mcp-plugin.json5)  _target="$HOME/.slife/mcp-plugin.json5" ;;
+        tools.json5)       _target="$HOME/.slife/tools.json5" ;;
         sharefile.json5)   _target="$HOME/.slife/sharefile.json5" ;;
         *)                 _target="$HOME/.slife/slife.json5" ;;
     esac
@@ -967,7 +973,7 @@ fi
 echo -e "${CYAN}Get started:${NC}"
 echo "  1. Semantic search (optional) — set up per README → Semantic Memory Search"
 echo "  2. Configure secrets with credstore — credstore set-password, then credstore set <API_KEY> <value>"
-echo "  3. Configure external MCP servers — edit ~/.slife/mcp-plugin.json5 (they apply at the next slife start)"
+echo "  3. Configure external MCP servers — edit ~/.slife/tools.json5 (they apply at the next slife start)"
 echo ""
 if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
     if [ "${PRESERVE_OK:-0}" = "1" ]; then
