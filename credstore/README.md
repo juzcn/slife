@@ -192,9 +192,12 @@ Callers of `get_credential()` and `resolve_uri()` must `del` the returned value 
 The encrypted credential file's path is resolved by precedence:
 
 1. `CREDSTORE_FILE=<path>` (env var)
-2. `./credentials.crypt` (dev — when the current directory is the Slife source
-   root, i.e. its `pyproject.toml` has `project.name == "slife"`)
-3. `~/.credstore/credentials.crypt` (default, standalone use)
+2. `~/.credstore/credentials.crypt` (default)
+
+Resolution never depends on the current directory. Slife's own source tree is
+no exception: the system keyring is shared between a checkout and a production
+install, so a checkout-local cryptfile forked the backup rather than isolating
+anything.
 
 ## Architecture
 

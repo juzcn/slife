@@ -191,8 +191,10 @@ credstore.get_backend_name()        # → "system keyring + cryptfile (dual-writ
 加密凭据文件路径按以下优先级解析：
 
 1. `CREDSTORE_FILE=<path>`（环境变量）
-2. `./credentials.crypt`（开发模式——当前目录为 Slife 源码根目录，即其 `pyproject.toml` 中 `project.name == "slife"`）
-3. `~/.credstore/credentials.crypt`（独立使用时的默认值）
+2. `~/.credstore/credentials.crypt`（默认值）
+
+解析与当前目录无关。Slife 源码树也不例外：系统 keyring 在源码检出和生产安装之间是共享的，
+放在检出目录里的 cryptfile 只是把备份分叉了，并没有隔离任何东西。
 
 ## 架构
 
