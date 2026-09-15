@@ -33,16 +33,31 @@ logger = logging.getLogger(__name__)
 JOB_PLUGIN_NAME = "job-coding"
 
 
-def tool_descriptor(tool: "Tool") -> str:
-    """Compact JSON of a tool's full descriptor (the catalog ``schema`` column)."""
+def descriptor_json(name: str, description: str, input_schema) -> str:
+    """Compact JSON of a tool descriptor — the catalog ``schema`` column.
+
+    Strictly the tool def: ``name``, ``description`` and ``inputSchema`` (the
+    arguments as a plain JSON Schema).  No other keys — the shape the loop
+    re-serializes into an OpenAI function definition, keeping the stored
+    schema and the injected one the same thing.
+    """
     return json.dumps(
         {
-            "name": getattr(tool, "name", ""),
-            "description": getattr(tool, "description", ""),
-            "inputSchema": getattr(tool, "parameters", {"type": "object", "properties": {}}),
+            "name": name,
+            "description": description,
+            "inputSchema": input_schema,
         },
         ensure_ascii=False,
         separators=(",", ":"),
+    )
+
+
+def tool_descriptor(tool: "Tool") -> str:
+    """Compact JSON of a tool's full descriptor (the catalog ``schema`` column)."""
+    return descriptor_json(
+        getattr(tool, "name", ""),
+        getattr(tool, "description", ""),
+        getattr(tool, "parameters", {"type": "object", "properties": {}}),
     )
 
 

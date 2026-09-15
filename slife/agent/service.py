@@ -1310,20 +1310,18 @@ class AgentService:
         catalog = self._catalog
         if catalog is None:
             return
+        import slife.tools.catalog_service as _cs
+
         category = await catalog.server_category(server_name)
         for t in tools:
             tname = t.get("name")
             if not tname:
                 continue
             full_name = t.get("full_name") or f"{server_name}__{tname}"
-            descriptor = json.dumps(
-                {
-                    "name": tname,
-                    "description": t.get("description", "") or "",
-                    "inputSchema": t.get("inputSchema", {"type": "object", "properties": {}}),
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
+            descriptor = _cs.descriptor_json(
+                tname,
+                t.get("description", "") or "",
+                t.get("inputSchema", {"type": "object", "properties": {}}),
             )
             await catalog.upsert_external_tool(
                 full_name,
@@ -1530,14 +1528,10 @@ class AgentService:
         )
         for t in tagged:
             try:
-                descriptor = json.dumps(
-                    {
-                        "name": t.get("name", ""),
-                        "description": t.get("description", "") or "",
-                        "inputSchema": t.get("inputSchema", {"type": "object", "properties": {}}),
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
+                descriptor = _cs.descriptor_json(
+                    t.get("name", ""),
+                    t.get("description", "") or "",
+                    t.get("inputSchema", {"type": "object", "properties": {}}),
                 )
                 await self._catalog.store.upsert_tool(
                     t["name"],
