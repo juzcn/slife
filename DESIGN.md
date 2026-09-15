@@ -1,6 +1,6 @@
 # Slife Design
 
-> Developer documentation for the Slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md). For plugin authors, [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) is the authoritative plugin spec; for how the model context is curated each turn, [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) is authoritative. This document is written for people who work on the code, and it assumes you have read the README.
+> Developer documentation for the Slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md). The **authoritative, exhaustive** treatment of each subsystem lives in a standalone doc — [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) (plugins), [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) (context curation), [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md) (the tool catalog), [TIMEOUT.md](docs/TIMEOUT.md) (timeouts), [SUBAGENT.md](docs/SUBAGENT.md) (workers), [A2A-MQTT.md](docs/A2A-MQTT.md) (the mesh) — and this document **summarizes and links rather than re-derives**: where a section names one of those docs, that doc is the reference and this text keeps only the DESIGN-level shape. Written for people who work on the code; assumes you have read the README.
 
 ## Contents
 
@@ -30,6 +30,7 @@ The sections are layered — orientation first, then the deep mechanics, then re
 | Working on the agent loop / context / prompts | **Part 2** |
 | Adding an LLM backend or dealing with wire formats | **Part 3** |
 | Adding or changing a native tool | **Part 4** |
+| Working on tool load/unload, the catalog, search, or MCP reconcile | **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** |
 | Writing or debugging a plugin, the MCP gateway, jobs, subagents | **Part 5** + [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) + [SUBAGENT.md](docs/SUBAGENT.md) |
 | Working on memory, search, embeddings, session restore | **Part 6** |
 | Working on the A2A mesh | **Part 7** |
@@ -203,7 +204,7 @@ Two distinct concepts live under different prefixes. They are **not** two tiers 
 | `__wechat_drain_incoming` / `__check` | wechat plugin | Internal — invisible |
 | `__scheduled_*` (10) / `__memfiles_reload_semantic` / `__user_pref_append` / `__check` | memfiles plugin | Internal — invisible |
 | `__a2a_drain_incoming` / `__a2a_dispatch_result` / `__check` | a2a plugin | Internal — invisible |
-| `__check` / `__mcp_call_tool` / `__mcp_get_tool` | mcp-gateway plugin | Internal — invisible |
+| `__check` / `__mcp_call_tool` | mcp-gateway plugin | Internal — invisible |
 | `__check` / `__register_file` | sharefile plugin | Internal — invisible |
 | `__check` | media plugin | Internal — invisible |
 | `__set_mcp_gateway_port` / `__check` | job-coding plugin | Internal — invisible |
@@ -365,38 +366,11 @@ Picker rules (hard-won, kept with the code):
 
 Eight internal plugins run as independent child processes (mcp-gateway, memdb, wechat, memfiles, sharefile, a2a, media, job-coding). Every plugin is declared by one row in the central plugin spec (`slife/plugins/spec.py`) and driven by one uniform lifecycle (spawn → MCP-handshake readiness → watchdog → health); the authoritative contract — the spec table, the registry, readiness, the lifecycle, health, and the child-process `server.py` shape — is **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)**. There is **no `plugins.external` mechanism** — third-party capability enters only as a standard MCP server in `tools.json5`, connected by the internal **mcp-gateway** plugin. `local-embed` is **not** a plugin: a standalone daemon (started manually, like Mosquitto) serving OpenAI-compatible `/v1/embeddings`. Communication is **Streamable HTTP** (MCP protocol) for all plugins; the sharefile plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`).
 
-**WSL note:** Custom env vars set via `create_subprocess_exec(env=…)` are NOT forwarded to Windows `.exe` processes through WSL interop (`WSLENV` is only read by the WSL `/init` at session start). Therefore **all MCP server runtimes on WSL must be Linux-native binaries** — the install script enforces this by detecting `/mnt/*` paths.
-
 ### The spec and the uniform lifecycle
 
-Plugins are **spec-driven**: `PluginSpec` rows in `slife/plugins/spec.py` are the single source of truth, and every plugin routes through one uniform start chain (`start_plugin_server` → spawn the child with the inherited session env plus `SLIFE_PLUGIN_NAME` and its published port → MCP-handshake readiness → `_after_ready_*` hook → arm the watchdog) — no per-plugin start methods remain. Adding a plugin is one spec row plus a `server.py` package; auto-discovered third-party packages get a generic row and the same lifecycle. The two public names with hyphens are `mcp-gateway` and `job-coding` (packages `mcp_gateway` / `job_coding`). The full mechanism — the spec table, the registry-as-runtime-truth, readiness, lifecycle, watchdog, stop — is in **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)**; what follows keeps the DESIGN-level operational detail (env handoff, readiness rules, watchdog tuning).
+Plugins are **spec-driven**: each plugin is one `PluginSpec` row in `slife/plugins/spec.py` — the single source of truth — and every plugin routes through one uniform start chain (spawn the child → MCP-handshake readiness → `_after_ready_*` hook → arm the watchdog); no per-plugin start methods remain. Adding a plugin is one spec row plus a `server.py` package; auto-discovered third-party packages get a generic row and the same lifecycle. The two public names with hyphens are `mcp-gateway` and `job-coding` (packages `mcp_gateway` / `job_coding`).
 
-Processes communicate through environment variables:
-
-| Variable | Purpose |
-|----------|---------|
-| `SLIFE_SESSION_ID` / `SLIFE_AGENT_NAME` | Log correlation, agent identity |
-| `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` / `SLIFE_LOG_DIR` | Directory overrides |
-| `SLIFE_PLUGIN_NAME` | Which plugin this child is |
-| `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP_GATEWAY / MEMDB / WECHAT / MEMFILES / A2A / MEDIA / JOB_CODING / SHAREFILE). Key is the uppercased plugin name with dashes normalised to underscores (`job-coding` → `SLIFE_JOB_CODING_PORT`) — via `plugin_port_env`. Subagents read this env to share the parent's plugins. `local-embed` is a daemon, not a plugin, so it publishes no port. |
-| `SLIFE_SHAREFILE_URL` | Public tunnel URL (set inside the sharefile plugin process) |
-
-**Readiness** follows the MCP standard: a plugin is ready when its `initialize` handshake completes — the server only answers it after its own initialization (FastMCP lifespan) succeeded, during which the plugin establishes its own serving capacity. There is no `__ready` probe tool. The lifespan stays **handshake-fast**: heavyweight startup (e.g. a plugin's semantic index, the job-coding LLM client) is deferred to `warm_after_handshake`, which runs **after the first `tools/list`** (a short delay, then fire-and-forget) — never inside the lifespan. External/subordinate dependencies never gate readiness: they are uncontrollable, self-heal at runtime, and are surfaced separately via status tools.
-
-**Required plugins.** `plugins.required` in `slife.json5` (empty by default; the shipped config sets `["memdb", "memfiles"]`) are core: failing to become ready **aborts startup** with an error instead of limping on. The spawn hang-guard is bounded by the registry's `ready.plugin_start` = **60 s** (a 30 s cap previously misfired on slow machines). The service opens for user input only once every plugin spawn has converged (ready / skipped / failed), so input can never race ahead of plugin startup.
-
-**Watchdog (auto-restart).** Each plugin runs with a watchdog background task that monitors the child process and auto-restarts it on unexpected exit:
-
-| Feature | Detail |
-|---------|--------|
-| Detection | `await subprocess.wait()` — blocks until the child exits |
-| On crash | Unregisters the plugin's exact registered bare-name tools (plus any registry tools bound to the dead client), disconnects the dead client, then re-runs the uniform start (skipping the first-start gate) |
-| Backoff | Exponential: 1 s → 2 s → 4 s → … → 30 s max |
-| Max restarts | 5 consecutive failures → the watchdog gives up and logs an error |
-| Counter reset | **Only when the crashed child had stayed up ≥ `_WATCHDOG_STABLE_UPTIME` (60 s)** — a fast boot-loop is deliberately NOT reset, so a crashing plugin accumulates toward the cap |
-| Scope | Every plugin — built-in, the **mcp-gateway**, or an auto-discovered one. A restart re-runs the uniform start and tells subagents sharing the plugin its new port |
-
-Subagents do **not** have their own watchdog — they connect to the main agent's plugin processes via HTTP, so a subagent crash only kills the subagent, not the shared infrastructure.
+The **authoritative contract** — the spec table, the registry-as-runtime-truth, readability (handshake), the uniform start/stop engine, the watchdog (backoff, restart cap, stable-uptime reset), required-plugin convergence, the child-environment env vars, and the `server.py` shape — is **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)**. The only DESIGN-level facts kept here: traffic between processes is **Streamable HTTP** (MCP protocol) everywhere except the sharefile plugin's plain-HTTP `/share/{token}` byte route; and `plugins.required` (shipped: `["memdb", "memfiles"]`) are core — a required plugin failing readiness **aborts startup**, and the service opens for input only after every plugin spawn has converged.
 
 ### Localhost Never Goes Through a Proxy
 
@@ -410,7 +384,7 @@ Every local `MCPClient` connection is loopback — the harness connects only to 
 
 | Plugin | Transport | Role |
 |--------|-----------|------|
-| **mcp-gateway** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp_gateway`). Manages connection lifecycle, keeps an in-memory **tool catalog** of every loaded tool, searched schema-aware and loaded on demand (see below). |
+| **mcp-gateway** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp_gateway`). Manages the connection lifecycle, health monitor, OAuth and a proxy-free localhost client; the host mirrors its live server/tool state into the shared tool catalog ([TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)). |
 | **memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0). Turn persistence, session restore, embedding configuration. |
 | **wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages (a failed poll backs off the next poll exponentially to 30 s and resets on the next clean poll), typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[Wechat:{...}]` (model-facing JSON carrying `peer_wechat_id` / `context_token`; the TUI strips the marker — the `Wechat>` bubble prefix already shows the channel). The model replies itself via `wechat_send_message` — no harness auto-dispatch. |
 | **memfiles** | Streamable HTTP | Private notes/diary/files/reports cabinet — see [Part 6 · The File Cabinet](#the-file-cabinet-memfiles). Owns the scheduled-task *data* tables; the schedule *tools* are native (Part 2 · Scheduled Tasks). |
@@ -435,11 +409,9 @@ For `url`-configured servers the gateway tries the SDK `sse_client` first: a non
 
 **`tools/list_changed` dispatch.** Notifications to connected hosts are **coalesced and sent from a detached task** — never inside a request handler's task/cancel scope. (A slow control tool previously held the session open in its own scope while its connect emitted a ~50-message burst; the burst interleaving into that scope desynced mcp 2.1.1's cancel-scope stack and crashed the session — every later MCP call died with `Session not found`. Coalescing folds bursts into one send with trailing-edge re-sends; `_active_sessions` is bounded.) Implemented once in `SessionNotifier` (`slife.server_utils`) and used by `mcp_gateway`, `host_server`, and `job_coding`.
 
-**Tool catalog & on-demand loading.** The gateway keeps every loaded external tool in an **in-memory** catalog (SQLite `:memory:`): one row per `{server}__{tool}` with name, description, the tool's **complete `tools/list` schema** as one compact JSON text, and a per-tool `enabled` flag derived from its server's state. The catalog is created at wrapper load and re-synced from the live connection pool on every (re)connect — by construction identical to what the runtime can use; nothing persists, so it can never drift or go stale. It is indexed twice — FTS5 (keyword, over name/server/description/schema text) and f32-BLOB vectors (semantic) produced against the **host-provided** embedding endpoint (slife.json5's top-level `embeddings`, passed via the `initialize` handshake — the gateway has no `embeddings` section of its own, and stale hints telling users to add one to `tools.json5` have been removed). The semantic vector sources the **schema text alone** (name, description, each parameter, return description), making `mcp_tool_search` **schema-aware**; it runs hybrid/keyword/grep retrieval, degrading to keyword-only while indexing.
+**The catalog is shared, not gateway-local.** The gateway owns *connections* and the live tool surface — `mcp_list_tools` is the live source, no wrapper-side catalog exists. Every external tool's row lives in the **shared `tools.db` catalog**, fed by the host's `_sync_mcp_proxies` reconcile on every (re)connect: auto-load servers get their proxies and rows wholesale (`autoload: true`), on-demand servers (the default) get **row-only** mirrors so `tool_search`/`tool_load` can reach individual tools one at a time, and `tool_load` materializes the execution proxy from the row. A server being configured-out / disconnected / disabled is expressed by the effective-status join, not by per-tool edits; `mcp_remove` is the only server teardown path. The row model, the reconcile, and the injection chain are **[docs/TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
 
-External tools are **loaded on demand**: the host registers none by default. The model discovers a tool with `mcp_tool_search` and loads it with the native `mcp_tool_load(full_name)`, which fetches the live schema + enabled state via the internal `__mcp_get_tool` and refuses a disabled tool. A server with `auto_load: true` keeps the older wholesale registration. Enable/disable is always **server-granular** (`mcp_set_enabled`): disabling a server disconnects it, marks its catalog tools disabled (refused at call time), and drops its loaded proxies. Every `tools/list_changed` runs a host-side reconcile (`_sync_mcp_proxies`) that validates each loaded proxy and unregisters any whose tool vanished, server disconnected, or was disabled. There is deliberately no offline rebuild command — the catalog syncs itself from the live connections.
-
-Exposed management tools: `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`, `mcp_tool_search` (LLM-visible); `__check`, `__mcp_call_tool`, `__mcp_get_tool` (internal). `mcp_list` is a **static config view** — what is configured, with no live state and no secrets; `check_mcp_gateway` (also run by `system_health`) calls the internal `__check` for the raw live state (servers + semantic block) and adds health levels with remediation hints. The separation keeps "what is configured" distinct from "what is connected".
+Exposed management tools: `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`, `mcp_connect`, `mcp_disconnect`, `mcp_search` (LLM-visible); `__check`, `__mcp_call_tool` (internal). `mcp_list` is a **static config view** — what is configured, with no live state and no secrets; `check_mcp_gateway` (also run by `system_health`) calls the internal `__check` for the raw live state and adds health levels with remediation hints. The separation keeps "what is configured" distinct from "what is connected".
 
 Server lifecycle:
 
@@ -465,14 +437,9 @@ A job that needs an **external capability** reaches it through the `mcp` handle:
 
 ### Subagents (local workers, not A2A)
 
-Local child-process workers, always available — no config toggle. A subagent (agent worker) is **not** an A2A peer: no network identity, no presence, and no mesh tooling of its own. The full design — the headless process protocol, the one-turn-per-task model, the harness-owned result delivery, and the failure/timeout semantics — lives in **[SUBAGENT.md](docs/SUBAGENT.md)**, the authoritative statement of the worker model.
+Local child-process workers, always available — no config toggle. A subagent (agent worker) is **not** an A2A peer: no network identity, no presence, and no mesh tooling of its own. It runs the identical `AgentLoop` (including the `_turn_prompt` harness pair and internal trim) with the service layer pointed away from the TUI, persistence and scheduling.
 
-- **headless.py**: Slife without TUI, worker-scoped JSON-RPC 2.0 over stdin/stdout — request methods `worker/send`, `worker/cancel`, `worker/plugin_restart`, `context` (cloned parent history), `shutdown`; notification `worker/complete` (the parent also parses a reserved `worker/progress`); a `{ready: true}` result signals startup. Pure UTF-8 on stdout to dodge GBK.
-- **SubagentManager**: spawn/stop/list lifecycle. **Names are explicit — a worker's name is its identity**; `spawn_subagent` requires a `subagent_name` (a short safe identifier) and never auto-generates one. `max_subagents` default 5; the task budget is developer-owned (registry `work.task_budget`).
-- **Serial processing + visibility**: a worker runs one task at a time. A sync `subagent_send_task` to a busy worker is automatically queued as async and reported (never a silent timeout, never a resend). `subagent_list_tasks` lists worker tasks across workers.
-- **Async delivery mode**: `subagent_send_task_async` takes `mode="auto"` (default — the result auto-pushes to the parent's inbox, starting a new turn; **it also stays retrievable** via `subagent_get_task_result`) or `mode="poll"` (no push — retrieve explicitly). The mode is chosen at send time so the caller's intent is explicit.
-- **Shared plugins**: subagents connect to the main agent's plugin servers (mcp-gateway / memdb / wechat / a2a / memfiles) via inherited ports — no isolation; they can send but never drain the inbound queue (all replies and management belong to the main agent).
-- **Recursion**: subagents can spawn their own descendants (each level has its own SubagentManager).
+The **authoritative worker model** — the `headless.py` process protocol, the one-turn-per-task spawn model, serial processing plus the auto-push `/poll` delivery modes, the harness-owned result push, the failure/timeout semantics, shared parent plugins, and recursion — is **[SUBAGENT.md](docs/SUBAGENT.md)**. DESIGN-level facts kept here: a worker's **name is its identity** (explicit, never auto-generated; `max_subagents` default 5, budget = registry `work.task_budget`); workers share the parent's plugin servers by inherited port with **no isolation**; and a subagent can spawn its own descendants.
 
 ## Part 6 · Memory, Search & Embeddings
 
@@ -661,7 +628,7 @@ Not all tools are in every request. Several categories use lightweight summaries
 |----------|--------|------|
 | MemDB | `turn_search` | `turn_read` |
 | Skills | `skill_list` | `skill_use` |
-| MCP | `mcp_tool_search` | `mcp_tool_load(full_name)` |
+| Every function tool (builtin/job/mcp/rest-api) | `tool_search` (the unified catalog — see [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)) | `tool_load` |
 
 ### i18n
 
@@ -799,10 +766,15 @@ slife/
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
     context.py         #   ToolContext — runtime refs (registry, mcp_client, config, history)
-    _config_io.py      #   JSON5 read/write helpers
+    _config_io.py      #   JSON5 read/write helpers (+ cross-process config_read_modify_write lock)
+    catalog.py         #   CatalogStore — the shared tools.db (SQL, FTS5 + semantic, effective-status join, evict_lru)
+    catalog_service.py #   ToolCatalogService — policy: seeding, snapshot, load/unload matrix, threshold eviction
+    catalog_search.py  #   hybrid search adapter (RRF + score annotator over memdb.search)
+    whitelist.py       #   harness pair + 11 meta tools (ALWAYS_LOADED — never evicted / not unloadable)
+    meta_tools.py      #   tool_search / tool_load / _unload_function_tool / skill_load (see TOOL-SYSTEM.md)
     system.py          #   system_health, list_native_tools, async tasks, clear_context, set_max_iterations, notify_user
     exec.py            #   Shell, Python, package install (+ _kill_process_tree)
-    mcp.py             #   mcp_tool_load — on-demand external tool loading
+    mcp.py             #   mcp_tool_load — legacy alias delegating to tool_load
     schedule.py        #   Scheduled-task tools (scheduled_task_*/scheduled_run_* + run_schedule_now)
     skill.py           #   Skill management (SKILL.md)
     cli.py             #   External CLI tool management
@@ -823,17 +795,13 @@ slife/
     a2a/               #   A2A mesh (mesh.py — official a2a-over-mqtt profile binding; see docs/A2A-MQTT.md)
     media/             #   Non-chat AI generation (server.py, config.py, adapters/ dashscope-aigc + openai-images)
     job_coding/        #   Deterministic jobs (server.py, runner.py, registry.py)
-    mcp_gateway/       #   The MCP gateway — a built-in plugin
-      server.py        #   FastMCP gateway server + tool-catalog/search/embeddings tools
-      connection.py    #   ConnectionPool / MCPServerConnection (stdio/SSE/streamable)
+    mcp_gateway/       #   The MCP gateway — a built-in plugin (connections only; catalog = tools.db)
+      server.py        #   FastMCP gateway server — mcp_set/list/tools/connect/disconnect/search, __check
+      connection.py    #   ConnectionPool / MCPServerConnection (stdio/SSE/streamable, health monitor)
       client.py        #   Streamable HTTP client (used by the harness to connect ALL plugins)
-      config.py        #   tools.json5 → mcp.servers / rest-api (servers, auto_load)
-      store.py         #   ToolStore — in-memory tool catalog (FTS5 + BLOB vectors, full-schema column)
-      semantic.py      #   SemanticManager subclass (host-provided embedding endpoint)
-      search.py        #   merge_hybrid (RRF)
-      embeddings.py    #   EmbeddingClient (host override only)
-      oauth.py / process.py / i18n.py / logging.py
-      schema.sql       #   catalog DDL
+      config.py        #   tools.json5 → the merged mcp.servers/rest-api server view + resolve_server_config
+      oauth.py         #   OAuth device flow (tokens in the credential store)
+      process.py / i18n.py
   mcp/                 # Host-process MCP infra
     host_server.py     #   slife-as-plugin — in-process FastMCP exposing the live ToolRegistry
     tool_adapter.py    #   MCPProxyTool (bridges MCP → Tool ABC, ProxyRoute dispatch)

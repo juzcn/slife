@@ -140,6 +140,14 @@ external servers, sharefile's tunnel, wechat's login, media providers, a2a's
 broker, embedding backends) are **not** readiness conditions — they surface
 via their own status tools and never gate readiness.
 
+A *required* plugin (`plugins.required` in `slife.json5`; the shipped config
+sets `["memdb", "memfiles"]`) failing to become ready **aborts startup**
+instead of limping on.  The spawn hang-guard is bounded by the registry's
+`ready.plugin_start` = **60 s** (a 30 s cap previously misfired on slow
+machines), and the service opens for user input only once every plugin spawn
+has converged (ready / skipped / failed — `_startup_converged`) so input can
+never race ahead of plugin startup.
+
 ### Start (uniform engine)
 
 `start_plugin_server(name, module)` → `_start_plugin_server_impl` is the one
@@ -166,15 +174,23 @@ entry for every plugin:
 
 Every started plugin (built-in, gateway, or auto-discovered) is supervised by
 the same `PluginLifecycle` watchdog (`_watchdog_loop`): on unexpected child
-exit it unregisters the plugin's tools, disconnects the dead client, and
+exit it unregisters the plugin's exact registered bare-name tools (plus any
+registry tools bound to the dead client), disconnects the dead client, and
 **restarts through the full uniform start** (spawn + ctx re-point +
-after-ready) with exponential backoff up to `_WATCHDOG_MAX_RESTARTS` (5).
-A restart re-runs `_arm_watchdog`'s restart path with `allow_gate=False` and
-then tells every live subagent sharing the plugin its new port
-(`worker/plugin_restart`).  The poll/restore tasks are reaped
-(`cancel_tasks`) before each respawn so a restart never stacks a second
-loop.  Restart state is recorded through `slife.health` under the
-`watchdog` component, keyed per plugin — surfaced by `check_watchdog`.
+after-ready) with exponential backoff — `_WATCHDOG_BACKOFF_INITIAL` (1 s) →
+2 s → 4 s → … capped at `_WATCHDOG_BACKOFF_MAX` (30 s) — up to
+`_WATCHDOG_MAX_RESTARTS` (5) consecutive failures, after which the watchdog
+gives up and logs.  A restart re-runs `_arm_watchdog`'s restart path with
+`allow_gate=False` and then tells every live subagent sharing the plugin its
+new port (`worker/plugin_restart`).  The restart counter resets **only when
+the crashed child had stayed up ≥ `_WATCHDOG_STABLE_UPTIME` (60 s)** — a fast
+boot-loop is deliberately NOT reset, so a crashing plugin accumulates toward
+the cap.  The poll/restore tasks are reaped (`cancel_tasks`) before each
+respawn so a restart never stacks a second loop.  Restart state is recorded
+through `slife.health` under the `watchdog` component, keyed per plugin —
+surfaced by `check_watchdog`.  Subagents do **not** have their own watchdog:
+they connect to the main agent's plugin processes via HTTP, so a subagent
+crash only kills the subagent, never the shared infrastructure.
 
 ### Stop
 
@@ -194,6 +210,28 @@ re-point; gateway workers also reconcile external proxies; wechat/a2a workers
 never start poll/drain — that stays with the main agent).  When the parent
 restarts a plugin, the worker reconnects on the new port.  On exit the worker
 disconnects every shared client (`stop_all_plugins`).
+
+---
+
+## The child environment
+
+The harness hands the child its identity and its serving ports through the
+process environment (`create_subprocess_exec(env=…)`) — there is no other
+handshake channel for these:
+
+| Variable | Purpose |
+|----------|---------|
+| `SLIFE_SESSION_ID` / `SLIFE_AGENT_NAME` | Log correlation, agent identity |
+| `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` / `SLIFE_LOG_DIR` | Directory overrides |
+| `SLIFE_PLUGIN_NAME` | Which plugin this child is |
+| `SLIFE_{NAME}_PORT` | Published port of each plugin (`MCP_GATEWAY` / `MEMDB` / `WECHAT` / `MEMFILES` / `A2A` / `MEDIA` / `JOB_CODING` / `SHAREFILE`). Key is the uppercased plugin name with dashes normalised to underscores (`job-coding` → `SLIFE_JOB_CODING_PORT`) — via `plugin_port_env`. Subagents read this env to share the parent's plugins. `local-embed` is a daemon, not a plugin, so it publishes no port. |
+| `SLIFE_SHAREFILE_URL` | Public tunnel URL (set inside the sharefile plugin process) |
+
+**WSL note:** custom env vars set via `create_subprocess_exec(env=…)` are NOT
+forwarded to Windows `.exe` processes through WSL interop (`WSLENV` is only
+read by the WSL `/init` at session start).  All MCP server runtimes on WSL
+must therefore be Linux-native binaries — the install script enforces this by
+detecting `/mnt/*` paths.
 
 ---
 
