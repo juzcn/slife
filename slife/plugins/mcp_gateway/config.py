@@ -7,6 +7,13 @@ Path precedence (one loader, every consumer):
      the checkout root in dev).  The mcp gateway is a built-in slife plugin —
      its config lives next to ``slife.json5``, like memdb/memfiles/wechat.
 
+One section per tool category: ``mcp.servers`` (external MCP servers),
+``rest-api``, ``cli``, ``builtin``, ``job``, ``skill`` (the host reads
+``builtin`` + ``cli`` at startup; ``job``/``skill`` are reserved).  The
+server view — ``servers()`` — is ``mcp.servers`` + ``rest-api``; a legacy
+top-level ``servers`` (pre-section shape) reads as the mcp section and is
+normalized on the first write.
+
 Server entries hold: ``command/args/env/url/headers/auth/description/enabled/source``
 plus ``os_paths``.
 ``env`` and ``auth.client_id``/``client_secret`` support ``${VAR}``
@@ -133,12 +140,32 @@ def current_path() -> Path:
 
 
 def _servers_dict(raw: dict) -> dict:
-    servers = raw.get("servers", {})
-    return servers if isinstance(servers, dict) else {}
+    """All server entries (name → raw entry), merged over the sections.
+
+    ``mcp.servers`` + the ``rest-api`` section (REST APIs are ordinary
+    mcp-openapi-proxy servers in their own category).  A legacy top-level
+    ``servers`` — the pre-section tools.json5 shape — reads as the mcp
+    section, so an old file keeps working at the next start; a write
+    normalizes it (see :func:`_normalize_legacy_servers`).
+    """
+    merged: dict = {}
+    mcp_raw = raw.get("mcp")
+    if isinstance(mcp_raw, dict):
+        mcp_servers = mcp_raw.get("servers")
+        if isinstance(mcp_servers, dict):
+            merged.update(mcp_servers)
+    rest_api = raw.get("rest-api")
+    if isinstance(rest_api, dict):
+        merged.update(rest_api)
+    if not merged:
+        legacy = raw.get("servers")
+        if isinstance(legacy, dict):
+            merged.update(legacy)
+    return merged
 
 
 def servers() -> dict:
-    """All server entries (name → raw entry)."""
+    """All server entries (name → raw entry), merged over the sections."""
     return _servers_dict(load_config())
 
 
@@ -155,8 +182,61 @@ def count_servers() -> int:
 # ── Server-entry persistence (shared by CLI + server management tools) ──
 
 
-def add_server_entry(name: str, entry: dict) -> None:
-    """Upsert *entry* for *name* with merge semantics.
+def _normalize_legacy_servers(raw: dict) -> None:
+    """Lift a legacy top-level ``servers`` into ``mcp.servers`` (one-time).
+
+    The pre-restructure tools.json5 held servers at the top level; the
+    first write migrates the file so the sections are canonical from then
+    on.  No-op when ``mcp`` already exists (a file with both sections is
+    already current).
+    """
+    if "mcp" in raw or not isinstance(raw.get("servers"), dict):
+        return
+    raw["mcp"] = {"servers": raw.pop("servers")}
+    logger.info("config_normalized_legacy_servers")
+
+
+def _servers_section(raw: dict, section: str) -> dict:
+    """The placement dict for *section* — ``"mcp"`` (``mcp.servers``) or
+    ``"rest-api"`` — creating it when missing.
+
+    A malformed existing value (not a dict) is replaced by ``{}`` so a
+    writer never stack-traces on it.
+    """
+    if section == "rest-api":
+        current = raw.get("rest-api")
+        if not isinstance(current, dict):
+            current = {}
+            raw["rest-api"] = current
+        return current
+    mcp_raw = raw.get("mcp")
+    if not isinstance(mcp_raw, dict):
+        mcp_raw = {}
+        raw["mcp"] = mcp_raw
+    current = mcp_raw.get("servers")
+    if not isinstance(current, dict):
+        current = {}
+        mcp_raw["servers"] = current
+    return current
+
+
+def _find_server_section(raw: dict, name: str) -> str | None:
+    """The section (``"mcp"`` or ``"rest-api"``) holding *name*, else None."""
+    mcp_raw = raw.get("mcp")
+    if (
+        isinstance(mcp_raw, dict)
+        and isinstance(mcp_raw.get("servers"), dict)
+        and name in mcp_raw["servers"]
+    ):
+        return "mcp"
+    rest_api = raw.get("rest-api")
+    if isinstance(rest_api, dict) and name in rest_api:
+        return "rest-api"
+    return None
+
+
+def add_server_entry(name: str, entry: dict, *, section: str = "mcp") -> None:
+    """Upsert *entry* for *name* into *section* with merge semantics.
 
     Existing fields not explicitly provided are preserved.  ``enabled: True``
     (the default) removes a stale ``enabled: false`` flag; ``None`` values
@@ -166,9 +246,8 @@ def add_server_entry(name: str, entry: dict) -> None:
     """
     with config_read_modify_write(current_path()):
         raw = _load_raw()
-        servers = _servers_dict(raw)
-        if not isinstance(raw.get("servers"), dict):
-            raw["servers"] = servers
+        _normalize_legacy_servers(raw)
+        servers = _servers_section(raw, section)
         existing = servers.get(name, {})
         server_entry: dict = dict(existing) if isinstance(existing, dict) else {}
         for key, value in entry.items():
@@ -186,10 +265,11 @@ def remove_server_entry(name: str) -> bool:
     """Remove *name* from the config; True if it existed."""
     with config_read_modify_write(current_path()):
         raw = _load_raw()
-        servers = _servers_dict(raw)
-        if name not in servers:
+        _normalize_legacy_servers(raw)
+        section = _find_server_section(raw, name)
+        if section is None:
             return False
-        del servers[name]
+        del _servers_section(raw, section)[name]
         write_config(current_path(), raw)
     return True
 
@@ -202,9 +282,11 @@ def set_server_enabled(name: str, enabled: bool) -> bool:
     """
     with config_read_modify_write(current_path()):
         raw = _load_raw()
-        servers = _servers_dict(raw)
-        if name not in servers:
+        _normalize_legacy_servers(raw)
+        section = _find_server_section(raw, name)
+        if section is None:
             return False
+        servers = _servers_section(raw, section)
         if enabled:
             servers[name].pop("enabled", None)
         else:
@@ -315,11 +397,14 @@ def save_rest_api(
     description: str = "",
     source: dict | None = None,
 ) -> bool:
-    """Persist a REST API as a server entry. Returns True when written."""
+    """Persist a REST API as a server entry in the ``rest-api`` section.
+
+    Returns True when written.
+    """
     entry = build_rest_api_entry(
         spec_url, base_url, api_key, description, source,
     )
-    add_server_entry(name, entry)
+    add_server_entry(name, entry, section="rest-api")
     logger.info("mcp_config_save_rest_api name=%s spec=%s", name, spec_url)
     return True
 

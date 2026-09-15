@@ -715,17 +715,15 @@ Known shapes: `sk-*`, `ghp_*`, `ya29.*`, `pypi-*`, `Authorization: Bearer` token
 | `models.providers` / `active_model` | LLM providers (api_key, base_url, api, models[]) + the active `"provider/model"` ref |
 | `job_coding_model` | Top-level provider/model ref for jobs (plugin-read, independent of `active_model`) |
 | `agent` | `max_iterations`, `context_floor`, `context_ceiling`, `tool_result_ceiling`, `memory_tool_result_chars`, `heartbeat_interval` |
-| `tools` | Per-tool overrides (timeout, enabled) |
 | `embeddings` | First-class embeddings config: `providers` (OpenAI-compatible endpoints), `active_model` (bare provider id), `enabled` — shared by memdb/memfiles + the gateway's tool catalog (host passes the active endpoint via handshake) |
 | `wechat` | `enabled` toggle |
 | `media` | Non-chat generation config (plugin-read, ignored by the main `Config` parser) |
 | `a2a` | Transport binding, broker host/port |
 | `subagent` | `max_subagents` (the timeout is developer-owned — see `timeouts` row) |
 | `timeouts` | **Not a user section.** Every timeout value is a developer-owned constant in **`slife/timeouts.py`** (the module is the registry — see [TIMEOUT.md](docs/TIMEOUT.md)); there is no `timeouts` section in `slife.json5` and `agent.tool_timeout` / `subagent.task_timeout` are no longer read from it |
-| `cli_tools` | External CLI tool definitions (read by the CLI tools directly) |
 | `plugins.required` | Required plugins (empty by default; the shipped config requires `memdb`, `memfiles`) |
 
-External MCP server configs live in **`tools.json5` → `servers`**, self-hosted by the gateway. REST-API registrations are also entries there (a server tagged `source.type == "rest_api"`); there is no top-level `rest_apis` section. Each such server is a `uvx mcp-openapi-proxy` instance in **Low-Level Mode** (the proxy's default — one typed MCP tool per OpenAPI endpoint), configured via env only: `rest_api_set` writes `OPENAPI_SPEC_URL` / `SERVER_URL_OVERRIDE`, and for a keyed API an `API_KEY` env var holding a `${VAR}` ref (resolved env → credstore; the proxy sends it as a Bearer `Authorization` header). The gateway prefixes the resulting tools as `{name}__{endpoint}`.
+**`tools.json5`** is the unified tool config with one section per tool category — `builtin` / `mcp` / `rest-api` / `job` / `cli` / `skill` — each entry setting `enabled: false` to disable (default enabled). External MCP servers live in `mcp.servers`; REST-API registrations in `rest-api` (a server tagged `source.type == "rest_api"`, still an ordinary `uvx mcp-openapi-proxy` entry — there is no top-level `rest_apis` section); the native-tool overrides (`builtin`, e.g. `install_python_package`) and the CLI tool definitions (`cli`) moved here from slife.json5; `job` / `skill` are reserved (their files are the source of truth). A legacy top-level `servers` in an old tools.json5 reads as the mcp section and is normalized on the first write. The gateway self-hosts the file. Each REST-API server is an `mcp-openapi-proxy` instance in **Low-Level Mode** (the proxy's default — one typed MCP tool per OpenAPI endpoint), configured via env only: `rest_api_set` writes `OPENAPI_SPEC_URL` / `SERVER_URL_OVERRIDE`, and for a keyed API an `API_KEY` env var holding a `${VAR}` ref (resolved env → credstore; the proxy sends it as a Bearer `Authorization` header). The gateway prefixes the resulting tools as `{name}__{endpoint}`.
 
 ### Health Checks
 
@@ -828,7 +826,7 @@ slife/
       server.py        #   FastMCP gateway server + tool-catalog/search/embeddings tools
       connection.py    #   ConnectionPool / MCPServerConnection (stdio/SSE/streamable)
       client.py        #   Streamable HTTP client (used by the harness to connect ALL plugins)
-      config.py        #   tools.json5 (servers, auto_load); REST-API tagged entries
+      config.py        #   tools.json5 → mcp.servers / rest-api (servers, auto_load)
       store.py         #   ToolStore — in-memory tool catalog (FTS5 + BLOB vectors, full-schema column)
       semantic.py      #   SemanticManager subclass (host-provided embedding endpoint)
       search.py        #   merge_hybrid (RRF)

@@ -371,6 +371,7 @@ class Config:
     plugins_required: frozenset[str] = field(default_factory=frozenset)
     cli_tools: dict = field(default_factory=dict)
     _path: Path | None = None
+    _tools_path: Path | None = None  # tools.json5 sibling — set by from_json5
 
     def __post_init__(self):
         # Resolve the tool budget at construction — call-time registry lookup,
@@ -478,6 +479,30 @@ class Config:
         from slife.tools._config_io import write_config
         write_config(self._path, raw)
 
+    def _tools_config_path(self) -> Path:
+        """The tools.json5 path this config owns.
+
+        Set by :meth:`from_json5` to the data-dir sibling of slife.json5;
+        falls back to the canonical data-dir default when unknown.
+        """
+        if self._tools_path is not None:
+            return self._tools_path
+        from slife.paths import get_tools_config_path
+        return get_tools_config_path()
+
+    def _read_tools_config(self, action: str, name: str) -> dict | None:
+        """Read and parse tools.json5. Returns None if no slife path set."""
+        if not self._path:
+            logger.warning("config_no_path action=%s name=%s", action, name)
+            return None
+        from slife.tools._config_io import read_config
+        return read_config(self._tools_config_path())
+
+    def _write_tools_config(self, raw: dict) -> None:
+        """Write tools.json5 back to disk (own atomic temp+replace)."""
+        from slife.tools._config_io import write_config
+        write_config(self._tools_config_path(), raw)
+
     # ── CLI tool persistence ─────────────────────────────────────────
 
     def _typed_section(self, raw: dict, key: str) -> dict:
@@ -511,12 +536,12 @@ class Config:
         if not self._path:
             logger.debug("config_no_path — cli_tool %s in memory only", name)
             return False
-        raw = self._read_config("save_cli_tool", name)
+        raw = self._read_tools_config("save_cli_tool", name)
         if raw is None:
             return False
-        section = self._typed_section(raw, "cli_tools")
+        section = self._typed_section(raw, "cli")
         section[name] = dict(entry)
-        self._write_config(raw)
+        self._write_tools_config(raw)
         logger.info("config_save_cli_tool name=%s", name)
         return True
 
@@ -531,12 +556,12 @@ class Config:
         if not self._path:
             logger.debug("config_no_path — cli_tool %s removed from memory only", name)
             return existed
-        raw = self._read_config("remove_cli_tool", name)
+        raw = self._read_tools_config("remove_cli_tool", name)
         if raw is None:
             return existed
-        section = self._typed_section(raw, "cli_tools")
+        section = self._typed_section(raw, "cli")
         section.pop(name, None)
-        self._write_config(raw)
+        self._write_tools_config(raw)
         logger.info("config_remove_cli_tool name=%s existed=%s", name, existed)
         return existed
 
@@ -852,6 +877,13 @@ class Config:
 
         raw = json5.loads(path.read_text(encoding="utf-8"))
 
+        # Tool configs live in tools.json5 (one section per tool category:
+        # builtin / mcp / rest-api / job / cli / skill).  The seed above
+        # guarantees the file sits next to slife.json5 in the data dir.
+        tools_path = path.parent / "tools.json5"
+        from slife.tools._config_io import read_config
+        tools_raw = read_config(tools_path)
+
         # Models
         all_models, provider_count = cls._parse_models_section(
             raw.get("models", {})
@@ -887,10 +919,11 @@ class Config:
         env_section = _parse_section(raw, "env", dict, {})
         cls._inject_env_vars(env_section)
 
-        # Tools (optional -- auto-discovery handles defaults).  Lenient: a
-        # ${OPTIONAL_KEY} that isn't set must not abort the whole app startup —
-        # it's left as-is for a downstream resolver, like every other section.
-        tools = _resolve_env_lenient(_parse_section(raw, "tools", list, []))
+        # Tools — the tools.json5 ``builtin`` section (optional; auto-discovery
+        # handles defaults).  Lenient: a ${OPTIONAL_KEY} that isn't set must
+        # not abort the whole app startup — it's left as-is for a downstream
+        # resolver, like every other section.
+        tools = _resolve_env_lenient(_parse_section(tools_raw, "builtin", list, []))
 
         # Memory -- built-in plugin, always enabled.  DB files live in
         # ~/.slife/<agent_name>.db — no configuration needed.
@@ -932,8 +965,8 @@ class Config:
             subagent_config["max_subagents"],
         )
 
-        # CLI tools — managed section, no config class
-        cli_tools = _parse_section(raw, "cli_tools", dict, {})
+        # CLI tools — the tools.json5 ``cli`` section (managed, no config class)
+        cli_tools = _parse_section(tools_raw, "cli", dict, {})
 
         plugins_section = _parse_section(raw, "plugins", dict, {})
         # Required (core) plugins — named in ``plugins.required``.  A
@@ -975,6 +1008,7 @@ class Config:
             cli_tools=cli_tools,
         )
         config._path = path
+        config._tools_path = tools_path
         # mcp-gateway is a built-in slife plugin — it resolves tools.json5 in
         # the same data dir as slife.json5 (via slife.paths.get_data_dir).
         # local-embed is a separate standalone app that resolves its own

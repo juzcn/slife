@@ -35,7 +35,7 @@ class TestAddServerEntry:
             "args": ["-y", "server-filesystem"],
             "env": {"NODE_ENV": "production"},
         })
-        servers = _raw_config()["servers"]
+        servers = _raw_config()["mcp"]["servers"]
         assert servers["fs"]["command"] == "npx"
         assert servers["fs"]["args"] == ["-y", "server-filesystem"]
         assert servers["fs"]["env"] == {"NODE_ENV": "production"}
@@ -44,7 +44,7 @@ class TestAddServerEntry:
 
     def test_without_env_leaves_no_env_key(self):
         cfg.add_server_entry("test_srv", {"command": "echo", "args": ["hello"]})
-        srv = _raw_config()["servers"]["test_srv"]
+        srv = _raw_config()["mcp"]["servers"]["test_srv"]
         assert "env" not in srv
         assert cfg.get_server("test_srv") == srv
 
@@ -59,7 +59,7 @@ class TestAddServerEntry:
                 "version": "0.4.0",
             },
         })
-        source = _raw_config()["servers"]["gh"]["source"]
+        source = _raw_config()["mcp"]["servers"]["gh"]["source"]
         assert source["url"] == "https://example.com/api.yaml"
         assert source["type"] == "mcp_package"
         assert source["version"] == "0.4.0"
@@ -67,7 +67,7 @@ class TestAddServerEntry:
 
     def test_without_source_writes_no_source_key(self):
         cfg.add_server_entry("srv", {"command": "echo", "args": ["hello"]})
-        assert "source" not in _raw_config()["servers"]["srv"]
+        assert "source" not in _raw_config()["mcp"]["servers"]["srv"]
 
     def test_with_url_and_headers(self):
         cfg.add_server_entry("web", {
@@ -77,7 +77,7 @@ class TestAddServerEntry:
             "headers": {"Authorization": "Bearer token"},
             "description": "A web server",
         })
-        srv = _raw_config()["servers"]["web"]
+        srv = _raw_config()["mcp"]["servers"]["web"]
         assert srv["url"] == "http://localhost:3000"
         assert srv["headers"] == {"Authorization": "Bearer token"}
         assert srv["description"] == "A web server"
@@ -85,20 +85,20 @@ class TestAddServerEntry:
     def test_upsert_preserves_unspecified_existing_fields(self):
         cfg.add_server_entry("srv", {"command": "echo", "args": ["a"]})
         cfg.add_server_entry("srv", {"args": ["b"]})
-        srv = _raw_config()["servers"]["srv"]
+        srv = _raw_config()["mcp"]["servers"]["srv"]
         assert srv["command"] == "echo"  # preserved
         assert srv["args"] == ["b"]       # updated
 
     def test_none_values_skipped(self):
         cfg.add_server_entry("srv", {"command": "echo", "args": [], "env": None})
-        srv = _raw_config()["servers"]["srv"]
+        srv = _raw_config()["mcp"]["servers"]["srv"]
         assert srv["command"] == "echo"
         assert "env" not in srv
 
     def test_enabled_true_clears_stale_false(self):
         cfg.add_server_entry("srv", {"command": "echo", "enabled": False})
         cfg.add_server_entry("srv", {"command": "echo", "enabled": True})
-        assert "enabled" not in _raw_config()["servers"]["srv"]
+        assert "enabled" not in _raw_config()["mcp"]["servers"]["srv"]
 
 
 class TestRemoveServerEntry:
@@ -110,7 +110,7 @@ class TestRemoveServerEntry:
 
         assert cfg.remove_server_entry("to_remove") is True
 
-        servers = _raw_config()["servers"]
+        servers = _raw_config()["mcp"]["servers"]
         assert "to_remove" not in servers
         assert "to_keep" in servers
         assert "to_remove" not in cfg.servers()
@@ -118,7 +118,7 @@ class TestRemoveServerEntry:
     def test_absent_name_returns_false(self):
         cfg.add_server_entry("keep", {"command": "echo"})
         assert cfg.remove_server_entry("nope") is False
-        assert _raw_config()["servers"]["keep"]["command"] == "echo"
+        assert _raw_config()["mcp"]["servers"]["keep"]["command"] == "echo"
 
 
 class TestSetServerEnabled:
@@ -127,18 +127,58 @@ class TestSetServerEnabled:
     def test_disabled_writes_enabled_false(self):
         cfg.add_server_entry("mysrv", {"command": "echo", "args": []})
         assert cfg.set_server_enabled("mysrv", False) is True
-        srv = _raw_config()["servers"]["mysrv"]
+        srv = _raw_config()["mcp"]["servers"]["mysrv"]
         assert srv["enabled"] is False
         assert cfg.servers()["mysrv"]["enabled"] is False
 
     def test_enabled_true_removes_key(self):
         cfg.add_server_entry("mysrv", {"command": "echo", "enabled": False})
         assert cfg.set_server_enabled("mysrv", True) is True
-        assert "enabled" not in _raw_config()["servers"]["mysrv"]
+        assert "enabled" not in _raw_config()["mcp"]["servers"]["mysrv"]
         assert "enabled" not in cfg.servers()["mysrv"]
 
     def test_absent_name_returns_false(self):
         assert cfg.set_server_enabled("nope", False) is False
+
+
+class TestLegacyServersMigration:
+    """Pre-section tools.json5 (top-level ``servers``) reads and migrates.
+
+    The rename lift created tools.json5 files with servers at the top level;
+    they keep working, and the first write normalizes them into the sections.
+    """
+
+    def _legacy_file(self) -> None:
+        path = cfg.current_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '{ "servers": {"old": {"command": "echo"}} }', encoding="utf-8"
+        )
+
+    def test_legacy_servers_read(self):
+        self._legacy_file()
+        assert cfg.servers() == {"old": {"command": "echo"}}
+        assert cfg.count_servers() == 1
+
+    def test_legacy_servers_normalized_on_write(self):
+        self._legacy_file()
+        cfg.add_server_entry("new", {"command": "npx"})
+        raw = _raw_config()
+        assert raw["mcp"]["servers"] == {
+            "old": {"command": "echo"},
+            "new": {"command": "npx"},
+        }
+        # The legacy top-level key is gone after the first write.
+        assert "servers" not in raw
+        assert cfg.servers()["old"]["command"] == "echo"
+        assert cfg.servers()["new"]["command"] == "npx"
+
+    def test_legacy_servers_remove_creates_section(self):
+        self._legacy_file()
+        assert cfg.remove_server_entry("old") is True
+        raw = _raw_config()
+        assert raw["mcp"]["servers"] == {}
+        assert cfg.count_servers() == 0
 
 
 class TestRestAPI:
@@ -147,7 +187,7 @@ class TestRestAPI:
 
     def test_save_rest_api_stamps_fetched_at(self):
         cfg.save_rest_api("gh", spec_url="https://example.com/api.yaml")
-        entry = _raw_config()["servers"]["gh"]
+        entry = _raw_config()["rest-api"]["gh"]
         assert entry["command"] == "uvx"
         assert entry["args"] == ["mcp-openapi-proxy"]
         assert entry["env"]["OPENAPI_SPEC_URL"] == "https://example.com/api.yaml"
@@ -158,7 +198,7 @@ class TestRestAPI:
 
     def test_save_rest_api_with_api_key_ref(self):
         cfg.save_rest_api("e", spec_url="https://x.example/swagger.json", api_key="KEY")
-        entry = _raw_config()["servers"]["e"]
+        entry = _raw_config()["rest-api"]["e"]
         assert entry["env"]["API_KEY"] == "${KEY}"
 
 

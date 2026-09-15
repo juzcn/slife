@@ -68,6 +68,17 @@ def get_config_path() -> Path:
     return get_data_dir() / "slife.json5"
 
 
+def get_tools_config_path() -> Path:
+    """Path to ``tools.json5`` — the unified tool config (builtin / mcp /
+    rest-api / job / cli / skill sections).
+
+    Same data dir as ``slife.json5``.  The mcp gateway is the file owner
+    (its resolver additionally honours ``$TOOLS_FILE`` as a test/dev
+    override); the host reads it too, for ``builtin`` and ``cli``.
+    """
+    return get_data_dir() / "tools.json5"
+
+
 def get_logs_dir() -> Path:
     """Directory for per-session log files.
 

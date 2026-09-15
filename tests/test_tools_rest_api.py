@@ -62,14 +62,14 @@ def _entry(spec_url: str, base_url: str, *, api_key: str = "", description: str 
 def _write_config(path: Path, servers: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json5.dumps({"servers": servers}, indent=2, trailing_commas=False, ensure_ascii=False),
+        json5.dumps({"rest-api": servers}, indent=2, trailing_commas=False, ensure_ascii=False),
         encoding="utf-8",
     )
 
 
 def _entries_from_file(path: Path) -> dict:
     raw = json5.loads(path.read_text(encoding="utf-8"))
-    return raw.get("servers", {})
+    return raw.get("rest-api", {})
 
 
 # ── get_rest_apis_summary ─────────────────────────────────────────────────

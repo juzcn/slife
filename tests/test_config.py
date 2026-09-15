@@ -354,7 +354,7 @@ class TestConfigFromJSON5:
         assert config.max_iterations == 5
 
     def test_tools_config(self, tmp_path, monkeypatch):
-        """Tools section is loaded correctly."""
+        """tools.json5 ``builtin`` section is loaded into Config.tools."""
         monkeypatch.setenv("MY_KEY", "my-key-value")
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({
@@ -366,7 +366,9 @@ class TestConfigFromJSON5:
                     }
                 }
             },
-            "tools": [
+        }))
+        (tmp_path / "tools.json5").write_text(json5.dumps({
+            "builtin": [
                 {"name": "execute_shell", "timeout": 60},
                 {"name": "run_python_script"},
             ],
@@ -801,7 +803,7 @@ class TestConfigFromJSON5EdgeCases:
         assert config.env == {}
 
     def test_tools_not_list(self, tmp_path, monkeypatch):
-        """Non-list tools section uses empty list."""
+        """Non-list builtin section uses empty list."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({
@@ -813,8 +815,8 @@ class TestConfigFromJSON5EdgeCases:
                     },
                 },
             },
-            "tools": "not-a-list",
         }))
+        (tmp_path / "tools.json5").write_text('{ builtin: "not-a-list" }')
         config = Config.from_json5(str(cfg_path))
         assert config.tools == []
 
@@ -917,7 +919,7 @@ class TestSeedFirstRunConfig:
             }}},
         }))
         (pkg / "local_embed.json5").write_text('{ active_model: "x" }')
-        (pkg / "tools.json5").write_text('{ servers: {} }')
+        (pkg / "tools.json5").write_text('{ mcp: { servers: {} }, cli: {} }')
         return pkg
 
     @staticmethod

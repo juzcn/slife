@@ -141,6 +141,7 @@ Installing slife depends on [credstore](credstore/README.md) — it does **not**
 |-------|---------|----------|
 | **Secrets** | credential store (credstore) | API keys — encrypted at OS level, plus an encrypted cryptfile backup |
 | **Config** | `~/.slife/slife.json5` | `${VAR}` references + non-secret values |
+| **Tool config** | `~/.slife/tools.json5` | Tool definitions by category — `builtin` / `mcp` / `rest-api` / `job` / `cli` / `skill` (see the gateway section below) |
 
 ### Secrets & API keys
 

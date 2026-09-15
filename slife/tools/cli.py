@@ -4,13 +4,15 @@ cli_set:               register/update a CLI so the LLM can discover it next tur
 cli_remove:            remove a registered CLI
 cli_list:              list all registered CLI tools
 
-Registered CLIs are persisted to slife.json5 → cli_tools: section.
+Registered CLIs are persisted to tools.json5 → cli: section (one category
+section of the unified tools config — the host reads it at startup into
+``Config.cli_tools``).
 These tools only manage the registry — they don't execute commands.
 """
 
 import logging
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from slife.tools._config_io import (
     _ConfigPathMixin,
@@ -20,15 +22,39 @@ from slife.tools._config_io import (
     with_fetched_at,
     write_config,
 )
+from slife.paths import get_tools_config_path
 from slife.tools.base import Tool
+
+if TYPE_CHECKING:
+    from slife.config import Config
+    from slife.tools.context import ToolContext
 
 logger = logging.getLogger(__name__)
 
-_CLI_TOOLS_KEY = "cli_tools"
+_CLI_TOOLS_KEY = "cli"
+
+
+class _CliConfigMixin(_ConfigPathMixin):
+    """The cli tools' config mixin — targets tools.json5, not slife.json5.
+
+    The ``cli`` section lives in tools.json5 (the ``_ConfigPathMixin``
+    default stays with slife.json5 for ``config_env.py``).
+    """
+
+    def __init__(self, config_path: Path | None = None):
+        super().__init__(config_path or get_tools_config_path())
+
+    @classmethod
+    def from_config(cls, cfg: dict, config: "Config | None", ctx: "ToolContext | None" = None):  # pyright: ignore[reportIncompatibleMethodOverride]
+        path = config._tools_config_path() if config is not None else get_tools_config_path()
+        tool = cls(config_path=path)
+        if ctx is not None:
+            object.__setattr__(tool, "_ctx", ctx)
+        return tool
 
 
 def _cli_section(raw: dict) -> dict:
-    """Get or create the cli_tools: section."""
+    """Get or create the cli: section."""
     section = raw.setdefault(_CLI_TOOLS_KEY, {})
     if not isinstance(section, dict):
         logger.warning("cli_config_not_dict")
@@ -71,7 +97,7 @@ def get_cli_tools_summary(config_path: Path) -> str:
     return _format_cli_tools(cli_tools)
 
 
-class CliSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
+class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """Register or update a CLI tool so the LLM can discover it in future turns.
 
     Does NOT execute the CLI — just records its existence, what it does,
@@ -82,7 +108,7 @@ class CliSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
 
     name = "cli_set"
     category = "CLI"
-    description = "Register/update an external CLI in slife.json5 for later discovery (does not execute it)."
+    description = "Register/update an external CLI in tools.json5 for later discovery (does not execute it)."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
@@ -150,12 +176,12 @@ class CliSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
         return f"[OK] {action} CLI tool '{name}'.\n  {description}"
 
 
-class CliRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
-    """Remove a registered CLI tool from slife.json5."""
+class CliRemoveTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
+    """Remove a registered CLI tool from tools.json5."""
 
     name = "cli_remove"
     category = "CLI"
-    description = "Remove a CLI registration from slife.json5. Does not uninstall the command."
+    description = "Remove a CLI registration from tools.json5. Does not uninstall the command."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
@@ -188,7 +214,7 @@ class CliRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatib
         return f"[OK] Removed CLI tool '{name}'."
 
 
-class CliListToolsTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
+class CliListToolsTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """List all registered CLI tools."""
 
     name = "cli_list"
@@ -214,7 +240,7 @@ class CliListToolsTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class CliSetEnabledTool(_ConfigPathMixin, Tool):
+class CliSetEnabledTool(_CliConfigMixin, Tool):
     name = "cli_set_enabled"
     category = "CLI"
     description = "Enable or disable a registered CLI tool. Takes effect after restart."
@@ -238,10 +264,10 @@ class CliSetEnabledTool(_ConfigPathMixin, Tool):
         
         if config is not None and config._path is not None:
             if name not in config.cli_tools:
-                return f"'{name}' not found in cli_tools."
+                return f"'{name}' not found in cli config."
             entry = config.cli_tools[name]
             if not isinstance(entry, dict):
-                return f"'{name}' in cli_tools is malformed."
+                return f"'{name}' in cli config is malformed."
             entry["enabled"] = enabled
             config.save_cli_tool(
                 name=name,
@@ -253,12 +279,12 @@ class CliSetEnabledTool(_ConfigPathMixin, Tool):
             )
         else:
             raw = read_config(self._config_path)
-            entries = raw.get("cli_tools", {})
+            entries = raw.get(_CLI_TOOLS_KEY, {})
             if not isinstance(entries, dict) or name not in entries:
-                return f"'{name}' not found in cli_tools."
+                return f"'{name}' not found in cli config."
             entry = entries[name]
             if not isinstance(entry, dict):
-                return f"'{name}' in cli_tools is malformed."
+                return f"'{name}' in cli config is malformed."
             entry["enabled"] = enabled
             write_config(self._config_path, raw)
 
