@@ -7,7 +7,6 @@
     context_floor: 0.2,
     context_ceiling: 0.8,
     heartbeat_interval: 1800,
-    // 入站消息可否在安全迭代边界插入当前轮（插队）：true=可以（默认）；false=排队等当前轮结束。
     cutin_enabled: true
   },
   models: {
@@ -301,7 +300,7 @@
       }
     }
   },
-  active_model: "bailian_personal/deepseek-v4-flash-0731",
+  active_model: "deepseek/deepseek-flash",
   job_coding_model: "bailian_personal/qwen3.6-flash",
   plugins: {
     required: [
