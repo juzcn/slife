@@ -149,6 +149,14 @@ def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, s
     if sem.get("available") is False:
         return ("warning", "unavailable (endpoint down or misconfigured)",
                 _EMBEDDING_FIX_HINT)
+    # Before the generic ``reason`` branch: a stall carries a reason too, and
+    # reporting it as "unavailable" hid the word "stalled" from the report
+    # entirely.  A stall is a fact (it retries on new content, keyword search
+    # works meanwhile) so, like the branch below, it carries no hint.
+    if sem.get("state") == "stalled":
+        return ("warning",
+                f"stalled ({sem.get('unembedded', 0)} {pending_noun} pending; "
+                f"keyword search available)", "")
     if sem.get("reason"):
         return ("warning", f"unavailable ({sem['reason']})", "")
     if sem.get("state") == "disabled":

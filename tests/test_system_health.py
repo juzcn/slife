@@ -569,6 +569,33 @@ class TestCheckMemdb:
         assert "hint" not in emb[0]
 
     @pytest.mark.asyncio
+    async def test_plugin_semantic_stalled_says_stalled(self):
+        """A stalled index must say so.
+
+        A stall carries a ``reason`` too, and the generic reason branch used to
+        win — so the report read "unavailable (… resumes automatically …)" with
+        an empty hint.  The word "stalled" never appeared, and the one thing the
+        message promised was the one thing the code could not deliver.
+        """
+        payload = {
+            "db": {"exists": True, "path": "slife.db"},
+            "semantic": {
+                "configured": True, "provider": "local", "model": "bge-m3",
+                "dimension": 1024, "available": True, "semantic_ready": False,
+                "state": "stalled", "unembedded": 7, "loaded": True,
+                "reason": "semantic index stalled — the embedder failed "
+                          "repeatedly and gave up this round.",
+            },
+        }
+        client = MagicMock()
+        client.call_tool = AsyncMock(return_value=json.dumps(payload))
+        entries = await check_memdb(client=client)
+        emb = [e for e in entries if e["key"] == "embedding"]
+        assert emb[0]["level"] == "warning"
+        assert emb[0]["value"] == "stalled (7 turns pending; keyword search available)"
+        assert "hint" not in emb[0]
+
+    @pytest.mark.asyncio
     async def test_missing_endpoint_points_at_the_config_tool(self):
         payload = {
             "db": {"exists": True, "size_mb": 1.0, "path": "slife.db"},

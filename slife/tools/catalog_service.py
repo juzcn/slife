@@ -111,10 +111,26 @@ class ToolCatalogService:
     def store(self) -> CatalogStore:
         return self._store
 
+    def wake_indexer(self, changed: list[str]) -> None:
+        """A reconcile invalidated these rows' vectors — wake the drainer.
+
+        Without this the catalog's semantic index only catches up on the MCP
+        paths (which call ``on_saved`` themselves) or at the next boot: a
+        skill / job / builtin schema change deletes the vectors and leaves the
+        drainer parked, so ``tool_search`` reports ``semantic_ready`` while
+        silently missing the tool.  A no-op before the manager exists (the
+        boot seed), where the drainer's first pass covers it anyway.
+        """
+        if changed and self.semantic_manager is not None:
+            self.semantic_manager.on_saved()
+
     # ── Session lifecycle ──────────────────────────────────────────
 
-    async def seed_inventory(self, tools: list["Tool"]) -> None:
+    async def seed_inventory(self, tools: list["Tool"]) -> list[str]:
         """Reconcile the registered tool set into the catalog.
+
+        Returns the names whose schema moved — the caller uses a non-empty
+        result to wake the semantic drainer.
 
         A NEW row gets the session default: ``loaded`` for the always-loaded
         set (the whitelist — harness pair, meta surface, pinned, plus anything
@@ -127,23 +143,30 @@ class ToolCatalogService:
         Main-owner only (a subagent worker never reseeds).
         """
         if not self.write_owner:
-            return
+            return []
+        rows = []
         for tool in tools:
             name = _tool_name(tool)
             if not name:
                 continue
             external = _is_external(tool)
-            await self._store.upsert_tool(
-                name,
-                description=getattr(tool, "description", "") or "",
-                category=catalog_category(tool),
-                source_id=getattr(tool, "server", None) if external else None,
-                schema=tool_descriptor(tool),
-                enabled=None if external else True,
-                # Only a brand-new row sees this — upsert_tool applies status
-                # on INSERT alone, which is exactly the keep-existing rule.
-                status=self.default_status(name),
-            )
+            rows.append({
+                "name": name,
+                "description": getattr(tool, "description", "") or "",
+                "category": catalog_category(tool),
+                "source_id": getattr(tool, "server", None) if external else None,
+                "schema": tool_descriptor(tool),
+                "enabled": None if external else True,
+                # Only a brand-new row sees this — reconcile applies status on
+                # INSERT alone, which is exactly the keep-existing rule.
+                "status": self.default_status(name),
+            })
+        # No purge: this set is "everything registered right now", and a name
+        # missing from it may be an mcp row that simply has not connected.
+        # _purge_plugin_tool_rows owns the plugin-removal cleanup.
+        result = await self._store.reconcile(rows)
+        self.wake_indexer(result["schema_changed"])
+        return result["schema_changed"]
 
     def default_status(self, name: str, *, server: str = "") -> str:
         """What a NEW catalog row starts as: autoload → loaded, else unloaded.
@@ -186,24 +209,28 @@ class ToolCatalogService:
         its row — a deleted skill must not linger as a hit `tool_search` keeps
         returning.  Returns the purged names.
         """
-        for name, spec in rows.items():
-            await self._store.upsert_tool(
-                name,
-                description=spec.get("description", ""),
-                category=category,
-                schema=spec.get("schema"),
-                enabled=spec.get("enabled"),
-                status=None,
-            )
-        vanished = await self._store.names_by_category(category) - set(rows)
-        for name in sorted(vanished):
-            await self._store.remove_tool(name)
-        if vanished:
+        result = await self._store.reconcile(
+            [
+                {
+                    "name": name,
+                    "description": spec.get("description", ""),
+                    "category": category,
+                    "schema": spec.get("schema"),
+                    "enabled": spec.get("enabled"),
+                    "status": None,
+                }
+                for name, spec in rows.items()
+            ],
+            category=category,
+            purge=True,
+        )
+        if result["purged"]:
             logger.info(
                 "catalog_category_mirrored category=%s rows=%d purged=%d",
-                category, len(rows), len(vanished),
+                category, len(rows), len(result["purged"]),
             )
-        return sorted(vanished)
+        self.wake_indexer(result["schema_changed"])
+        return result["purged"]
 
     # ── Load / unload (shared across main agent and workers) ───────
 

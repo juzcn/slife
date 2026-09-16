@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from slife import timeouts as _t
 from slife.plugins.memdb.semantic import SemanticManager
 
 
@@ -196,22 +197,111 @@ class TestDrainerGate:
             await m.close()  # cancel the drainer task even on assertion failure
 
     @pytest.mark.asyncio
-    async def test_stalls_after_no_progress(self):
-        # every batch: check 1, total 1, remaining 1 — embed returns None
+    async def test_stall_parks_alive_and_heals_on_new_work(self):
+        """A stall PARKS the drainer; it does not end it.
+
+        ``_enabled`` staying True is what lets ``on_saved()`` deliver the wake
+        that ends the stall.  The previous behaviour returned out of the loop
+        AND cleared ``_enabled``, so every content-driven wake became a silent
+        no-op — a transient embedder failure disabled semantic indexing until
+        the next process restart.
+        """
+        # remaining drops to 0 only when the embed actually commits
+        state = {"remaining": 1}
         store = AsyncMock()
-        store.count_unembedded = AsyncMock(
-            side_effect=lambda: next(cycle([1, 1, 1])))
-        store.get_unembedded_docs = AsyncMock(return_value=[_doc()])
+        store.count_unembedded = AsyncMock(side_effect=lambda: state["remaining"])
+        store.get_unembedded_docs = AsyncMock(
+            side_effect=lambda limit=100: [_doc()] if state["remaining"] else [])
+        store.replace_embedding_chunks = AsyncMock(
+            side_effect=lambda *a, **kw: state.__setitem__("remaining", 0))
         m = SemanticManager(store)
         m._enabled = True
         m._embedder = _embedder(embed_result=None)  # embed fails persistently
 
-        with patch("slife.plugins.memdb.semantic.MAX_REINDEX_NO_PROGRESS", 3):
-            await m._drain_loop()  # returns on its own (stalled)
+        with patch.object(_t.timeouts.ready, "watchdog_backoff_initial", 0.0), \
+                patch.object(_t.timeouts.ready, "watchdog_backoff_max", 0.0), \
+                patch("slife.plugins.memdb.semantic.MAX_REINDEX_NO_PROGRESS", 3):
+            m._drain_task = asyncio.create_task(m._drain_loop())
+            try:
+                for _ in range(200):          # burn the budget → stall
+                    await asyncio.sleep(0.005)
+                    if m.state == "stalled":
+                        break
+                assert m.state == "stalled"
+                assert m.semantic_ready is False
+                assert m._enabled is True, "a stalled drainer is alive, not finished"
+                assert not m._drain_task.done(), "the loop parked; it did not return"
 
-        assert m.state == "stalled"
-        assert m.semantic_ready is False
-        assert m._enabled is False  # only enable() restarts
+                # Parked means idle: no batch runs while nothing wakes it.
+                calls = store.get_unembedded_docs.await_count
+                await asyncio.sleep(0.05)
+                assert store.get_unembedded_docs.await_count == calls
+
+                # New work wakes it, and the embedder now works → gate reopens.
+                m._embedder = _embedder()
+                m.on_saved()
+                for _ in range(200):
+                    await asyncio.sleep(0.005)
+                    if m.semantic_ready:
+                        break
+                assert m.semantic_ready is True, "the stall never healed"
+                assert m.state == "ready"
+            finally:
+                await m.close()
+
+    @pytest.mark.asyncio
+    async def test_unavailable_embedder_stalls_instead_of_spinning(self):
+        """An unusable embedder must stall, not report ``complete``.
+
+        The loop reads ``complete`` as progress, so that early-out used to
+        reset the no-progress bound and spin at ``sleep(0)`` forever — neither
+        stalling nor ever opening the gate.  It was the one state
+        ``MAX_REINDEX_NO_PROGRESS`` structurally could not catch.
+        """
+        store = AsyncMock()
+        store.count_unembedded = AsyncMock(return_value=1)
+        store.get_unembedded_docs = AsyncMock(return_value=[_doc()])
+        m = SemanticManager(store)
+        m._enabled = True
+        m._embedder = None                     # nothing to embed with
+
+        with patch.object(_t.timeouts.ready, "watchdog_backoff_initial", 0.0), \
+                patch.object(_t.timeouts.ready, "watchdog_backoff_max", 0.0), \
+                patch("slife.plugins.memdb.semantic.MAX_REINDEX_NO_PROGRESS", 3):
+            m._drain_task = asyncio.create_task(m._drain_loop())
+            try:
+                for _ in range(200):
+                    await asyncio.sleep(0.005)
+                    if m.state == "stalled":
+                        break
+                assert m.state == "stalled"
+                assert m.semantic_ready is False
+                assert not m._drain_task.done()
+                # It got here by burning the bound rather than spinning: the
+                # budget is parked at the limit, and the loop ran a handful of
+                # iterations instead of an unbounded stream of them.
+                assert m._no_progress == 3
+                assert store.count_unembedded.await_count <= 5
+            finally:
+                await m.close()
+
+    @pytest.mark.asyncio
+    async def test_pace_retry_backs_off_and_caps(self):
+        """Failing batches are paced.  Only ``sleep(0)`` separated them before,
+        so a broken embedder was retried as fast as the loop allowed."""
+        m = SemanticManager(AsyncMock())
+        fake = MagicMock()
+        fake.sleep = AsyncMock()
+        with patch("slife.plugins.memdb.semantic.asyncio", fake), \
+                patch.object(_t.timeouts.ready, "watchdog_backoff_multiplier", 2.0), \
+                patch.object(_t.timeouts.ready, "watchdog_backoff_max", 5.0):
+            b = await m._pace_retry(1.0)
+            assert b == 2.0
+            b = await m._pace_retry(b)
+            assert b == 4.0
+            b = await m._pace_retry(b)
+            assert b == 5.0                    # capped at the registry max
+        assert [c.args[0] for c in fake.sleep.await_args_list] == [1.0, 2.0, 4.0]
 
 
 class TestProcessBatch:

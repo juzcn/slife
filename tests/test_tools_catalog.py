@@ -158,6 +158,154 @@ async def test_upsert_schema_change_drops_embedding(store):
     assert await store.count_unembedded() == 0
 
 
+# ── Reconcile: the boot/mirror delta contract ───────────────────────
+#
+# The sync must write the DELTA and nothing else.  `total_changes` is the
+# probe: it counts row changes on this connection, so a steady-state
+# reconcile that touches no row leaves it flat — which is the whole point
+# (the old unconditional upsert rewrote every row AND fired tool_au, which
+# re-indexed every row into tool_fts on every boot).
+
+def _row(name, *, description="", category="builtin", schema=None,
+         source_id=None, enabled=None, status=None):
+    return {
+        "name": name, "description": description, "category": category,
+        "source_id": source_id, "schema": schema, "enabled": enabled,
+        "status": status,
+    }
+
+
+@pytest.mark.asyncio
+async def test_reconcile_noop_writes_nothing(store):
+    rows = [
+        _row("native_a", description="A", schema="schema-a", enabled=True,
+             status="unloaded"),
+        _row("native_b", description="B", schema="schema-b", enabled=True,
+             status="unloaded"),
+    ]
+    first = await store.reconcile(rows)
+    assert sorted(first["inserted"]) == ["native_a", "native_b"]
+
+    before = store._c.total_changes
+    second = await store.reconcile(rows)
+    assert store._c.total_changes == before
+    assert second["inserted"] == [] and second["updated"] == []
+    assert second["skipped"] == 2
+
+
+@pytest.mark.asyncio
+async def test_reconcile_writes_only_the_column_that_moved(store):
+    """An enabled-only flip must not rewrite the schema blob — so the FTS
+    update trigger does not fire — and must not invalidate the embedding."""
+    await store.reconcile([_row("native_a", description="A", schema="schema-a",
+                                enabled=True)])
+    await _set_embedding(store, "native_a", [0.1, 0.2])
+
+    result = await store.reconcile([_row("native_a", description="A",
+                                         schema="schema-a", enabled=False)])
+    assert result["updated"] == ["native_a"]
+    assert result["schema_changed"] == []
+    assert await store.count_unembedded() == 0
+    assert (await store.get_tool("native_a"))["enabled"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reconcile_invalidates_only_the_tools_whose_schema_moved(store):
+    await store.reconcile([_row("a", schema="schema-a"), _row("b", schema="schema-b")])
+    await _set_embedding(store, "a", [0.1, 0.2])
+    await _set_embedding(store, "b", [0.3, 0.4])
+
+    result = await store.reconcile([_row("a", schema="schema-a2"),
+                                    _row("b", schema="schema-b")])
+    assert result["schema_changed"] == ["a"]
+    assert await store.count_unembedded() == 1
+    assert await store.count_embedded() == 1
+
+
+@pytest.mark.asyncio
+async def test_reconcile_invalidates_on_the_embedded_text_not_the_raw_schema(store):
+    """The drainer embeds ``_flatten_schema(schema)``, which keeps only name,
+    description, each param's type/required/description and a return line.
+
+    So the invalidation comparator must be that text, not the raw schema
+    column: a change only in a field the flattener drops (enum, default,
+    nesting past one level) otherwise deleted the vectors and re-embedded to a
+    byte-identical vector."""
+    base = {"type": "object", "properties": {"repo": {"type": "string"}}}
+    await store.reconcile([_row("svc__t", category="mcp", source_id="svc",
+                                schema=_descriptor("t", "search repos", base))])
+    await _set_embedding(store, "svc__t", [0.1, 0.2])
+
+    # ``enum`` is dropped by the flattener → the embedded text is unchanged
+    with_enum = {"type": "object", "properties": {
+        "repo": {"type": "string", "enum": ["a", "b"]}}}
+    dropped = await store.reconcile([_row(
+        "svc__t", category="mcp", source_id="svc",
+        schema=_descriptor("t", "search repos", with_enum))])
+    assert dropped["updated"] == ["svc__t"]        # the row (and FTS) moved…
+    assert dropped["schema_changed"] == []         # …the embedding did not
+    assert await store.count_unembedded() == 0
+
+    # a param description IS part of the embedded text → invalidated
+    described = {"type": "object", "properties": {
+        "repo": {"type": "string", "description": "the repository"}}}
+    moved = await store.reconcile([_row(
+        "svc__t", category="mcp", source_id="svc",
+        schema=_descriptor("t", "search repos", described))])
+    assert moved["schema_changed"] == ["svc__t"]
+    assert await store.count_unembedded() == 1
+
+
+@pytest.mark.asyncio
+async def test_reconcile_enabled_none_is_no_opinion_and_status_survives(store):
+    """`enabled=None` leaves the column alone (the mcp/rest-api contract),
+    and a re-reconcile never clobbers the model's load state."""
+    await store.reconcile([_row("svc__t", category="mcp", source_id="svc",
+                                schema="s", enabled=None, status="loaded")])
+    row = await store.get_tool("svc__t")
+    assert row["enabled"] is None and row["status"] == "loaded"
+
+    # An explicit value DOES land, even over a NULL column — the behaviour the
+    # old COALESCE(excluded.enabled, tool.enabled) provided.
+    result = await store.reconcile([_row("svc__t", category="mcp", source_id="svc",
+                                         schema="s", enabled=False, status="unloaded")])
+    assert result["updated"] == ["svc__t"]
+    row = await store.get_tool("svc__t")
+    assert row["enabled"] == 0
+    assert row["status"] == "loaded"      # untouched by an update
+
+
+@pytest.mark.asyncio
+async def test_reconcile_purge_is_scoped_to_its_category(store):
+    await store.reconcile([_row("keep", category="skill", schema="s")],
+                          category="skill", purge=True)
+    await store.reconcile([_row("other", category="cli")],
+                          category="cli", purge=True)
+    await _set_embedding(store, "keep", [0.1, 0.2])
+
+    result = await store.reconcile([], category="skill", purge=True)
+    assert result["purged"] == ["keep"]
+    assert await store.get_tool("keep") is None
+    assert await store.get_tool("other") is not None     # another category
+    assert await store.count_embedded() == 0             # vectors went too
+
+
+@pytest.mark.asyncio
+async def test_reconcile_without_purge_keeps_vanished_rows(store):
+    """The boot seed runs without purge: a name missing from the registered
+    set may simply be an mcp row whose server has not connected yet."""
+    await store.reconcile([_row("gone")])
+    result = await store.reconcile([])
+    assert result["purged"] == []
+    assert await store.get_tool("gone") is not None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_ignores_nameless_rows(store):
+    result = await store.reconcile([_row(""), _row("real", schema="s")])
+    assert result["inserted"] == ["real"]
+
+
 @pytest.mark.asyncio
 async def test_purge_source_drops_its_tools(store):
     """A server that left the config owns no rows."""

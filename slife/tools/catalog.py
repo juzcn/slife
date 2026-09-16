@@ -348,6 +348,174 @@ class CatalogStore:
 
     # ── Upserts ────────────────────────────────────────────────────
 
+    async def reconcile(
+        self,
+        rows: "list[dict]",
+        *,
+        category: str = "",
+        purge: bool = False,
+    ) -> dict[str, Any]:
+        """Apply a source's whole row set as a delta — write only what differs.
+
+        The boot-seed / category-mirror contract: a name that is not in the
+        catalog INSERTs, a name the source dropped DELETEs (when *purge*), and
+        a name already present is compared **in memory** and written only if a
+        column actually moved.  A steady-state boot therefore touches no row at
+        all — one read, no writes, and no FTS churn.  (``tool_au`` fires on
+        every UPDATE, so the previous unconditional upsert re-indexed all ~1500
+        rows into ``tool_fts`` on every start, however little had changed.)
+
+        Each entry carries ``name`` plus the written columns (``description``,
+        ``category``, ``source_id``, ``schema``, ``enabled``).  ``enabled`` is
+        tri-state: ``None`` means *no opinion* and leaves the column alone —
+        the contract mcp/rest-api rows rely on to keep it NULL.  ``status``
+        applies to a NEW row only: an existing row keeps its loaded/unloaded
+        state, so a plugin re-register can never clobber a user unload.
+        ``type`` is derived from ``category`` here — the one place it is
+        written, so the two columns cannot drift.
+
+        Returns ``{inserted, updated, skipped, purged, schema_changed}``.  The
+        first four are name lists (``skipped`` is a count); ``schema_changed``
+        names the rows whose embedding was invalidated, for the caller to wake
+        the drainer.
+        """
+        async with self._write_lock:
+            where = " WHERE t.category = ?" if category else ""
+            cursor = await self._c.execute(
+                f"SELECT {_SCAN_COLS} FROM tool t{where}",
+                (category,) if category else (),
+            )
+            existing = {r["name"]: dict(r) for r in await cursor.fetchall()}
+
+            inserted: list[str] = []
+            updated: list[str] = []
+            invalidated: list[str] = []
+            incoming: set[str] = set()
+            skipped = 0
+
+            for row in rows:
+                name = row.get("name") or ""
+                if not name:
+                    continue
+                incoming.add(name)
+                prev = existing.get(name)
+                new_type = type_for_category(row.get("category", "") or "")
+                new_schema = row.get("schema")
+                new_enabled = row.get("enabled")
+
+                if prev is None:
+                    await self._c.execute(
+                        """INSERT INTO tool(name, description, category, type,
+                                            source_id, schema, enabled, status,
+                                            last_loaded)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            name, row.get("description") or "",
+                            row.get("category", "") or "", new_type,
+                            row.get("source_id"), new_schema,
+                            (1 if new_enabled else 0) if new_enabled is not None else None,
+                            row.get("status"), None,
+                        ),
+                    )
+                    inserted.append(name)
+                    if _flatten_schema(new_schema or ""):
+                        invalidated.append(name)
+                    continue
+
+                # Build the SET list from the columns that actually moved, so
+                # an enabled-only flip does not rewrite a multi-KB schema blob.
+                #
+                # Two different questions, two different comparators:
+                # ``row_dirty`` — the raw text moved, so the row (and the FTS
+                # index the update trigger feeds) must be rewritten.
+                # ``embed_stale`` — the text that actually gets EMBEDDED moved.
+                # The drainer embeds ``_flatten_schema(schema)``, which drops
+                # enum/default/pattern/format and nesting past one level, so a
+                # change only in a dropped field would otherwise delete the
+                # vectors and re-embed to a byte-identical vector.
+                schema_moved = (prev["schema"] or "") != (new_schema or "")
+                # ``embed_stale`` implies ``schema_moved`` (the flattener is a
+                # pure function of the text), so short-circuit: an unchanged
+                # row — every row on a steady-state boot — costs one string
+                # compare and never parses a schema.
+                embed_stale = schema_moved and (
+                    _flatten_schema(prev["schema"] or "")
+                    != _flatten_schema(new_schema or "")
+                )
+                sets: list[str] = []
+                vals: list = []
+                if (prev["description"] or "") != (row.get("description") or ""):
+                    sets.append("description = ?")
+                    vals.append(row.get("description") or "")
+                if prev["category"] != (row.get("category", "") or ""):
+                    sets.append("category = ?")
+                    vals.append(row.get("category", "") or "")
+                if prev["type"] != new_type:
+                    sets.append("type = ?")
+                    vals.append(new_type)
+                if (prev["source_id"] or "") != (row.get("source_id") or ""):
+                    sets.append("source_id = ?")
+                    vals.append(row.get("source_id"))
+                if schema_moved:
+                    sets.append("schema = ?")
+                    vals.append(new_schema)
+                # An explicit value differs from NULL too — the old COALESCE
+                # wrote 0/1 over a NULL column, and that must keep happening.
+                if new_enabled is not None and (
+                    prev["enabled"] is None or bool(prev["enabled"]) != bool(new_enabled)
+                ):
+                    sets.append("enabled = ?")
+                    vals.append(1 if new_enabled else 0)
+
+                if not sets:
+                    skipped += 1
+                    continue
+                vals.append(name)
+                await self._c.execute(
+                    f"UPDATE tool SET {', '.join(sets)} WHERE name = ?", vals,
+                )
+                updated.append(name)
+                if embed_stale:
+                    invalidated.append(name)
+
+            purged: list[str] = []
+            if purge and category:
+                gone = sorted(n for n in existing if n not in incoming)
+                if gone:
+                    ph = in_placeholders(len(gone))
+                    await self._c.execute(
+                        f"DELETE FROM tool WHERE name IN ({ph})", gone,
+                    )
+                    # Same explicit cleanup as remove_tool — the purge must
+                    # not depend on the FK cascade being enabled.
+                    await self._c.execute(
+                        f"DELETE FROM tool_embeddings WHERE name IN ({ph})", gone,
+                    )
+                    purged = gone
+
+            # Stale vectors go with the rows that moved: the drainer re-embeds
+            # off count_unembedded, which now sees exactly these names.
+            if invalidated:
+                await self._c.execute(
+                    f"DELETE FROM tool_embeddings "
+                    f"WHERE name IN ({in_placeholders(len(invalidated))})",
+                    invalidated,
+                )
+
+            await self._c.commit()
+
+        logger.info(
+            "catalog_reconcile category=%s inserted=%d updated=%d skipped=%d purged=%d",
+            category or "(all)", len(inserted), len(updated), skipped, len(purged),
+        )
+        return {
+            "inserted": inserted,
+            "updated": updated,
+            "skipped": skipped,
+            "purged": purged,
+            "schema_changed": invalidated,
+        }
+
     async def upsert_tool(
         self,
         name: str,
@@ -359,48 +527,19 @@ class CatalogStore:
         enabled: bool | None = None,
         status: str | None = None,
     ) -> bool:
-        """Upsert a tool row; returns True iff the ``schema`` text changed.
+        """Upsert one tool row; returns True iff its ``schema`` text changed.
 
-        ``type`` is derived from ``category`` here — the one place it is
-        written, so the two columns cannot drift.  ``status`` is only applied
-        to a NEW row — an existing row keeps its loaded/unloaded state (a
-        plugin re-register must not clobber a user unload).  ``enabled`` is
-        only applied when not None (mcp/rest-api upserts pass None and keep
-        the column NULL).  A schema edit drops the stale embedding row so the
-        drainer re-embeds; keyword search stays live through the FTS5 update
-        trigger.
+        The single-row face of :meth:`reconcile`, so the comparison that
+        decides "re-embed or not" has exactly one implementation.  See that
+        method for the column contracts (``enabled=None`` = no opinion,
+        ``status`` on a NEW row only).
         """
-        type_name = type_for_category(category)
-        async with self._write_lock:
-            prev = await self._c.execute(
-                "SELECT schema FROM tool WHERE name = ?", (name,),
-            )
-            prev_row = await prev.fetchone()
-            prev_schema = prev_row[0] if prev_row is not None else None
-            schema_changed = ((prev_schema or "") != (schema or ""))
-            new_row = prev_row is None
-            await self._c.execute(
-                """INSERT INTO tool(name, description, category, type, source_id,
-                                    schema, enabled, status, last_loaded)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(name) DO UPDATE SET
-                       description = excluded.description,
-                       category    = excluded.category,
-                       type        = excluded.type,
-                       source_id   = excluded.source_id,
-                       schema      = excluded.schema,
-                       enabled     = COALESCE(excluded.enabled, tool.enabled)
-                """,
-                (name, description, category, type_name, source_id, schema,
-                 (1 if enabled else 0) if enabled is not None else None,
-                 status if new_row else None, None),
-            )
-            if new_row or schema_changed:
-                await self._c.execute(
-                    "DELETE FROM tool_embeddings WHERE name = ?", (name,),
-                )
-            await self._c.commit()
-        return schema_changed
+        result = await self.reconcile([{
+            "name": name, "description": description, "category": category,
+            "source_id": source_id, "schema": schema, "enabled": enabled,
+            "status": status,
+        }])
+        return name in result["schema_changed"]
 
     async def purge_source(self, source_id: str) -> int:
         """Delete every tool row owned by one external server.

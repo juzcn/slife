@@ -1551,23 +1551,31 @@ class AgentService:
             self.config.disabled_jobs
             if cat == "job" else self.config.disabled_builtin
         )
+        rows = []
         for t in tagged:
-            try:
-                descriptor = _cs.descriptor_json(
-                    t.get("name", ""),
+            tname = t.get("name", "")
+            if not tname:
+                continue
+            rows.append({
+                "name": tname,
+                "description": t.get("description", "") or "",
+                "category": cat,
+                "schema": _cs.descriptor_json(
+                    tname,
                     t.get("description", "") or "",
                     t.get("inputSchema", {"type": "object", "properties": {}}),
-                )
-                await self._catalog.store.upsert_tool(
-                    t["name"],
-                    description=t.get("description", "") or "",
-                    category=cat,
-                    schema=descriptor,
-                    enabled=t["name"] not in disabled,
-                    status=self._catalog.default_status(t["name"]),
-                )
-            except Exception as e:
-                logger.debug("plugin_catalog_upsert_failed name=%s tool=%s err=%s", name, t.get("name"), e)
+                ),
+                "enabled": tname not in disabled,
+                "status": self._catalog.default_status(tname),
+            })
+        try:
+            changed = (await self._catalog.store.reconcile(rows))["schema_changed"]
+        except Exception as e:
+            logger.debug("plugin_catalog_reconcile_failed name=%s err=%s", name, e)
+            return
+        # A plugin tool whose schema moved has just lost its vectors — wake
+        # the drainer, or they stay missing until the next MCP reconcile.
+        self._catalog.wake_indexer(changed)
 
     async def _purge_plugin_tool_rows(self, name: str, removed) -> None:
         """Delete catalog rows for plugin tools that no longer exist.

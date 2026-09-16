@@ -27,19 +27,29 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+
 from slife.plugins.memdb.embeddings import EmbeddingClient
 from slife.plugins.memdb.embedding_config import read_embedding_config
 
 logger = logging.getLogger(__name__)
 
-#: Max consecutive zero-progress drain batches before giving up —
-#: a persistently failing embedder must not spin forever.
+#: Max consecutive zero-progress drain batches in ONE drain session before the
+#: drainer parks in ``stalled`` — a persistently failing embedder must not spin
+#: forever.  Per session, not global: a stall costs nothing while idle, and the
+#: wake that ends it grants a fresh budget.
 MAX_REINDEX_NO_PROGRESS = 20
 REINDEX_BATCH_LIMIT = 5
 
 _DRAIN_INDEXING_REASON = (
     "hybrid degraded to fts5 — semantic index is building/rebuilding. "
     "Semantic search resumes automatically when indexing finishes."
+)
+
+_DRAIN_STALLED_REASON = (
+    "semantic index stalled — the embedder failed repeatedly and gave up this "
+    "round. It retries when new content arrives. Keyword search (fts5/grep/time) "
+    "still works."
 )
 
 
@@ -182,6 +192,11 @@ class SemanticManager:
         """
         async with self._enable_lock:
             await self._stop_drainer()
+            # ``_enabled`` is True exactly while a drain task is live: cleared
+            # here, set only on the success path below.  The two degraded
+            # returns leave it False, so a failed enable cannot leave a stale
+            # True behind for on_saved() to wake nothing with.
+            self._enabled = False
             self._semantic_ready = False
             self._state = "loading"
             self._reason = ""
@@ -224,6 +239,9 @@ class SemanticManager:
         """Blocking: stop the drainer, drop the embedder; embeddings on disk kept."""
         async with self._enable_lock:
             await self._stop_drainer()
+            # No drainer to wake — keep ``on_saved``'s guard honest rather than
+            # setting an event nothing awaits.
+            self._enabled = False
             self._semantic_ready = False
             self._state = "disabled"
             self._reason = (
@@ -301,24 +319,66 @@ class SemanticManager:
                 logger.debug("drainer_stop_error err=%s", e)
         self._drain_task = None
 
+    def _enter_stall(self, reason: str) -> None:
+        """Close the gate and park in ``stalled`` — ALIVE, not finished.
+
+        ``_enabled`` deliberately stays True.  It is both what lets
+        :meth:`on_saved` deliver the wake that ends the stall, and what keeps
+        the loop's guard true so the coroutine is still there to receive it.
+        Clearing it (as this once did) killed the task and made every
+        content-driven wake a silent no-op — a transient embedder failure then
+        disabled semantic search until the next process restart.
+        """
+        self._state = "stalled"
+        self._semantic_ready = False
+        self._reason = reason
+
+    async def _park_until_work(self) -> bool:
+        """Wait for a wake; True when there is new work worth attempting.
+
+        Grants a fresh no-progress budget: the bound applies to one drain
+        session, so a parked drainer never burns it while idle and the wake
+        after a stall is a new attempt rather than a continuation of the failed
+        one.  That is the whole safety story — idle costs nothing, and each
+        arrival buys one bounded round.
+        """
+        await self._work_event.wait()
+        self._work_event.clear()
+        if not self._enabled:
+            return False
+        self._no_progress = 0
+        return True
+
+    async def _pace_retry(self, backoff: float) -> float:
+        """Sleep *backoff* after a failed batch; return the next (grown) value.
+
+        Only ``asyncio.sleep(0)`` separated failing batches before, so the
+        drainer retried a broken embedder as fast as the event loop allowed.
+        """
+        await asyncio.sleep(backoff)
+        r = _timeouts.timeouts.ready
+        return min(backoff * r.watchdog_backoff_multiplier, r.watchdog_backoff_max)
+
     async def _drain_loop(self) -> None:
         """Event-driven index drainer — the ONLY gate writer (opens at count==0)."""
+        backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
         while self._enabled:
             try:
                 unembedded = await self._store.count_unembedded()
             except Exception as e:
-                self._semantic_ready = False
-                self._state = "stalled"
-                self._reason = f"semantic index unavailable: {e}"
-                self._enabled = False
                 logger.warning("drainer_aborted err=%s", e)
-                return
+                self._enter_stall(f"semantic index unavailable: {e}")
+                if not await self._park_until_work():
+                    return
+                backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
+                continue
             if unembedded == 0:
                 self._semantic_ready = True
                 self._state = "ready"
                 self._reason = ""
-                await self._work_event.wait()
-                self._work_event.clear()
+                if not await self._park_until_work():
+                    return
+                backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
                 continue
             self._semantic_ready = False
             self._state = "indexing"
@@ -328,41 +388,49 @@ class SemanticManager:
             except Exception as e:
                 # An unexpected error (e.g. a row whose messages JSON is
                 # malformed) must not kill the drainer task silently — count it
-                # as no-progress so the M7 bound stops the loop loudly instead
-                # of leaving the semantic gate off with no trace.
+                # as no-progress so the bound parks the loop loudly instead of
+                # leaving the semantic gate off with no trace.
                 self._no_progress += 1
                 logger.warning(
                     "drainer_batch_error no_progress=%d err=%s",
                     self._no_progress, e,
                 )
                 if self._no_progress >= MAX_REINDEX_NO_PROGRESS:
-                    self._state = "stalled"
-                    self._semantic_ready = False
-                    self._enabled = False
                     logger.warning(
-                        "drainer_stalled — _process_batch failing persistently, "
-                        "giving up",
+                        "drainer_stalled — _process_batch failing persistently "
+                        "(%d attempts); parked until new content arrives",
+                        self._no_progress,
                     )
-                    return
-                await asyncio.sleep(0)
+                    self._enter_stall(_DRAIN_STALLED_REASON)
+                    if not await self._park_until_work():
+                        return
+                    backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
+                    continue
+                backoff = await self._pace_retry(backoff)
                 continue
             if result.get("complete"):
                 self._no_progress = 0
+                backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
                 continue  # re-check → gate ON next iteration
             if result.get("indexed", 0) == 0:
                 self._no_progress += 1
                 if self._no_progress >= MAX_REINDEX_NO_PROGRESS:
-                    self._state = "stalled"
-                    self._semantic_ready = False
-                    self._enabled = False
                     logger.warning(
-                        "drainer_stalled — embedder failing persistently, giving up. "
-                        "remaining=%s stuck=%s", result.get("remaining"),
+                        "drainer_stalled — embedder failing persistently "
+                        "(%d attempts); parked until new content arrives. "
+                        "remaining=%s stuck=%s", self._no_progress,
+                        result.get("remaining"),
                         await self._stuck_doc_ids(),
                     )
-                    return
-            else:
-                self._no_progress = 0
+                    self._enter_stall(_DRAIN_STALLED_REASON)
+                    if not await self._park_until_work():
+                        return
+                    backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
+                    continue
+                backoff = await self._pace_retry(backoff)
+                continue
+            self._no_progress = 0
+            backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
             await asyncio.sleep(0)  # yield between batches
 
     async def _stuck_doc_ids(self, limit: int = 5) -> list:
@@ -387,7 +455,11 @@ class SemanticManager:
         """
         embedder = self._embedder
         if not embedder or not embedder.available:
-            return {"total": 0, "indexed": 0, "remaining": 0, "complete": True,
+            # NOT ``complete``: the loop reads complete as progress, so claiming
+            # it here reset the no-progress bound and spun the drainer at
+            # sleep(0) forever — neither stalling nor ever opening the gate.
+            # That was the one state MAX_REINDEX_NO_PROGRESS could not catch.
+            return {"total": 0, "indexed": 0, "remaining": 0, "complete": False,
                     "reason": "embedder unavailable"}
         total = await self._store.count_unembedded()
         if total == 0:
