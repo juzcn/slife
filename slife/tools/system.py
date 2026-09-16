@@ -11,10 +11,20 @@ Registered LLM tools:
     notify_user              — push a desktop notification to the human operator
 
 The per-subsystem ``check_*`` functions (memdb, wechat, memfiles,
-local_embed, sharefile, watchdog, mcp_gateway, a2a, media, job-coding)
-are NOT registered as tools — ``system_health`` aggregates them, plus the
-startup records, into one report.  They exist as functions so the
-harness (and tests) can probe a single subsystem.
+local_embed, sharefile, watchdog, mcp_gateway, a2a, media, job-coding,
+tool_catalog) are NOT registered as tools — ``system_health`` aggregates
+them, plus the startup records, into one report.  They exist as functions
+so the harness (and tests) can probe a single subsystem.  ``check_mcp_gateway``
+reports the two external-server families as separate components
+(``mcp_servers`` / ``rest-api``): a REST-API server is an MCP server, but it is
+configured and managed by its own tool set.
+
+Every check returns the same flat entries (``component``/``level``/``key``/
+``value``/``hint``), and one rule governs their text: **``value`` is the
+fact, ``hint`` is what to do about it.**  ``value`` must be self-contained
+(it is what the healthy section of the report prints); ``hint`` is rendered
+only for ``warning``/``error`` entries, so a healthy entry carries none.
+Any other key on an entry is machine-only — the renderer ignores it.
 
 (The agent self-management tools were a ``Meta`` category in ``tools/meta.py``;
 merged here — one category (System), one module per category.)
@@ -34,6 +44,7 @@ import logging
 import sys
 import uuid
 from collections import defaultdict
+from pathlib import Path
 from typing import ClassVar
 
 import httpx2
@@ -54,8 +65,33 @@ logger = logging.getLogger(__name__)
 # Shared plugin-probe prologue
 # ═══════════════════════════════════════════════════════════════════════
 
-async def _probe_plugin(client, component: str, *, offline_hint: str,
-                        unavailable_hint: str, key: str = "plugin",
+#: Remediation for any unreachable plugin process — the plugin is spawned at
+#: startup and supervised by the watchdog, so the operator's move is a restart
+#: (the reason, if it keeps failing, is in the plugin's own log).
+#:
+#: Hints are plain sentences: no ``—`` and no ``;``, because those are the
+#: report line's own separators and would make the structure ambiguous.
+_PLUGIN_DOWN_HINT = ("Restart slife to respawn the plugin. Its log has the "
+                     "reason if it stays down.")
+
+
+def _entry(component: str, level: str, key: str, value: str,
+           hint: str = "") -> dict:
+    """Build one health entry, omitting an empty hint.
+
+    ``health.record`` omits falsy fields too; an empty ``hint`` would only be
+    dead weight in the report (and the fact/hint rule says a healthy entry
+    carries none).
+    """
+    e = {"component": component, "level": level, "key": key, "value": value}
+    if hint:
+        e["hint"] = hint
+    return e
+
+
+async def _probe_plugin(client, component: str, *, offline_hint: str = _PLUGIN_DOWN_HINT,
+                        unavailable_hint: str = "probe failed",
+                        key: str = "plugin",
                         offline_value: str = "offline",
                         unavailable_value: str = "unavailable",
                         log_name: str | None = None) -> tuple[dict | None, list[dict]]:
@@ -68,6 +104,9 @@ async def _probe_plugin(client, component: str, *, offline_hint: str,
     *data*.  Entry wording stays per-check via the explicit parameters —
     this helper centralises the *structure*, and the review noted the loose
     copies had already drifted from each other.
+
+    Both failure entries follow the value/hint rule: ``value`` is the state
+    (``offline``/``unavailable``) and ``hint`` is the remedy.
     """
     try:
         if client is None:
@@ -87,30 +126,41 @@ async def _probe_plugin(client, component: str, *, offline_hint: str,
 # check_memdb
 # ═══════════════════════════════════════════════════════════════════════
 
-def _semantic_index_hint(sem: dict, pending_noun: str = "items") -> str:
-    """Compose a hint for a semantic-index facts block (memdb/memfiles).
+#: Remedy for an embeddings endpoint that is missing or broken — shared by
+#: every subsystem that owns a semantic index (memdb, memfiles, the catalog).
+_EMBEDDING_FIX_HINT = ("Set a working endpoint with embeddings_model_set "
+                       "(provider + base_url + api_key). Keyword search keeps "
+                       "working meanwhile.")
+
+
+def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, str]:
+    """Interpret a semantic-index facts block into ``(level, value, hint)``.
 
     The plugins' ``__check`` reports facts only — this is the harness's
     interpretation layer.  Splits by the facts available (configured /
     available / state / reason / unembedded) without assuming remediation
-    text baked into the plugin.
+    text baked into the plugin, and keeps to the value/hint rule: a stalled
+    index is a fact (it needs no action, it is catching up), a missing or
+    broken endpoint is the case that carries a remedy.
     """
     if sem.get("configured") is False:
-        return ("Semantic search unavailable — no embeddings endpoint "
-                "configured. Add one with embeddings_model_set "
-                "(provider + base_url + api_key). Keyword search works.")
+        return ("warning", "unavailable (no embeddings endpoint configured)",
+                _EMBEDDING_FIX_HINT)
     if sem.get("available") is False:
-        return ("Semantic search unavailable — the active embedding endpoint "
-                "is down or misconfigured. Fix base_url/api_key with "
-                "embeddings_model_set.")
+        return ("warning", "unavailable (endpoint down or misconfigured)",
+                _EMBEDDING_FIX_HINT)
     if sem.get("reason"):
-        return sem["reason"]
+        return ("warning", f"unavailable ({sem['reason']})", "")
     if sem.get("state") == "disabled":
-        return ("Semantic search disabled — enable with embeddings_enable "
-                "true, or edit the top-level embeddings section in slife.json5.")
+        return ("warning", "disabled",
+                "Enable with embeddings_enable true, or edit the top-level "
+                "embeddings section in slife.json5.")
+    if sem.get("semantic_ready"):
+        return ("ok", f"ready ({sem.get('model') or '?'}, dim={sem.get('dimension')})", "")
     state = sem.get("state") or "building"
-    return (f"Semantic index {state} — {sem.get('unembedded', 0)} "
-            f"{pending_noun} pending embedding; keyword search remains available.")
+    return ("warning",
+            f"{state} ({sem.get('unembedded', 0)} {pending_noun} pending; "
+            f"keyword search available)", "")
 
 
 async def check_memdb(client=None) -> list[dict]:
@@ -121,11 +171,12 @@ async def check_memdb(client=None) -> list[dict]:
     (raw facts) through its MCP client (from ``ToolContext.memdb_client``)
     and interprets them into health entries.  When the plugin is not
     connected, a warning is reported.
+
+    The DB value names the file (``1.2 MB (jack.db)``): the DB is
+    agent-scoped, so *which* file is live is part of the fact.
     """
     data, entries = await _probe_plugin(
         client, "memdb",
-        offline_hint="memdb plugin not connected — turns DB unavailable.",
-        unavailable_hint="memdb status unavailable",
         unavailable_value="offline",
     )
     if entries:
@@ -135,41 +186,21 @@ async def check_memdb(client=None) -> list[dict]:
 
     # ── Database file ────────────────────────────────────────────
     db = data.get("db") or {}
+    db_name = Path(str(db.get("path") or "?")).name
     if db.get("exists"):
-        entries.append({
-            "component": "memdb", "level": "ok", "key": "db",
-            "value": f"{db.get('size_mb', 0):.1f} MB",
-            "hint": f"Database ready: {db.get('path', '?')}",
-        })
+        entries.append(_entry("memdb", "ok", "db",
+                              f"{db.get('size_mb', 0):.1f} MB ({db_name})"))
     else:
-        entries.append({
-            "component": "memdb", "level": "warning", "key": "db",
-            "value": "not found",
-            "hint": (f"Database file not found at {db.get('path', '?')}. "
-                     "Will be created on first memory write."),
-        })
+        entries.append(_entry(
+            "memdb", "warning", "db", f"not found ({db.get('path', '?')})",
+            "It is created on the first memory write.",
+        ))
 
     # ── Semantic search ──────────────────────────────────────────
-    sem = data.get("semantic") or {}
-    if sem.get("configured") is False or sem.get("available") is False:
-        entries.append({
-            "component": "memdb", "level": "warning", "key": "embedding",
-            "value": "unavailable",
-            "hint": _semantic_index_hint(sem, pending_noun="turns"),
-        })
-    elif sem.get("semantic_ready"):
-        entries.append({
-            "component": "memdb", "level": "ok", "key": "embedding",
-            "value": "ready",
-            "hint": (f"Semantic search ready "
-                     f"({sem.get('model', '?')}, dim={sem.get('dimension')})."),
-        })
-    else:
-        entries.append({
-            "component": "memdb", "level": "warning", "key": "embedding",
-            "value": sem.get("state", "building"),
-            "hint": _semantic_index_hint(sem, pending_noun="turns"),
-        })
+    sem_level, sem_value, sem_hint = _semantic_facts(
+        data.get("semantic") or {}, pending_noun="turns",
+    )
+    entries.append(_entry("memdb", sem_level, "embedding", sem_value, sem_hint))
     return entries
 
 
@@ -205,25 +236,18 @@ async def check_wechat(client=None, config=None) -> list[dict]:
         config = _get_wechat_config()
 
     if config is None or config.wechat_config is None:
-        results.append({"component": "wechat", "level": "ok", "key": "enabled",
-                        "value": "unknown",
-                        "hint": "WeChat plugin: config not available (no slife.json5?). "
-                                "Default is enabled — will activate when config is loaded."})
+        results.append(_entry(
+            "wechat", "ok", "enabled", "unknown (config not loaded)",
+        ))
         return results
 
     wc = config.wechat_config
     if not wc.enabled:
-        results.append({"component": "wechat", "level": "ok", "key": "enabled",
-                        "value": "disabled",
-                        "hint": "WeChat plugin is disabled in config (wechat.enabled: false). "
-                                "Set wechat.enabled: true in slife.json5 to enable."})
+        results.append(_entry("wechat", "ok", "enabled",
+                              "disabled (wechat.enabled: false)"))
         return results
 
-    data, entries = await _probe_plugin(
-        client, "wechat",
-        offline_hint="WeChat plugin not connected — login/session status unavailable.",
-        unavailable_hint="WeChat status unavailable",
-    )
+    data, entries = await _probe_plugin(client, "wechat")
     if entries:
         return entries
     assert data is not None  # entries empty ⇒ probe succeeded
@@ -237,35 +261,28 @@ async def check_wechat(client=None, config=None) -> list[dict]:
     if data.get("logged_in"):
         if data.get("auth_failed"):
             return [{"component": "wechat", "level": "error", "key": "status",
-                     "value": "session_rejected",
-                     "hint": ("WeChat session was rejected by the server — "
-                              "call wechat_login to re-scan. "
-                              f"Last error: {last_error}")}]
+                     "value": f"session_rejected (last error: {last_error})",
+                     "hint": "Call wechat_login to re-scan the QR code."}]
         if last_error:
             return [{"component": "wechat", "level": "warning", "key": "status",
-                     "value": "degraded",
-                     "hint": (f"WeChat link is down — messages will not arrive until "
-                              f"it recovers. Last error: {last_error}")}]
-        return [{"component": "wechat", "level": "ok", "key": "status",
-                 "value": "logged_in",
-                 "hint": (f"WeChat logged in. Session age: {age_h:.1f}h, "
-                          f"remaining: {remaining_h:.1f}h.")}]
+                     "value": f"degraded (last error: {last_error})",
+                     "hint": ("The link may recover on its own; messages will "
+                              "not arrive until it does.")}]
+        return [_entry("wechat", "ok", "status",
+                       f"logged_in (session {age_h:.1f}h of {max_h:.0f}h, "
+                       f"{remaining_h:.1f}h left)")]
 
     if session.get("saved"):
         if remaining_h <= 0:
             return [{"component": "wechat", "level": "warning", "key": "status",
-                     "value": "session_expired",
-                     "hint": (f"WeChat session expired ({age_h:.1f}h old, "
-                              f"max {max_h:.0f}h). "
-                              "Call wechat_login to re-scan.")}]
-        return [{"component": "wechat", "level": "ok", "key": "status",
-                 "value": "not_logged_in",
-                 "hint": (f"WeChat not logged in. Saved session "
-                          f"{remaining_h:.1f}h left — restores on the "
-                          "next wechat_check_status.")}]
+                     "value": f"session_expired ({age_h:.1f}h old, max {max_h:.0f}h)",
+                     "hint": "Call wechat_login to re-scan the QR code."}]
+        return [_entry("wechat", "ok", "status",
+                       f"not_logged_in (saved session, {remaining_h:.1f}h left; "
+                       "restores on the next wechat_check_status)")]
     return [{"component": "wechat", "level": "warning", "key": "status",
              "value": "not_logged_in",
-             "hint": "WeChat not logged in. Call wechat_login to scan the QR code."}]
+             "hint": "Call wechat_login to scan the QR code."}]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -281,29 +298,26 @@ async def check_sharefile(client=None) -> list[dict]:
     data, entries = await _probe_plugin(
         client, "sharefile",
         key="tunnel", offline_value="plugin_offline", unavailable_value="offline",
-        offline_hint="sharefile plugin not connected — file sharing unavailable.",
-        unavailable_hint="File sharing tunnel status unavailable",
+        unavailable_hint="Tunnel probe failed",
     )
     if entries:
         return entries
     assert data is not None
     if data.get("active"):
-        return [{"component": "sharefile", "level": "ok", "key": "tunnel",
-                 "value": data.get("url", "?"),
-                 "hint": "File sharing tunnel is online."}]
-    # The plugin composes the actionable reason for ITS provider (a missing
-    # NGROK_AUTHTOKEN, an absent ssh/cloudflared binary).  The harness must not
-    # paste one provider's remediation onto another's failure — the provider is
-    # chosen by sharefile.json5, and __check reports which one is active.
+        return [_entry("sharefile", "ok", "tunnel", data.get("url", "?"))]
+    # Which provider is live is a FACT (it is chosen by sharefile.json5), so it
+    # rides in the value; the reason it is down is the plugin's own diagnosis
+    # for ITS provider (a missing NGROK_AUTHTOKEN, an absent ssh/cloudflared
+    # binary) and the harness must not paste one provider's remediation onto
+    # another's failure.
     provider = (data.get("provider") or "").strip()
     reason = (data.get("reason") or "").strip()
-    who = f" ({provider})" if provider else ""
-    hint = f"File sharing tunnel unavailable{who}."
-    if reason:
-        hint += f" {reason}"
-    hint += " The active provider is set by sharefile.json5 (active_provider)."
+    value = f"offline ({provider})" if provider else "offline"
+    hint = f"{reason} " if reason else ""
     return [{"component": "sharefile", "level": "warning", "key": "tunnel",
-             "value": "offline", "hint": hint}]
+             "value": value,
+             "hint": hint + "The active provider is set by sharefile.json5 "
+                            "(active_provider)."}]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -315,11 +329,13 @@ async def check_memfiles(client=None) -> list[dict]:
     the plugin's internal tool ``__check`` through its MCP client
     (from ``ToolContext.memfiles_client``).  When the plugin is not
     connected, a warning is reported.
+
+    An index that is still catching up is ``ok`` — semantic search is a
+    bonus on top of keyword search, so a building index is a fact, not a
+    problem.
     """
     data, entries = await _probe_plugin(
         client, "memfiles",
-        offline_hint="memfiles plugin not connected — file cabinet unavailable.",
-        unavailable_hint="Cabinet status unavailable",
         unavailable_value="offline",
     )
     if entries:
@@ -327,17 +343,16 @@ async def check_memfiles(client=None) -> list[dict]:
     assert data is not None
     if data.get("ok"):
         if data.get("semantic_ready"):
-            return [{"component": "memfiles", "level": "ok", "key": "plugin",
-                     "value": "connected",
-                     "hint": "Cabinet connected; semantic index ready."}]
-        return [{"component": "memfiles", "level": "ok", "key": "plugin",
-                 "value": "connected",
-                 "hint": (f"Cabinet connected — semantic index "
-                          f"{data.get('state')}, {data.get('unembedded', 0)} "
-                          "pending embedding; keyword search available.")}]
+            value = "connected (semantic index ready)"
+        else:
+            value = (f"connected (semantic index {data.get('state') or 'building'}, "
+                     f"{data.get('unembedded', 0)} pending)")
+        return [_entry("memfiles", "ok", "plugin", value)]
+    # A broken store has no remedy to offer — the reason IS the fact.
+    reason = (data.get("reason") or "").strip()
+    state = data.get("state", "degraded")
     return [{"component": "memfiles", "level": "warning", "key": "plugin",
-             "value": data.get("state", "degraded"),
-             "hint": data.get("reason") or "Cabinet store unavailable."}]
+             "value": f"{state}: {reason}" if reason else str(state)}]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -363,10 +378,11 @@ async def check_local_embed(base_url: str = "") -> list[dict]:
         ep = get_active_endpoint()
         base_url = (base_url or ep.get("base_url") or "").strip()
         if not base_url:
-            return [{"component": "local_embed", "level": "warning", "key": "plugin",
-                     "value": "offline",
-                     "hint": "No embeddings base_url in slife.json5 — configure the "
-                             "top-level embeddings section (see embeddings_model_set)."}]
+            return [_entry(
+                "local_embed", "warning", "status", "offline (no base_url)",
+                "Configure the top-level embeddings section "
+                "(see embeddings_model_set).",
+            )]
         headers: dict[str, str] = {}
         api_key = ep.get("api_key") or ""
         if api_key:
@@ -387,10 +403,8 @@ async def check_local_embed(base_url: str = "") -> list[dict]:
         # A standard /v1/models listing has no active marker — the first
         # model id stands in as the health value.
         exposed = next((m.get("id") or "?" for m in models), "?")
-        preview = ", ".join(m.get("id", "?") for m in models[:3]) or "none"
-        return [{"component": "local_embed", "level": "ok", "key": "status",
-                 "value": exposed,
-                 "hint": f"Embedding endpoint {base_url}: {len(models)} model(s) exposed (e.g. {preview})."}]
+        return [_entry("local_embed", "ok", "status",
+                       f"{exposed} ({len(models)} models at {base_url})")]
     except Exception as e:
         logger.warning("local_embed_check_failed err=%s", e)
         return [{"component": "local_embed", "level": "warning", "key": "status",
@@ -422,11 +436,8 @@ def check_watchdog() -> list[dict]:
             seen[key] = r  # later records overwrite earlier ones
 
     if not seen:
-        results.append({
-            "component": "watchdog", "level": "ok",
-            "key": "status", "value": "none",
-            "hint": "No plugin watchdogs active (subagent, or plugins not started).",
-        })
+        results.append(_entry("watchdog", "ok", "status",
+                              "none (subagent, or plugins not started)"))
         return results
 
     for name in sorted(seen):
@@ -440,12 +451,44 @@ def check_watchdog() -> list[dict]:
 # check_mcp_gateway
 # ═══════════════════════════════════════════════════════════════════════
 
+#: Remediation shared by every disconnected server — identical text is what
+#: lets the report collapse 20 entries into one line instead of 20 sentences.
+#: One per family, because each is managed by its own tool set.
+_MCP_RETRY_HINT = ("The wrapper retries in the background. Re-run system_health "
+                   "shortly, or inspect one server with mcp_list and turn it "
+                   "off with mcp_set_enabled.")
+_REST_API_RETRY_HINT = ("The wrapper retries in the background. Re-run "
+                        "system_health shortly, or inspect one API with "
+                        "rest_api_list and turn it off with "
+                        "rest_api_set_enabled.")
+
+
+def _server_family(server: dict) -> str:
+    """``"rest-api"`` for a REST-API-backed server entry, else ``""``.
+
+    ``list_servers`` carries the config entry's ``source``; a REST API is an
+    ordinary ``mcp-openapi-proxy`` entry tagged ``source.type == "rest_api"``.
+    The families are reported as separate components even though a REST-API
+    server *is* an MCP server: it is configured, probed and managed by a
+    different tool set (``rest_api_*`` vs ``mcp_*``), so an operator reading
+    "which servers are down" needs them apart.
+    """
+    source = server.get("source")
+    if isinstance(source, dict) and source.get("type") == "rest_api":
+        return "rest-api"
+    return ""
+
+
 def _diagnose_mcp_server(server: dict) -> dict:
     """Diagnose a single MCP server from raw ``__check`` data.
 
-    Pure data transformation — no side effects, no external calls.
-    Maps the raw server state to a health-check entry with an
-    appropriate level (info / ok / warning) and human-readable hint.
+    Pure data transformation — no side effects, no external calls.  Maps the
+    raw server state to a health entry: the state (plus the family tag, the
+    tool count and the transport) is the fact in ``value``, and only a broken
+    server carries a ``hint``.  The machine-only keys the probe returns
+    (``enabled``/``state``/``tool_count``/``transport``) are deliberately not
+    copied onto the entry — a fact belongs in exactly one place, and
+    ``mcp_list`` owns the config view.
     """
     name = server.get("name", "?")
     state = server.get("state", "unknown")
@@ -454,71 +497,45 @@ def _diagnose_mcp_server(server: dict) -> dict:
     transport = server.get("transport", "")
     error_msg = server.get("error", "")
     needs_user_auth = server.get("needs_user_auth", False)
+    family = _server_family(server)
+    # The family decides the reported component (and therefore the tool set its
+    # remedy names); the rest of the entry is identical.
+    component = family or "mcp_servers"
+    retry_hint = _REST_API_RETRY_HINT if family else _MCP_RETRY_HINT
+    manage_tool = "rest_api_list" if family else "mcp_list"
+    remove_tool, add_tool = (
+        ("rest_api_remove", "rest_api_set") if family else ("mcp_remove", "mcp_set")
+    )
 
     if needs_user_auth:
         # OAuth device flow needs a human — auto-reconnect is PAUSED (F5),
         # so "wait for the background reconnect" is not the right advice.
-        return {
-            "component": "mcp_servers", "level": "warning",
-            "key": name, "value": "needs_user_auth",
-            "enabled": True, "state": "needs_user_auth",
-            "tool_count": 0, "transport": transport,
-            "hint": (
-                f"MCP server '{name}' needs OAuth re-authorization — "
-                f"{error_msg or 'the device flow was not completed.'} "
-                "Remove and re-add it with mcp_remove / mcp_set to run the "
-                "device flow again."
-            ),
-        }
+        return _entry(
+            component, "warning", name,
+            f"needs_user_auth ({error_msg or 'device flow not completed'})",
+            f"Re-run the OAuth device flow with {remove_tool} + {add_tool}.",
+        )
 
     if not enabled:
-        return {
-            "component": "mcp_servers", "level": "info",
-            "key": name, "value": "disabled",
-            "enabled": False, "state": "disabled",
-            "tool_count": 0,
-            "transport": transport,
-            "hint": f"MCP server '{name}' is disabled (not connected).",
-        }
+        return _entry(component, "info", name, "disabled")
 
     if state == "running":
-        tool_note = f"{tool_count} tools loaded"
-        return {
-            "component": "mcp_servers", "level": "ok",
-            "key": name, "value": f"connected ({tool_note})",
-            "enabled": True, "state": "connected",
-            "tool_count": tool_count,
-            "transport": transport,
-            "hint": (
-                f"MCP server '{name}': connected via {transport}, "
-                f"{tool_note}."
-            ),
-        }
+        return _entry(
+            component, "ok", name,
+            f"connected ({tool_count} tools, {transport})",
+        )
 
     if state == "stopped":
         detail = f" — {error_msg}" if error_msg else ""
-        return {
-            "component": "mcp_servers", "level": "warning",
-            "key": name, "value": f"disconnected{detail}",
-            "enabled": True, "state": "disconnected",
-            "tool_count": 0,
-            "transport": transport,
-            "hint": (
-                f"MCP server '{name}' is enabled but NOT connected.{detail} "
-                f"The wrapper auto-reconnects in the background; use check_mcp_gateway "
-                f"to see current status and error details."
-            ),
-        }
+        return _entry(component, "warning", name,
+                      f"disconnected{detail}", retry_hint)
 
     # Unknown / other states (e.g. "connecting", "failed")
-    return {
-        "component": "mcp_servers", "level": "warning",
-        "key": name, "value": state,
-        "enabled": enabled, "state": state,
-        "tool_count": tool_count,
-        "transport": transport,
-        "hint": f"MCP server '{name}' state={state}.",
-    }
+    return _entry(
+        component, "warning", name, f"unexpected state: {state}",
+        f"Re-run system_health shortly, and inspect it with {manage_tool} "
+        f"if it persists.",
+    )
 
 
 async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
@@ -544,18 +561,16 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
     per-server diagnostics.
     """
     def _not_found(target: str) -> list[dict]:
-        return [{
-            "component": "mcp_servers", "level": "warning",
-            "key": target, "value": "not_found",
-            "hint": f"MCP server '{target}' is not configured. "
-                    "Use mcp_list to see configured servers.",
-        }]
+        return [_entry("mcp_servers", "warning", target, "not_found",
+                       "Use mcp_list to see the configured servers.")]
 
     try:
         if client is None:
-            return [{"component": "mcp_servers", "level": "warning",
-                     "key": "status", "value": "client_unavailable",
-                     "hint": "MCP wrapper client not available — slife-mcp may not be running."}]
+            return [_entry(
+                "mcp_servers", "warning", "status", "unavailable (client not connected)",
+                "Restart slife to respawn the plugin. Its log has the reason "
+                "if it stays down.",
+            )]
 
         raw = await client.call_tool("__check")
         data = json.loads(raw)
@@ -564,9 +579,7 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
         if not isinstance(data, list) or len(data) == 0:
             if server:
                 return _not_found(server)
-            return [{"component": "mcp_servers", "level": "ok",
-                     "key": "status", "value": "none",
-                     "hint": "No external MCP servers configured."}]
+            return [_entry("mcp_servers", "ok", "status", "none configured")]
 
         if server:
             matched = [s for s in data if s.get("name") == server]
@@ -580,8 +593,8 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
     except Exception as e:
         logger.warning("check_mcp_gateway_failed err=%s", e)
         return [{"component": "mcp_servers", "level": "error",
-                 "key": "check_failed", "value": str(e),
-                 "hint": f"Failed to check MCP servers: {e}"}]
+                 "key": "check_failed", "value": "probe failed",
+                 "hint": f"{e} — server states are unknown until it recovers."}]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -600,35 +613,39 @@ async def check_a2a(client=None) -> list[dict]:
     data, entries = await _probe_plugin(
         client, "a2a",
         key="status", offline_value="unavailable",
-        offline_hint="No active MQTT port — A2A unavailable. Start mosquitto, then restart slife to enable the A2A mesh.",
-        unavailable_hint="A2A mesh status unavailable",
+        offline_hint="Start mosquitto, then restart slife to bring the mesh up.",
+        unavailable_hint="Mesh probe failed",
     )
     if entries:
         return entries
     assert data is not None
 
+    broker = data.get("broker", "")
+    where = f" (broker {broker})" if broker else ""
     if not data.get("connected"):
-        broker = data.get("broker", "")
-        where = f" (broker {broker})" if broker else ""
         return [{"component": "a2a", "level": "warning", "key": "status",
-                 "value": "unavailable",
-                 "hint": f"No active MQTT port — A2A unavailable{where}. Start mosquitto and the plugin will auto-reconnect."}]
+                 "value": f"unavailable{where}",
+                 "hint": "No active MQTT port. Start mosquitto and the plugin "
+                         "reconnects on its own."}]
 
     peers = data.get("peers", [])
     peer_names = ", ".join(p.get("agent_name") or "?" for p in peers)
     n = len(peers)
     if n == 0:
-        peer_clause = "You have no peers online."
+        peer_clause = "no peers"
     elif n == 1:
-        peer_clause = f"You have 1 peer: {peer_names}."
+        peer_clause = f"1 peer: {peer_names}"
     else:
-        peer_clause = f"You have {n} peers: {peer_names}."
-    broker = data.get("broker", "")
+        peer_clause = f"{n} peers: {peer_names}"
+    queued = sum(
+        v for v in (data.get("queued") or {}).values()
+        if isinstance(v, (int, float))
+    )
+    backlog = f", {queued} queued" if queued else ""
     return [{
         "component": "a2a", "level": "ok", "key": "status",
-        "value": "connected",
+        "value": f"connected (broker {broker}, {peer_clause}{backlog})",
         "peers": peers,
-        "hint": f"A2A mesh online (broker {broker}). {peer_clause}",
     }]
 
 
@@ -651,58 +668,91 @@ async def check_media(client=None) -> list[dict]:
         from slife.plugins.media.config import load_media_config
         cfg = load_media_config()
         if cfg.is_empty():
-            return [{"component": "media", "level": "ok", "key": "enabled",
-                     "value": "not_configured",
-                     "hint": "Media generation not configured (no media: section in slife.json5)."}]
+            return [_entry("media", "ok", "enabled",
+                           "not_configured (add a media: section to enable "
+                           "generate_image / generate_video / text_to_speech / "
+                           "transcribe_audio)")]
     except Exception as e:
         logger.warning("media_check_config_failed err=%s", e)
-        return [{"component": "media", "level": "warning", "key": "config",
-                 "value": "error",
-                 "hint": f"Media config status unavailable: {e}"}]
-    data, entries = await _probe_plugin(
-        client, "media",
-        offline_hint="media plugin configured but not connected.",
-        unavailable_hint="media status unavailable",
-    )
+        return [_entry("media", "warning", "config", "unreadable", str(e))]
+    data, entries = await _probe_plugin(client, "media")
     if entries:
         return entries
     assert data is not None
 
     # The plugin reports facts; shape the health entries here.
     if data.get("error"):
-        return [{"component": "media", "level": "warning", "key": "config",
-                 "value": "error",
-                 "hint": f"Media config status unavailable: {data.get('error')}"}]
+        return [_entry("media", "warning", "config", "error",
+                       str(data.get("error")))]
     if not data.get("configured"):
-        return [{"component": "media", "level": "ok", "key": "enabled",
-                 "value": "not_configured",
-                 "hint": ("Media generation not configured. Add a media: "
-                          "section to slife.json5 to enable generate_image / "
-                          "generate_video / text_to_speech / transcribe_audio.")}]
+        return [_entry("media", "ok", "enabled", "not_configured")]
     providers = data.get("providers") or []
     all_kinds = sorted({k for p in providers for k in (p.get("kinds") or [])})
-    results: list[dict] = [{
-        "component": "media", "level": "ok", "key": "enabled",
-        "value": f"{len(providers)} provider(s)",
-        "hint": (f"Media configured: {len(providers)} provider(s), "
-                 f"capabilities {', '.join(all_kinds) or '(none)'}."),
-    }]
+    results: list[dict] = [_entry(
+        "media", "ok", "enabled",
+        f"{len(providers)} provider(s) ({', '.join(all_kinds) or 'no models'})",
+    )]
     for p in providers:
         pid = p.get("id", "?")
         caps = ", ".join(p.get("kinds") or []) or "(no models)"
         if p.get("has_api_key"):
-            results.append({
-                "component": "media", "level": "ok", "key": pid,
-                "value": caps,
-                "hint": f"Provider '{pid}' ({p.get('api')}) configured with api_key.",
-            })
+            results.append(_entry(
+                "media", "ok", pid, f"{caps} ({p.get('api')})",
+            ))
         else:
-            results.append({
-                "component": "media", "level": "warning", "key": pid,
-                "value": caps,
-                "hint": f"Provider '{pid}' has no api_key set — generation calls will fail.",
-            })
+            results.append(_entry(
+                "media", "warning", pid, caps,
+                "No api_key set, so generation calls fail.",
+            ))
     return results
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# check_tool_catalog
+# ═══════════════════════════════════════════════════════════════════════
+
+
+async def check_tool_catalog(ctx=None) -> list[dict]:
+    """Return the unified tool catalog's status (``tools.db`` + its index).
+
+    ``tools.db`` is the single source of truth for every tool the agent can
+    search or load, so a catalog that failed to open or a semantic drain that
+    stalled degrades ``tool_search`` silently.  The catalog lives in the main
+    process (not a plugin), so there is no MCP client to probe: the raw facts
+    come from :func:`slife.mcp.host_server._host_catalog_facts` — the same
+    probe the host-as-plugin ``__check`` serves — and are interpreted here.
+
+    Unlike the plugin checks this one needs the whole ``ToolContext`` (the
+    catalog service is a context field), and a subagent that shares no catalog
+    reports nothing rather than a false alarm.
+    """
+    catalog = getattr(ctx, "catalog", None) if ctx is not None else None
+    if ctx is not None and catalog is None:
+        return [{
+            "component": "tool_catalog", "level": "warning", "key": "db",
+            "value": "unavailable",
+            "hint": ("Restart slife. tool_search and func-tool-load fall back to "
+                     "name matching meanwhile, and the session log has the reason."),
+        }]
+    if catalog is None:
+        return []
+
+    from slife.mcp.host_server import _host_catalog_facts
+    facts = await _host_catalog_facts(catalog)
+    if facts.get("error"):
+        return [{"component": "tool_catalog", "level": "warning", "key": "db",
+                 "value": "probe failed", "hint": str(facts["error"])}]
+
+    entries = [_entry(
+        "tool_catalog", "ok", "db",
+        f"{facts.get('tools', 0)} tools, {facts.get('servers', 0)} servers, "
+        f"{facts.get('loaded', 0)} loaded",
+    )]
+    sem_level, sem_value, sem_hint = _semantic_facts(
+        facts.get("semantic") or {}, pending_noun="tools",
+    )
+    entries.append(_entry("tool_catalog", sem_level, "semantic", sem_value, sem_hint))
+    return entries
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -718,64 +768,75 @@ async def check_job_coding(client=None) -> list[dict]:
     them into health entries.
     """
     data, entries = await _probe_plugin(
-        client, "job-coding",
-        offline_hint="job-coding plugin not connected — job tools unavailable.",
-        unavailable_hint="job-coding status unavailable",
-        log_name="job_coding",
+        client, "job-coding", log_name="job_coding",
     )
     if entries:
         return entries
     assert data is not None
 
     if data.get("error"):
-        return [{"component": "job-coding", "level": "warning", "key": "config",
-                 "value": "error",
-                 "hint": f"job-coding config status unavailable: {data.get('error')}"}]
+        return [_entry("job-coding", "warning", "config", "error",
+                       str(data.get("error")))]
 
     jobs = data.get("job_names") or []
-    model = data.get("llm_model") or ""
-    hints = [f"Jobs dir: {data.get('jobs_dir') or '(none)'}."]
+    jobs_dir = data.get("jobs_dir") or "(none)"
     if jobs:
-        hints.insert(0, f"Jobs registered: {', '.join(jobs)}.")
-        level, value, hint = "ok", f"{len(jobs)} job(s)", " ".join(hints)
+        entries: list[dict] = [_entry(
+            "job-coding", "ok", "jobs", f"{len(jobs)} ({', '.join(jobs)})",
+        )]
     else:
-        level, value, hint = (
-            "ok", "no jobs",
-            "No jobs registered. Add a .py file to the jobs directory or use "
-            "job-write; load the job-coding skill to author one.",
-        )
-    entries: list[dict] = [{
-        "component": "job-coding", "level": level, "key": "jobs",
-        "value": value, "hint": hint,
-    }]
+        entries = [_entry("job-coding", "ok", "jobs",
+                          f"none (add a .py file to {jobs_dir} or use job-write)")]
+
+    model = data.get("llm_model") or ""
     if model in ("", "?", "unconfigured"):
-        entries.append({
-            "component": "job-coding", "level": "warning", "key": "llm_model",
-            "value": "unconfigured",
-            "hint": ("No job LLM resolved (set job_coding_model in slife.json5) — "
-                     "jobs that call llm.chat will fail; pure-computation jobs work."),
-        })
+        entries.append(_entry(
+            "job-coding", "warning", "llm_model", "unconfigured",
+            "Set job_coding_model in slife.json5. Jobs that call llm.chat "
+            "fail without it, while pure-computation jobs still work.",
+        ))
     else:
-        entries.append({
-            "component": "job-coding", "level": "ok", "key": "llm_model",
-            "value": model, "hint": f"Job LLM model: {model}.",
-        })
+        entries.append(_entry("job-coding", "ok", "llm_model", model))
+
+    # Jobs reach MCP tools through this gateway; without it those jobs fail
+    # while pure-computation ones keep working.
+    gw = data.get("mcp_gateway")
+    if isinstance(gw, dict):
+        if gw.get("error"):
+            entries.append(_entry("job-coding", "warning", "mcp_gateway",
+                                  "unknown", str(gw["error"])))
+        elif gw.get("connected"):
+            entries.append(_entry("job-coding", "ok", "mcp_gateway",
+                                  f"connected (port {gw.get('port', '?')})"))
+        else:
+            entries.append(_entry(
+                "job-coding", "warning", "mcp_gateway", "disconnected",
+                "Jobs that call MCP tools fail without it. The plugin "
+                "connects on demand, so re-run system_health shortly.",
+            ))
     return entries
 
 
 #: Plugin-backed health checks — derived from the central plugin contract so
 #: ``system_health`` always enumerates exactly the declared plugins (no hand
-#: list to drift from the registry).  ``check_local_embed`` and
-#: ``check_watchdog`` are not plugins and are appended by hand.
+#: list to drift from the registry).  The non-plugin checks are appended by
+#: hand: the catalog lives in the main process, and local-embed / the watchdog
+#: are not plugins at all.
 _SPEC_CHECKS: list[tuple[str, str | None]] = [
     (health_check_name(spec.name), spec.ctx_field)
     for spec in PLUGIN_SPECS.values()
     if spec.health
 ]
 _CHECK_FUNCTIONS: list[str] = [name for name, _ in _SPEC_CHECKS] + [
+    "check_tool_catalog",
     "check_local_embed",
     "check_watchdog",
 ]
+
+#: Checks that need the whole ``ToolContext`` rather than a plugin client —
+#: the catalog is an in-process service exposed as a context field, not an MCP
+#: server to probe.
+_CTX_CHECKS: frozenset[str] = frozenset({"check_tool_catalog"})
 
 #: check_* function → ToolContext client field it reaches live plugin state
 #: through (also derived from the spec).
@@ -802,7 +863,11 @@ async def _run_checks(ctx=None) -> list[dict]:
         try:
             fn = getattr(_mod, func_name)
             field = _CLIENT_FIELD.get(func_name)
-            if field is not None:
+            if func_name in _CTX_CHECKS:
+                # In-process checks (the tool catalog) read the context's
+                # services directly — there is no plugin to probe.
+                entries = await fn(ctx=ctx)
+            elif field is not None:
                 # Plugin-backed checks reach live state via their plugin's
                 # MCP client from ToolContext.
                 client = getattr(ctx, field, None) if ctx is not None else None
@@ -819,62 +884,44 @@ async def _run_checks(ctx=None) -> list[dict]:
             logger.warning("health_check_failed check=%s err=%s", func_name, e)
             all_entries.append({
                 "component": "system_health", "level": "error",
-                "key": f"{func_name}_failed", "value": str(e),
-                "hint": f"Check {func_name}() raised {type(e).__name__}: {e}",
+                "key": f"{func_name}_failed", "value": f"{func_name} failed",
+                "hint": f"{type(e).__name__}: {e} — the rest of this report "
+                        f"is unaffected.",
             })
     return all_entries
-
-
-#: Startup-record components that a live ``check_*`` inside ``system_health``
-#: re-reports, mapped to that live check's component.  A live entry is the
-#: deduplicated, latest-per-key view of the same health store, so the startup
-#: records it covers are dropped when the two are merged.
-_LIVE_REPORTS: dict[str, str] = {
-    "mcp_server": "mcp_servers",  # startup auto-connect record vs check_mcp_gateway
-    "watchdog": "watchdog",        # startup watchdog record vs check_watchdog
-}
 
 
 def _dedupe_records(startup: list[dict], live: list[dict]) -> list[dict]:
     """Merge startup records with live check entries without double-reporting.
 
-    Some startup records are re-reported by a live ``check_*`` inside
-    ``system_health``: ``mcp_server`` records (recorded by the main process
-    during auto-connect / reconnect) are re-reported by ``check_mcp_gateway`` as
-    ``mcp_servers``; ``watchdog`` records are re-reported (deduplicated to
-    one entry per plugin) by ``check_watchdog``.  Merging both without dedup
-    would double-report each plugin — and for watchdogs, surface every
-    historical record instead of the latest — or keep a stale startup warning
-    next to a live "connected" report (contradictory health).
+    One rule: **a startup record is dropped when a live entry covers the same
+    ``(component, key)``.**  Producers name their component after the live
+    check that re-reports it (``mcp_servers``, ``watchdog``, ``wechat``,
+    ``a2a``), so the match needs no alias table — the earlier component-pair
+    map is exactly what let ``a2a`` report ``status`` twice.
 
-    Rules (keyed by the name in each entry's ``key``):
-      - an entry is the *live* one iff its component is a live component in
-        ``_LIVE_REPORTS`` (regardless of level — a live "disconnected"
-        report is authoritative too, so a stale "connected" startup record
-        is never resurrected);
-      - every startup record whose component maps to a live component and
-        whose name is covered by a live entry is dropped;
-      - startup records not covered by a live entry (e.g. the wrapper was
-        unreachable, or only a single server was checked) are kept so
-        recovery info is never lost.
+    The live entry wins in BOTH directions: a live "disconnected" is not
+    masked by a stale "connected" record, and a stale startup warning is not
+    resurrected next to a live "connected" (contradictory health).  A startup
+    record no live entry covers is kept — e.g. the gateway was unreachable, so
+    the record is the only evidence of what did start.
     """
-    live_keys: dict[str, set[str]] = {}
-    for e in live:
-        comp = e.get("component")
-        key = e.get("key")
-        if isinstance(comp, str) and comp in _LIVE_REPORTS.values() and isinstance(key, str) and key:
-            live_keys.setdefault(comp, set()).add(key)
+    live_keys = {
+        (e.get("component"), e.get("key"))
+        for e in live
+        if isinstance(e.get("component"), str)
+        and isinstance(e.get("key"), str) and e.get("key")
+    }
 
-    def _reported_live(e: dict) -> bool:
-        """True if startup record *e* is re-reported by a live entry."""
-        comp = e.get("component")
-        key = e.get("key")
-        if not (isinstance(comp, str) and isinstance(key, str)):
-            return False
-        live_comp = _LIVE_REPORTS.get(comp)
-        return live_comp is not None and key in live_keys.get(live_comp, set())
-
-    kept = [e for e in startup if not _reported_live(e)]
+    kept: list[dict] = []
+    for e in startup:
+        pair = (e.get("component"), e.get("key"))
+        if isinstance(pair[0], str) and isinstance(pair[1], str) and pair[1] and pair in live_keys:
+            logger.debug(
+                "health_startup_record_superseded component=%s key=%s", *pair,
+            )
+            continue
+        kept.append(e)
     return kept + live
 
 
@@ -890,9 +937,15 @@ def _group_by_component(entries: list[dict]) -> dict[str, list[dict]]:
 def _component_status(entries: list[dict]) -> str:
     """Worst status across a group: info/ok < warning < error.
 
-    ``info`` is treated as non-problematic (e.g. disabled servers).
+    ``info`` is treated as non-problematic (e.g. disabled servers).  A level
+    the renderer does not recognise — a typo in a check — counts as a warning
+    instead of being reported as healthy, which is what an unknown state
+    deserves in a report whose whole job is surfacing degradation.
     """
-    levels = {e.get("level", "ok") for e in entries}
+    levels: set[str] = set()
+    for e in entries:
+        level = str(e.get("level", "ok"))
+        levels.add(level if level in _LEVELS else "warning")
     if "error" in levels:
         return "error"
     if "warning" in levels:
@@ -900,21 +953,219 @@ def _component_status(entries: list[dict]) -> str:
     return "ok"
 
 
-def _build_summary(groups: dict[str, list[dict]]) -> str:
-    """One-line summary: '3 ok, 2 warnings (embeddings, memory), 0 errors'."""
-    ok_count = sum(1 for es in groups.values() if _component_status(es) == "ok")
-    warn_comps = [comp for comp, es in groups.items() if _component_status(es) == "warning"]
-    err_comps = [comp for comp, es in groups.items() if _component_status(es) == "error"]
-    parts: list[str] = [f"{ok_count} ok"]
-    if warn_comps:
-        parts.append(f"{len(warn_comps)} warning(s): {', '.join(warn_comps)}")
-    if err_comps:
-        parts.append(f"{len(err_comps)} error(s): {', '.join(err_comps)}")
+# ── Report rendering ───────────────────────────────────────────────────
+# The report is plain text, not JSON, and that is a consequence of the
+# harness's two result budgets rather than a style preference: a tool result is
+# tail-cut at the live cap, and above ``memory_tool_result_chars`` it is
+# head+tail cut at save (the middle is dropped for good).  A line-oriented
+# report degrades to *fewer whole lines*; a JSON document degrades to an
+# unparseable fragment — which is exactly what the previous JSON report did to
+# itself.  So: the verdict and the problems come first, and the report is built
+# to fit the save budget in the first place.
+
+#: Severity rank — lower sorts first.  An unknown level ranks as a warning
+#: instead of raising, so a check with a typo'd level still renders.
+_RANK: dict[str, int] = {"error": 0, "warning": 1, "info": 2, "ok": 3}
+_RANK_UNKNOWN = 1
+
+#: The levels a check may emit (``info`` = intentionally off, not a problem).
+_LEVELS = frozenset({"ok", "info", "warning", "error"})
+
+#: Component order: live subsystems first, then the in-process checks, then the
+#: static startup records.  The tail is what a truncated report loses, and the
+#: environment facts are the least actionable thing in it.
+_ORDER: dict[str, int] = {
+    "system_health": 0,   # a check that blew up is the most alarming entry
+    "mcp_servers": 1, "rest-api": 2, "tool_catalog": 3, "memdb": 4,
+    "memfiles": 5, "wechat": 6, "sharefile": 7, "a2a": 8, "media": 9,
+    "job-coding": 10, "local_embed": 11, "watchdog": 12,
+}
+
+#: Static startup records (environment facts) — last by design.
+_ENV_COMPONENTS: tuple[str, ...] = (
+    "config", "model", "subagent", "node", "npm", "bun", "uv",
+)
+_ORDER_FALLBACK = 20
+_ORDER_ENV = 30
+
+#: Cap on the key list a collapsed fact prints — a 200-server outage must not
+#: print 200 names (the count still tells the truth).
+_KEY_LIST_CAP = 24
+
+#: The report is kept under the save-side compaction budget
+#: (``memory_tool_result_chars``, 8000) so the model's permanent copy of a
+#: health check is the whole report rather than a head and a tail with the
+#: middle amputated.  Only the healthy section is ever folded to fit.
+_MAX_REPORT_CHARS = 7000
+
+#: Problem components named in the verdict line before it is truncated.
+_MAX_VERDICT_NAMES = 8
+
+
+def _order(component: str) -> int:
+    if component in _ORDER:
+        return _ORDER[component]
+    if component in _ENV_COMPONENTS:
+        return _ORDER_ENV + _ENV_COMPONENTS.index(component)
+    return _ORDER_FALLBACK
+
+
+def _rank(level: str) -> int:
+    return _RANK.get(level, _RANK_UNKNOWN)
+
+
+def _collapse(entries: list[dict]) -> list[dict]:
+    """Reduce a component's entries to one item per distinct (level, value, hint).
+
+    Entries agreeing on all three are one fact reported once per key — the
+    shape 20 disconnected MCP servers arrive in, and the reason the old report
+    repeated the same sentence 19 times.  ``value`` is part of the key on
+    purpose: two servers whose errors differ are two facts, and merging them
+    would silently drop one.
+    """
+    groups: dict[tuple[str, str, str], dict] = {}
+    for e in entries:
+        level = str(e.get("level") or "ok")
+        value = str(e.get("value") or "")
+        hint = str(e.get("hint") or "")
+        item = groups.setdefault(
+            (level, value, hint),
+            {"level": level, "value": value, "hint": hint, "keys": []},
+        )
+        if e.get("key"):
+            item["keys"].append(str(e["key"]))
+    items = list(groups.values())
+    for item in items:
+        item["keys"] = sorted(set(item["keys"]))
+    # Problems lead inside a component; the wider group breaks the tie, so the
+    # line reads "19 disconnected" before a one-off.
+    items.sort(key=lambda i: (_rank(i["level"]), -len(i["keys"]), i["value"]))
+    return items
+
+
+def _format_fact(item: dict) -> str:
+    keys = item["keys"]
+    value = item["value"]
+    if len(keys) > 1:
+        names = ", ".join(keys[:_KEY_LIST_CAP])
+        if len(keys) > _KEY_LIST_CAP:
+            names += f", +{len(keys) - _KEY_LIST_CAP} more"
+        return f"{value} [{names}]" if value else f"[{names}]"
+    if len(keys) == 1:
+        return f"{keys[0]}={value}" if value else keys[0]
+    return value
+
+
+def _component_line(items: list[dict], *, hints: bool) -> str:
+    """One component's facts as a single line, with remedies when *hints*.
+
+    A remedy is attached to the line rather than to one fact because in
+    practice every problem fact in a component shares it (19 disconnected
+    servers, one sentence); when they genuinely differ, each fact carries its
+    own so the pairing stays unambiguous.
+    """
+    facts = [_format_fact(i) for i in items]
+    if not hints:
+        return "; ".join(f for f in facts if f)
+    remedies = {i["hint"] for i in items
+                if i["hint"] and i["level"] in ("warning", "error")}
+    if len(remedies) == 1:
+        return "; ".join(f for f in facts if f) + f" — {remedies.pop()}"
+    parts = []
+    for item, fact in zip(items, facts):
+        if not fact:
+            continue
+        remedy = item["hint"] if item["level"] in ("warning", "error") else ""
+        parts.append(f"{fact} — {remedy}" if remedy else fact)
     return "; ".join(parts)
 
 
-def _overall_healthy(groups: dict[str, list[dict]]) -> bool:
-    return all(_component_status(es) == "ok" for es in groups.values())
+def _plural(count: int, noun: str, plural: str = "") -> str:
+    if count == 1:
+        return f"{count} {noun}"
+    return f"{count} {plural or noun + 's'}"
+
+
+def _verdict(problems: list[tuple], ok_count: int) -> str:
+    """The one-line verdict that leads the report."""
+    checked = len(problems) + ok_count
+    if not problems:
+        return f"HEALTHY — {_plural(checked, 'component')} checked, no problems."
+    errors = sum(1 for p in problems if p[3] == "error")
+    warnings = len(problems) - errors
+    names = [p[2] for p in problems]
+    shown = ", ".join(names[:_MAX_VERDICT_NAMES])
+    if len(names) > _MAX_VERDICT_NAMES:
+        shown += f", +{len(names) - _MAX_VERDICT_NAMES} more"
+    return (f"DEGRADED — {_plural(len(problems), 'problem')} "
+            f"({_plural(errors, 'error')}, {_plural(warnings, 'warning')}): "
+            f"{shown}; {_plural(ok_count, 'component')} OK.")
+
+
+def _section_width(names: list[str]) -> int:
+    """Column width for a section's component names (capped, so one long name
+    cannot push every fact off the screen)."""
+    return min(max((len(n) for n in names), default=0), 15)
+
+
+def _render_report(groups: dict[str, list[dict]]) -> str:
+    """Render merged, grouped health entries into the LLM-facing report.
+
+    Layout::
+
+        system_health: <verdict>
+
+        ## Problems
+        [WARN]  <component>: <fact(s)> — <remedy>
+
+        ## Components OK
+        <component>: <fact(s)>
+
+    A component appears in exactly one section (by its worst level) and shows
+    all of its facts there, so "what is the state of memdb?" is answered in one
+    place.  ``## Problems`` is omitted when there is nothing wrong.
+    """
+    problems: list[tuple] = []
+    oks: list[tuple[str, str]] = []
+    for component, entries in groups.items():
+        status = _component_status(entries)
+        line = _component_line(_collapse(entries), hints=status != "ok")
+        if status == "ok":
+            oks.append((component, line))
+        else:
+            problems.append((_rank(status), _order(component), component,
+                             status, line))
+    problems.sort()  # worst level first, then report order
+    oks.sort(key=lambda o: (_order(o[0]), o[0]))
+
+    head = [f"system_health: {_verdict(problems, len(oks))}"]
+    if problems:
+        width = _section_width([p[2] for p in problems])
+        head += ["", "## Problems"]
+        for _rank_i, _order_i, component, status, line in problems:
+            marker = "[ERROR]" if status == "error" else "[WARN] "
+            head.append(f"{marker} {component.ljust(width)}: {line}")
+
+    def _ok_block(fold: bool) -> list[str]:
+        if not oks:
+            return []
+        width = _section_width([c for c, _ in oks])
+        if not fold:
+            return ["", "## Components OK"] + [
+                f"{c.ljust(width)}: {line}" for c, line in oks
+            ]
+        # Folding is the only lossy path in the renderer, it never touches the
+        # problems, and it says so — a silently middle-cut report is worse.
+        return (["", "## Components OK"]
+                + [c.ljust(width) for c, _ in oks]
+                + ["", f"(detail omitted to fit the result budget — "
+                       f"{_plural(len(oks), 'healthy component')}; re-run "
+                       f"system_health and read one component's line below)"])
+
+    report = "\n".join(head + _ok_block(fold=False))
+    if len(report) > _MAX_REPORT_CHARS:
+        report = "\n".join(head + _ok_block(fold=True))
+    return report
 
 
 class SystemHealthTool(Tool):
@@ -922,29 +1173,16 @@ class SystemHealthTool(Tool):
 
     name = "system_health"
     category: ClassVar[str] = "System"
-    description = ("One-call health report: every subsystem check plus startup "
-                   "records, grouped per component with an overall healthy flag.")
+    description = ("One-call health report over every subsystem: problems first "
+                   "with the remedy, then one line per healthy component "
+                   "(startup records included). No arguments.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
         startup = get_startup_records()
         dynamic = await _run_checks(ctx=getattr(self, "_ctx", None))
-        all_entries = _dedupe_records(startup, dynamic)
-        groups = _group_by_component(all_entries)
-
-        components: dict[str, dict] = {}
-        for comp, entries in groups.items():
-            components[comp] = {
-                "status": _component_status(entries),
-                "entries": entries,
-            }
-
-        result = {
-            "healthy": _overall_healthy(groups),
-            "summary": _build_summary(groups),
-            "components": components,
-        }
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        groups = _group_by_component(_dedupe_records(startup, dynamic))
+        return _render_report(groups)
 
 
 # ═══════════════════════════════════════════════════════════════════════

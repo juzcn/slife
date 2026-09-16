@@ -105,17 +105,18 @@ def check_external_deps() -> None:
         try:
             r = _sp.run(["node", "--version"], capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
             if r.returncode == 0:
-                record("node", "ok", key="version", value=r.stdout.strip(),
-                        hint="Node.js found — fetch MCP can use Readability.js for article extraction.")
+                record("node", "ok", key="version", value=r.stdout.strip())
             else:
                 record("node", "warning", key="exit", value=str(r.returncode),
-                        hint="node exists but returned non-zero. Fetch MCP falls back to pure-Python extraction.")
+                        hint="Reinstall Node.js from https://nodejs.org — fetch "
+                             "falls back to pure-Python extraction meanwhile.")
         except Exception:
             record("node", "warning", key="error", value="unexpected error",
-                    hint="node check failed. Fetch MCP uses pure-Python extraction.")
+                    hint="Reinstall Node.js from https://nodejs.org.")
     else:
         record("node", "warning", key="missing", value="not found",
-                hint="Node.js not installed. Re-run install script or install manually from https://nodejs.org. Fetch MCP uses pure-Python extraction.")
+                hint="Install Node.js from https://nodejs.org (fetch falls back "
+                     "to pure-Python extraction without it).")
 
     if npm_path:
         try:
@@ -125,17 +126,18 @@ def check_external_deps() -> None:
             npm_cmd = ["cmd", "/c", "npm", "--version"] if _sys.platform == "win32" else ["npm", "--version"]
             r = _sp.run(npm_cmd, capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
             if r.returncode == 0:
-                record("npm", "ok", key="version", value=(r.stdout.strip() or "?"),
-                        hint="npm found.")
+                record("npm", "ok", key="version", value=(r.stdout.strip() or "?"))
             else:
                 record("npm", "warning", key="exit", value=str(r.returncode),
-                        hint="npm exists but returned non-zero.")
+                        hint="Reinstall Node.js from https://nodejs.org — npx-based "
+                             "MCP servers cannot start meanwhile.")
         except Exception:
             record("npm", "warning", key="error", value="unexpected error",
-                    hint="npm check failed.")
+                    hint="Reinstall Node.js from https://nodejs.org.")
     else:
         record("npm", "warning", key="missing", value="not found",
-                hint="npm not installed. Re-run install script or install Node.js from https://nodejs.org.")
+                hint="Install Node.js from https://nodejs.org — npx-based MCP "
+                     "servers cannot start without it.")
 
     # ── bun (used to run Node.js MCP servers) ──
     bun_path = _shutil.which("bun")
@@ -145,18 +147,19 @@ def check_external_deps() -> None:
             bun_cmd = ["cmd", "/c", "bun", "--version"] if _sys.platform == "win32" else ["bun", "--version"]
             r = _sp.run(bun_cmd, capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
             if r.returncode == 0:
-                record("bun", "ok", key="version", value=r.stdout.strip(),
-                        hint="bun found — JavaScript/TypeScript MCP servers can run via bunx.")
+                record("bun", "ok", key="version", value=r.stdout.strip())
             else:
                 record("bun", "warning", key="exit", value=str(r.returncode),
-                        hint="bun exists but returned non-zero.")
+                        hint="Reinstall from https://bun.sh, or ignore — JS/TS MCP "
+                             "servers also run via npx.")
         except Exception:
             record("bun", "warning", key="error", value="unexpected error",
-                    hint="bun check failed.")
+                    hint="Reinstall from https://bun.sh, or ignore — JS/TS MCP "
+                         "servers also run via npx.")
     else:
         record("bun", "warning", key="missing", value="not found",
-                hint="bun not installed. Run the install script or install from https://bun.sh. "
-                     "JS/TS MCP servers run via npx; bun is optional for these.")
+                hint="Optional: install from https://bun.sh. JS/TS MCP servers "
+                     "run via npx without it.")
 
     # ── uv / uvx (used to run Python MCP servers) ──
     uv_path = _shutil.which("uv")
@@ -164,13 +167,16 @@ def check_external_deps() -> None:
         try:
             r = _sp.run(["uv", "--version"], capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
             if r.returncode == 0:
-                record("uv", "ok", key="version", value=r.stdout.strip(),
-                        hint="uv found — MCP servers can be spawned via uvx.")
+                record("uv", "ok", key="version", value=r.stdout.strip())
             else:
                 record("uv", "warning", key="exit", value=str(r.returncode),
-                        hint="uv exists but returned non-zero.")
+                        hint="Reinstall from https://astral.sh. uvx-based MCP "
+                             "servers cannot start meanwhile.")
         except Exception:
-            record("uv", "warning", key="error", value="unexpected error")
+            record("uv", "warning", key="error", value="unexpected error",
+                    hint="Reinstall from https://astral.sh. uvx-based MCP "
+                         "servers cannot start meanwhile.")
     else:
         record("uv", "warning", key="missing", value="not found",
-                hint="uv not installed. Re-run the install script or install from https://astral.sh.")
+                hint="Install from https://astral.sh. uvx-based MCP servers "
+                     "cannot start without it.")

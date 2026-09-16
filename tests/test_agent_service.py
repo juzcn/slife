@@ -407,11 +407,11 @@ class TestAgentServiceMCPDiscovery:
     @pytest.mark.asyncio
     async def test_discover_records_ok_health_replace(self, sample_config):
         """Successful tool registration supersedes a stale startup warning —
-        ``mcp_server/ok`` with replace=True, so the health store itself
+        ``mcp_servers/ok`` with replace=True, so the health store itself
         reflects the recovery, not just the live check_mcp diff."""
         from slife.health import record
         record(
-            "mcp_server", "warning",
+            "mcp_servers", "warning",
             key="foo", value="connect_pending",
             hint="enabled but not yet connected; retrying in background.",
         )
@@ -427,7 +427,7 @@ class TestAgentServiceMCPDiscovery:
         recs = [e for e in get_report() if e.get("key") == "foo"]
         assert len(recs) == 1  # the warning was replaced, not appended
         assert recs[0]["level"] == "ok"
-        assert recs[0]["value"] == "connected"
+        assert recs[0]["value"] == "tools registered"
 
     @pytest.mark.asyncio
     async def test_discover_with_no_tools_leaves_health_untouched(self, sample_config):
@@ -435,7 +435,7 @@ class TestAgentServiceMCPDiscovery:
         warning must survive (no flicker in either registry or health)."""
         from slife.health import record
         record(
-            "mcp_server", "warning",
+            "mcp_servers", "warning",
             key="foo", value="connect_pending",
             hint="enabled but not yet connected; retrying in background.",
         )

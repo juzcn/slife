@@ -485,7 +485,7 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 
 ### Health & logs
 
-* **`system_health`** (or the standalone `check_memdb`, `check_wechat`, `check_memfiles`, `check_sharefile`, `check_local_embed`, `check_mcp_gateway [server]`, `check_a2a`, `check_media`, `check_job_coding`, `check_watchdog`) reports live status for every subsystem — ask the agent to run it any time something seems off.
+* **`system_health`** reports live status for every subsystem in one call — problems first with what to do about them, then one line per healthy component — and it is the only health tool the agent has (the per-subsystem `check_*` functions are internal). Ask the agent to run it any time something seems off.
 * **Logs** live in `~/.slife/logs/` (one per session, `event_name key=value` lines, DEBUG+; plugins inherit the session id). The terminal is reserved for the TUI — nothing prints to it but the chat.
 
 ## Development

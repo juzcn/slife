@@ -135,12 +135,15 @@ def main(config_path: str | None = None):
         _mcp_servers = _mcp_cfg.count_servers()
     except Exception:
         pass
+    # The fact lives in ``value`` (a healthy report prints values only) — the
+    # counts tell the reader which config is actually live.
     record(
         "config", "ok",
-        key="path", value=str(_cp),
-        hint=f"Config loaded: {len(config.models)} models, "
-             f"{_mcp_servers} MCP servers, "
-             f"embeddings={'enabled' if (config.embeddings_config and config.embeddings_config.enabled and config.embeddings_config.active_model) else 'disabled'}.",
+        key="path", value=(
+            f"{_cp} ({len(config.models)} models, {_mcp_servers} MCP servers, "
+            f"embeddings="
+            f"{'enabled' if (config.embeddings_config and config.embeddings_config.enabled and config.embeddings_config.active_model) else 'disabled'})"
+        ),
     )
 
     # Check external tooling availability (best-effort, reports via health
@@ -176,10 +179,11 @@ def main(config_path: str | None = None):
     logger.debug("tools=%d", len(config.tools))
     record(
         "model", "ok",
-        key="active", value=active.ref,
-        hint=f"Model: {active.ref}, "
-             f"thinking={'on' if active.thinking_enabled else 'off'}, "
-             f"context={active.context_window}.",
+        key="active", value=(
+            f"{active.ref} (thinking="
+            f"{'on' if active.thinking_enabled else 'off'}, "
+            f"ctx {active.context_window})"
+        ),
     )
 
     # Logs never reach the terminal: setup_logging() runs the console stderr

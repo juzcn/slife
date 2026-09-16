@@ -248,11 +248,7 @@ class PluginLifecycle:
         self._watchdog_task = asyncio.ensure_future(self._watchdog_loop())
         logger.info("%s_watchdog_started", self.name)
         from slife.health import record
-        record(
-            "watchdog", "ok",
-            key=self.name, value="active",
-            hint=f"Watchdog monitoring {self.name} plugin process.",
-        )
+        record("watchdog", "ok", key=self.name, value="active")
 
     async def _watchdog_loop(self) -> None:
         """Monitor the child process; restart on unexpected exit.
@@ -460,8 +456,7 @@ class PluginLifecycle:
                 from slife.health import record
                 record(
                     "watchdog", "ok",
-                    key=self.name, value="active",
-                    hint=f"{self.name} plugin restarted successfully — watchdog monitoring.",
+                    key=self.name, value="active after restart",
                 )
             except Exception:
                 backoff = min(

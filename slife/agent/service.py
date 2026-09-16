@@ -97,6 +97,16 @@ def _server_category(name: str) -> str:
         return "mcp"
 
 
+def _health_component(name: str) -> str:
+    """The health component an external server belongs to.
+
+    ``system_health`` reports the two server families separately (an operator
+    manages them with different tool sets), so a startup record has to name the
+    same component its live check does or the merge layer cannot supersede it.
+    """
+    return "rest-api" if _server_category(name) == "rest-api" else "mcp_servers"
+
+
 def _short_reason(reason: str, limit: int = 140) -> str:
     """Condense a provider's failure reason to one readable line.
 
@@ -740,12 +750,11 @@ class AgentService:
         and start the inbound-message poll loop."""
         lc.restore_task = asyncio.create_task(self._wechat_restore_session())
         lc.poll_task = asyncio.create_task(self._wechat_poll_loop())
+        # Component name == the live check's component (``check_wechat``) so the
+        # merge layer can supersede this record by (component, key) — one
+        # component name per subsystem, no alias table.
         from slife.health import record
-        record(
-            "wechat_service", "ok",
-            key="status", value="connected",
-            hint="WeChat plugin started and tools registered.",
-        )
+        record("wechat", "ok", key="status", value="plugin started")
 
     async def _wechat_restore_session(self) -> None:
         """Best-effort session restore (triggers the server-side poll loop).
@@ -808,12 +817,12 @@ class AgentService:
         """After an a2a child is ready: start the drain loop that feeds
         inbound tasks/presence into the inbox."""
         lc.poll_task = asyncio.create_task(self._a2a_poll_loop())
+        # The live ``check_a2a`` reports the same (component, key) on every
+        # ``system_health`` call, so this record is the startup evidence that
+        # the plugin did start; the merge layer drops it once the live entry
+        # covers it.
         from slife.health import record
-        record(
-            "a2a", "ok",
-            key="status", value="connected",
-            hint="A2A P2P mesh connected (plugin).",
-        )
+        record("a2a", "ok", key="status", value="plugin started")
         logger.info("a2a_plugin_started")
 
     async def _after_ready_sharefile(self, lc) -> None:
@@ -1636,11 +1645,15 @@ class AgentService:
             # same entry when a server comes up while the agent is otherwise
             # idle; recording here too keeps the store consistent regardless
             # of which path actually re-synced the tools.
+            # Component name == the live check's (``check_mcp_gateway`` reports
+            # the two server families separately) so the merge layer supersedes
+            # this record once the live entry covers the same server;
+            # ``replace=True`` keeps the store itself consistent when a server
+            # recovers mid-session.
             from slife.health import record
             record(
-                "mcp_server", "ok",
-                key=server_name, value="connected",
-                hint=f"MCP server '{server_name}' connected.",
+                _health_component(server_name), "ok",
+                key=server_name, value="tools registered",
                 replace=True,
             )
 
@@ -1662,9 +1675,10 @@ class AgentService:
             logger.error("mcp_discover_failed server=%s err=%s", server_name, e)
             from slife.health import record
             record(
-                "mcp_server", "warning",
-                key=server_name, value="discovery_failed",
-                hint=f"MCP server '{server_name}' connected but tool discovery failed: {e}",
+                _health_component(server_name), "warning",
+                key=server_name, value="tool discovery failed",
+                hint=f"{e} — the server connected but its tool list is empty; "
+                     f"re-run system_health to retry discovery.",
             )
         finally:
             self._mcp_syncing.discard(server_name)
@@ -2884,8 +2898,10 @@ class AgentService:
         from slife.health import record
         record(
             "subagent", "ok",
-            key="status", value="ready",
-            hint=f"Subagent manager ready (max_subagents={(self.config.subagent_config or {}).get('max_subagents', '?')}).",
+            key="status", value=(
+                "ready (max_subagents="
+                f"{(self.config.subagent_config or {}).get('max_subagents', '?')})"
+            ),
         )
 
     async def stop_subagent(self) -> None:

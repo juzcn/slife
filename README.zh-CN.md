@@ -494,7 +494,7 @@ uv pip install --python "$(uv tool dir)/slife" sentence-transformers        # sl
 
 ### 健康与日志
 
-* **`system_health`**（或独立的 `check_memdb`、`check_wechat`、`check_memfiles`、`check_sharefile`、`check_local_embed`、`check_mcp_gateway [server]`、`check_a2a`、`check_media`、`check_job_coding`、`check_watchdog`）报告每个子系统的实时状态——感觉任何东西不对劲时都让 agent 跑一下。
+* **`system_health`** 一次调用报告每个子系统的实时状态——先说问题和该怎么处理，然后每个健康组件一行——它是 agent 唯一的健康工具（各子系统的 `check_*` 函数是内部实现）。感觉任何东西不对劲时都让 agent 跑一下。
 * **日志**在 `~/.slife/logs/`（每个会话一个文件，`event_name key=value` 行格式，DEBUG+；插件继承会话 id）。终端保留给 TUI——除了聊天，什么都不往终端打印。
 
 <a id="development" name="development"></a>

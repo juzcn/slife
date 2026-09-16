@@ -411,7 +411,7 @@ For `url`-configured servers the gateway tries the SDK `sse_client` first: a non
 
 **The catalog is shared, not gateway-local.** The gateway owns *connections* and the live tool surface — `mcp_list_tools` is the live source, no wrapper-side catalog exists. Every external tool's row lives in the **shared `tools.db` catalog**, fed by the host's `_sync_mcp_proxies` reconcile on every (re)connect: auto-load servers get their proxies and rows wholesale (`autoload: true`), on-demand servers (the default) get **row-only** mirrors so `tool_search`/`func-tool-load` can reach individual tools one at a time, and `func-tool-load` materializes the execution proxy from the row. A server being disconnected / disabled marks its rows `error` (so they stop injecting without losing the model's own load decisions), and a server configured-out has its rows purged — `mcp_remove` is the only server teardown path. The row model, the reconcile, and the injection chain are **[docs/TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
 
-Exposed management tools: `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` (LLM-visible); `__check`, `__mcp_call_tool` (internal).  `mcp_connect` / `mcp_disconnect` were retired with the modern protocol era — a stateless peer has no session to open or close, so `mcp_set_enabled` is the single lifecycle switch (enabling connects; a later tool call reconnects lazily). `mcp_list` is a **static config view** — what is configured, with no live state and no secrets; `check_mcp_gateway` (also run by `system_health`) calls the internal `__check` for the raw live state and adds health levels with remediation hints. The separation keeps "what is configured" distinct from "what is connected".
+Exposed management tools: `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` (LLM-visible); `__check`, `__mcp_call_tool` (internal).  `mcp_connect` / `mcp_disconnect` were retired with the modern protocol era — a stateless peer has no session to open or close, so `mcp_set_enabled` is the single lifecycle switch (enabling connects; a later tool call reconnects lazily). `mcp_list` is a **static config view** — what is configured, with no live state and no secrets; the internal `check_mcp_gateway` function (run by `system_health`, not callable as a tool) reads the same `__check` for the raw live state and adds health levels with remediation hints. The separation keeps "what is configured" distinct from "what is connected".
 
 Server lifecycle:
 
@@ -697,26 +697,44 @@ Known shapes: `sk-*`, `ghp_*`, `ya29.*`, `pypi-*`, `Authorization: Bearer` token
 
 ### Health Checks
 
-Health checks fall into two categories. `system_health` runs them all together. Because the standalone checks are subsets of `system_health`, their schemas state that relationship explicitly — so the LLM never re-calls each `check_*` after running the aggregate.
+Health checks fall into two categories. `system_health` runs them all together — it is the **only** health tool registered for the LLM (the per-subsystem `check_*` functions are internal, so nothing re-calls them after the aggregate).
 
 **Static startup checks** — `check_external_deps()` in `slife/health.py` probes system tooling once at startup **on a daemon thread**, recording per-tool entries via `health.record()` (components `node` / `npm` / `bun` / `uv`); they surface through `system_health` via the startup-record merge. Missing deps are warnings, not failures — Slife still starts.
 
-**Dynamic runtime checks** — spec-derived (`_SPEC_CHECKS` maps each plugin's health-check name to its client) plus two non-plugin checks:
+**Dynamic runtime checks** — spec-derived (`_SPEC_CHECKS` maps each plugin's health-check name to its client) plus three non-plugin checks (`check_tool_catalog` reads the context's catalog service; `check_local_embed` and `check_watchdog` have no plugin client at all):
 
 | Check | What it monitors | Layer |
 |-------|-----------------|-------|
 | `check_memdb` | Database file + embedding backend (model, dimension, availability) | memdb plugin `__check` |
 | `check_wechat` | Login status, session age, QR expiry | wechat plugin `__check` |
 | `check_memfiles` | Cabinet connected? semantic index ready? | memfiles plugin `__check` |
-| `check_local_embed` | Local embedding daemon online? model list? (probes the daemon's HTTP `GET /v1/models` — not a plugin) | local-embed daemon |
-| `check_sharefile` | Tunnel online? URL? | sharefile plugin `__check` |
-| `check_mcp_gateway [server]` | Gateway health + per-server diagnosis (optional `server` arg filters one) | gateway `__check` |
-| `check_a2a` | Mesh connection + peer status | a2a plugin `__check` |
+| `check_local_embed` | Active embedding endpoint online? model list? (probes its HTTP `GET /v1/models` — not a plugin) | embedding endpoint |
+| `check_sharefile` | Tunnel online? URL? which provider? | sharefile plugin `__check` |
+| `check_mcp_gateway` | Per-server diagnosis; reports `mcp_servers` and `rest-api` as **separate components** (optional `server` arg filters one) | gateway `__check` |
+| `check_a2a` | Mesh connection + peer status + queue backlog | a2a plugin `__check` |
 | `check_media` | Media provider availability | media plugin `__check` |
-| `check_job_coding` | Jobs dir + registered job tools | job-coding plugin `__check` |
+| `check_job_coding` | Jobs dir + registered job tools + gateway link | job-coding plugin `__check` |
+| `check_tool_catalog` | `tools.db`: tool/server/loaded counts + the catalog's semantic index | host-as-plugin `__check` facts |
 | `check_watchdog` | Auto-restart status per plugin, deduplicated from health records (latest per plugin) | Process layer |
 
 Every plugin-backed check probes the plugin's internal `__check` tool, which reports only raw technical state (facts and measurements, like a physical-examination report) and **never triggers a connect**. The harness interprets those facts into health levels and remediation hints — a plugin `__check` has no levels of its own. The watchdog only monitors processes — it does not introspect application state.
+
+**The report.** `system_health` renders **plain text, not JSON** — a truncated JSON document is unparseable, while a line-oriented report degrades to fewer whole lines (a tool result is tail-cut at the live cap, and above `memory_tool_result_chars` head+tail-cut at save, so the report is built to fit the save budget in the first place and puts the verdict first):
+
+```
+system_health: DEGRADED — 2 problems (0 errors, 2 warnings): rest-api, wechat; 16 components OK
+
+## Problems
+[WARN]  rest-api: disconnected [github, mcp-registry] — The wrapper retries in the background. …
+[WARN]  wechat  : status=session_expired (436.6h old, max 23h) — Call wechat_login to re-scan.
+
+## Components OK
+memdb: db=7.3 MB (slife.db); embedding=ready (BAAI/bge-m3, dim=1024)
+```
+
+One rule shapes every entry a check returns: **`value` is the fact, `hint` is what to do about it.** `value` must be self-contained (it is what the healthy section prints); `hint` is rendered only for `warning`/`error` entries, so a healthy entry carries none (enforced by `TestOkEntriesCarryNoHint`). Any other key on an entry is machine-only — the renderer reads only `component`/`level`/`key`/`value`/`hint`. Entries that agree on `(level, value, hint)` collapse into one fact with a key list, which is what keeps 19 disconnected servers to one line; ranking puts problems first, and the static environment records last. Nothing may name a `check_*` function as a remedy — they are not callable.
+
+**Startup records vs live checks.** A startup record (`health.record`) is dropped when a live entry covers the same `(component, key)` — so a producer names its component after the live check that re-reports it (`mcp_servers` / `rest-api`, `watchdog`, `wechat`, `a2a`), and the live report wins in both directions. This is why `_discover_and_register_external_tools` records under `_health_component()` rather than a fixed name.
 
 ### Logging Convention
 

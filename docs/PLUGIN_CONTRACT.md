@@ -242,11 +242,35 @@ detecting `/mnt/*` paths.
 
 `system_health` (`slife/tools/system.py`) enumerates plugin checks **from the
 registry**: for each spec with `health=True` it runs `check_<name>` and binds
-that check to the plugin's `ctx_field` client.  `check_local_embed` and
-`check_watchdog` (not plugins) are appended.  Each `check_*` encodes its
-subsystem's semantics (probes the plugin's `__check` internal tool, reads
-config, etc.) — the *enumeration* is derived, the implementations stay
-bespoke.  Startup records that a live check re-reports are de-duplicated.
+that check to the plugin's `ctx_field` client.  The non-plugin checks are
+appended by hand — `check_tool_catalog` (the catalog service is an in-process
+context field, not a plugin), `check_local_embed` and `check_watchdog`.  Each
+`check_*` encodes its subsystem's semantics (probes the plugin's `__check`
+internal tool, reads config, etc.) — the *enumeration* is derived, the
+implementations stay bespoke.
+
+**The entry contract a check must keep.**  Every check returns flat entries of
+`component` / `level` / `key` / `value` / `hint`, where **`value` is the fact
+and `hint` is what to do about it**:
+
+- `value` must be self-contained — it is what the healthy section of the report
+  prints, and a healthy entry is rendered as `value` alone;
+- `hint` is rendered **only** for `warning`/`error` entries, so an `ok`/`info`
+  entry must not carry one (a fact parked there is invisible; the suite fails
+  on it);
+- neither may be a sentence that restates the component or the key — the
+  renderer prints those already;
+- a remedy must name a tool that exists (`mcp_list`, `wechat_login`,
+  `embeddings_model_set`, …) — never a `check_*` function, which is internal;
+- `info` means "intentionally off" (a disabled server): it is not a problem;
+- any extra key is machine-only and never rendered.
+
+The report itself is plain text (verdict → problems → one line per healthy
+component).  The renderer collapses entries agreeing on
+`(level, value, hint)` into a single fact with a key list, and a startup record
+from `health.record` is dropped when a live entry covers the same
+`(component, key)` — so a producer must name its component after the live check
+that re-reports it.
 
 ---
 
