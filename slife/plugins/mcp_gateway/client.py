@@ -365,7 +365,8 @@ class MCPClient:
         # open (and asking would only earn a ListenNotSupportedError).
         if peer_era(self._session) == "modern":
             self._watch_task = asyncio.create_task(
-                watch_tools_changed(self._session, self._forward_tools_changed),
+                watch_tools_changed(self._session, self._forward_tools_changed,
+                                    link=url),
                 name="mcp-listen",
             )
 

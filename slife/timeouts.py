@@ -48,6 +48,9 @@ class Ready:
     signal: float = 60.0
     stderr_line: float = 1.0
     relisten: float = 1.0        # backoff before re-opening a dropped change stream
+    relisten_max: float = 30.0   # cap on that backoff — a peer that keeps rejecting
+                                 # re-listen (e.g. its subscription quota is full)
+                                 # must not be asked every second forever
     probe_broker: float = 1.0
     probe_endpoint: float = 5.0
     tunnel_start: float = 45.0
@@ -154,6 +157,8 @@ def validate(ts: Timeouts) -> list[str]:
         errs.append(f"invariant: grace.gentle({ts.grace.gentle}) <= grace.force({ts.grace.force})")
     if not (ts.ready.relisten <= ts.ready.connect_attempt <= ts.ready.spawn):
         errs.append("invariant: ready.relisten <= ready.connect_attempt <= ready.spawn")
+    if ts.ready.relisten_max < ts.ready.relisten:
+        errs.append("invariant: ready.relisten_max >= ready.relisten")
     if ts.ready.connect_startup < ts.ready.spawn:
         errs.append("invariant: ready.connect_startup >= ready.spawn")
     if ts.work.stall <= 0:

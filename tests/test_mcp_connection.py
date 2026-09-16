@@ -641,6 +641,23 @@ class TestMCPServerConnectionPing:
         assert await conn.ping() is False
 
     @pytest.mark.asyncio
+    async def test_ping_answered_with_an_error_is_alive(self):
+        """A server that answers "Method not found" is alive — ``ping`` is
+        optional, and reading the error as death put 8 real servers into a
+        respawn-every-30s loop (the health monitor reconnects on a False)."""
+        from mcp import MCPError
+
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.CONNECTED
+        session = AsyncMock()
+        session.send_ping = AsyncMock(
+            side_effect=MCPError(-32601, "Method not found"),
+        )
+        conn._session = session
+        assert await conn.ping() is True
+
+    @pytest.mark.asyncio
     async def test_ping_hung_server_times_out(self):
         """A hung server (no ping answer) makes ping() False, not hang."""
         cfg = ServerConfig(name="test", command="echo")

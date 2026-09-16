@@ -31,6 +31,8 @@ import inspect
 import logging
 from typing import Any, Awaitable, Callable
 
+from mcp import MCPError
+
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
@@ -69,18 +71,32 @@ def peer_era(session: Any) -> str:
     return "unknown"
 
 
+#: JSON-RPC "Method not found" — the peer answered, it just has no such method.
+_METHOD_NOT_FOUND = -32601
+
+
 async def watch_tools_changed(
     session: Any,
     handler: Callable[[], Awaitable[None] | None],
+    *,
+    link: str,
 ) -> None:
     """Keep a ``tools/list_changed`` listen stream open; call *handler* per event.
 
-    Runs until cancelled (the link disconnects).  A legacy peer raises
-    ``ListenNotSupportedError`` on the first attempt — its notifications
-    ride the session channel, so this returns quietly and the caller's
-    ``message_handler`` path stays the trigger.  Every other failure
-    (``SubscriptionLost`` on an abrupt drop, a rejected listen, a transport
-    that died) re-listens after ``timeouts.ready.relisten``.
+    Runs until cancelled (the link disconnects).  One answer means "this peer
+    has no change stream, stop asking" and settles the link quietly:
+    ``MCPError -32601`` — the peer does not implement ``subscriptions/listen``,
+    so the rejection is permanent and re-asking only burns its subscription
+    quota and floods the log.  A legacy peer never gets that far
+    (``ListenNotSupportedError`` below), and its notifications ride the session
+    channel, so the caller's ``message_handler`` stays the trigger for both.
+
+    Every other failure — ``SubscriptionLost`` on an abrupt drop, a rejected
+    listen (e.g. the peer's subscription quota is momentarily full), a
+    transport that died — re-listens, backing off from ``relisten`` to
+    ``relisten_max`` so a peer that keeps refusing is not asked every second.
+    The backoff resets as soon as a listen is accepted, so a recovered peer is
+    watched at full cadence again.
 
     The event is a bare level trigger: a listener re-reads the tool list
     rather than trusting a payload, so a missed-during-reconnect change is
@@ -89,18 +105,31 @@ async def watch_tools_changed(
     """
     from mcp.client.subscriptions import ListenNotSupportedError, listen
 
+    wait = _timeouts.timeouts.ready.relisten
     while True:
         try:
             async with listen(session, tools_list_changed=True) as subscription:
+                wait = _timeouts.timeouts.ready.relisten  # accepted — full cadence
                 async for _event in subscription:
                     result = handler()
                     if inspect.isawaitable(result):
                         await result
         except ListenNotSupportedError:
-            logger.debug("mcp_listen_unsupported era=%s", peer_era(session))
+            logger.debug("mcp_listen_unsupported link=%s era=%s", link,
+                         peer_era(session))
             return
+        except MCPError as e:
+            if e.code == _METHOD_NOT_FOUND:
+                logger.info("mcp_listen_absent link=%s era=%s msg=%s", link,
+                            peer_era(session), e.message)
+                return
+            logger.debug("mcp_listen_stream_lost link=%s err=%s", link, e)
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.debug("mcp_listen_stream_lost err=%s", e)
-        await asyncio.sleep(_timeouts.timeouts.ready.relisten)
+            logger.debug("mcp_listen_stream_lost link=%s err=%s", link, e)
+        await asyncio.sleep(wait)
+        wait = min(
+            wait * _timeouts.timeouts.ready.watchdog_backoff_multiplier,
+            _timeouts.timeouts.ready.relisten_max,
+        )

@@ -32,7 +32,7 @@ from typing import Any
 
 import httpx2
 
-from mcp import ClientSession
+from mcp import ClientSession, MCPError
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
@@ -448,7 +448,8 @@ class MCPServerConnection:
         if self._session is None:
             return
         self._watch_task = asyncio.create_task(
-            watch_tools_changed(self._session, self._notify_tools_changed),
+            watch_tools_changed(self._session, self._notify_tools_changed,
+                                link=self.config.name),
             name=f"mcp-listen:{self.config.name}",
         )
 
@@ -650,7 +651,16 @@ class MCPServerConnection:
         return list(self._tools_cache)
 
     async def ping(self, timeout: float | None = None) -> bool:
-        """Return True if the server answers an MCP ping (SDK send_ping).
+        """Return True if the server is ALIVE (SDK ``send_ping``).
+
+        Liveness, not protocol compliance.  A server that answers with a
+        JSON-RPC error is alive — it simply does not implement ``ping``, which
+        the protocol leaves optional, and a whole class of publicly published
+        servers answers ``Method not found``.  Reading that as death made the
+        health monitor tear such a server down and respawn it every interval,
+        forever (eight configured servers here, each looping every 30 s with a
+        fresh child process).  Only silence (the timeout) or a transport
+        failure means dead.
 
         ``timeout`` defaults to the registry's ready.probe_endpoint; a caller
         may pass a shorter bound explicitly.
@@ -662,7 +672,16 @@ class MCPServerConnection:
         try:
             await asyncio.wait_for(self._session.send_ping(), timeout=timeout)
             return True
-        except Exception:
+        except MCPError as e:
+            logger.debug(
+                "mcp_ping_unsupported server=%s code=%s msg=%s",
+                self.config.name, e.code, e.message,
+            )
+            return True
+        except Exception as e:
+            # The health monitor's warning says what it is about to do; this is
+            # the why, which it cannot see (the exception dies here).
+            logger.warning("mcp_ping_failed server=%s err=%s", self.config.name, e)
             return False
 
     async def _health_monitor(self) -> None:

@@ -12,6 +12,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from mcp import MCPError
 
 from slife.mcp import era
 
@@ -99,6 +100,14 @@ class TestNegotiateEra:
         assert era.peer_era(MagicMock(discover_result=None, initialize_result=None)) == "unknown"
 
 
+def _ready(relisten: float = 0, relisten_max: float = 0) -> MagicMock:
+    """A stand-in timeout registry with the two knobs the supervisor reads."""
+    return MagicMock(ready=MagicMock(
+        relisten=relisten, relisten_max=relisten_max,
+        watchdog_backoff_multiplier=2.0,
+    ))
+
+
 class TestWatchToolsChanged:
     @pytest.mark.asyncio
     async def test_calls_handler_per_event_and_relistens_after_a_drop(self):
@@ -112,10 +121,11 @@ class TestWatchToolsChanged:
         with (
             patch("mcp.client.subscriptions.listen", fake),
             # no backoff between rounds in the test
-            patch("slife.timeouts.timeouts", MagicMock(ready=MagicMock(relisten=0))),
+            patch("slife.timeouts.timeouts", _ready()),
         ):
             # The supervisor ends on its own once the peer refuses a stream.
-            await asyncio.wait_for(era.watch_tools_changed(MagicMock(), handler), 1)
+            await asyncio.wait_for(
+                era.watch_tools_changed(MagicMock(), handler, link="test"), 1)
 
         # 2 events + 1 event, across a drop and a re-listen
         assert handler.await_count == 3
@@ -128,9 +138,10 @@ class TestWatchToolsChanged:
         fake = _FakeListen([([], None)])
         with (
             patch("mcp.client.subscriptions.listen", fake),
-            patch("slife.timeouts.timeouts", MagicMock(ready=MagicMock(relisten=5))),
+            patch("slife.timeouts.timeouts", _ready(relisten=5, relisten_max=5)),
         ):
-            task = asyncio.create_task(era.watch_tools_changed(MagicMock(), handler))
+            task = asyncio.create_task(
+                era.watch_tools_changed(MagicMock(), handler, link="test"))
             await asyncio.sleep(0.02)     # parked in the backoff sleep
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -148,6 +159,71 @@ class TestWatchToolsChanged:
             raise ListenNotSupportedError("2025-11-25")
 
         with patch("mcp.client.subscriptions.listen", _listen):
-            await era.watch_tools_changed(MagicMock(), handler)   # returns, no raise
+            # returns, no raise
+            await era.watch_tools_changed(MagicMock(), handler, link="test")
 
         handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_peer_without_the_method_is_not_retried(self):
+        """A modern-negotiated peer that answers -32601 never gains the method
+        mid-session, so re-asking every relisten is pure churn — the loop
+        settles the link on the first refusal."""
+        handler = AsyncMock()
+        calls = 0
+
+        def _listen(session, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise MCPError(-32601, "Method not found")
+
+        with (
+            patch("mcp.client.subscriptions.listen", _listen),
+            patch("slife.timeouts.timeouts", _ready(relisten=0, relisten_max=0)),
+        ):
+            await asyncio.wait_for(
+                era.watch_tools_changed(MagicMock(), handler, link="test"), 1)
+
+        assert calls == 1, "a permanent refusal must not be retried"
+        handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_rejection_that_can_succeed_backs_off(self):
+        """A refused listen (the peer's subscription quota is momentarily
+        full) can clear, so keep asking — but widening the interval — and drop
+        back to full cadence the moment one is accepted."""
+        from mcp.client.subscriptions import ListenNotSupportedError, SubscriptionLost
+
+        waits: list[float] = []
+
+        async def _sleep(seconds):
+            waits.append(seconds)
+
+        rounds = {"n": 0}
+
+        def _listen(session, **kwargs):
+            rounds["n"] += 1
+            n = rounds["n"]
+
+            class _CM:
+                async def __aenter__(_self):
+                    if n <= 2:      # refused at the ack — quota full
+                        raise MCPError(-32000, "Subscription limit reached")
+                    if n == 3:      # accepted, then the stream drops
+                        return _FakeSubscription([object()],
+                                                 SubscriptionLost("drop"))
+                    raise ListenNotSupportedError("test: done")
+
+                async def __aexit__(_self, *tb):
+                    return False
+
+            return _CM()
+
+        with (
+            patch("mcp.client.subscriptions.listen", _listen),
+            patch("slife.timeouts.timeouts", _ready(relisten=1, relisten_max=8)),
+            patch("slife.mcp.era.asyncio.sleep", _sleep),
+        ):
+            await era.watch_tools_changed(AsyncMock(), AsyncMock(), link="test")
+
+        assert waits == [1, 2, 1]
