@@ -44,6 +44,9 @@
    - `${VAR}` / `${VAR:-default}` resolves `os.environ` → credential store (credstore) → the default.
 3. Tools & skills
    - External MCP tools are `server__tool`-namespaced and **on-demand** (a server with `auto_load` pre-registers).
+   - Every function tool — builtin / job / mcp / rest-api — is a row in one shared catalog with a `loaded` / `unloaded` state: `tool_search` searches it (filters: category, status, mode), `tool_load` flips a row to loaded and injects it. Loading is **per tool, never per server**; `cli` tools are not catalog rows — `cli_list` enumerates them.
+   - The injected tool list is rebuilt from the catalog each turn and capped by the `tool_load` threshold (default 100). At a turn boundary the least-recently-used loaded tools are unloaded — the turn prompt names them, a tool executed in this turn is never the next victim, and the harness pair plus the meta tools are never unloaded. `_unload_function_tool` frees a slot on demand.
+   - A tool whose server is unusable (not up, failed, disabled, or its gateway child died) carries status `error` — out of the injected set, still searchable; `mcp_list` shows the live pool, and `mcp_set_enabled` / `rest_api_set_enabled` is the one on/off switch per external family (enabling reconnects; a call reconnects lazily if the server died meanwhile).
    - Skills load via `skill_use` — it returns the full SKILL.md.
    - `_`-prefixed tools are harness-injected (e.g. `_turn_prompt`, `_check_new_input`) — read their latest result; a `_check_new_input` reply may carry a live mid-turn message (cut-in): address it in this turn.
    - `add_user_pref` saves your standing rules to `USER.md` (prompt-level, not cabinet notes).

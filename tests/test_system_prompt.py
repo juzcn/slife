@@ -103,6 +103,21 @@ class TestBuild:
         assert "Skills:" in result
         assert "skill_use" in result
 
+    def test_tool_system_in_prompt(self, cfg):
+        """The catalog contract: search/load is per tool, the cap evicts LRU
+        at turn boundaries, and an unusable server shows as ``error``."""
+        from slife.agent.system_prompt import build
+        result = build(cfg)
+        assert "tool_search" in result
+        assert "tool_load" in result
+        assert "per tool, never per server" in result
+        assert "capped by the `tool_load` threshold" in result
+        assert "least-recently-used" in result
+        assert "_unload_function_tool" in result
+        assert "mcp_set_enabled" in result
+        assert "rest_api_set_enabled" in result
+        assert "mcp_list" in result
+
     def test_data_dirs_in_prompt(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
