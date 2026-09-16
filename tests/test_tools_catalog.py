@@ -480,3 +480,46 @@ def test_cosine_and_f32_roundtrip():
     assert _deserialize_f32(blob) == vec
     assert _cosine_distance([1, 0, 0], [1, 0, 0]) < 1e-9
     assert _cosine_distance([1, 0, 0], [0, 1, 0]) > 0.9
+
+# ── Embedding drainer contract (count ⟺ docs) ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_schemaless_rows_do_not_starve_the_drainer(store):
+    """Regression: schema-less rows must not hide the embeddable ones.
+
+    ``cli`` rows carry no schema and can never be embedded, so the exclusion
+    has to happen IN SQL.  When it ran in Python *after* ``LIMIT``, a batch
+    consisting of exactly those rows returned no docs while
+    ``count_unembedded()`` still reported one — the drainer burnt its
+    no-progress bound, gave up, and the semantic gate stayed shut with 1537 of
+    1538 tools already embedded.
+    """
+    # Five schema-less rows sort before the embeddable tool and
+    # REINDEX_BATCH_LIMIT is 5 — the exact shape that starved the drainer.
+    for name in ("browser-harness", "npm", "npx", "uv", "uvx"):
+        await store.upsert_tool(name, category="cli")
+    await store.upsert_tool(
+        "wait_minutes", category="builtin", status="loaded",
+        schema=_descriptor("wait_minutes", "pause and resume later", None),
+    )
+
+    assert await store.count_unembedded() == 1
+    docs = await store.get_unembedded_docs(limit=5)
+    assert [d["doc_id"] for d in docs] == ["wait_minutes"]
+    assert docs[0]["text"].strip()
+
+
+@pytest.mark.asyncio
+async def test_unembedded_count_and_docs_agree(store):
+    """The invariant the gate rides on: a non-zero count always yields at
+    least one doc; zero yields none."""
+    await store.upsert_tool("a", category="builtin",
+                            schema=_descriptor("a", "first tool", None))
+    await store.upsert_tool("b", category="cli")          # never embeddable
+    assert await store.count_unembedded() == 1
+    assert [d["doc_id"] for d in await store.get_unembedded_docs()] == ["a"]
+
+    await _set_embedding(store, "a", [0.1] * 4)
+    assert await store.count_unembedded() == 0
+    assert await store.get_unembedded_docs() == []

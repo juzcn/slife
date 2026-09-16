@@ -828,33 +828,45 @@ class CatalogStore:
 
     # ── Embedding drainer contract (one document = one tool) ───────
 
+    # A row is "embeddable" when it carries a schema to flatten.  ``skill`` /
+    # ``cli`` rows have none — they can never be embedded, so they must be
+    # excluded IN SQL, not after the fetch: filtering in Python let ``LIMIT``
+    # pick a batch of exactly those rows, return no docs while
+    # ``count_unembedded()`` still said 1, and the drainer burnt its
+    # no-progress bound and gave up — leaving the semantic gate closed with
+    # every other tool embedded.  (memdb/memfiles carry the same predicate for
+    # the same reason.)
+    _EMBEDDABLE_SCHEMA = "trim(coalesce(schema, '')) != ''"
+
     async def count_unembedded(self) -> int:
-        """Tools with no embedding chunk and a non-empty flattenable schema."""
+        """Tools with no embedding chunk and an embeddable (non-empty) schema."""
         cursor = await self._c.execute(
-            """SELECT schema FROM tool
-               WHERE name NOT IN (SELECT DISTINCT name FROM tool_embeddings)"""
+            f"""SELECT COUNT(*) FROM tool
+                WHERE name NOT IN (SELECT DISTINCT name FROM tool_embeddings)
+                  AND ({self._EMBEDDABLE_SCHEMA})"""
         )
-        return sum(
-            1 for (schema_text,) in await cursor.fetchall()
-            if _flatten_schema(schema_text or "").strip()
-        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
 
     async def get_unembedded_docs(self, limit: int = 100) -> list[dict]:
-        """Drainer docs: ``doc_id`` = tool ``name``, ``text`` = flattened schema."""
+        """Drainer docs: ``doc_id`` = tool ``name``, ``text`` = flattened schema.
+
+        Selects exactly the rows :meth:`count_unembedded` counts, so a
+        non-zero count always yields at least one doc (``LIMIT`` truncates the
+        batch, it never starves it).
+        """
         cursor = await self._c.execute(
-            """SELECT name, schema FROM tool
-               WHERE name NOT IN (SELECT DISTINCT name FROM tool_embeddings)
-               ORDER BY name
-               LIMIT ?""",
+            f"""SELECT name, schema FROM tool
+                WHERE name NOT IN (SELECT DISTINCT name FROM tool_embeddings)
+                  AND ({self._EMBEDDABLE_SCHEMA})
+                ORDER BY name
+                LIMIT ?""",
             (limit,),
         )
-        docs = []
-        for row in await cursor.fetchall():
-            text = _flatten_schema(row[1] or "")
-            if not text.strip():
-                continue
-            docs.append({"doc_id": row[0], "text": text})
-        return docs
+        return [
+            {"doc_id": name, "text": _flatten_schema(schema or "")}
+            for name, schema in await cursor.fetchall()
+        ]
 
     async def replace_embedding_chunks(
         self, doc: dict, embeddings: list[list[float]], *, model: str = "",

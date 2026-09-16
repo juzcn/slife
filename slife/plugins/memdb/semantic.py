@@ -127,10 +127,15 @@ class SemanticManager:
         )
         embed_text = doc["text"]
         if not embed_text.strip():
+            logger.debug("reindex_skip_empty_text doc_id=%s", doc.get("doc_id"))
             return False
         chunks = _chunk_text(embed_text)
         chunks = _split_chunks_to_token_limit(chunks, embedder.max_tokens)
         if not chunks:
+            logger.debug(
+                "reindex_skip_unchunkable doc_id=%s len=%d max_tokens=%s",
+                doc.get("doc_id"), len(embed_text), embedder.max_tokens,
+            )
             return False
         # Embed one chunk per request.  A long document batched into a
         # single request can exceed the client's embed timeout on a slow
@@ -140,6 +145,9 @@ class SemanticManager:
         for chunk in chunks:
             vec = await embedder.embed([chunk])
             if not vec or not vec[0]:
+                # The embedder answered nothing (empty payload or a failed
+                # call) — name the doc, or a stall is undiagnosable.
+                logger.debug("reindex_skip_no_vector doc_id=%s", doc.get("doc_id"))
                 return False
             embeddings.append(vec[0])
         if len(embeddings) != len(chunks):
@@ -349,12 +357,25 @@ class SemanticManager:
                     self._enabled = False
                     logger.warning(
                         "drainer_stalled — embedder failing persistently, giving up. "
-                        "remaining=%s", result.get("remaining"),
+                        "remaining=%s stuck=%s", result.get("remaining"),
+                        await self._stuck_doc_ids(),
                     )
                     return
             else:
                 self._no_progress = 0
             await asyncio.sleep(0)  # yield between batches
+
+    async def _stuck_doc_ids(self, limit: int = 5) -> list:
+        """Name the docs the drainer could not embed (diagnostic only).
+
+        A stall that reports only a count sends the reader hunting; the ids
+        point straight at the offending row.
+        """
+        try:
+            docs = await self._store.get_unembedded_docs(limit=limit)
+            return [d.get("doc_id") for d in docs]
+        except Exception:
+            return []
 
     async def _process_batch(self, batch_limit: int = REINDEX_BATCH_LIMIT) -> dict:
         """Embed one batch of unembedded documents.
