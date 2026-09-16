@@ -11,9 +11,17 @@ def _to_json(schema: dict) -> str:
 
 def test_empty_and_invalid():
     assert _flatten_schema("") == ""
-    assert _flatten_schema("not json {") == ""
+    # valid JSON that is not a tool descriptor carries no doc
     assert _flatten_schema("[1, 2]") == ""
     assert _flatten_schema("null") == ""
+
+
+def test_non_json_text_is_a_skill_playbook():
+    """A skill row's ``schema`` is its SKILL.md verbatim: the text IS the doc,
+    so it goes to the indexer instead of being dropped."""
+    assert _flatten_schema("# Deploy\nrun scripts/deploy.py") == \
+        "# Deploy\nrun scripts/deploy.py"
+    assert _flatten_schema("  \n # trimmed \n ") == "# trimmed"
 
 
 def test_root_description():

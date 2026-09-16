@@ -33,9 +33,9 @@ class _NativeShell(Tool):
         return "ok"
 
 
-class _NativeHealth(Tool):
-    name = "system_health"
-    description = "one-call health report"
+class _NativeToolList(Tool):
+    name = "list_native_tools"
+    description = "list the registered native tools"
     parameters = {"type": "object", "properties": {}, "required": []}
     category = "System"
 
@@ -147,7 +147,7 @@ async def test_empty_db_opens_and_seeds(_isolate):
     store = CatalogStore(_isolate / "tools.db")
     await store.open()
     svc = ToolCatalogService(store, threshold=cfg.tool_load_threshold, write_owner=True)
-    await svc.seed_inventory([_NativeShell(), _NativeHealth()])
+    await svc.seed_inventory([_NativeShell(), _NativeToolList()])
 
     # self-consistent empty state: rows exist, but seeding alone injects
     # NOTHING except the always-loaded whitelist

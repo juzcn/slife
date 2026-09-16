@@ -1,11 +1,12 @@
 """Unified tool catalog store — the single shared ``tools.db``.
 
 The authoritative catalog for all six tool categories
-(builtin/job/mcp/rest-api/skill/cli).  Lives on disk (data dir, WAL) and is
-opened by every agent process (main agent + subagent workers) at the same
-path; SQLite gives concurrent readers + one writer, ``busy_timeout``
-backs off the short load/unload writes.  Ops are deliberately store-shaped
-(upserts, search, LRU, embed drainer contract) — policy lives in
+(builtin/job/mcp/rest-api/skill/cli), in three kinds of row — ``type`` is
+``func`` / ``skill`` / ``cli``.  Lives on disk (data dir, WAL) and is opened
+by every agent process (main agent + subagent workers) at the same path;
+SQLite gives concurrent readers + one writer, ``busy_timeout`` backs off the
+short load/unload writes.  Ops are deliberately store-shaped (upserts,
+search, LRU, embed drainer contract) — policy lives in
 :mod:`slife.tools.catalog_service`.
 
 State model (see DESIGNER_NOTES §8.5): ``tool.status`` holds
@@ -55,6 +56,29 @@ SERVER_CATEGORIES = frozenset({"mcp", "rest-api"})
 #: Function-tool categories — the only ones with a load/unload status.
 FUNCTION_CATEGORIES = frozenset({"builtin", "job", "mcp", "rest-api"})
 
+#: The row's ``type`` — the coarse kind behind ``category``: a function tool
+#: (loadable: builtin / job / mcp / rest-api), a skill, or a cli entry.
+TYPE_FUNC = "func"
+TYPE_SKILL = "skill"
+TYPE_CLI = "cli"
+
+_TYPE_BY_CATEGORY = {
+    **{c: TYPE_FUNC for c in FUNCTION_CATEGORIES},
+    "skill": TYPE_SKILL,
+    "cli": TYPE_CLI,
+}
+
+
+def type_for_category(category: str) -> str:
+    """The ``type`` a category implies — the one derivation both writers use.
+
+    ``category`` says where a tool came from (a builtin module, a job file, an
+    external server, a skill dir, a cli config entry); ``type`` says what kind
+    of thing it is, which is what decides whether ``status`` applies at all.
+    """
+    return _TYPE_BY_CATEGORY[category]
+
+
 # The stored status values for function tools.  ``error`` is the server-down
 # verdict projected onto every tool of that server (see
 # ``ToolCatalogService.mark_source_error``): a distinct state, NOT an unload —
@@ -70,7 +94,7 @@ EFF_NA = "n/a"
 
 #: Schema revision this store expects (``catalog_schema.sql`` sets it; the
 #: migration in :meth:`CatalogStore._migrate` moves an older file up to it).
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Local ISO-seconds timestamp — the shared store convention.
 _now = now_local_seconds
@@ -144,15 +168,17 @@ def _param_line(name: str, spec: dict, required: bool) -> str:
 def _flatten_schema(schema_text: str) -> str:
     """Single flat readable text of a tool's ``schema`` column — the semantic doc.
 
-    The column stores the complete tool descriptor as compact JSON
-    (``{name, description, inputSchema}``) for function tools, so the doc
-    covers name + description + each parameter + a return description.
-    Skill rows hold SKILL.md text and simply flatten to "" (never embedded).
+    Two shapes reach the indexer.  A function tool stores its complete
+    descriptor as compact JSON (``{name, description, inputSchema}``), so the
+    doc covers name + description + each parameter + a return description.  A
+    skill stores its SKILL.md verbatim — a playbook IS its documentation, so
+    the text is the doc, indexing the whole thing for search.
     """
+    text = schema_text or ""
     try:
-        doc = json.loads(schema_text or "")
+        doc = json.loads(text)
     except (ValueError, TypeError):
-        return ""
+        return text.strip()
     if not isinstance(doc, dict):
         return ""
 
@@ -213,8 +239,8 @@ def effective_from_row(row: dict) -> str:
 
 # Row prefix used by the scan/search queries.
 _SCAN_COLS = (
-    "t.name, t.description, t.category, t.source_id, t.schema, t.enabled, "
-    "t.status, t.last_loaded"
+    "t.name, t.description, t.category, t.type, t.source_id, t.schema, "
+    "t.enabled, t.status, t.last_loaded"
 )
 
 
@@ -268,6 +294,11 @@ class CatalogStore:
         table is dead weight AND a stale source of truth.  ``CREATE TABLE IF
         NOT EXISTS`` would leave it in place forever — the only place a
         retired table can be removed is a migration step like this one.
+
+        v3 added ``tool.type`` (func | skill | cli).  A fresh file gets it
+        from the schema; an existing one is ALTERed and backfilled from
+        ``category`` here, since the schema's ``IF NOT EXISTS`` never touches
+        a table that is already there.
         """
         cursor = await self._c.execute("PRAGMA user_version")
         row = await cursor.fetchone()
@@ -277,6 +308,23 @@ class CatalogStore:
         if version < 2:
             await self._c.execute("DROP TABLE IF EXISTS server")
             logger.info("catalog_migrated from=%s to=2 dropped=server", version)
+        if version < 3:
+            cursor = await self._c.execute("PRAGMA table_info(tool)")
+            columns = {r[1] for r in await cursor.fetchall()}
+            # No `tool` table yet (a brand-new file) → the schema creates it
+            # with the column already in place.
+            if columns and "type" not in columns:
+                await self._c.execute(
+                    "ALTER TABLE tool ADD COLUMN type TEXT NOT NULL DEFAULT 'func' "
+                    "CHECK (type IN ('func','skill','cli'))",
+                )
+                for category, type_name in _TYPE_BY_CATEGORY.items():
+                    await self._c.execute(
+                        "UPDATE tool SET type = ? WHERE category = ?",
+                        (type_name, category),
+                    )
+                await self._c.commit()
+                logger.info("catalog_migrated from=%s to=3 added=type", version)
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -313,13 +361,16 @@ class CatalogStore:
     ) -> bool:
         """Upsert a tool row; returns True iff the ``schema`` text changed.
 
-        ``status`` is only applied to a NEW row — an existing row keeps its
-        loaded/unloaded state (a plugin re-register must not clobber a user
-        unload).  ``enabled`` is only applied when not None (mcp/rest-api
-        upserts pass None and keep the column NULL).  A schema edit drops the
-        stale embedding row so the drainer re-embeds; keyword search stays
-        live through the FTS5 update trigger.
+        ``type`` is derived from ``category`` here — the one place it is
+        written, so the two columns cannot drift.  ``status`` is only applied
+        to a NEW row — an existing row keeps its loaded/unloaded state (a
+        plugin re-register must not clobber a user unload).  ``enabled`` is
+        only applied when not None (mcp/rest-api upserts pass None and keep
+        the column NULL).  A schema edit drops the stale embedding row so the
+        drainer re-embeds; keyword search stays live through the FTS5 update
+        trigger.
         """
+        type_name = type_for_category(category)
         async with self._write_lock:
             prev = await self._c.execute(
                 "SELECT schema FROM tool WHERE name = ?", (name,),
@@ -329,17 +380,18 @@ class CatalogStore:
             schema_changed = ((prev_schema or "") != (schema or ""))
             new_row = prev_row is None
             await self._c.execute(
-                """INSERT INTO tool(name, description, category, source_id, schema,
-                                    enabled, status, last_loaded)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """INSERT INTO tool(name, description, category, type, source_id,
+                                    schema, enabled, status, last_loaded)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(name) DO UPDATE SET
                        description = excluded.description,
                        category    = excluded.category,
+                       type        = excluded.type,
                        source_id   = excluded.source_id,
                        schema      = excluded.schema,
                        enabled     = COALESCE(excluded.enabled, tool.enabled)
                 """,
-                (name, description, category, source_id, schema,
+                (name, description, category, type_name, source_id, schema,
                  (1 if enabled else 0) if enabled is not None else None,
                  status if new_row else None, None),
             )
@@ -449,13 +501,20 @@ class CatalogStore:
             )
             await self._c.commit()
 
+    async def names_by_category(self, category: str) -> set[str]:
+        """Every row name of one category — the mirror's purge diff basis."""
+        cursor = await self._c.execute(
+            "SELECT name FROM tool WHERE category = ?", (category,),
+        )
+        return {row[0] for row in await cursor.fetchall()}
+
     # ── Status flips ───────────────────────────────────────────────
 
     async def set_status(self, name: str, status: str | None, *, bump: bool = False) -> int:
         """Set a tool's ``status`` (loaded/unloaded/NULL); bump → LRU refresh.
 
-        Only meaningful for function-tool rows (skill/cli stay NULL); the
-        store is lenient — callers guard with the category.
+        Only meaningful for ``type='func'`` rows (skill/cli stay NULL); the
+        store is lenient — callers guard with the type.
         """
         last_loaded = _now() if (bump and status == "loaded") else None
         async with self._write_lock:
@@ -514,9 +573,7 @@ class CatalogStore:
 
     async def get_tool(self, name: str) -> dict | None:
         cursor = await self._c.execute(
-            "SELECT name, description, category, source_id, schema, enabled, "
-            "status, last_loaded FROM tool WHERE name = ?",
-            (name,),
+            f"SELECT {_SCAN_COLS} FROM tool t WHERE t.name = ?", (name,),
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
@@ -737,9 +794,7 @@ class CatalogStore:
             clauses = " AND t.category = ?"
             params.append(category)
         cursor = await self._c.execute(
-            f"""SELECT t.name, t.description, t.category, t.source_id, t.schema,
-                      t.enabled, t.status, t.last_loaded,
-                      te.embedding
+            f"""SELECT {_SCAN_COLS}, te.embedding
                FROM tool_embeddings te
                JOIN tool t ON te.name = t.name
                WHERE 1=1{clauses}""",

@@ -30,7 +30,7 @@ Per-turn context (harness-injected):
 {%- endfor %}
 {%- endif %}
 {%- if tools_evicted %}
-▸ Loaded tool limit reached — these tools were unloaded to make room (reload with tool_load if needed):
+▸ Loaded tool limit reached — these tools were unloaded to make room (reload with func-tool-load if needed):
 {%- for name in tools_evicted %}
    - {{ name }}
 {%- endfor %}

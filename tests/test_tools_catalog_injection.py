@@ -101,9 +101,9 @@ async def test_load_unload_refusal_matrix(db):
     assert not ok and "unknown" in msg
 
     await svc.seed_inventory([_Native()])
-    # meta refuse on unload
+    # whitelist refuse on unload
     ok, msg = await svc.unload_tool("_turn_prompt")
-    assert not ok and "meta tool" in msg
+    assert not ok and "whitelisted" in msg
     # skill/cli refuse
     await db.upsert_tool("skill-xyz", category="skill")
     ok, msg = await svc.load_tool("skill-xyz")
@@ -284,3 +284,58 @@ async def test_worker_reads_shared_loaded_set_and_can_flip_status(tmp_path):
 
     await agent_store.close()
     await worker_store.close()
+
+# ── Non-function row mirror (skill / cli) ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_sync_category_mirrors_and_purges(db):
+    """skill/cli rows come from their own live sources: upsert every entry,
+    purge the vanished one — and no load state, ever."""
+    svc = ToolCatalogService(db, write_owner=True)
+
+    purged = await svc.sync_category("skill", {
+        "deploy": {"description": "Ship it", "schema": "# Deploy\nrun x", "enabled": True},
+        "quiet": {"description": "hush", "schema": "# Quiet", "enabled": False},
+    })
+    assert purged == []
+
+    row = await db.get_tool("deploy")
+    assert row["category"] == "skill"
+    assert row["type"] == "skill"
+    assert row["status"] is None                    # skills have no load state
+    assert "# Deploy" in row["schema"]              # SKILL.md, as stored
+    assert (await db.get_tool("quiet"))["enabled"] == 0
+    # discoverable exactly like a function tool, and never injected
+    assert [r["name"] for r in await db.search_keyword("deploy")] == ["deploy"]
+    assert "deploy" not in await svc.snapshot_loaded()
+
+    # a skill that left the dir loses its row (the §8.5 "清理干净" contract)
+    purged = await svc.sync_category("skill", {
+        "deploy": {"description": "Ship it", "schema": "# Deploy\nrun x", "enabled": True},
+    })
+    assert purged == ["quiet"]
+    assert await db.get_tool("quiet") is None
+    assert await db.get_tool("deploy") is not None
+
+
+@pytest.mark.asyncio
+async def test_sync_category_cli_rows_have_no_schema(db):
+    svc = ToolCatalogService(db, write_owner=True)
+    await svc.sync_category("cli", {"gh": {"description": "GitHub CLI", "schema": None}})
+
+    row = await db.get_tool("gh")
+    assert row["type"] == "cli"
+    assert row["status"] is None
+    assert row["schema"] is None
+
+
+@pytest.mark.asyncio
+async def test_sync_category_refuses_load_and_unload(db):
+    """A skill row is a row, not a function tool: the load verbs refuse it."""
+    svc = ToolCatalogService(db, write_owner=True)
+    await svc.sync_category("skill", {"deploy": {"description": "Ship it", "schema": "# Deploy"}})
+
+    ok, msg = await svc.load_tool("deploy")
+    assert not ok and "no load/unload state" in msg and "skill" in msg
+    ok, msg = await svc.unload_tool("deploy")
+    assert not ok and "no load/unload state" in msg

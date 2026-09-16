@@ -7,10 +7,14 @@ import pytest
 import pytest_asyncio
 
 from slife.tools.catalog import (
+    SCHEMA_VERSION,
     CatalogStore,
     EFF_DISABLED,
     EFF_ERROR,
     EFF_NA,
+    TYPE_CLI,
+    TYPE_FUNC,
+    TYPE_SKILL,
     _compact_schema,
     _cosine_distance,
     _deserialize_f32,
@@ -201,8 +205,69 @@ async def test_migration_drops_the_retired_server_table(tmp_path):
     )
     assert await cur.fetchone() is None                    # table is gone
     cur = await store._c.execute("PRAGMA user_version")
-    assert (await cur.fetchone())[0] == 2
+    assert (await cur.fetchone())[0] == SCHEMA_VERSION
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_migration_adds_and_backfills_tool_type(tmp_path):
+    """A v2 db's rows gain ``type`` on open — derived from ``category``, so an
+    old file answers the same questions the new schema does."""
+    import aiosqlite
+
+    path = tmp_path / "tools.db"
+    conn = await aiosqlite.connect(str(path))
+    await conn.execute(
+        """CREATE TABLE tool (
+               name TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '',
+               category TEXT NOT NULL, source_id TEXT, schema TEXT,
+               enabled INTEGER, status TEXT, last_loaded TEXT)""",
+    )
+    for name, category in (
+        ("execute_shell", "builtin"), ("job_x", "job"),
+        ("svc__search", "mcp"), ("readme", "skill"), ("mycmd", "cli"),
+    ):
+        await conn.execute(
+            "INSERT INTO tool(name, category) VALUES (?, ?)", (name, category),
+        )
+    await conn.execute("PRAGMA user_version = 2")
+    await conn.commit()
+    await conn.close()
+
+    store = CatalogStore(path)
+    await store.open()
+    types = {
+        name: (await store.get_tool(name))["type"]
+        for name in ("execute_shell", "job_x", "svc__search", "readme", "mycmd")
+    }
+    assert types == {
+        "execute_shell": TYPE_FUNC, "job_x": TYPE_FUNC, "svc__search": TYPE_FUNC,
+        "readme": TYPE_SKILL, "mycmd": TYPE_CLI,
+    }
+    cur = await store._c.execute("PRAGMA user_version")
+    assert (await cur.fetchone())[0] == SCHEMA_VERSION
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_type_is_derived_from_category(store):
+    """``type`` is written wherever a row is, from the category — the two
+    columns cannot drift, and a non-function row refuses load/unload."""
+    await store.upsert_tool("execute_shell", category="builtin")
+    await store.upsert_tool("svc__search", category="mcp", source_id="svc")
+    await store.upsert_tool("readme", category="skill")
+    await store.upsert_tool("mycmd", category="cli")
+
+    assert (await store.get_tool("execute_shell"))["type"] == TYPE_FUNC
+    assert (await store.get_tool("svc__search"))["type"] == TYPE_FUNC
+    assert (await store.get_tool("readme"))["type"] == TYPE_SKILL
+    assert (await store.get_tool("mycmd"))["type"] == TYPE_CLI
+    # A re-upsert under another category moves the type with it.
+    await store.upsert_tool("readme", category="builtin")
+    assert (await store.get_tool("readme"))["type"] == TYPE_FUNC
+    # Search rows carry it too (one row shape for every read path).
+    hits = await store.search_keyword("execute_shell")
+    assert [h["type"] for h in hits] == [TYPE_FUNC]
 
 
 @pytest.mark.asyncio
@@ -322,28 +387,29 @@ async def test_drainer_roundtrip_and_model_meta(store):
     await store.upsert_tool("svcA__search", category="mcp", source_id="svcA",
                             schema=_descriptor("search", "search things", None),
                             status="unloaded")
-    # skill rows (SKILL.md text) never count as unembedded docs
+    # a skill row's doc IS its SKILL.md — a playbook is text worth searching
     await store.upsert_tool("skill-xyz", category="skill", schema="# Skill notes")
-    # empty-schema rows don't count either
+    # a cli row holds no tool def, so it has nothing to embed
     await store.upsert_tool("cli-foo", category="cli")
 
     docs = await store.get_unembedded_docs()
-    assert [d["doc_id"] for d in docs] == ["svcA__search"]
-    # text is already flattened (name + description + params)
-    assert "search things" in docs[0]["text"]
-    assert docs[0]["text"].strip()
+    assert [d["doc_id"] for d in docs] == ["skill-xyz", "svcA__search"]
+    texts = {d["doc_id"]: d["text"] for d in docs}
+    assert texts["skill-xyz"] == "# Skill notes"          # verbatim, not parsed
+    assert "search things" in texts["svcA__search"]        # flattened descriptor
+    assert "cli-foo" not in texts
 
     await store.replace_embedding_chunks(docs[0], [[0.1, 0.2]], model="api:bge-m3")
-    assert await store.count_unembedded() == 0
+    assert await store.count_unembedded() == 1
     assert await store.count_embedded() == 1
     # meta never written by replace — the SemanticManager writes it on model select
     assert (await store.get_meta("embedding_model")) is None
 
     # model swap contract: drop_embeddings clears the old vector space
     await _set_embedding(store, "svcA__search", [0.5, 0.6], model="old")
-    assert await store.drop_embeddings() == 1
+    assert await store.drop_embeddings() == 2
     assert await store.count_embedded() == 0
-    assert await store.count_unembedded() == 1  # svcA__search needs re-embedding
+    assert await store.count_unembedded() == 2  # both need re-embedding
 
 
 # ── Chunking: one shared chunker for tool schemas too ───────────────
@@ -395,7 +461,7 @@ async def test_wal_pragmas_and_user_version(tmp_path):
     assert row is not None and row[0] == expected_ms
     cursor = await store._c.execute("PRAGMA user_version")
     row = await cursor.fetchone()
-    assert row is not None and row[0] == 2
+    assert row is not None and row[0] == SCHEMA_VERSION
     await store.close()
 
 
@@ -404,7 +470,8 @@ def test_helper_sanity():
     flat = _flatten_schema(desc)
     assert "name: search" in flat and "find repos" in flat
     assert _flatten_schema("") == ""
-    assert _flatten_schema("# just a markdown skill") == ""
+    # A non-JSON schema is a skill's SKILL.md: the text IS the doc.
+    assert _flatten_schema("# just a markdown skill") == "# just a markdown skill"
 
 
 def test_cosine_and_f32_roundtrip():

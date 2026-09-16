@@ -168,9 +168,9 @@ class TestAgentServiceMCPEnrichment:
     @pytest.mark.asyncio
     async def test_sync_proxies_mirrors_on_demand_rows_only(self, sample_config, tmp_path):
         """An on-demand (non-auto-load) server's tools enter the CATALOG
-        (the tool_search / tool_load surface) but no proxy is registered —
-        proxies materialize via ``tool_load``.  Without this, on-demand
-        external tools were unreachable (T1a)."""
+        (the tool_search / func-tool-load surface) but no proxy is registered
+        — proxies materialize via ``func-tool-load``.  Without this,
+        on-demand external tools were unreachable (T1a)."""
         from slife.tools.catalog import CatalogStore
         from slife.tools.catalog_service import ToolCatalogService
 
@@ -225,14 +225,14 @@ class TestAgentServiceMCPEnrichment:
                 assert "ondemand__search" not in names
 
                 # ... but the row is in the catalog and discoverable via
-                # tool_load's row source (unloaded — the on-demand state).
+                # func-tool-load's row source (unloaded — the on-demand state).
                 row = await store.get_tool("ondemand__search")
                 assert row is not None
                 assert row["category"] == "mcp"
                 assert row["status"] == "unloaded"
                 assert row["schema"]
 
-                # A reloaded row (tool_load flips loaded) survives the next
+                # A reloaded row (func-tool-load flips loaded) survives the next
                 # reconcile: upsert_tool only applies status to a NEW row.
                 await store.set_status("ondemand__search", "loaded", bump=True)
                 await service._sync_mcp_proxies()

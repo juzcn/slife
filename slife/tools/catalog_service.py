@@ -2,7 +2,7 @@
 
 The store is a dumb data layer; this service owns the semantics from
 DESIGNER_NOTES §8.5: seed/reseed on session start, the effective-status
-refusals for ``tool_load`` / ``_unload_function_tool``, the per-turn
+refusals for ``func-tool-load`` / ``_unload_func_tool``, the per-turn
 injection snapshot (loaded ∧ whitelist), and main-agent-only curatorship.
 Instances are per-process (main agent + subagent workers open the same
 file); ``write_owner`` marks the single process allowed to run session
@@ -18,10 +18,10 @@ from typing import TYPE_CHECKING
 from slife.tools.catalog import (
     STATUS_LOADED,
     STATUS_UNLOADED,
+    TYPE_FUNC,
     CatalogStore,
     EFF_DISABLED,
     EFF_ERROR,
-    FUNCTION_CATEGORIES,
 )
 from slife.tools.whitelist import ALWAYS_LOADED, is_meta_tool
 
@@ -111,11 +111,12 @@ class ToolCatalogService:
         """Reconcile the registered tool set into the catalog.
 
         A NEW row gets the session default: ``loaded`` for the always-loaded
-        set (the harness pair + the meta tools, plus anything listed under
-        ``tool_load.preload``), ``unloaded`` for everything else — discovery
-        alone never puts a tool into the injection set.  An EXISTING row keeps
-        its state: this sync mirrors WHICH tools are registered, it never
-        overrides what the model (or a previous session) decided to load.
+        set (the whitelist — harness pair, meta surface, pinned, plus anything
+        listed under ``tool_load.preload``), ``unloaded`` for everything else
+        — discovery alone never puts a tool into the injection set.  An
+        EXISTING row keeps its state: this sync mirrors WHICH tools are
+        registered, it never overrides what the model (or a previous session)
+        decided to load.
 
         Main-owner only (a subagent worker never reseeds).
         """
@@ -158,6 +159,41 @@ class ToolCatalogService:
     async def is_meta(self, name: str) -> bool:
         return is_meta_tool(name)
 
+    # ── Non-function row mirror (skill / cli) ──────────────────────
+
+    async def sync_category(self, category: str, rows: dict[str, dict]) -> list[str]:
+        """Mirror a live source into one row-per-entry category.
+
+        ``skill`` and ``cli`` are the two categories no registry feeds: their
+        rows come from their own live sources (the skills dir; the ``cli``
+        section of ``tools.json5``).  They are rows all the same — that is how
+        ``tool_search`` reaches them — but they are not function tools, so
+        they carry no load state (``status`` stays NULL).
+
+        Upsert + purge, the same contract the plugin mirror follows: every
+        entry is (re)written, and a name that vanished from the source loses
+        its row — a deleted skill must not linger as a hit `tool_search` keeps
+        returning.  Returns the purged names.
+        """
+        for name, spec in rows.items():
+            await self._store.upsert_tool(
+                name,
+                description=spec.get("description", ""),
+                category=category,
+                schema=spec.get("schema"),
+                enabled=spec.get("enabled"),
+                status=None,
+            )
+        vanished = await self._store.names_by_category(category) - set(rows)
+        for name in sorted(vanished):
+            await self._store.remove_tool(name)
+        if vanished:
+            logger.info(
+                "catalog_category_mirrored category=%s rows=%d purged=%d",
+                category, len(rows), len(vanished),
+            )
+        return sorted(vanished)
+
     # ── Load / unload (shared across main agent and workers) ───────
 
     async def load_tool(self, name: str) -> tuple[bool, str]:
@@ -172,11 +208,10 @@ class ToolCatalogService:
         if row is None:
             return False, (f"Error: tool '{name}' is unknown — see tool_search.")
 
-        cat = row.get("category", "")
-        if cat not in FUNCTION_CATEGORIES:
+        if row.get("type") != TYPE_FUNC:
             return False, (
                 f"Error: tool '{name}' has no load/unload state "
-                f"(category '{cat}')."
+                f"(type '{row.get('type')}')."
             )
 
         eff = await self._store.get_effective(name)
@@ -210,20 +245,19 @@ class ToolCatalogService:
         await self._store.touch(name)
 
     async def unload_tool(self, name: str) -> tuple[bool, str]:
-        """Flip a function tool to ``unloaded``; refuses meta/skill/cli."""
+        """Flip a function tool to ``unloaded``; refuses whitelisted/skill/cli."""
         if is_meta_tool(name):
             return False, (
-                f"Error: cannot unload '{name}' — it is a meta tool "
+                f"Error: cannot unload '{name}' — it is whitelisted "
                 f"(always loaded, not configurable)."
             )
         row = await self._store.get_tool(name)
         if row is None:
             return False, f"Error: tool '{name}' is unknown."
-        cat = row.get("category", "")
-        if cat not in FUNCTION_CATEGORIES:
+        if row.get("type") != TYPE_FUNC:
             return False, (
                 f"Error: tool '{name}' has no load/unload state "
-                f"(category '{cat}')."
+                f"(type '{row.get('type')}')."
             )
         if row.get("status") != "loaded":
             return True, f"tool '{name}' is already unloaded."
@@ -236,8 +270,8 @@ class ToolCatalogService:
     async def evict_to_threshold(self) -> list[str]:
         """Evict oldest-by-``last_loaded`` loaded tools down to the threshold.
 
-        Never evicts the always-loaded carve-outs (harness pairs + meta
-        whitelist) or non-function (skill/cli) rows.
+        Never evicts the always-loaded carve-outs (``ALWAYS_LOADED``: harness
+        pairs + meta surface + pinned) or non-function (skill/cli) rows.
         Main-owner only — a subagent worker inherits the curator's budget
         and never squeezes it (a worker's turn stays within what the agent
         left loaded).
@@ -275,8 +309,8 @@ class ToolCatalogService:
 
         A newly seen tool lands ``unloaded`` (and always will — an external
         name is never in the whitelist), while an existing row keeps whatever
-        the model decided.  ``tool_load`` is the only way into the injection
-        set.
+        the model decided.  ``func-tool-load`` is the only way into the
+        injection set.
         """
         return await self._store.upsert_tool(
             name,

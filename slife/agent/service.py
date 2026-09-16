@@ -1158,7 +1158,7 @@ class AgentService:
         2. **auto_load servers**: their proxies are (re)registered and their
            tool rows mirrored — ``_discover_and_register_external_tools``.
         2b. **on-demand servers** (the default): their tool rows are mirrored
-           so ``tool_search`` finds them and ``tool_load`` materializes them
+           so ``tool_search`` finds them and ``func-tool-load`` materializes them
            one at a time — no proxies until then.
         3. A proxy whose server left the CONFIG is unregistered; a merely
            disconnected/disabled server keeps its proxies — its rows carry the
@@ -1213,8 +1213,8 @@ class AgentService:
                     logger.debug("mcp_auto_load_sync_failed server=%s", name, exc_info=True)
 
             # 2b — on-demand (non-auto-load) servers: mirror their tool rows
-            # into the catalog so tool_search can find them and tool_load can
-            # materialize them.  No proxies are registered here — the caller
+            # into the catalog so tool_search can find them and func-tool-load
+            # can materialize them.  No proxies are registered here — the caller
             # must have a catalog and the server must be connected.
             for name in configured:
                 if name in auto_servers:
@@ -1346,10 +1346,10 @@ class AgentService:
         """Upsert a non-auto-load server's tool rows into the shared catalog.
 
         On-demand servers register NO proxies at reconcile time (proxies are
-        materialized by ``tool_load`` from the catalog row on demand).  The
-        reconciliation feeds their rows so ``tool_search`` can discover them
-        and ``tool_load`` can materialize them — without this an on-demand
-        server's tools would never enter the catalog and would be
+        materialized by ``func-tool-load`` from the catalog row on demand).
+        The reconciliation feeds their rows so ``tool_search`` can discover
+        them and ``func-tool-load`` can materialize them — without this an
+        on-demand server's tools would never enter the catalog and would be
         unreachable.  Only a CONNECTED server yields rows (``mcp_list_tools``
         answers ``tools=[]`` otherwise); a disconnected server's existing rows
         stay and are kept out of injection by its ``error`` mark (written by
@@ -1460,9 +1460,10 @@ class AgentService:
         await self._register_plugin_tools(name)
         if spec.gateway:
             # Reconcile external {server}__{tool} proxies — registers auto_load
-            # tools and mirrors on-demand servers' catalog rows (tool_search /
-            # tool_load surface).  Same network the main agent's _wire_mcp_glue
-            # uses, mirrored for a worker sharing the gateway.
+            # tools and mirrors on-demand servers' catalog rows (the
+            # tool_search / func-tool-load surface).  Same network the main
+            # agent's _wire_mcp_glue uses, mirrored for a worker sharing the
+            # gateway.
             await self._sync_mcp_proxies()
         elif spec.ctx_field is not None:
             setattr(self._tool_ctx, spec.ctx_field, self._plugins[name].client)
@@ -2450,14 +2451,20 @@ class AgentService:
             # built-in plugin tools).  External mcp/rest-api rows are seeded
             # by the reconcile extension as their servers connect.
             await svc.seed_inventory(self.tool_registry.list_tools())
+            self._catalog = svc
+            self._tool_ctx.catalog = svc
+            self.tool_registry.set_catalog(svc)
+            # Skill and cli rows come from their own live sources (the skills
+            # dir, the cli section of tools.json5), not from the registry —
+            # seed_inventory cannot see them, so they are mirrored here.  Same
+            # rows as any other tool: that is how tool_search reaches a skill,
+            # with no load state (type skill/cli instead of func).
+            await self._mirror_local_rows(svc)
             # Nothing external is usable yet — no server has connected.  Mark
             # every external tool ``error`` so the injection set starts empty
             # (rather than offering tools from servers that may never come up);
             # each server clears its own mark as the reconcile sees it connect.
             await svc.mark_all_external_error()
-            self._catalog = svc
-            self._tool_ctx.catalog = svc
-            self.tool_registry.set_catalog(svc)
             # tools.json5 IS the authoritative config — anything that left its
             # mcp/rest-api sections loses its rows here (hand-edits and
             # agent-tool edits alike).  Startup does NOT wait on the servers
@@ -2484,6 +2491,30 @@ class AgentService:
             logger.info("catalog_initialized subagent=%s", self.is_subagent)
         except Exception:
             logger.exception("catalog_init_failed — continuing without catalog")
+
+    async def _mirror_local_rows(self, svc) -> None:
+        """Mirror the two registry-less categories into the catalog.
+
+        ``skill`` and ``cli`` have no registered tool instance to seed from —
+        their sources are the skills dir and tools.json5's ``cli`` section — so
+        they are pushed here at boot, and again by each skill_*/cli_* tool right
+        after it writes its source.  Best-effort: a failure leaves the previous
+        rows in place rather than blocking startup.
+        """
+        from slife.paths import get_skills_dir
+        from slife.tools.cli import sync_cli_catalog
+        from slife.tools.skill import sync_skill_catalog
+
+        try:
+            await sync_skill_catalog(self._tool_ctx, get_skills_dir())
+            await sync_cli_catalog(self._tool_ctx, self.config.cli_tools)
+            logger.info(
+                "catalog_local_rows_mirrored skills=%d cli=%d",
+                len(await svc.store.names_by_category("skill")),
+                len(await svc.store.names_by_category("cli")),
+            )
+        except Exception as e:
+            logger.debug("catalog_local_mirror_failed err=%s", e)
 
     async def _sync_catalog_from_config(self) -> None:
         """Startup db ← tools.json5 sync — tools.json5 IS the authority.

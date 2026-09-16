@@ -530,8 +530,8 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
 
     The status report is authoritative: an enabled server whose state is
     ``running`` reports ok.  External tools load on demand via the shared
-    catalog (``tool_search`` / ``tool_load`` — the unified tool system); the
-    catalog's own health (db + semantic index) is reported by
+    catalog (``tool_search`` / ``func-tool-load`` — the unified tool system);
+    the catalog's own health (db + semantic index) is reported by
     :func:`check_tool_catalog`, not here.
 
     Args:

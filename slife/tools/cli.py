@@ -97,6 +97,41 @@ def get_cli_tools_summary(config_path: Path) -> str:
     return _format_cli_tools(cli_tools)
 
 
+def cli_catalog_rows(cli_tools: dict) -> dict[str, dict]:
+    """The catalog rows the ``cli`` section implies — name → {description, schema, enabled}.
+
+    A cli entry has no tool def to store (``schema`` stays NULL): the
+    description is what identifies it to ``tool_search``, and ``cli_list``
+    carries the command / install detail.  ``enabled`` mirrors the entry's own
+    flag.
+    """
+    rows: dict[str, dict] = {}
+    for name, cfg in cli_tools.items():
+        if not isinstance(cfg, dict):
+            continue
+        rows[name] = {
+            "description": cfg.get("description", ""),
+            "schema": None,
+            "enabled": cfg.get("enabled", True) is not False,
+        }
+    return rows
+
+
+async def sync_cli_catalog(ctx, cli_tools: dict) -> None:
+    """Push the current cli section into the catalog (no catalog → no-op).
+
+    Called at boot and after every cli mutation, so the rows say what the
+    config says right now — a removed CLI loses its row immediately.
+    """
+    catalog = getattr(ctx, "catalog", None) if ctx is not None else None
+    if catalog is None:
+        return
+    try:
+        await catalog.sync_category("cli", cli_catalog_rows(cli_tools))
+    except Exception as e:  # never break the tool that called us
+        logger.debug("cli_catalog_sync_failed err=%s", e)
+
+
 class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """Register or update a CLI tool so the LLM can discover it in future turns.
 
@@ -152,6 +187,7 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
                 name=name, command=command, description=description,
                 install=install, source=source, enabled=old_enabled,
             )
+            current = config.cli_tools
         else:
             raw = read_config(self._config_path)
             cli_tools = _cli_section(raw)
@@ -170,7 +206,11 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
                 entry["enabled"] = old_enabled
             cli_tools[name] = entry
             write_config(self._config_path, raw)
+            current = cli_tools
 
+        # The catalog follows the config, so the entry is findable by
+        # tool_search before the next restart.
+        await sync_cli_catalog(ctx, current)
         action = "Updated" if is_update else "Registered"
         logger.info("cli_%s name=%s", "updated" if is_update else "added", name)
         return f"[OK] {action} CLI tool '{name}'.\n  {description}"
@@ -202,6 +242,7 @@ class CliRemoveTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibl
             if name not in config.cli_tools:
                 return f"CLI tool '{name}' is not registered."
             config.remove_cli_tool(name)
+            current = config.cli_tools
         else:
             raw = read_config(self._config_path)
             cli_tools = raw.get(_CLI_TOOLS_KEY, {})
@@ -209,7 +250,9 @@ class CliRemoveTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibl
                 return f"CLI tool '{name}' is not registered."
             del cli_tools[name]
             write_config(self._config_path, raw)
+            current = cli_tools
 
+        await sync_cli_catalog(ctx, current)
         logger.info("cli_removed name=%s", name)
         return f"[OK] Removed CLI tool '{name}'."
 
@@ -277,6 +320,7 @@ class CliSetEnabledTool(_CliConfigMixin, Tool):
                 source=entry.get("source"),
                 enabled=enabled,
             )
+            current = config.cli_tools
         else:
             raw = read_config(self._config_path)
             entries = raw.get(_CLI_TOOLS_KEY, {})
@@ -287,7 +331,9 @@ class CliSetEnabledTool(_CliConfigMixin, Tool):
                 return f"'{name}' in cli config is malformed."
             entry["enabled"] = enabled
             write_config(self._config_path, raw)
+            current = entries
 
+        await sync_cli_catalog(ctx, current)
         state = "enabled" if enabled else "disabled"
         logger.info("cli_set_enabled name=%s enabled=%s", name, enabled)
         return f"[OK] CLI tool '{name}' {state}. Restart for the change to take effect."

@@ -606,3 +606,41 @@ class TestSkillSecurity:
         assert result.startswith("Error")
         assert victim.exists()
         assert (victim / "keep.txt").exists()
+
+
+# ── Catalog rows (skill IS a catalog category) ─────────────────────────
+
+
+class TestSkillCatalogRows:
+    """A skill is a catalog row whose `schema` is the SKILL.md itself —
+    that text is what tool_search indexes (keyword and semantic)."""
+
+    def test_row_carries_the_skill_md_verbatim(self, tmp_path):
+        from slife.tools.skill import skill_catalog_rows
+
+        skill_dir = tmp_path / "skills" / "deploy"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: deploy\ndescription: Ship it\n---\n# Deploy\nrun scripts/deploy.py\n",
+            encoding="utf-8",
+        )
+
+        rows = skill_catalog_rows(tmp_path / "skills")
+
+        assert rows["deploy"]["description"] == "Ship it"
+        assert "# Deploy" in rows["deploy"]["schema"]
+        assert "run scripts/deploy.py" in rows["deploy"]["schema"]
+        assert rows["deploy"]["enabled"] is True
+
+    def test_disabled_names_mirror_into_enabled(self, tmp_path):
+        from slife.tools.skill import skill_catalog_rows
+
+        skill_dir = tmp_path / "skills" / "quiet"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: quiet\ndescription: hush\n---\nbody\n", encoding="utf-8",
+        )
+
+        rows = skill_catalog_rows(tmp_path / "skills", disabled={"quiet"})
+
+        assert rows["quiet"]["enabled"] is False

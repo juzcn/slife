@@ -212,6 +212,45 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
     return f"Skill '{skill_name}' not found.\n\nAvailable skills:\n{hint}"
 
 
+def skill_catalog_rows(
+    skills_dir: str | Path, disabled: set[str] | None = None,
+) -> dict[str, dict]:
+    """The catalog rows the skills dir implies — name → {description, schema, enabled}.
+
+    ``schema`` carries the SKILL.md text verbatim: a skill IS its playbook, so
+    that is the text ``tool_search`` indexes (keyword through FTS, semantic
+    through the drainer).  ``enabled`` mirrors ``skill_set_enabled``.
+    """
+    disabled = disabled or set()
+    rows: dict[str, dict] = {}
+    for d, fm, _body in _iter_skills(Path(skills_dir)):
+        name = fm.get("name", d.name)
+        rows[name] = {
+            "description": fm.get("description", ""),
+            "schema": (d / "SKILL.md").read_text(encoding="utf-8"),
+            "enabled": name not in disabled,
+        }
+    return rows
+
+
+async def sync_skill_catalog(ctx, skills_dir: str | Path) -> None:
+    """Push the current skills dir into the catalog (no catalog → no-op).
+
+    Called at boot and after every skill mutation, so the rows always say what
+    is on disk right now — including the negative direction: a removed skill's
+    row goes with it.
+    """
+    catalog = getattr(ctx, "catalog", None) if ctx is not None else None
+    if catalog is None:
+        return
+    config = getattr(ctx, "config", None)
+    config_path = getattr(config, "_path", None)
+    try:
+        await catalog.sync_category(
+            "skill", skill_catalog_rows(skills_dir, _disabled_skill_names(config_path)),
+        )
+    except Exception as e:  # never break the tool that called us
+        logger.debug("skill_catalog_sync_failed err=%s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -438,6 +477,9 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             raise
         if backup is not None:
             _shutil.rmtree(backup, ignore_errors=True)
+        # The catalog follows the skills dir, so the new skill is findable by
+        # tool_search before the next restart.
+        await sync_skill_catalog(getattr(self, "_ctx", None), self.skills_dir)
         # Cosmetic: report the real install path, not the temp one.
         return result.replace(str(tmp_dir), str(skill_dir))
 
@@ -563,6 +605,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
                 import shutil
                 shutil.rmtree(d)
                 logger.info("skill_removed name=%s", skill_name)
+                await sync_skill_catalog(getattr(self, "_ctx", None), self.skills_dir)
                 return f"[OK] Removed skill '{skill_name}' (deleted {d})."
 
         # 2) Try matching by directory name directly (handles git clones
@@ -572,6 +615,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
             import shutil
             shutil.rmtree(direct)
             logger.info("skill_dir_removed path=%s", direct)
+            await sync_skill_catalog(getattr(self, "_ctx", None), self.skills_dir)
             return (
                 f"[OK] Removed directory '{skill_name}' ({direct}).\n"
                 f"Note: it had no SKILL.md — may not have been a valid skill."
@@ -638,6 +682,9 @@ class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompati
             entries[name] = entry
         entry["enabled"] = enabled
         write_config(config_path, raw)
+        # The row's enabled mirror lives in the catalog too (read from the
+        # file we just wrote — the in-memory config does not track skills).
+        await sync_skill_catalog(ctx, self.skills_dir)
         state = "enabled" if enabled else "disabled"
         logger.info("skill_set_enabled name=%s enabled=%s", name, enabled)
         return f"[OK] Skill '{name}' {state}."

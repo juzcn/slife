@@ -1,5 +1,5 @@
-"""Meta tool tests — tool_search / tool_load / _unload_function_tool /
-skill_load / mcp_tool_load delegation."""
+"""Meta tool tests — tool_search / func-tool-load / _unload_func_tool /
+mcp_tool_load delegation."""
 
 import json
 from types import SimpleNamespace
@@ -12,10 +12,9 @@ from slife.tools.catalog import CatalogStore
 from slife.tools.catalog_service import ToolCatalogService
 from slife.tools.mcp import McpToolLoadTool
 from slife.tools.meta_tools import (
-    SkillLoadTool,
-    ToolLoadTool,
+    FuncToolLoadTool,
     ToolSearchTool,
-    UnloadFunctionTool,
+    UnloadFuncTool,
 )
 from slife.tools.registry import ToolRegistry
 
@@ -93,17 +92,17 @@ async def test_tool_search_grep_mode_and_disabled_status(db, ctx):
     assert payload["results"][0]["status"] == "disabled"
 
 
-# ── tool_load / _unload_function_tool ──────────────────────────────
+# ── func-tool-load / _unload_func_tool ─────────────────────────────
 
 @pytest.mark.asyncio
 async def test_tool_load_and_unload_roundtrip_opts(ctx):
-    t_load = ToolLoadTool()
+    t_load = FuncToolLoadTool()
     object.__setattr__(t_load, "_ctx", ctx)
     # seeding leaves a native unloaded — the first load flips it
     msg = await t_load.execute(full_name="native_a")
     assert "Loaded" in msg or "already loaded" in msg
     # unload it, then reload
-    t_unload = UnloadFunctionTool()
+    t_unload = UnloadFuncTool()
     object.__setattr__(t_unload, "_ctx", ctx)
     msg = await t_unload.execute(full_name="native_a")
     assert "Unloaded" in msg
@@ -116,7 +115,7 @@ async def test_tool_load_and_unload_roundtrip_opts(ctx):
 @pytest.mark.asyncio
 async def test_tool_load_refuses_meta_and_unavailable(db, ctx):
     await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="error")
-    t_load = ToolLoadTool()
+    t_load = FuncToolLoadTool()
     object.__setattr__(t_load, "_ctx", ctx)
     msg = await t_load.execute(full_name="svcA__x")
     # The server's row was marked `error` — the refusal says so and names the
@@ -124,12 +123,12 @@ async def test_tool_load_refuses_meta_and_unavailable(db, ctx):
     assert "not up" in msg and "mcp_list" in msg
     msg = await t_load.execute(full_name="_turn_prompt")
     assert msg  # meta unknown? actually _turn_prompt is not in catalog → unknown
-    # _unload_function_tool refuses a whitelisted meta tool
+    # _unload_func_tool refuses a whitelisted tool
     await ctx.catalog.seed_inventory([_NativeA(), _turn_prompt_stub()])
-    t_unload = UnloadFunctionTool()
+    t_unload = UnloadFuncTool()
     object.__setattr__(t_unload, "_ctx", ctx)
     msg = await t_unload.execute(full_name="_turn_prompt")
-    assert "meta tool" in msg
+    assert "whitelisted" in msg
 
 
 def _turn_prompt_stub():
@@ -147,41 +146,13 @@ def _turn_prompt_stub():
 # ── mcp_tool_load delegation ───────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_mcp_tool_load_delegates_to_tool_load(ctx):
+async def test_mcp_tool_load_delegates_to_func_tool_load(ctx):
     t = McpToolLoadTool()
     object.__setattr__(t, "_ctx", ctx)
-    # native path through the delegation flips status like tool_load
-    t2 = UnloadFunctionTool()
+    # native path through the delegation flips status like func-tool-load
+    t2 = UnloadFuncTool()
     object.__setattr__(t2, "_ctx", ctx)
     await t2.execute(full_name="native_a")
     msg = await t.execute(full_name="native_a")
     assert "Loaded" in msg or "already loaded" in msg
     assert await ctx.catalog.effective_status("native_a") == "loaded"
-
-
-# ── skill_load ─────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_skill_load_returns_md_and_catalogs_row(tmp_path, db, ctx):
-    skills_dir = tmp_path / "skills"
-    skill_dir = skills_dir / "my-skill"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\nname: my-skill\ndescription: My skill desc\n---\n# My Skill\nbody\n",
-        encoding="utf-8",
-    )
-    tool = SkillLoadTool()
-    object.__setattr__(tool, "_ctx", ctx)
-    tool.skills_dir = skills_dir
-
-    result = await tool.execute(skill_name="my-skill")
-    assert "# My Skill" in result
-    row = await db.get_tool("my-skill")
-    assert row is not None
-    assert row["category"] == "skill"
-    assert row["status"] is None  # skills have no load/unload state
-
-    # a missing skill is not catalogued
-    missing = await tool.execute(skill_name="nope")
-    assert "not found" in missing
-    assert await db.get_tool("nope") is None

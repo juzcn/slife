@@ -111,7 +111,7 @@ class ToolRegistry:
 
         Both gates (registered-but-down, and known-to-the-catalog-only) answer
         with this, so the model is told what is actually wrong instead of
-        being sent to ``tool_load``, which refuses for the same reason.
+        being sent to ``func-tool-load``, which refuses for the same reason.
         """
         return (
             f"Error: tool '{tool_name}' is unavailable — its server is not up "
@@ -166,7 +166,7 @@ class ToolRegistry:
                     logger.info("tool_known_not_loaded name=%s eff=%s", tool_name, eff)
                     return (
                         f"Error: tool '{tool_name}' is known but not loaded — "
-                        f"use tool_search + tool_load."
+                        f"use tool_search + func-tool-load."
                     )
             logger.warning("tool_not_found name=%s", tool_name)
             return f"Error: Unknown tool '{tool_name}'"
@@ -178,14 +178,15 @@ class ToolRegistry:
             eff = await self._catalog.effective_status(tool_name)
             if eff == EFF_ERROR:
                 # Its server is down: saying "not loaded" would send the model
-                # to tool_load, which refuses for the same unreachable reason.
+                # to func-tool-load, which refuses for the same unreachable
+                # reason.
                 logger.info("tool_server_down name=%s", tool_name)
                 return self._server_down_message(tool_name)
             if eff is not None and eff != "loaded":
                 logger.info("tool_unloaded_called name=%s eff=%s", tool_name, eff)
                 return (
                     f"Error: tool '{tool_name}' is not loaded — "
-                    f"use tool_search + tool_load."
+                    f"use tool_search + func-tool-load."
                 )
         try:
             t0 = _time.monotonic()

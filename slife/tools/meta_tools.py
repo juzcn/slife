@@ -1,11 +1,9 @@
 """Tool-system meta tools — the unified, catalog-native surface.
 
-``tool_search``        — cross-category hybrid search over the shared catalog
-``tool_load``          — load a function tool (flip status + materialize proxy)
-``_unload_function_tool`` — unload a function tool (self-service; the harness
-                          also evicts LRU at turn boundaries)
-``skill_load``         — load a skill's SKILL.md into context AND register it
-                         in the catalog for search
+``tool_search``     — cross-category hybrid search over the shared catalog
+``func-tool-load``  — load a function tool (flip status + materialize proxy)
+``_unload_func_tool`` — unload a function tool (self-service; the harness
+                        also evicts LRU at turn boundaries)
 
 These are in the meta whitelist (``slife.tools.whitelist``) — always
 injected, never evicted, not configurable.  The legacy ``mcp_tool_load``
@@ -22,7 +20,6 @@ from typing import TYPE_CHECKING, ClassVar
 from slife.tools.base import Tool, make_params, require_params
 from slife.tools.catalog import effective_from_row
 from slife.tools.catalog_search import merge_hybrid
-from slife.tools.skill import _SkillDirMixin, _iter_skills, _read_skill
 from slife.tools.whitelist import TOOL_META_CATEGORY
 
 if TYPE_CHECKING:
@@ -58,7 +55,7 @@ class ToolSearchTool(Tool):
         "Search the unified tool catalog across all six categories "
         "(builtin/job/mcp/rest-api/skill/cli). Returns name, category, source "
         "server, and effective status per tool — load a function tool with "
-        "tool_load."
+        "func-tool-load."
     )
     parameters = make_params(
         query={
@@ -147,10 +144,10 @@ class ToolSearchTool(Tool):
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-class ToolLoadTool(Tool):
+class FuncToolLoadTool(Tool):
     """Load a function tool into the LLM tool list (status flip + materialize)."""
 
-    name = "tool_load"
+    name = "func-tool-load"
     category: ClassVar[str] = TOOL_META_CATEGORY
     description = (
         "Load a function tool (builtin/job/mcp/rest-api) into the LLM's tool "
@@ -213,14 +210,14 @@ class ToolLoadTool(Tool):
         return msg
 
 
-class UnloadFunctionTool(Tool):
+class UnloadFuncTool(Tool):
     """Unload a function tool (self-service; eviction is the harness's LRU)."""
 
-    name = "_unload_function_tool"
+    name = "_unload_func_tool"
     category: ClassVar[str] = TOOL_META_CATEGORY
     description = (
         "Unload a function tool (builtin/job/mcp/rest-api) from the loaded set "
-        "by name, freeing a slot in the tool list. Meta tools cannot be unloaded."
+        "by name, freeing a slot in the tool list. Whitelisted tools stay loaded."
     )
     parameters = make_params(
         full_name={
@@ -253,51 +250,3 @@ class UnloadFunctionTool(Tool):
             ):
                 registry.unregister(full_name)
         return msg
-
-
-class SkillLoadTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
-    """Load a skill into context and register it in the catalog for search."""
-
-    name = "skill_load"
-    category: ClassVar[str] = TOOL_META_CATEGORY
-    description = (
-        "Load a skill's full SKILL.md documentation into context and register "
-        "it in the tool catalog (find skills with tool_search)."
-    )
-    parameters = make_params(
-        skill_name={"type": "string", "description": "Skill name, from skill_list."},
-    )
-
-    async def execute(self, **kwargs) -> str:
-        skill_name: str = kwargs.get("skill_name", "") or ""
-        if err := require_params(skill_name=skill_name):
-            return err
-        text = _read_skill(self.skills_dir, skill_name)
-        # Both failure shapes are NOT successes: a named skill that is absent
-        # ("Skill 'x' not found") AND a missing skills directory ("Skills
-        # directory not found: ...").  The latter used to fall through and
-        # register a PHANTOM skill row whose "schema" was the error text.
-        if text.startswith("Skill") and "not found" in text:
-            return text
-
-        # Register the skill as a discoverable catalog row (category=skill,
-        # status stays NULL — skills have no load/unload state).
-        catalog = _catalog(_ctx(self))
-        if catalog is not None:
-            try:
-                description = skill_name
-                for _d, fm, _body in _iter_skills(self.skills_dir):
-                    if fm.get("name") == skill_name or _d.name == skill_name:
-                        description = fm.get("description") or skill_name
-                        break
-                await catalog.store.upsert_tool(
-                    skill_name,
-                    description=description,
-                    category="skill",
-                    schema=text,
-                    enabled=True,
-                    status=None,
-                )
-            except Exception:
-                logger.debug("skill_load_catalog_upsert_failed name=%s", skill_name)
-        return text

@@ -55,7 +55,7 @@ class TestBuild:
         assert "4. Annotations" in result
         assert "1. Images & multimodal" in result
         assert "2. Credentials" in result
-        assert "3. Tools & skills" in result
+        assert "3. Unified Tool System" in result
 
     def test_agent_nameentity_is_agent_name(self, cfg):
         """The prompt identity is the agent_name (--agent) — no separate name."""
@@ -105,15 +105,18 @@ class TestBuild:
 
     def test_tool_system_in_prompt(self, cfg):
         """The catalog contract: search/load is per tool, the cap evicts LRU
-        at turn boundaries, and an unusable server shows as ``error``."""
+        at turn boundaries (the whitelist carved out), and an unusable server
+        shows as ``error``."""
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "tool_search" in result
-        assert "tool_load" in result
-        assert "per tool, never per server" in result
+        assert "func-tool-load" in result
+        assert "Loading is **per tool**" in result
         assert "capped by the `tool_load` threshold" in result
         assert "least-recently-used" in result
-        assert "_unload_function_tool" in result
+        assert "Always injected: the whitelist" in result
+        assert "pinned `skill_use` / `system_health`" in result
+        assert "_unload_func_tool" in result
         assert "mcp_set_enabled" in result
         assert "rest_api_set_enabled" in result
         assert "mcp_list" in result

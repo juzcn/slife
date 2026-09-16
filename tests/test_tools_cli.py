@@ -326,3 +326,29 @@ class TestGetCliToolsSummaryEdgeCases:
         }))
         result = get_cli_tools_summary(cfg_path)
         assert result == "No CLI tools registered."
+
+
+# ── Catalog rows (cli IS a catalog category) ───────────────────────────
+
+
+class TestCliCatalogRows:
+    """`cli` entries are catalog rows: that is how tool_search finds them."""
+
+    def test_rows_carry_description_and_enabled(self):
+        from slife.tools.cli import cli_catalog_rows
+
+        rows = cli_catalog_rows({
+            "gh": {"command": "gh", "description": "GitHub CLI"},
+            "off": {"command": "x", "description": "disabled one", "enabled": False},
+            "malformed": "not a dict",
+        })
+
+        assert rows["gh"] == {
+            "description": "GitHub CLI", "schema": None, "enabled": True,
+        }
+        assert rows["off"]["enabled"] is False
+        assert "malformed" not in rows
+
+    def test_empty_section_is_no_rows(self):
+        from slife.tools.cli import cli_catalog_rows
+        assert cli_catalog_rows({}) == {}

@@ -1,7 +1,7 @@
-"""MCP tool loading — ``mcp_tool_load`` (legacy alias of ``tool_load``).
+"""MCP tool loading — ``mcp_tool_load`` (legacy alias of ``func-tool-load``).
 
 Kept registered so old callers and subagents keep working during the wrapper
-retirement; executes by delegating to the unified :class:`~slife.tools.meta_tools.ToolLoadTool`.
+retirement; executes by delegating to the unified :class:`~slife.tools.meta_tools.FuncToolLoadTool`.
 The old ``__mcp_get_tool`` live-schema lookup is superseded by the shared
 catalog (synced by the reconcile on connect).
 """
@@ -18,7 +18,7 @@ class McpToolLoadTool(Tool):
     category = "mcp"
     description = (
         "Load an external MCP tool by full_name '{server}__{{tool}}' into the "
-        "LLM's tool list (find it with tool_search). Delegates to tool_load."
+        "LLM's tool list (find it with tool_search). Delegates to func-tool-load."
     )
     parameters = {
         "type": "object",
@@ -34,17 +34,17 @@ class McpToolLoadTool(Tool):
     }
 
     async def execute(self, **kwargs) -> str:
-        """Delegate to the unified ``tool_load`` (mcp/rest-api materialization).
+        """Delegate to the unified ``func-tool-load`` (mcp/rest-api materialize).
 
         The mcp-specific lookup (``__mcp_get_tool``) is superseded by the
-        catalog: ``tool_load`` reads the tool's schema from the shared
+        catalog: ``func-tool-load`` reads the tool's schema from the shared
         catalog row (synced by the reconcile on connect) and materializes the
         proxy from it.  This name stays registered for old callers and
         subagents during the wrapper retirement.
         """
-        from slife.tools.meta_tools import ToolLoadTool
+        from slife.tools.meta_tools import FuncToolLoadTool
 
         full_name: str = kwargs.get("full_name", "")
-        delegate = ToolLoadTool()
+        delegate = FuncToolLoadTool()
         object.__setattr__(delegate, "_ctx", getattr(self, "_ctx", None))
         return await delegate.execute(full_name=full_name)

@@ -1,13 +1,15 @@
 -- ═══════════════════════════════════════════════════════════════
 --  slife 统一工具目录库（tools.db）— host 主进程持有的单一事实源
 --
---  一行 = 一个工具（6 类：builtin | job | mcp | rest-api | skill | cli），
---  mcp/rest-api 用 ``{server}__{tool}`` 全名标识（source_id 指 server）。
+--  一行 = 一个 function tool（builtin | job | mcp | rest-api；category 的 CHECK
+--  另允许 skill/cli，但两者都没有行：skill 是 skills 目录里的文件、cli 只在
+--  tools.json5），mcp/rest-api 用 ``{server}__{tool}`` 全名标识（source_id 指 server）。
+--  type 是 category 的粗粒度投影：func | skill | cli —— load/unload 只属于 func。
 --  落盘 + WAL（多进程：主 agent 写、subagent 只读/短写），busy_timeout
 --  兜底 SQLITE_BUSY。无运行时 DDL 迁移：schema 版本走 PRAGMA user_version，
 --  真需要迁移时在 _config_io 的跨进程 filelock 下重建新库。
 --
---  tool.status 存 loaded|unloaded|error|NULL（skill/cli 无 load 概念）；
+--  tool.status 存 loaded|unloaded|error（type='func' 才有行，故不再用 NULL）；
 --  error = 该 server 此刻不可用（未连上/掉线/连接失败/网关子进程死亡），由 host 写。
 --  FTS5（关键词）+ BLOB 向量（语义，over schema 文本）混合检索。
 -- ═══════════════════════════════════════════════════════════════
@@ -20,15 +22,18 @@ CREATE TABLE IF NOT EXISTS tool (
     description TEXT NOT NULL DEFAULT '',
     category    TEXT NOT NULL               -- builtin | job | mcp | rest-api | skill | cli
                 CHECK (category IN ('builtin','job','mcp','rest-api','skill','cli')),
+    type        TEXT NOT NULL DEFAULT 'func' -- func | skill | cli（粗粒度种类，由 category 派生）
+                CHECK (type IN ('func','skill','cli')),
     source_id   TEXT,                        -- 仅 mcp/rest-api：所属 server 名
-    schema      TEXT,                        -- Tool def JSON | SKILL.md 文本 | NULL(cli)
+    schema      TEXT,                        -- Tool def JSON（唯一取值：只有 function tool 有行）
     enabled     INTEGER,                     -- 0/1（builtin/job/skill/cli）；NULL（mcp/rest-api，join server）
-    status      TEXT,                        -- 'loaded'|'unloaded'|'error'（function tool）；skill/cli NULL
+    status      TEXT,                        -- 'loaded'|'unloaded'|'error'（type='func'）；skill/cli NULL
     last_loaded TEXT                         -- 本地 ISO，LRU evict 排序
 );
 CREATE INDEX IF NOT EXISTS idx_tool_status ON tool(status);
 CREATE INDEX IF NOT EXISTS idx_tool_source ON tool(source_id);
 CREATE INDEX IF NOT EXISTS idx_tool_category ON tool(category);
+CREATE INDEX IF NOT EXISTS idx_tool_type ON tool(type);
 
 
 -- 没有 server 表：哪些 server 该连由 tools.json5 的 enabled 决定，此刻谁活着由
@@ -86,4 +91,4 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
