@@ -335,11 +335,13 @@
   },
   skill: {},
 
-  // Unified tool-system knobs (DESIGNER_NOTES §8.5) — the loaded-function-tool
-  // threshold the turn-boundary LRU eviction enforces, and an optional explicit
-  // preload list (extra names seeded `loaded` at session start).
+  // Unified tool-system knob (DESIGNER_NOTES §8.5) — the loaded-function-tool
+  // threshold the turn-boundary LRU eviction enforces.  `autoload` is NOT a
+  // knob here: it is a per-entry flag, the sibling of `enabled`, written on
+  // the tool itself — e.g. `builtin: [{ name: "execute_shell", autoload: true }]`
+  // or a server entry (`autoload: true` = every tool of that server).  An
+  // autoloaded tool is born `loaded` and never evicted.
   tool_load: {
-    threshold: 100,
-    preload: []
+    threshold: 100
   }
 }

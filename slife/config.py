@@ -178,6 +178,42 @@ def _disabled_names(section: list) -> frozenset[str]:
     return frozenset(out)
 
 
+def _autoload_names(section: list) -> frozenset[str]:
+    """Names with ``autoload: true`` in a ``[{name, autoload}]`` section list.
+
+    The sibling of ``enabled``: the same entries, the same shape, one flag per
+    tool.  It seeds the tool ``loaded`` at session start and keeps it out of
+    LRU eviction.  Only the sections that hold function tools act on it — a
+    ``skill`` / ``cli`` entry has no load state, so its flag is accepted and
+    inert.
+    """
+    out: set[str] = set()
+    for entry in section:
+        if isinstance(entry, dict) and entry.get("autoload") is True:
+            name = entry.get("name")
+            if isinstance(name, str) and name:
+                out.add(name)
+    return frozenset(out)
+
+
+def _autoload_servers(*sections: dict) -> frozenset[str]:
+    """Server names with ``autoload: true`` in the mcp / rest-api sections.
+
+    An external tool's name is not knowable before its server connects, so the
+    flag sits on the SERVER entry: every tool row that server mirrors is born
+    ``loaded``.  It is the same key ``mcp_gateway`` reads to register that
+    server's proxies wholesale — one flag, one meaning: bring it up loaded.
+    """
+    out: set[str] = set()
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        for name, entry in section.items():
+            if name and isinstance(entry, dict) and entry.get("autoload") is True:
+                out.add(name)
+    return frozenset(out)
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a single LLM model."""
@@ -386,11 +422,15 @@ class Config:
     # optional (failure warns and the session continues).
     plugins_required: frozenset[str] = field(default_factory=frozenset)
     cli_tools: dict = field(default_factory=dict)
-    #: Unified tool-system knobs from tools.json5's ``tool_load`` section —
-    #: the loaded-function-tool threshold (default 100) and an optional
-    #: explicit preload list (extra names seeded loaded at session start).
+    #: The loaded-function-tool threshold — tools.json5's ``tool_load``
+    #: section, the one remaining tool-system knob (default 100).
     tool_load_threshold: int = 100
-    tool_load_preload: frozenset[str] = field(default_factory=frozenset)
+    #: Tools marked ``autoload: true`` in a per-tool section entry (builtin /
+    #: job) — seeded ``loaded`` at session start and never evicted.
+    autoload_tools: frozenset[str] = field(default_factory=frozenset)
+    #: Servers marked ``autoload: true`` in their mcp / rest-api entry — every
+    #: tool row that server mirrors is seeded ``loaded`` and never evicted.
+    autoload_servers: frozenset[str] = field(default_factory=frozenset)
     #: Per-entry ``enabled: false`` names from the tools.json5 ``job`` /
     #: ``skill`` sections (hidden from the catalog seed).
     disabled_jobs: frozenset[str] = field(default_factory=frozenset)
@@ -999,8 +1039,20 @@ class Config:
         disabled_jobs = _disabled_names(job_overrides)
         disabled_skills = _disabled_names(skill_overrides)
         disabled_builtin = _disabled_names(builtin_overrides)
-        # Tool-system knobs — tools.json5 ``tool_load`` section:
-        #   tool_load: {threshold: 100, preload: ["foo"]}
+        # ``autoload`` is a per-ENTRY flag, the sibling of ``enabled``: on a
+        # builtin/job entry it names a tool; on an mcp/rest-api entry it names
+        # a server (an external tool's name is unknown until it connects).
+        # A skill/cli entry accepts it and nothing more — those rows carry no
+        # load state to seed.
+        autoload_tools = _autoload_names(builtin_overrides) | _autoload_names(job_overrides)
+        mcp_section = _parse_section(tools_raw, "mcp", dict, {})
+        mcp_servers = mcp_section.get("servers", {})
+        autoload_servers = _autoload_servers(
+            mcp_servers if isinstance(mcp_servers, dict) else {},
+            _parse_section(tools_raw, "rest-api", dict, {}),
+        )
+        # The one tool-system knob left in the policy section:
+        #   tool_load: {threshold: 100}
         tool_load_section = _parse_section(tools_raw, "tool_load", dict, {})
         try:
             tool_load_threshold = int(
@@ -1010,10 +1062,6 @@ class Config:
                 tool_load_threshold = 100
         except (TypeError, ValueError):
             tool_load_threshold = 100
-        _preload_raw = tool_load_section.get("preload", [])
-        tool_load_preload = frozenset(
-            p for p in _preload_raw if isinstance(p, str) and p.strip()
-        ) if isinstance(_preload_raw, (list, tuple)) else frozenset()
 
         plugins_section = _parse_section(raw, "plugins", dict, {})
         # Required (core) plugins — named in ``plugins.required``.  A
@@ -1054,7 +1102,8 @@ class Config:
             plugins_required=plugins_required,
             cli_tools=cli_tools,
             tool_load_threshold=tool_load_threshold,
-            tool_load_preload=tool_load_preload,
+            autoload_tools=autoload_tools,
+            autoload_servers=autoload_servers,
             disabled_jobs=disabled_jobs,
             disabled_skills=disabled_skills,
             disabled_builtin=disabled_builtin,

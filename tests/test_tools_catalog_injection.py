@@ -1,6 +1,8 @@
 """Catalog wiring tests — seeded snapshot, loaded projection, A4 hints,
 and the worker (subagent) sharing semantics at the service level."""
 
+import json
+
 import pytest
 import pytest_asyncio
 
@@ -64,12 +66,12 @@ async def db(tmp_path):
 @pytest.mark.asyncio
 async def test_seed_defaults_new_rows_unloaded_except_whitelist(db):
     """Discovery alone never injects: a NEW row is unloaded unless it is
-    always-loaded (the whitelist) — or listed under ``tool_load.preload``."""
-    svc = ToolCatalogService(db, write_owner=True, preload=("native_b",))
+    always-loaded (the whitelist) — or marked ``autoload: true``."""
+    svc = ToolCatalogService(db, write_owner=True, autoload=("native_b",))
     await svc.seed_inventory([_Native(), _NativeB(), _TurnPromptStub()])
 
     loaded = set(await db.loaded_names())
-    assert loaded == {"native_b", "_turn_prompt"}   # the preload + the whitelist
+    assert loaded == {"native_b", "_turn_prompt"}   # the autoload + the whitelist
     snap = await svc.snapshot_loaded()
     assert "native_b" in snap
     assert "native_a" not in snap                        # not loaded by seeding
@@ -198,9 +200,34 @@ async def test_injected_schema_comes_from_catalog_not_instance(db):
 # ── Eviction policy ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
+async def test_autoload_server_tools_are_born_loaded_and_protected(db):
+    """A server entry's ``autoload: true`` covers tools whose names the config
+    cannot know: its mirrored rows land loaded, and eviction leaves them be."""
+    svc = ToolCatalogService(
+        db, threshold=1, write_owner=True, autoload_servers=("eager",),
+    )
+    await svc.upsert_external_tool("eager__search", server="eager",
+                                   description="search",
+                                   schema=json.dumps({"name": "search", "description": "search", "inputSchema": {"type": "object", "properties": {}}}))
+    await svc.upsert_external_tool("lazy__search", server="lazy",
+                                   description="search",
+                                   schema=json.dumps({"name": "search", "description": "search", "inputSchema": {"type": "object", "properties": {}}}))
+    await svc.seed_inventory([_Native()])
+
+    assert await db.get_effective("eager__search") == "loaded"
+    assert await db.get_effective("lazy__search") == "unloaded"
+
+    # threshold 1 is far exceeded; the autoloaded server's tool is not a victim
+    ok, _ = await svc.load_tool("native_a")
+    assert ok
+    evicted = await svc.evict_to_threshold()
+    assert "eager__search" not in evicted
+
+
+@pytest.mark.asyncio
 async def test_evict_to_threshold_respects_whitelist_and_owner(db):
     svc = ToolCatalogService(
-        db, threshold=2, write_owner=True, preload=("native_a",),
+        db, threshold=2, write_owner=True, autoload=("native_a",),
     )
     await svc.seed_inventory([_Native(), _NativeB(), _NativeC()])
     for name in ("native_b", "native_c"):        # the model loads the rest

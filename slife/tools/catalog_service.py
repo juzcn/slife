@@ -91,12 +91,18 @@ class ToolCatalogService:
         *,
         threshold: int = 100,
         write_owner: bool = True,
-        preload: tuple[str, ...] = (),
+        autoload: tuple[str, ...] = (),
+        autoload_servers: tuple[str, ...] = (),
     ):
         self._store = store
         self.threshold = threshold
         self.write_owner = write_owner
-        self.preload = frozenset(preload)
+        #: Names marked ``autoload: true`` in their section entry — born
+        #: loaded, never evicted.
+        self.autoload = frozenset(autoload)
+        #: Servers marked ``autoload: true`` — the same contract for tools
+        #: whose names are unknown until their server connects.
+        self.autoload_servers = frozenset(autoload_servers)
         #: The host's semantic actor (set by AgentService after startup) —
         #: tool_search reads its embedder for hybrid retrieval.
         self.semantic_manager: "SemanticManager | None" = None
@@ -112,7 +118,7 @@ class ToolCatalogService:
 
         A NEW row gets the session default: ``loaded`` for the always-loaded
         set (the whitelist — harness pair, meta surface, pinned, plus anything
-        listed under ``tool_load.preload``), ``unloaded`` for everything else
+        listed under ``autoload``), ``unloaded`` for everything else
         — discovery alone never puts a tool into the injection set.  An
         EXISTING row keeps its state: this sync mirrors WHICH tools are
         registered, it never overrides what the model (or a previous session)
@@ -139,9 +145,14 @@ class ToolCatalogService:
                 status=self.default_status(name),
             )
 
-    def default_status(self, name: str) -> str:
-        """What a NEW catalog row starts as: always-loaded → loaded, else unloaded."""
-        if is_meta_tool(name) or name in self.preload:
+    def default_status(self, name: str, *, server: str = "") -> str:
+        """What a NEW catalog row starts as: autoload → loaded, else unloaded.
+
+        ``server`` is the owning external server for a server-backed row — a
+        server marked ``autoload: true`` has its whole tool set born loaded
+        (its tool names are not knowable in the config).
+        """
+        if is_meta_tool(name) or name in self.autoload or server in self.autoload_servers:
             return STATUS_LOADED
         return STATUS_UNLOADED
 
@@ -282,10 +293,12 @@ class ToolCatalogService:
         excess = count - self.threshold
         if excess <= 0:
             return []
-        # Protected = the always-loaded carve-outs ∪ the configured preload
-        # set (tools.json5 ``tool_load: {preload: [...]}`` — an explicit
-        # "never evict these" list a user can tune).
-        protected = set(ALWAYS_LOADED) | set(self.preload)
+        # Protected = the always-loaded carve-outs ∪ the autoload set: the
+        # names marked ``autoload: true`` in their section entry, plus every
+        # tool of a server marked the same way.
+        protected = set(ALWAYS_LOADED) | set(self.autoload)
+        if self.autoload_servers:
+            protected |= await self._store.names_for_sources(self.autoload_servers)
         evicted = await self._store.evict_lru(excess, protected=protected)
         if evicted:
             logger.info(
@@ -307,10 +320,10 @@ class ToolCatalogService:
     ) -> bool:
         """Upsert a server-backed tool row (schema-change detection → re-embed).
 
-        A newly seen tool lands ``unloaded`` (and always will — an external
-        name is never in the whitelist), while an existing row keeps whatever
-        the model decided.  ``func-tool-load`` is the only way into the
-        injection set.
+        A newly seen tool lands ``unloaded`` — unless its server is marked
+        ``preload: true``, which seeds the whole set loaded — while an existing
+        row keeps whatever the model decided.  For everything else
+        ``func-tool-load`` is the only way into the injection set.
         """
         return await self._store.upsert_tool(
             name,
@@ -319,7 +332,7 @@ class ToolCatalogService:
             source_id=server,
             schema=schema,
             enabled=None,
-            status=self.default_status(name),
+            status=self.default_status(name, server=server),
         )
 
     async def mark_source_error(self, source: str) -> int:

@@ -508,6 +508,18 @@ class CatalogStore:
         )
         return {row[0] for row in await cursor.fetchall()}
 
+    async def names_for_sources(self, sources) -> set[str]:
+        """Every row name owned by the given servers — the autoload-protect set."""
+        wanted = {s for s in sources if s}
+        if not wanted:
+            return set()
+        names = tuple(sorted(wanted))
+        cursor = await self._c.execute(
+            f"SELECT name FROM tool WHERE source_id IN ({in_placeholders(len(names))})",
+            names,
+        )
+        return {row[0] for row in await cursor.fetchall()}
+
     # ── Status flips ───────────────────────────────────────────────
 
     async def set_status(self, name: str, status: str | None, *, bump: bool = False) -> int:

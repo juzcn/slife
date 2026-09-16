@@ -17,7 +17,7 @@ The goal is one unified model: **every function tool** (builtin, job, mcp, rest-
 Key properties:
 
 - **Unified search + load.** `tool_search` spans every category in the catalog (all six `tools.json5` sections); `func-tool-load` loads any function tool by name.
-- **Threshold-managed.** A configurable cap (`tool_load.threshold`, default 100) bounds how many function tools are injected; the harness evicts the oldest-by-usage at turn boundaries. Never evicted — and the only things injected before the model asks: the whitelist (harness pair + 5 meta tools + 2 pinned), plus anything listed under `tool_load.preload`.
+- **Threshold-managed.** A configurable cap (`tool_load.threshold`, default 100) bounds how many function tools are injected; the harness evicts the oldest-by-usage at turn boundaries. Never evicted — and the only things injected before the model asks: the whitelist (harness pair + 5 meta tools + 2 pinned) and anything marked `autoload` in `tools.json5`.
 - **Granular.** Load/unload is per-tool, not per-server. A connected MCP server with 50 tools injects only the ones the model loaded.
 - **DB-driven injection.** The schema injected into the LLM comes from the catalog's `schema` column — never re-fetched from the live MCP server or parsed from tool code.
 
@@ -28,18 +28,18 @@ Key properties:
 The tool system is configured entirely in `tools.json5` (sibling of `slife.json5` in the data dir). It carries **one section per category** plus the **`tool_load`** policy section:
 
 ```
-builtin:   [{name, enabled, ...overrides}]
+builtin:   [{name, enabled, autoload, ...overrides}]
 mcp:       {servers: {<name>: {command|url, args, env, enabled, autoload, source, ...}}}
-rest-api:  {<name>: {spec_url, base_url, api_key, ...}}        # OpenAPI via mcp-openapi-proxy
-job:       [{name, enabled}]                                    # jobs are files in jobs/
-cli:       [{name, enabled}]
-skill:     [{name, enabled}]
+rest-api:  {<name>: {spec_url, base_url, api_key, enabled, autoload, ...}}   # OpenAPI via mcp-openapi-proxy
+job:       [{name, enabled, autoload}]                          # jobs are files in jobs/
+cli:       {<name>: {command, description, enabled, autoload}}  # cli_list enumerates
+skill:     [{name, enabled, autoload}]
 
-tool_load: {threshold: 100, preload: ["execute_shell", ...]}
+tool_load: {threshold: 100}
 ```
 
 - Sections are the *only* knobs; the `tools:` array of `slife.json5` is retired. `tools.json5` is **the authority** — at startup the host mirrors its `mcp`/`rest-api` sections into the catalog db (`sync_config_servers`), and every `cli_set` / `rest_api_set` / `job-write` / etc. persists there and re-syncs.
-- Per-category disable is a `{name, enabled: false}` list entry; the parsed disable sets (`disabled_builtin`, `disabled_jobs`, `disabled_skills`) are enforced where each category is mirrored.
+- Every entry carries the same two policy flags, siblings of each other: **`enabled`** (false = off, mirrored onto the row's `enabled` column and reported by search as `disabled`) and **`autoload`** (true = injected from session start, never evicted). `autoload` is per *tool* wherever a tool has a name of its own (`builtin` / `job`), and per *server* in `mcp` / `rest-api` — an external tool's name is not knowable before its server connects, so the flag covers the server's whole tool set. In `skill` / `cli` it is accepted and inert: those rows have no load state to seed.
 - The gateway reads the **merged server view**: `mcp.servers` ∪ `rest-api`, with a legacy top-level `servers` fallback so a pre-section file keeps working (`_servers_dict`).
 
 ---
@@ -174,7 +174,7 @@ Self-service unload (the spare-ticket the model can use to free a slot); refused
 
 ### Boot ordering
 
-1. Host `_init_catalog` opens `tools.db` and runs `seed_inventory`: every registered tool gets a row, and **a NEW row is `loaded` only if it is whitelisted** (`ALWAYS_LOADED`, plus anything under `tool_load.preload`) — everything else is born `unloaded`. An EXISTING row keeps whatever the model decided; the sync mirrors *which* tools are registered, never *what is loaded*. The two registry-less categories are mirrored in the same pass (`_mirror_local_rows`: the skills dir → `skill` rows, the `cli` section → `cli` rows). Every external row is then marked `error`, because no server is up yet.
+1. Host `_init_catalog` opens `tools.db` and runs `seed_inventory`: every registered tool gets a row, and **a NEW row is `loaded` only from the two autoload sources** — the whitelist (`ALWAYS_LOADED`: the loop's own tools, a system-level protection that is not configurable) and the entries marked `autoload: true` in `tools.json5` (user intent) — everything else is born `unloaded`. An EXISTING row keeps whatever the model decided; the sync mirrors *which* tools are registered, never *what is loaded*. The two registry-less categories are mirrored in the same pass (`_mirror_local_rows`: the skills dir → `skill` rows, the `cli` section → `cli` rows). Every external row is then marked `error`, because no server is up yet.
 2. The wrapper spawns; `_auto_connect_configured` connects **every server enabled in `tools.json5`** (disabled ones are registered only, so `mcp_list` still matches the config). Nothing is remembered from a previous session — a server that was down when you quit is retried here like any other.
 3. Each successful connect publishes `tools/list_changed`; the host's listen stream wakes the reconcile below, which mirrors that server's tool rows (new rows `unloaded`) and clears the `error` mark. `_wire_mcp_glue` also runs one reconcile deterministically the moment the gateway is ready, so startup converges as servers come up — one that never comes up simply stays `error`.
 4. `tools.json5` removals are purged in the same pass (config is the authority).
@@ -185,7 +185,7 @@ At each turn boundary the loop refreshes a **snapshot**: `snapshot_loaded()` = t
 
 ### Threshold eviction
 
-At the turn boundary, if loaded count exceeds `tool_load.threshold` (default 100), `evict_to_threshold` drops the excess via `evict_lru` — ordered `(last_loaded IS NULL) DESC, last_loaded ASC, name`, i.e. never-used first, then least-recently-used. Protected from eviction: `ALWAYS_LOADED` ∪ `preload` (the `tool_load.preload` names — the same list that makes a tool born `loaded` at startup; see the boot ordering). Two writer rules keep the LRU honest:
+At the turn boundary, if loaded count exceeds `tool_load.threshold` (default 100), `evict_to_threshold` drops the excess via `evict_lru` — ordered `(last_loaded IS NULL) DESC, last_loaded ASC, name`, i.e. never-used first, then least-recently-used. Protected from eviction: the same two autoload sources that seed a row `loaded` — `ALWAYS_LOADED` and the `autoload` entries (an autoloaded server contributes every name it owns, resolved by `source_id`). Two writer rules keep the LRU honest:
 
 - `seed_inventory` seeds without touching `last_loaded` (never-used tools sort oldest);
 - **every successful `registry.execute` bumps `last_loaded`** (`CatalogStore.touch`), so a tool used this turn is never the next victim. Eviction is main-owner only: subagents inherit the curator's budget and never squeeze it.
@@ -238,7 +238,7 @@ nowhere to carry one.
 Driven by connect events / `mcp_*` mutations / `tools/list_changed`:
 
 1. **Project the connectivity verdict**: read the wrapper's live `__check`; a server that is `connected` has its `error` marks cleared, every other configured server (down, failed, or disabled) has its tools marked `error`.  A failed probe is *not* a verdict — the rows are left untouched rather than marking every server broken;
-2. **auto_load servers** — register their proxies (full diff) and mirror their tool rows (new rows `unloaded`);
+2. **auto_load servers** — register their proxies (full diff) and mirror their tool rows (new rows `unloaded`, or `loaded` when the server is marked `autoload`);
 3. **on-demand servers** (the default) — mirror their tool rows with **no proxies**: this is what makes `tool_search` find their tools and `func-tool-load` materialize them one at a time.  Only connected servers yield rows (`mcp_list_tools` answers empty otherwise); a disconnected server's rows stay and its `error` mark keeps them out of injection;
 4. **drop** registered proxies whose server left the config (`mcp_remove` is the only unregister path — a merely disabled server keeps its proxy, and its rows are marked `error`);
 5. **purge the removed server's catalog rows.** Comparing against **tools.json5** (the authority) rather than the pool keeps a transient empty pool — a gateway restart — from wiping a still-configured server's rows.

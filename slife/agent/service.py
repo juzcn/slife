@@ -1525,7 +1525,8 @@ class AgentService:
         The job-coding plugin's proxies are the ``job`` category, every other
         built-in plugin tool is ``builtin``.  Status follows the same rule as
         the native seed: a NEW row is ``loaded`` only for the always-loaded
-        whitelist (plus ``tool_load.preload``), ``unloaded`` otherwise, and an
+        whitelist (plus the entries marked ``autoload``), ``unloaded``
+        otherwise, and an
         existing row keeps the state the model set.  Best-effort.
         """
         if self._catalog is None:
@@ -2442,10 +2443,12 @@ class AgentService:
                 store,
                 threshold=self._tool_load_threshold,
                 write_owner=not self.is_subagent,
-                # tools.json5's `tool_load.preload` — the explicit "load these
-                # at startup" escape hatch around the new default (only the
-                # whitelist is born loaded).
-                preload=tuple(self.config.tool_load_preload),
+                # tools.json5's per-entry `autoload: true` — the explicit "load
+                # these at startup" escape hatch around the default (only the
+                # whitelist is born loaded).  A server entry's flag covers its
+                # whole tool set, whose names are unknown until it connects.
+                autoload=tuple(self.config.autoload_tools),
+                autoload_servers=tuple(self.config.autoload_servers),
             )
             # Session seed from everything currently registered (natives +
             # built-in plugin tools).  External mcp/rest-api rows are seeded

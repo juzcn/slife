@@ -1,5 +1,12 @@
 """Tool whitelist — the "always loaded, never touched" carve-outs.
 
+This is the SYSTEM-level autoload layer: `tools.json5` marks a tool or server
+``autoload: true`` when the user wants it injected from session start, and the
+names here are injected the same way without being configurable at all — no
+entry can turn them off, and nothing can evict them.  Both sources seed a row
+`loaded` and are carved out of LRU eviction; this one exists so the harness
+keeps its own tools whatever the config says.
+
 Three classes, all always injected into the LLM tool list, none LRU-evictable,
 none unloadable via ``_unload_func_tool``:
 
