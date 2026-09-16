@@ -264,6 +264,8 @@ status：为空时，搜索所有状态的， status=status, 只搜索status的t
 - 确认新安装的slife，带着seeded tools.json5 能与空db 自洽，也能和已有db自洽。
 
 
+9. Issues
 
-8.6 Job system 的重新思考
+credstore 在开发环境不读写本地 D:\Dev\Workspace\slife\credentials.crypt， fixed， use ~/.credstore
+
 
