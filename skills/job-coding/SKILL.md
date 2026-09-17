@@ -171,7 +171,9 @@ call an *unloaded* tool directly by name.
   never from memory: a loaded tool is in front of you with its schema; for
   an unloaded one, probe it with the gateway's `mcp_list` / `mcp_list_tools`
   (host tools, usable in the same conversation) and freeze the exact
-  names/args you observed into the job.
+  names/args you observed into the job.  `mcp_list` covers the MCP family;
+  a server in the `rest-api` section is `rest_api_list` /
+  `rest_api_list_tools`.
 
 ```python
 from slife.plugins.job_coding import mcp
@@ -303,8 +305,9 @@ want typed arguments.
 **Create a job** (e.g. turn a recurring task into a job):
 1. `job-list` to see what exists and confirm the name is free.
 2. If the job will call external MCP tools, probe the surface first —
-   `mcp_list` for server names, `mcp_list_tools(server)` for an unloaded
-   tool's real schema — and write against the observed names, never memory.
+   `mcp_list` for server names (a `rest-api` server is `rest_api_list`'s),
+   `mcp_list_tools(server)` for an unloaded tool's real schema — and write
+   against the observed names, never memory.
 3. Write the code following the grammar above — start from the `translate`
    template (LLM job), `search_github` (MCP job), or `slugify` (pure job).
 3. **Self-review before submitting.** Check the file against the fast-fail

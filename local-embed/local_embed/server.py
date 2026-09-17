@@ -115,9 +115,9 @@ mcp, _ = create_plugin_server(
     instructions=(
         "local-embed — local embedding service.  Serves OpenAI-compatible "
         "/v1/embeddings + /v1/models for slife's embeddings config (shared by "
-        "memdb + memfiles).  The only MCP tool is the internal __check, "
-        "probed by the host's check_local_embed — the host consumes the model "
-        "service over HTTP, never through MCP tools."
+        "memdb + memfiles).  The only MCP tool is the internal __check; the "
+        "host consumes the model service over HTTP — its check_embeddings "
+        "probes GET /v1/models — never through MCP tools."
     ),
     lifespan=_startup_eager,
 )

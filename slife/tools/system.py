@@ -11,13 +11,14 @@ Registered LLM tools:
     notify_user              — push a desktop notification to the human operator
 
 The per-subsystem ``check_*`` functions (memdb, wechat, memfiles,
-local_embed, sharefile, watchdog, mcp_gateway, a2a, media, job-coding,
+embeddings, sharefile, watchdog, mcp_gateway, a2a, media, job-coding,
 tool_catalog) are NOT registered as tools — ``system_health`` aggregates
 them, plus the startup records, into one report.  They exist as functions
 so the harness (and tests) can probe a single subsystem.  ``check_mcp_gateway``
 reports the two external-server families as separate components
-(``mcp_servers`` / ``rest-api``): a REST-API server is an MCP server, but it is
-configured and managed by its own tool set.
+(``mcp_servers`` / ``rest-api``): an MCP server and a REST API are different
+things, sharing only the transport they are currently implemented over, and
+each is configured and managed by its own tool set.
 
 Every check returns the same flat entries (``component``/``level``/``key``/
 ``value``/``hint``), and one rule governs their text: **``value`` is the
@@ -367,27 +368,37 @@ async def check_memfiles(client=None) -> list[dict]:
 # Endpoint probe deadline is developer-owned (registry ready.probe_endpoint).
 
 
-async def check_local_embed(base_url: str = "") -> list[dict]:
+async def check_embeddings(base_url: str = "") -> list[dict]:
     """Probe the ACTIVE embedding endpoint.
 
-    Every configured embeddings provider — local-embed or a cloud API like
-    SiliconFlow — is treated as ONE ordinary OpenAI-compatible endpoint and
-    handled the same way: the api_key is resolved like the model section's
-    (env → credstore → literal) and sent as the Bearer header, then
-    ``GET {base_url}/models`` is probed.  Reachability + model list IS the
-    health signal — no local-embed-specific loaded/available semantics.
+    Every configured embeddings provider — the local-embed daemon or a cloud
+    API like SiliconFlow — is treated as ONE ordinary OpenAI-compatible
+    endpoint and handled the same way: the api_key is resolved like the model
+    section's (env → credstore → literal) and sent as the Bearer header, then
+    ``GET {base_url}/models`` is probed.  Reachability IS the health signal.
+
+    The reported fact is the endpoint's identity and the model this session
+    embeds with: the configured one, or — for a provider that names no model —
+    the listing's first entry, which is the one ``EmbeddingClient`` pins.  The
+    listing itself carries no active marker, so on a cloud endpoint its first
+    entry is a catalogue entry (a chat model, on SiliconFlow) and says nothing
+    about us.  The entry is keyed by provider id, so the line names which
+    endpoint answered.
 
     Only the ACTIVE provider is probed.  A configured-but-inactive provider
-    (e.g. a local-embed daemon that is listed but not active) is never
+    (e.g. the local-embed daemon while a cloud API is active) is never
     touched or warned about.
     """
+    provider = "endpoint"
+    base_url = base_url.strip()
     try:
         from slife.plugins.memdb.embedding_config import get_active_endpoint
         ep = get_active_endpoint()
+        provider = (ep.get("provider") or "").strip() or provider
         base_url = (base_url or ep.get("base_url") or "").strip()
         if not base_url:
             return [_entry(
-                "local_embed", "warning", "status", "offline (no base_url)",
+                "embeddings", "warning", provider, "offline (no base_url)",
                 "Configure the top-level embeddings section "
                 "(see embeddings_model_set).",
             )]
@@ -408,16 +419,25 @@ async def check_local_embed(base_url: str = "") -> list[dict]:
             resp.raise_for_status()
             payload = resp.json()
         models = payload.get("data") or []
-        # A standard /v1/models listing has no active marker — the first
-        # model id stands in as the health value.
-        exposed = next((m.get("id") or "?" for m in models), "?")
-        return [_entry("local_embed", "ok", "status",
-                       f"{exposed} ({len(models)} models at {base_url})")]
+        # The configured id is the model this session embeds with.  A provider
+        # that names none leaves the choice to the endpoint, and the client
+        # resolves it by pinning the listing's first entry — so that, and not
+        # some arbitrary catalogue entry, is the fact to report.
+        model = (ep.get("model") or "").strip() or next(
+            (m.get("id") or "" for m in models if m.get("id")), "",
+        )
+        return [_entry("embeddings", "ok", provider,
+                       f"{model or '?'} at {base_url}")]
     except Exception as e:
-        logger.warning("local_embed_check_failed err=%s", e)
-        return [{"component": "local_embed", "level": "warning", "key": "status",
-                 "value": "unavailable",
-                 "hint": f"Active embedding endpoint unreachable: {e}"}]
+        logger.warning("embeddings_check_failed err=%s", e)
+        return [{
+            "component": "embeddings", "level": "warning", "key": provider,
+            "value": "unavailable",
+            "hint": f"GET {base_url}/models failed: {e}. Point this provider "
+                    f"at a reachable endpoint with embeddings_model_set, or "
+                    f"start the service it names. Keyword search keeps "
+                    f"working meanwhile.",
+        }]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -472,16 +492,18 @@ _REST_API_RETRY_HINT = ("The wrapper retries in the background. Re-run "
 
 
 def _server_family(server: dict) -> str:
-    """``"rest-api"`` for a REST-API-backed server entry, else ``""``.
+    """``"rest-api"`` for a REST-API entry, else ``""``.
 
-    ``list_servers`` carries the wrapper's own ``rest_api`` verdict — read
-    off the entry's config SECTION there, since a REST API is an ordinary
-    ``mcp-openapi-proxy`` server that merely lives in ``rest-api``.  It is
-    NOT ``source``: that records where a definition was downloaded from.
-    The families are reported as separate components even though a REST-API
-    server *is* an MCP server: it is configured, probed and managed by a
-    different tool set (``rest_api_*`` vs ``mcp_*``), so an operator reading
-    "which servers are down" needs them apart.
+    ``list_servers`` carries the wrapper's own ``rest_api`` verdict, read off
+    the entry's config SECTION there.  It is NOT ``source``: that records
+    where a definition was downloaded from.
+
+    The families get separate components because they are separate things —
+    an MCP server and an API described by an OpenAPI document.  That a REST
+    API currently runs through an MCP proxy is an implementation choice, not
+    an identity: it is configured, probed and managed by a different tool set
+    (``rest_api_*`` vs ``mcp_*``), so an operator reading "which servers are
+    down" needs them apart.
     """
     if server.get("rest_api") is True:
         return "rest-api"
@@ -749,7 +771,9 @@ async def check_tool_catalog(ctx=None) -> list[dict]:
 
     entries = [_entry(
         "tool_catalog", "ok", "db",
-        f"{facts.get('tools', 0)} tools, {facts.get('servers', 0)} servers, "
+        f"{facts.get('tools', 0)} tools, {facts.get('servers', 0)} servers "
+        f"({facts.get('servers_mcp', 0)} mcp, "
+        f"{facts.get('servers_rest_api', 0)} rest-api), "
         f"{facts.get('loaded', 0)} loaded",
     )]
     sem_level, sem_value, sem_hint = _semantic_facts(
@@ -832,8 +856,8 @@ async def check_job_coding(client=None) -> list[dict]:
 #: Plugin-backed health checks — derived from the central plugin contract so
 #: ``system_health`` always enumerates exactly the declared plugins (no hand
 #: list to drift from the registry).  The non-plugin checks are appended by
-#: hand: the catalog lives in the main process, and local-embed / the watchdog
-#: are not plugins at all.
+#: hand: the catalog lives in the main process, and the active embedding
+#: endpoint / the watchdog are not plugins at all.
 _SPEC_CHECKS: list[tuple[str, str | None]] = [
     (health_check_name(spec.name), spec.ctx_field)
     for spec in PLUGIN_SPECS.values()
@@ -841,7 +865,7 @@ _SPEC_CHECKS: list[tuple[str, str | None]] = [
 ]
 _CHECK_FUNCTIONS: list[str] = [name for name, _ in _SPEC_CHECKS] + [
     "check_tool_catalog",
-    "check_local_embed",
+    "check_embeddings",
     "check_watchdog",
 ]
 
@@ -990,7 +1014,7 @@ _ORDER: dict[str, int] = {
     "system_health": 0,   # a check that blew up is the most alarming entry
     "mcp_servers": 1, "rest-api": 2, "tool_catalog": 3, "memdb": 4,
     "memfiles": 5, "wechat": 6, "sharefile": 7, "a2a": 8, "media": 9,
-    "job-coding": 10, "local_embed": 11, "watchdog": 12,
+    "job-coding": 10, "embeddings": 11, "watchdog": 12,
 }
 
 #: Static startup records (environment facts) — last by design.

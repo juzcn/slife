@@ -255,44 +255,59 @@ def _persist_entry(
     )
 
 
-@mcp.tool(
-    name="mcp_set",
-    description=(
-        "Add or update an external MCP server connection (upsert; stdio via "
-        "`command`/`args`, or http via `url`)."
-    ),
-)
-async def mcp_set(
-    name: str,
-    command: str = "",
-    args: list[str] | None = None,
-    env: dict[str, str] | None = None,
-    url: str = "",
-    headers: dict[str, str] | None = None,
-    description: str = "",
-    enabled: bool = True,
-    source: dict | None = None,
-    auth: dict | None = None,
-    ctx: Context | None = None,
-) -> str:
-    """Add or update an MCP server (upsert — idempotent).
+# ═══════════════════════════════════════════════════════════════════════
+# Family gate — the mcp_* tools own the MCP family, and only it
+# ═══════════════════════════════════════════════════════════════════════
 
-    Identical config → ``already_connected``, no restart.  Changed config →
-    restart.  ``enabled`` sets the initial state; use ``mcp_set_enabled`` to
-    toggle enable/disable at runtime.  Persisted to tools.json5.
+def _family_refusal(name: str, category: str, twin: str) -> str | None:
+    """Refuse a call that speaks for *category* but names the other family.
 
-    Args:
-        name: Unique server name (not a reserved plugin name).
-        command: For stdio servers — the binary (npx, uvx, python).
-        args: For stdio servers — command-line arguments (list).
-        env: Environment overrides. Use ${VAR} refs for secrets, never plaintext.
-        url: For http servers — the SSE or streamable endpoint (auto-detected).
-        headers: HTTP headers. Use ${VAR} refs for secrets, never plaintext.
-        description: What the server does, in its own language — don't translate.
-        enabled: Initial state: true connects now, false stays disconnected.
-        source: Provenance (e.g. registry) for future updates.
-        auth: OAuth config for device code flow (auth type 'oauth').
+    A REST API and an MCP server are different things with different tool
+    sets, and the ``mcp_*`` tools own the MCP one — the pool holding both does
+    not make ``github`` an MCP server any more than it makes ``playwright`` an
+    API.  *twin* is the ``rest_api_*`` tool that does own the server, named in
+    the refusal so the caller is sent somewhere real.
+
+    Only the ``mcp`` direction is gated.  The internal registrations declare
+    ``category="rest-api"`` because that is who calls them; they stay
+    family-blind so the ``rest_api_*`` family can drive its own servers'
+    lifecycle through them.
     """
+    if category == "mcp" and plugin_config.is_rest_api(name):
+        return error_json(
+            f"'{name}' is a REST API, not an MCP server. Use {twin} instead.",
+            server=name,
+        )
+    return None
+
+
+async def _set_server(
+    name: str,
+    command: str,
+    args: list[str] | None,
+    env: dict[str, str] | None,
+    url: str,
+    headers: dict[str, str] | None,
+    description: str,
+    enabled: bool,
+    source: dict | None,
+    auth: dict | None,
+    category: str,
+    ctx: Context | None,
+) -> str:
+    """The shared upsert behind ``mcp_set`` and ``__mcp_set``.
+
+    ``category`` is the family the CALLER speaks for — the gate reads it, so
+    the one rule lives here instead of once per registration (see
+    :func:`_family_refusal`).
+
+    The ENTRY's config section decides which family the connection is built
+    as, which is why ``rest_api_set`` writes the config before calling: a name
+    that resolves to ``rest-api`` connects as a REST API.
+    """
+    refusal = _family_refusal(name, category, "rest_api_set")
+    if refusal:
+        return refusal
 
     if not command and not url:
         return error_json(
@@ -394,6 +409,79 @@ async def mcp_set(
 
 
 @mcp.tool(
+    name="mcp_set",
+    description=(
+        "Add or update an external MCP server connection (upsert; stdio via "
+        "`command`/`args`, or http via `url`)."
+    ),
+)
+async def mcp_set(
+    name: str,
+    command: str = "",
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    url: str = "",
+    headers: dict[str, str] | None = None,
+    description: str = "",
+    enabled: bool = True,
+    source: dict | None = None,
+    auth: dict | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Add or update an MCP server (upsert — idempotent).
+
+    The MCP family's own tool.  Identical config → ``already_connected``, no
+    restart.  Changed config → restart.  ``enabled`` sets the initial state;
+    use ``mcp_set_enabled`` to toggle enable/disable at runtime.  Persisted to
+    tools.json5.
+
+    Args:
+        name: Unique server name (not a reserved plugin name).
+        command: For stdio servers — the binary (npx, uvx, python).
+        args: For stdio servers — command-line arguments (list).
+        env: Environment overrides. Use ${VAR} refs for secrets, never plaintext.
+        url: For http servers — the SSE or streamable endpoint (auto-detected).
+        headers: HTTP headers. Use ${VAR} refs for secrets, never plaintext.
+        description: What the server does, in its own language — don't translate.
+        enabled: Initial state: true connects now, false stays disconnected.
+        source: Provenance (e.g. registry) for future updates.
+        auth: OAuth config for device code flow (auth type 'oauth').
+    """
+    return await _set_server(
+        name, command, args, env, url, headers, description, enabled,
+        source, auth, category="mcp", ctx=ctx,
+    )
+
+
+@mcp.tool(
+    name="__mcp_set",
+    description=(
+        "Add or update ANY server connection — REST APIs included. Internal: "
+        "the rest_api_* family's warm-up calls this; the model gets the "
+        "family-gated mcp_set."
+    ),
+)
+async def __mcp_set(
+    name: str,
+    command: str = "",
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    url: str = "",
+    headers: dict[str, str] | None = None,
+    description: str = "",
+    enabled: bool = True,
+    source: dict | None = None,
+    auth: dict | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """The ``rest_api_*`` family's registration of the shared upsert."""
+    return await _set_server(
+        name, command, args, env, url, headers, description, enabled,
+        source, auth, category="rest-api", ctx=ctx,
+    )
+
+
+@mcp.tool(
     name="mcp_set_enabled",
     description=(
         "Enable or disable an MCP server (true reconnects + loads tools; "
@@ -403,10 +491,41 @@ async def mcp_set(
 async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) -> str:
     """Toggle enable/disable on an existing MCP server.
 
+    The MCP family's own tool.
+
     Args:
         name: Server name (from mcp_list).
         enabled: true = reconnect and load tools; false = disconnect and unload.
     """
+    return await _set_server_enabled(name, enabled, category="mcp", ctx=ctx)
+
+
+@mcp.tool(
+    name="__mcp_set_enabled",
+    description=(
+        "Enable or disable ANY server — REST APIs included. Internal: the "
+        "rest_api_* family calls this; the model gets the family-gated "
+        "mcp_set_enabled."
+    ),
+)
+async def __mcp_set_enabled(
+    name: str, enabled: bool, ctx: Context | None = None,
+) -> str:
+    """The ``rest_api_*`` family's registration of the shared toggle."""
+    return await _set_server_enabled(name, enabled, category="rest-api", ctx=ctx)
+
+
+async def _set_server_enabled(
+    name: str, enabled: bool, category: str, ctx: Context | None,
+) -> str:
+    """The shared toggle behind ``mcp_set_enabled`` and ``__mcp_set_enabled``.
+
+    ``category`` is the family the caller speaks for (see
+    :func:`_family_refusal`).
+    """
+    refusal = _family_refusal(name, category, "rest_api_set_enabled")
+    if refusal:
+        return refusal
     existing = _pool.get_server(name)
     if existing is None:
         return error_json(
@@ -471,9 +590,36 @@ async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) 
 async def mcp_remove(name: str, ctx: Context | None = None) -> str:
     """Stop and remove an MCP server.
 
+    The MCP family's own tool.
+
     Args:
         name: Server name to remove.
     """
+    return await _remove_server(name, category="mcp", ctx=ctx)
+
+
+@mcp.tool(
+    name="__mcp_remove",
+    description=(
+        "Stop and remove ANY server — REST APIs included. Internal: the "
+        "rest_api_* family calls this; the model gets the family-gated "
+        "mcp_remove."
+    ),
+)
+async def __mcp_remove(name: str, ctx: Context | None = None) -> str:
+    """The ``rest_api_*`` family's registration of the shared removal."""
+    return await _remove_server(name, category="rest-api", ctx=ctx)
+
+
+async def _remove_server(name: str, category: str, ctx: Context | None) -> str:
+    """The shared removal behind ``mcp_remove`` and ``__mcp_remove``.
+
+    ``category`` is the family the caller speaks for (see
+    :func:`_family_refusal`).
+    """
+    refusal = _family_refusal(name, category, "rest_api_remove")
+    if refusal:
+        return refusal
     try:
         await _pool.remove_server(name)
         plugin_config.remove_server_entry(name)
@@ -487,12 +633,21 @@ async def mcp_remove(name: str, ctx: Context | None = None) -> str:
 @mcp.tool(
     name="mcp_list",
     description=(
-        "List configured MCP servers (transport, command/url, enabled)."
+        "List configured MCP servers (transport, command/url, enabled). "
+        "REST APIs are a separate family — rest_api_list."
     ),
 )
 async def mcp_list(ctx: Context | None = None) -> str:
-    """List configured external MCP servers (static config view)."""
-    servers = _pool.list_configured()
+    """List configured external MCP servers (static config view).
+
+    Its OWN family only.  A REST API is a different thing from an MCP server
+    — an API described by an OpenAPI document, which this gateway happens to
+    serve through an ``mcp-openapi-proxy`` process — and it is managed by the
+    ``rest_api_*`` tools.  ``rest_api_list`` is its listing; returning it here
+    reported servers the ``mcp_*`` tools do not own, indistinguishable from
+    the ones they do.
+    """
+    servers = [s for s in _pool.list_configured() if not s.get("rest_api")]
     return json.dumps(servers, ensure_ascii=False, indent=2)
 
 
@@ -638,6 +793,12 @@ async def mcp_list_tools(server: str, limit: int = 0, ctx: Context | None = None
         server: Server name (from mcp_list).
         limit: Max tools to list (0 = the configured cap, ``mcp.tool_list_limit``).
     """
+    # No twin registration needed: ``rest_api_list_tools`` already reads the
+    # uncapped ``__mcp_list_tools`` (its own cap, its own family), so this tool
+    # has no internal caller to keep working past the gate.
+    refusal = _family_refusal(server, "mcp", "rest_api_list_tools")
+    if refusal:
+        return refusal
     cap = plugin_config.tool_list_limit() if limit <= 0 else limit
     return await __mcp_list_tools(server, limit=cap)
 

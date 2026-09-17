@@ -110,8 +110,10 @@ class ServerConfig:
     #: DOWNLOAD SOURCE (registry/file/hand), never a category.  Never written
     #: by us and never overwritten.
     source: dict | None = None
-    #: REST API or plain MCP server — derived from which config SECTION the
-    #: entry lives in (``rest-api`` vs ``mcp.servers``); not a config key.
+    #: Which family this entry belongs to — derived from the config SECTION it
+    #: lives in (``rest-api`` vs ``mcp.servers``); not a config key.  The two
+    #: are different things that share this pool's plumbing, not one thing with
+    #: a flag.
     rest_api: bool = False
     os_paths: bool = False  # inject --allow-path from the OS-accessible path set
     auto_load: bool = False  # True = host bulk-registers this server's tools on connect
@@ -1105,11 +1107,17 @@ class ConnectionPool:
         """List configured servers — static config fields only, no live state.
 
         This is the *config view*: what servers are configured, their transport,
-        command/args or URL, enabled/disabled, and description.
-        It deliberately excludes live connection state (tool counts, errors) —
-        that is reported by :meth:`list_servers` for the ``__check`` internal
-        tool.  Secret-holding fields (``env``, ``headers``, ``auth``) are
-        omitted so the listing never leaks tokens.
+        command/args or URL, enabled/disabled, and description.  It deliberately
+        excludes live connection state (tool counts, errors) — that is reported
+        by :meth:`list_servers` for the ``__check`` internal tool.  Secret-holding
+        fields (``env``, ``headers``, ``auth``) are omitted so the listing never
+        leaks tokens.
+
+        Both families are returned, each row carrying ``rest_api`` — the caller
+        that speaks for one family filters on it (``mcp_list`` /
+        ``rest_api_list``).  Dropping the field is what let ``mcp_list`` report
+        the REST APIs as MCP servers, with nothing in the output to tell them
+        apart.
         """
         return [
             {
@@ -1122,6 +1130,7 @@ class ConnectionPool:
                 "auto_load": conn.config.auto_load,
                 "description": conn.config.description,
                 "source": conn.config.source,
+                "rest_api": conn.config.rest_api,
             }
             for name, conn in self._connections.items()
         ]

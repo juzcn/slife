@@ -17,7 +17,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import asyncio
 import inspect
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -27,6 +27,7 @@ from fastmcp.tools.function_tool import FunctionTool
 import slife.timeouts as _timeouts
 from slife.tools.registry import ToolRegistry
 from slife.mcp.host_server import (
+    _host_catalog_facts,
     build_registry_mcp,
     is_exposed,
     start_host_server,
@@ -354,3 +355,52 @@ class TestLiveSync:
             assert ToolRegistry()._on_change == []
         finally:
             await stop()
+
+class TestCatalogFactsFamilies:
+    """The catalog's server count carries its family split.
+
+    The catalog is the one place both families meet, and the health report
+    renders the families as separate components.  A bare total there sat next
+    to `mcp_servers` / `rest-api` and was read back as the MCP count — 20 for
+    what is 18 MCP servers + 2 REST APIs.
+    """
+
+    @staticmethod
+    def _catalog(source_ids_by_call):
+        """A catalog whose store answers list_source_ids per category filter."""
+        calls: list = []
+
+        async def _list_source_ids(categories=None):
+            calls.append(categories)
+            return set(source_ids_by_call.get(
+                tuple(sorted(categories)) if categories else None, (),
+            ))
+
+        store = MagicMock()
+        store.list_source_ids = _list_source_ids
+        store.scan_effective = AsyncMock(return_value=[1] * 1596)
+        store.count_loaded = AsyncMock(return_value=16)
+        catalog = MagicMock(store=store, semantic_manager=None)
+        return catalog, calls
+
+    @pytest.mark.asyncio
+    async def test_counts_each_family(self):
+        catalog, calls = self._catalog({
+            None: [f"m{i}" for i in range(18)] + ["github", "mcp-registry"],
+            ("mcp",): [f"m{i}" for i in range(18)],
+            ("rest-api",): ["github", "mcp-registry"],
+        })
+        facts = await _host_catalog_facts(catalog)
+        assert facts["servers"] == 20
+        assert facts["servers_mcp"] == 18
+        assert facts["servers_rest_api"] == 2
+        # The whole-catalog read is still the unfiltered one.
+        assert calls[0] is None
+
+    @pytest.mark.asyncio
+    async def test_no_rest_apis_reports_zero(self):
+        catalog, _calls = self._catalog({
+            None: ["m0", "m1"], ("mcp",): ["m0", "m1"], ("rest-api",): [],
+        })
+        facts = await _host_catalog_facts(catalog)
+        assert (facts["servers"], facts["servers_mcp"], facts["servers_rest_api"]) == (2, 2, 0)

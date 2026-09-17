@@ -4,9 +4,10 @@ rest_api_set / rest_api_remove / rest_api_list / rest_api_list_tools /
 rest_api_set_enabled.
 
 Server definitions live in ``tools.json5`` (owned by the mcp gateway,
-resolved via ``$TOOLS_FILE``); REST APIs are ordinary ``command: uvx`` server
-entries living in the ``rest-api`` section — the section is what makes one,
-and no entry needs to say so itself.  This module is the
+resolved via ``$TOOLS_FILE``); a REST API is an entry in the ``rest-api``
+section — the section is what makes one, and no entry needs to say so itself.
+It is registered and reached through an ``mcp-openapi-proxy`` process, which
+is how this module executes one, not what one is.  This module is the
 sLife-side face: it re-points persistence to :mod:`slife.plugins.mcp_gateway.config`
 and keeps a live ``mcp_set``-style warm-up through the mcp plugin so an API
 connects immediately.
@@ -150,7 +151,7 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         if mcp is not None:
             try:
                 mcp_result = await mcp.call_tool(  # type: ignore[union-attr]
-                    "mcp_set",
+                    "__mcp_set",
                     {
                         "name": name,
                         "command": entry["command"],
@@ -197,7 +198,7 @@ class RestApiRemoveTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompati
         mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is not None:
             try:
-                await mcp.call_tool("mcp_remove", {"name": name})  # type: ignore[union-attr]
+                await mcp.call_tool("__mcp_remove", {"name": name})  # type: ignore[union-attr]
             except Exception as e:
                 logger.warning("rest_api_remove_mcp_failed name=%s err=%s", name, e)
 
@@ -255,10 +256,12 @@ def _format_operations(name: str, data: dict) -> str:
 class RestApiListToolsTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     """List the operations one REST API exposes — its OpenAPI-derived tools.
 
-    The REST-API-shaped twin of ``mcp_list_tools``: same live read through the
-    gateway (a REST API *is* an MCP server, an ``mcp-openapi-proxy`` one), but
-    answering in this family's vocabulary so the model never has to know which
-    transport an API rides (DESIGNER NOTES §8.5).
+    The REST-API-shaped twin of ``mcp_list_tools``: the same live read through
+    the gateway, but answering in this family's vocabulary so the model never
+    has to know which transport an API rides (DESIGNER NOTES §8.5).  The
+    gateway holds it as an ``mcp-openapi-proxy`` process because that is what
+    serves an OpenAPI document today — the shared read path follows from the
+    implementation, not from what a REST API is.
     """
 
     name = "rest_api_list_tools"
@@ -360,7 +363,7 @@ class RestApiSetEnabledTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIn
         mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is not None:
             try:
-                await mcp.call_tool("mcp_set_enabled", {"name": name, "enabled": enabled})  # type: ignore[union-attr]
+                await mcp.call_tool("__mcp_set_enabled", {"name": name, "enabled": enabled})  # type: ignore[union-attr]
             except Exception as e:
                 logger.warning("rest_api_set_mcp_failed name=%s err=%s", name, e)
 

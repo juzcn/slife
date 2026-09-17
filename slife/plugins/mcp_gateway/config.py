@@ -143,11 +143,14 @@ def current_path() -> Path:
 def _servers_dict(raw: dict) -> dict:
     """All server entries (name → raw entry), merged over the sections.
 
-    ``mcp.servers`` + the ``rest-api`` section (REST APIs are ordinary
-    mcp-openapi-proxy servers in their own category — **the section is what
-    makes one**, see below).  A legacy top-level ``servers`` — the
-    pre-section tools.json5 shape — reads as the mcp section, so an old file
-    keeps working at the next start; a write normalizes it (see
+    ``mcp.servers`` + the ``rest-api`` section.  A REST API is not an MCP
+    server in any sense the config cares about — it is an API described by an
+    OpenAPI document, currently served through an ``mcp-openapi-proxy``
+    process.  That shared shape is why both sections live here at all, and
+    **the section is what makes one** (see below): a REST API's identity is
+    its placement.  A legacy top-level ``servers`` — the pre-section
+    tools.json5 shape — reads as the mcp section, so an old file keeps working
+    at the next start; a write normalizes it (see
     :func:`_normalize_legacy_servers`).
     """
     merged: dict = {}

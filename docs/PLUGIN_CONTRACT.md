@@ -247,7 +247,7 @@ detecting `/mnt/*` paths.
 registry**: for each spec with `health=True` it runs `check_<name>` and binds
 that check to the plugin's `ctx_field` client.  The non-plugin checks are
 appended by hand — `check_tool_catalog` (the catalog service is an in-process
-context field, not a plugin), `check_local_embed` and `check_watchdog`.  Each
+context field, not a plugin), `check_embeddings` and `check_watchdog`.  Each
 `check_*` encodes its subsystem's semantics (probes the plugin's `__check`
 internal tool, reads config, etc.) — the *enumeration* is derived, the
 implementations stay bespoke.

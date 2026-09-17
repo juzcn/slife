@@ -15,7 +15,7 @@ from slife.tools.system import (
     check_wechat,
     check_memfiles,
     check_sharefile,
-    check_local_embed,
+    check_embeddings,
     check_mcp_gateway,
     check_a2a,
     check_media,
@@ -1240,13 +1240,17 @@ class TestCheckSharefileFunction:
         assert "sharefile.json5" in entries[0]["hint"]
 
 
-class TestCheckLocalEmbed:
-    """check_local_embed probes the ACTIVE embedding endpoint uniformly.
+class TestCheckEmbeddings:
+    """check_embeddings probes the ACTIVE embedding endpoint uniformly.
 
-    Every provider — local-embed or a cloud API like SiliconFlow — is one
-    ordinary OpenAI-compatible endpoint: the api_key resolves like the model
-    section's and rides as a Bearer header, then ``/models`` is probed.
+    Every provider — the local-embed daemon or a cloud API like SiliconFlow —
+    is one ordinary OpenAI-compatible endpoint: the api_key resolves like the
+    model section's and rides as a Bearer header, then ``/models`` is probed.
     Only the ACTIVE provider is probed; nothing inactive is ever checked.
+
+    The component is the embeddings CONFIG (``embeddings``), never a provider:
+    ``local_embed`` names one provider that happens to be a local daemon, and
+    the check must not wear that name while a cloud endpoint answers.
     """
 
     @staticmethod
@@ -1291,9 +1295,11 @@ class TestCheckLocalEmbed:
         """No configured endpoint → offline/not configured."""
         with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
                    return_value={"base_url": "", "api_key": "", "model": ""}):
-            entries = await check_local_embed()
-        assert entries[0]["component"] == "local_embed"
+            entries = await check_embeddings()
+        assert entries[0]["component"] == "embeddings"
         assert entries[0]["level"] == "warning"
+        # No provider named → the stand-in key, so the line still reads k=v.
+        assert entries[0]["key"] == "endpoint"
         assert entries[0]["value"] == "offline (no base_url)"
         assert "embeddings_model_set" in entries[0]["hint"]
 
@@ -1305,14 +1311,52 @@ class TestCheckLocalEmbed:
         with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
                    return_value=self._endpoint()), \
              patch("slife.tools.system.httpx2.AsyncClient", self._http(
-                 seen, models=[{"id": "BAAI/bge-m3"}])) , \
+                 seen, models=[{"id": "BAAI/bge-m3"}])), \
              patch("slife.config._resolve_secret", return_value="sk-real"):
-            entries = await check_local_embed()
+            entries = await check_embeddings()
+        assert entries[0]["component"] == "embeddings"
         assert entries[0]["level"] == "ok"
         assert seen["url"] == "https://api.siliconflow.cn/v1/models"
         assert seen["authorization"] == "Bearer sk-real"
-        assert entries[0]["value"] == \
-            "BAAI/bge-m3 (1 models at https://api.siliconflow.cn/v1)"
+        # The key names the provider that answered, not the local daemon.
+        assert entries[0]["key"] == "siliconflow"
+        assert entries[0]["value"] == "BAAI/bge-m3 at https://api.siliconflow.cn/v1"
+
+    @pytest.mark.asyncio
+    async def test_reports_the_configured_model_not_the_catalog_head(self):
+        """The configured model is the fact — a cloud catalogue's first entry
+        is not.  SiliconFlow lists ~100 chat models and our embedding model is
+        nowhere near the head, so "first entry + a model count" named a model
+        this session never embeds with."""
+        seen = {}
+        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value=self._endpoint()), \
+             patch("slife.tools.system.httpx2.AsyncClient", self._http(
+                 seen, models=[{"id": "tencent/Hy4-preview"},
+                               {"id": "Qwen/Qwen3-8B"},
+                               {"id": "BAAI/bge-m3"}])), \
+             patch("slife.config._resolve_secret", return_value="sk-real"):
+            entries = await check_embeddings()
+        assert entries[0]["level"] == "ok"
+        assert entries[0]["value"] == "BAAI/bge-m3 at https://api.siliconflow.cn/v1"
+        assert "tencent" not in _render(entries)
+        # The catalogue size is not a fact about our endpoint.
+        assert "3 models" not in _render(entries)
+
+    @pytest.mark.asyncio
+    async def test_model_discovered_from_listing_when_provider_names_none(self):
+        """A provider that names no model leaves the choice to the endpoint:
+        EmbeddingClient pins the listing's first entry, so that IS the model
+        this session embeds with — reported as such."""
+        seen = {}
+        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value=self._endpoint(model="")), \
+             patch("slife.tools.system.httpx2.AsyncClient", self._http(
+                 seen, models=[{"id": "bge-m3"}, {"id": "bge-small"}])), \
+             patch("slife.config._resolve_secret", return_value="sk-real"):
+            entries = await check_embeddings()
+        assert entries[0]["level"] == "ok"
+        assert entries[0]["value"] == "bge-m3 at https://api.siliconflow.cn/v1"
 
     @pytest.mark.asyncio
     async def test_unresolvable_placeholder_key_not_sent(self):
@@ -1325,15 +1369,16 @@ class TestCheckLocalEmbed:
                  seen, models=[{"id": "BAAI/bge-m3"}])), \
              patch("slife.config._resolve_secret",
                    return_value="${SILICONFLOW_API_KEY}"):
-            entries = await check_local_embed()
+            entries = await check_embeddings()
         assert entries[0]["level"] == "ok"
         assert seen["authorization"] is None
 
     @pytest.mark.asyncio
-    async def test_local_embed_is_an_ordinary_endpoint(self):
-        """local-embed is handled exactly like a cloud endpoint — a model
-        list without the old loaded/available metadata is healthy, not a
-        "model not loaded" warning."""
+    async def test_local_daemon_is_an_ordinary_endpoint(self):
+        """The local-embed daemon is handled exactly like a cloud endpoint —
+        a model list without the old loaded/available metadata is healthy, not
+        a "model not loaded" warning.  It is the PROVIDER key here, which is
+        the only place the daemon's name belongs."""
         seen = {}
         with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
                    return_value={
@@ -1345,9 +1390,10 @@ class TestCheckLocalEmbed:
              patch("slife.tools.system.httpx2.AsyncClient", self._http(
                  seen, models=[{"id": "bge-m3"}])), \
              patch("slife.config._resolve_secret", return_value="local"):
-            entries = await check_local_embed()
+            entries = await check_embeddings()
         assert entries[0]["level"] == "ok"
-        assert entries[0]["value"] == "bge-m3 (1 models at http://127.0.0.1:17347/v1)"
+        assert entries[0]["key"] == "local_embed"
+        assert entries[0]["value"] == "bge-m3 at http://127.0.0.1:17347/v1"
         assert "17347" in seen["url"]
         # The ordinary-path key "local" still rides as the Bearer header.
         assert seen["authorization"] == "Bearer local"
@@ -1360,10 +1406,14 @@ class TestCheckLocalEmbed:
              patch("slife.tools.system.httpx2.AsyncClient", self._http(
                  seen, error=RuntimeError("Connection error."))), \
              patch("slife.config._resolve_secret", return_value="sk-real"):
-            entries = await check_local_embed()
+            entries = await check_embeddings()
+        assert entries[0]["component"] == "embeddings"
         assert entries[0]["level"] == "warning"
+        assert entries[0]["key"] == "siliconflow"
         assert entries[0]["value"] == "unavailable"
-        assert "unreachable" in entries[0]["hint"]
+        # The remedy names WHICH endpoint failed — the provider key alone does
+        # not say where it points.
+        assert "https://api.siliconflow.cn/v1/models" in entries[0]["hint"]
 
 
 class TestCheckToolsInternal:
@@ -1552,6 +1602,7 @@ class TestCheckToolCatalog:
 
     _FACTS = {
         "tools": 1538, "servers": 19, "loaded": 12,
+        "servers_mcp": 17, "servers_rest_api": 2,
         "semantic": {"configured": True, "available": True,
                      "semantic_ready": True, "state": "ready", "reason": "",
                      "model": "BAAI/bge-m3", "dimension": 1024, "unembedded": 0},
@@ -1581,7 +1632,8 @@ class TestCheckToolCatalog:
         assert keys == {"db", "semantic"}
         db = next(e for e in entries if e["key"] == "db")
         assert db["level"] == "ok"
-        assert db["value"] == "1538 tools, 19 servers, 12 loaded"
+        assert db["value"] == ("1538 tools, 19 servers (17 mcp, 2 rest-api), "
+                              "12 loaded")
         sem = next(e for e in entries if e["key"] == "semantic")
         assert sem["level"] == "ok"
         assert sem["value"] == "ready (BAAI/bge-m3, dim=1024)"

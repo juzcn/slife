@@ -257,11 +257,25 @@ class TestConnectionPoolListConfigured:
         assert s["url"] == ""
         assert s["enabled"] is True
         assert s["description"] == "First"
+        # The family rides the row — the caller that speaks for one family
+        # filters on it, and without it the two are indistinguishable.
+        assert s["rest_api"] is False
         # No live state — those belong to list_servers / __check
         assert "tools_ok" not in s
         assert "tool_count" not in s
         assert "error" not in s
         assert "active" not in s
+
+    def test_rest_api_row_is_marked(self):
+        """A REST-API entry is returned too, flagged — the pool is family-blind,
+        the listing tool is not."""
+        pool = ConnectionPool()
+        conn = MCPServerConnection(ServerConfig(name="gh", url="http://x/mcp", rest_api=True))
+        pool._connections["gh"] = conn
+
+        servers = pool.list_configured()
+        assert [s["name"] for s in servers] == ["gh"]
+        assert servers[0]["rest_api"] is True
 
     def test_omits_secret_holding_fields(self):
         pool = ConnectionPool()

@@ -168,7 +168,13 @@ async def _host_catalog_facts(catalog: "ToolCatalogService") -> dict:
         store = catalog.store
         facts["tools"] = len(await store.scan_effective())
         # Servers are no longer a table — count the ones that own tool rows.
+        # The total is split by family because the catalog is the ONE place
+        # both families meet: a bare "20 servers" in the health report sat
+        # next to the family-split `mcp_servers` / `rest-api` components and
+        # was read back as the MCP count (18 MCP + 2 REST APIs = 20).
         facts["servers"] = len(await store.list_source_ids())
+        facts["servers_mcp"] = len(await store.list_source_ids({"mcp"}))
+        facts["servers_rest_api"] = len(await store.list_source_ids({"rest-api"}))
         facts["loaded"] = await store.count_loaded()
 
         sem = getattr(catalog, "semantic_manager", None)

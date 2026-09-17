@@ -241,7 +241,10 @@ class TestRestApiSetTool:
                 base_url="https://api.github.com",
             )
             assert "[OK]" in result
-            assert mock_client.call_tool.called
+            # The INTERNAL twin, not the family-gated mcp_set: the entry is
+            # already in the rest-api section by now, so the public tool
+            # would refuse its own family's warm-up.
+            assert mock_client.call_tool.call_args[0][0] == "__mcp_set"
         finally:
             tool._ctx = None
 
@@ -288,7 +291,7 @@ class TestRestApiRemoveTool:
             tool._ctx = ToolContext(mcp_client=mock_client, config=None)
             result = await tool.execute(name="github")
             assert "[OK]" in result
-            assert mock_client.call_tool.called
+            assert mock_client.call_tool.call_args[0][0] == "__mcp_remove"
         finally:
             tool._ctx = None
 
@@ -537,6 +540,6 @@ class TestRestApiSetEnabledTool:
             tool._ctx = ToolContext(mcp_client=mock_client, config=None)
             result = await tool.execute(name="github", enabled=True)
             assert "[OK]" in result
-            assert mock_client.call_tool.called
+            assert mock_client.call_tool.call_args[0][0] == "__mcp_set_enabled"
         finally:
             tool._ctx = None

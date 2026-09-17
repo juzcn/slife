@@ -438,7 +438,7 @@ curl http://127.0.0.1:17347/v1/embeddings -H 'Content-Type: application/json' \
   -d '{"model": "bge-m3", "input": ["hello world"]}'   # 返回一个真实向量
 ```
 
-健康状态：`/health` → `status: ok`；`system_health` → `local_embed` 组件探测活动嵌入端点（可达 + 模型列表 = `ok`——无论这个端点是本地守护进程还是硅基流动这类云 provider），`memdb`/`memfiles` 组件显示 `semantic_ready`。当服务不可达（后端缺失、权重缺失、仍在加载）时，slife **优雅降级为关键词搜索**——`system_health` 报告原因，一旦当前模型的索引完整构建，hybrid 结果自动恢复。
+健康状态：`/health` → `status: ok`；`system_health` → `embeddings` 组件探测活动嵌入端点（可达 = `ok`，并报出本次会话嵌入用的模型——无论这个端点是本地守护进程还是硅基流动这类云 provider），`memdb`/`memfiles` 组件显示 `semantic_ready`。当服务不可达（后端缺失、权重缺失、仍在加载）时，slife **优雅降级为关键词搜索**——`system_health` 报告原因，一旦当前模型的索引完整构建，hybrid 结果自动恢复。
 
 ### 故障排查
 
@@ -447,7 +447,7 @@ curl http://127.0.0.1:17347/v1/embeddings -H 'Content-Type: application/json' \
 | 日志：`backend_unavailable … reason=llama_cpp_not_installed` / `sentence_transformers_not_installed` | 按你的平台跑第 1 步安装——日志会打印精确命令。 |
 | Transformer 路线在 `HF_HUB_OFFLINE=1` 下加载失败 | 仓库不在缓存里——跑 `hf download BAAI/bge-m3`，并确保 `HF_HUB_CACHE` 指向持有它的缓存。 |
 | GGUF 路线加载失败 | `gguf_path` 处文件缺失——检查 `BGE_M3_GGUF_PATH` / `gguf_path`，以及客户端请求的是 `"bge-m3"`（所有已配置模型都是对等——没有任何东西被挡在 `active_model` 后面）。 |
-| `system_health` 显示 `local_embed` 为 `unavailable`（"Active embedding endpoint unreachable"） | 活动嵌入端点没有应答 `GET /v1/models`——启动 `local-embed` 守护进程（或修云 provider 的 key：`api_key` 按 `${VAR}` → env → credstore 解析）。该组件只探测**活动的** provider。 |
+| `system_health` 显示 `embeddings` 为 `unavailable` | 活动嵌入端点没有应答 `GET /v1/models`——如果活动 provider 正是 `local-embed`，启动它的守护进程（或修云 provider 的 key：`api_key` 按 `${VAR}` → env → credstore 解析）。该组件只探测**活动的** provider，行首的 key 就是该 provider 的 id。 |
 | 首次嵌入非常慢 | transformer 下载/预热延迟到第一次嵌入；后续调用很快。 |
 
 ### 可选扩展（手动安装）

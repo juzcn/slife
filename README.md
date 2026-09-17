@@ -432,7 +432,7 @@ curl http://127.0.0.1:17347/v1/embeddings -H 'Content-Type: application/json' \
   -d '{"model": "bge-m3", "input": ["hello world"]}'   # returns a real vector
 ```
 
-A healthy state: `/health` → `status: ok`; `system_health` → `local_embed` component probes the active embedding endpoint (reachable + model list = `ok` — whether that endpoint is the local daemon or a cloud provider like SiliconFlow), and the `memdb`/`memfiles` components show `semantic_ready`. When the service is unreachable (backend missing, weights missing, still loading), slife **degrades gracefully to keyword search** — `system_health` reports the reason, and once the index is fully built for the current model, hybrid results resume automatically.
+A healthy state: `/health` → `status: ok`; `system_health` → the `embeddings` component probes the active embedding endpoint (reachable = `ok`, and it names the model this session embeds with — whether that endpoint is the local daemon or a cloud provider like SiliconFlow), and the `memdb`/`memfiles` components show `semantic_ready`. When the service is unreachable (backend missing, weights missing, still loading), slife **degrades gracefully to keyword search** — `system_health` reports the reason, and once the index is fully built for the current model, hybrid results resume automatically.
 
 ### Troubleshooting
 
@@ -441,7 +441,7 @@ A healthy state: `/health` → `status: ok`; `system_health` → `local_embed` c
 | Log: `backend_unavailable … reason=llama_cpp_not_installed` / `sentence_transformers_not_installed` | Run the step-1 install for your platform — the log prints the exact command. |
 | Transformer route won't load with `HF_HUB_OFFLINE=1` | The repo isn't in the cache — run `hf download BAAI/bge-m3` and make sure `HF_HUB_CACHE` points at the cache that holds it. |
 | GGUF route won't load | File missing at `gguf_path` — check `BGE_M3_GGUF_PATH` / `gguf_path`, and that the client requests `"bge-m3"` (all configured models are peers — nothing is gated behind an `active_model`). |
-| `system_health` shows `local_embed` as `unavailable` ("Active embedding endpoint unreachable") | The active embedding endpoint didn't answer `GET /v1/models` — start the `local-embed` daemon (or fix the cloud provider's key: `api_key` resolves `${VAR}` → env → credstore). The component only ever probes the **active** provider. |
+| `system_health` shows `embeddings` as `unavailable` | The active embedding endpoint didn't answer `GET /v1/models` — start the `local-embed` daemon if that is the active provider (or fix the cloud provider's key: `api_key` resolves `${VAR}` → env → credstore). The component only ever probes the **active** provider, and its line is keyed by that provider's id. |
 | First embed very slow | A transformer download/warm-up is deferred to the first embed; subsequent calls are fast. |
 
 ### Optional extras (manual installs)

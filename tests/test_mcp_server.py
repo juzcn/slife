@@ -247,6 +247,9 @@ class TestAddServerToolRegistration:
             "mcp_remove",
             "mcp_list",
             "mcp_list_tools",
+            "__mcp_set",
+            "__mcp_set_enabled",
+            "__mcp_remove",
             "__mcp_list_tools",
             "__mcp_call_tool",
             "__check",
@@ -331,6 +334,45 @@ class TestWrapperNotifyToolsChanged:
         and without it a modern client's change notifications have no path."""
         srv = _import_mcp_server()
         assert "subscriptions/listen" in srv.mcp._mcp_server._request_handlers
+
+
+class TestMcpListFamily:
+    """``mcp_list`` speaks for the MCP family only.
+
+    A REST API is an ordinary MCP server living in the other config section
+    and owned by the ``rest_api_*`` tools — listing it here reported servers
+    the ``mcp_*`` tools do not manage, with nothing in the output to tell them
+    from the ones they do (18 servers in this repo's config, not 20).
+    ``rest_api_list`` is the other family's listing.
+    """
+
+    @staticmethod
+    async def _list(srv, rows):
+        import json as _json
+
+        pool = MagicMock()
+        pool.list_configured.return_value = rows
+        with patch.object(srv, "_pool", pool):
+            return _json.loads(await srv.mcp_list())
+
+    @pytest.mark.asyncio
+    async def test_rest_apis_are_not_listed(self, restore_root_logger):
+        srv = _import_mcp_server()
+        out = await self._list(srv, [
+            {"name": "fs", "rest_api": False},
+            {"name": "github", "rest_api": True},
+            {"name": "mcp-registry", "rest_api": True},
+            {"name": "playwright", "rest_api": False},
+        ])
+        assert [s["name"] for s in out] == ["fs", "playwright"]
+
+    @pytest.mark.asyncio
+    async def test_only_rest_apis_is_empty_not_everything(self, restore_root_logger):
+        """A pool holding only REST APIs lists none — the filter must not fall
+        back to "no filter" when its own family is empty."""
+        srv = _import_mcp_server()
+        out = await self._list(srv, [{"name": "github", "rest_api": True}])
+        assert out == []
 
 
 class TestMCPListToolsSingleRead:
@@ -598,3 +640,164 @@ class TestNotifyReachesEveryListenStream:
 
         assert len(seen) == 2
         assert all(type(e).__name__ == "ToolsListChanged" for e in seen)
+
+
+class TestMcpFamilyGate:
+    """The ``mcp_*`` tools own the MCP family, and only it.
+
+    A REST API is a different thing, managed by ``rest_api_*`` — but both
+    families share this gateway's pool, so a bare name says nothing about
+    which it is.  The config section does (``is_rest_api``), and each refusal
+    names the ``rest_api_*`` tool that does own the server.
+
+    The family is patched rather than read so the tests don't depend on which
+    servers this repo's tools.json5 happens to configure.
+    """
+
+    @staticmethod
+    def _pool():
+        pool = MagicMock()
+        pool.remove_server = AsyncMock()
+        return pool
+
+    @pytest.mark.asyncio
+    async def test_set_refuses_a_rest_api(self, restore_root_logger):
+        import json as _json
+
+        srv = _import_mcp_server()
+        pool = self._pool()
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv.plugin_config, "is_rest_api", return_value=True),
+        ):
+            out = _json.loads(await srv.mcp_set(name="github", url="http://x/mcp"))
+        assert out["status"] == "error"
+        assert "rest_api_set" in out["error"]
+        # Refused BEFORE any connect work — the pool is untouched.
+        pool.get_server.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_remove_refuses_a_rest_api(self, restore_root_logger):
+        import json as _json
+
+        srv = _import_mcp_server()
+        pool = self._pool()
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv.plugin_config, "is_rest_api", return_value=True),
+        ):
+            out = _json.loads(await srv.mcp_remove(name="github"))
+        assert out["status"] == "error"
+        assert "rest_api_remove" in out["error"]
+        pool.remove_server.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_set_enabled_refuses_a_rest_api(self, restore_root_logger):
+        import json as _json
+
+        srv = _import_mcp_server()
+        pool = self._pool()
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv.plugin_config, "is_rest_api", return_value=True),
+        ):
+            out = _json.loads(await srv.mcp_set_enabled(name="github", enabled=False))
+        assert out["status"] == "error"
+        assert "rest_api_set_enabled" in out["error"]
+        pool.get_server.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_list_tools_refuses_a_rest_api(self, restore_root_logger):
+        import json as _json
+
+        srv = _import_mcp_server()
+        pool = self._pool()
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv.plugin_config, "is_rest_api", return_value=True),
+        ):
+            out = _json.loads(await srv.mcp_list_tools(server="github"))
+        assert out["status"] == "error"
+        assert "rest_api_list_tools" in out["error"]
+        pool.list_all_tools.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_plain_mcp_server_is_not_refused(self, restore_root_logger):
+        import json as _json
+
+        srv = _import_mcp_server()
+        conn = MagicMock()
+        conn.config = ServerConfig(name="live", command="echo")
+        conn.tools_ok = True
+        conn.list_tools.return_value = []
+        pool = MagicMock()
+        pool.get_server.return_value = conn
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv.plugin_config, "is_rest_api", return_value=False),
+            patch.object(srv.plugin_config, "set_server_enabled", return_value=True),
+        ):
+            out = _json.loads(await srv.mcp_set_enabled(name="live", enabled=True))
+        assert out["status"] == "connected"
+
+    @pytest.mark.asyncio
+    async def test_internal_twins_are_not_gated(self, restore_root_logger):
+        """The rest_api_* family drives its server's lifecycle through the
+        ``__mcp_*`` twins (rest_api_set/remove/set_enabled call them over MCP),
+        so those must stay family-blind — gating them would break the very
+        family the gate exists to protect."""
+        import json as _json
+
+        srv = _import_mcp_server()
+        pool = self._pool()
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv.plugin_config, "is_rest_api", return_value=True),
+            patch.object(srv.plugin_config, "remove_server_entry", return_value=True),
+            patch.object(srv, "_request_tools_changed"),
+        ):
+            # ``srv.__mcp_remove`` would be name-mangled inside this class body.
+            out = _json.loads(await getattr(srv, "__mcp_remove")(name="github"))
+        assert out["status"] == "removed"
+        pool.remove_server.assert_awaited_once_with("github")
+
+
+class TestSharedBodiesAreNotTools:
+    """One body, two registrations — and only the registrations are tools.
+
+    ``_set_server`` / ``_set_server_enabled`` / ``_remove_server`` carry the
+    shared implementation; their public and internal callers are thin.  A
+    decorator left attached to a shared body would register it under a tool
+    name with an extra required parameter (``category``), and the name set
+    would still look right — which is the same shape as the original
+    decorator-detachment bug this module's tests exist for.
+    """
+
+    @staticmethod
+    def _tools(srv):
+        from fastmcp.tools.function_tool import FunctionTool
+
+        return {
+            c.name: c for c in srv.mcp.local_provider._components.values()
+            if isinstance(c, FunctionTool)
+        }
+
+    def test_shared_bodies_are_not_registered(self, restore_root_logger):
+        from fastmcp.tools.function_tool import FunctionTool
+
+        srv = _import_mcp_server()
+        for body in ("_set_server", "_set_server_enabled", "_remove_server"):
+            assert not isinstance(getattr(srv, body), FunctionTool), body
+
+    def test_each_name_binds_to_its_own_function(self, restore_root_logger):
+        srv = _import_mcp_server()
+        for name, comp in self._tools(srv).items():
+            assert comp.fn.__name__ == name
+
+    def test_no_tool_schema_exposes_the_family_parameter(self, restore_root_logger):
+        """``category`` is how the caller declares its family — a schema
+        parameter would let the model declare its way past the gate."""
+        srv = _import_mcp_server()
+        for name, comp in self._tools(srv).items():
+            props = (comp.parameters or {}).get("properties", {})
+            assert "category" not in props, name

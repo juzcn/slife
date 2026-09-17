@@ -422,8 +422,9 @@ slife treats every embedding model as a remote OpenAI-compatible endpoint —
 local-embed is one such endpoint. The model a request hits is the one the
 caller names; when the config names no model, slife discovers it from
 `GET /v1/models` (the first entry) on load. When the daemon is unreachable,
-slife degrades gracefully to keyword search (`check_local_embed` in
-`system_health` probes the daemon's HTTP endpoint and reports it down).
+slife degrades gracefully to keyword search (`check_embeddings` in
+`system_health` probes the **active** provider's HTTP endpoint and reports it
+down — it never assumes that provider is local-embed).
 
 The MCP surface it still serves is the internal **`__check`** (engine status:
 model list, dimensions, load state) — a service-provider facade
