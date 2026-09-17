@@ -905,6 +905,7 @@ class TestCheckMcpFunction:
             "last_error": None if tools_ok else "boom",
             "needs_user_auth": False,
             "source": None,
+            "rest_api": False,
         }
         server.update(extra)
         return server
@@ -962,7 +963,7 @@ class TestCheckMcpFunction:
         payload = [
             self._server("fs", tools_ok=False, last_error=""),
             self._server("github", tools_ok=False, last_error="",
-                         source={"type": "rest_api"}),
+                         rest_api=True),
         ]
         entries = await check_mcp_gateway(client=self._client(payload))
         by_key = {e["key"]: e for e in entries}
@@ -976,7 +977,7 @@ class TestCheckMcpFunction:
 
     @pytest.mark.asyncio
     async def test_working_rest_api_server_keeps_its_family_component(self):
-        payload = [self._server("github", source={"type": "rest_api"})]
+        payload = [self._server("github", rest_api=True)]
         entries = await check_mcp_gateway(client=self._client(payload))
         assert entries[0]["component"] == "rest-api"
         assert entries[0]["value"] == "tool list current (2 tools, stdio)"

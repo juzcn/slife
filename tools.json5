@@ -317,8 +317,9 @@
   // ── rest-api ───────────────────────────────────────────────────────────
   // An OpenAPI service run as an MCP server through mcp-openapi-proxy —
   // category `rest-api`, family `external`.  The same `enabled` / `autoload`
-  // rules as `mcp` (per server); `source.type: "rest_api"` is what tells the
-  // two external categories apart in the catalog.
+  // rules as `mcp` (per server).  **This section is what makes one** — an
+  // entry here is a REST API, no tag needed; `rest_api_set` writes here and
+  // upserts write back here.
   "rest-api": {
     github: {
       command: "uvx",
@@ -341,12 +342,7 @@
         OPENAPI_SPEC_URL: "https://registry.modelcontextprotocol.io/openapi.json",
         SERVER_URL_OVERRIDE: "https://registry.modelcontextprotocol.io"
       },
-      description: "A community driven registry service for Model Context Protocol (MCP) servers. Provides APIs to list/search MCP servers, view server details, versions, and server.json metadata.",
-      source: {
-        type: "rest_api",
-        fetched_at: "2026-09-02T08:25:41.033202+00:00"
-      },
-      url: ""
+      description: "A community driven registry service for Model Context Protocol (MCP) servers. Provides APIs to list/search MCP servers, view server details, versions, and server.json metadata."
     }
   },
 

@@ -73,8 +73,12 @@ class TestAutoConnectConfigured:
             lambda raw: raw.get("mcp", {}).get("servers", {})
             or raw.get("servers", {})
         )
+        # No ``rest-api`` section in this config, and the set must be a real
+        # iterable — the boot path asks once for the names placement says are
+        # REST APIs.
+        fake_config.rest_api_names.return_value = set()
         fake_config.resolve_server_config.side_effect = (
-            lambda name, entry: ServerConfig(
+            lambda name, entry, **kw: ServerConfig(
                 name=name, command="echo", enabled=entry.get("enabled", True),
             )
         )
@@ -96,11 +100,50 @@ class TestPersistEntry:
     def test_persist_entry_calls_add_server_entry(self, restore_root_logger):
         srv = _import_mcp_server()
         fake_cfg = MagicMock()
+        fake_cfg.server_section.return_value = None
         with patch.object(srv, "plugin_config", fake_cfg):
             srv._persist_entry(
                 "srv", "echo", [], None, "", None, "desc", None, None,
             )
         fake_cfg.add_server_entry.assert_called_once()
+
+    def test_empty_fields_are_not_written(self, restore_root_logger):
+        """A stdio server has no ``url``, a public REST API has no ``auth`` —
+        an empty field is noise in a file people read and hand-edit, and
+        ``url: ""`` even reads as a claim that there is one."""
+        srv = _import_mcp_server()
+        fake_cfg = MagicMock()
+        fake_cfg.server_section.return_value = None
+        with patch.object(srv, "plugin_config", fake_cfg):
+            srv._persist_entry(
+                "srv", "echo", [], {}, "", None, "", None, None,
+            )
+        entry = fake_cfg.add_server_entry.call_args[0][1]
+        assert entry == {"command": "echo"}
+
+    def test_an_existing_entry_keeps_its_own_section(self, restore_root_logger):
+        """Upserting a REST API must write back into ``rest-api``: defaulting
+        to ``mcp`` left a second copy under ``mcp.servers``, where the
+        enable/disable path finds it first and flips the copy nobody reads."""
+        srv = _import_mcp_server()
+        fake_cfg = MagicMock()
+        fake_cfg.server_section.return_value = "rest-api"
+        with patch.object(srv, "plugin_config", fake_cfg):
+            srv._persist_entry(
+                "github", "uvx", ["mcp-openapi-proxy"], {"A": "b"}, "", None,
+                "desc", None, None,
+            )
+        assert fake_cfg.add_server_entry.call_args.kwargs["section"] == "rest-api"
+
+    def test_a_new_entry_defaults_to_the_mcp_section(self, restore_root_logger):
+        srv = _import_mcp_server()
+        fake_cfg = MagicMock()
+        fake_cfg.server_section.return_value = None
+        with patch.object(srv, "plugin_config", fake_cfg):
+            srv._persist_entry(
+                "fresh", "echo", None, None, "", None, "", None, None,
+            )
+        assert fake_cfg.add_server_entry.call_args.kwargs["section"] == "mcp"
 
 
 class TestMcpSetEnabled:
@@ -456,12 +499,16 @@ class TestMCPListToolsSingleRead:
 
 
 class TestBootConnectsEveryEnabled:
-    """Startup is decided by tools.json5 alone: enabled ⇒ connect now.
+    """Startup is decided by tools.json5 alone: enabled ⇒ bring it up now.
 
     Nothing is remembered between sessions — no db, no snapshot — so a server
     that was down when the user quit is retried at the next boot like any
     other, and a disabled one is merely registered (``mcp_list`` must still
     list the same set as the config).
+
+    Bringing it up is the TRANSPORT only (``read_tools=False``): boot spawns
+    and stops there, because the tool list is asked for by the host's
+    reconcile and boot has no reader waiting for one.
     """
 
     @pytest.mark.asyncio
@@ -482,8 +529,12 @@ class TestBootConnectsEveryEnabled:
             lambda raw: raw.get("mcp", {}).get("servers", {})
             or raw.get("servers", {})
         )
+        # No ``rest-api`` section in this config, and the set must be a real
+        # iterable — the boot path asks once for the names placement says are
+        # REST APIs.
+        fake_config.rest_api_names.return_value = set()
         fake_config.resolve_server_config.side_effect = (
-            lambda name, entry: ServerConfig(
+            lambda name, entry, **kw: ServerConfig(
                 name=name, command="echo", enabled=entry.get("enabled", True),
             )
         )
@@ -494,7 +545,8 @@ class TestBootConnectsEveryEnabled:
             await srv._auto_connect_configured()
 
         calls = {c[0][0].name: c.kwargs for c in pool.add_server.await_args_list}
-        assert calls["up"] == {}                       # enabled → connect
+        # enabled → transport up, tool list left to the first reader
+        assert calls["up"] == {"read_tools": False}
         assert calls["off"] == {"connect": False}      # disabled → register only
 
 

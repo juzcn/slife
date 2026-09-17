@@ -135,6 +135,7 @@ class TestMCPServerConnectionSnapshot:
         assert snap["tools_age_s"] is None
         assert snap["last_error"] is None
         assert snap["needs_user_auth"] is False
+        assert snap["rest_api"] is False   # mcp.servers is the default placement
         # The config view owns these — a fact belongs in exactly one place.
         assert "description" not in snap
         assert "command" not in snap
@@ -313,6 +314,49 @@ class TestConnectionPoolAddServerGate:
                 ServerConfig(name="ok", command="npx"),
             )
         mock_refresh.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_boot_spawns_without_reading_the_list(self):
+        """``read_tools=False`` is the boot shape: transport up, list left to
+        the first reader (the host's reconcile asks for one anyway) — boot used
+        to pay every server's ``tools/list`` before the gateway was usable."""
+        pool = ConnectionPool()
+        with (
+            patch.object(
+                MCPServerConnection, "refresh_tools", new=AsyncMock(),
+            ) as mock_refresh,
+            patch.object(
+                MCPServerConnection, "ensure_session", new=AsyncMock(return_value=True),
+            ) as mock_session,
+        ):
+            conn = await pool.add_server(
+                ServerConfig(name="boot", command="npx"), read_tools=False,
+            )
+        assert pool.get_server("boot") is conn
+        mock_session.assert_awaited_once()
+        mock_refresh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_boot_arms_the_repair_when_the_spawn_fails(self):
+        """A peer that was down at boot has no list and no reader coming for
+        one: the spawn-only path must arm the same background repair a failed
+        read arms, or nothing would ever ask it again."""
+        pool = ConnectionPool()
+        with (
+            patch.object(
+                MCPServerConnection, "refresh_tools", new=AsyncMock(),
+            ),
+            patch.object(
+                MCPServerConnection, "ensure_session", new=AsyncMock(return_value=False),
+            ),
+            patch.object(
+                MCPServerConnection, "arm_refresh",
+            ) as mock_arm,
+        ):
+            await pool.add_server(
+                ServerConfig(name="down", command="npx"), read_tools=False,
+            )
+        mock_arm.assert_called_once()
 
 
 class TestConnectionPoolListAllTools:

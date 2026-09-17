@@ -105,7 +105,14 @@ class ServerConfig:
     enabled: bool = True  # False = don't auto-connect at startup
     description: str = ""
     auth: dict | None = None  # OAuth config for device code flow
-    source: dict | None = None  # provenance metadata (e.g. {"type": "rest_api"})
+    #: Provenance: where this server definition came from, e.g.
+    #: ``{"type": "github", "url": ..., "version": ...}`` — the ``type`` is the
+    #: DOWNLOAD SOURCE (registry/file/hand), never a category.  Never written
+    #: by us and never overwritten.
+    source: dict | None = None
+    #: REST API or plain MCP server — derived from which config SECTION the
+    #: entry lives in (``rest-api`` vs ``mcp.servers``); not a config key.
+    rest_api: bool = False
     os_paths: bool = False  # inject --allow-path from the OS-accessible path set
     auto_load: bool = False  # True = host bulk-registers this server's tools on connect
 
@@ -236,6 +243,10 @@ class MCPServerConnection:
             "last_error": self._last_error,
             "needs_user_auth": self._needs_user_auth,
             "source": self.config.source,
+            # The category the harness splits its health report by — derived
+            # from the config section, so the host never has to read a tag out
+            # of ``source`` (that one names a download origin).
+            "rest_api": self.config.rest_api,
         }
 
     def _record_error(self, err: BaseException) -> None:
@@ -810,6 +821,16 @@ class MCPServerConnection:
 
         raise AssertionError("unreachable")  # pragma: no cover
 
+    def arm_refresh(self) -> None:
+        """Arm the background re-list from outside the read path.
+
+        The boot's spawn-only shape (:meth:`ConnectionPool.add_server`) is the
+        one caller: it never reads, so it never sees the failure that arms the
+        repair, and a peer that was down at boot would otherwise stay listless
+        with nothing left to ask it.
+        """
+        self._start_refresh_task()
+
     def _start_refresh_task(self) -> None:
         """Ensure the background re-list runs — see :meth:`_refresh_until_listed`.
 
@@ -1025,7 +1046,17 @@ class ConnectionPool:
 
     async def add_server(
         self, config: ServerConfig, *, connect: bool | None = None,
+        read_tools: bool = True,
     ) -> MCPServerConnection:
+        """Register a server; ``connect`` brings its transport up.
+
+        ``read_tools=False`` is the BOOT shape: bring the transport up (spawn
+        for stdio, session for http) and stop there — the tool list is left to
+        the first reader, which is the host's reconcile, and it asks every
+        server for one anyway.  Boot used to be spawn *and* list, which made
+        opening a session the sum of every server's ``tools/list`` (a 1100-tool
+        peer is not a fast one), for a list nobody had asked for yet.
+        """
         if config.name in self._connections:
             logger.info("mcp_replace server=%s", config.name)
             await self.remove_server(config.name)
@@ -1036,9 +1067,16 @@ class ConnectionPool:
         # attempt until they are enabled or used.
         should_connect = config.enabled if connect is None else connect
         if should_connect:
-            # The read IS the connect: establishing the session and reading the
-            # tool list are one operation, and its failure arms the retry.
-            await conn.refresh_tools()
+            if read_tools:
+                # The read IS the connect: establishing the session and reading
+                # the tool list are one operation, and its failure arms the retry.
+                await conn.refresh_tools()
+            elif not await conn.ensure_session():
+                # Spawn-only: the transport is up (or its failure recorded).
+                # A peer that was DOWN at boot has no tool list and, with the
+                # boot read gone, nothing that would ask it again on its own —
+                # so arm the same background repair a failed read arms.
+                conn.arm_refresh()
         else:
             logger.info("mcp_server_not_connected name=%s enabled=%s", config.name, config.enabled)
         return conn

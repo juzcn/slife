@@ -182,19 +182,62 @@ class TestLegacyServersMigration:
 
 
 class TestRestAPI:
-    """save_rest_api — uvx mcp-openapi-proxy entry with a fetched_at-stamped
-    source.  Spec/base/key ride the proxy's env vars (Low-Level Mode default)."""
+    """save_rest_api — uvx mcp-openapi-proxy entry in the ``rest-api`` section.
+    Spec/base/key ride the proxy's env vars (Low-Level Mode default).
 
-    def test_save_rest_api_stamps_fetched_at(self):
+    The section is the whole fact: no ``source.type`` tag on the entry and no
+    ``fetched_at`` (nothing is fetched here — the proxy reads the spec itself,
+    at every start)."""
+
+    def test_save_rest_api_writes_the_section_and_nothing_redundant(self):
         cfg.save_rest_api("gh", spec_url="https://example.com/api.yaml")
         entry = _raw_config()["rest-api"]["gh"]
         assert entry["command"] == "uvx"
         assert entry["args"] == ["mcp-openapi-proxy"]
         assert entry["env"]["OPENAPI_SPEC_URL"] == "https://example.com/api.yaml"
         assert "API_KEY" not in entry["env"]  # public API — no auth env
-        source = entry["source"]
-        assert source["type"] == "rest_api"
-        assert "fetched_at" in source
+        assert "source" not in entry          # the section says it
+        assert "url" not in entry             # stdio — no url to write, empty or not
+
+    def test_a_sectioned_entry_is_a_rest_api_without_any_tag(self):
+        """Placement decides, and nothing is tagged for it: this entry matches
+        NEITHER entry-level rule (no ``source`` tag, not an openapi-proxy
+        shape), so only the section can make it a REST API — and its twin
+        under ``mcp.servers`` must stay an MCP server."""
+        cfg.add_server_entry(
+            "handmade", {"command": "npx", "args": ["-y", "some-mcp"]},
+            section="rest-api",
+        )
+        cfg.add_server_entry(
+            "twinshape", {"command": "npx", "args": ["-y", "some-mcp"]},
+            section="mcp",
+        )
+        assert "handmade" in cfg.list_rest_apis()
+        assert "twinshape" not in cfg.list_rest_apis()
+        assert cfg.is_rest_api("handmade") and not cfg.is_rest_api("twinshape")
+        # …and nothing was written into either entry to carry the answer.
+        raw = _raw_config()
+        assert "source" not in raw["rest-api"]["handmade"]
+        assert "source" not in raw["mcp"]["servers"]["twinshape"]
+
+    def test_source_provenance_is_never_overwritten(self):
+        """``source`` records where a definition came from (its ``type`` is the
+        download source — github / registry / hand), so placement must not
+        touch it: a REST API installed from the registry keeps its origin."""
+        cfg.add_server_entry(
+            "from_registry",
+            {"command": "uvx", "args": ["mcp-openapi-proxy"],
+             "env": {"OPENAPI_SPEC_URL": "https://x.example/openapi.json"},
+             "source": {"type": "github", "url": "https://github.com/x/y",
+                        "version": "latest"}},
+            section="rest-api",
+        )
+        entry = _raw_config()["rest-api"]["from_registry"]
+        assert entry["source"] == {"type": "github", "url": "https://github.com/x/y",
+                                   "version": "latest"}
+        # The merged view is untouched too — the category comes from placement.
+        assert cfg._servers_dict(_raw_config())["from_registry"]["source"]["type"] == "github"
+        assert cfg.is_rest_api("from_registry")
 
     def test_save_rest_api_with_api_key_ref(self):
         cfg.save_rest_api("e", spec_url="https://x.example/swagger.json", api_key="KEY")

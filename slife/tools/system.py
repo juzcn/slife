@@ -474,15 +474,16 @@ _REST_API_RETRY_HINT = ("The wrapper retries in the background. Re-run "
 def _server_family(server: dict) -> str:
     """``"rest-api"`` for a REST-API-backed server entry, else ``""``.
 
-    ``list_servers`` carries the config entry's ``source``; a REST API is an
-    ordinary ``mcp-openapi-proxy`` entry tagged ``source.type == "rest_api"``.
+    ``list_servers`` carries the wrapper's own ``rest_api`` verdict — read
+    off the entry's config SECTION there, since a REST API is an ordinary
+    ``mcp-openapi-proxy`` server that merely lives in ``rest-api``.  It is
+    NOT ``source``: that records where a definition was downloaded from.
     The families are reported as separate components even though a REST-API
     server *is* an MCP server: it is configured, probed and managed by a
     different tool set (``rest_api_*`` vs ``mcp_*``), so an operator reading
     "which servers are down" needs them apart.
     """
-    source = server.get("source")
-    if isinstance(source, dict) and source.get("type") == "rest_api":
+    if server.get("rest_api") is True:
         return "rest-api"
     return ""
 

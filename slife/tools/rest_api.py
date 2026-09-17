@@ -4,8 +4,9 @@ rest_api_set / rest_api_remove / rest_api_list / rest_api_list_tools /
 rest_api_set_enabled.
 
 Server definitions live in ``tools.json5`` (owned by the mcp gateway,
-resolved via ``$TOOLS_FILE``); REST APIs are ordinary ``command: uvx``
-server entries tagged ``source.type == "rest_api"``.  This module is the
+resolved via ``$TOOLS_FILE``); REST APIs are ordinary ``command: uvx`` server
+entries living in the ``rest-api`` section — the section is what makes one,
+and no entry needs to say so itself.  This module is the
 sLife-side face: it re-points persistence to :mod:`slife.plugins.mcp_gateway.config`
 and keeps a live ``mcp_set``-style warm-up through the mcp plugin so an API
 connects immediately.

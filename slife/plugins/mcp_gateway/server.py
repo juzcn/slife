@@ -81,13 +81,25 @@ async def _auto_connect_configured() -> None:
     ]
     logger.info("mcp_configured count=%d (connecting the enabled ones)", len(configured))
 
+    # Which of these are REST APIs — the SECTION decides (one read, not one
+    # per server), and it rides into the pool so ``__check`` can report the
+    # category without any tag being written into the entry itself.
+    rest_api_names = plugin_config.rest_api_names()
+
     async def _register_one(name: str, entry: dict) -> None:
         try:
-            cfg = plugin_config.resolve_server_config(name, entry)
+            cfg = plugin_config.resolve_server_config(
+                name, entry, rest_api=name in rest_api_names,
+            )
             if not cfg.enabled:
                 await _pool.add_server(cfg, connect=False)
                 return
-            conn = await _pool.add_server(cfg)
+            # Spawn-only: boot brings the transport up and leaves the tool LIST
+            # to the first reader (the host's reconcile asks every server for
+            # one as it mirrors the catalog).  Reading it here made boot the
+            # sum of every server's tools/list — a slow peer delayed the whole
+            # set, for a list no one had asked for yet.
+            conn = await _pool.add_server(cfg, read_tools=False)
             # ``add_server`` SWALLOWS the failure (it is recorded as the
             # server's ``last_error`` and the retry is armed).  Announce it
             # anyway: the host's reconcile turns an unreachable server into
@@ -209,6 +221,18 @@ def _persist_entry(
     ``enabled=True`` (the default) leaves the flag untouched — only
     ``mcp_set_enabled`` flips enable/disable; ``enabled=False`` is written
     so the server stays disconnected on the next wrapper start.
+
+    Empty fields are not written: a stdio server has no ``url``, an http one
+    may have no ``args``, and a field that says nothing is noise in a file
+    people read and hand-edit (``url: ""`` also read as a claim that there is
+    a URL).  ``add_server_entry`` already drops ``None``; this drops the
+    empty containers and strings around it.
+
+    The entry goes back into the section it already lives in
+    (``server_section``): an upsert of a REST API belongs to ``rest-api``,
+    and defaulting to ``mcp`` used to scatter a second copy under
+    ``mcp.servers`` — where the enable/disable path would then find it first
+    and flip the copy nothing reads.
     """
     entry: dict = {
         "command": command,
@@ -222,7 +246,13 @@ def _persist_entry(
     }
     if not enabled:
         entry["enabled"] = False
-    plugin_config.add_server_entry(name, entry)
+    entry = {
+        key: value for key, value in entry.items()
+        if value is not None and value != "" and value != [] and value != {}
+    }
+    plugin_config.add_server_entry(
+        name, entry, section=plugin_config.server_section(name) or "mcp",
+    )
 
 
 @mcp.tool(
@@ -310,6 +340,12 @@ async def mcp_set(
         auto_load=existing.config.auto_load if existing else False,
         source=(source if source is not None
                 else (existing.config.source if existing else None)),
+        # Same rule as the other derived fields: preserve what the entry's
+        # placement says.  A server already in the pool keeps its answer; a new
+        # one takes the section its name resolves to (mcp unless rest_api_set
+        # wrote it there first, which it does before calling us).
+        rest_api=(existing.config.rest_api if existing
+                  else plugin_config.server_section(name) == "rest-api"),
     )
 
     try:

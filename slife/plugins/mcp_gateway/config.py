@@ -18,8 +18,9 @@ Server entries hold: ``command/args/env/url/headers/auth/description/enabled/sou
 plus ``os_paths``.
 ``env`` and ``auth.client_id``/``client_secret`` support ``${VAR}``
 references resolved through **os.environ → credstore → literal**.  REST APIs
-are ordinary ``uvx mcp-openapi-proxy`` entries tagged
-``source.type == "rest_api"``.
+are ordinary ``uvx mcp-openapi-proxy`` entries living in the ``rest-api``
+section — **placement is the whole fact** (:func:`is_rest_api` /
+:func:`rest_api_names`), never a tag on the entry.
 
 The top-level ``embeddings`` section is the **fallback** embedding config: a
 connecting host may pass its own endpoint in the connect exchange's
@@ -37,7 +38,6 @@ from pathlib import Path
 from slife.tools._config_io import (
     config_read_modify_write,
     read_config,
-    with_fetched_at,
     write_config,
 )
 
@@ -71,7 +71,7 @@ def resolve_config_path() -> Path:
 
 
 # ── Reader / writer ──────────────────────────────────────────────────
-# read_config / write_config / ConfigParseError / now_iso / with_fetched_at
+# read_config / write_config / ConfigParseError / now_iso
 # are the shared implementations in ``slife.tools._config_io`` (imported
 # above) — atomic temp-file + os.replace with a config-dir mkdir, used by
 # every slife config writer.  Secret resolution follows below.
@@ -144,10 +144,11 @@ def _servers_dict(raw: dict) -> dict:
     """All server entries (name → raw entry), merged over the sections.
 
     ``mcp.servers`` + the ``rest-api`` section (REST APIs are ordinary
-    mcp-openapi-proxy servers in their own category).  A legacy top-level
-    ``servers`` — the pre-section tools.json5 shape — reads as the mcp
-    section, so an old file keeps working at the next start; a write
-    normalizes it (see :func:`_normalize_legacy_servers`).
+    mcp-openapi-proxy servers in their own category — **the section is what
+    makes one**, see below).  A legacy top-level ``servers`` — the
+    pre-section tools.json5 shape — reads as the mcp section, so an old file
+    keeps working at the next start; a write normalizes it (see
+    :func:`_normalize_legacy_servers`).
     """
     merged: dict = {}
     mcp_raw = raw.get("mcp")
@@ -163,6 +164,40 @@ def _servers_dict(raw: dict) -> dict:
         if isinstance(legacy, dict):
             merged.update(legacy)
     return merged
+
+
+def rest_api_names() -> set[str]:
+    """The names the config says are REST APIs.
+
+    An entry in the ``rest-api`` SECTION is a REST API, one under
+    ``mcp.servers`` is not — placement is the whole fact and nothing is
+    tagged for it.  A legacy file (top-level ``servers``, no sections) has no
+    placement to read, so the entry's own marker/shape is the only thing left
+    to go on.
+
+    The one place that reads the file for this; everything else asks
+    :func:`is_rest_api` or takes the set.
+    """
+    raw = load_config()
+    section = raw.get("rest-api")
+    if isinstance(section, dict):
+        return set(section)
+    return {
+        name for name, entry in _servers_dict(raw).items()
+        if _is_rest_api_entry(entry)
+    }
+
+
+def is_rest_api(name: str) -> bool:
+    """Is *name* a REST API?  The config SECTION answers.
+
+    Used by the host to tag mirrored catalog rows
+    (:func:`slife.agent.service._server_category`).  The gateway crosses a
+    process boundary with the same fact, so it does NOT re-derive it there:
+    the section is read at load and rides
+    :attr:`ServerConfig.rest_api` into the ``__check`` payload.
+    """
+    return name in rest_api_names()
 
 
 def servers() -> dict:
@@ -243,6 +278,19 @@ def _servers_section(raw: dict, section: str) -> dict:
         current = {}
         mcp_raw["servers"] = current
     return current
+
+
+def server_section(name: str) -> str | None:
+    """The section (``"mcp"`` or ``"rest-api"``) holding *name*, else None.
+
+    Public because a WRITER needs it too: an upsert must land the entry back
+    in the section it already lives in, or updating a REST API writes a
+    second copy under ``mcp.servers`` — the merged read view prefers
+    ``rest-api``, so the phantom copy is invisible until ``set_server_enabled``
+    (which resolves the section the same way, mcp first) flips the one nobody
+    reads and the disable silently does nothing.
+    """
+    return _find_server_section(load_config(), name)
 
 
 def _find_server_section(raw: dict, name: str) -> str | None:
@@ -327,12 +375,17 @@ def _load_raw() -> dict:
 # ── Raw json5 entry → ServerConfig ─────────────────────────────────────
 
 
-def resolve_server_config(name: str, raw_entry: dict):
+def resolve_server_config(name: str, raw_entry: dict, *, rest_api: bool = False):
     """Build a :class:`~mcp_gateway.connection.ServerConfig` from a raw entry.
 
     Resolves ``${VAR}`` refs in ``env`` and ``auth.client_*`` fields.
     Args/url/headers keep their embedded refs — the connection layer
     resolves them at connect time (unchanged behaviour).
+
+    *rest_api* comes from the caller because it is a fact about the ENTRY'S
+    PLACEMENT, not about the entry: the section it was found in.  A caller
+    holding only the entry (a test, a rebuild) gets the ``mcp.servers``
+    answer, which is also what :func:`is_rest_api` would say for it.
     """
     from slife.plugins.mcp_gateway.connection import ServerConfig
 
@@ -360,6 +413,10 @@ def resolve_server_config(name: str, raw_entry: dict):
         # Config key is `autoload` — a valid json5 identifier, so it needs no
         # quotes in tools.json5 (a dash would require quoting).
         auto_load=raw_entry.get("autoload") is True,
+        # NOT read from the entry: it is which SECTION the entry sits in, and
+        # only the caller that read the file knows that.  Defaults to False
+        # (the ``mcp.servers`` answer) for entry-only callers like tests.
+        rest_api=rest_api,
     )
 
 
@@ -396,6 +453,12 @@ def build_rest_api_entry(
     is referenced as ``${<api_key>}`` in the proxy's ``API_KEY`` env var so
     the secret itself stays in the credential store (credstore), never in
     the config file.
+
+    No ``source`` tag: the entry lands in the ``rest-api`` section, and the
+    section is the whole fact (``_servers_dict`` projects the tag in memory
+    for the readers that key on it).  ``source`` is accepted and ignored —
+    the parameter is kept for callers that still pass provenance, so the
+    entry never grows a written-back copy of what placement already says.
     """
     env = {SPEC_URL_ENV: spec_url, BASE_URL_ENV: base_url}
     if api_key:
@@ -407,10 +470,6 @@ def build_rest_api_entry(
     }
     if description:
         entry["description"] = description
-    src = {"type": "rest_api", **(source or {})}
-    stamped = with_fetched_at(src)
-    if stamped:
-        entry["source"] = stamped
     return entry
 
 
@@ -443,6 +502,18 @@ def remove_rest_api(name: str) -> bool:
 
 
 def _is_rest_api_entry(entry: object) -> bool:
+    """ENTRY-level detection — used only where there is no section to read.
+
+    :func:`is_rest_api` is the real answer (the section decides); this is what
+    is left for a legacy top-level ``servers`` file: the old explicit tag, or
+    the mcp-openapi-proxy shape.
+
+    Note the tag branch: an entry may still carry ``source.type == "rest_api"``
+    from a file written before sections were the rule.  It is NOT what the tag
+    generally means — ``source`` records where a definition was DOWNLOADED
+    from (``github`` / registry / hand) — so nothing writes it and only this
+    legacy reader recognises it.
+    """
     if not isinstance(entry, dict):
         return False
     source = entry.get("source")
@@ -462,10 +533,24 @@ def _is_rest_api_entry(entry: object) -> bool:
 
 
 def list_rest_apis() -> dict:
-    """Server entries that are REST-API-backed (name → raw entry)."""
+    """Server entries that are REST-API-backed (name → raw entry).
+
+    The ``rest-api`` section, as-is: placement is the whole fact, so this is
+    the section's own contents (a malformed, non-dict entry is skipped — a
+    caller reading an entry's env must not trip on one).  A legacy file (no
+    sections at all) has no placement to read and falls back to the
+    entry-level detection.
+    """
+    raw = load_config()
+    section = raw.get("rest-api")
+    if isinstance(section, dict) and section:
+        return {
+            name: entry for name, entry in section.items()
+            if isinstance(entry, dict)
+        }
     return {
         name: entry
-        for name, entry in servers().items()
+        for name, entry in _servers_dict(raw).items()
         if _is_rest_api_entry(entry)
     }
 

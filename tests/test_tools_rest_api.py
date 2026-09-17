@@ -167,7 +167,10 @@ class TestRestApiSetTool:
         assert entry["env"]["OPENAPI_SPEC_URL"] == "https://api.github.com/openapi.json"
         assert entry["env"]["SERVER_URL_OVERRIDE"] == "https://api.github.com"
         assert "API_KEY" not in entry["env"]  # no auth for a public API
-        assert entry["source"]["type"] == "rest_api"
+        # The section says it is a REST API; the entry does not repeat it —
+        # and nothing empty gets written either.
+        assert "source" not in entry
+        assert "url" not in entry
 
     @pytest.mark.asyncio
     async def test_add_with_api_key(self, mcp_config_path):
