@@ -9,13 +9,15 @@ Each ``PluginLifecycle`` can run a **watchdog** background task that monitors
 the child process and auto-restarts it on unexpected exit, with exponential
 backoff up to a configurable max restart count.
 
-Readiness (MCP plugin contract): a plugin is READY when the MCP
-``initialize`` handshake completes — ``MCPClient.connect()`` runs it
-(``await session.initialize()``), and a plugin server only answers
-``initialize`` after its own initialization (lifespan) succeeded, so a
-returned handshake means the plugin can serve.  The per-plugin serving
-requirement is encoded server-side in the lifespan (e.g. memdb/memfiles
-require their store); it is never probed by a harness tool.
+Readiness (MCP plugin contract): a plugin is READY when its connect-time
+era negotiation completes — ``MCPClient.connect()`` runs it, and a plugin
+server only answers that exchange after its own initialization (lifespan)
+succeeded, so a returned negotiation means the plugin can serve.  Our own
+plugins are all modern (2026-07-28): the exchange is ``server/discover`` +
+``adopt``, and only a third-party peer that answers as legacy falls back to
+the ``initialize`` handshake.  The per-plugin serving requirement is encoded
+server-side in the lifespan (e.g. memdb/memfiles require their store); it is
+never probed by a harness tool.
 Subordinate/external dependencies (mcp's external servers, sharefile's
 tunnel, embedding backends under a store) are reported separately and never
 gate readiness.
@@ -66,7 +68,7 @@ _WATCHDOG_MAX_RESTARTS: int = 5
 #: A restarted child is only considered *stable* once it has stayed up this
 #: long.  The watchdog resets its consecutive-failure counter / backoff only
 #: when the child that just exited ran for at least this window — otherwise a
-#: child that comes up, passes the handshake and dies a second later would
+#: child that comes up, passes readiness and dies a second later would
 #: reset the counter every cycle and restart forever (a ~1s boot-loop that
 #: `_max_restarts` never trips).  Equal to the spawn hang-guard: a child
 #: dying within the spawn window never "stabilised".  Value is the registry's
@@ -100,8 +102,8 @@ class PluginStartStatus(enum.Enum):
     FAILED = "failed"
 
 
-#: Readiness states.  ``READY_PENDING`` → ``READY_READY`` once the MCP
-#: ``initialize`` handshake completes (the plugin can serve) — see the
+#: Readiness states.  ``READY_PENDING`` → ``READY_READY`` once the
+#: connect-time era negotiation completes (the plugin can serve) — see the
 #: module docstring.  ``SKIPPED`` plugins stay PENDING; failed startups
 #: surface via ``PluginStartStatus.FAILED``.
 READY_PENDING = "pending"
@@ -178,8 +180,8 @@ class PluginLifecycle:
         self._restart_count: int = 0
 
         # ── Readiness (MCP plugin contract) ─────────────────────────
-        # Filled by mark_initialized() once the spawn's MCP initialize
-        # handshake completed; terminal state is READY_READY (SKIPPED
+        # Filled by mark_initialized() once the spawn's connect-time era
+        # negotiation completed; terminal state is READY_READY (SKIPPED
         # stays PENDING; spawn failure → FAILED via PluginStartStatus).
         self.ready: bool = False
         self.ready_state: str = READY_PENDING
@@ -188,11 +190,13 @@ class PluginLifecycle:
     # ── readiness (plugin contract) ─────────────────────────────────────
 
     def mark_initialized(self) -> None:
-        """Record that the plugin's MCP ``initialize`` handshake completed.
+        """Record that the plugin's connect-time era negotiation completed.
 
-        Readiness (MCP plugin contract): a plugin is ready exactly when its
-        ``session.initialize()`` handshake succeeded — the server only
-        answers it after its own initialization (lifespan) completed.  The
+        Readiness (MCP plugin contract): a plugin is ready exactly when that
+        exchange succeeded — the server only answers it after its own
+        initialization (lifespan) completed.  Our own plugins negotiate the
+        modern era (``server/discover`` + ``adopt``); the ``initialize``
+        handshake is the legacy fallback for a third-party peer.  The
         per-plugin serving requirement is encoded server-side in the
         lifespan, never probed here.  Called once the client connected;
         informational in itself, made explicit so the readiness state shows
@@ -200,7 +204,7 @@ class PluginLifecycle:
         """
         self.ready = True
         self.ready_state = READY_READY
-        self.ready_detail = "initialized (MCP handshake)"
+        self.ready_detail = "ready (era negotiated)"
         logger.info(
             "%s_ready ready=%s state=%s detail=%s",
             self.name, self.ready, self.ready_state, self.ready_detail,
@@ -496,8 +500,9 @@ class PluginLifecycle:
         await client.connect(f"http://127.0.0.1:{port}/mcp")
         self.client = client
         self.port = port
-        # Readiness (MCP plugin contract): the connect ran the initialize
-        # handshake — record the plugin as ready for subagent sharing too.
+        # Readiness (MCP plugin contract): the connect negotiated the era
+        # (modern for our own servers) — record the plugin as ready for
+        # subagent sharing too.
         self.mark_initialized()
 
     # ── stop ─────────────────────────────────────────────────────────────

@@ -121,7 +121,7 @@ def _register_tool(job: registry.Job) -> None:
     from the ORIGINAL function; the tool NAME is the prefixed one
     (``job-translate``), which is what the LLM sees and calls.  The LLM client
     is passed as a lazy ``_LLMClientRef``: registration happens in the
-    lifespan, which must stay handshake-fast — constructing the real
+    lifespan, which must stay connect-fast — constructing the real
     ``LLMClient`` cold-imports the provider SDK (30s+ on a slow machine) and is
     deferred to the job's first ``llm.chat``.
     """
@@ -232,7 +232,7 @@ def _reload_all() -> str:
 async def _job_lifespan(_app):
     """Resolve the job model and register the jobs from the jobs dir.
 
-    All handshake-fast steps: register job tools from the jobs directory so
+    All connect-fast steps: register job tools from the jobs directory so
     the harness's first ``tools/list`` already shows them (and the restart
     contract — jobs re-register on every plugin start).  The ``job-coding``
     authoring skill lives in the standard skills directory (seed_skills).
@@ -490,7 +490,6 @@ async def __check() -> str:
         result["mcp_gateway"] = {
             "port": runner.mcp.port,
             "source": runner.mcp.port_source,
-            "connected": runner.mcp.connected,
         }
     except Exception as e:
         result["mcp_gateway"] = {"error": str(e)}

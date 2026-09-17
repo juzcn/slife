@@ -492,23 +492,19 @@ async def test_rescan_registers_and_unregisters(sample_config):
 def _reset_gateway_state():
     """Isolate the module-level mcp-handle state across in-process tests.
 
-    ``runner.mcp`` keeps its gateway port/client as module globals; any test
-    touching it must start (and end) clean so a connected fake client from
-    one test never leaks into the next.
+    ``runner.mcp`` keeps the gateway PORT as module globals; a test touching
+    it must start (and end) clean so a push from one test never leaks into the
+    next.  There is no client global — the handle holds nothing between calls.
     """
     runner._gateway_port = None
     runner._gateway_port_source = ""
-    runner._gateway_client = None
-    runner._gateway_lock = None
     yield
     runner._gateway_port = None
     runner._gateway_port_source = ""
-    runner._gateway_client = None
-    runner._gateway_lock = None
 
 
 class _FakeGateClient:
-    """MCPClient stand-in for the gateway connection.
+    """MCPClient stand-in for ONE gateway call.
 
     Records connect / disconnect / call_tool.  ``result`` may be a str to
     return or an exception to raise — mirrors MCPClient.call_tool's
@@ -519,6 +515,7 @@ class _FakeGateClient:
         self.result = result
         self.calls: list = []
         self.urls: list[str] = []
+        self.attempts: list = []
         self.disconnects = 0
         self._connected = False
 
@@ -526,8 +523,9 @@ class _FakeGateClient:
     def is_connected(self) -> bool:
         return self._connected
 
-    async def connect(self, url: str) -> None:
+    async def connect(self, url: str, *, attempts: int | None = None) -> None:
         self.urls.append(url)
+        self.attempts.append(attempts)
         self._connected = True
 
     async def disconnect(self) -> None:
@@ -541,24 +539,64 @@ class _FakeGateClient:
         return self.result
 
 
+def _patch_clients(monkeypatch, *clients):
+    """Make ``MCPClient()`` hand out *clients* in order — one per call."""
+    import slife.plugins.mcp_gateway.client as gw_client_mod
+
+    made: list = []
+
+    def _factory():
+        made.append(clients[min(len(made), len(clients) - 1)])
+        return made[-1]
+
+    monkeypatch.setattr(gw_client_mod, "MCPClient", _factory)
+    return made
+
+
 @pytest.mark.asyncio
 async def test_mcp_call_forwards_bare_call(monkeypatch):
     client = _FakeGateClient("R")
-    monkeypatch.setattr(runner.mcp, "_client", AsyncMock(return_value=client))
+    made = _patch_clients(monkeypatch, client)
+    runner._gateway_port = "1234"
+    runner._gateway_port_source = "push"
+
     out = await runner.mcp.call("github", "search_code", {"q": "abc"})
+
     assert out == "R"
+    assert client.urls == ["http://127.0.0.1:1234/mcp"]
     assert client.calls == [(
         "__mcp_call_tool",
         {"server": "github", "tool_name": "search_code",
          "arguments": json.dumps({"q": "abc"}, ensure_ascii=False)},
     )]
+    assert len(made) == 1
+
+
+@pytest.mark.asyncio
+async def test_each_call_gets_its_own_client(monkeypatch):
+    """The modern protocol is stateless, so the handle holds nothing between
+    calls: a session that dies can cost only the call that opened it."""
+    first = _FakeGateClient("A")
+    second = _FakeGateClient("B")
+    made = _patch_clients(monkeypatch, first, second)
+    runner._gateway_port = "1234"
+
+    assert await runner.mcp.call("github", "x") == "A"
+    assert await runner.mcp.call("github", "x") == "B"
+
+    assert len(made) == 2
+    assert first.urls == second.urls  # same endpoint, fresh client each time
+    assert (first.disconnects, second.disconnects) == (1, 1)
 
 
 @pytest.mark.asyncio
 async def test_mcp_call_defaults_args_to_empty_json(monkeypatch):
     client = _FakeGateClient("R")
-    monkeypatch.setattr(runner.mcp, "_client", AsyncMock(return_value=client))
+    _patch_clients(monkeypatch, client)
+    runner._gateway_port = "1234"
+
     await runner.mcp.call("fs", "list_directory")
+
     assert client.calls == [(
         "__mcp_call_tool",
         {"server": "fs", "tool_name": "list_directory", "arguments": "{}"},
@@ -566,119 +604,80 @@ async def test_mcp_call_defaults_args_to_empty_json(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mcp_call_no_gateway_returns_error(monkeypatch):
-    monkeypatch.setattr(runner.mcp, "_client", AsyncMock(return_value=None))
-    out = await runner.mcp.call("github", "x")
-    assert out.startswith("Error: mcp.call")
-
-
-@pytest.mark.asyncio
-async def test_mcp_call_surfaces_client_failure(monkeypatch):
-    client = _FakeGateClient(RuntimeError("boom"))
-    monkeypatch.setattr(runner.mcp, "_client", AsyncMock(return_value=client))
-    out = await runner.mcp.call("github", "x")
-    assert out.startswith("Error: mcp.call('github', 'x')")
-    assert "boom" in out
-
-
-@pytest.mark.asyncio
-async def test_mcp_client_opens_on_pushed_port(monkeypatch):
-    import slife.plugins.mcp_gateway.client as gw_client_mod
-
-    fake = _FakeGateClient()
-    monkeypatch.setattr(gw_client_mod, "MCPClient", lambda: fake)
-    monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "9999")  # push must win
+async def test_mcp_call_uses_a_bounded_connect_window(monkeypatch):
+    """One call must not pay the whole plugin-startup window (~10 s): the
+    next call builds a fresh client and retries anyway."""
+    client = _FakeGateClient("R")
+    _patch_clients(monkeypatch, client)
     runner._gateway_port = "1234"
-    runner._gateway_port_source = "push"
 
-    client = await runner.mcp._client()
+    await runner.mcp.call("github", "x")
 
-    assert client is fake
-    assert fake.urls == ["http://127.0.0.1:1234/mcp"]
-    assert runner._gateway_port == "1234"
-    assert runner._gateway_port_source == "push"
+    assert client.attempts == [runner._CALL_CONNECT_ATTEMPTS]
 
 
 @pytest.mark.asyncio
-async def test_mcp_client_falls_back_to_env_port(monkeypatch):
-    import slife.plugins.mcp_gateway.client as gw_client_mod
-
-    fake = _FakeGateClient()
-    monkeypatch.setattr(gw_client_mod, "MCPClient", lambda: fake)
-    monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "7777")
-
-    client = await runner.mcp._client()
-
-    assert client is fake
-    assert fake.urls == ["http://127.0.0.1:7777/mcp"]
-    assert runner._gateway_port == "7777"
-    assert runner._gateway_port_source == "env"
-
-
-@pytest.mark.asyncio
-async def test_mcp_client_no_port_returns_none(monkeypatch):
-    import slife.plugins.mcp_gateway.client as gw_client_mod
-
-    fake = _FakeGateClient()
-    monkeypatch.setattr(gw_client_mod, "MCPClient", lambda: fake)
+async def test_mcp_call_no_port_returns_error(monkeypatch):
+    made = _patch_clients(monkeypatch, _FakeGateClient())
     monkeypatch.delenv("SLIFE_MCP_GATEWAY_PORT", raising=False)
 
-    out = await runner.mcp._client()
+    out = await runner.mcp.call("github", "x")
 
-    assert out is None
-    assert fake.urls == []
+    assert out.startswith("Error: mcp.call")
+    assert "port unknown" in out
+    assert made == []  # no port, no connect
 
 
 @pytest.mark.asyncio
-async def test_mcp_client_connect_failure_returns_none(monkeypatch):
+async def test_mcp_call_falls_back_to_env_port(monkeypatch):
+    client = _FakeGateClient("R")
+    _patch_clients(monkeypatch, client)
+    monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "7777")
+
+    await runner.mcp.call("github", "x")
+
+    assert client.urls == ["http://127.0.0.1:7777/mcp"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_connect_failure_returns_error(monkeypatch):
     import slife.plugins.mcp_gateway.client as gw_client_mod
 
     class _Boom:
-        async def connect(self, url: str) -> None:
+        async def connect(self, url, *, attempts=None):
             raise ConnectionError("refused")
 
-    monkeypatch.setattr(gw_client_mod, "MCPClient", lambda: _Boom())
-    monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "7777")
+        async def disconnect(self):
+            pass
 
-    out = await runner.mcp._client()
+    monkeypatch.setattr(gw_client_mod, "MCPClient", _Boom)
+    runner._gateway_port = "1234"
 
-    assert out is None
-    assert runner._gateway_client is None
+    out = await runner.mcp.call("github", "x")
+
+    assert out.startswith("Error: mcp.call('github', 'x')")
+    assert "refused" in out
 
 
 @pytest.mark.asyncio
-async def test_mcp_set_port_repoints_and_drops_client():
-    old = _FakeGateClient()
-    old._connected = True
-    runner._gateway_client = old
-    runner._gateway_port = "1111"
-    runner._gateway_port_source = "push"
+async def test_mcp_call_surfaces_client_failure_and_closes(monkeypatch):
+    client = _FakeGateClient(RuntimeError("boom"))
+    _patch_clients(monkeypatch, client)
+    runner._gateway_port = "1234"
 
+    out = await runner.mcp.call("github", "x")
+
+    assert out.startswith("Error: mcp.call('github', 'x')")
+    assert "boom" in out
+    assert client.disconnects == 1  # torn down even on the error path
+
+
+@pytest.mark.asyncio
+async def test_mcp_set_port_records_and_clears():
+    """Nothing to re-point: the next call resolves the port afresh."""
     await runner.mcp.set_port(2222)
+    assert (runner._gateway_port, runner._gateway_port_source) == ("2222", "push")
 
-    assert old.disconnects == 1
-    assert old.is_connected is False
-    assert runner._gateway_client is None
-    assert runner._gateway_port == "2222"
-    assert runner._gateway_port_source == "push"
-
-
-@pytest.mark.asyncio
-async def test_mcp_set_port_same_port_noop():
-    old = _FakeGateClient()
-    old._connected = True
-    runner._gateway_client = old
-    runner._gateway_port = "1111"
-    runner._gateway_port_source = "push"
-
-    await runner.mcp.set_port(1111)
-
-    assert old.disconnects == 0
-    assert runner._gateway_client is old
-
-
-@pytest.mark.asyncio
-async def test_mcp_set_port_none_clears():
     await runner.mcp.set_port(None)
     assert runner._gateway_port is None
     assert runner._gateway_port_source == ""
@@ -693,32 +692,16 @@ async def test_server_sets_gateway_port(srv):
 
 
 @pytest.mark.asyncio
-async def test_check_reflects_opened_gateway(srv, monkeypatch):
-    import slife.plugins.mcp_gateway.client as gw_client_mod
-
-    fake = _FakeGateClient()
-    monkeypatch.setattr(gw_client_mod, "MCPClient", lambda: fake)
-    monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "7777")
-    await runner.mcp._client()
-
-    data = json.loads(await srv.__check())
-
-    assert data["mcp_gateway"] == {"port": "7777", "source": "env", "connected": True}
-
-
-@pytest.mark.asyncio
-async def test_check_reports_the_env_port_before_any_call(srv, monkeypatch):
-    """The port is a readable fact, not a by-product of connecting: a child
-    spawned after the gateway inherits ``SLIFE_MCP_GATEWAY_PORT``, and the
-    host's push only reaches a job-coding client that is already up.  The
-    probe reported port=None for that whole wiring until it was resolved
-    the same way a call resolves it."""
+async def test_check_reports_the_port_without_connecting(srv, monkeypatch):
+    """The port is a readable fact AND the whole live fact: one call opens one
+    short-lived client, so the probe has no `connected` bit to report."""
+    made = _patch_clients(monkeypatch, _FakeGateClient())
     monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "7777")
 
     data = json.loads(await srv.__check())
 
-    assert data["mcp_gateway"] == {"port": "7777", "source": "env", "connected": False}
-    assert runner._gateway_client is None  # resolving the port never connects
+    assert data["mcp_gateway"] == {"port": "7777", "source": "env"}
+    assert made == []  # resolving the port never connects
 
 
 def test_port_is_none_without_push_or_env(monkeypatch):
@@ -796,3 +779,63 @@ async def test_wire_mcp_glue_pushes_port_to_jobs(sample_config, monkeypatch):
     await service._wire_mcp_glue()
 
     jobs_client.call_tool.assert_awaited_once_with("__set_mcp_gateway_port", {"port": 12345})
+
+
+@pytest.mark.asyncio
+async def test_plugin_ready_pushes_the_gateway_port(sample_config, monkeypatch):
+    """The handshake's SECOND edge: a plugin that readies after the gateway
+    completes it.  Spawn order used to decide whether jobs could reach
+    ``mcp.call`` at all — job-coding readied ~0.5s behind the gateway, the
+    gateway-only push skipped it silently, and nothing re-pushed."""
+    from slife.agent.service import AgentService
+    from slife.agent.plugins import PluginLifecycle, PluginStartStatus
+
+    service = AgentService(sample_config)
+    gw = PluginLifecycle("mcp-gateway", service)
+    gw.port = 12345
+    service._plugins["mcp-gateway"] = gw
+    jobs = PluginLifecycle("job-coding", service)
+    jobs_client = AsyncMock()
+    jobs_client.is_connected = True
+    jobs_client.call_tool = AsyncMock(return_value='{"port": "12345"}')
+    jobs.client = jobs_client
+    service._plugins["job-coding"] = jobs
+    monkeypatch.setattr(service, "_spawn_plugin_generic", AsyncMock(return_value=True))
+    monkeypatch.setattr(service, "_arm_watchdog", lambda *a, **k: None)
+
+    status = await service._start_plugin_uniform(
+        service._registry.spec("job-coding"), jobs,
+    )
+
+    assert status is PluginStartStatus.STARTED
+    jobs_client.call_tool.assert_awaited_once_with(
+        "__set_mcp_gateway_port", {"port": 12345},
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_ready_leaves_the_push_to_its_glue(sample_config, monkeypatch):
+    """The gateway's own ready is the glue's edge (``_wire_mcp_glue``); the
+    uniform path skips it, so one connect never pushes the port twice."""
+    from slife.agent.service import AgentService
+    from slife.agent.plugins import PluginBehavior, PluginLifecycle
+
+    service = AgentService(sample_config)
+    gw = PluginLifecycle("mcp-gateway", service)
+    gw.port = 12345
+    service._plugins["mcp-gateway"] = gw
+    # After-ready glue is bound at construction — replace the stored behavior
+    # so the real ``_wire_mcp_glue`` (and its push) stays out of this test.
+    service._plugin_behaviors["mcp-gateway"] = PluginBehavior(after_ready=AsyncMock())
+    jobs = PluginLifecycle("job-coding", service)
+    jobs_client = AsyncMock()
+    jobs_client.is_connected = True
+    jobs_client.call_tool = AsyncMock(return_value='{"port": "12345"}')
+    jobs.client = jobs_client
+    service._plugins["job-coding"] = jobs
+    monkeypatch.setattr(service, "_spawn_plugin_generic", AsyncMock(return_value=True))
+    monkeypatch.setattr(service, "_arm_watchdog", lambda *a, **k: None)
+
+    await service._start_plugin_uniform(service._registry.spec("mcp-gateway"), gw)
+
+    jobs_client.call_tool.assert_not_awaited()

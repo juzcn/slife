@@ -337,14 +337,15 @@ class TestPluginLifecycleSpawn:
 
 class TestPluginLifecycleMarkInitialized:
     """Readiness (MCP plugin contract): mark_initialized() records that the
-    initialize handshake completed — there is no __ready probe anymore."""
+    connect-time era negotiation completed — there is no __ready probe
+    anymore, and no ``initialize`` handshake for our own modern plugins."""
 
     def test_marks_ready(self, lifecycle):
-        lifecycle.client = MagicMock()  # connect()/initialize() done by spawn
+        lifecycle.client = MagicMock()  # connect()/era negotiation done by spawn
         lifecycle.mark_initialized()
         assert lifecycle.ready is True
         assert lifecycle.ready_state == "ready"
-        assert "initialized" in lifecycle.ready_detail
+        assert "ready" in lifecycle.ready_detail
 
     def test_idempotent(self, lifecycle):
         lifecycle.mark_initialized()

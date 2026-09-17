@@ -25,7 +25,7 @@ from slife.plugins.memdb.search import (
     SCORE_BAND_HINT, annotate_scores, merge_hybrid,
 )
 from slife.plugins.memdb.semantic import SemanticManager
-from slife.server_utils import create_plugin_server, warm_after_handshake
+from slife.server_utils import create_plugin_server, warm_after_ready
 
 
 @asynccontextmanager
@@ -178,7 +178,7 @@ async def _warm_semantic() -> None:
     await manager.start()
 
 
-warm_after_handshake(mcp, _warm_semantic, name="semantic")
+warm_after_ready(mcp, _warm_semantic, name="semantic")
 
 
 # ═══════════════════════════════════════════════════════════════════════

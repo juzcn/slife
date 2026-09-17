@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx2
 
-from mcp import ClientSession
+from mcp import ClientSession, MCPError
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Implementation
 
@@ -64,7 +64,7 @@ def make_local_http_client(headers: dict | None = None) -> httpx2.AsyncClient:
     session), so ``trust_env=False`` keeps the client proxy-free.  Read/write
     timeouts are DELEGATED — the loop's tool budget owns the read bound (both
     are None); only connect/pool are bounded so a dead endpoint can't hang
-    the handshake.  ``headers`` ride the session (external server auth, etc.).
+    the connect.  ``headers`` ride the session (external server auth, etc.).
     """
     return httpx2.AsyncClient(
         trust_env=False,
@@ -131,10 +131,10 @@ def _install_cancel_scope_exception_handler() -> None:
 
 
 # Bounds one full connect attempt — transport setup (the SDK's
-# streamable_http_client context) AND the initialize handshake.  Previously
-# only initialize() was wrapped, so a hang in transport setup (e.g. memfiles'
-# eager ngrok tunnel delaying the app past the port signal) left the spawn
-# pending forever.
+# streamable_http_client context) AND the era negotiation that follows it.
+# Previously only the exchange itself was wrapped, so a hang in transport
+# setup (e.g. memfiles' eager ngrok tunnel delaying the app past the port
+# signal) left the spawn pending forever.
 # Per-attempt connect bound is developer-owned (registry ready.connect_attempt).
 # Max time to wait for the SDK transport to tear down after a failed attempt.
 # A request hung against a not-yet-ready server may keep aclose() from
@@ -148,6 +148,21 @@ def _install_cancel_scope_exception_handler() -> None:
 # to outlast it, bounded above by the spawn guard in the harness (a count,
 # the registry's ready.connect_retry_delay governs the band).
 _CONNECT_RETRY_ATTEMPTS = 20  # up to ~10 s of slow-start plugins (WSL)
+
+
+#: The SDK's JSON-RPC ``CONNECTION_CLOSED`` code — ``mcp_types``'s constant,
+#: which ``mcp`` does not re-export.  ``send_raw_request`` raises it in exactly
+#: two places: a send after the dispatcher closed, and a write that failed on a
+#: transport already torn down.  Both mean the call never reached the peer,
+#: which is what makes ONE rebuild-and-retry safe; ``REQUEST_TIMEOUT`` is
+#: deliberately outside this class (the peer may be executing that call).
+#: ``tests/test_mcp_client.py`` pins the value against the SDK's own.
+_LINK_DOWN_CODE = -32000
+
+
+def _is_link_down(err: BaseException) -> bool:
+    """True when *err* is the link, not the call — see :data:`_LINK_DOWN_CODE`."""
+    return isinstance(err, MCPError) and getattr(err, "code", None) == _LINK_DOWN_CODE
 
 
 # ── Binary → temp file helper ──────────────────────────────────────
@@ -221,6 +236,14 @@ class MCPClient:
             tool_timeout = _timeouts.timeouts.work.tool_budget  # call-time lookup
         self._session: ClientSession | None = None
         self._connected: bool = False
+        #: The URL this client connected to.  The recovery path reconnects to
+        #: it when a session dies under a ``_connected`` that still says True.
+        self._url: str | None = None
+        #: Bumped on every successful (re)connect.  A caller that failed on a
+        #: link-down rebuilds only while the generation it failed on is still
+        #: current — concurrent callers on one dead session rebuild ONCE.
+        self._generation: int = 0
+        self._recover_lock: asyncio.Lock | None = None
         #: The protocol version the era negotiation adopted (None before
         #: connect) — modern means session-less requests, per-request `_meta`.
         self._era: str | None = None
@@ -243,17 +266,63 @@ class MCPClient:
         # notifications (e.g. ``notifications/tools/list_changed``).  Must
         # return quickly — it runs on the SDK's receive loop; a handler that
         # awaits a call_tool on the same session would deadlock that loop.
-        self.on_notification: Callable[[str, dict], Awaitable[None]] | None = None
+        # Backing field for the ``on_notification`` property: assigning one to
+        # a live modern session is what opens its listen stream, and the
+        # wiring sites all assign AFTER ``connect``.
+        self._on_notification: Callable[[str, dict], Awaitable[None]] | None = None
 
     @property
     def is_connected(self) -> bool:
         return self._connected
 
-    async def connect(self, url: str) -> None:
+    @property
+    def on_notification(self) -> Callable[[str, dict], Awaitable[None]] | None:
+        """The change-notification handler, or None when nothing is listening."""
+        return self._on_notification
+
+    @on_notification.setter
+    def on_notification(
+        self, handler: Callable[[str, dict], Awaitable[None]] | None,
+    ) -> None:
+        self._on_notification = handler
+        if handler is not None:
+            self._ensure_watch_task()
+
+    def _ensure_watch_task(self) -> None:
+        """Open the ``tools/list_changed`` listen stream a handler needs.
+
+        A modern peer delivers that event ONLY on a stream the client asked
+        for (the session channel is gone at that era), which makes the stream
+        the client's one piece of connection state — so it exists only where
+        a handler does.  With no handler nothing could consume an event, and
+        the stream would be pure state on a link the protocol calls stateless
+        (no session id, no standalone channel).  Idempotent; called by
+        ``connect`` and by the handler setter.
+        """
+        if self._on_notification is None or not self._connected:
+            return
+        if self._watch_task is not None and not self._watch_task.done():
+            return
+        if peer_era(self._session) != "modern":
+            return
+        self._watch_task = asyncio.create_task(
+            watch_tools_changed(self._session, self._forward_tools_changed,
+                                link=self._url or ""),
+            name="mcp-listen",
+        )
+
+    async def connect(self, url: str, *, attempts: int | None = None) -> None:
         """Connect to an MCP server via Streamable HTTP transport.
 
         Retries on connection failure — the server may still be starting
         (the port signal is sent before uvicorn begins accepting).
+
+        Args:
+            url: Streamable HTTP endpoint.
+            attempts: Connect attempts before giving up.  None uses the
+                startup window (``_CONNECT_RETRY_ATTEMPTS``), which exists to
+                outlast a plugin still coming up; a one-shot caller whose next
+                request would retry anyway can pass a smaller count.
         """
         if self._connected:
             logger.warning("mcp_client_already_connected")
@@ -266,9 +335,10 @@ class MCPClient:
 
         logger.info("mcp_client_connect transport=%s url=%s", "streamable-http", url)
 
+        tries = attempts if attempts is not None else _CONNECT_RETRY_ATTEMPTS
         last_err = None
         attempt: int = -1
-        for attempt in range(_CONNECT_RETRY_ATTEMPTS):
+        for attempt in range(tries):
             try:
                 # Bound the WHOLE attempt — transport setup included.  A
                 # plugin whose app isn't serving yet (memfiles' eager ngrok
@@ -294,12 +364,14 @@ class MCPClient:
                     )
                     # mcp ≥2.0: host extras ride in the standard
                     # ``capabilities.extensions`` map (identifier → settings)
-                    # on the initialize request — the old ``clientInfo.other``
-                    # smuggling was dropped from the wire models.  The mcp
-                    # gateway's ``_client_info_extra`` is exactly that shape
+                    # on the connect exchange — modern peers get them in the
+                    # ``server/discover`` ``_meta`` (the SDK builds the same
+                    # capability ad for both eras), legacy peers on
+                    # ``initialize``.  The old ``clientInfo.other`` smuggling
+                    # was dropped from the wire models.  The mcp gateway's
+                    # ``_client_info_extra`` is exactly that shape
                     # (``{"embeddings": {...}}``), so pass it as session
-                    # extensions; the gateway reads the same map back from the
-                    # initialize params it receives.
+                    # extensions; the gateway reads the same map back.
                     self._session = await self._exit_stack.enter_async_context(
                         ClientSession(
                             read_stream, write_stream,
@@ -335,7 +407,7 @@ class MCPClient:
                 # transient transport failure, not a cancellation of the
                 # connect — fall through to the retry path.
                 last_err = exc
-                if attempt < _CONNECT_RETRY_ATTEMPTS - 1:
+                if attempt < tries - 1:
                     await asyncio.sleep(_timeouts.timeouts.ready.connect_retry_delay)
                     continue
             except Exception as e:
@@ -343,32 +415,26 @@ class MCPClient:
                 await self._cleanup()
                 if not _is_retryable_connect_error(e):
                     raise
-                if attempt < _CONNECT_RETRY_ATTEMPTS - 1:
+                if attempt < tries - 1:
                     await asyncio.sleep(_timeouts.timeouts.ready.connect_retry_delay)
 
         if not self._session:
             raise ConnectionError(
-                f"Failed to connect to {url} after "
-                f"{_CONNECT_RETRY_ATTEMPTS} attempts: {last_err}"
+                f"Failed to connect to {url} after {tries} attempts: {last_err}"
             )
 
         self._connected = True
+        self._url = url
+        self._generation += 1
         logger.info(
             "mcp_client_connected transport=%s url=%s attempts=%d era=%s "
             "protocol=%s",
             "streamable-http", url, attempt + 1,
             peer_era(self._session), self._era,
         )
-        # A modern peer delivers `tools/list_changed` ONLY on a listen stream
-        # it is asked for (the session channel is gone at that era), so keep
-        # one open.  A legacy peer keeps its session channel — no stream to
-        # open (and asking would only earn a ListenNotSupportedError).
-        if peer_era(self._session) == "modern":
-            self._watch_task = asyncio.create_task(
-                watch_tools_changed(self._session, self._forward_tools_changed,
-                                    link=url),
-                name="mcp-listen",
-            )
+        # The listen stream a change handler needs (none, no stream — see
+        # _ensure_watch_task).  The host wires its handler after this returns.
+        self._ensure_watch_task()
 
     async def _forward_tools_changed(self) -> None:
         """Feed a listen-stream event into the existing notification handler.
@@ -418,8 +484,7 @@ class MCPClient:
 
     async def disconnect(self) -> None:
         """Disconnect from the MCP server and release all resources."""
-        self._connected = False
-        await self._cleanup()
+        await self._teardown_session()
         # Remove temp images handed out for display — a long session would
         # otherwise accumulate one per image tool result.
         for p in list(self._temp_image_files):
@@ -429,6 +494,16 @@ class MCPClient:
                 pass
         self._temp_image_files.clear()
         logger.info("mcp_client_disconnected")
+
+    async def _teardown_session(self) -> None:
+        """Drop the live session, keeping the client's own state intact.
+
+        Split out of :meth:`disconnect` for the link-loss rebuild: the
+        session ended, the conversation did not — the temp images already
+        handed to the UI must survive it.
+        """
+        self._connected = False
+        await self._cleanup()
 
     async def _cleanup(self) -> None:
         """Close the exit stack, properly exiting all nested contexts.
@@ -475,6 +550,63 @@ class MCPClient:
             self._http_client = None
         self._session = None
 
+    # ── Link-loss recovery ─────────────────────────────────────────────
+
+    def _recover_lock_ref(self) -> asyncio.Lock:
+        """The rebuild lock, created lazily so it binds to the running loop."""
+        if self._recover_lock is None:
+            self._recover_lock = asyncio.Lock()
+        return self._recover_lock
+
+    async def _rebuild_after_link_loss(self, generation: int) -> bool:
+        """Rebuild the session after a link-down failure; True when it is fresh.
+
+        ``_connected`` is cleared by :meth:`disconnect` alone, so a session
+        that dies under us — the modern era's ``subscriptions/listen`` stream
+        is the observed way — keeps answering ``is_connected`` and the corpse
+        is reused for the client's whole life.  Serialized and
+        generation-guarded: callers that all failed on the same dead session
+        rebuild once, then retry on the fresh one.
+        """
+        async with self._recover_lock_ref():
+            if self._generation != generation:
+                # Another caller already rebuilt it — retry on its session.
+                return True
+            url = self._url
+            if not url:
+                return False  # never connected: nothing to rebuild
+            logger.info("mcp_client_link_lost url=%s — reconnecting", url)
+            await self._teardown_session()
+            try:
+                await self.connect(url)
+            except Exception as e:
+                logger.warning("mcp_client_reconnect_failed url=%s err=%s", url, e)
+                return False
+            return True
+
+    async def _request_with_recovery(
+        self, op: Callable[[ClientSession], Awaitable[Any]],
+    ) -> Any:
+        """Run one session request, rebuilding the link once when it died.
+
+        Only a :func:`_is_link_down` failure — the dispatcher refusing a send
+        on a transport that is already gone — earns the retry, so a call the
+        peer may be executing is never issued twice; every other error
+        propagates unchanged with its own contract intact.
+        """
+        generation = self._generation
+        for attempt in (1, 2):
+            session = self._session
+            assert session is not None  # post-condition of _ensure_connected
+            try:
+                return await op(session)
+            except Exception as e:
+                if (attempt == 2 or not _is_link_down(e)
+                        or not await self._rebuild_after_link_loss(generation)):
+                    raise
+                generation = self._generation
+        raise AssertionError("unreachable")  # pragma: no cover
+
     async def list_tools(self) -> list[dict]:
         """Return tools from the connected MCP server.
 
@@ -501,7 +633,9 @@ class MCPClient:
             # asyncio.timeout raises at the deadline without waiting for the
             # inner task — the hang becomes a recoverable TimeoutError.
             async with asyncio.timeout(list_timeout):
-                result = await self._session.list_tools()
+                result = await self._request_with_recovery(
+                    lambda session: session.list_tools(),
+                )
         except TimeoutError:
             raise TimeoutError(
                 f"list_tools timed out after {list_timeout}s — "
@@ -550,12 +684,19 @@ class MCPClient:
         via ``asyncio.wait_for`` — this method does NOT apply its own
         timeout, so per-call overrides (e.g. ``call_tool_with_timeout``)
         propagate correctly.
+
+        A session that died under us is rebuilt once and the call retried —
+        see :meth:`_request_with_recovery`.
         """
-        self._ensure_connected()
-        assert self._session is not None  # post-condition of _ensure_connected
         args = arguments or {}
         try:
-            result = await self._session.call_tool(name, args)
+            # Inside the try: a rebuild that could not re-establish the link
+            # leaves the client disconnected, and the contract here is a
+            # result string, never a raise.
+            self._ensure_connected()
+            result = await self._request_with_recovery(
+                lambda session: session.call_tool(name, args),
+            )
         except Exception as e:
             msg = (
                 f"Tool '{name}' failed: {type(e).__name__}: {e}. "

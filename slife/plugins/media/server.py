@@ -47,7 +47,7 @@ async def _media_lifespan(_app):
     it keeps every built-in plugin on the same protocol shape: readiness is
     the MCP ``initialize`` handshake completing, and nothing here can stall
     it.  Any future startup init must stay handshake-fast (or go through
-    ``warm_after_handshake``), never block in the lifespan.  Shutdown closes
+    ``warm_after_ready``), never block in the lifespan.  Shutdown closes
     every lazily-created adapter (their httpx2 clients) — a clean close for
     a child process, rather than letting the OS reap them.
     """

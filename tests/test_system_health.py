@@ -1462,7 +1462,7 @@ class TestCheckJobCoding:
             "jobs_dir": r"C:\jobs", "jobs": 2,
             "job_names": ["summarize", "translate"],
             "llm_model": "scnet/DeepSeek-V4-Flash-0731", "error": "",
-            "mcp_gateway": {"port": 1234, "source": "env", "connected": True},
+            "mcp_gateway": {"port": 1234, "source": "env"},
         }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
@@ -1472,7 +1472,7 @@ class TestCheckJobCoding:
         assert keys == {"jobs", "llm_model", "mcp_gateway"}
         gw = next(e for e in result if e["key"] == "mcp_gateway")
         assert gw["level"] == "ok"
-        assert gw["value"] == "connected (port 1234)"
+        assert gw["value"] == "on demand (port 1234)"
         jobs = next(e for e in result if e["key"] == "jobs")
         assert jobs["level"] == "ok"
         assert jobs["value"] == "2 (summarize, translate)"
@@ -1493,20 +1493,21 @@ class TestCheckJobCoding:
 
     @pytest.mark.asyncio
     async def test_known_port_without_a_live_client_is_not_a_problem(self):
-        """Jobs reach MCP tools through the plugin's gateway, and the
-        connection opens on the job's first ``mcp.call`` — a client that has
-        never been built is the design.  The check used to warn here on every
-        fresh session and prescribe "re-run system_health shortly", which no
-        probe could ever clear (the probe never connects)."""
+        """Jobs reach MCP tools through the plugin's gateway, and the modern
+        protocol is stateless — one call opens one short-lived client, so NO
+        connection is ever held and the port is the whole live fact.  The
+        check used to warn here on every fresh session and prescribe "re-run
+        system_health shortly", which no probe could ever clear (the probe
+        never connects)."""
         payload = {"jobs_dir": r"C:\jobs", "jobs": 1, "job_names": ["x"],
                    "llm_model": "m", "error": "",
-                   "mcp_gateway": {"port": 1, "source": "env", "connected": False}}
+                   "mcp_gateway": {"port": 1, "source": "env"}}
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         result = await check_job_coding(client=client)
         gw = next(e for e in result if e["key"] == "mcp_gateway")
         assert gw["level"] == "ok"
-        assert gw["value"] == "connects on demand (port 1)"
+        assert gw["value"] == "on demand (port 1)"
         assert "hint" not in gw
 
     @pytest.mark.asyncio

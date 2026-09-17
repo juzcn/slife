@@ -62,7 +62,7 @@ from slife.tools.base import require_params
 from slife.server_utils import (
     create_plugin_server,
     run_plugin_server,
-    warm_after_handshake,
+    warm_after_ready,
 )
 
 # Hard cap on url_save downloads — a multi-GB public URL must not OOM the
@@ -226,7 +226,7 @@ async def _warm_semantic() -> None:
     await manager.start()
 
 
-warm_after_handshake(mcp, _warm_semantic, name="semantic")
+warm_after_ready(mcp, _warm_semantic, name="semantic")
 
 
 # ═══════════════════════════════════════════════════════════════════════

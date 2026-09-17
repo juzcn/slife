@@ -4,13 +4,16 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from mcp import MCPError
 from mcp.types import CallToolResult, TextContent
+from mcp_types import REQUEST_TIMEOUT
 
-from slife.plugins.mcp_gateway.client import MCPClient
+from slife.plugins.mcp_gateway.client import MCPClient, _LINK_DOWN_CODE
 
 
 # ── MCPClient ───────────────────────────────────────────────────────────────
@@ -235,6 +238,189 @@ class TestMCPClientCallTool:
 
         result = await client.call_tool("noop")
         client._session.call_tool.assert_called_once_with("noop", {})
+
+
+class TestMCPClientLinkRecovery:
+    """A session that dies under a live-looking ``_connected`` is rebuilt once."""
+
+    @staticmethod
+    def _text_result(text: str) -> MagicMock:
+        block = MagicMock()
+        block.text = text
+        result = MagicMock()
+        result.is_error = False
+        result.content = [block]
+        return result
+
+    @staticmethod
+    def _client(session: Any, *, url: str = "http://127.0.0.1:1234/mcp") -> MCPClient:
+        client = MCPClient()
+        client._connected = True
+        client._url = url
+        client._session = session
+        return client
+
+    def test_link_down_code_matches_the_sdk(self):
+        """``_LINK_DOWN_CODE`` is spelled locally (``mcp`` does not re-export
+        it) — pin it to the SDK's own so a renumber fails here, not in prod."""
+        from mcp_types import CONNECTION_CLOSED
+
+        assert _LINK_DOWN_CODE == CONNECTION_CLOSED
+
+    @pytest.mark.asyncio
+    async def test_call_tool_rebuilds_a_dead_session_and_retries(self, monkeypatch):
+        """The observed failure: the first call on a session is fine, the
+        session then dies, and every later call failed forever because
+        ``_connected`` stayed True.  One rebuild turns that into a retry."""
+        dead = MagicMock()
+        dead.call_tool = AsyncMock(
+            side_effect=MCPError(code=_LINK_DOWN_CODE, message="Connection closed"),
+        )
+        client = self._client(dead)
+
+        fresh = MagicMock()
+        fresh.call_tool = AsyncMock(return_value=self._text_result("recovered"))
+        reconnects: list[str] = []
+
+        async def _connect(url: str) -> None:
+            reconnects.append(url)
+            client._session = fresh
+            client._connected = True
+            client._generation += 1
+
+        async def _teardown() -> None:
+            client._connected = False
+
+        monkeypatch.setattr(client, "connect", _connect)
+        monkeypatch.setattr(client, "_teardown_session", _teardown)
+
+        result = await client.call_tool("__mcp_check", {"a": 1})
+
+        assert result == "recovered"
+        assert reconnects == ["http://127.0.0.1:1234/mcp"]
+        dead.call_tool.assert_awaited_once()
+        fresh.call_tool.assert_awaited_once_with("__mcp_check", {"a": 1})
+
+    @pytest.mark.asyncio
+    async def test_other_errors_are_not_retried(self, monkeypatch):
+        """Only a link-down earns the retry: a call the peer may be executing
+        (a timeout) or one it rejected must never be issued twice."""
+        session = MagicMock()
+        session.call_tool = AsyncMock(
+            side_effect=MCPError(code=REQUEST_TIMEOUT, message="Request timed out"),
+        )
+        client = self._client(session)
+        reconnects = AsyncMock()
+        monkeypatch.setattr(client, "connect", reconnects)
+
+        result = await client.call_tool("job-write", {})
+
+        assert result.startswith("Error: Tool 'job-write' failed: MCPError")
+        session.call_tool.assert_awaited_once()
+        reconnects.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_rebuild_reports_the_original_error(self, monkeypatch):
+        """A gateway that is gone for good stays an error string, not a raise
+        and not an endless reconnect loop."""
+        session = MagicMock()
+        session.call_tool = AsyncMock(
+            side_effect=MCPError(code=_LINK_DOWN_CODE, message="Connection closed"),
+        )
+        client = self._client(session)
+
+        async def _teardown() -> None:
+            client._connected = False
+
+        async def _connect(url: str) -> None:
+            raise ConnectionError("refused")
+
+        monkeypatch.setattr(client, "connect", _connect)
+        monkeypatch.setattr(client, "_teardown_session", _teardown)
+
+        result = await client.call_tool("__mcp_check")
+
+        assert result.startswith("Error: Tool '__mcp_check' failed:")
+        assert "Connection closed" in result
+        session.call_tool.assert_awaited_once()  # no second attempt
+
+    @pytest.mark.asyncio
+    async def test_call_after_a_failed_rebuild_still_returns_a_string(self):
+        """A client left disconnected (rebuild failed, or a plain shutdown)
+        reports through the result string — ``call_tool`` never raises."""
+        client = MCPClient()
+        client._connected = False
+
+        result = await client.call_tool("__mcp_check")
+
+        assert result.startswith("Error: Tool '__mcp_check' failed: RuntimeError")
+
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_rebuild_the_session_once(self, monkeypatch):
+        """Two callers that failed on the SAME dead session share one rebuild:
+        the generation guard makes the loser retry instead of reconnecting."""
+        dead = MagicMock()
+        dead.call_tool = AsyncMock(
+            side_effect=MCPError(code=_LINK_DOWN_CODE, message="Connection closed"),
+        )
+        client = self._client(dead)
+        fresh = MagicMock()
+        fresh.call_tool = AsyncMock(return_value=self._text_result("ok"))
+        rebuilds = 0
+
+        async def _connect(url: str) -> None:
+            nonlocal rebuilds
+            rebuilds += 1
+            await asyncio.sleep(0)  # hold the lock across both callers
+            client._session = fresh
+            client._connected = True
+            client._generation += 1
+
+        async def _teardown() -> None:
+            # Deliberately leaves ``_connected`` alone: the gather's
+            # interleaving must not decide which caller gets past
+            # ``_ensure_connected`` — the generation guard is what is under
+            # test here.
+            pass
+
+        monkeypatch.setattr(client, "connect", _connect)
+        monkeypatch.setattr(client, "_teardown_session", _teardown)
+
+        results = await asyncio.gather(
+            client.call_tool("a"), client.call_tool("b"),
+        )
+
+        assert results == ["ok", "ok"]
+        assert rebuilds == 1
+
+    @pytest.mark.asyncio
+    async def test_list_tools_recovers_the_same_way(self, monkeypatch):
+        dead = MagicMock()
+        dead.list_tools = AsyncMock(
+            side_effect=MCPError(code=_LINK_DOWN_CODE, message="Connection closed"),
+        )
+        client = self._client(dead)
+        tool = MagicMock()
+        tool.name = "t"
+        tool.description = "d"
+        tool.input_schema = {}
+        fresh = MagicMock()
+        fresh.list_tools = AsyncMock(return_value=MagicMock(tools=[tool]))
+
+        async def _connect(url: str) -> None:
+            client._session = fresh
+            client._connected = True
+            client._generation += 1
+
+        async def _teardown() -> None:
+            client._connected = False
+
+        monkeypatch.setattr(client, "connect", _connect)
+        monkeypatch.setattr(client, "_teardown_session", _teardown)
+
+        tools = await client.list_tools()
+
+        assert [t["name"] for t in tools] == ["t"]
 
 
 class TestMCPClientPing:
@@ -528,6 +714,63 @@ class TestMCPClientConnect:
             assert client.is_connected is False
             # One attempt only — the cancel propagated instead of retrying.
             assert mock_transport.call_count == 1
+
+
+class TestMCPClientListenStream:
+    """A modern peer's listen stream exists only where a handler does.
+
+    The stream is the client's one piece of connection state (the protocol is
+    stateless: no session id, no standalone channel), and a client with no
+    handler could not consume an event from it.
+    """
+
+    @staticmethod
+    def _live_modern(monkeypatch) -> MCPClient:
+        """A connected client whose peer negotiated the modern era."""
+        monkeypatch.setattr(
+            "slife.plugins.mcp_gateway.client.peer_era",
+            MagicMock(return_value="modern"),
+        )
+        monkeypatch.setattr(
+            "slife.plugins.mcp_gateway.client.watch_tools_changed",
+            MagicMock(return_value=asyncio.sleep(3600)),
+        )
+        client = MCPClient()
+        client._connected = True
+        client._session = MagicMock()
+        client._url = "http://127.0.0.1:1234/mcp"
+        return client
+
+    @pytest.mark.asyncio
+    async def test_no_handler_opens_no_stream(self, monkeypatch):
+        client = self._live_modern(monkeypatch)
+
+        client._ensure_watch_task()
+
+        assert client._watch_task is None
+
+    @pytest.mark.asyncio
+    async def test_handler_assigned_after_connect_opens_the_stream(self, monkeypatch):
+        """The host wires its handler AFTER ``connect`` — the stream follows
+        the handler, so it must still open then."""
+        client = self._live_modern(monkeypatch)
+
+        client.on_notification = AsyncMock()
+
+        assert client._watch_task is not None
+        await client.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_legacy_peer_gets_no_stream(self, monkeypatch):
+        client = self._live_modern(monkeypatch)
+        monkeypatch.setattr(
+            "slife.plugins.mcp_gateway.client.peer_era",
+            MagicMock(return_value="legacy"),
+        )
+
+        client.on_notification = AsyncMock()
+
+        assert client._watch_task is None
 
 
 class TestMCPClientNotificationHandler:

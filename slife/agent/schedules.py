@@ -384,7 +384,7 @@ async def schedule_startup_sweep(service) -> None:
     them.
     """
     # The sweep must read the client only after every plugin has converged
-    # (memfiles is confirmed serving once its MCP initialize handshake
+    # (memfiles is confirmed serving once its connect-time era negotiation
     # completed at spawn).  Event-driven, no polling, no timing guess.
     await service.wait_startup_settled()
     client = _memfiles_client(service)

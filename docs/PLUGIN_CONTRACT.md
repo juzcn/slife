@@ -291,7 +291,7 @@ A plugin's `server.py` must:
    so it is findable by `tool_search` (born `unloaded`: searchable, not
    injected, until `func-tool-load`).
    (called programmatically via `call_tool("__…")`, never exposed to the LLM);
-   heavy post-handshake work goes through `warm_after_handshake`;
+   heavy post-readiness work goes through `warm_after_ready`;
 5. be importable: `python -m <module>`.
 
 There is no base class and no SDK — the contract is the `server.py` +

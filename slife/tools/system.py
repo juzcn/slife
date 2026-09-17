@@ -807,11 +807,12 @@ async def check_job_coding(client=None) -> list[dict]:
         entries.append(_entry("job-coding", "ok", "llm_model", model))
 
     # Jobs reach MCP tools through this gateway; without a port those jobs
-    # fail while pure-computation ones keep working.  A known port with no
-    # live client is the DESIGN, not degradation: the connection opens on
-    # the job's first ``mcp.call``.  Only a missing port is a problem, and
-    # no health probe can change it (the probe never connects), so the
-    # remedy never claims a re-run will.
+    # fail while pure-computation ones keep working.  Holding no connection
+    # is the DESIGN, not degradation: the modern protocol is stateless, so
+    # each ``mcp.call`` opens its own short-lived client against this port
+    # and the port is the whole live fact.  Only a missing port is a
+    # problem, and no health probe can change it (the probe never connects),
+    # so the remedy never claims a re-run will.
     gw = data.get("mcp_gateway")
     if isinstance(gw, dict):
         port = gw.get("port")
@@ -826,12 +827,9 @@ async def check_job_coding(client=None) -> list[dict]:
                 "publishes its port when it starts, so restart slife to "
                 "respawn it.",
             ))
-        elif gw.get("connected"):
-            entries.append(_entry("job-coding", "ok", "mcp_gateway",
-                                  f"connected (port {port})"))
         else:
             entries.append(_entry("job-coding", "ok", "mcp_gateway",
-                                  f"connects on demand (port {port})"))
+                                  f"on demand (port {port})"))
     return entries
 
 

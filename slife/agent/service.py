@@ -353,7 +353,7 @@ class AgentService:
         # ── Plugin startup convergence ──────────────────────────────
         # The service opens for user input only after every attempted
         # plugin spawn has converged (ready / skipped / failed — the
-        # initialize handshake either completed or the spawn failed).
+        # connect either negotiated its era or the spawn failed).
         # The TUI input and the inbox consumer gate on this.
         # Event-driven: set by the last spawn's ``finally``, never polled.
         self._startup_plugins: set[str] = set()
@@ -726,6 +726,16 @@ class AgentService:
         bhv = self._plugin_behaviors.get(spec.name)
         if bhv is not None and bhv.after_ready is not None:
             await bhv.after_ready(lc)
+        if not spec.gateway:
+            # Second edge of the gateway↔jobs port handshake (the gateway's
+            # own after-ready glue is the first): push on every OTHER
+            # plugin's ready, so whichever side readies last completes it.
+            # Spawn order used to decide this — job-coding readied ~0.5s
+            # after the gateway and silently lost the port, and a job-coding
+            # watchdog restart re-opened the same hole.  Guarded no-op all
+            # the way down (no gateway port / no live jobs client / an
+            # unchanged port), so the extra calls cost one round trip.
+            await self._push_gateway_port_to_jobs(self._gateway_lifecycle())
         self._arm_watchdog(spec, lc)
         return PluginStartStatus.STARTED
 
@@ -1103,8 +1113,8 @@ class AgentService:
             self._plugins[name]._module = module
             os.environ[plugin_port_env(name)] = str(process.port)
 
-            # Readiness (MCP plugin contract): create_client() ran the
-            # initialize handshake — completing it is the plugin's ready
+            # Readiness (MCP plugin contract): create_client() negotiated
+            # the peer's era — completing that exchange is the plugin's ready
             # declaration; record it.
             self._plugins[name].mark_initialized()
 
@@ -1157,11 +1167,14 @@ class AgentService:
         """Best-effort push of the gateway's port to the job-coding plugin.
 
         job-coding's ``mcp`` handle resolves the gateway port lazily, but a
-        child's spawn-time env snapshot never changes — a gateway restarted
-        on a new port would leave live jobs pointing at the old endpoint.
-        Re-pointing via the internal tool fixes that.  Non-fatal by design:
-        job-coding may not be up yet (its rebuild inherits the current env;
-        a later gateway event re-pushes) and a dead client just logs.
+        child's spawn-time env snapshot never changes — the gateway's port is
+        not known when its siblings spawn, and a gateway restarted on a new
+        port would leave live jobs pointing at the old endpoint.  Pushing
+        through the internal tool is the only live path, so it is evaluated
+        from BOTH edges of the handshake (``_wire_mcp_glue`` on the gateway's
+        ready, ``_start_plugin_uniform`` on every other plugin's) and is
+        idempotent at the far end (``set_port`` no-ops on an unchanged port).
+        Non-fatal by design: a dead client just logs.
         """
         jobs = self._plugins.get("job-coding")
         client = getattr(jobs, "client", None)

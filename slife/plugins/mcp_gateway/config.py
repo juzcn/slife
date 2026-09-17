@@ -22,8 +22,9 @@ are ordinary ``uvx mcp-openapi-proxy`` entries tagged
 ``source.type == "rest_api"``.
 
 The top-level ``embeddings`` section is the **fallback** embedding config: a
-connecting host may pass its own endpoint via the standard ``initialize``
-handshake's ``clientInfo``, which wins when present (see
+connecting host may pass its own endpoint in the connect exchange's
+``clientInfo``/capabilities (modern peers carry it in the ``server/discover``
+``_meta``, legacy ones on ``initialize``), which wins when present (see
 :mod:`mcp_gateway.embeddings`).
 """
 

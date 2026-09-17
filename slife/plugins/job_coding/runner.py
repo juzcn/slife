@@ -28,7 +28,6 @@ function's ``__name__``/docstring/annotations — standard MCP tool norms.
 
 from __future__ import annotations
 
-import asyncio
 import contextvars
 import functools
 import inspect
@@ -94,7 +93,7 @@ class _LLMClientRef:
 
     Job tools are registered in the lifespan so the harness's first
     ``tools/list`` already lists them — and the lifespan must stay
-    handshake-fast.  Building the real ``LLMClient`` imports the provider
+    connect-fast.  Building the real ``LLMClient`` imports the provider
     SDK (a multi-second cold import that, on a slow machine, pushed
     job-coding past the spawn guard).  The client is therefore deferred
     until the job actually calls ``llm.chat``: :meth:`get` builds it once
@@ -199,14 +198,22 @@ llm = _LLMProxy()
 # persistent connection pool — bare MCP, on demand.  The gateway's port is
 # pushed by the host on every gateway connect/reconnect
 # (``__set_mcp_gateway_port``), with the spawn-time env var
-# ``SLIFE_MCP_GATEWAY_PORT`` as a fallback.  The CONNECTION is lazy (opened
-# by the first ``mcp.call``, never at plugin start); the port itself is a
-# readable fact at any time — the harness's health probe resolves it
-# without connecting.  The gateway's INTERNAL tool
+# ``SLIFE_MCP_GATEWAY_PORT`` as a fallback; the port itself is a readable
+# fact at any time — the harness's health probe resolves it without
+# connecting.  The gateway's INTERNAL tool
 # ``__mcp_call_tool(server, tool_name, arguments)`` reaches any tool
 # on any connected external server, including tools never loaded into the
 # main agent's tool registry (only ``auto_load`` servers are; unloaded tool
 # names are probed at authoring time via the host's ``mcp_list_tools``).
+#
+# NO CLIENT IS HELD between calls.  A 2026-07-28 (modern) MCP connection is
+# stateless — no session id, no handshake, per-request ``_meta``, and the
+# transport opens no standalone channel without a session id — so a session
+# object buys one ``server/discover`` and nothing else.  Holding one cost a
+# failure mode instead: a session that died under a live-looking
+# ``is_connected`` failed every later call for the plugin's lifetime.  One
+# ``mcp.call`` is one short-lived client, which is also why no reconnect
+# bookkeeping lives here.
 
 #: Host env var the generic spawn publishes for a plugin's port
 #: (via ``plugin_port_env("mcp-gateway")`` — uppercase, dashes→underscores).
@@ -215,27 +222,15 @@ def _gateway_port_env() -> str:
 
     return plugin_port_env("mcp-gateway")
 
-#: Per-process gateway connection state.  Nothing is established until the
-#: first ``mcp.call``; the host push re-points it on gateway restart.
-#: ``_gateway_port`` holds the port the host pushed (or an env-resolved port
-#: cached by a successful connect) — :meth:`_resolve_port` is what adds the
-#: env fallback, so a probe never reads this global alone.
+#: Connect attempts for one ``mcp.call`` — a count, so it stays local.  The
+#: default startup window (~10 s) exists to outlast a plugin still coming up;
+#: this caller is one-shot against a gateway that has been serving for a
+#: while, and its NEXT call retries anyway, so it waits only long enough to
+#: ride out a watchdog restart.
+_CALL_CONNECT_ATTEMPTS = 3
+
 _gateway_port: str | None = None     # last known port ("push" or "env")
 _gateway_port_source: str = ""       # "push" | "env" | "" — diagnostic only
-_gateway_client: "Any | None" = None  # MCPClient, lazily built
-_gateway_lock: asyncio.Lock | None = None
-
-
-def _gateway_lock_ref() -> asyncio.Lock:
-    """Return the gateway connect lock, created lazily.
-
-    Created on first use (rather than at import) so the lock binds to the
-    plugin's running event loop, not an import-time loop.
-    """
-    global _gateway_lock
-    if _gateway_lock is None:
-        _gateway_lock = asyncio.Lock()
-    return _gateway_lock
 
 
 class _GatewayProxy:
@@ -257,8 +252,7 @@ class _GatewayProxy:
         job-coding child spawned after the gateway inherits it, and the
         host's push only reaches a client that is already up.  Shared by
         :attr:`port` / :attr:`port_source` (the health facts) and
-        :meth:`_client` (the connect), so what a probe reports is exactly
-        what a call uses.
+        :meth:`call`, so what a probe reports is exactly what a call uses.
         """
         if _gateway_port:
             return _gateway_port, _gateway_port_source
@@ -277,83 +271,16 @@ class _GatewayProxy:
         """Where the port came from: ``"push"``, ``"env"``, or ``""``."""
         return self._resolve_port()[1]
 
-    @property
-    def connected(self) -> bool:
-        """True when a gateway client is live (never connects).
-
-        Reads the cached client's transport state only — the lazy connect
-        stays lazy under health probes.
-        """
-        client = _gateway_client
-        if client is None:
-            return False
-        try:
-            return bool(client.is_connected)
-        except Exception:
-            return False
-
     async def set_port(self, port: int | None) -> None:
         """Record the gateway port pushed by the host (gateway (re)connect).
 
-        A changed port invalidates the cached client — the next call
-        negotiates a fresh transport against the new endpoint.  An
-        unchanged port is a no-op.  ``None`` clears the pushed port.
+        Nothing to re-point or tear down: the next call resolves the port
+        afresh, so a gateway restarted on a new port is followed by
+        construction.  ``None`` clears the pushed port.
         """
-        global _gateway_port, _gateway_port_source, _gateway_client
-        new = str(port) if port else None
-        async with _gateway_lock_ref():
-            if new == _gateway_port and _gateway_port_source == "push":
-                return
-            client = _gateway_client
-            _gateway_client = None
-            _gateway_port = new
-            _gateway_port_source = "push" if new else ""
-            if client is not None:
-                try:
-                    await client.disconnect()
-                except Exception:
-                    logger.debug("job_mcp_client_disconnect_error", exc_info=True)
-
-    async def _client(self) -> "Any | None":
-        """Return a connected gateway client, building one on first use.
-
-        Port resolution is LAZY (first ``mcp.call``): the host-pushed port
-        wins; ``SLIFE_MCP_GATEWAY_PORT`` (the env snapshot inherited at
-        spawn) is the fallback when nothing was pushed.  Returns ``None`` —
-        with a warning — when no port is known or the connect fails; the
-        caller folds that into a deterministic error string.
-        """
-        global _gateway_client, _gateway_port, _gateway_port_source
-        async with _gateway_lock_ref():
-            client = _gateway_client
-            if client is not None:
-                try:
-                    if client.is_connected:
-                        return client
-                except Exception:
-                    pass
-                _gateway_client = None
-                client = None
-
-            port, source = self._resolve_port()
-            if not port:
-                logger.warning("job_mcp_no_gateway_port")
-                return None
-
-            try:
-                from slife.plugins.mcp_gateway.client import MCPClient
-
-                admin = MCPClient()
-                await admin.connect(f"http://127.0.0.1:{port}/mcp")
-            except Exception as e:
-                _gateway_client = None
-                logger.warning("job_mcp_connect_failed port=%s err=%s", port, e)
-                return None
-            _gateway_client = admin
-            _gateway_port = port
-            _gateway_port_source = source
-            logger.info("job_mcp_connected port=%s source=%s", port, source)
-            return admin
+        global _gateway_port, _gateway_port_source
+        _gateway_port = str(port) if port else None
+        _gateway_port_source = "push" if port else ""
 
     async def call(
         self,
@@ -369,13 +296,30 @@ class _GatewayProxy:
         or a clear ``Error: ...`` string when the gateway is unreachable /
         the server is disconnected or disabled / the tool is unknown —
         never raises.  Jobs branch on the ``"Error"`` prefix.
+
+        One call, one client, torn down again: the protocol is stateless, so
+        nothing outlives the call and nothing can go stale between them.
         """
-        client = await self._client()
-        if client is None:
+        port, _ = self._resolve_port()
+        if not port:
+            logger.warning("job_mcp_no_gateway_port")
             return (
                 "Error: mcp.call — no connection to the mcp-gateway plugin "
-                "(port unknown or connect failed). It is published on gateway "
-                "start; check that mcp-gateway is running."
+                "(port unknown). It is published on gateway start; check that "
+                "mcp-gateway is running."
+            )
+        from slife.plugins.mcp_gateway.client import MCPClient
+
+        client = MCPClient()
+        try:
+            await client.connect(
+                f"http://127.0.0.1:{port}/mcp", attempts=_CALL_CONNECT_ATTEMPTS,
+            )
+        except Exception as e:
+            logger.warning("job_mcp_connect_failed port=%s err=%s", port, e)
+            return (
+                f"Error: mcp.call('{server}', '{tool}') failed: "
+                f"{type(e).__name__}: {e}"
             )
         try:
             return await client.call_tool(
@@ -386,7 +330,7 @@ class _GatewayProxy:
                     "arguments": json.dumps(args, ensure_ascii=False) if args else "{}",
                 },
             )
-        except Exception as e:
+        except Exception as e:  # call_tool returns its own errors; belt and braces
             logger.warning(
                 "job_mcp_call_failed server=%s tool=%s err=%s",
                 server, tool, e,
@@ -395,6 +339,11 @@ class _GatewayProxy:
                 f"Error: mcp.call('{server}', '{tool}') failed: "
                 f"{type(e).__name__}: {e}"
             )
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                logger.debug("job_mcp_client_disconnect_error", exc_info=True)
 
 
 mcp = _GatewayProxy()

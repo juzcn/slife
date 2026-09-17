@@ -42,10 +42,10 @@ Readiness (protocol negotiation)
   store) and
   nothing that could stall the loop while the wrapper is connecting — a
   GIL-holding model load, slow I/O, or long connect belongs in
-  :func:`warm_after_handshake`, never in the lifespan.  A failing lifespan
-  before the handshake reports the plugin FAILED (its watchdog backs off
+  :func:`warm_after_ready`, never in the lifespan.  A failing lifespan
+  before the negotiation reports the plugin FAILED (its watchdog backs off
   and retries); the port signal fires only when the app is ready, so the
-  wrapper's first ``initialize`` always lands on a serving server.
+  wrapper's first connect exchange always lands on a serving server.
   Every built-in plugin shares this complete lifecycle shape (all declare a
   lifespan).  Dependencies that are NOT required to serve (external MCP
   servers, ngrok tunnel, MQTT broker, login state, media providers) are
@@ -294,7 +294,7 @@ async def flush_tools_changed(notifier: "ToolsChangedNotifier") -> None:
     await notifier.flush()
 
 
-class _WarmAfterHandshake(Middleware):
+class _WarmAfterReady(Middleware):
     """Middleware that runs a background warm-up after the first tools/list."""
 
     def __init__(self, factory: "Callable[[], Awaitable[None]]", delay: float, name: str):
@@ -318,7 +318,7 @@ class _WarmAfterHandshake(Middleware):
             logger.debug("%s_warm_failed", self._name, exc_info=True)
 
 
-def warm_after_handshake(
+def warm_after_ready(
     mcp,
     factory: "Callable[[], Awaitable[None]]",
     *,
@@ -345,7 +345,7 @@ def warm_after_handshake(
     guard could time out a perfectly healthy plugin on a slow machine, so
     the default delay is generous (5s) rather than a tight 0.25s.
     """
-    mcp.add_middleware(_WarmAfterHandshake(factory, delay, name))
+    mcp.add_middleware(_WarmAfterReady(factory, delay, name))
 
 
 # FastMCP-specific loggers that should also be silenced.
