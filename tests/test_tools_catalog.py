@@ -84,6 +84,48 @@ async def test_upsert_tool_and_effective_truth_table(store):
 
 
 @pytest.mark.asyncio
+async def test_set_source_enabled_moves_the_flag_and_nothing_else(store):
+    """An enable/disable flip writes ``enabled`` — the model's column is not
+    part of it.
+
+    The row survives being switched off (a disabled server keeps its tools),
+    it reports ``disabled`` rather than looking merely down, and a tool the
+    model had loaded is still loaded when the server comes back.
+    """
+    await store.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="loaded")
+    await store.upsert_tool("svcA__y", category="mcp", source_id="svcA", status="unloaded")
+
+    moved = await store.set_source_enabled("svcA", False)
+    assert moved == 2
+    x = await store.get_tool("svcA__x")
+    assert x["enabled"] == 0
+    assert x["status"] == "loaded"                      # untouched
+    eff = {r["name"]: r["eff"] for r in await store.scan_effective()}
+    assert eff["svcA__x"] == EFF_DISABLED               # switched off…
+    assert eff["svcA__y"] == EFF_DISABLED
+    assert await store.loaded_names() == []             # …so not injectable
+
+    await store.set_source_enabled("svcA", True)
+    x = await store.get_tool("svcA__x")
+    assert x["enabled"] == 1
+    assert x["status"] == "loaded"                      # the round trip cost nothing
+    assert set(await store.loaded_names()) == {"svcA__x"}
+
+
+@pytest.mark.asyncio
+async def test_a_switched_off_server_is_disabled_not_error(store):
+    """``disabled`` outranks ``error``: a server that was down when it was
+    switched off is off, and that is the fact the model needs to act on."""
+    await store.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="loaded")
+    await store.mark_source_error("svcA")
+    await store.set_source_enabled("svcA", False)
+
+    eff = {r["name"]: r["eff"] for r in await store.scan_effective()}
+    assert eff["svcA__x"] == EFF_DISABLED
+    assert (await store.get_tool("svcA__x"))["status"] == EFF_ERROR   # the fact is kept
+
+
+@pytest.mark.asyncio
 async def test_mark_and_reset_source_error(store):
     """The connect/disconnect cycle as the store sees it."""
     for name, status in (("svcA__x", "loaded"), ("svcA__y", "unloaded")):

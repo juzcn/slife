@@ -1247,21 +1247,26 @@ class AgentService:
 
             configured: set[str] = set()
             auto_servers: set[str] = set()
+            #: The config's on/off switch per server — the ``enabled`` column,
+            #: which moves independently of the liveness verdict.
+            enabled_servers: dict[str, bool] = {}
             if isinstance(servers, list):
                 for s in servers:
                     if not (isinstance(s, dict) and s.get("name")):
                         continue
                     configured.add(s["name"])
+                    enabled_servers[s["name"]] = s.get("enabled") is not False
                     if s.get("enabled") is not False and s.get("auto_load") is True:
                         auto_servers.add(s["name"])
 
-            # 1 — the connectivity verdict, projected onto the tool rows: a
-            # server that is NOT up has its tools marked ``error`` (so they
-            # leave the injection set at once), a (re)connected one has that
-            # mark cleared.  There is no server table to carry this — the row
-            # itself is where "your server is unusable" lives now.
+            # 1 — the state of every configured server, projected onto its tool
+            # rows: the on/off switch onto ``enabled``, the liveness verdict
+            # onto ``status``.  There is no server table to carry either — the
+            # row itself is where "switched off" and "not up" live now.
             if not self.is_subagent and self._catalog is not None:
-                await self._mark_server_connectivity(client, configured)
+                await self._mark_server_connectivity(
+                    client, configured, enabled_servers,
+                )
 
             # 2 — auto_load servers: full-diff register + catalog upsert.
             for name in auto_servers:
@@ -1330,17 +1335,25 @@ class AgentService:
             logger.debug("catalog_plugin_down_mark_failed name=%s err=%s", name, e)
 
     async def _mark_server_connectivity(
-        self, client, configured: set[str],
+        self, client, configured: set[str], enabled: dict[str, bool] | None = None,
     ) -> None:
-        """Project each configured server's liveness onto its tool rows.
+        """Project each configured server's state onto its tool rows.
 
-        The live state comes from the wrapper's ``__check``, whose verdict is
-        ``tools_ok``: the server answered a ``tools/list`` and its result is
-        still held.  A server that is not — down, never listed, or disabled in
-        the config — has its tools marked ``error``, and a working one has that
-        mark cleared (leaving any per-tool ``loaded`` state the user set).
-        This is the whole liveness story now: there is no server table to join,
-        so the verdict has to land on the rows.
+        Two independent facts land here, and they are deliberately different
+        columns:
+
+        - **``enabled``** — the server's own on/off switch in tools.json5.  A
+          server switched off keeps its rows and reports ``disabled``; the
+          write touches only that flag, so the model's loaded/unloaded
+          decision survives the round trip (see ``set_source_enabled``).
+        - **``status``** — the liveness verdict from the wrapper's ``__check``:
+          ``tools_ok`` means the server answered a ``tools/list`` and its
+          result is still held.  A server that is not — down, never listed —
+          has its tools marked ``error``; a working one has that mark cleared.
+
+        A switched-off server gets no verdict at all: it is not down, so
+        marking its tools ``error`` would be a lie the model could not tell
+        from the real thing.
         """
         catalog = self._catalog
         if catalog is None:
@@ -1357,8 +1370,13 @@ class AgentService:
         for s in (data.get("servers") or []) if isinstance(data, dict) else []:
             if isinstance(s, dict) and s.get("name") and s.get("tools_ok"):
                 live.add(s["name"])
+        switches = enabled or {}
         for name in sorted(configured):
             try:
+                if switches.get(name, True) is False:
+                    await catalog.set_source_enabled(name, False)
+                    continue
+                await catalog.set_source_enabled(name, True)
                 if name in live:
                     await catalog.mark_server_connected(name)
                 else:
@@ -1379,11 +1397,23 @@ class AgentService:
         the stale embedding (the drainer re-embeds); ``on_saved`` is the
         caller's job so a batch wakes the drainer once.  New rows land
         ``unloaded``: registering a tool never loads it.
+
+        Each row also carries its server's on/off switch — tools.json5 is the
+        authority for that column, and a mirrored row that omitted it would
+        read as merely ``down`` when its server is in fact switched off.
         """
         catalog = self._catalog
         if catalog is None:
             return
         import slife.tools.catalog_service as _cs
+
+        try:
+            from slife.plugins.mcp_gateway import config as _gw_cfg
+            _entry = _gw_cfg.get_server(server_name) or {}
+            server_enabled = _entry.get("enabled") is not False
+        except Exception:
+            # Unreadable config is not a reason to call a server disabled.
+            server_enabled = True
 
         for t in tools:
             tname = t.get("name")
@@ -1401,6 +1431,7 @@ class AgentService:
                 description=t.get("description", "") or "",
                 schema=descriptor,
                 category=category,
+                enabled=server_enabled,
             )
 
     async def _mirror_on_demand_server_tools(self, server_name: str) -> None:

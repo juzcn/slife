@@ -162,7 +162,9 @@ class ToolCatalogService:
 
     # ── Session lifecycle ──────────────────────────────────────────
 
-    def _row_for(self, tool: "Tool") -> dict:
+    def _row_for(
+        self, tool: "Tool", *, disabled_servers: frozenset[str] = frozenset(),
+    ) -> dict:
         """The catalog row for one registered tool — the ONE row builder.
 
         The boot seed and a plugin's (re)connect both come through here, so a
@@ -176,29 +178,53 @@ class ToolCatalogService:
             "category": catalog_category(tool),
             "source_id": _source_id(tool),
             "schema": tool_descriptor(tool),
-            "enabled": self._row_enabled(tool),
+            "enabled": self._row_enabled(tool, disabled_servers),
             # Only a brand-new row sees this — reconcile applies status on
             # INSERT alone, which is exactly the keep-existing rule.
             "status": self.default_status(name),
         }
 
-    def _row_enabled(self, tool: "Tool") -> bool | None:
-        """The row's ``enabled``: config for a local tool, ``None`` for external.
+    def _row_enabled(
+        self, tool: "Tool", disabled_servers: frozenset[str] = frozenset(),
+    ) -> bool | None:
+        """The row's ``enabled`` — always tools.json5's answer.
 
-        An external tool's availability is its own ``status`` (a down server),
-        never a config flag.  A job and a plugin's own tool are registered
-        whatever the config says, so their section's disable is mirrored here;
-        a BUILTIN tool disabled in the config is never registered at all, so
-        whatever reaches this method is enabled by definition.
+        There is no per-tool enable anywhere in the system: a family's section
+        decides, and for an external server that decision is the SERVER's
+        switch (all of its tools move together).  A job / plugin tool mirrors
+        its section's disable; a BUILTIN tool disabled in the config is never
+        registered at all, so whatever reaches this method is enabled by
+        definition.  ``None`` only for a tool whose owner the config does not
+        name — "not known to be off" is not "off".
+
+        *disabled_servers* is passed in (not looked up per tool) because one
+        pass can carry a four-figure number of an external server's tools, and
+        a per-tool config read would re-parse ``tools.json5`` per row.
         """
         if _is_external(tool):
-            return None
+            server = _source_id(tool)
+            if not server:
+                return None
+            return server not in disabled_servers
         category = catalog_category(tool)
         if category == "job":
             return _tool_name(tool) not in self._disabled_jobs
         if category == "plugin":
             return _tool_name(tool) not in self._disabled_plugin
         return True
+
+    @staticmethod
+    def _disabled_servers() -> frozenset[str]:
+        """Servers switched OFF in ``tools.json5`` — one read per sync pass."""
+        try:
+            from slife.plugins.mcp_gateway import config as _cfg
+            return frozenset(
+                name for name, entry in _cfg.servers().items()
+                if isinstance(entry, dict) and entry.get("enabled") is False
+            )
+        except Exception:
+            # An unreadable config is not a reason to call every server off.
+            return frozenset()
 
     async def sync_system_tools(
         self, tools: Sequence["Tool"], *, source: str = "",
@@ -225,7 +251,11 @@ class ToolCatalogService:
         """
         if not self.write_owner:
             return []
-        rows = [self._row_for(t) for t in tools if _tool_name(t)]
+        disabled_servers = self._disabled_servers()
+        rows = [
+            self._row_for(t, disabled_servers=disabled_servers)
+            for t in tools if _tool_name(t)
+        ]
         result = await self._store.reconcile(rows)
         changed = list(result["schema_changed"])
         if source:
@@ -419,6 +449,7 @@ class ToolCatalogService:
         description: str,
         schema: str,
         category: str = "mcp",
+        enabled: bool | None = None,
     ) -> bool:
         """Upsert a server-backed tool row (schema-change detection → re-embed).
 
@@ -426,6 +457,10 @@ class ToolCatalogService:
         ``preload: true``, which seeds the whole set loaded — while an existing
         row keeps whatever the model decided.  For everything else
         ``func-tool-load`` is the only way into the injection set.
+
+        ``enabled`` is the server's own on/off switch (``None`` = no opinion);
+        it moves independently of ``status`` — see
+        :meth:`set_source_enabled`.
         """
         return await self._store.upsert_tool(
             name,
@@ -433,60 +468,68 @@ class ToolCatalogService:
             category=category,
             source_id=server,
             schema=schema,
-            enabled=None,
+            enabled=enabled,
             status=self.default_status(name, server=server),
         )
 
+    async def set_source_enabled(self, source: str, enabled: bool) -> int:
+        """Mirror a server's on/off switch onto its rows' ``enabled`` flag.
+
+        The sync's only write to this column, and a deliberately narrow one:
+        it never touches ``status`` (the model's loaded/unloaded decision
+        survives the round trip) and never deletes rows (a disabled server
+        keeps its tools, showing ``disabled`` — a state of its own, so the
+        model can tell "switched off" from "down", which is ``error``).
+        """
+        if not self.write_owner:
+            return 0
+        return await self._store.set_source_enabled(source, enabled)
+
     async def mark_source_error(self, source: str) -> int:
-        """Mark one server's tools ``error`` — the server is unusable.
+        """Flag one owner's tools ``unavailable`` — it is unusable right now.
 
         The single verdict for every unavailable case: not yet connected at
         startup, disconnected, a failed connect, or a dead gateway child.
-        ``error`` is a state of its own, so the row still says the tool
-        belongs to a server that is simply not up.
+        Effective status becomes ``error`` — a state of its own, so the row
+        still says the tool belongs to a server that is simply not up — while
+        the loaded/unloaded the model chose stays on the row untouched.
         """
         if not self.write_owner:
             return 0
-        return await self._store.mark_source_error(source)
+        return await self._store.mark_source_unavailable(source)
 
     async def mark_all_external_error(self) -> int:
-        """Mark EVERY external tool ``error`` — nothing is live right now.
+        """Flag EVERY external tool ``unavailable`` — nothing is live yet.
 
         Used both at catalog init (no server has connected yet) and when the
-        gateway child dies (all of its servers are unreachable at once).
+        gateway child dies (all of its servers are unreachable at once).  It
+        flags, never rewrites: the load state a previous session persisted is
+        what makes the catalog worth restoring at all.
         """
         if not self.write_owner:
             return 0
-        return await self._store.mark_all_external_error()
+        return await self._store.mark_all_external_unavailable()
 
     async def mark_server_connected(self, source: str) -> int:
-        """A server (re)connected — its ``error`` tools become ``unloaded``.
+        """A server (re)connected — clear its tools' verdict.
 
-        Only ``error`` rows move: a tool the user had loaded keeps that state
-        across a reconnect, because the reconnect clears the error mark
-        rather than resetting the whole server.
+        Nothing else moves: a tool the model had loaded is still ``loaded``,
+        because the verdict was never written into the load state.
         """
         if not self.write_owner:
             return 0
-        return await self._store.reset_source_status(source, STATUS_UNLOADED)
+        return await self._store.clear_source_unavailable(source)
 
     async def mark_plugin_connected(self, plugin: str) -> int:
-        """A plugin (re)connected — its ``error`` rows return to their default.
+        """A plugin (re)connected — clear its tools' verdict.
 
-        The per-row default is the one difference from
-        :meth:`mark_server_connected`: a server's tools share one status, while
-        each plugin tool carries its own (whitelisted / ``autoload`` → loaded,
-        else unloaded).  Only ``error`` rows move, so a tool the model had
-        loaded keeps that state across a plugin restart.
+        Identical to :meth:`mark_server_connected`: with the verdict in its own
+        column there is no per-tool default to restore, so a plugin restart
+        leaves every row saying exactly what it said before.
         """
         if not self.write_owner or not plugin:
             return 0
-        names = await self._store.names_for_sources([plugin])
-        if not names:
-            return 0
-        return await self._store.reset_source_error_rows(
-            plugin, {n: self.default_status(n) for n in names},
-        )
+        return await self._store.clear_source_unavailable(plugin)
 
     async def purge_source(self, source: str) -> int:
         """Drop every row of a server or plugin that is gone (main-owner only).

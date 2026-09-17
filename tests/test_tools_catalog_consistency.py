@@ -18,7 +18,7 @@ import pytest_asyncio
 
 from slife.config import Config
 from slife.tools.base import Tool
-from slife.tools.catalog import CatalogStore
+from slife.tools.catalog import CatalogStore, effective_from_row
 from slife.tools.catalog_service import ToolCatalogService
 from slife.tools.whitelist import ALWAYS_LOADED
 
@@ -332,6 +332,54 @@ async def test_connectivity_projection_follows_check(_isolate, sample_config):
         states["weather"] = True
         await service._mark_server_connectivity(client, {"serper", "weather"})
         assert (await store.get_tool("weather__temp"))["status"] == "unloaded"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_switching_a_server_off_keeps_its_rows_and_the_load_state(
+    _isolate, sample_config,
+):
+    """The reconcile's two columns move independently.
+
+    ``enabled`` mirrors tools.json5's switch; ``status`` carries the liveness
+    verdict.  A switched-off server is NOT a down one — marking it ``error``
+    would be a lie the model could not tell from the real thing — and its rows
+    stay put, so re-enabling restores a tool set that remembers what was
+    loaded.
+    """
+    from slife.agent.service import AgentService
+
+    store = CatalogStore(_isolate / "tools.db")
+    await store.open()
+    try:
+        svc = ToolCatalogService(store, write_owner=True)
+        await _mirror_server(svc, "serper", ["search"])
+        await store.set_status("serper__search", "loaded")
+
+        service = AgentService(sample_config)
+        service._catalog = svc
+        service._catalog_semantic = None
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def _check(*_a, **_kw):
+            return json.dumps({"servers": [{"name": "serper", "tools_ok": False}]})
+
+        client.call_tool = _check
+
+        await service._mark_server_connectivity(client, {"serper"}, {"serper": False})
+
+        row = await store.get_tool("serper__search")
+        assert row["enabled"] == 0            # the switch
+        assert row["status"] == "loaded"      # the model's decision, untouched
+        assert effective_from_row(row) == "disabled"
+
+        # Switched back on while still down: now it IS the liveness verdict.
+        await service._mark_server_connectivity(client, {"serper"}, {"serper": True})
+        row = await store.get_tool("serper__search")
+        assert row["enabled"] == 1
+        assert row["status"] == "error"
     finally:
         await store.close()
 

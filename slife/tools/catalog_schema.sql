@@ -11,14 +11,18 @@
 --  这个库是派生数据（行来自 tool registry / tools.json5 / skills 目录 / 插件子进程），
 --  所以 CHECK 变了就删库重建，不原地升级 —— 旧文件由 _check_categories 报出来。
 --
---  tool.status 存 loaded|unloaded|error（type='func' 才有行，故不再用 NULL）；
---  error = 该 server 此刻不可用（未连上/掉线/连接失败/网关子进程死亡），由 host 写。
+--  tool.status 只存 loaded|unloaded（type='func' 才有行，故不用 NULL）——
+--  这是 model 的决定，也是这个库唯一要持久化的东西。
+--  tool.unavailable = 该 tool 的拥有者（server / plugin）此刻不可用
+--  （未连上/掉线/连接失败/网关子进程死亡），由 host 写；它是一列**独立**的
+--  运行态，不写进 status：写进去会把 model 的 loaded 决定抹掉（掉线一次、
+--  重启一次就丢）。两者都不覆盖对方的存储。
 --  FTS5（关键词）+ BLOB 向量（语义，over schema 文本）混合检索。
 -- ═══════════════════════════════════════════════════════════════
 
 
--- 工具目录。mcp/rest-api 的 enabled 为 NULL（可用性改由 status='error' 表达），
--- 其余类别的 enabled 来自各 json5 section。status 会话内可翻转。
+-- 工具目录。enabled 一律来自 tools.json5（mcp/rest-api 也一样，就是该 server
+-- 的开关）；可用性由 unavailable 单独表达，两者都不动 status。
 CREATE TABLE IF NOT EXISTS tool (
     name        TEXT PRIMARY KEY,            -- mcp: '{server}__{tool}'；否则裸名
     description TEXT NOT NULL DEFAULT '',
@@ -28,8 +32,9 @@ CREATE TABLE IF NOT EXISTS tool (
                 CHECK (type IN ('func','skill','cli')),
     source_id   TEXT,                        -- 拥有者：mcp/rest-api 为 server 名，plugin 为插件名，其余 NULL
     schema      TEXT,                        -- function tool：Tool def JSON；skill：SKILL.md 全文；cli：NULL
-    enabled     INTEGER,                     -- 0/1（builtin/job/plugin/skill/cli）；NULL（mcp/rest-api，join server）
-    status      TEXT,                        -- 'loaded'|'unloaded'|'error'（type='func'）；skill/cli NULL
+    enabled     INTEGER,                     -- 0/1，来自 tools.json5 的 enabled
+    status      TEXT,                        -- 'loaded'|'unloaded'（type='func'）；skill/cli NULL
+    unavailable INTEGER,                     -- 1 = 拥有者此刻不可用（effective status 记 error）；NULL = 可用
     last_loaded TEXT                         -- 本地 ISO，LRU evict 排序
 );
 CREATE INDEX IF NOT EXISTS idx_tool_status ON tool(status);
@@ -41,7 +46,8 @@ CREATE INDEX IF NOT EXISTS idx_tool_type ON tool(type);
 -- 没有 server 表：哪些 server 该连由 tools.json5 的 enabled 决定，此刻谁活着由
 -- 网关的 pool（mcp_list / __check）回答，这个库只把结果记在 tool 行上 ——
 -- 服务器不可用（未连上 / 掉线 / 连接失败 / 网关子进程死亡）时，它的 tool 行
--- status 置 'error'；连上后由镜像重置回该类默认（autoload→loaded，否则 unloaded）。
+-- unavailable 置 1（effective status 记 'error'，退出注入集）；连上后清掉这个
+-- 标记，**不动 status** —— model 之前 loaded 的工具连上后仍然是 loaded。
 
 
 -- ── 关键词搜索（FTS5 external-content，列取 tool 的前缀列，顺序一致）──

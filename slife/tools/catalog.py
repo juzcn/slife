@@ -89,13 +89,14 @@ def type_for_category(category: str) -> str:
     return _TYPE_BY_CATEGORY[category]
 
 
-# The stored status values for function tools.  ``error`` is the server-down
-# verdict projected onto every tool of that server (see
-# ``ToolCatalogService.mark_source_error``): a distinct state, NOT an unload —
-# the row keeps saying "this tool belonged to a server that is not up".
+# The stored status values for function tools.  ONLY the load state lives here
+# — the model's decision, and the one thing the db exists to persist
+# (``loaded`` / ``unloaded``).  The connectivity verdict is a SEPARATE column
+# (``unavailable``): writing it into ``status`` destroyed the load state it
+# landed on, so a server blip — or the startup sweep — reset every external
+# tool the model had loaded.
 STATUS_LOADED = "loaded"
 STATUS_UNLOADED = "unloaded"
-STATUS_ERROR = "error"
 
 # Effective status labels (derived, never stored).
 EFF_DISABLED = "disabled"
@@ -104,6 +105,9 @@ EFF_NA = "n/a"
 
 #: Schema revision this store expects (``catalog_schema.sql`` sets it; the
 #: migration in :meth:`CatalogStore._migrate` moves an older file up to it).
+#: Deliberately NOT bumped for the ``unavailable`` column: that revision has no
+#: migration step — the file is derived data, so a stale one is reported and
+#: rebuilt (``_check_columns``), never upgraded in place.
 SCHEMA_VERSION = 4
 
 #: The category values the code can write — the set the live table's ``CHECK``
@@ -113,6 +117,13 @@ ALL_CATEGORIES = FUNCTION_CATEGORIES | {"skill", "cli"}
 #: Local ISO-seconds timestamp — the shared store convention.
 _now = now_local_seconds
 
+
+#: The columns the code reads or writes on ``tool`` — checked at open against
+#: the live table (:meth:`CatalogStore._check_columns`).
+_REQUIRED_COLUMNS = frozenset({
+    "name", "description", "category", "type", "source_id", "schema",
+    "enabled", "status", "unavailable", "last_loaded",
+})
 
 #: The ``tool`` table's category constraint, parsed rather than substring-matched.
 _CATEGORY_CHECK_RE = re.compile(
@@ -250,18 +261,48 @@ def _flatten_schema(schema_text: str) -> str:
     return "\n".join(lines)
 
 
+#: What makes a row injectable — the ONE predicate the injection set is built
+#: from, in SQL: **a func tool that is enabled and loaded**.
+#:
+#: - ``type = 'func'`` — skills and cli entries are never injected (their
+#:   ``status`` is NULL, so this only makes the rule explicit).
+#: - ``enabled`` — tools.json5's answer.  NULL is treated as enabled: the column
+#:   is "not known to be off", and a row whose flag was never written must not
+#:   silently vanish from the model's tool list.
+#: - ``status = 'loaded'`` — the model's decision, the db's whole reason to exist.
+#: - ``unavailable`` — the runtime verdict, its own column (never a status):
+#:   a tool whose server is down leaves the injected set while the flag is up
+#:   and comes back with the load state it had.
+#:
+#: It is ``_effective_status``'s rule and MUST move with it.
+_INJECTABLE_SQL = (
+    "type = 'func'"
+    " AND status = 'loaded'"
+    " AND (enabled IS NULL OR enabled = 1)"
+    " AND (unavailable IS NULL OR unavailable = 0)"
+)
+
+
 def _effective_status(trow: dict) -> str:
     """Derived effective status (never stored): disabled / error / loaded /
     unloaded / n/a.
 
-    Everything it needs is ON THE ROW: a locally-disableable tool (builtin,
-    job, skill, cli) reports ``disabled`` when its config mirror says so, and
-    the rest is the row's own load state.  An external tool whose server went
-    down was marked ``error`` by the reconcile, so the connectivity verdict
-    arrives the same way every other fact does — no join, no server table.
+    Everything it needs is ON THE ROW, and in a deliberate order:
+
+    1. ``enabled == 0`` → ``disabled`` — the json5 switch, for every category
+       (a server switched off is distinguishable from one that is merely
+       down).
+    2. ``unavailable`` → ``error`` — the runtime verdict that the owner (a
+       server, a plugin) is not usable right now.
+    3. the row's own ``status`` — what the model decided.
+
+    Neither fact above overwrites the one below it, which is what lets a
+    ``loaded`` tool survive a blip and come back ``loaded``.
     """
-    if trow.get("category") not in SERVER_CATEGORIES and trow.get("enabled") == 0:
+    if trow.get("enabled") == 0:
         return EFF_DISABLED
+    if trow.get("unavailable"):
+        return EFF_ERROR
     status = trow.get("status")
     return status if status else EFF_NA
 
@@ -274,7 +315,7 @@ def effective_from_row(row: dict) -> str:
 # Row prefix used by the scan/search queries.
 _SCAN_COLS = (
     "t.name, t.description, t.category, t.type, t.source_id, t.schema, "
-    "t.enabled, t.status, t.last_loaded"
+    "t.enabled, t.status, t.last_loaded, t.unavailable"
 )
 # The four-column substring predicate shared by _search_like / search_grep
 # (4 ``?`` placeholders per column ANDed into name/description/category/schema).
@@ -329,6 +370,7 @@ class CatalogStore:
         await self._migrate()
         await self._run_schema()
         await self._check_categories()
+        await self._check_columns()
         logger.info("catalog_ready path=%s", self._path)
 
     async def _check_categories(self) -> None:
@@ -368,6 +410,40 @@ class CatalogStore:
         record(
             "tool_catalog", "warning", key="schema",
             value=f"stale (no {'/'.join(missing)} category)",
+            hint=f"Delete {self._path} and restart slife. The catalog is "
+                 f"rebuilt from the tool registry, tools.json5 and the plugins, "
+                 f"so nothing is lost but the loaded/unloaded state.",
+        )
+
+    async def _check_columns(self) -> None:
+        """Verify the live ``tool`` table has every column this code uses.
+
+        Same doctrine as :meth:`_check_categories`, same reason to verify the
+        DDL rather than ``user_version``: ``CREATE TABLE IF NOT EXISTS`` never
+        touches an existing file, and these revisions have no migration step —
+        a stale catalog is DELETED and rebuilt.  Without this check an older
+        file fails every scan with ``no such column: unavailable``, which reads
+        as a code bug instead of "delete the derived file".
+        """
+        try:
+            cursor = await self._c.execute("PRAGMA table_info(tool)")
+            columns = {r[1] for r in await cursor.fetchall()}
+        except Exception as e:  # a probe failure is never fatal
+            logger.debug("catalog_column_probe_failed err=%s", e)
+            return
+        if not columns:  # no table yet → the schema creates it complete
+            return
+        missing = sorted(_REQUIRED_COLUMNS - columns)
+        if not missing:
+            return
+        logger.error(
+            "catalog_schema_stale path=%s missing_columns=%s action=delete_the_file",
+            self._path, ",".join(missing),
+        )
+        from slife.health import record
+        record(
+            "tool_catalog", "warning", key="schema",
+            value=f"stale (no {'/'.join(missing)} column)",
             hint=f"Delete {self._path} and restart slife. The catalog is "
                  f"rebuilt from the tool registry, tools.json5 and the plugins, "
                  f"so nothing is lost but the loaded/unloaded state.",
@@ -684,24 +760,46 @@ class CatalogStore:
         cursor = await self._c.execute(sql, params)
         return {row[0] for row in await cursor.fetchall()}
 
-    async def mark_source_error(self, source_id: str) -> int:
-        """Mark one server's tools ``error`` — its server went down.
+    async def set_source_enabled(self, source_id: str, enabled: bool) -> int:
+        """Set one source's ``enabled`` flag on all of its rows.
 
-        The verdict lives on the rows themselves now (no server table to join
-        for "is it connected"): ``error`` is a state of its own, so the row
-        does not lose the fact that it *belonged* to a live server.  Reconnecting
-        resets them (``reset_source_status``).
+        The whole of the sync's business with this column: a server switched
+        off in ``tools.json5`` is a row that reports ``disabled``.  Deliberately
+        narrow — it writes ``enabled`` and nothing else:
+
+        - ``status`` is NOT touched, so the model's loaded/unloaded decision
+          survives a disable/enable round trip untouched.
+        - the rows are NOT deleted, so re-enabling restores a tool set that
+          still remembers what was loaded.
         """
         async with self._write_lock:
             cursor = await self._c.execute(
-                "UPDATE tool SET status = ? WHERE source_id = ? AND status IS NOT NULL",
-                (STATUS_ERROR, source_id),
+                "UPDATE tool SET enabled = ? WHERE source_id = ?",
+                (1 if enabled else 0, source_id),
             )
             await self._c.commit()
         return cursor.rowcount
 
-    async def mark_all_external_error(self) -> int:
-        """Mark EVERY external tool ``error`` — the gateway child died.
+    async def mark_source_unavailable(self, source_id: str) -> int:
+        """Flag one owner's tools ``unavailable`` — its server/plugin is down.
+
+        The verdict is its own column, NOT a status: the rows keep saying what
+        the model decided (``loaded`` / ``unloaded``), and they simply leave
+        the injection set while the flag is up — so the decision is still there
+        when the owner comes back.  Only rows that can have a load state are
+        flagged (the same set the old status write covered).
+        """
+        async with self._write_lock:
+            cursor = await self._c.execute(
+                "UPDATE tool SET unavailable = 1 "
+                "WHERE source_id = ? AND status IS NOT NULL",
+                (source_id,),
+            )
+            await self._c.commit()
+        return cursor.rowcount
+
+    async def mark_all_external_unavailable(self) -> int:
+        """Flag EVERY external tool ``unavailable`` — the gateway child died.
 
         All of its servers are unreachable at once, so their tools must leave
         the injection set immediately rather than at the next reconcile.
@@ -709,51 +807,28 @@ class CatalogStore:
         async with self._write_lock:
             placeholders = ",".join("?" * len(SERVER_CATEGORIES))
             cursor = await self._c.execute(
-                f"UPDATE tool SET status = ? "
+                f"UPDATE tool SET unavailable = 1 "
                 f"WHERE category IN ({placeholders}) AND status IS NOT NULL",
-                (STATUS_ERROR, *sorted(SERVER_CATEGORIES)),
+                (*sorted(SERVER_CATEGORIES),),
             )
             await self._c.commit()
         return cursor.rowcount
 
-    async def reset_source_status(self, source_id: str, status: str) -> int:
-        """Bring a server's ``error`` rows back to *status* (its class default).
+    async def clear_source_unavailable(self, source_id: str) -> int:
+        """Clear one owner's verdict — it is usable again.
 
-        Only ``error`` rows move: a row the user loaded or unloaded keeps that
-        state across a reconnect — the error mark is what a reconnect clears.
+        The only thing a reconnect does to the rows: every tool keeps the
+        ``loaded`` / ``unloaded`` it had, which is what makes the load state
+        survive a blip, a restart, and a plugin restart alike.
         """
         async with self._write_lock:
             cursor = await self._c.execute(
-                "UPDATE tool SET status = ? WHERE source_id = ? AND status = ?",
-                (status, source_id, STATUS_ERROR),
+                "UPDATE tool SET unavailable = NULL "
+                "WHERE source_id = ? AND unavailable IS NOT NULL",
+                (source_id,),
             )
             await self._c.commit()
         return cursor.rowcount
-
-    async def reset_source_error_rows(
-        self, source_id: str, status_by_name: "dict[str, str]",
-    ) -> int:
-        """Reset a source's ``error`` rows, one status per row, in one transaction.
-
-        :meth:`reset_source_status` writes ONE status for the whole source,
-        which is right for a server (every tool of it shares the server's
-        default) but wrong for a plugin: each of a plugin's tools carries its
-        own default.  Only ``error`` rows move, so a tool the model had loaded
-        keeps that state across a plugin restart.
-        """
-        if not status_by_name:
-            return 0
-        changed = 0
-        async with self._write_lock:
-            for name, status in status_by_name.items():
-                cursor = await self._c.execute(
-                    "UPDATE tool SET status = ?"
-                    " WHERE name = ? AND source_id = ? AND status = ?",
-                    (status, name, source_id, STATUS_ERROR),
-                )
-                changed += cursor.rowcount
-            await self._c.commit()
-        return changed
 
     async def remove_tool(self, name: str) -> None:
         """Delete a single tool row plus its embedding chunks.
@@ -897,23 +972,16 @@ class CatalogStore:
         Everything is on the row now.  An external tool whose server is down
         is not ``loaded`` — the reconcile marked it ``error`` — so it drops
         out of the injection set without a join, exactly as the retired
-        server-row join used to arrange.
+        server-row join used to arrange.  See :data:`_INJECTABLE_SQL`.
         """
         cursor = await self._c.execute(
-            """SELECT name FROM tool
-               WHERE status = 'loaded'
-                 AND (category IN ('mcp','rest-api')
-                      OR enabled IS NULL OR enabled = 1)
-               ORDER BY name"""
+            f"SELECT name FROM tool WHERE {_INJECTABLE_SQL} ORDER BY name"
         )
         return [row[0] for row in await cursor.fetchall()]
 
     async def count_loaded(self) -> int:
         cursor = await self._c.execute(
-            """SELECT COUNT(*) FROM tool
-               WHERE status = 'loaded'
-                 AND (category IN ('mcp','rest-api')
-                      OR enabled IS NULL OR enabled = 1)"""
+            f"SELECT COUNT(*) FROM tool WHERE {_INJECTABLE_SQL}"
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
