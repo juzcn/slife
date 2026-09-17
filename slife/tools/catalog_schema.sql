@@ -1,9 +1,9 @@
 -- ═══════════════════════════════════════════════════════════════
 --  slife 统一工具目录库（tools.db）— host 主进程持有的单一事实源
 --
---  一行 = 一个 function tool（builtin | job | plugin | mcp | rest-api；category 的
---  CHECK 另允许 skill/cli，但两者都没有行：skill 是 skills 目录里的文件、cli 只在
---  tools.json5），mcp/rest-api 用 ``{server}__{tool}`` 全名标识（source_id 指 server）；
+--  一行 = 一个 tool：function tool（builtin | job | plugin | mcp | rest-api）、
+--  skill（skills 目录里的一个 SKILL.md）、cli（tools.json5 里的一条 cli 配置）；
+--  mcp/rest-api 用 ``{server}__{tool}`` 全名标识（source_id 指 server）；
 --  plugin = 内置插件自己的工具，source_id 指该插件名（job-coding 的 job 工具仍是 job）。
 --  type 是 category 的粗粒度投影：func | skill | cli —— load/unload 只属于 func。
 --  落盘 + WAL（多进程：主 agent 写、subagent 只读/短写），busy_timeout
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS tool (
     type        TEXT NOT NULL DEFAULT 'func' -- func | skill | cli（粗粒度种类，由 category 派生）
                 CHECK (type IN ('func','skill','cli')),
     source_id   TEXT,                        -- 拥有者：mcp/rest-api 为 server 名，plugin 为插件名，其余 NULL
-    schema      TEXT,                        -- Tool def JSON（唯一取值：只有 function tool 有行）
+    schema      TEXT,                        -- function tool：Tool def JSON；skill：SKILL.md 全文；cli：NULL
     enabled     INTEGER,                     -- 0/1（builtin/job/plugin/skill/cli）；NULL（mcp/rest-api，join server）
     status      TEXT,                        -- 'loaded'|'unloaded'|'error'（type='func'）；skill/cli NULL
     last_loaded TEXT                         -- 本地 ISO，LRU evict 排序
