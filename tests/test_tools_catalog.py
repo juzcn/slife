@@ -116,6 +116,15 @@ async def test_set_source_enabled_moves_the_flag_and_nothing_else(store):
     assert x["status"] == "loaded"                      # the round trip cost nothing
     assert set(await store.loaded_names()) == {"svcA__x"}
 
+    # An override that overrides nothing is not a write: the sync re-projects
+    # every configured server on every pass, and ``tool_au`` fires on any
+    # UPDATE — re-indexing the server's rows into tool_fts each time.
+    assert await store.set_source_enabled("svcA", True) == 0
+    # A NULL row still MOVES: the column's NULL means "no opinion", so pinning
+    # it to the switch's explicit value is exactly the config-wins rule.
+    await store.upsert_tool("svcA__z", category="mcp", source_id="svcA")
+    assert await store.set_source_enabled("svcA", True) == 1
+
 
 @pytest.mark.asyncio
 async def test_a_switched_off_server_is_disabled_not_error(store):
@@ -141,6 +150,9 @@ async def test_mark_and_clear_source_unavailable(store):
 
     marked = await store.mark_source_unavailable("svcA")
     assert marked == 2
+    # Every reconcile pass re-projects a still-unreachable server: a row that
+    # is already flagged is not written (and not re-indexed) again.
+    assert await store.mark_source_unavailable("svcA") == 0
     assert await store.loaded_names() == []          # out of the injected set
     assert await store.get_effective("svcA__x") == EFF_ERROR
 
@@ -164,6 +176,8 @@ async def test_mark_all_external_unavailable_spares_local_rows(store):
     marked = await store.mark_all_external_unavailable()
 
     assert marked == 1
+    # A second gateway death must not re-flag the whole external set.
+    assert await store.mark_all_external_unavailable() == 0
     assert (await store.get_tool("svcA__x"))["unavailable"] == 1
     # The startup sweep is what a restart does to every external row: it must
     # leave the load state alone, or a restart would cost the model its set.

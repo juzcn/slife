@@ -809,11 +809,23 @@ class CatalogStore:
           survives a disable/enable round trip untouched.
         - the rows are NOT deleted, so re-enabling restores a tool set that
           still remembers what was loaded.
+        - only a row whose value actually MOVES is written: config overrides
+          the db value, but an override that overrides nothing is not a write.
+          Every pass projects the whole server list, and ``tool_au`` fires on
+          any UPDATE, so the unconditioned form re-indexed every external row
+          into ``tool_fts`` once per reconcile — the FTS churn ``reconcile``
+          exists to avoid.  A NULL counts as a difference: the column's NULL
+          means "no opinion" (read as enabled), so pinning it to the switch's
+          explicit value IS the config-wins rule.
+
+        Returns the number of rows whose value moved (0 on a steady-state pass).
         """
+        value = 1 if enabled else 0
         async with self._write_lock:
             cursor = await self._c.execute(
-                "UPDATE tool SET enabled = ? WHERE source_id = ?",
-                (1 if enabled else 0, source_id),
+                "UPDATE tool SET enabled = ? "
+                "WHERE source_id = ? AND (enabled IS NULL OR enabled != ?)",
+                (value, source_id, value),
             )
             await self._c.commit()
         return cursor.rowcount
@@ -825,12 +837,15 @@ class CatalogStore:
         the model decided (``loaded`` / ``unloaded``), and they simply leave
         the injection set while the flag is up — so the decision is still there
         when the owner comes back.  Only rows that can have a load state are
-        flagged (the same set the old status write covered).
+        flagged (the same set the old status write covered) and only rows not
+        already flagged are written: every reconcile pass re-projects every
+        unreachable server, so the unconditioned form rewrote — and, through
+        ``tool_au``, re-indexed — the same rows on each pass.
         """
         async with self._write_lock:
             cursor = await self._c.execute(
                 "UPDATE tool SET unavailable = 1 "
-                "WHERE source_id = ? AND status IS NOT NULL",
+                "WHERE source_id = ? AND status IS NOT NULL AND unavailable IS NULL",
                 (source_id,),
             )
             await self._c.commit()
@@ -841,12 +856,17 @@ class CatalogStore:
 
         All of its servers are unreachable at once, so their tools must leave
         the injection set immediately rather than at the next reconcile.
+
+        Only rows not already flagged are written — a gateway that dies, is
+        restarted and dies again must not re-flag (and re-index) the whole
+        external set.  Returns the number of rows newly flagged.
         """
         async with self._write_lock:
             placeholders = ",".join("?" * len(SERVER_CATEGORIES))
             cursor = await self._c.execute(
                 f"UPDATE tool SET unavailable = 1 "
-                f"WHERE category IN ({placeholders}) AND status IS NOT NULL",
+                f"WHERE category IN ({placeholders}) AND status IS NOT NULL "
+                f"AND unavailable IS NULL",
                 (*sorted(SERVER_CATEGORIES),),
             )
             await self._c.commit()
@@ -937,17 +957,6 @@ class CatalogStore:
                 (_now(), name),
             )
             await self._c.commit()
-
-    async def set_enabled(self, name: str, enabled: bool | None) -> int:
-        """Set a local category's ``enabled`` (mcp/rest-api pass None → noop)."""
-        async with self._write_lock:
-            cursor = await self._c.execute(
-                "UPDATE tool SET enabled = ? WHERE name = ?",
-                (1 if enabled else 0) if enabled is not None else None,
-                (name,),
-            )
-            await self._c.commit()
-        return cursor.rowcount
 
     # ── Reads / effective status ───────────────────────────────────
 
