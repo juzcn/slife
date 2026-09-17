@@ -22,8 +22,13 @@ from slife.plugins.mcp_gateway import config as plugin_config
 from slife.plugins.spec import mcp_child_reserved_names
 from slife.plugins.mcp_gateway.connection import ConnectionPool, ServerConfig, ServerStatus
 from slife.logfmt import error_json, ok_json
-from slife.server_utils import create_plugin_server
-from slife.server_utils import ToolsChangedNotifier, tools_changed_bus
+from slife.server_utils import (
+    ToolsChangedNotifier,
+    create_plugin_server,
+    flush_tools_changed,
+    request_tools_changed,
+    tools_changed_bus,
+)
 
 
 @asynccontextmanager
@@ -127,18 +132,15 @@ _notifier = ToolsChangedNotifier(tools_changed_bus(mcp))
 def _request_tools_changed() -> None:
     """Publish ``tools/list_changed`` to the listen subscribers.
 
-    Fire-and-forget — the publish is scheduled as a DETACHED task, so a
-    slow ``tools/call`` handler (e.g. ``mcp_set_enabled`` (re)connecting a
-    server) never blocks on the fan-out.  Callers MUST NOT rely on delivery
-    ordering; hosts re-list on receipt.
+    Fire-and-forget — see :func:`slife.server_utils.request_tools_changed`.
     """
-    _notifier.request_tools_changed()
+    request_tools_changed(_notifier)
 
 
 async def _notify_tools_changed() -> None:
-    """Eager-flush alias kept for tests/…: publish in this task (deterministic
-    delivery).  Production paths should use :func:`_request_tools_changed`."""
-    await _notifier.flush()
+    """Eager-flush alias kept for tests/…: deterministic delivery in this
+    task.  Production paths should use :func:`_request_tools_changed`."""
+    await flush_tools_changed(_notifier)
 
 
 # ── Connection → host notification ──────────────────────────────────────

@@ -68,31 +68,38 @@ def _like_escape(pattern: str) -> str:
     return pattern.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
 
-class SessionStore:
-    """Manages the Slife memory database — turn-based, no sessions."""
+class VecStoreLifecycleMixin:
+    """sqlite-vec store lifecycle shared by memdb and memfiles.
 
-    def __init__(self, db_path: Path):
-        self._db_path = db_path
-        self._conn: aiosqlite.Connection | None = None
-        self._embedding_dim = DEFAULT_EMBEDDING_DIM
-        self._vec_available = False  # sqlite-vec loaded? embeddings are optional
-        # Serializes every mutating statement on the shared connection.  All
-        # writers commit on the same aiosqlite connection; without this, one
-        # coroutine's commit() can land between another's multi-statement
-        # transaction (e.g. the drainer's delete-then-insert replace) and split
-        # it — leaving a half-committed chunk set.
-        self._write_lock = asyncio.Lock()
+    ``setup`` / ``reconfigure_for_embedding`` / ``_load_vec_extension`` /
+    ``_run_schema`` / ``_maybe_migrate_vec_dimension`` are the same algorithm
+    in both stores; this base parameterizes only what differs — the vec0
+    semantic tables to migrate, the meta table that records the active
+    embedding model, the schema file, and the structured-log keys.
+    """
+
+    #: vec0 semantic table names this store migrates (dropped + recreated
+    #: when the embedding dimension, or the model, changes).
+    _semantic_tables: tuple[str, ...] = ()
+    #: Meta table holding the ``embedding_model`` key.
+    _meta_table: str = "meta"
+    #: Directory holding this store's ``schema.sql``.
+    _schema_dir: Path
+    #: Structured-log key prefix (memdb uses ``store_*``, memfiles
+    #: ``memfiles_*``).
+    _store_log_key: str = "store"
+
+    #: State owned by the concrete store (its ``__init__`` / ``setup``).
+    _db_path: Path
+    _conn: "aiosqlite.Connection | None"
+    _embedding_dim: int
+    _embedding_model: str
+    _vec_available: bool
 
     @property
-    def _c(self):
-        assert self._conn is not None
-        return self._conn
-
-    @property
-    def db_path(self) -> Path:
-        return self._db_path
-
-    # ── Lifecycle ──────────────────────────────────────────────────
+    def _c(self) -> "aiosqlite.Connection":
+        """The live connection — the concrete store asserts and returns it."""
+        raise NotImplementedError
 
     async def setup(
         self,
@@ -122,26 +129,22 @@ class SessionStore:
             self._embedding_dim = 0
         await self._run_schema()
         logger.info(
-            "store_ready path=%s wal=on vec_dim=%d model=%s",
-            self._db_path, self._embedding_dim, embedding_model or "none",
+            "%s_ready path=%s wal=on vec_dim=%d model=%s",
+            self._store_log_key, self._db_path, self._embedding_dim,
+            embedding_model or "none",
         )
 
     async def reconfigure_for_embedding(
-        self,
-        embedding_dim: int,
-        embedding_model: str = "",
+        self, embedding_dim: int, embedding_model: str = "",
     ) -> None:
         """Switch the live connection to a real embedding dimension.
 
         The initial ``setup`` runs with dim 0 (no vec0) so the first save
         never waits on the embedding model.  Once the model is loaded, this
-        re-runs the schema on the SAME connection so the vec0 table is
+        re-runs the schema on the SAME connection so the vec0 tables are
         created with the real width.  Unlike ``setup`` it never reconnects,
-        so a concurrent ``save_turn`` is not split across two handles
-        (``_c`` stays valid from ``execute`` to ``commit``) and no handle
-        leaks.
-
-        Falls back to ``setup`` only when there is no live connection to
+        so a concurrent save is not split across two handles and no handle
+        leaks.  Falls back to ``setup`` when there is no live connection to
         upgrade (defensive — the store was closed).
         """
         if self._conn is None:
@@ -157,8 +160,9 @@ class SessionStore:
                 self._embedding_dim = 0
         await self._run_schema()
         logger.info(
-            "store_reconfigured vec_dim=%d model=%s",
-            self._embedding_dim, embedding_model or "none",
+            "%s_reconfigured vec_dim=%d model=%s",
+            self._store_log_key, self._embedding_dim,
+            embedding_model or "none",
         )
 
     async def _load_vec_extension(self) -> None:
@@ -166,9 +170,9 @@ class SessionStore:
 
         Embeddings are optional: when the extension can't load (e.g. no
         bundled ``.dylib``/``.so`` for this platform), the store must still
-        work — restore and keyword search are independent of vec, and
-        semantic search is gated by ``_semantic_ready``.  A hard failure
-        here would break the whole store (and session restore) for no gain.
+        work — the vec0 tables are skipped and semantic search stays gated
+        off.  A hard failure here would break keyword-only operation for no
+        gain.
         """
         try:
             import sqlite_vec
@@ -176,36 +180,146 @@ class SessionStore:
             await self._c.load_extension(sqlite_vec.loadable_path())
             await self._c.enable_load_extension(False)
             row = await self._c.execute("SELECT vec_version()")
-            version = await row.fetchone()
-            logger.info("vec_loaded version=%s", version[0] if version else "unknown")
+            version = await row.fetchone() if row else None
+            logger.info(
+                "%s_vec_loaded version=%s", self._store_log_key,
+                version[0] if version else "unknown",
+            )
             self._vec_available = True
         except Exception as e:
             self._vec_available = False
-            logger.warning("vec_unavailable err=%s — semantic search disabled (keyword only)", e)
+            logger.warning(
+                "%s_vec_unavailable err=%s — semantic search disabled "
+                "(keyword only)", self._store_log_key, e,
+            )
 
     async def _run_schema(self) -> None:
-        # Statement-by-statement execution is shared (vec0 tables hang in
-        # aiosqlite's executescript — see run_schema).  vec0 rejects
-        # float[0], so the semantic table is skipped when no embedding
-        # backend is configured.
+        """Run this store's ``schema.sql`` and reconcile embedding state.
+
+        Statement-by-statement (vec0 tables hang in aiosqlite's
+        ``executescript``); vec0 CREATEs are skipped when no embedding
+        backend is configured.  Then migrate away from a stale vec0
+        dimension/model and run the store-specific post-schema audit.
+        """
         keep = None if self._embedding_dim > 0 else _not_vec0_create
         await run_schema(
-            self._c, Path(__file__).parent / "schema.sql",
+            self._c, self._schema_dir / "schema.sql",
             self._embedding_dim, keep=keep,
+            log_prefix=f"{self._store_log_key}_schema",
         )
-
-        # Detect and fix embedding dimension mismatch after model change.
-        # CREATE TABLE IF NOT EXISTS won't alter a vec0 table whose
-        # dimension no longer matches.  We drop it so the next statement
-        # recreates with the correct dimension — old embeddings are
-        # invalid anyway (different model → different vector space).
         await self._maybe_migrate_vec_dimension()
+        await self._post_schema_check()
+        logger.debug("schema_ready path=%s", self._db_path)
 
-        # A diary table still carrying the legacy `prompt_tokens` column means
-        # the database predates the rename to `context_tokens` (the CREATE IF
-        # NOT EXISTS in schema.sql never alters an existing table).  The new
-        # code SELECT/INSERTs `context_tokens`, so such a DB fails on the next
-        # save or restore — surface the one-time migration path loudly.
+    async def _post_schema_check(self) -> None:
+        """Store-specific schema post-check — nothing by default."""
+
+    async def _maybe_migrate_vec_dimension(self) -> None:
+        """Drop + recreate the vec0 tables when model/dimension changed.
+
+        ``CREATE TABLE IF NOT EXISTS`` won't resize an existing vec0 table; a
+        model/dimension change makes old vectors invalid (different vector
+        space), so they are dropped and rebuilt at the current width — a
+        background drainer repopulates them.  The new model identity is
+        recorded in ``_meta_table`` so future same-dimension switches are
+        also detected.  Skips when no embedding backend is configured
+        (dim ≤ 0).
+        """
+        import re
+
+        if self._embedding_dim <= 0:
+            return
+        cursor = await self._c.execute(
+            f"SELECT value FROM {self._meta_table} "
+            "WHERE key = 'embedding_model'",
+        )
+        row = await cursor.fetchone()
+        stored_model = row[0] if (row and isinstance(row[0], str)) else ""
+        model_identity = self._embedding_model or ""
+
+        migrated = False
+        for sem in self._semantic_tables:
+            cursor = await self._c.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                (sem,),
+            )
+            row = await cursor.fetchone()
+            create_sql = row[0] if (row and row[0] and isinstance(row[0], str)) else ""
+            existing_dim = 0
+            if create_sql:
+                match = re.search(r"float\[(\d+)\]", create_sql)
+                if match:
+                    existing_dim = int(match.group(1))
+            dim_changed = existing_dim and existing_dim != self._embedding_dim
+            model_changed = (
+                model_identity and stored_model and stored_model != model_identity
+            )
+            table_missing = not create_sql
+            if dim_changed or model_changed or table_missing:
+                logger.info(
+                    "%s_vec_migrate table=%s dim=%s→%s model=%s→%s",
+                    self._store_log_key, sem, existing_dim,
+                    self._embedding_dim, stored_model, model_identity,
+                )
+                await self._c.execute(f"DROP TABLE IF EXISTS {sem}")
+                migrated = True
+        if migrated:
+            await self._c.commit()
+            # Recreate only the vec0 CREATE statements, at the new width.
+            await run_schema(
+                self._c, self._schema_dir / "schema.sql",
+                self._embedding_dim, keep=_vec0_create,
+                log_prefix=f"{self._store_log_key}_vec_recreate",
+            )
+        # Persist the new model identity (the first run records it too).
+        if model_identity and model_identity != stored_model:
+            await self._c.execute(
+                f"INSERT OR REPLACE INTO {self._meta_table} (key, value) "
+                "VALUES ('embedding_model', ?)",
+                (model_identity,),
+            )
+            await self._c.commit()
+
+
+class SessionStore(VecStoreLifecycleMixin):
+    """Manages the Slife memory database — turn-based, no sessions."""
+
+    def __init__(self, db_path: Path):
+        self._db_path = db_path
+        self._conn: aiosqlite.Connection | None = None
+        self._embedding_dim = DEFAULT_EMBEDDING_DIM
+        self._vec_available = False  # sqlite-vec loaded? embeddings are optional
+        # Serializes every mutating statement on the shared connection.  All
+        # writers commit on the same aiosqlite connection; without this, one
+        # coroutine's commit() can land between another's multi-statement
+        # transaction (e.g. the drainer's delete-then-insert replace) and split
+        # it — leaving a half-committed chunk set.
+        self._write_lock = asyncio.Lock()
+
+    @property
+    def _c(self):
+        assert self._conn is not None
+        return self._conn
+
+    @property
+    def db_path(self) -> Path:
+        return self._db_path
+
+    # ── Lifecycle (VecStoreLifecycleMixin) ─────────────────────────
+
+    _semantic_tables = ("diary_semantic",)
+    _meta_table = "diary_meta"
+    _schema_dir = Path(__file__).parent
+
+    async def _post_schema_check(self) -> None:
+        """Audit the diary schema for the legacy ``prompt_tokens`` column.
+
+        A diary table still carrying ``prompt_tokens`` predates the rename to
+        ``context_tokens`` (CREATE IF NOT EXISTS never alters an existing
+        table).  The new code SELECT/INSERTs ``context_tokens``, so such a DB
+        fails on the next save or restore — surface the one-time migration
+        path loudly.
+        """
         try:
             cursor = await self._c.execute("PRAGMA table_info(diary)")
             cols = [r[1] for r in await cursor.fetchall()]
@@ -217,105 +331,6 @@ class SessionStore:
                 )
         except Exception:
             pass
-
-        logger.debug("schema_ready path=%s", self._db_path)
-
-    async def _maybe_migrate_vec_dimension(self) -> None:
-        """Drop and recreate ``diary_semantic`` if the embedding config changed.
-
-        Two triggers:
-        1.  **Dimension mismatch** — the vec0 ``float[N]`` column doesn't
-            match the current model's output dimension.  Inserting wrong-sized
-            vectors would fail silently.
-        2.  **Model identity change** — same dimension, different model
-            (e.g. ``text-embedding-ada-002`` → ``text-embedding-3-small``,
-            both 1536).  Vectors live in different spaces and hybrid search
-            would mix incompatible scores.
-
-        Skips when no embedding backend is configured (dim ≤ 0).
-
-        When either triggers, the old ``diary_semantic`` table is dropped.
-        A background reindex will repopulate it with the new model's vectors.
-        The new model identity is recorded in ``diary_meta`` so future
-        same-dimension switches are also detected.
-        """
-        import re
-
-        # No embedding backend → no vec0 table to migrate.
-        if self._embedding_dim <= 0:
-            return
-
-        # ── Check stored model identity ──────────────────────────
-        cursor = await self._c.execute(
-            "SELECT value FROM diary_meta WHERE key = 'embedding_model'",
-        )
-        row = await cursor.fetchone()
-        stored_model: str = row[0] if (row and isinstance(row[0], str)) else ""
-        model_identity = self._embedding_model or ""
-
-        # ── Check current vec0 dimension ─────────────────────────
-        cursor = await self._c.execute(
-            "SELECT sql FROM sqlite_master "
-            "WHERE type='table' AND name='diary_semantic'",
-        )
-        row = await cursor.fetchone()
-        create_sql = row[0] if (row and row[0] and isinstance(row[0], str)) else ""
-        existing_dim = 0
-        if create_sql:
-            match = re.search(r"float\[(\d+)\]", create_sql)
-            if match:
-                existing_dim = int(match.group(1))
-
-        dim_changed = existing_dim and existing_dim != self._embedding_dim
-        model_changed = (
-            model_identity
-            and stored_model
-            and stored_model != model_identity
-        )
-        table_missing = not create_sql
-
-        if not dim_changed and not model_changed and not table_missing:
-            # Record model identity if not yet stored (first run / upgrade).
-            if model_identity and not stored_model:
-                await self._c.execute(
-                    "INSERT OR REPLACE INTO diary_meta (key, value) "
-                    "VALUES ('embedding_model', ?)",
-                    (model_identity,),
-                )
-                await self._c.commit()
-            return
-
-        reason = (
-            f"dim {existing_dim}→{self._embedding_dim}"
-            if dim_changed
-            else f"model {stored_model}→{model_identity}"
-            if model_changed
-            else "table missing"
-        )
-        logger.info(
-            "vec_migrate reason=%s action=drop_diary_semantic", reason,
-        )
-        await self._c.execute("DROP TABLE IF EXISTS diary_semantic")
-        await self._c.commit()
-
-        # Recreate with the correct dimension — only the vec0 CREATE statement.
-        await run_schema(
-            self._c, Path(__file__).parent / "schema.sql",
-            self._embedding_dim,
-            keep=lambda stmt: "diary_semantic" in stmt,
-            log_prefix="vec_recreate",
-        )
-
-        # Persist the new model identity.
-        if model_identity:
-            await self._c.execute(
-                "INSERT OR REPLACE INTO diary_meta (key, value) "
-                "VALUES ('embedding_model', ?)",
-                (model_identity,),
-            )
-            await self._c.commit()
-
-        logger.info("vec_migrated reason=%s", reason)
 
     async def close(self) -> None:
         if self._conn:

@@ -24,16 +24,6 @@ from slife.ui.i18n import t
 # WSL: Linux kernel with Windows interop — clip.exe is the native clipboard.
 _IS_WSL = sys.platform == "linux" and os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop")
 
-_counter: int = 0
-
-
-def _unique_suffix() -> str:
-    """Return a unique counter-based suffix to prevent widget ID collisions."""
-    global _counter
-    _counter += 1
-    return str(_counter)
-
-
 # ── Tool display helpers ─────────────────────────────────────────────
 
 _PRIMARY_ARG_MAX = 72
@@ -49,11 +39,12 @@ _MAX_RESULT_LINES = 2000
 
 
 def _friendly_label(tool_name: str, status: str) -> str:
-    """Return a human-readable label: present tense when running, past when done."""
-    label = tool_name.replace("_", " ").capitalize()
-    if status in ("running", "pending"):
-        return label  # "Run command"
-    return label  # same — simple is fine, the status icon already signals done
+    """Return a human-readable label (name with underscores as spaces).
+
+    ``status`` is accepted for call-shape symmetry but plays no part in the
+    label — the status icon already signals running vs done.
+    """
+    return tool_name.replace("_", " ").capitalize()
 
 
 def _primary_arg_value(tool_args: dict) -> str | None:
@@ -145,7 +136,6 @@ class ToolCallWidget(VerticalScroll):
         self._status: str = "running"
         self._result: str = ""
         self._result_is_error: bool = False
-        self._suffix = _unique_suffix()
         # Single renderable child holds every state of the panel.
         self._content: Static | None = None
         super().__init__()

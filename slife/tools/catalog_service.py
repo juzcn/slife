@@ -190,9 +190,6 @@ class ToolCatalogService:
         """Effective status for one name (None if unknown)."""
         return await self._store.get_effective(name)
 
-    async def is_meta(self, name: str) -> bool:
-        return is_meta_tool(name)
-
     # ── Non-function row mirror (skill / cli) ──────────────────────
 
     async def sync_category(self, category: str, rows: dict[str, dict]) -> list[str]:
@@ -424,3 +421,20 @@ def _is_external(tool: "Tool") -> bool:
     from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 
     return isinstance(tool, MCPProxyTool) and getattr(tool, "_route", None) == ProxyRoute.EXTERNAL
+
+
+async def mirror_source_rows(ctx, category: str, rows: dict) -> None:
+    """Mirror a live source row-set into one catalog category (no catalog → no-op).
+
+    The single wrapper the skill and cli mirrors both used to spell out: pull
+    ``catalog`` from ``ctx``, no-op when absent, ``sync_category`` wrapped in
+    a never-raise debug log.  Best-effort by contract — a failing mirror
+    never breaks the tool that called us.
+    """
+    catalog = getattr(ctx, "catalog", None) if ctx is not None else None
+    if catalog is None:
+        return
+    try:
+        await catalog.sync_category(category, rows)
+    except Exception as e:
+        logger.debug("catalog_mirror_failed category=%s err=%s", category, e)

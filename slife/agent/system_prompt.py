@@ -14,6 +14,7 @@ import sys
 from datetime import datetime
 
 from slife.logfmt import format_turn_ts
+from slife.os_detect import is_wsl
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -265,31 +266,24 @@ def _platform_type() -> str:
     if os.environ.get("SLIFE_SUBAGENT_NAME") or not sys.stdin.isatty():
         return "headless"
     if sys.platform == "linux":
+        # The WSLInterop marker is the fast, modern-path check; the
+        # /proc/version scan (microsoft/wsl kernel markers) is the fallback
+        # shared with slife.os_detect.
         try:
             if os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
                 return "wsl"
         except OSError:
             pass
-        try:
-            with open("/proc/version", encoding="ascii", errors="replace") as f:
-                content = f.read().lower()
-                if "microsoft" in content or "wsl" in content:
-                    return "wsl"
-        except (FileNotFoundError, PermissionError, OSError):
-            pass
+        if is_wsl():
+            return "wsl"
     return "native"
 
 
 def _os_name() -> str:
     """Human-readable OS name: ``"Windows"`` | ``"Linux"`` | ``"macOS"``."""
-    system = platform.system()
-    if system == "Darwin":
-        return "macOS"
-    if system == "Windows":
-        return "Windows"
-    if system == "Linux":
-        return "Linux"
-    return system
+    from slife.platform import get_os_info
+
+    return get_os_info()
 
 
 def _os_version() -> str:

@@ -8,6 +8,7 @@ import pytest
 from slife.agent.message_history import (
     MessageHistory,
     a2a_marker,
+    info_footnote_span,
     subagent_marker,
     unwrap_info_envelope,
     wechat_marker,
@@ -65,6 +66,24 @@ class TestUnwrapInfoEnvelope:
         assert unwrap_info_envelope(
             '[Wechat:{"peer_wechat_id": "wx_1"}] hello [INFO: {"turn_id": 5}]'
         ) == 'hello {"turn_id": 5}'
+
+    def test_info_footnote_span_is_display_relative(self):
+        """The footnote span is measured against the DISPLAY string, so a
+        leading channel envelope (stripped by unwrap) can't push the raw-text
+        index past the end of the rendered text."""
+        text = '[A2A:{"from": "peer-1", "type": "task_response", "task_id": "c"}] done [INFO: {"turn_id": 5}]'
+        display = unwrap_info_envelope(text)
+        span = info_footnote_span(text)
+        assert display == 'done {"turn_id": 5}'
+        assert span == (display.index('{"turn_id": 5}'),
+                        display.index('{"turn_id": 5}') + len('{"turn_id": 5}'))
+        # Styling with this span stays inside the display bounds — the old
+        # raw-text index would have overshot after the stripped envelope.
+        start, end = span
+        assert start >= 0 and end <= len(display)
+        # No INFO envelope → no span.
+        assert info_footnote_span("plain text") is None
+        assert info_footnote_span('[Wechat:{"peer_wechat_id": "wx_1"}] hi') is None
 
     def test_a2a_marker_carries_type(self):
         # One envelope — [A2A:{from, task_id?, type}] — a type field tells

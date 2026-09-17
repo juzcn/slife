@@ -7,7 +7,6 @@ its primary responsibility: UI event handling and layout.
 from __future__ import annotations
 
 import json
-import logging
 from typing import TYPE_CHECKING
 
 from slife.a2a.identity import Channel
@@ -24,8 +23,6 @@ if TYPE_CHECKING:
     from slife.agent.message_history import MessageHistory
     from slife.ui.app import SlifeApp
     from slife.ui.chat import ChatView
-
-logger = logging.getLogger(__name__)
 
 
 # ── Turn token estimation ─────────────────────────────────────────────
@@ -78,11 +75,12 @@ def estimate_turn_tokens(turn: dict) -> int:
 # ── Prefix mapping ────────────────────────────────────────────────────
 
 
-def restore_prefix(channel: "Channel", _agent_name: str = "") -> str | None:
+def restore_prefix(channel: "Channel") -> str | None:
     """Consistent prefix mapping for restored turns.
 
-    Delegates to the channel type's display prefix, which matches the
-    real-time prefixes used during live operation:
+    Delegates entirely to the channel type's display prefix — the single
+    implementation live and restored bubbles share (the subagent branch is
+    i18n-aware there, so the two can never diverge by language):
       - human     → "You> "
       - wechat    → "Wechat> "
       - subagent  → "Subagent(<name>)> " (local worker completion, routed
@@ -90,9 +88,6 @@ def restore_prefix(channel: "Channel", _agent_name: str = "") -> str | None:
       - a2a       → "A2A(<peer name>)"
       - system    → None (filtered from the chat view)
     """
-    if channel.kind == "subagent":
-        # i18n so live and restored subagent bubbles agree in both languages.
-        return t("subagent_prefix", name=channel.data.get("name") or "subagent")
     return channel.display_prefix()
 
 
@@ -124,7 +119,6 @@ async def restore_session(
     recovery_info: dict,
     history: "MessageHistory",
     config: "Config",
-    agent_name: str,
     assistant_prefix: str,
 ) -> None:
     """Restore a previous session from turn-based memory.
@@ -280,7 +274,7 @@ async def restore_session(
                     # No persisted channel row (shouldn't happen — every
                     # turn carries one) — degrade to a human message.
                     ch = Channel.human()
-                prefix = restore_prefix(ch, agent_name)
+                prefix = restore_prefix(ch)
                 if prefix is None:
                     # System channel — filtered from the chat view.
                     continue
@@ -368,7 +362,7 @@ async def restore_session(
                 break
 
     except Exception as e:
-        _show_system_message(app, t("restore_failed", err=e), color="#f85149")
+        app._show_system_message(t("restore_failed", err=e), color="#f85149")
         return
 
     # ── Phase 2: Replace history messages ────────────────────────
@@ -450,7 +444,7 @@ async def restore_session(
     # ── Post-restore setup ────────────────────────────────────────────
     # Still under suppressed auto-scroll — the system message must not
     # scroll by itself; the single final scroll below covers it.
-    _show_system_message(app, t("restored_ok"), color="#3fb950")
+    app._show_system_message(t("restored_ok"), color="#3fb950")
 
     # Auto-scroll is live again; settle the view with ONE scroll.
     chat_view._autoscroll = True
@@ -476,9 +470,3 @@ async def restore_session(
             total_tokens=prompt,
         )
     app._update_status()
-
-
-def _show_system_message(app: "SlifeApp", text: str, color: str | None = None) -> None:
-    """Show a system message in the chat view."""
-    chat_view = app.query_one("#chat-view", ChatView)
-    chat_view.add_system_message(text, color=color)

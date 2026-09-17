@@ -46,6 +46,8 @@ from slife.server_utils import (
     INTERNAL_TOOL_PREFIX,
     ToolsChangedNotifier,
     bind_free_port,
+    flush_tools_changed,
+    request_tools_changed,
     tools_changed_bus,
 )
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
@@ -93,17 +95,17 @@ _notifier = ToolsChangedNotifier()
 def _request_tools_changed() -> None:
     """Publish ``tools/list_changed`` to the listen subscribers.
 
-    Fire-and-forget — the publish is scheduled as a detached task (hosts
-    re-list on receipt, so no ordering guarantees are assumed).
+    Fire-and-forget — see :func:`slife.server_utils.request_tools_changed`
+    (hosts re-list on receipt, so no ordering guarantees are assumed).
     """
-    _notifier.request_tools_changed()
+    request_tools_changed(_notifier)
 
 
 async def _notify_tools_changed() -> None:
     """Eager-flush alias kept for tests/…: run one full notification round
     now, in this task (deterministic delivery — no coalescing).  Production
     notification paths should use :func:`_request_tools_changed`."""
-    await _notifier.flush()
+    await flush_tools_changed(_notifier)
 
 
 def build_registry_mcp(

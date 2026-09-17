@@ -10,9 +10,36 @@ from textual.content import Content
 from textual.events import Key
 from textual.widgets import Static
 
-from slife.agent.message_history import INFO_PREFIX, trim_note, unwrap_info_envelope
+from slife.agent.message_history import (
+    info_footnote_span,
+    trim_note,
+    unwrap_info_envelope,
+)
 from slife.agent.llm_client import TokenUsage
 from slife.ui.i18n import t
+
+
+# ── Printable-key redirection ─────────────────────────────────────────
+
+
+async def _redirect_printable_to_input(widget, event: Key) -> bool:
+    """Forward a printable key to the chat input field; True when handled.
+
+    Shared by ChatView and AssistantMessage (both had the identical block
+    copy-pasted): while a message widget has focus, typing must land in the
+    input box.  Returns False when the event should fall through to the
+    widget's normal key handling.
+    """
+    if not event.is_printable:
+        return False
+    inp = widget.screen.query_one("#user-input")
+    if inp is None or inp.has_focus:
+        return False
+    inp.focus()
+    await inp._on_key(event)
+    event.stop()
+    return True
+
 
 # ── Clickable link detection ──────────────────────────────────────────
 # Detects URIs and absolute paths in assistant output so links are
@@ -106,14 +133,8 @@ class ChatView(VerticalScroll):
 
     async def _on_key(self, event: Key) -> None:
         """Redirect printable keys to the input field."""
-        if event.is_printable:
-            inp = self.screen.query_one("#user-input")
-            if inp is not None and not inp.has_focus:
-                inp.focus()
-                await inp._on_key(event)
-                event.stop()
-                return
-        await super()._on_key(event)
+        if not await _redirect_printable_to_input(self, event):
+            await super()._on_key(event)
 
     def add_user_message(
         self,
@@ -197,12 +218,17 @@ class UserMessage(Static):
         # The unwrapped footnote keeps the machine-metadata style
         # (dim/italic, the same as thinking) inline, right after the user's
         # words, so it still reads as a footnote, not part of the message.
-        footnote = text.rfind(INFO_PREFIX)
-        if footnote != -1:
+        # The span is measured against DISPLAY, not the raw text: a leading
+        # ``[Wechat:…]``/``[Subagent:…]``/``[A2A:…]`` envelope that
+        # unwrap_info_envelope strips would otherwise push the raw ``rfind``
+        # index past the end of the rendered string (stylize silently no-ops).
+        footnote = info_footnote_span(text)
+        if footnote is not None:
+            n_start, n_end = footnote
             content = content.stylize(
                 "dim italic",
-                start=len(time_str) + len(prefix) + footnote,
-                end=len(time_str) + len(prefix) + len(display),
+                start=len(time_str) + len(prefix) + n_start,
+                end=len(time_str) + len(prefix) + n_end,
             )
         super().__init__(content)
         self.add_class("user-message")
@@ -235,14 +261,8 @@ class AssistantMessage(Static):
 
     async def _on_key(self, event: Key) -> None:
         """Redirect printable keys to the input field."""
-        if event.is_printable:
-            inp = self.screen.query_one("#user-input")
-            if inp is not None and not inp.has_focus:
-                inp.focus()
-                await inp._on_key(event)
-                event.stop()
-                return
-        await super()._on_key(event)
+        if not await _redirect_printable_to_input(self, event):
+            await super()._on_key(event)
 
     def __init__(self, name_prefix: str | None = None, timestamp=None):
         super().__init__("")

@@ -464,6 +464,15 @@ class MCPServerConnection:
         # and mcp_set_enabled can otherwise each spawn their own transport,
         # orphaning the loser (and starting duplicate monitors).
         async with self._connect_lock:
+            # A concurrent connect can win the race while we wait for the
+            # lock.  Re-check before touching anything: without this, the
+            # loser would overwrite CONNECTING and establish a second
+            # transport, orphaning the winner's AsyncExitStack (never
+            # aclose()d — leaked h2/SSE socket or duplicate stdio child).
+            if self._status in (
+                ServerStatus.CONNECTED, ServerStatus.CONNECTING,
+            ):
+                return
             # A disconnect() that raced an in-flight connect must not be
             # undone by this fresh connect.
             if self._disconnecting:

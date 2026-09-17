@@ -68,8 +68,7 @@ def delete_credential(key: str) -> None:
 # there raised "ValueError: I/O operation on closed file".
 # All user instructions go to stderr instead, prefixed so the parent's
 # MCPWrapperProcess._log_stderr can surface them.
-_OAUTH_MARKER = "[OAUTH]"
-_OAUTH_ACTION_MARKER = "[OAUTH-ACTION]"
+from slife.plugins.mcp_gateway import _OAUTH_ACTION_MARKER, _OAUTH_MARKER
 
 
 def _emit_user_message(text: str, marker: str = _OAUTH_MARKER) -> None:

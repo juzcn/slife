@@ -36,8 +36,7 @@ _DEFAULT_SERVER_MODULE = "slife.plugins.mcp_gateway.server"
 # stderr markers emitted by the OAuth device flow inside the gateway child
 # (slife.plugins.mcp_gateway.oauth) — the gateway's stdout is closed after the port
 # signal, so user instructions come over stderr.
-_OAUTH_MARKER = "[OAUTH]"
-_OAUTH_ACTION_MARKER = "[OAUTH-ACTION]"
+from slife.plugins.mcp_gateway import _OAUTH_ACTION_MARKER, _OAUTH_MARKER
 
 
 def _notify_user(title: str, message: str) -> None:

@@ -43,13 +43,25 @@ async def _media_lifespan(_app):
     """Complete-MCP-lifecycle declaration for the media plugin.
 
     Config and adapters load lazily on the first tool call (media has no
-    startup resource to establish), so the lifespan only yields — but
-    declaring it keeps every built-in plugin on the same protocol shape:
-    readiness is the MCP ``initialize`` handshake completing, and nothing
-    here can stall it.  Any future startup init must stay handshake-fast
-    (or go through ``warm_after_handshake``), never block in the lifespan.
+    startup resource to establish), so startup only yields — but declaring
+    it keeps every built-in plugin on the same protocol shape: readiness is
+    the MCP ``initialize`` handshake completing, and nothing here can stall
+    it.  Any future startup init must stay handshake-fast (or go through
+    ``warm_after_handshake``), never block in the lifespan.  Shutdown closes
+    every lazily-created adapter (their httpx2 clients) — a clean close for
+    a child process, rather than letting the OS reap them.
     """
-    yield
+    try:
+        yield
+    finally:
+        for pid, adapter in list(_adapters.items()):
+            try:
+                await adapter.close()
+            except Exception:
+                logger.debug(
+                    "media_adapter_close_failed provider=%s", pid, exc_info=True,
+                )
+        _adapters.clear()
 
 
 mcp, _log_path, logger = create_plugin_server(

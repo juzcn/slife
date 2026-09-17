@@ -29,16 +29,13 @@ class TestTranslation:
 
     def test_format_placeholders(self):
         set_language("en")
-        assert t("restored_partial", n=3, skipped=2) == (
-            "✅ Restored exit-time context (3 turns; 2 earlier "
-            "turns not loaded — use turn_search to find them)"
-        )
+        assert t("restore_failed", err="boom") == "✗ Restore failed: boom"
 
     def test_format_placeholders_chinese(self):
         set_language("zh")
-        out = t("restored_partial", n=3, skipped=2)
-        assert "3 轮" in out
-        assert "2 轮" in out
+        out = t("restore_failed", err="boom")
+        assert "恢复失败" in out
+        assert "boom" in out
 
     def test_set_language_round_trip(self):
         set_language("zh")
@@ -54,7 +51,7 @@ class TestTranslation:
     def test_missing_placeholder_raises(self):
         """Strict formatting — a missing field is a call-site bug."""
         with pytest.raises(KeyError):
-            t("restored_partial")  # no n= / skipped=
+            t("restore_failed")  # no err=
 
     def test_all_keys_have_both_languages(self):
         """Every entry ships English + Chinese — no half-translated keys."""

@@ -688,7 +688,6 @@ class SubagentManager:
         self, name: str | None = None,
         context_source: str = "clean", context_messages: list[dict] | None = None,
     ) -> str:
-        if self.count >= self._max: raise RuntimeError(f"Max {self._max} subagents reached")
         # The worker's name is its identity — never auto-generate an id.
         if not name or not name.strip():
             raise ValueError("subagent_name is required")
@@ -702,7 +701,13 @@ class SubagentManager:
                 "(letters/digits/_/. with a letter/digit start, max 64 chars) — "
                 f"got {name!r}"
             )
-        if name in self._subagents and self._subagents[name].is_running: return name
+        # Reuse a running worker BEFORE the cap check — spawn() is idempotent
+        # (the spawned_running() contract), so re-invoking a name that is
+        # already running at the cap must hand back the worker, not raise.
+        if name in self._subagents and self._subagents[name].is_running:
+            return name
+        if self.count >= self._max:
+            raise RuntimeError(f"Max {self._max} subagents reached")
         proc = SubagentProcess(
             name, self._config,
             context_source=context_source, context_messages=context_messages,

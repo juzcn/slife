@@ -69,7 +69,7 @@ class ToolSearchTool(Tool):
         },
         status={
             "type": "string",
-            "description": "Filter by effective status: all|loaded|unloaded|disabled|unavailable.",
+            "description": "Filter by effective status: all|loaded|unloaded|disabled|error|n/a.",
             "default": "all",
         },
         mode={
@@ -121,8 +121,6 @@ class ToolSearchTool(Tool):
                                 "semantic search unavailable — keyword only.")
                 else:
                     hint = "semantic search unavailable — keyword only."
-        results = results[:limit]
-
         rows = []
         for r in results:
             row = dict(r)
@@ -138,6 +136,10 @@ class ToolSearchTool(Tool):
                 "status": eff,
             })
 
+        # Truncate AFTER the status filter so a filtered search keeps the top
+        # matching rows instead of dropping qualifying rows beyond a premature
+        # relevance cutoff (the filter-after-limit shape the drainer has).
+        rows = rows[:limit]
         payload = {"count": len(rows), "results": rows}
         if hint:
             payload["hint"] = hint

@@ -730,10 +730,17 @@ class TestDimProbe:
 
         fake_client = MagicMock()
         fake_client.models.list = AsyncMock(return_value=_ModelsResponse())
-        with patch.object(client, "_client", new=fake_client, create=True):
+        with (
+            patch.object(client, "_client", new=fake_client, create=True),
+            patch.object(
+                client, "_call_api", new=AsyncMock(return_value=[[0.1] * 1536]),
+            ),
+        ):
             ok = await client.load()
 
         assert ok is True
         assert client._model == "some-model"  # configured id preserved
-        # dim stays provisional — no listing to pin it
-        assert client.dimension_known is False
+        # Not listed → load() probes the real width so the vec0 table is
+        # created with the actual dimension, not the provisional guess.
+        assert client.dimension == 1536
+        assert client.dimension_known is True

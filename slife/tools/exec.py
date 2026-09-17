@@ -323,7 +323,11 @@ class RunPythonScriptTool(Tool):
     async def execute(self, **kwargs) -> str:
         input_str = kwargs["script"]
 
-        if input_str.startswith("-c ") or input_str.startswith("-c"):
+        # Exactly ``-c <code>`` means inline code.  A bare prefix check would
+        # swallow any script whose PATH starts with ``-c`` (e.g. ``-checks.py``
+        # → ``python -c "checks.py"``, a silent no-op), so require either the
+        # exact word or the ``-c `` separator.
+        if input_str == "-c" or input_str.startswith("-c "):
             code = input_str[2:].strip()
             # LLMs naturally write shell-style '-c "code"'.  Strip the
             # wrapping quotes, otherwise python -c gets a bare string-literal

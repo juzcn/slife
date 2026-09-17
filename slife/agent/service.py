@@ -1752,25 +1752,12 @@ class AgentService:
         Called from the finally block in main() — no event loop required.
         Directly terminates known subprocesses so they don't become
         orphans holding log file handles on Windows.
-
-        Scans for all ``_<name>_process`` attributes — works with
-        auto-discovered plugins, not just the three built-ins.
         """
-        # Kill known plugin processes first
+        # Kill every plugin's child process (all children live under
+        # self._plugins[name].process — the plugin refactor removed the old
+        # ``self._<name>_process`` dynamic attributes this method once scanned).
         for plugin in self._plugins.values():
             plugin.kill()
-
-        # Scan for auto-discovered plugins
-        for attr_name in dir(self):
-            if not attr_name.endswith("_process") or not attr_name.startswith("_"):
-                continue
-            wrapper = getattr(self, attr_name, None)
-            if wrapper is None:
-                continue
-            p = getattr(wrapper, "_process", None)
-            if p is None:
-                continue
-            terminate_process_sync(p, label=attr_name)
 
         # Subagent manager cleanup
         mgr = self._subagent_manager
@@ -2557,8 +2544,12 @@ class AgentService:
             from slife.plugins.mcp_gateway import config as _cfg
             await catalog.purge_unconfigured_sources(set(_cfg.servers()))
         except Exception as e:
+            # Best-effort by contract: a failure leaves whichever rows the
+            # purge already handled and keeps the catalog live.  Nulling it
+            # here would silently disable every catalog-using path for the
+            # rest of the session (and leak the store on close) — a transient
+            # DB lock must not take the whole catalog down.
             logger.debug("catalog_config_sync_failed err=%s", e)
-            self._catalog = None
 
     async def start_inbox(self) -> None:
         """Start the inbox background processor.

@@ -73,11 +73,12 @@ _MAX_ATTEMPTS = 3
 _BACKOFF_BASE_S = [1.0, 2.0, 4.0]
 _JITTER_FACTOR = 0.2
 _MAX_TRACKED_SENDS = 500  # delivery-tracking cap (mirrors the task store)
-#: Cap on correlation→task routing entries.  Retry correlations are popped
-#: by ``_deliver``'s finally; the PRIMARY mapping survives for late-routing
-#: by design ("never abandon a result") but must still be bounded — a long
-#: session (or sends evicted from the capped ``_sends`` cache before their
-#: reply) would otherwise grow ``_corr_to_task`` without limit.
+#: Cap on correlation→task routing entries.  Every correlation a task was
+#: published under stays routed until its TERMINAL reply lands (the peer may
+#: answer on any of them — see ``_deliver``), then all of them are dropped
+#: together.  The cap is a safety valve for sends that never complete — a
+#: long session (or sends evicted from the capped ``_sends`` cache before
+#: their reply) would otherwise grow ``_corr_to_task`` without limit.
 _MAX_CORR_ENTRIES = 2 * _MAX_TRACKED_SENDS
 
 
@@ -86,6 +87,21 @@ def _backoff_delay(attempt: int) -> float:
     base = _BACKOFF_BASE_S[min(attempt, len(_BACKOFF_BASE_S) - 1)]
     jitter = base * _JITTER_FACTOR * (2 * random.random() - 1)
     return base + jitter
+
+
+def _decode_payload(msg) -> dict | None:
+    """Decode an MQTT payload to JSON; None when empty or unparseable.
+
+    ``utf-8 replace`` keeps a binary or mis-encoded payload from raising,
+    and an unparseable body is dropped by callers rather than fatal.
+    """
+    raw = msg.payload.decode("utf-8", "replace") if msg.payload else ""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return None
 
 
 class _OutboundSend:
@@ -326,7 +342,7 @@ class A2AMesh:
         self._responder_ready = asyncio.Event()  # inbound responder subscribed
         self._tasks: list[asyncio.Task] = []
         self._peers: dict[str, _PresencePeer] = {}
-        self._pending: dict[str, str] = {}  # corr → last artifact text
+        self._pending: dict[str, str] = {}  # task_id → last artifact text
         # FIFO-capacity: evicts the oldest tracked send past _MAX_TRACKED_SENDS
         # (replaces the manual ``pop(next(iter(...)))`` oldest drop).
         self._sends: FIFOCache[str, _OutboundSend] = FIFOCache(
@@ -404,6 +420,7 @@ class A2AMesh:
             await asyncio.gather(*(tasks + loops), return_exceptions=True)
         self._sends.clear()
         self._corr_to_task.clear()
+        self._pending.clear()  # artifact texts for tasks that never completed
         self._connected = False
         self._outbound = None
 
@@ -511,15 +528,11 @@ class A2AMesh:
         attribute a broadcast whose topic's final segment is the shared
         ``broadcast`` id (not the publisher's address).
         """
-        raw = msg.payload.decode("utf-8", "replace") if msg.payload else ""
-        if not raw:
-            return
-        try:
-            data = json.loads(raw)
-            sender = data.get("sender", "")
-            text = data.get("text", "")
-        except (ValueError, TypeError):
+        data = _decode_payload(msg)
+        if data is None:
             return  # a broadcast we don't recognise is dropped
+        sender = data.get("sender", "")
+        text = data.get("text", "")
         if sender == self.agent_name:
             return  # our own broadcast echo
         if not text:
@@ -571,12 +584,8 @@ class A2AMesh:
         send = self._sends.get(task_id)
         if send is not None:
             send.delivered = True  # any classified reply confirms delivery
-        raw = msg.payload.decode("utf-8", "replace") if msg.payload else ""
-        if not raw:
-            return
-        try:
-            data = json.loads(raw)
-        except (ValueError, TypeError):
+        data = _decode_payload(msg)
+        if data is None:
             return
         kind, content = classify_reply(data)
         if kind in (REPLY_SUBMITTED, REPLY_TEXT):
@@ -585,6 +594,12 @@ class A2AMesh:
             # The final artifact precedes the terminal status event; hold its
             # text so the terminal (which carries no message) has a result.
             self._pending[task_id] = content
+            if len(self._pending) > _MAX_TRACKED_SENDS:
+                # Bound the artifact hold like ``_sends``: a task that never
+                # reaches a terminal must not accumulate artifact strings for
+                # the session.  Oldest first — the artifact of a lost/evicted
+                # task is the least likely to ever be answered.
+                self._pending.pop(next(iter(self._pending)), None)
             return
         if kind not in TERMINAL_KINDS:
             return
@@ -611,11 +626,14 @@ class A2AMesh:
             self.on_task_completion(
                 task_id, result, cancelled, record.agent_name, "task",
             )
-        # Terminal reply → the send is finished; stop tracking its delivery AND
-# drop the routing entry for this correlation (it never needs to route
-# again — keeps the primary mapping from accumulating across a session).
+        # Terminal reply → the send is finished; stop tracking its delivery and
+        # drop EVERY routing entry for this task — the primary correlation and
+        # every retry correlation the peer may have answered on (the terminal
+        # can ride any of them, see :meth:`_deliver`) — so the table cannot
+        # accumulate stale routes across a session.
         self._sends.pop(task_id, None)
-        self._corr_to_task.pop(corr, None)
+        for c in [c for c, tid in self._corr_to_task.items() if tid == task_id]:
+            self._corr_to_task.pop(c, None)
 
     # ── Outbound operations (LLM-facing, via the plugin) ────────────────
 
@@ -691,12 +709,14 @@ class A2AMesh:
         except asyncio.CancelledError:
             raise
         finally:
-            # Keep the primary correlation (corr == task_id) mapped so a late
-            # reply still routes — a push model never abandons a result.  Drop
-            # only the per-attempt retry correlations.
-            for corr, tid in list(self._corr_to_task.items()):
-                if tid == send.task_id and corr != send.task_id:
-                    self._corr_to_task.pop(corr, None)
+            # Routing entries are deliberately LEFT in place here.  The peer
+            # answers each retry on the correlation it first saw — usually a
+            # retry correlation, not the primary one — so the terminal reply
+            # must still route after `delivered` flips.  Dropping retry
+            # correlations on `delivered` would lose the result
+            # (a2a_reply_unknown_corr).  The map stays bounded by
+            # _MAX_CORR_ENTRIES, and every entry for a task is removed together
+            # when its terminal reply routes (:meth:`_handle_reply`).
             # Bookkeeping must also survive GC of an unawaited coroutine when
             # the loop is already closed: asyncio.current_task() then raises
             # RuntimeError ("no running event loop"), which would turn the

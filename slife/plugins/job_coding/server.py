@@ -39,6 +39,8 @@ from slife.paths import get_jobs_dir
 from slife.server_utils import (
     ToolsChangedNotifier,
     create_plugin_server,
+    flush_tools_changed,
+    request_tools_changed,
     run_plugin_server,
     tools_changed_bus,
 )
@@ -67,16 +69,16 @@ _notifier = ToolsChangedNotifier()
 def _request_tools_changed() -> None:
     """Publish ``tools/list_changed`` to the listen subscribers.
 
-    Fire-and-forget — the publish is scheduled as a DETACHED task.  A
-    listening harness re-syncs its tool registry on receipt.
+    Fire-and-forget — see :func:`slife.server_utils.request_tools_changed`.
+    A listening harness re-syncs its tool registry on receipt.
     """
-    _notifier.request_tools_changed()
+    request_tools_changed(_notifier)
 
 
 async def _notify_tools_changed() -> None:
-    """Eager-flush alias kept for tests/…: publish in this task (deterministic
-    delivery).  Production paths should use :func:`_request_tools_changed`."""
-    await _notifier.flush()
+    """Eager-flush alias kept for tests/…: deterministic delivery in this
+    task.  Production paths should use :func:`_request_tools_changed`."""
+    await flush_tools_changed(_notifier)
 
 
 def _get_llm_client():
@@ -144,6 +146,14 @@ def _load_file(path: Path) -> str:
             f"Error: {path.name} defines no public job functions "
             "(module-level function with a non-underscore name)"
         )
+    # A reserved-name collision is a malformed file — reject the WHOLE file
+    # atomically, before anything is touched: no job from it registers, and
+    # nothing already registered is unregistered.  (Matches the whole-file
+    # skip _reload_all applies at startup, so a restart and a live edit
+    # always agree for the same file.)
+    invalid = next((j.name for j in jobs if j.name in _RESERVED_NAMES), None)
+    if invalid is not None:
+        return f"Error: job '{invalid}' collides with a reserved name"
     # A file can define MANY public functions; functions removed from it
     # must not linger as ghost tools (the old function object stays callable
     # forever otherwise).  Unregister this file's previously-registered jobs
@@ -158,8 +168,6 @@ def _load_file(path: Path) -> str:
         if str(_registry[name].path.resolve()) == resolved:
             _unregister_tool(name)
     for job in jobs:
-        if job.name in _RESERVED_NAMES:
-            return f"Error: job '{job.name}' collides with a reserved name"
         _register_tool(job)
     return ""
 
@@ -170,14 +178,28 @@ def _reload_all() -> str:
     Registers newly-appeared jobs and removes vanished ones (files edited
     externally).  Shared by lifespan startup and the removal path.
     """
+    if not _jobs_dir.is_dir():
+        return f"ok: {len(_registry)} jobs"
+    # A job is tracked by its SOURCE file, not by its name — one file can
+    # define many jobs (job.name != file stem), so a vanished file is
+    # detected against ``_registry[name].path``, never a ``{name}.py`` glob.
+    live_files = {
+        str(p.resolve()) for p in _jobs_dir.glob("*.py")
+        if not p.name.startswith("_")
+    }
     for name in list(_registry):
-        if not (_jobs_dir / f"{name}.py").exists():
+        if str(_registry[name].path.resolve()) not in live_files:
             _unregister_tool(name)
-    for job in registry.scan_jobs_dir(_jobs_dir):
-        if job.name in _registry:
-            continue  # already live
-        if job.name in _RESERVED_NAMES:
-            continue
+    # A file whose content collides with a reserved name is rejected WHOLE by
+    # _load_file — the reload must agree, so a restart and a live edit never
+    # diverge for the same file.
+    jobs = registry.scan_jobs_dir(_jobs_dir)
+    reserved_files = {
+        str(j.path.resolve()) for j in jobs if j.name in _RESERVED_NAMES
+    }
+    for job in jobs:
+        if str(job.path.resolve()) in reserved_files or job.name in _registry:
+            continue  # whole-file skip / already live
         _register_tool(job)
     return f"ok: {len(_registry)} jobs"
 

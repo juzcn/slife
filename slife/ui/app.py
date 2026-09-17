@@ -980,7 +980,6 @@ class SlifeApp(App):
             recovery_info=self._recovery_info,
             history=self.service.message_history,
             config=self.service.config,
-            agent_name=self._agent_name,
             assistant_prefix=self._assistant_prefix,
         )
         self._recovery_info = None

@@ -298,8 +298,8 @@ class MCPClient:
                     # smuggling was dropped from the wire models.  The mcp
                     # gateway's ``_client_info_extra`` is exactly that shape
                     # (``{"embeddings": {...}}``), so pass it as session
-                    # extensions; the server's ``_CaptureClientEmbeddings``
-                    # reads it back from init params.
+                    # extensions; the gateway reads the same map back from the
+                    # initialize params it receives.
                     self._session = await self._exit_stack.enter_async_context(
                         ClientSession(
                             read_stream, write_stream,

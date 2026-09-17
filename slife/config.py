@@ -162,20 +162,26 @@ def _as_name_set(value) -> frozenset[str]:
     return frozenset(v for v in value if isinstance(v, str))
 
 
-def _disabled_names(section: list) -> frozenset[str]:
-    """Names with ``enabled: false`` in a ``[{name, enabled}]`` section list.
+def _flagged_names(section: list, key: str, flag: object) -> frozenset[str]:
+    """Extract entry names whose *key* is exactly *flag*.
 
-    Every tools.json5 category section carries the same enable/disable
-    policy; this extracts the disabled names (never raises on a malformed
-    entry).
+    Every tools.json5 category section carries the same ``[{name, key}]``
+    policy shape; this is the one implementation (never raises on a malformed
+    entry).  The identity comparison matches the exact boolean — ``enabled:
+    false`` and ``autoload: true`` — never e.g. a truthy ``1``.
     """
     out: set[str] = set()
     for entry in section:
-        if isinstance(entry, dict) and entry.get("enabled") is False:
+        if isinstance(entry, dict) and entry.get(key) is flag:
             name = entry.get("name")
             if isinstance(name, str) and name:
                 out.add(name)
     return frozenset(out)
+
+
+def _disabled_names(section: list) -> frozenset[str]:
+    """Names with ``enabled: false`` in a ``[{name, enabled}]`` section list."""
+    return _flagged_names(section, "enabled", False)
 
 
 def _autoload_names(section: list) -> frozenset[str]:
@@ -187,13 +193,7 @@ def _autoload_names(section: list) -> frozenset[str]:
     ``skill`` / ``cli`` entry has no load state, so its flag is accepted and
     inert.
     """
-    out: set[str] = set()
-    for entry in section:
-        if isinstance(entry, dict) and entry.get("autoload") is True:
-            name = entry.get("name")
-            if isinstance(name, str) and name:
-                out.add(name)
-    return frozenset(out)
+    return _flagged_names(section, "autoload", True)
 
 
 def _autoload_servers(*sections: dict) -> frozenset[str]:

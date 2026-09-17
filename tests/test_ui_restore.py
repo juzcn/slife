@@ -91,7 +91,7 @@ class TestRestoreSkipsEmptyAssistantMessages:
     async def _restore(self, app, conv, config, turns):
         await restore_session(
             app, {"turns": turns, "budget": 1_000_000},
-            conv, config, "agent", "Jack> ",
+            conv, config, "Jack> ",
         )
 
     @pytest.mark.asyncio
@@ -253,7 +253,7 @@ class TestRestoreTurnHeader:
     async def _restore(self, app, conv, config, turns):
         await restore_session(
             app, {"turns": turns, "budget": 1_000_000},
-            conv, config, "agent", "Jack> ",
+            conv, config, "Jack> ",
         )
 
     @pytest.mark.asyncio

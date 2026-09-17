@@ -86,6 +86,47 @@ def clear() -> None:
 # ── External tooling availability check ─────────────────────────────────
 
 
+def _probe_version(
+    name: str, *,
+    missing_hint: str, exit_hint: str, error_hint: str,
+    wrap_cmd_on_windows: bool = False,
+) -> None:
+    """Probe one external tool's ``--version`` and record its health verdict.
+
+    The shared shape behind the node / npm / bun / uv checks: ``which`` →
+    run ``--version`` → record ``ok`` with the version, a ``warning`` with
+    the non-zero exit code or the unexpected error, or a ``warning`` with a
+    ``missing`` hint when the tool is absent.  A 5 s sync subprocess runs in
+    a daemon-thread diagnostic, never on the event loop.
+    """
+    import shutil as _shutil
+    import subprocess as _sp
+    import sys as _sys
+
+    if _shutil.which(name) is None:
+        record(name, "warning", key="missing", value="not found",
+               hint=missing_hint)
+        return
+    try:
+        # npm / bun resolve through ``cmd`` on Windows (no .exe on PATH as a
+        # bare name); node / uv exec directly.
+        cmd = (
+            ["cmd", "/c", name, "--version"]
+            if wrap_cmd_on_windows and _sys.platform == "win32"
+            else [name, "--version"]
+        )
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
+    except Exception:
+        record(name, "warning", key="error", value="unexpected error",
+               hint=error_hint)
+        return
+    if r.returncode == 0:
+        record(name, "ok", key="version", value=(r.stdout.strip() or "?"))
+    else:
+        record(name, "warning", key="exit", value=str(r.returncode),
+               hint=exit_hint)
+
+
 def check_external_deps() -> None:
     """Check that optional external tools are available.
 
@@ -93,90 +134,45 @@ def check_external_deps() -> None:
     surface missing tools to the LLM / user.  Does NOT attempt to
     install anything — the one-click install scripts handle that.
     """
-    import shutil as _shutil
-    import subprocess as _sp
-    import sys as _sys
-
     # ── Node.js / npm (used by readabilipy for article extraction) ──
-    node_path = _shutil.which("node")
-    npm_path = _shutil.which("npm")
-
-    if node_path:
-        try:
-            r = _sp.run(["node", "--version"], capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
-            if r.returncode == 0:
-                record("node", "ok", key="version", value=r.stdout.strip())
-            else:
-                record("node", "warning", key="exit", value=str(r.returncode),
-                        hint="Reinstall Node.js from https://nodejs.org — fetch "
-                             "falls back to pure-Python extraction meanwhile.")
-        except Exception:
-            record("node", "warning", key="error", value="unexpected error",
-                    hint="Reinstall Node.js from https://nodejs.org.")
-    else:
-        record("node", "warning", key="missing", value="not found",
-                hint="Install Node.js from https://nodejs.org (fetch falls back "
-                     "to pure-Python extraction without it).")
-
-    if npm_path:
-        try:
-            # `npm --version` is a local, lock-free check — unlike `npm version`,
-            # which can block on the npm cache lock while many npx servers are
-            # warming up concurrently, causing spurious timeouts at startup.
-            npm_cmd = ["cmd", "/c", "npm", "--version"] if _sys.platform == "win32" else ["npm", "--version"]
-            r = _sp.run(npm_cmd, capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
-            if r.returncode == 0:
-                record("npm", "ok", key="version", value=(r.stdout.strip() or "?"))
-            else:
-                record("npm", "warning", key="exit", value=str(r.returncode),
-                        hint="Reinstall Node.js from https://nodejs.org — npx-based "
-                             "MCP servers cannot start meanwhile.")
-        except Exception:
-            record("npm", "warning", key="error", value="unexpected error",
-                    hint="Reinstall Node.js from https://nodejs.org.")
-    else:
-        record("npm", "warning", key="missing", value="not found",
-                hint="Install Node.js from https://nodejs.org — npx-based MCP "
-                     "servers cannot start without it.")
-
+    _probe_version(
+        "node",
+        missing_hint="Install Node.js from https://nodejs.org (fetch falls back "
+                     "to pure-Python extraction without it).",
+        exit_hint="Reinstall Node.js from https://nodejs.org — fetch "
+                  "falls back to pure-Python extraction meanwhile.",
+        error_hint="Reinstall Node.js from https://nodejs.org.",
+    )
+    _probe_version(
+        "npm",
+        # ``npm --version`` is a local, lock-free check — unlike ``npm
+        # version``, which can block on the npm cache lock while many npx
+        # servers are warming up concurrently, causing spurious timeouts.
+        wrap_cmd_on_windows=True,
+        missing_hint="Install Node.js from https://nodejs.org — npx-based MCP "
+                     "servers cannot start without it.",
+        exit_hint="Reinstall Node.js from https://nodejs.org — npx-based "
+                  "MCP servers cannot start meanwhile.",
+        error_hint="Reinstall Node.js from https://nodejs.org.",
+    )
     # ── bun (used to run Node.js MCP servers) ──
-    bun_path = _shutil.which("bun")
-
-    if bun_path:
-        try:
-            bun_cmd = ["cmd", "/c", "bun", "--version"] if _sys.platform == "win32" else ["bun", "--version"]
-            r = _sp.run(bun_cmd, capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
-            if r.returncode == 0:
-                record("bun", "ok", key="version", value=r.stdout.strip())
-            else:
-                record("bun", "warning", key="exit", value=str(r.returncode),
-                        hint="Reinstall from https://bun.sh, or ignore — JS/TS MCP "
-                             "servers also run via npx.")
-        except Exception:
-            record("bun", "warning", key="error", value="unexpected error",
-                    hint="Reinstall from https://bun.sh, or ignore — JS/TS MCP "
-                         "servers also run via npx.")
-    else:
-        record("bun", "warning", key="missing", value="not found",
-                hint="Optional: install from https://bun.sh. JS/TS MCP servers "
-                     "run via npx without it.")
-
+    _probe_version(
+        "bun",
+        wrap_cmd_on_windows=True,
+        missing_hint="Optional: install from https://bun.sh. JS/TS MCP servers "
+                     "run via npx without it.",
+        exit_hint="Reinstall from https://bun.sh, or ignore — JS/TS MCP "
+                  "servers also run via npx.",
+        error_hint="Reinstall from https://bun.sh, or ignore — JS/TS MCP "
+                   "servers also run via npx.",
+    )
     # ── uv / uvx (used to run Python MCP servers) ──
-    uv_path = _shutil.which("uv")
-    if uv_path:
-        try:
-            r = _sp.run(["uv", "--version"], capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
-            if r.returncode == 0:
-                record("uv", "ok", key="version", value=r.stdout.strip())
-            else:
-                record("uv", "warning", key="exit", value=str(r.returncode),
-                        hint="Reinstall from https://astral.sh. uvx-based MCP "
-                             "servers cannot start meanwhile.")
-        except Exception:
-            record("uv", "warning", key="error", value="unexpected error",
-                    hint="Reinstall from https://astral.sh. uvx-based MCP "
-                         "servers cannot start meanwhile.")
-    else:
-        record("uv", "warning", key="missing", value="not found",
-                hint="Install from https://astral.sh. uvx-based MCP servers "
-                     "cannot start without it.")
+    _probe_version(
+        "uv",
+        missing_hint="Install from https://astral.sh. uvx-based MCP servers "
+                     "cannot start without it.",
+        exit_hint="Reinstall from https://astral.sh. uvx-based MCP "
+                  "servers cannot start meanwhile.",
+        error_hint="Reinstall from https://astral.sh. uvx-based MCP "
+                   "servers cannot start meanwhile.",
+    )

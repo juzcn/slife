@@ -11,6 +11,7 @@ These tools only manage the registry — they don't execute commands.
 """
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -123,13 +124,35 @@ async def sync_cli_catalog(ctx, cli_tools: dict) -> None:
     Called at boot and after every cli mutation, so the rows say what the
     config says right now — a removed CLI loses its row immediately.
     """
-    catalog = getattr(ctx, "catalog", None) if ctx is not None else None
-    if catalog is None:
-        return
-    try:
-        await catalog.sync_category("cli", cli_catalog_rows(cli_tools))
-    except Exception as e:  # never break the tool that called us
-        logger.debug("cli_catalog_sync_failed err=%s", e)
+    from slife.tools.catalog_service import mirror_source_rows
+
+    await mirror_source_rows(ctx, "cli", cli_catalog_rows(cli_tools))
+
+
+def _live_cli_config(self) -> "Config | None":
+    """The live ``Config`` when it is bound to a real path, else None.
+
+    Every cli mutation tool shares the same dual-write shape: mutate the live
+    ``Config`` snapshot (its own writer persists it), or fall back to the raw
+    tools.json5 file.  This selects the target.
+    """
+    ctx = getattr(self, "_ctx", None)
+    config = ctx.config if ctx is not None else None
+    if config is not None and config._path is not None:
+        return config
+    return None
+
+
+def _open_raw_cli(self) -> tuple[dict, "Callable[[], None]"]:
+    """The raw tools.json5 ``cli`` section plus a writer that commits it.
+
+    Fallback write target when no live Config is bound.  Mutate the returned
+    section in place, then call the writer to persist the whole file back.
+    """
+    raw = read_config(self._config_path)
+    # ``_cli_section`` attaches a fresh ``{}`` to *raw* when the key is
+    # missing, so a brand-new entry actually lands in the written file.
+    return _cli_section(raw), lambda: write_config(self._config_path, raw)
 
 
 class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -177,10 +200,12 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
         source = with_fetched_at(source)
         is_update = False
 
-        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
-        
-        if config is not None and config._path is not None:
-            is_update = name in config.cli_tools
+        ctx = getattr(self, "_ctx", None)
+        config = _live_cli_config(self)
+        if config is not None:
+            # Preserve the enable/disable flag across an update — the
+            # "idempotent upsert" contract must not silently re-enable a
+            # deliberately-disabled tool.
             old = config.cli_tools.get(name)
             old_enabled = old.get("enabled") if isinstance(old, dict) else None
             config.save_cli_tool(
@@ -189,9 +214,7 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
             )
             current = config.cli_tools
         else:
-            raw = read_config(self._config_path)
-            cli_tools = _cli_section(raw)
-            is_update = name in cli_tools
+            cli_tools, persist = _open_raw_cli(self)
             old = cli_tools.get(name)
             old_enabled = old.get("enabled") if isinstance(old, dict) else None
             entry: dict = {"command": command, "description": description}
@@ -200,14 +223,12 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
             if source:
                 entry["source"] = source
             if old_enabled is not None:
-                # Preserve the enable/disable flag across an update — the
-                # "idempotent upsert" contract must not silently re-enable a
-                # deliberately-disabled tool.
                 entry["enabled"] = old_enabled
             cli_tools[name] = entry
-            write_config(self._config_path, raw)
+            persist()
             current = cli_tools
 
+        is_update = name in current
         # The catalog follows the config, so the entry is findable by
         # tool_search before the next restart.
         await sync_cli_catalog(ctx, current)
@@ -235,21 +256,19 @@ class CliRemoveTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibl
         name: str = kwargs["name"]
 
 
-        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
-
-
-        if config is not None and config._path is not None:
+        ctx = getattr(self, "_ctx", None)
+        config = _live_cli_config(self)
+        if config is not None:
             if name not in config.cli_tools:
                 return f"CLI tool '{name}' is not registered."
             config.remove_cli_tool(name)
             current = config.cli_tools
         else:
-            raw = read_config(self._config_path)
-            cli_tools = raw.get(_CLI_TOOLS_KEY, {})
-            if not isinstance(cli_tools, dict) or name not in cli_tools:
+            cli_tools, persist = _open_raw_cli(self)
+            if name not in cli_tools:
                 return f"CLI tool '{name}' is not registered."
             del cli_tools[name]
-            write_config(self._config_path, raw)
+            persist()
             current = cli_tools
 
         await sync_cli_catalog(ctx, current)
@@ -303,15 +322,15 @@ class CliSetEnabledTool(_CliConfigMixin, Tool):
         enabled: bool = kwargs["enabled"]
 
 
-        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
-        
-        if config is not None and config._path is not None:
-            if name not in config.cli_tools:
+        ctx = getattr(self, "_ctx", None)
+        config = _live_cli_config(self)
+        if config is not None:
+            entries = config.cli_tools
+            if name not in entries:
                 return f"'{name}' not found in cli config."
-            entry = config.cli_tools[name]
+            entry = entries[name]
             if not isinstance(entry, dict):
                 return f"'{name}' in cli config is malformed."
-            entry["enabled"] = enabled
             config.save_cli_tool(
                 name=name,
                 command=entry.get("command", ""),
@@ -320,19 +339,17 @@ class CliSetEnabledTool(_CliConfigMixin, Tool):
                 source=entry.get("source"),
                 enabled=enabled,
             )
-            current = config.cli_tools
         else:
-            raw = read_config(self._config_path)
-            entries = raw.get(_CLI_TOOLS_KEY, {})
-            if not isinstance(entries, dict) or name not in entries:
+            entries, persist = _open_raw_cli(self)
+            if name not in entries:
                 return f"'{name}' not found in cli config."
             entry = entries[name]
             if not isinstance(entry, dict):
                 return f"'{name}' in cli config is malformed."
             entry["enabled"] = enabled
-            write_config(self._config_path, raw)
-            current = entries
+            persist()
 
+        current = entries
         await sync_cli_catalog(ctx, current)
         state = "enabled" if enabled else "disabled"
         logger.info("cli_set_enabled name=%s enabled=%s", name, enabled)

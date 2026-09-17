@@ -77,12 +77,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "✗ Restore failed: {err}",
         "zh": "✗ 恢复失败: {err}",
     },
-    "restored_partial": {
-        "en": "✅ Restored exit-time context ({n} turns; {skipped} earlier "
-              "turns not loaded — use turn_search to find them)",
-        "zh": "✅ 已恢复退出时的上下文（{n} 轮；{skipped} 轮更早记录未载入，"
-              "可用 turn_search 查找）",
-    },
     "restored_ok": {
         "en": "✅ Restored exit-time context, continue",
         "zh": "✅ 已恢复退出时的上下文，继续吧",

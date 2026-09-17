@@ -240,17 +240,14 @@ async def sync_skill_catalog(ctx, skills_dir: str | Path) -> None:
     is on disk right now — including the negative direction: a removed skill's
     row goes with it.
     """
-    catalog = getattr(ctx, "catalog", None) if ctx is not None else None
-    if catalog is None:
-        return
+    from slife.tools.catalog_service import mirror_source_rows
+
     config = getattr(ctx, "config", None)
     config_path = getattr(config, "_path", None)
-    try:
-        await catalog.sync_category(
-            "skill", skill_catalog_rows(skills_dir, _disabled_skill_names(config_path)),
-        )
-    except Exception as e:  # never break the tool that called us
-        logger.debug("skill_catalog_sync_failed err=%s", e)
+    await mirror_source_rows(
+        ctx, "skill",
+        skill_catalog_rows(skills_dir, _disabled_skill_names(config_path)),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -638,7 +635,6 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
 
 class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     name = "skill_set_enabled"
-    category = "Skills"
     category: ClassVar[str] = "Skills"
     description = ("Enable or disable a skill (skill_list hides / skill_use "
                    "refuses disabled).")

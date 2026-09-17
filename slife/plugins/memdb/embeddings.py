@@ -640,27 +640,24 @@ class EmbeddingClient:
             # daemon's model listing), so discover it from /v1/models and
             # pin the real dimension before the vec0 table uses it.
             if self._backend == "api":
-                if not await self._discover_model():
-                    # Endpoint unreachable or no usable model — not available.
-                    if not self._available:
-                        logger.warning(
-                            "embedding_api_unavailable base_url=%s "
-                            "(backend not ready — keyword search only)",
-                            getattr(self, "_base_url", ""),
-                        )
-                        return False
-                    if not self._dim_known:
-                        await self._probe_api_dim()
-                elif not self._available:
-                    # The endpoint lists a model but its backend dependency is
-                    # missing (local-embed reports available=false) — degrade
+                await self._discover_model()
+                if not self._available:
+                    # Endpoint unreachable, no usable model, or the listed
+                    # model's backend dependency is missing — degrade
                     # instead of running a drainer that 503s on every batch.
                     logger.warning(
-                        "embedding_backend_unavailable model=%s base_url=%s "
-                        "(dependency missing — keyword search only)",
+                        "embedding_api_unavailable model=%s base_url=%s "
+                        "(backend not ready — keyword search only)",
                         self._model, getattr(self, "_base_url", ""),
                     )
                     return False
+                if not self._dim_known:
+                    # The endpoint could not pin the real width — this is the
+                    # configured-model-not-listed case, which _discover_model
+                    # keeps and reports True, but its guess may be wrong.  A
+                    # wrong width silently drops every vec0 insert of a
+                    # different size, so probe it once before the gate opens.
+                    await self._probe_api_dim()
             return True
         if self._loading is not None:
             return await self._loading  # share the in-flight load

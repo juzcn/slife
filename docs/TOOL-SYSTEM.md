@@ -150,7 +150,7 @@ Search the whole catalog:
 ```
 query    -- free text over name/description/schema
 category -- builtin|job|mcp|rest-api|skill|cli; empty = all
-status   -- all|loaded|unloaded|disabled|unavailable; default all
+status   -- all|loaded|unloaded|disabled|error|n/a; default all
 mode     -- hybrid (default) | keyword | grep
 ```
 

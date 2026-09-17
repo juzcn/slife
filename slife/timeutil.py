@@ -25,12 +25,13 @@ from datetime import date, datetime, timedelta
 
 #: Relative-date words LLMs may pass verbatim despite being told to
 #: compute ISO datetimes.  We convert them server-side so a time-window
-#: search doesn't silently return zero (or wrong) results.
+#: search doesn't silently return zero (or wrong) results.  ``now`` is NOT
+#: cached here: it is a time-of-day, not a calendar date — see
+#: :func:`normalize_time_bound`.
 _RELATIVE_DATES: dict[str, str] = {
     "today": "",
     "yesterday": "",
     "tomorrow": "",
-    "now": "",
 }
 
 
@@ -57,10 +58,14 @@ def normalize_time_bound(
         _RELATIVE_DATES["today"] = today_iso
         _RELATIVE_DATES["yesterday"] = (today - timedelta(days=1)).isoformat()
         _RELATIVE_DATES["tomorrow"] = (today + timedelta(days=1)).isoformat()
-        _RELATIVE_DATES["now"] = now_local_seconds()
 
     key = value.strip().lower()
-    if key in _RELATIVE_DATES:
+    if key == "now":
+        # ``now`` is a time-of-day, so it must stay fresh: day-caching it
+        # would pin a search window to the day's first resolution (a
+        # ``since=now`` at 14:00 after a 09:00 call would bound against 09:00).
+        value = now_local_seconds()
+    elif key in _RELATIVE_DATES:
         value = _RELATIVE_DATES[key]
 
     if granularity == "date":

@@ -132,7 +132,12 @@ class TaskStore:
         transport: str | None = None,
         limit: int = 50,
     ) -> list[TaskRecord]:
-        """Return filtered task records, newest first."""
+        """Return filtered task records, newest first.
+
+        The store's bulk-read surface (the LLM-facing ``a2a_list_tasks`` tool
+        was retired with the push-model rework — see docs/A2A-MQTT.md — but
+        the records stay queryable here).
+        """
         result = list(self._records.values())
 
         if agent_name is not None:
@@ -145,13 +150,6 @@ class TaskStore:
         # Newest first
         result.sort(key=lambda r: r.created_at, reverse=True)
         return result[:limit]
-
-    def count_by_status(self) -> dict[str, int]:
-        """Return ``{status: count}`` summary."""
-        counts: dict[str, int] = {}
-        for r in self._records.values():
-            counts[r.status] = counts.get(r.status, 0) + 1
-        return counts
 
     # ── Maintenance ───────────────────────────────────────────────────
 

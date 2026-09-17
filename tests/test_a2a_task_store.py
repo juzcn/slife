@@ -179,10 +179,6 @@ class TestTaskStoreReads:
         records = store.list_tasks(limit=1)
         assert len(records) == 1
 
-    def test_count_by_status(self, store):
-        counts = store.count_by_status()
-        assert counts == {"completed": 1, "failed": 1, "pending": 1}
-
 
 # ── TaskStore — maintenance ─────────────────────────────────────────────
 

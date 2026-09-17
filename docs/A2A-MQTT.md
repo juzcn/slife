@@ -124,8 +124,11 @@ preempt (`cancellations` → `inbox.cancel_correlation`, Esc-equivalent) unless 
   an inbound task via the bridge (nothing is published as a new request).
 - **Delivery retry profile** (the standard values above): re-publish the same payload under a fresh
   correlation when no first reply arrives within 15 s, backoff 1000/2000/4000 ms ± 20 %, ≤ 3 attempts.
-  Any reply (a deduped `working` replay confirms delivery) stops the retries. A late reply still routes
-  after exhaustion — the push model never abandons a result.
+  Any reply (a deduped `working` replay confirms delivery) stops the retries. Every correlation a task
+  was published under stays routed until its **terminal** reply arrives — the peer answers on whichever
+  correlation it first saw, so that is usually a retry correlation, not the primary one.  All of a task's
+  correlation entries are dropped together as the terminal reply routes; exhaustion + a subsequently
+  late reply still routes — the push model never abandons a result.
 - **Reply routing**: non-terminal replies (submitted/working) are ignored; artifact text is held; a
   terminal reply (completed/cancelled/failed) records the store entry and enqueues the auto-push.
 - `a2a_cancel_task` → standard `CancelTask`; `a2a_list_agents` → own card + presence cache;

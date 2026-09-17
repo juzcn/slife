@@ -7,6 +7,8 @@ from collections.abc import Callable, Awaitable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NewType
 
+from slife.ui.i18n import t
+
 if TYPE_CHECKING:
     from slife.agent.loop import AgentEventHandler
 
@@ -96,8 +98,10 @@ class Channel:
         if self.kind == "heartbeat":
             return "Heartbeat> "
         if self.kind == "subagent":
+            # The i18n-aware label — the one string live and restored bubbles
+            # both render (see restore_prefix), so the two cannot diverge.
             name = self.data.get("name") or "subagent"
-            return f"Subagent({name})> "
+            return t("subagent_prefix", name=name)
         peer = self.data.get("agent_name") or self.data.get("name") or "?"
         return f"A2A({peer})> "
 

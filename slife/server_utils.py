@@ -274,6 +274,26 @@ def tools_changed_bus(server) -> "SubscriptionBus":
     return bus
 
 
+def request_tools_changed(notifier: "ToolsChangedNotifier") -> None:
+    """Fire-and-forget ``tools/list_changed`` publish via *notifier*.
+
+    The shared body every plugin server's module-level
+    ``_request_tools_changed`` used to spell out: schedule a detached
+    publish so a slow ``tools/call`` handler never blocks on the fan-out.
+    Callers MUST NOT rely on delivery ordering; hosts re-list on receipt.
+    """
+    notifier.request_tools_changed()
+
+
+async def flush_tools_changed(notifier: "ToolsChangedNotifier") -> None:
+    """Eager-flush via *notifier*: publish in this task, deterministically.
+
+    The deterministic alias tests use (await the full round-trip); production
+    paths should fire-and-forget with :func:`request_tools_changed`.
+    """
+    await notifier.flush()
+
+
 class _WarmAfterHandshake(Middleware):
     """Middleware that runs a background warm-up after the first tools/list."""
 

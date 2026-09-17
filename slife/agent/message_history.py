@@ -262,6 +262,27 @@ def unwrap_info_envelope(text: str) -> str:
     and A2A (plus legacy WECHAT) markers — exactly our injected prefixes —
     are stripped.  Returns *text* unchanged when no marker is present.
     """
+    display, _span = _unwrap_with_footnote(text)
+    return display
+
+
+def info_footnote_span(text: str) -> tuple[int, int] | None:
+    """Display-side half-open span of the unwrapped ``[INFO: …]`` payload.
+
+    A caller that styles the footnote (the TUI's dim-italic suffix) needs the
+    span in *display* coordinates: the raw-text ``rfind`` index is shifted by
+    any leading channel marker :func:`unwrap_info_envelope` strips.  Returns
+    None when no INFO envelope is present.
+    """
+    _display, span = _unwrap_with_footnote(text)
+    return span
+
+
+def _unwrap_with_footnote(text: str) -> tuple[str, tuple[int, int] | None]:
+    """Shared engine behind :func:`unwrap_info_envelope` and
+    :func:`info_footnote_span`: the display string plus the half-open span
+    of the unwrapped INFO payload in that string.
+    """
     if text.startswith(WECHAT_MARKER):
         text = text[len(WECHAT_MARKER):]
     for prefix in (WECHAT_PREFIX, SUBAGENT_PREFIX, A2A_PREFIX):
@@ -271,11 +292,11 @@ def unwrap_info_envelope(text: str) -> str:
                 text = text[end + 1:].lstrip()
     start = text.rfind(INFO_PREFIX)
     if start == -1:
-        return text
+        return text, None
     payload = text[start + len(INFO_PREFIX):]
     if payload.endswith("]"):
         payload = payload[:-1]
-    return text[:start] + payload
+    return text[:start] + payload, (start, start + len(payload))
 
 
 class MessageHistory:
@@ -573,6 +594,18 @@ class MessageHistory:
 
         return cleaned
 
+    def _last_user_index(self) -> int | None:
+        """Index of the last user message — the current turn's start.
+
+        Shared by every turn-boundary operation (pop_last_turn,
+        clear_history, extract_oldest_turns); None when the history has no
+        user message.
+        """
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i]["role"] == "user":
+                return i
+        return None
+
     def pop_last_turn(self) -> int:
         """Remove the last user turn and all subsequent messages.
 
@@ -584,16 +617,7 @@ class MessageHistory:
         Returns:
             Number of messages removed.
         """
-        if not self.messages:
-            return 0
-
-        # Find the index of the last user message
-        last_user_idx = None
-        for i in range(len(self.messages) - 1, -1, -1):
-            if self.messages[i]["role"] == "user":
-                last_user_idx = i
-                break
-
+        last_user_idx = self._last_user_index()
         if last_user_idx is None:
             return 0
 
@@ -627,16 +651,7 @@ class MessageHistory:
         Returns:
             Number of messages removed.
         """
-        if not self.messages:
-            return 0
-
-        # Find the last user message (start of the current turn)
-        last_user_idx: int | None = None
-        for i in range(len(self.messages) - 1, -1, -1):
-            if self.messages[i]["role"] == "user":
-                last_user_idx = i
-                break
-
+        last_user_idx = self._last_user_index()
         if last_user_idx is None:
             return 0
 
@@ -758,12 +773,7 @@ class MessageHistory:
 
         # Find the last user message — the current turn starts here and
         # must never be removed.
-        last_user_idx: int | None = None
-        for i in range(len(self.messages) - 1, -1, -1):
-            if self.messages[i]["role"] == "user":
-                last_user_idx = i
-                break
-
+        last_user_idx = self._last_user_index()
         if last_user_idx is None:
             return [], 0
 

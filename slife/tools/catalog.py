@@ -242,6 +242,21 @@ _SCAN_COLS = (
     "t.name, t.description, t.category, t.type, t.source_id, t.schema, "
     "t.enabled, t.status, t.last_loaded"
 )
+# The four-column substring predicate shared by _search_like / search_grep
+# (4 ``?`` placeholders per column ANDed into name/description/category/schema).
+_LIKE_WHERE = (
+    "(t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\'"
+    " OR t.category LIKE ? ESCAPE '\\' OR t.schema LIKE ? ESCAPE '\\')"
+)
+# Keyword-result spine: scan columns + a description snippet anchored on the
+# first search term + a zero rank.  Keyword searches order by category/name;
+# rank only matters to the hybrid semantic merge.
+_SEARCH_SELECT = (
+    f"SELECT {_SCAN_COLS},"
+    " substr(t.description, max(0, instr(t.description, ?) - 40), 160) AS snippet,"
+    " 0 AS rank"
+    " FROM tool t"
+)
 
 
 class CatalogStore:
@@ -880,26 +895,9 @@ class CatalogStore:
         for w in words:
             safe = _like_escape(w)
             like = f"%{safe}%"
-            and_clauses.append(
-                "(t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\'"
-                " OR t.category LIKE ? ESCAPE '\\' OR t.schema LIKE ? ESCAPE '\\')"
-            )
+            and_clauses.append(_LIKE_WHERE)
             params.extend([like, like, like, like])
-        where = " AND ".join(and_clauses)
-        if category:
-            where += " AND t.category = ?"
-            params.append(category)
-        params.append(limit)
-        cursor = await self._c.execute(
-            f"""SELECT {_SCAN_COLS},
-                      substr(t.description, max(0, instr(t.description, ?) - 40), 160) AS snippet,
-                      0 AS rank
-               FROM tool t
-               WHERE {where}
-               ORDER BY t.category, t.name LIMIT ?""",
-            params,
-        )
-        return [dict(row) for row in await cursor.fetchall()]
+        return await self._search_by_sql(and_clauses, params, category, limit)
 
     async def search_grep(
         self, pattern: str, limit: int = 20, category: str = "",
@@ -908,23 +906,27 @@ class CatalogStore:
         limit = _clamp_limit(limit)
         safe = _like_escape(pattern)
         like_pattern = f"%{safe}%"
-        clauses = ""
         params: list = [
             pattern, like_pattern, like_pattern, like_pattern, like_pattern,
         ]
+        return await self._search_by_sql([_LIKE_WHERE], params, category, limit)
+
+    async def _search_by_sql(
+        self, clauses: list[str], params: list, category: str, limit: int,
+    ) -> list[dict]:
+        """Run one keyword ``AND``-clause search against the shared spine.
+
+        Both LIKE flavours build their clauses+params (the first param of
+        *params* is the snippet anchor — the first search term), then append
+        the optional category filter and the LIMIT here.
+        """
+        where = " AND ".join(clauses)
         if category:
-            clauses += " AND t.category = ?"
+            where += " AND t.category = ?"
             params.append(category)
         params.append(limit)
         cursor = await self._c.execute(
-            f"""SELECT {_SCAN_COLS},
-                      substr(t.description, max(0, instr(t.description, ?) - 40), 160) AS snippet,
-                      0 AS rank
-               FROM tool t
-               WHERE (t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\'
-                      OR t.category LIKE ? ESCAPE '\\' OR t.schema LIKE ? ESCAPE '\\')
-                     {clauses}
-               ORDER BY t.category, t.name LIMIT ?""",
+            f"{_SEARCH_SELECT} WHERE {where} ORDER BY t.category, t.name LIMIT ?",
             params,
         )
         return [dict(row) for row in await cursor.fetchall()]

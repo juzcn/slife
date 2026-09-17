@@ -23,25 +23,21 @@ import re
 from pathlib import Path
 
 import aiosqlite
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 from slife.plugins.memdb.search import merge_hybrid
 from slife.plugins.memdb.store import (
+    DEFAULT_EMBEDDING_DIM,
+    VecStoreLifecycleMixin,
     _clamp_limit,
     _contains_cjk,
     _like_escape,
-    _not_vec0_create,
     _serialize_f32,
     _to_fts5_query,
-    _vec0_create,
     in_placeholders,
-    run_schema,
 )
 from slife.timeutil import normalize_time_bound, now_local_seconds
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_EMBEDDING_DIM = 1536
 
 #: Local ISO-seconds timestamp — the shared helper under the store's name
 #: (memdb aliases it the same way).
@@ -126,8 +122,15 @@ _KIND_SPECS = {
 _KIND_NAMES = ("note", "diary", "file", "report")
 
 
-class MemfilesStore:
+class MemfilesStore(VecStoreLifecycleMixin):
     """The memfiles index: three typed document tables + hybrid search."""
+
+    _semantic_tables: tuple[str, ...] = tuple(
+        _KIND_SPECS[k]["semantic"] for k in _KIND_NAMES
+    )
+    _meta_table = "meta"
+    _schema_dir = Path(__file__).parent
+    _store_log_key = "memfiles"
 
     def __init__(self, db_path: Path):
         self._db_path = db_path
@@ -146,6 +149,8 @@ class MemfilesStore:
         self._write_lock = asyncio.Lock()
 
     # ── lifecycle ─────────────────────────────────────────────────
+    # ``setup`` / ``reconfigure_for_embedding`` / ``_run_schema`` /
+    # ``_maybe_migrate_vec_dimension`` come from VecStoreLifecycleMixin.
 
     @property
     def _c(self):
@@ -159,135 +164,6 @@ class MemfilesStore:
     @property
     def mem_dir(self) -> Path:
         return self._mem_dir
-
-    async def setup(
-        self,
-        embedding_dim: int = DEFAULT_EMBEDDING_DIM,
-        embedding_model: str = "",
-    ) -> None:
-        self._embedding_dim = embedding_dim
-        self._embedding_model = embedding_model
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = await aiosqlite.connect(
-            str(self._db_path), timeout=_timeouts.timeouts.storage.sqlite_busy,
-        )
-        self._conn.row_factory = aiosqlite.Row
-        await self._conn.execute("PRAGMA journal_mode=WAL")
-        await self._conn.execute("PRAGMA foreign_keys=ON")
-        # Embeddings are optional AND semantically deferred: when no real
-        # dimension is applied here (dim == 0), don't pay to load the
-        # sqlite-vec DLL inside the startup-critical lifespan.  The
-        # reconfigure path (SemanticManager.enable after the handshake)
-        # loads it the first time a real dimension is applied.
-        if embedding_dim > 0:
-            await self._load_vec_extension()
-        if not self._vec_available:
-            self._embedding_dim = 0
-        await self._run_schema()
-        logger.info(
-            "memfiles_store_ready path=%s wal=on vec_dim=%d model=%s",
-            self._db_path, self._embedding_dim, embedding_model or "none",
-        )
-
-    async def reconfigure_for_embedding(
-        self, embedding_dim: int, embedding_model: str = "",
-    ) -> None:
-        if self._conn is None:
-            await self.setup(
-                embedding_dim=embedding_dim, embedding_model=embedding_model,
-            )
-            return
-        self._embedding_dim = embedding_dim
-        self._embedding_model = embedding_model
-        if not self._vec_available:
-            await self._load_vec_extension()
-            if not self._vec_available:
-                self._embedding_dim = 0
-        await self._run_schema()
-
-    async def _load_vec_extension(self) -> None:
-        try:
-            import sqlite_vec
-            await self._c.enable_load_extension(True)
-            await self._c.load_extension(sqlite_vec.loadable_path())
-            await self._c.enable_load_extension(False)
-            await self._c.execute("SELECT vec_version()")
-            self._vec_available = True
-            logger.info("memfiles_vec_loaded")
-        except Exception as e:
-            self._vec_available = False
-            logger.warning("memfiles_vec_unavailable err=%s", e)
-
-    async def _run_schema(self) -> None:
-        # Shared statement-by-statement executor (vec0 tables hang in
-        # executescript).  Skip only actual vec0 CREATE statements when no
-        # embedding backend — not any fragment whose leading comment merely
-        # mentions "vec0" (the header comment does) — see _not_vec0_create.
-        keep = None if self._embedding_dim > 0 else _not_vec0_create
-        await run_schema(
-            self._c, Path(__file__).parent / "schema.sql",
-            self._embedding_dim, keep=keep, log_prefix="memfiles_schema",
-        )
-        await self._maybe_migrate_vec_dimension()
-
-    async def _maybe_migrate_vec_dimension(self) -> None:
-        """Drop + recreate the vec0 tables when dim/model changed (mirrors memdb).
-
-        ``CREATE TABLE IF NOT EXISTS`` won't resize an existing vec0 table; a
-        model/dimension change makes old vectors invalid (different vector
-        space), so the tables are dropped and the drainer rebuilds them.
-        """
-        if self._embedding_dim <= 0:
-            return
-        cursor = await self._c.execute(
-            "SELECT value FROM meta WHERE key = 'embedding_model'",
-        )
-        row = await cursor.fetchone()
-        stored_model = row[0] if (row and isinstance(row[0], str)) else ""
-        model_identity = self._embedding_model or ""
-
-        migrated = False
-        for kind in _KIND_NAMES:
-            sem = _KIND_SPECS[kind]["semantic"]
-            cursor = await self._c.execute(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
-                (sem,),
-            )
-            row = await cursor.fetchone()
-            create_sql = row[0] if (row and row[0] and isinstance(row[0], str)) else ""
-            existing_dim = 0
-            if create_sql:
-                m = re.search(r"float\[(\d+)\]", create_sql)
-                if m:
-                    existing_dim = int(m.group(1))
-            dim_changed = existing_dim and existing_dim != self._embedding_dim
-            model_changed = (
-                model_identity and stored_model and stored_model != model_identity
-            )
-            if dim_changed or model_changed or not create_sql:
-                logger.info("memfiles_vec_migrate table=%s dim=%s→%s model=%s→%s",
-                            sem, existing_dim, self._embedding_dim,
-                            stored_model, model_identity)
-                await self._c.execute(f"DROP TABLE IF EXISTS {sem}")
-                migrated = True
-        if migrated:
-            await self._c.commit()
-            await self._run_schema_recreate_vec()
-
-        if model_identity and model_identity != stored_model:
-            await self._c.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES ('embedding_model', ?)",
-                (model_identity,),
-            )
-            await self._c.commit()
-
-    async def _run_schema_recreate_vec(self) -> None:
-        """Re-create only the vec0 tables after a dimension migration."""
-        await run_schema(
-            self._c, Path(__file__).parent / "schema.sql",
-            self._embedding_dim, keep=_vec0_create,
-            log_prefix="memfiles_vec_recreate",
-        )
 
     async def close(self) -> None:
         if self._conn is not None:

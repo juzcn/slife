@@ -298,9 +298,3 @@ class TestHelperFunctions:
         from slife.ui.tool_display import _primary_arg_value
         val = _primary_arg_value({"x": 1, "y": 2})
         assert val is None
-
-    def test_unique_suffix_increments(self):
-        from slife.ui.tool_display import _unique_suffix
-        a = _unique_suffix()
-        b = _unique_suffix()
-        assert int(b) == int(a) + 1
