@@ -261,6 +261,35 @@ class TestPresence:
         assert len(events) == 1
         assert events[0][1] == "online"
 
+    def test_deleted_card_retires_the_peer(self):
+        """A deleted retained card arrives as an EMPTY publish with no
+        properties, and the absent-property default is "online" — so the
+        deletion used to resurrect the peer it retired, leaving a test agent
+        online in every running session forever.  Deleting the card must drop
+        the peer, not re-announce it."""
+        mesh = _make_mesh()
+        events = []
+        mesh.on_agent_change = lambda card, e: events.append((card, e))
+        topic = "$a2a/v1/discovery/default/default/peer-1"
+        mesh._handle_discovery(_msg(topic, b'{"name":"peer-1"}', status="online"))
+        events.clear()
+
+        mesh._handle_discovery(_msg(topic, b"", status=None))
+
+        assert "peer-1" not in {str(c.agent_name) for c in mesh.list_agents()}
+        assert [e[1] for e in events] == ["offline"]   # announced, not silent
+
+    def test_deleting_an_unknown_card_is_silent(self):
+        """The cleanup fixture clears cards BEFORE a run too; a delete for a
+        peer we never saw must not invent an offline line."""
+        mesh = _make_mesh()
+        events = []
+        mesh.on_agent_change = lambda card, e: events.append((card, e))
+        mesh._handle_discovery(
+            _msg("$a2a/v1/discovery/default/default/nobody", b"", status=None),
+        )
+        assert events == []
+
     def test_list_agents_own_first_then_peers_sorted(self):
         mesh = _make_mesh()
         mesh._handle_discovery(

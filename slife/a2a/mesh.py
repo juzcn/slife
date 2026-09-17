@@ -553,6 +553,22 @@ class A2AMesh:
             if _presence_status(msg.properties) == "online":
                 self._responder_ready.set()
             return
+        if not msg.payload:
+            # An EMPTY retained publish is how a publisher retires its card
+            # (MQTT has no "card removed" event, so the deletion arrives as an
+            # ordinary message).  It carries no `a2a-status` property, and the
+            # absent-property default is "online" — so without this the
+            # deletion would RESURRECT the peer it just retired.  Dropping the
+            # card means dropping the peer: a session that watched one vanish
+            # must not keep it in the roster.
+            prev = self._peers.pop(agent_id, None)
+            if prev is not None and prev.status == "online":
+                self.on_agent_change(
+                    AgentCard(agent_name=AgentName(agent_id), status="offline"),
+                    "offline",
+                )
+            logger.debug("a2a_presence_card_deleted agent=%s", agent_id)
+            return
         status = _presence_status(msg.properties)
         prev = self._peers.get(agent_id)
         if prev is not None and prev.status == status:

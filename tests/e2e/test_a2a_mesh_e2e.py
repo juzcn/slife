@@ -16,16 +16,20 @@ Run with mosquitto up:
 """
 
 import asyncio
+import json
 import logging
 import sys
 
 import aiomqtt
 import pytest
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.properties import Properties
 
 from slife.a2a.broker import probe_broker
 from slife.a2a.config import A2AConfig
 from slife.a2a.mesh import A2AMesh
 from slife.a2a.task_store import clear_store
+import slife.timeouts as _timeouts
 
 pytestmark = pytest.mark.e2e
 
@@ -34,21 +38,64 @@ logger = logging.getLogger(__name__)
 BROKER_HOST = "localhost"
 BROKER_PORT = 1883
 
+#: Connect budget for the throwaway cleanup clients below — the same "how long
+#: do we wait for the broker" value the startup probe uses.  Without it, a port
+#: that DROPS SYNs (filtered/firewalled rather than refused) makes every
+#: cleanup wait out the OS connect timeout (~21 s on Windows).
+_CLEANUP_TIMEOUT = float(_timeouts.timeouts.ready.probe_broker)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _require_broker():
+    """Skip the whole module when no broker answers — ONE probe, before any
+    aiomqtt client is constructed.
+
+    The cleanup fixture below opens real MQTT connections; against a filtered
+    port each one spends the OS connect timeout before failing, so a
+    broker-less run used to burn ~35 s skipping two tests.  Probing up front
+    bounds that to the registry's probe budget (and the in-scenario probes stay
+    as the guard for a broker that dies mid-run).
+    """
+    if not asyncio.run(probe_broker(BROKER_HOST, BROKER_PORT)):
+        pytest.skip("mosquitto not reachable at localhost:1883")
+
 
 async def _clear_retained(agent: str) -> None:
-    """Delete our agent's retained discovery card (publish empty retained
-    payload) so an e2e run never leaves a stale offline card polluting other
-    sessions' presence on a shared broker."""
+    """Retire our agent's retained discovery card — in TWO publishes.
+
+    A DELETED retained card tells observers **nothing** (MQTT has no "card
+    removed" event), and a mesh keeps peers in the cache its discovery
+    messages feed: a slife session running while the tests run saw `e2e-a`
+    online, and deleting the card left it online in that roster for good.
+    So:
+
+      1. publish an OFFLINE card — the same shape the SDK's responder writes on
+         shutdown (`a2a-status: offline`, source `agent`) — so every live
+         session turns the peer offline;
+      2. delete the retained card (empty payload) so the broker is left clean
+         and a later session never replays it.
+
+    Deleting alone (the old behaviour) is why the two e2e agents stayed in a
+    running session's peer list long after the run finished.
+    """
+    topic = f"$a2a/v1/discovery/default/default/{agent}"
+    offline_props = Properties(PacketTypes.PUBLISH)
+    offline_props.UserProperty = [
+        ("a2a-status", "offline"),
+        ("a2a-status-source", "agent"),
+    ]
+    card = json.dumps({"name": agent, "description": "e2e test agent"})
     try:
         async with aiomqtt.Client(
             hostname=BROKER_HOST, port=BROKER_PORT,
             protocol=aiomqtt.ProtocolVersion.V5,
             identifier=f"e2e-cleanup-{agent}",
+            timeout=_CLEANUP_TIMEOUT,
         ) as client:
             await client.publish(
-                f"$a2a/v1/discovery/default/default/{agent}",
-                b"", qos=1, retain=True,
+                topic, card, qos=1, retain=True, properties=offline_props,
             )
+            await client.publish(topic, b"", qos=1, retain=True)
     except Exception:
         # NOT swallowed: a silent failure here is how a stale retained card
         # outlives the run and greets every later slife session as a live peer.

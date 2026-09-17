@@ -39,3 +39,39 @@ class TestProbeBroker:
         with patch("asyncio.wait_for", side_effect=TimeoutError):
             result = await probe_broker("localhost", 1883)
             assert result is False
+
+    @pytest.mark.asyncio
+    async def test_a_dead_first_address_does_not_hide_a_live_one(self):
+        """Every resolved address gets tried: a name resolving to IPv6 first
+        must not report a broker that listens on IPv4 as missing.
+
+        On Windows a dead ``::1`` refused only after ~2 s, which spent the
+        whole 1 s budget on the FIRST address — the probe answered False (and
+        A2A stayed disabled) while the broker was up and reachable two lines
+        further down the list.
+        """
+        import socket
+
+        infos = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 1883, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1883)),
+        ]
+        mock_writer = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+        calls: list[tuple] = []
+
+        async def _open(host, port, **kwargs):
+            calls.append((host, port, kwargs.get("family")))
+            if host == "::1":
+                raise ConnectionRefusedError
+            return MagicMock(), mock_writer
+
+        with patch("asyncio.get_running_loop") as loop, \
+             patch("asyncio.open_connection", _open):
+            loop.return_value.getaddrinfo = AsyncMock(return_value=infos)
+            assert await probe_broker("localhost", 1883) is True
+
+        # The dead family was tried first, the live one second — and it was
+        # pinned to its own family rather than re-resolved by name.
+        assert calls == [("::1", 1883, socket.AF_INET6),
+                         ("127.0.0.1", 1883, socket.AF_INET)]
