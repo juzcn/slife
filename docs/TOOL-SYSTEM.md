@@ -6,20 +6,34 @@
 
 ## 1 · Why a unified system
 
-Before the rework: `tool_search` could only find MCP tools; every MCP server was loaded or unloaded **as a whole**; native tools always flooded the tool list. Three symptoms (§8.5):
+Before the rework: `tool_search` could only find MCP tools; every MCP server was loaded or unloaded **as a whole**; builtin tools always flooded the tool list. Three symptoms (§8.5):
 
 - search could not address the other tool kinds (builtin / job / rest-api / skill / cli);
 - every configured server was connected eagerly AND all of its tools injected, so connect cost and context cost both scaled with the config rather than with use;
 - loading was not granular — one MCP server's dozens of tools all entered the context at once, blowing up the schema box the model must read every turn.
 
-The goal is one unified model: **every function tool** (builtin, job, mcp, rest-api) is a row in one shared catalog with a **loaded / unloaded** state; the LLM discovers with one `tool_search`, loads with one `func-tool-load`, and a **threshold** manages how many loaded tools fit in the context. The catalog (`tools.db`) is the single source of truth — with one schema per tool that the injection chain reads directly.
+The goal is one unified model: **every function tool** (builtin, job, plugin, mcp, rest-api) is a row in one shared catalog with a **loaded / unloaded** state; the LLM discovers with one `tool_search`, loads with one `func-tool-load`, and a **threshold** manages how many loaded tools fit in the context. The catalog (`tools.db`) is the single source of truth — with one schema per tool that the injection chain reads directly.
 
 Key properties:
 
-- **Unified search + load.** `tool_search` spans every category in the catalog (all six `tools.json5` sections); `func-tool-load` loads any function tool by name.
+- **Unified search + load.** `tool_search` spans every category in the catalog (the six `tools.json5` sections plus the plugin tools); `func-tool-load` loads any function tool by name.
 - **Threshold-managed.** A configurable cap (`tool_load.threshold`, default 100) bounds how many function tools are injected; the harness evicts the oldest-by-usage at turn boundaries. Never evicted — and the only things injected before the model asks: the whitelist (harness pair + 5 meta tools + 2 pinned) and anything marked `autoload` in `tools.json5`.
 - **Granular.** Load/unload is per-tool, not per-server. A connected MCP server with 50 tools injects only the ones the model loaded.
 - **DB-driven injection.** The schema injected into the LLM comes from the catalog's `schema` column — never re-fetched from the live MCP server or parsed from tool code.
+
+### Vocabulary — system, job, external
+
+Three families, by **who owns the tool** — the category column is the *provenance* inside its family:
+
+| family | owner | categories | what it is |
+|---|---|---|---|
+| **system** | the developer | `builtin`, `plugin` | slife ships it: a module in `slife/tools/`, or a built-in plugin's own tool (memdb's `turn_search`, the gateway's `mcp_set`, job-coding's `job-write`) |
+| **job** | the user | `job` | code the user wrote themselves: a public function in `jobs/`, exposed by the job-coding plugin as `job-<function>` |
+| **external** | a third party | `mcp`, `rest-api` | someone else's server, reached through the mcp-gateway (`{server}__{tool}`) |
+
+`skill` and `cli` are rows with **no runtime component** — a playbook file and a `tools.json5` entry, not tools anything can call — so they belong to none of the three families: they are user-authored *content* the system reads, not tools it runs.
+
+The split is what `SERVER_CATEGORIES` encodes on the code side (`mcp`/`rest-api` are the external ones — the only rows a gateway death marks `error`, the only sources the config purge owns), and it is why `system_tools_list` lists the system family only: a job is inventoried by `job-list`, and an external tool's schema already rides every request.
 
 ---
 
@@ -31,7 +45,7 @@ The tool system is configured entirely in `tools.json5` (sibling of `slife.json5
 builtin:   [{name, enabled, autoload, ...overrides}]
 mcp:       {servers: {<name>: {command|url, args, env, enabled, autoload, source, ...}}}
 rest-api:  {<name>: {spec_url, base_url, api_key, enabled, autoload, ...}}   # OpenAPI via mcp-openapi-proxy
-job:       [{name, enabled, autoload}]                          # jobs are files in jobs/
+job:       [{name, enabled, autoload}]                          # jobs are files in jobs/ (tool: job-<name>)
 cli:       {<name>: {command, description, enabled, autoload}}  # cli_list enumerates
 skill:     [{name, enabled, autoload}]
 
@@ -79,30 +93,38 @@ Every transition is written by the HOST as it reconciles:
 ### `tool` — one row per tool
 
 ```
-name        -- unique; external tools are "{server}__{tool}", everything else bare
+name        -- unique; external tools are "{server}__{tool}", a job is
+               "job-" + its function name (job-translate), system tools bare
 description -- used by search
-category    -- builtin | job | mcp | rest-api | skill | cli  (where it came from)
+category    -- builtin | job | plugin | mcp | rest-api | skill | cli (where it came from)
 type        -- func | skill | cli  (what kind of thing it is; derived from category)
-source_id   -- owning server name for mcp/rest-api, else NULL
+source_id   -- owning server name for mcp/rest-api, owning PLUGIN name for
+               plugin/job rows, NULL for builtin (no separate component owns them)
 schema      -- the tool def {name, description, inputSchema} for func rows;
                the SKILL.md text for skill rows; NULL for cli rows
-enabled     -- config disable mirror for LOCAL categories; NULL for mcp/rest-api
-               (their availability is the row's own status, not a config flag)
+enabled     -- config disable mirror for LOCAL categories (builtin/job/plugin/
+               skill/cli — a plugin tool is configured in the builtin or job
+               section); NULL for mcp/rest-api (their availability is the row's
+               own status, not a config flag)
 status      -- loaded | unloaded | error for type='func'; NULL for skill/cli
 last_loaded -- ISO timestamp, bumped on func-tool-load and on every successful execute (LRU key)
 ```
 
-`category` and `type` answer different questions: the category is the tool's *provenance* (a builtin module, a job file, an external server, the skills dir, a `tools.json5` cli entry — one per `tools.json5` section), the type is its *kind*. Only `func` has a load state, so `type` is what the load/unload rules read; it is **derived from `category` at write time** in one place (`type_for_category`, used by `CatalogStore.upsert_tool`), so the two columns cannot drift. A db written by an older schema is ALTERed and backfilled at boot (`_migrate`).
+`category` and `type` answer different questions: the category is the tool's *provenance* (a builtin module, a job file, a built-in plugin's own tool, an external server, the skills dir, a `tools.json5` cli entry), the type is its *kind*. Only `func` has a load state, so `type` is what the load/unload rules read; it is **derived from `category` at write time** in one place (`type_for_category`, used by `CatalogStore.upsert_tool`), so the two columns cannot drift.
+
+`plugin` and `job` are the two categories the built-in **job-coding** plugin feeds, split by name: a `job-<function>` tool is a job file's function (`job`), everything else the plugin exposes — `job-write` / `job-list` / `job-run` / `job-remove` — is the plugin's own (`plugin`), as is every other built-in plugin's tool (`catalog_service.plugin_category`).
+
+Schema revisions: a v2/v3 file is ALTERed and backfilled at boot (`_migrate`). **v4 (the `plugin` category) is deliberately not migrated** — widening a `CHECK` needs the table rebuilt, and this db is derived data (every row comes from the registry, `tools.json5`, the skills dir or the plugin children), so the file is DELETED and rebuilt instead. `_check_categories` reads the live DDL at every open and reports a stale file through `system_health` rather than letting its writes fail silently.
 
 **The `schema` column is the row's documentation — what the model reads and what search indexes.** For a func row it is exactly the tool def, and it is exactly what gets injected; its shape is fixed to `{name, description, inputSchema}`:
 
 - `inputSchema` is a plain JSON Schema (per-parameter type + description + `required`). Nothing custom is ever placed *inside* it — a non-standard key would make the schema invalid for the tool-calling wire format.
-- No other keys. The source's declared *output* schema (an MCP server's `outputSchema`, fastmcp's `output_schema`) is deliberately **dropped**: the OpenAI function definition has no return slot, and a `-> str` wrapper yields only a meaningless `{result: string}` artifact. Return information belongs in `description` — where native tools already state it ("Run a shell command. Returns stdout + stderr.") and where a plugin tool's docstring summary lands (note: fastmcp *discards* a `Returns:` docstring section, so it must be in the summary to survive).
+- No other keys. The source's declared *output* schema (an MCP server's `outputSchema`, fastmcp's `output_schema`) is deliberately **dropped**: the OpenAI function definition has no return slot, and a `-> str` wrapper yields only a meaningless `{result: string}` artifact. Return information belongs in `description` — where builtin tools already state it ("Run a shell command. Returns stdout + stderr.") and where a plugin tool's docstring summary lands (note: fastmcp *discards* a `Returns:` docstring section, so it must be in the summary to survive).
 - It is **never docstring text** — plugin tools enter the catalog as the JSON schema fastmcp derived from their signature/docstring, not as the raw docstring.
 
 `_function_from_schema` re-serializes this column into the OpenAI function definition (`parameters` ← `inputSchema`), so the stored schema and the wire schema are one and the same — a single `descriptor_json` builder writes it at every site (seed, external mirror, plugin mirror).
 
-Only `type='func'` (builtin | job | mcp | rest-api) participates in the load state (the §8.5 status rule: "loaded unloaded only applies to function tools; skill and cli stay null"). The other two types are rows all the same — being in the catalog is what makes them findable by `tool_search`, which is the whole point of one catalog:
+Only `type='func'` (builtin | job | plugin | mcp | rest-api) participates in the load state (the §8.5 status rule: "loaded unloaded only applies to function tools; skill and cli stay null"). The other two types are rows all the same — being in the catalog is what makes them findable by `tool_search`, which is the whole point of one catalog:
 
 - **skill** — one row per skill directory, `status` NULL. The `schema` is the SKILL.md verbatim: a playbook *is* its documentation, so that text is what search indexes (keyword via FTS, semantic via the drainer) and `skill_use` returns it to the model. Rows are mirrored from the skills dir at boot and after every `skill_set` / `skill_remove` / `skill_set_enabled` (`skill_catalog_rows` → `ToolCatalogService.sync_category`); `enabled` mirrors the `skills:` config disable.
 - **cli** — one row per `tools.json5` `cli` entry, `status` NULL, `schema` NULL (a CLI has no tool def — the description is what identifies it, and `cli_list` carries the command/install detail). Mirrored from the `cli` section at boot and after every `cli_set` / `cli_remove` / `cli_set_enabled`.
@@ -149,7 +171,7 @@ Search the whole catalog:
 
 ```
 query    -- free text over name/description/schema
-category -- builtin|job|mcp|rest-api|skill|cli; empty = all
+category -- builtin|job|plugin|mcp|rest-api|skill|cli; empty = all
 status   -- all|loaded|unloaded|disabled|error|n/a; default all
 mode     -- hybrid (default) | keyword | grep
 ```
@@ -194,7 +216,9 @@ Evicted tools stay registered but leave the injection snapshot, and an execution
 
 ### Plugin & job tool rows
 
-The built-in plugins' own tools (job-coding's per-job tools, the other plugins' bare-name tools) are mirrored into the catalog when the plugin connects and again on every runtime tool-set change (a `job-write` / `job-remove` → `tools/list_changed` → the host's `_rescan_plugin_tools`). The mirror is **upsert + purge**: `_mirror_plugin_tools_catalog` writes the current rows (`job` category for job-coding, `builtin` for the rest) and `_purge_plugin_tool_rows` deletes the rows of tools that vanished (`old_names - new_names` via `CatalogStore.remove_tool`) — so a removed job cannot linger as a stale row that `tool_search` keeps returning.
+A built-in plugin's tools are mirrored into the catalog **when its child is spawned and ready** (`_spawn_plugin_generic`, the one path every plugin start and watchdog restart takes), when a subagent connects over HTTP to a shared plugin, and again on every runtime tool-set change (a `job-write` / `job-remove` → `tools/list_changed` → the host's `_rescan_plugin_tools`). Each row is `plugin` (the plugin's own tool) or `job` (a job file's function), with `source_id` naming the plugin that owns it; status follows the same rule as the builtin seed, so a plugin tool is **searchable, not injected, until loaded**.
+
+The mirror is **upsert + purge**: `_mirror_plugin_tools_catalog` writes the current rows and `_purge_plugin_tool_rows` deletes the rows of tools that vanished (`old_names - new_names` via `CatalogStore.remove_tool`) — so a removed job cannot linger as a stale row that `tool_search` keeps returning. Two further edges: a plugin that is **skipped** (its enable gate said no) owns no rows, so its rows are purged; and a plugin whose child **exits** has its rows marked `error` (`mark_source_error`), cleared back to each tool's own default when it is up again (`mark_plugin_connected`).
 
 ---
 

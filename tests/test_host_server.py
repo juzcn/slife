@@ -175,7 +175,7 @@ class TestBuildRegistryMcp:
         store = CatalogStore(tmp_path / "tools.db")
         await store.open()
         svc = ToolCatalogService(store, write_owner=True)
-        await svc.seed_inventory([_Shell()])
+        await svc.sync_system_tools([_Shell()])
 
         reg = _registry()
         mcp = build_registry_mcp(reg, catalog=svc)

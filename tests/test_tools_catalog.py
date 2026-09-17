@@ -403,11 +403,17 @@ async def test_type_is_derived_from_category(store):
     columns cannot drift, and a non-function row refuses load/unload."""
     await store.upsert_tool("execute_shell", category="builtin")
     await store.upsert_tool("svc__search", category="mcp", source_id="svc")
+    await store.upsert_tool("turn_search", category="plugin", source_id="memdb")
     await store.upsert_tool("readme", category="skill")
     await store.upsert_tool("mycmd", category="cli")
 
     assert (await store.get_tool("execute_shell"))["type"] == TYPE_FUNC
     assert (await store.get_tool("svc__search"))["type"] == TYPE_FUNC
+    # A plugin's own tool is a function tool too — it carries a load state and
+    # its plugin as the source.
+    plugin_row = await store.get_tool("turn_search")
+    assert plugin_row["type"] == TYPE_FUNC
+    assert plugin_row["source_id"] == "memdb"
     assert (await store.get_tool("readme"))["type"] == TYPE_SKILL
     assert (await store.get_tool("mycmd"))["type"] == TYPE_CLI
     # A re-upsert under another category moves the type with it.
@@ -416,6 +422,71 @@ async def test_type_is_derived_from_category(store):
     # Search rows carry it too (one row shape for every read path).
     hits = await store.search_keyword("execute_shell")
     assert [h["type"] for h in hits] == [TYPE_FUNC]
+
+
+# ── The stale-CHECK guard (no in-place migration by policy) ──────────
+
+#: The ``tool`` table as v3 created it: same columns, category CHECK without
+#: ``plugin``.  ``CREATE TABLE IF NOT EXISTS`` never touches such a table, and
+#: widening a CHECK needs a rebuild the project does not do — so the file is
+#: meant to be deleted, and this is the guard that says so.
+_V3_TOOL_DDL = """
+CREATE TABLE tool (
+    name        TEXT PRIMARY KEY,
+    description TEXT NOT NULL DEFAULT '',
+    category    TEXT NOT NULL
+                CHECK (category IN ('builtin','job','mcp','rest-api','skill','cli')),
+    type        TEXT NOT NULL DEFAULT 'func'
+                CHECK (type IN ('func','skill','cli')),
+    source_id   TEXT, schema TEXT, enabled INTEGER, status TEXT, last_loaded TEXT)
+"""
+
+
+def test_category_check_values_reads_only_the_category_clause():
+    """The parser is scoped to the category CHECK on purpose: ``'skill'`` and
+    ``'cli'`` also appear in the TYPE check, so a whole-statement substring
+    test would report a category list missing them as complete."""
+    from slife.tools.catalog import _category_check_values
+
+    values = _category_check_values(_V3_TOOL_DDL)
+    assert values == {"builtin", "job", "mcp", "rest-api", "skill", "cli"}
+    assert "plugin" not in values
+    assert _category_check_values("CREATE TABLE tool (name TEXT PRIMARY KEY)") is None
+
+
+@pytest.mark.asyncio
+async def test_stale_category_check_is_reported_not_silently_broken(tmp_path):
+    """An old file keeps its old CHECK, so every ``plugin`` write fails — and
+    the mirror is best-effort, so the tools would just stay uncatalogued.  The
+    open-time probe must say so (the file is deleted, not migrated)."""
+    import aiosqlite
+    from slife.health import clear, get_report
+
+    clear()
+    path = tmp_path / "tools.db"
+    conn = await aiosqlite.connect(str(path))
+    await conn.execute(_V3_TOOL_DDL)
+    await conn.execute("INSERT INTO tool(name, category) VALUES ('execute_shell', 'builtin')")
+    await conn.execute("PRAGMA user_version = 3")
+    await conn.commit()
+    await conn.close()
+
+    store = CatalogStore(path)
+    await store.open()
+
+    entry = next(e for e in get_report() if e.get("component") == "tool_catalog")
+    assert entry["level"] == "warning"
+    assert entry["value"] == "stale (no plugin category)"
+    assert "Delete" in entry["hint"] and str(path) in entry["hint"]
+    # …and the reason it matters, verified rather than asserted in prose: the
+    # write the plugin mirror would make is refused by the old constraint.
+    import sqlite3
+    with pytest.raises(sqlite3.IntegrityError):
+        await store.upsert_tool("turn_search", category="plugin", source_id="memdb")
+    # The pre-existing row is untouched and still readable.
+    assert (await store.get_tool("execute_shell"))["category"] == "builtin"
+    await store.close()
+    clear()
 
 
 @pytest.mark.asyncio

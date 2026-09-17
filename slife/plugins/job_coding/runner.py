@@ -199,9 +199,11 @@ llm = _LLMProxy()
 # persistent connection pool — bare MCP, on demand.  The gateway's port is
 # pushed by the host on every gateway connect/reconnect
 # (``__set_mcp_gateway_port``), with the spawn-time env var
-# ``SLIFE_MCP_GATEWAY_PORT`` as a fallback.  Both are read LAZILY, on the
-# first ``mcp.call`` — no hook-up at plugin start.  The gateway's INTERNAL
-# tool ``__mcp_call_tool(server, tool_name, arguments)`` reaches any tool
+# ``SLIFE_MCP_GATEWAY_PORT`` as a fallback.  The CONNECTION is lazy (opened
+# by the first ``mcp.call``, never at plugin start); the port itself is a
+# readable fact at any time — the harness's health probe resolves it
+# without connecting.  The gateway's INTERNAL tool
+# ``__mcp_call_tool(server, tool_name, arguments)`` reaches any tool
 # on any connected external server, including tools never loaded into the
 # main agent's tool registry (only ``auto_load`` servers are; unloaded tool
 # names are probed at authoring time via the host's ``mcp_list_tools``).
@@ -215,6 +217,9 @@ def _gateway_port_env() -> str:
 
 #: Per-process gateway connection state.  Nothing is established until the
 #: first ``mcp.call``; the host push re-points it on gateway restart.
+#: ``_gateway_port`` holds the port the host pushed (or an env-resolved port
+#: cached by a successful connect) — :meth:`_resolve_port` is what adds the
+#: env fallback, so a probe never reads this global alone.
 _gateway_port: str | None = None     # last known port ("push" or "env")
 _gateway_port_source: str = ""       # "push" | "env" | "" — diagnostic only
 _gateway_client: "Any | None" = None  # MCPClient, lazily built
@@ -245,15 +250,32 @@ class _GatewayProxy:
     branch on — the same determinism contract as ``llm``.
     """
 
+    def _resolve_port(self) -> tuple[str | None, str]:
+        """The port a call would use, resolved WITHOUT connecting.
+
+        Host push wins; ``SLIFE_MCP_GATEWAY_PORT`` is the fallback — a
+        job-coding child spawned after the gateway inherits it, and the
+        host's push only reaches a client that is already up.  Shared by
+        :attr:`port` / :attr:`port_source` (the health facts) and
+        :meth:`_client` (the connect), so what a probe reports is exactly
+        what a call uses.
+        """
+        if _gateway_port:
+            return _gateway_port, _gateway_port_source
+        env_port = (os.environ.get(_gateway_port_env()) or "").strip()
+        if env_port:
+            return env_port, "env"
+        return None, ""
+
     @property
     def port(self) -> str | None:
-        """The gateway port currently in use (push or env), or None."""
-        return _gateway_port
+        """The gateway port a call would use (push or env), or None."""
+        return self._resolve_port()[0]
 
     @property
     def port_source(self) -> str:
         """Where the port came from: ``"push"``, ``"env"``, or ``""``."""
-        return _gateway_port_source
+        return self._resolve_port()[1]
 
     @property
     def connected(self) -> bool:
@@ -313,11 +335,7 @@ class _GatewayProxy:
                 _gateway_client = None
                 client = None
 
-            port, source = _gateway_port, _gateway_port_source
-            if not port:
-                env_port = os.environ.get(_gateway_port_env())
-                if env_port and env_port.strip():
-                    port, source = env_port.strip(), "env"
+            port, source = self._resolve_port()
             if not port:
                 logger.warning("job_mcp_no_gateway_port")
                 return None

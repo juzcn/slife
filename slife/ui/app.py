@@ -366,7 +366,7 @@ class SlifeApp(App):
         """Initialize status bar and start all plugins via auto-discovery.
 
         Plugins are discovered by scanning ``slife.plugins.*`` — the
-        same mechanism as native tools.  Built-in plugins (memdb, mcp,
+        same mechanism as builtin tools.  Built-in plugins (memdb, mcp,
         wechat) get their post-connect hooks; third-party plugins are
         started with the generic :meth:`AgentService.start_plugin_server`.
         """

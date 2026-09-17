@@ -1,9 +1,10 @@
 # Slife
 
-> **Tool tiers, in one line.** Slife presents three kinds of tools to the LLM,
-> indistinguishable at the call site: **native** tools (shipped in
-> `slife/tools/`, auto-discovered), **built-in plugin** tools (first-class,
-> bare names — e.g. `turn_search`, `mcp_set`), and **external MCP server**
+> **Tool families, in one line.** Slife presents three families to the LLM,
+> indistinguishable at the call site: the developer's **system** tools —
+> builtin (`slife/tools/`, auto-discovered) and built-in plugin tools
+> (first-class, bare names — e.g. `turn_search`, `mcp_set`) — the user's
+> **jobs** (`job-<function>` — code the user wrote), and a third party's **external MCP server**
 > tools (`{server}__{tool}`, loaded on demand).
 
 **Terminal-based AI agent** — a function-calling loop with minimum harness. Chat with an LLM that calls tools, remembers every turn forever, and orchestrates other agents.
@@ -15,7 +16,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: **63 native tools by default** across 14 categories (including the reserved harness tool `_turn_prompt`, auto-invoked each turn), **eight internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, and the MCP gateway `mcp-gateway`), the **`local-embed`** embedding daemon (started manually), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: **63 builtin tools by default** across 14 categories (including the reserved harness tool `_turn_prompt`, auto-invoked each turn), **eight internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, and the MCP gateway `mcp-gateway`), the **`local-embed`** embedding daemon (started manually), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -225,25 +226,25 @@ models: {
 
 ### Tools
 
-All unified as OpenAI function definitions — the LLM sees no difference between native, built-in plugin, and external MCP tools. Every tool additionally accepts three meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt — Y approve / N, Esc deny).
+All unified as OpenAI function definitions — the LLM sees no difference between system tools (builtin + built-in plugin) and external MCP tools. Every tool additionally accepts three meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt — Y approve / N, Esc deny).
 
-**62 native tools in 14 categories** (63 classes auto-discovered from `slife/tools/`; `install_python_package` ships disabled in the bundled config). The reserved harness tools `_turn_prompt` (per-turn prompt, once per turn) and `_check_new_input` (mid-turn message injection, at iteration boundaries in cut-in mode) are auto-invoked by the loop — the model reads their results but is told not to call them. `attach_image` is auto-invoked on `@`-attachments and refuses at call time on a vision-less model.
+**62 builtin tools in 14 categories** (63 classes auto-discovered from `slife/tools/`; `install_python_package` ships disabled in the bundled config). The reserved harness tools `_turn_prompt` (per-turn prompt, once per turn) and `_check_new_input` (mid-turn message injection, at iteration boundaries in cut-in mode) are auto-invoked by the loop — the model reads their results but is told not to call them. `attach_image` is auto-invoked on `@`-attachments and refuses at call time on a vision-less model.
 
 | Category | Tools |
 |----------|-------|
-| System | `system_health`, `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `set_midturn_input` (mid-turn preemption on/off), `notify_user`, `wait_minutes` (pause the turn and resume automatically), `add_user_pref` (record a preference in `USER.md`) |
+| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `set_midturn_input` (mid-turn preemption on/off), `notify_user`, `wait_minutes` (pause the turn and resume automatically), `add_user_pref` (record a preference in `USER.md`) |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` (disabled by default) |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
-| Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
+| Config | `config_env_set`, `config_env_get`, `config_env_remove` |
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image` (feed images to a vision model), `_turn_prompt` (per-turn prompt, auto-invoked), `_check_new_input` (mid-turn input, auto-invoked) |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | embeddings | `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_enable` |
 | mcp | `mcp_tool_load` (legacy alias) |
-| ToolSystem | `tool_search` (catalog search across all six categories), `func-tool-load`, `_unload_func_tool` (self-service unload) |
+| ToolSystem | `tool_search` (catalog search across every category), `func-tool-load`, `_unload_func_tool` (self-service unload) |
 
 **Managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts; `model_set` **merges** into the existing entry, so a field-focused change can't silently strip a model's `reasoning`/`input`/`compat`. `rest_api_set` registers an OpenAPI-described external API as one server backed by `mcp-openapi-proxy` (Low-Level Mode, the default) — every spec endpoint becomes a typed `{name}__{endpoint}` tool.
 
@@ -260,7 +261,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + one tool per registered job (e.g. `translate`) |
 
-**One catalog for every tool, managed by a threshold.** Third-party capability enters only as a standard MCP server in `tools.json5` (`mcp` + `rest-api` sections — any stdio / SSE / Streamable HTTP server works, no Slife SDK required). All six categories live in one shared `tools.db`; the model discovers across all of them with `tool_search` (grep / keyword / semantic hybrid, with category + status filters), then loads a specific tool with `func-tool-load(full_name)` — per-tool, not per-server, so one large server injects only the tools actually used. Nothing is injected just because it exists: a tool is born `unloaded` and only `func-tool-load` puts it in the tool list (the whitelist — harness pair, meta tools, and the pinned `skill_use` / `system_health` — and anything marked `autoload: true` in `tools.json5` excepted). The injected list is capped by a threshold (default 100, tunable in `tools.json5`) and the harness evicts least-recently-used tools at turn boundaries. A server's lifecycle is one switch per family (`mcp_set_enabled` / `rest_api_set_enabled`) — the modern MCP protocol has no session to open or close, so enabling connects and a tool call reconnects lazily — and **every enabled server is brought up at boot**; a server that is down has its tools marked `error`, so they never inject a dead transport. The catalog is synced live from the connections on every (re)connect — no offline rebuild step. Full design: **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
+**One catalog for every tool, managed by a threshold.** Third-party capability enters only as a standard MCP server in `tools.json5` (`mcp` + `rest-api` sections — any stdio / SSE / Streamable HTTP server works, no Slife SDK required). Every category — builtin, job, plugin, mcp, rest-api, skill, cli — lives in one shared `tools.db`; the model discovers across all of them with `tool_search` (grep / keyword / semantic hybrid, with category + status filters), then loads a specific tool with `func-tool-load(full_name)` — per-tool, not per-server, so one large server injects only the tools actually used. Nothing is injected just because it exists: a tool is born `unloaded` and only `func-tool-load` puts it in the tool list (the whitelist — harness pair, meta tools, and the pinned `skill_use` / `system_health` — and anything marked `autoload: true` in `tools.json5` excepted). The injected list is capped by a threshold (default 100, tunable in `tools.json5`) and the harness evicts least-recently-used tools at turn boundaries. A server's lifecycle is one switch per family (`mcp_set_enabled` / `rest_api_set_enabled`) — the modern MCP protocol has no session to open or close, so enabling connects and a tool call reconnects lazily — and **every enabled server is brought up at boot**; a server that is down has its tools marked `error`, so they never inject a dead transport. The catalog is synced live from the connections on every (re)connect — no offline rebuild step. Full design: **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
 
 **Windows execution.** `execute_shell` runs in the detected shell — PowerShell or cmd (the same value the system prompt reports, so the LLM's syntax actually executes) — and its output is decoded with the system code page (GBK/cp936 on Chinese Windows). `run_python_script` forces the child Python to UTF-8 (`-X utf8`) so non-ASCII output can't crash the child.
 
@@ -277,7 +278,7 @@ Every turn is permanently recorded in SQLite (`~/.slife/<agent>.db`) and searche
 | `hybrid` | Semantic recall (FTS5 + vector → RRF merge) |
 | `time` | Browse by date |
 
-Embeddings are a **first-class top-level `embeddings` section** in `slife.json5` (shared by `memdb` + `memfiles`), managed by the native `embeddings_*` tools; runtime index status is surfaced by `system_health`. Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); `active_model` ("provider" — e.g. `"local_embed"` or `"siliconflow"`) is configuration-authoritative. The **`local-embed` daemon** (started manually, like Mosquitto — not a slife plugin) serves local GGUF/transformer models at `http://127.0.0.1:17347/v1`, each loaded **once** and shared by `memdb` and `memfiles` — no double load — with no "active model" of its own (the client requests the model it wants, so a model is never loaded twice). **Keyword search works without any embedding backend.** Semantic (hybrid) results are only served once the index is fully built for the current model — while a reindex runs, hybrid degrades to keyword-only and resumes automatically when indexing finishes.
+Embeddings are a **first-class top-level `embeddings` section** in `slife.json5` (shared by `memdb` + `memfiles`), managed by the builtin `embeddings_*` tools; runtime index status is surfaced by `system_health`. Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); `active_model` ("provider" — e.g. `"local_embed"` or `"siliconflow"`) is configuration-authoritative. The **`local-embed` daemon** (started manually, like Mosquitto — not a slife plugin) serves local GGUF/transformer models at `http://127.0.0.1:17347/v1`, each loaded **once** and shared by `memdb` and `memfiles` — no double load — with no "active model" of its own (the client requests the model it wants, so a model is never loaded twice). **Keyword search works without any embedding backend.** Semantic (hybrid) results are only served once the index is fully built for the current model — while a reindex runs, hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
 Each turn records two timestamps — your input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers. User messages carry a compact **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** footnote (the turn id plus when it happened) so the agent can reference turns by id (`turn_read` / `turn_summarize`) — and you read the same line in the TUI.
 
@@ -295,7 +296,7 @@ Tasks fire **only while Slife is running**. At the next start a one-shot sweep s
 
 ### Jobs — deterministic, code-defined
 
-For work that is well-specified and repeatable — translate, summarize, extract, classify, format — a **Job** runs one code-defined function with exactly the arguments it declares, instead of dragging a whole conversation into an agent turn. Jobs are plain `.py` files in `~/.slife/jobs/` (one public function = one job tool; see the `job-coding` skill for the conventions and the bundled `translate` / `summarize` samples). The plugin reloads them at every start and manages them live:
+For work that is well-specified and repeatable — translate, summarize, extract, classify, format — a **Job** runs one code-defined function with exactly the arguments it declares, instead of dragging a whole conversation into an agent turn. Jobs are plain `.py` files in `~/.slife/jobs/` (one public function = one `job-<function>` tool; see the `job-coding` skill for the conventions and the bundled `translate` / `summarize` samples). The plugin reloads them at every start and manages them live:
 
 - `job-list` — see the registered jobs
 - `job-write` / `job-remove` — add/change (create or replace; a broken write rolls back) or delete a job; its tool appears/disappears immediately and survives restarts

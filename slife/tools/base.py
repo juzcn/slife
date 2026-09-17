@@ -1,4 +1,4 @@
-"""Slife native tool specification & abstract base class.
+"""Slife tool specification & abstract base class.
 
 ═══════════════════════════════════════════════════════════════════════
 Native Tool Contract (third-party tools MUST follow this)
@@ -204,8 +204,8 @@ class Tool(ABC):
     description: ClassVar[str]
     parameters: ClassVar[dict]
 
-    # Logical category for grouping in list_native_tools output — a
-    # free-form display label each native tool sets itself (e.g. System,
+    # Logical category for grouping in system_tools_list output — a
+    # free-form display label each builtin tool sets itself (e.g. System,
     # Execution, Skills, Models, Config, Credentials, CLI, REST API,
     # Vision, Display, Subagent, Harness).  Built-in plugin tools
     # are grouped by their plugin name instead; external MCP tools are

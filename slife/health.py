@@ -1,6 +1,6 @@
 """Startup health collector — subsystems push status here during init.
 
-Native tools (like ``system_health``) read from this module to report
+Builtin tools (like ``system_health``) read from this module to report
 system status to the LLM.  Logs are invisible to the agent; this module
 bridges that gap.
 
@@ -18,6 +18,12 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import TYPE_CHECKING
+
+# Annotation-only: the store must stay importable from the earliest startup
+# path (``slife/__init__.py``), so it never imports config at runtime.
+if TYPE_CHECKING:
+    from slife.config import ModelConfig
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +75,29 @@ def record(
         _entries.append(entry)
         if len(_entries) > _MAX_ENTRIES:
             del _entries[:-_MAX_ENTRIES]
+
+
+def record_active_model(model: ModelConfig) -> None:
+    """Record the active model's facts for ``system_health``.
+
+    Called at startup AND on every live switch (``reload_active_model``):
+    the report's ``model`` line is the only place the model describes
+    itself (the system prompt carries no model name), and a switch would
+    otherwise leave the session's opening model in the report.
+    ``replace=True`` keeps the store at exactly one ``model`` entry — the
+    one the last switch wrote — which is also what the report's own merge
+    layer assumes.  One definition for both producers: a second inline copy
+    of this text is what drifts.
+    """
+    record(
+        "model", "ok", key="active", replace=True,
+        value=(
+            f"{model.ref} (thinking="
+            f"{'on' if model.thinking_enabled else 'off'}, "
+            f"vision={'on' if model.supports_vision else 'off'}, "
+            f"ctx {model.context_window})"
+        ),
+    )
 
 
 def get_report() -> list[dict]:

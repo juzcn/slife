@@ -29,7 +29,7 @@ The sections are layered — orientation first, then the deep mechanics, then re
 | New to the codebase, wanting the map | **Part 1** (orientation + concepts), then skim Part 2 |
 | Working on the agent loop / context / prompts | **Part 2** |
 | Adding an LLM backend or dealing with wire formats | **Part 3** |
-| Adding or changing a native tool | **Part 4** |
+| Adding or changing a builtin tool | **Part 4** |
 | Working on tool load/unload, the catalog, search, or MCP reconcile | **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** |
 | Writing or debugging a plugin, the MCP gateway, jobs, subagents | **Part 5** + [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) + [SUBAGENT.md](docs/SUBAGENT.md) |
 | Working on memory, search, embeddings, session restore | **Part 6** |
@@ -60,7 +60,7 @@ The sections are layered — orientation first, then the deep mechanics, then re
 
 ### What Slife is
 
-A single Textual TUI around a streaming function-calling loop. The LLM picks from a unified tool registry — native tools, built-in plugin tools, and external MCP tools are indistinguishable at the call site (all OpenAI function definitions). Every turn is persisted unconditionally to SQLite; the context the model sees is engineered explicitly (see [Part 2](#part-2--the-agent) and [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)). Plugins — including the MCP gateway to external servers — are independent child processes over Streamable HTTP, declared spec-driven and driven by one uniform lifecycle.
+A single Textual TUI around a streaming function-calling loop. The LLM picks from a unified tool registry — system tools (builtin + built-in plugins), jobs, and external MCP tools are indistinguishable at the call site (all OpenAI function definitions). Every turn is persisted unconditionally to SQLite; the context the model sees is engineered explicitly (see [Part 2](#part-2--the-agent) and [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)). Plugins — including the MCP gateway to external servers — are independent child processes over Streamable HTTP, declared spec-driven and driven by one uniform lifecycle.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -79,7 +79,7 @@ A single Textual TUI around a streaming function-calling loop. The LLM picks fro
 │  Thinking support                        │                            │
 ├──────────────────────────────────────────┴───────────────────────────┤
 │  Tool Registry — unified OpenAI function definitions                 │
-│  Native · Built-in plugin tools · External MCP ({server}__{tool})    │
+│  System (builtin · plugin tools) · External MCP ({server}__{tool})   │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins — independent child processes (Streamable HTTP)             │
 │  mcp-gateway · memdb · wechat · a2a (MQTT) · memfiles                │
@@ -115,8 +115,8 @@ Two audiences, two languages. The model input reads uniformly in English; the hu
 **Model input — English (uniform):**
 
 - **System prompt** (`agent.j2` / `subagent.j2` + `slife.j2`, `turn_prompt.j2`): English.
-- **Native tool schemas** — tool `name`, `description`, parameter docs, and result strings: English.
-- **Plugin tool schemas and result strings**: English (same policy as native tools — they are model-visible).
+- **System tool schemas** — a builtin or plugin tool's `name`, `description`, parameter docs, and result strings: English.
+- **Job tool schemas and result strings**: English too (the user authors them, but they are model-visible).
 - **External tools** (MCP servers, skills, third-party commands): keep the language of the external source — do not translate. They are opaque and pass through as-is.
 - **Logs** (session file + console): English — for developers, per the [Logging Convention](#logging-convention).
 
@@ -194,12 +194,12 @@ Active history stays within `context_floor`–`context_ceiling` (default 20%–8
 
 Two distinct concepts live under different prefixes. They are **not** two tiers of the same thing:
 
-1. **`_` (single underscore) = harness, LLM-visible but reserved.** Harness tools are invoked by the agent loop *on the agent's behalf* — the LLM does not decide to call them. The only one is the native `_turn_prompt` (`slife/tools/models.py`): `AgentLoop._auto_invoke()` injects it each turn as a normal `assistant(tool_calls)` + `tool` pair. It **does** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept its tool-call pair in history — and the system prompt tells the model to *read its latest result* rather than call it (an implicit don't-call; it is side-effect free if invoked anyway). Context trimming is **not** a tool. Note: `attach_image` is also auto-invoked via `_auto_invoke`, but it has no `_` prefix and is not schema-reserved, so it is not a harness tool.
+1. **`_` (single underscore) = harness, LLM-visible but reserved.** Harness tools are invoked by the agent loop *on the agent's behalf* — the LLM does not decide to call them. The only one is the builtin `_turn_prompt` (`slife/tools/models.py`): `AgentLoop._auto_invoke()` injects it each turn as a normal `assistant(tool_calls)` + `tool` pair. It **does** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept its tool-call pair in history — and the system prompt tells the model to *read its latest result* rather than call it (an implicit don't-call; it is side-effect free if invoked anyway). Context trimming is **not** a tool. Note: `attach_image` is also auto-invoked via `_auto_invoke`, but it has no `_` prefix and is not schema-reserved, so it is not a harness tool.
 2. **`__` (double underscore) = plugin internal tool, LLM-invisible.** This is a **plugin-spec marker**, not a harness concept. Plugin internal tools (`__memory_save_turn`, `__a2a_drain_incoming`, `__mcp_call_tool`, `__check`, …) are ordinary MCP tools that happen to serve the main process rather than the LLM. They are filtered out of the schema before registration (`is_internal_tool` in `slife/server_utils.py`, applied on every registration and reconcile path) and are called programmatically via `client.call_tool("__…")`.
 
 | Tool | Shape | Category |
 |------|-------|----------|
-| `_turn_prompt` | Native tool, auto-invoked each turn | Harness — visible-but-reserved |
+| `_turn_prompt` | Builtin tool, auto-invoked each turn | Harness — visible-but-reserved |
 | `__memory_save_turn` / `__memory_get_recent_turns` / `__memory_reload_semantic` / `__memory_context_start_advance` / `__check` | memdb plugin | Internal — invisible |
 | `__wechat_drain_incoming` / `__check` | wechat plugin | Internal — invisible |
 | `__scheduled_*` (10) / `__memfiles_reload_semantic` / `__user_pref_append` / `__check` | memfiles plugin | Internal — invisible |
@@ -246,7 +246,7 @@ Recurring tasks the agent runs on a cron schedule, designed as three separated c
 - **Record.** `scheduled_tasks` (definition), `scheduled_runs` (per-fire state + report link), and `reports` live in the memfiles DB. A `report_save` bound to a task backfills the newest un-linked run's `report_id` at the store layer — pending → ran is the **only** success writeback.
 - **Failed & missed runs — settled at startup.** The one-shot `schedule_startup_sweep` reaps every surviving `pending` run to `failed`, and fires due while slife was down to `missed`. It posts no message. Both surface via `scheduled_run_list` and can be backfilled (`run_schedule_now`) or closed (`scheduled_run_skip`). Tasks fire **only while slife is running**.
 
-Tools: `scheduled_task_set` / `scheduled_task_remove` / `scheduled_task_list`, `scheduled_run_list` / `scheduled_run_skip`, `run_schedule_now` — all native, "Schedule" category. `run_schedule_now` takes `due_at` (backfill) and `clone_context=True` (spawn the worker with a clone of the current conversation). `scheduled_task_set`'s `description` is **schema-required** — it is the worker's instruction.
+Tools: `scheduled_task_set` / `scheduled_task_remove` / `scheduled_task_list`, `scheduled_run_list` / `scheduled_run_skip`, `run_schedule_now` — all builtin, "Schedule" category. `run_schedule_now` takes `due_at` (backfill) and `clone_context=True` (spawn the worker with a clone of the current conversation). `scheduled_task_set`'s `description` is **schema-required** — it is the worker's instruction.
 
 ### Context Injection
 
@@ -277,7 +277,7 @@ Reasoning ("thinking") support is per-backend:
 
 **Prompt caching (Anthropic system blocks):** `AnthropicBackend` emits each OpenAI `system` message as an Anthropic system content block and tags the **last** one with `cache_control: {type: "ephemeral"}` — the static base prompt becomes the cache breakpoint, so only the dynamic `_turn_prompt` status (a message-stream tool pair, never a second `system` message) changes per turn. Guarded by `_use_system_cache_control()`: on by default for `api.anthropic.com`, off for Anthropic-compatible providers (Bailian/Qwen) that may reject the field, overridable per model via `compat.cacheControl`.
 
-**History validation.** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_turn_prompt` is therefore a **declared native tool** (schema-present, auto-invoked by the loop), not a history-layer fabrication — so its pair validates. DeepSeek (Chat Completions) doesn't validate and is unaffected. Context trimming no longer needs schema validation at all — it is internal (`_trim_after_save`), not a tool call.
+**History validation.** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_turn_prompt` is therefore a **declared builtin tool** (schema-present, auto-invoked by the loop), not a history-layer fabrication — so its pair validates. DeepSeek (Chat Completions) doesn't validate and is unaffected. Context trimming no longer needs schema validation at all — it is internal (`_trim_after_save`), not a tool call.
 
 **History wire shape.** `OpenAIResponsesBackend` emits the Responses API's native `function_call` / `function_call_output` items for tool history — not the Chat-Completions `role:"tool"` / `tool_calls` shape (unit-tested; not yet exercised against a live endpoint).
 
@@ -289,7 +289,7 @@ An Anthropic-Messages gateway that runs LiteLLM's prompt sanitizer rewrites an e
 
 ### Model Management
 
-Runtime model management via native tools — no config editing needed:
+Runtime model management via builtin tools — no config editing needed:
 
 | Tool | Description |
 |------|-------------|
@@ -310,7 +310,7 @@ Model switches fire callbacks that rebuild the LLM client, update loop parameter
 
 `execute_shell` runs commands in the **detected shell** — `detect_current_shell()`: PowerShell / cmd on native Windows, `$SHELL` on POSIX incl. WSL — the **same value the system prompt reports**, so the LLM's shell syntax actually executes. Output is decoded with the system code page (GBK/cp936 on zh-CN Windows); `run_python_script` forces the child Python to UTF-8 via `-X utf8`.
 
-Three tool tiers exist, indistinguishable to the LLM: **native** tools (own names), **built-in plugin** tools (bare names, `[<server>]` description prefix), and **external MCP server** tools (`{server}__{tool}`, discovered with `tool_search` and loaded per-tool with `func-tool-load`). The naming rules are fixed; the load/unload machinery is [the Unified Tool Catalog](#tool-categories-the-unified-catalog--managed-surfaces).
+Three families exist by **ownership**, indistinguishable to the LLM at the call site. **System** tools are the developer's — a builtin module's tool (own name) or a built-in plugin's own tool (bare name, `[<plugin>]` description prefix). **External** tools are a third party's (`{server}__{tool}` for an MCP/REST server, discovered with `tool_search` and loaded per-tool with `func-tool-load`). A **job** (`job-<function>`) is the user's own — code *they* wrote: the job-coding plugin only exposes it. The naming rules are fixed; the load/unload machinery is [the Unified Tool Catalog](#tool-categories-the-unified-catalog--managed-surfaces).
 
 ### Schema Authoring
 
@@ -318,7 +318,7 @@ The schema is the model's only view of a tool — write it for the model, not th
 
 - **`description` = what the tool does.** One or two sentences: what it does and what it returns. Do **not** write when-to-use ("Use when…"), and do **not** restate knowledge the LLM already has (pip, timeouts, env-var concepts). Keep project-specific facts the model cannot infer — idempotency ("upsert — add + update in one call"), blocking ("BLOCKS until the model is loaded"), effect timing ("takes effect after restart"), or that a value comes from a sibling tool.
 - **Parameter docs = how to use.** Per parameter: the accepted format, where the value comes from ("`turn_id` from `turn_list`"), what the values mean, and the default.
-- **Mechanism.** Native tools carry parameter docs directly in the `parameters` dict. Plugin tools (`@mcp.tool`) get them from a Google-style `Args:` docstring — fastmcp parses it into the input schema, so a plugin tool whose parameters have no `Args:` yields an undocumented schema.
+- **Mechanism.** Builtin tools carry parameter docs directly in the `parameters` dict. Plugin tools (`@mcp.tool`) get them from a Google-style `Args:` docstring — fastmcp parses it into the input schema, so a plugin tool whose parameters have no `Args:` yields an undocumented schema.
 - **Language.** Model-visible strings are English (see [Language policy](#language-policy)). Content authored by an external source keeps the source language.
 
 There is a deliberate asymmetry: tool schemas sent to the LLM carry **business parameters only**. The three meta-parameters (`_timeout`, `_async`, `_approve`), declared once in the system prompt, are popped by `_execute_tools` before dispatch — re-describing them on each of ~60 schemas would be the single biggest per-request context tax.
@@ -327,11 +327,11 @@ There is a deliberate asymmetry: tool schemas sent to the LLM carry **business p
 
 `slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory` and the `_skip_auto_register` base classes `_ModelConfigTool` / `_EmbeddingsConfigTool`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides and per-model requirements enforced at **execute time** rather than load time: tools are always registered, and a tool like `attach_image` refuses at runtime when the active model has no vision (`vision=false` error) instead of being silently-missing.
 
-The current inventory — 64 native classes in 14 categories (63 LLM-visible with the shipped config's `install_python_package: enabled: false`), plus the built-in plugin tools by server — is enumerated in the [README](README.md#tools). It is a *reference*, not a duplicate: the mechanism lives here, the catalog lives there.
+The current inventory — 64 builtin classes in 14 categories (63 LLM-visible with the shipped config's `install_python_package: enabled: false`), plus the built-in plugin tools by server — is enumerated in the [README](README.md#tools). It is a *reference*, not a duplicate: the mechanism lives here, the catalog lives there.
 
 ### Tool Categories, the Unified Catalog & Managed Surfaces
 
-**The catalog is the load/unload model.** Every tool is a row in one shared `tools.db` — a *function tool* (builtin / job / mcp / rest-api) or a *skill* / *cli* entry, which is what `type` says. Function tools carry a `loaded / unloaded / error` state (`error` = the tool's external server is unusable, written by the reconcile); **skill and cli carry no load state** (they are always available). Skill and cli rows are mirrored from their own live sources — the skills dir and `tools.json5`'s `cli` section — at boot and after every `skill_*` / `cli_*` mutation, which is how `tool_search` finds them; a skill row's `schema` is its SKILL.md, so a playbook is searchable by its own text. State never lives in the registry — `ToolRegistry` is only the execution pool of materialized instances. The system is configured by the six category sections of `tools.json5` (plus the `tool_load.threshold` knob) — every entry carries the two policy flags `enabled` and `autoload`, per tool where a tool has its own name (builtin / job) and per server in mcp / rest-api, whose tool names are unknown until they connect. Seeding is at boot: a new row is born `loaded` only for the two autoload sources — the whitelist (system protection, not configurable) and the `autoload` entries — `unloaded` otherwise. Injection is per-turn from the catalog's `schema` column, and a threshold trims the least-recently-used tools with both autoload sources carved out. That stored `schema` **is** the injected definition — strictly the tool def (`name` + `description` + a plain JSON Schema `inputSchema`, no other keys, never docstring text) — so the catalog and the wire carry one schema, not two. Discovery is one `tool_search` (grep / keyword / hybrid across all six categories, with category and status filters); loading is one `func-tool-load`, which for `mcp`/`rest-api` rows also materializes the execution proxy. The full design — the db schema (there is no `server` table), the effective status, the per-turn snapshot, the eviction order, the boot sequence, and the `_sync_mcp_proxies` reconcile — is **[docs/TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**; this section keeps only what no other document covers.
+**The catalog is the load/unload model.** Every tool is a row in one shared `tools.db` — a *function tool* (builtin / job / plugin / mcp / rest-api) or a *skill* / *cli* entry, which is what `type` says. Function tools carry a `loaded / unloaded / error` state (`error` = the tool's external server is unusable, written by the reconcile); **skill and cli carry no load state** (they are always available). Skill and cli rows are mirrored from their own live sources — the skills dir and `tools.json5`'s `cli` section — at boot and after every `skill_*` / `cli_*` mutation, which is how `tool_search` finds them; a skill row's `schema` is its SKILL.md, so a playbook is searchable by its own text. State never lives in the registry — `ToolRegistry` is only the execution pool of materialized instances. The system is configured by the six category sections of `tools.json5` (plus the `tool_load.threshold` knob) — every entry carries the two policy flags `enabled` and `autoload`, per tool where a tool has its own name (builtin / job — a plugin tool is configured in one of those two) and per server in mcp / rest-api, whose tool names are unknown until they connect. Seeding is at boot: a new row is born `loaded` only for the two autoload sources — the whitelist (system protection, not configurable) and the `autoload` entries — `unloaded` otherwise. Injection is per-turn from the catalog's `schema` column, and a threshold trims the least-recently-used tools with both autoload sources carved out. That stored `schema` **is** the injected definition — strictly the tool def (`name` + `description` + a plain JSON Schema `inputSchema`, no other keys, never docstring text) — so the catalog and the wire carry one schema, not two. Discovery is one `tool_search` (grep / keyword / hybrid across every category, with category and status filters); loading is one `func-tool-load`, which for `mcp`/`rest-api` rows also materializes the execution proxy. The full design — the db schema (there is no `server` table), the effective status, the per-turn snapshot, the eviction order, the boot sequence, and the `_sync_mcp_proxies` reconcile — is **[docs/TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**; this section keeps only what no other document covers.
 
 **Managed categories** (Skills / CLI / REST API / Models / MCP / embeddings) support a standard **`X_list` / `X_set` / `X_remove`** surface (plus `X_set_enabled` where a toggle applies). `X_set` is an idempotent upsert — add + update in one call. Config uses the `config_env_*` prefix (no `config_list`); Models substitutes `model_switch` for `X_set_enabled`; embeddings tools are `embeddings_model_*` + `embeddings_enable`.
 
@@ -387,11 +387,11 @@ Every local `MCPClient` connection is loopback — the harness connects only to 
 | **mcp-gateway** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp_gateway`). Manages the connection lifecycle, health monitor, OAuth and a proxy-free localhost client; the host mirrors its live server/tool state into the shared tool catalog ([TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)). |
 | **memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0). Turn persistence, session restore, embedding configuration. |
 | **wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages (a failed poll backs off the next poll exponentially to 30 s and resets on the next clean poll), typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[Wechat:{...}]` (model-facing JSON carrying `peer_wechat_id` / `context_token`; the TUI strips the marker — the `Wechat>` bubble prefix already shows the channel). The model replies itself via `wechat_send_message` — no harness auto-dispatch. |
-| **memfiles** | Streamable HTTP | Private notes/diary/files/reports cabinet — see [Part 6 · The File Cabinet](#the-file-cabinet-memfiles). Owns the scheduled-task *data* tables; the schedule *tools* are native (Part 2 · Scheduled Tasks). |
+| **memfiles** | Streamable HTTP | Private notes/diary/files/reports cabinet — see [Part 6 · The File Cabinet](#the-file-cabinet-memfiles). Owns the scheduled-task *data* tables; the schedule *tools* are builtin (Part 2 · Scheduled Tasks). |
 | **sharefile** | Streamable HTTP + `/share` route | Public file sharing — LLM-visible tools `share_file` / `sharefile_unshare`; internal `__check`, `__register_file`; `GET /share/{token}` serves file bytes on the same port (one port, two protocols), stat-pinned to the registered file so a share never silently serves replaced content. Shares are in-session only. Owns the pluggable tunnel (provider from `sharefile.json5`'s `active_provider`; eager start, non-blocking). |
 | **a2a** | Streamable HTTP | A2A mesh over the official `a2a-over-mqtt` profile (aiomqtt v5, LWT; see [A2A-MQTT.md](docs/A2A-MQTT.md)). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools (see Part 7). |
 | **media** | Streamable HTTP | Non-chat AI generation (image, video, TTS, ASR) from any provider. Owns the `media:` config section (plugin-read, ignored by the main `Config` parser) and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio`. Long renders use the harness's universal `_async: true` + `check_async`. Artifacts are saved to the working directory (or a `folder` passed to the tool) — work products, never memfiles cabinet files. |
-| **job-coding** | Streamable HTTP | Deterministic Jobs as MCP tools — see [Job System](#job-system-job-coding). Tools: `job-list`, `job-write`, `job-remove`, `job-run` + one tool per job. |
+| **job-coding** | Streamable HTTP | Deterministic Jobs as MCP tools — see [Job System](#job-system-job-coding). Tools: `job-list`, `job-write`, `job-remove`, `job-run` + one `job-<function>` tool per job. |
 
 The sharefile tunnel is **pluggable** (`sharefile.json5` names `active_provider`): every provider presents one surface (`start`/`stop`/`is_active`/`status`/`share_url_for`/monitors) and shares one lifecycle (`_TunnelProviderBase`): single-flight start guard with stale-start supersede (45 s), 3 retries with linear backoff, the `active`/`starting`/`failed`/`idle` state machine, and a background health monitor. Providers: `ngrok` (default, official SDK, endpoint pooling, free-tier splash for browser User-Agents), `localhost.run` (`ssh -R`, no account, rotating `*.lhr.life` host), `cloudflare` (`cloudflared tunnel --url`, no account, stable-for-process URL, binary not bundled — a missing binary is a terminal `failed` state carrying an install hint). A **missing dependency** is terminal and never retried; a **transport failure** is retried, and free-tier sessions recycle so the monitor keeps restarting the tunnel in the background. The plugin always loads — the tunnel is a subordinate dependency that never gates readiness.
 
@@ -427,7 +427,7 @@ All state changes persist to `tools.json5` (self-hosted by the gateway). Servers
 
 ### Job System (job-coding)
 
-DESIGNER_NOTES §6.7 — *"The smarter the model, the more it needs a Job System"*. A **Job** is a plain public function in `<data_dir>/jobs/*.py` (dev: `<project>/jobs/` — the repo's committed `jobs/` holds the bundled `translate`/`summarize`/`total_tokens` samples; prod: `~/.slife/jobs/`, seeded from those by the installers). Following standard MCP tool norms, the function's `__name__`, docstring, and typed signature become the job tool's name, description, and parameters schema. **The files are the source of truth — there is no job-config file**: a restart (or the watchdog) re-scans the directory and re-registers the tools. Creating/editing a job is *coding*: the `job-coding` skill in `skills/` is the authoring guide.
+DESIGNER_NOTES §6.7 — *"The smarter the model, the more it needs a Job System"*. A **Job** is a plain public function in `<data_dir>/jobs/*.py` (dev: `<project>/jobs/` — the repo's committed `jobs/` holds the bundled `translate`/`summarize`/`total_tokens` samples; prod: `~/.slife/jobs/`, seeded from those by the installers). Following standard MCP tool norms, the function's docstring and typed signature become the job tool's description and parameters schema; its name is the function's with the `job-` prefix (`translate` → `job-translate`), the namespace it shares with the plugin's own `job-write` / `job-list` / `job-run` / `job-remove` — and one a job may never take (`job-write` refuses a job whose exposed name would collide). **The files are the source of truth — there is no job-config file**: a restart (or the watchdog) re-scans the directory and re-registers the tools. Creating/editing a job is *coding*: the `job-coding` skill in `skills/` is the authoring guide.
 
 Execution is deterministic: the tool calls the job function with exactly its declared arguments; the only LLM access is an explicit `llm.chat(system=…, user=…, model=…)` one-shot on `job_coding_model` — a **top-level** `"provider/model"` ref in slife.json5 that reuses `models.providers` and is independent of `active_model`. It should name a *different* (usually smaller/faster) model: a nested one-shot job call neither churns the agent loop's prompt-cache prefix nor competes for its quota. Jobs that call `llm` are `async def`; pure-computation jobs stay plain `def` (the runner runs sync jobs on a **daemon thread** via `slife.threads.run_daemon` — never `asyncio.to_thread`, whose default-executor workers are joined at exit and would wedge plugin shutdown on a hung blocking job; the runner captures `contextvars.copy_context()` so a sync job's `llm` client stays visible). No system prompt, no conversation history, no agent loop ever reaches a job's model — a structural guarantee.
 
@@ -491,7 +491,7 @@ Search hardening: every `LIKE` path escapes `%`/`_`/`\` through a shared `_like_
 
 ### Embeddings & the SemanticManager
 
-Embeddings are a **first-class top-level `embeddings` section** in `slife.json5`, shared by memdb + memfiles + the mcp gateway's tool catalog (the host passes its active endpoint to the gateway via the `initialize` handshake — the single source of truth), managed by the native `embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` / `embeddings_model_remove` / `embeddings_enable` tools. The shape mirrors the LLM `models.providers` two-level hierarchy:
+Embeddings are a **first-class top-level `embeddings` section** in `slife.json5`, shared by memdb + memfiles + the mcp gateway's tool catalog (the host passes its active endpoint to the gateway via the `initialize` handshake — the single source of truth), managed by the builtin `embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` / `embeddings_model_remove` / `embeddings_enable` tools. The shape mirrors the LLM `models.providers` two-level hierarchy:
 
 - **provider** = one OpenAI-compatible endpoint (`base_url` + `api_key`), with a `model` id.
 - **`active_model` is a bare provider id** (e.g. `"local_embed"` or `"siliconflow"`), configuration-authoritative; the `"provider/model"` form belongs to the LLM `models` config, not here.
@@ -507,7 +507,7 @@ The embedder (`EmbeddingClient`, `slife/plugins/memdb/embeddings.py`) exposes `a
 
 The gate (`semantic_ready`) opens exactly when `embedder_ready ∧ count_unembedded() == 0`; there are no intermediate states. `enable(cfg)` / `disable()` are blocking config transitions (load model, migrate vec0 in place, start/stop the drainer); `on_saved()` is a non-blocking `event.set()` wake. The drainer loops: empty → gate ON, wait on the `asyncio.Event` (no polling); else → gate OFF, embed one batch (atomic `replace_embedding_chunks`). A persistently failing embedder is bounded by a **per-session** no-progress limit → the drainer parks in `stalled` (gate OFF, keyword search only) rather than exiting: `_enabled` stays true, so the next `on_saved()` — new content, a rewritten schema — wakes it for a fresh bounded round, and failing batches are paced by the timeout registry's backoff ladder. Idle therefore costs nothing and a transient failure self-heals; only `disable()` (or shutdown) clears `_enabled`. The state machine (`disabled | loading | indexing | ready | stalled`) and a human `reason` are reported separately from the binary gate — each plugin's internal `__check` surfaces both to `system_health`. While the gate is OFF, hybrid degrades to FTS5-only with a hint naming the reason — partial semantic results are never served. The embedder is owned in-process, so the `python -m` double-module hazard that once left the gate stuck is structurally impossible.
 
-**Model / dimension change.** The `embeddings_*` native tools persist the top-level `embeddings` section and then hot-reload: they call the internal `__memory_reload_semantic` / `__memfiles_reload_semantic` tools, which `await manager.enable()` — stopping the drainer, migrating the vec0 table in place (`reconfigure_for_embedding` compares the vec0 `float[N]` width and the current model identity (`backend:model`, persisted in `diary_meta.embedding_model`; the endpoint is not included, so two providers serving the same model name are not distinguished) against what the DB was built with; a mismatch drops and recreates `diary_semantic`, since old vectors live in a different vector space), and restarting the drainer. `embeddings_enable(false)` calls `manager.disable()` instead. A failed reload degrades to "takes effect on restart" (never blocks the persist).
+**Model / dimension change.** The `embeddings_*` builtin tools persist the top-level `embeddings` section and then hot-reload: they call the internal `__memory_reload_semantic` / `__memfiles_reload_semantic` tools, which `await manager.enable()` — stopping the drainer, migrating the vec0 table in place (`reconfigure_for_embedding` compares the vec0 `float[N]` width and the current model identity (`backend:model`, persisted in `diary_meta.embedding_model`; the endpoint is not included, so two providers serving the same model name are not distinguished) against what the DB was built with; a mismatch drops and recreates `diary_semantic`, since old vectors live in a different vector space), and restarting the drainer. `embeddings_enable(false)` calls `manager.disable()` instead. A failed reload degrades to "takes effect on restart" (never blocks the persist).
 
 **Search.** `turn_search` has four modes; `hybrid` runs the FTS5 keyword query and a vec0 KNN side by side, then merges via RRF (k=60). sqlite-vec forbids auxiliary-column constraints or JOINs inside a KNN query, so the KNN runs alone, time-window filtering happens in Python (with a wider fetch pool), and `user_message` is fetched in a second query.
 
@@ -693,7 +693,7 @@ Known shapes: `sk-*`, `ghp_*`, `ya29.*`, `pypi-*`, `Authorization: Bearer` token
 | `timeouts` | **Not a user section.** Every timeout value is a developer-owned constant in **`slife/timeouts.py`** (the module is the registry — see [TIMEOUT.md](docs/TIMEOUT.md)); there is no `timeouts` section in `slife.json5` and `agent.tool_timeout` / `subagent.task_timeout` are no longer read from it |
 | `plugins.required` | Required plugins (empty by default; the shipped config requires `memdb`, `memfiles`) |
 
-**`tools.json5`** is the unified tool config with one section per tool category — `builtin` / `mcp` / `rest-api` / `job` / `cli` / `skill` — each entry setting `enabled: false` to disable (default enabled). External MCP servers live in `mcp.servers`; REST-API registrations in `rest-api` (a server tagged `source.type == "rest_api"`, still an ordinary `uvx mcp-openapi-proxy` entry — there is no top-level `rest_apis` section); the native-tool overrides (`builtin`, e.g. `install_python_package`) and the CLI tool definitions (`cli`) moved here from slife.json5; `job` / `skill` are reserved (their files are the source of truth). A legacy top-level `servers` in an old tools.json5 reads as the mcp section and is normalized on the first write. The gateway self-hosts the file. Each REST-API server is an `mcp-openapi-proxy` instance in **Low-Level Mode** (the proxy's default — one typed MCP tool per OpenAPI endpoint), configured via env only: `rest_api_set` writes `OPENAPI_SPEC_URL` / `SERVER_URL_OVERRIDE`, and for a keyed API an `API_KEY` env var holding a `${VAR}` ref (resolved env → credstore; the proxy sends it as a Bearer `Authorization` header). The gateway prefixes the resulting tools as `{name}__{endpoint}`.
+**`tools.json5`** is the unified tool config with one section per tool category — `builtin` / `mcp` / `rest-api` / `job` / `cli` / `skill` — each entry setting `enabled: false` to disable (default enabled). External MCP servers live in `mcp.servers`; REST-API registrations in `rest-api` (a server tagged `source.type == "rest_api"`, still an ordinary `uvx mcp-openapi-proxy` entry — there is no top-level `rest_apis` section); the builtin-tool overrides (`builtin`, e.g. `install_python_package`) and the CLI tool definitions (`cli`) moved here from slife.json5; `job` / `skill` are reserved (their files are the source of truth). A legacy top-level `servers` in an old tools.json5 reads as the mcp section and is normalized on the first write. The gateway self-hosts the file. Each REST-API server is an `mcp-openapi-proxy` instance in **Low-Level Mode** (the proxy's default — one typed MCP tool per OpenAPI endpoint), configured via env only: `rest_api_set` writes `OPENAPI_SPEC_URL` / `SERVER_URL_OVERRIDE`, and for a keyed API an `API_KEY` env var holding a `${VAR}` ref (resolved env → credstore; the proxy sends it as a Bearer `Authorization` header). The gateway prefixes the resulting tools as `{name}__{endpoint}`.
 
 ### Health Checks
 
@@ -781,7 +781,7 @@ slife/
     heartbeat.py       #   Autonomous heartbeat scheduling
     schedules.py       #   schedule_loop, run records, startup sweep, trigger markers
     timer.py           #   [Timer] wake message helper (posted by wait_minutes)
-  tools/               # Native tools (auto-discovered; 63 classes / 14 categories)
+  tools/               # Builtin tools (auto-discovered; 63 classes / 14 categories)
     base.py            #   Tool ABC + make_params/NO_PARAMS/require_params
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
@@ -792,7 +792,7 @@ slife/
     catalog_search.py  #   hybrid search adapter (RRF + score annotator over memdb.search)
     whitelist.py       #   harness pair + 5 meta tools + 2 pinned (ALWAYS_LOADED — never evicted / not unloadable)
     meta_tools.py      #   tool_search / func-tool-load / _unload_func_tool (see TOOL-SYSTEM.md)
-    system.py          #   system_health, list_native_tools, async tasks, clear_context, set_max_iterations, notify_user
+    system.py          #   system_health, system_tools_list, async tasks, clear_context, set_max_iterations, notify_user
     exec.py            #   Shell, Python, package install (+ _kill_process_tree)
     mcp.py             #   mcp_tool_load — legacy alias delegating to func-tool-load
     schedule.py        #   Scheduled-task tools (scheduled_task_*/scheduled_run_* + run_schedule_now)
@@ -801,7 +801,7 @@ slife/
     rest_api.py        #   REST API tool management
     subagent.py        #   Local worker tools (spawn/list/stop + delegation + task mgmt)
     models.py          #   Model management + attach_image (vision) + _turn_prompt (harness) + _ModelConfigTool base
-    config.py          #   Config env var + native tool toggles
+    config.py          #   Config env var tools
     credentials.py     #   Credential check/inject/uninject
     embeddings.py      #   embeddings_model_* — first-class embeddings section config
     timer.py           #   wait_minutes (pause the turn and resume automatically)

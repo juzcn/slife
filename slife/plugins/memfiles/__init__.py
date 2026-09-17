@@ -18,7 +18,7 @@ LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``,
 ``report_save`` saves a report (notes / diary / reports are the document
 types) — an optional ``name`` binds it to a scheduled task and confirms that
 task's run.  The scheduled-task tools (``scheduled_task_*`` /
-``scheduled_run_*`` / ``run_schedule_now``) are native, grouped under the
+``scheduled_run_*`` / ``run_schedule_now``) are builtin, grouped under the
 "Schedule" category in ``slife/tools/schedule.py``.
 
 Docs: ``notes/``, ``diary/``, ``files/``, ``reports/``; index DB

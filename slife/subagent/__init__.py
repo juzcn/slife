@@ -11,7 +11,7 @@ Public API
 - ``SubagentManager`` — manage the collection (spawn / send / stop / list)
 - ``run_headless`` — headless slife entry point (no TUI, stdin/stdout IPC)
 
-The native :class:`Tool` subclasses in :mod:`slife.tools.subagent` are
+The :class:`Tool` subclasses in :mod:`slife.tools.subagent` are
 auto-discovered at startup and use module-level transport references.
 """
 

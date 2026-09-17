@@ -3,7 +3,7 @@
 Registered LLM tools:
     system_health            — one-call health report (every subsystem check
                                plus startup records, grouped per component)
-    list_native_tools        — native tool inventory (grouped, harness markers)
+    system_tools_list        — the system's own tool inventory (grouped, harness markers)
     check_async              — poll background task result
     cancel_async             — cancel a running background task
     clear_context            — reset the loaded turns
@@ -806,22 +806,32 @@ async def check_job_coding(client=None) -> list[dict]:
     else:
         entries.append(_entry("job-coding", "ok", "llm_model", model))
 
-    # Jobs reach MCP tools through this gateway; without it those jobs fail
-    # while pure-computation ones keep working.
+    # Jobs reach MCP tools through this gateway; without a port those jobs
+    # fail while pure-computation ones keep working.  A known port with no
+    # live client is the DESIGN, not degradation: the connection opens on
+    # the job's first ``mcp.call``.  Only a missing port is a problem, and
+    # no health probe can change it (the probe never connects), so the
+    # remedy never claims a re-run will.
     gw = data.get("mcp_gateway")
     if isinstance(gw, dict):
+        port = gw.get("port")
         if gw.get("error"):
             entries.append(_entry("job-coding", "warning", "mcp_gateway",
                                   "unknown", str(gw["error"])))
+        elif not port:
+            entries.append(_entry(
+                "job-coding", "warning", "mcp_gateway",
+                "unavailable (no gateway port)",
+                "Jobs that call mcp.call fail without it. The gateway "
+                "publishes its port when it starts, so restart slife to "
+                "respawn it.",
+            ))
         elif gw.get("connected"):
             entries.append(_entry("job-coding", "ok", "mcp_gateway",
-                                  f"connected (port {gw.get('port', '?')})"))
+                                  f"connected (port {port})"))
         else:
-            entries.append(_entry(
-                "job-coding", "warning", "mcp_gateway", "disconnected",
-                "Jobs that call MCP tools fail without it. The plugin "
-                "connects on demand, so re-run system_health shortly.",
-            ))
+            entries.append(_entry("job-coding", "ok", "mcp_gateway",
+                                  f"connects on demand (port {port})"))
     return entries
 
 
@@ -1194,19 +1204,19 @@ class SystemHealthTool(Tool):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# list_native_tools
+# system_tools_list
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _native_category(tool) -> str:
-    """Display category for a tool in ``list_native_tools``.
+def _system_category(tool) -> str:
+    """Display category for a tool in ``system_tools_list``.
 
     Source-based, no name-prefix guessing:
-      - native tools carry their own ``category`` class attribute;
+      - builtin tools carry their own ``category`` class attribute;
       - built-in plugin tools (MCP proxy tools) group by their plugin
         name — the grouping heading carries the identity, so the
         per-tool ``[<server>] `` description prefix is stripped below.
-    External MCP proxy tools are filtered out before this is called.
+    External MCP proxies and job tools are filtered out before this is called.
     """
     if isinstance(tool, MCPProxyTool):
         return getattr(tool, "_server", "") or "Plugins"
@@ -1215,7 +1225,7 @@ def _native_category(tool) -> str:
 
 def _strip_server_prefix(tool, desc: str) -> str:
     """Remove the ``[<server>] `` prefix MCPProxyTool stamps on its
-    description.  In ``list_native_tools`` the plugin name is already the
+    description.  In ``system_tools_list`` the plugin name is already the
     group heading — the per-line prefix is redundant noise (tools are bare
     names, no ``server__`` prefix)."""
     if isinstance(tool, MCPProxyTool):
@@ -1226,12 +1236,32 @@ def _strip_server_prefix(tool, desc: str) -> str:
     return desc
 
 
-class ListNativeToolsTool(Tool):
-    name: ClassVar[str] = "list_native_tools"
+def _is_system_tool(tool) -> bool:
+    """True for a tool the SYSTEM itself provides.
+
+    System = builtin (a module in ``slife/tools/``) + the built-in plugins'
+    own tools.  Two things are deliberately NOT system tools: an external
+    MCP/REST tool (`{server}__{tool}`, someone else's server), and a JOB
+    (``job-<function>``) — that one is the user's own code, inventoried by
+    ``job-list`` and searchable in the catalog like any other row.
+    """
+    if isinstance(tool, MCPProxyTool):
+        if getattr(tool, "_route", None) == ProxyRoute.EXTERNAL:
+            return False
+        from slife.tools.catalog_service import plugin_category
+        return plugin_category(
+            getattr(tool, "_server", "") or "", getattr(tool, "name", "") or "",
+        ) != "job"
+    return True
+
+
+class SystemToolsListTool(Tool):
+    name: ClassVar[str] = "system_tools_list"
     category: ClassVar[str] = "System"
     description: ClassVar[str] = (
-        "List native and built-in plugin tools, grouped by category "
-        "(harness/auto-invoked markers; external MCP excluded)."
+        "List the system's own tools — builtin modules and built-in plugin "
+        "tools — grouped by category (harness/auto-invoked markers; jobs and "
+        "external MCP excluded)."
     )
     parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
 
@@ -1245,27 +1275,24 @@ class ListNativeToolsTool(Tool):
         if not all_tools:
             return "No tools are currently registered."
 
-        # External MCP server tools are excluded: the model already receives
-        # their full schemas in the native `tools` array of every request, so
-        # a second listing here is pure redundant context.  Built-in plugin
-        # tools (DIRECT/WRAPPER — bare names) ARE native: included here.
-        natives = [
-            t for t in all_tools
-            if not (isinstance(t, MCPProxyTool) and t._route == ProxyRoute.EXTERNAL)
-        ]
-        if not natives:
-            return "No native tools are currently registered."
+        # Two exclusions, one reason — each already has an owner that lists it:
+        # an external server's tools ride the request's `tools` array of every
+        # request (their schemas are already in context), and a job is the
+        # user's own tool, inventoried by `job-list`.
+        system = [t for t in all_tools if _is_system_tool(t)]
+        if not system:
+            return "No system tools are currently registered."
 
-        lines = [f"## Native Tools ({len(natives)} total)\n"]
-        native_groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
-        for t in sorted(natives, key=lambda t: t.name):
-            cat = _native_category(t)
+        lines = [f"## System Tools ({len(system)} total)\n"]
+        groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for t in sorted(system, key=lambda t: t.name):
+            cat = _system_category(t)
             desc = t.description.split(".")[0].strip() + "."
             desc = _strip_server_prefix(t, desc)
-            native_groups[cat].append((t.name, desc))
+            groups[cat].append((t.name, desc))
 
-        for cat in sorted(native_groups):
-            items = native_groups[cat]
+        for cat in sorted(groups):
+            items = groups[cat]
             lines.append(f"### {cat} ({len(items)})")
             for name, desc in items:
                 marker = " — harness, auto-invoked" if name.startswith("_") else ""

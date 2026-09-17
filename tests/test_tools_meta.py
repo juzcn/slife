@@ -40,7 +40,7 @@ async def db(tmp_path):
 @pytest_asyncio.fixture
 async def ctx(db):
     svc = ToolCatalogService(db, write_owner=True)
-    await svc.seed_inventory([_NativeA()])
+    await svc.sync_system_tools([_NativeA()])
     registry = ToolRegistry()
     registry.register(_NativeA())
     registry.set_catalog(svc)
@@ -124,7 +124,7 @@ async def test_tool_load_refuses_meta_and_unavailable(db, ctx):
     msg = await t_load.execute(full_name="_turn_prompt")
     assert msg  # meta unknown? actually _turn_prompt is not in catalog → unknown
     # _unload_func_tool refuses a whitelisted tool
-    await ctx.catalog.seed_inventory([_NativeA(), _turn_prompt_stub()])
+    await ctx.catalog.sync_system_tools([_NativeA(), _turn_prompt_stub()])
     t_unload = UnloadFuncTool()
     object.__setattr__(t_unload, "_ctx", ctx)
     msg = await t_unload.execute(full_name="_turn_prompt")

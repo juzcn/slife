@@ -44,6 +44,25 @@ class Job:
     path: Path        # absolute source file path
 
 
+#: Prefix every job's TOOL name carries — ``translate`` is exposed to the LLM as
+#: ``job-translate``.  Jobs share one namespace with the plugin's own
+#: management tools (``job-write`` / ``job-list`` / ``job-run`` / ``job-remove``)
+#: and with every system and external tool, so the name says where the tool came
+#: from and a job can never displace a tool it does not own.  The exposed name —
+#: not the bare function name — is what the reservation check tests.
+JOB_TOOL_PREFIX = "job-"
+
+
+def tool_name(job_name: str) -> str:
+    """The MCP tool name a job is exposed under (``translate`` → ``job-translate``)."""
+    return f"{JOB_TOOL_PREFIX}{job_name}"
+
+
+def bare_name(exposed: str) -> str:
+    """The job name behind an exposed tool name; *exposed* unchanged if bare."""
+    return exposed[len(JOB_TOOL_PREFIX):] if exposed.startswith(JOB_TOOL_PREFIX) else exposed
+
+
 def load_module(path: Path) -> types.ModuleType:
     """Import one job file; evicts any prior version first.
 

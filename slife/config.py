@@ -435,7 +435,12 @@ class Config:
     #: ``skill`` sections (hidden from the catalog seed).
     disabled_jobs: frozenset[str] = field(default_factory=frozenset)
     disabled_skills: frozenset[str] = field(default_factory=frozenset)
-    disabled_builtin: frozenset[str] = field(default_factory=frozenset)
+    #: Per-entry ``enabled: false`` names from the ``plugin`` section — the
+    #: built-in plugins' own tools.  They are registered whatever the config
+    #: says (the plugin decides its tool set), so their disable is carried on
+    #: the catalog row.  The ``builtin`` section needs no such set: a disabled
+    #: builtin tool is never registered, so it has no row to mark.
+    disabled_plugin: frozenset[str] = field(default_factory=frozenset)
     _path: Path | None = None
     _tools_path: Path | None = None  # tools.json5 sibling — set by from_json5
 
@@ -609,6 +614,35 @@ class Config:
         section[name] = dict(entry)
         self._write_tools_config(raw)
         logger.info("config_save_cli_tool name=%s", name)
+        return True
+
+    def save_skill_enabled(self, name: str, enabled: bool) -> bool:
+        """Persist a skill's ``enabled`` into the ``skill`` section.
+
+        The section is the authority for the disable — one section per
+        category, the same per-entry ``{name, enabled}`` shape as ``builtin`` /
+        ``plugin`` / ``job`` / ``cli`` (``_disabled_names`` reads it into
+        ``Config.disabled_skills``).  Returns True if persisted.
+        """
+        if not self._path:
+            logger.debug("config_no_path — skill %s in memory only", name)
+            return False
+        raw = self._read_tools_config("save_skill_enabled", name)
+        if raw is None:
+            return False
+        section = raw.setdefault("skill", [])
+        if not isinstance(section, list):
+            logger.warning("config_skill_section_not_a_list — replacing")
+            section = []
+            raw["skill"] = section
+        for entry in section:
+            if isinstance(entry, dict) and entry.get("name") == name:
+                entry["enabled"] = enabled
+                break
+        else:
+            section.append({"name": name, "enabled": enabled})
+        self._write_tools_config(raw)
+        logger.info("config_save_skill_enabled name=%s enabled=%s", name, enabled)
         return True
 
     def remove_cli_tool(self, name: str) -> bool:
@@ -1036,15 +1070,24 @@ class Config:
         job_overrides = _parse_section(tools_raw, "job", list, [])
         skill_overrides = _parse_section(tools_raw, "skill", list, [])
         builtin_overrides = _parse_section(tools_raw, "builtin", list, [])
+        # ``plugin`` — the built-in plugins' OWN tools, one section for the
+        # ``plugin`` category (one section per category, like every other).
+        # Their tool names are bare (turn_search, wechat_login, mcp_set), so a
+        # flat entry list is all the config needs.
+        plugin_overrides = _parse_section(tools_raw, "plugin", list, [])
         disabled_jobs = _disabled_names(job_overrides)
         disabled_skills = _disabled_names(skill_overrides)
-        disabled_builtin = _disabled_names(builtin_overrides)
+        disabled_plugin = _disabled_names(plugin_overrides)
         # ``autoload`` is a per-ENTRY flag, the sibling of ``enabled``: on a
         # builtin/job entry it names a tool; on an mcp/rest-api entry it names
         # a server (an external tool's name is unknown until it connects).
         # A skill/cli entry accepts it and nothing more — those rows carry no
         # load state to seed.
-        autoload_tools = _autoload_names(builtin_overrides) | _autoload_names(job_overrides)
+        autoload_tools = (
+            _autoload_names(builtin_overrides)
+            | _autoload_names(job_overrides)
+            | _autoload_names(plugin_overrides)
+        )
         mcp_section = _parse_section(tools_raw, "mcp", dict, {})
         mcp_servers = mcp_section.get("servers", {})
         autoload_servers = _autoload_servers(
@@ -1106,7 +1149,7 @@ class Config:
             autoload_servers=autoload_servers,
             disabled_jobs=disabled_jobs,
             disabled_skills=disabled_skills,
-            disabled_builtin=disabled_builtin,
+            disabled_plugin=disabled_plugin,
         )
         config._path = path
         config._tools_path = tools_path

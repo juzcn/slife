@@ -875,7 +875,7 @@ class AgentLoop:
         """The OpenAI function list for the NEXT LLM request.
 
         Schemas are read from the CATALOG DB (the ``schema`` column — the
-        single source: natives' descriptors are seeded from their defs at
+        single source: builtin tools' descriptors are seeded from their defs at
         session start, mcp/rest-api rows from the reconcile), NOT from tool
         code or a live MCP fetch.  A row that is missing or lacks a schema
         (e.g. a meta tool not yet mirrored while its gateway is down) falls
@@ -1129,7 +1129,7 @@ class AgentLoop:
         # Any tool that reads ctx.message_history (attach_image, clear_context)
         # must see the history this loop is processing — not the startup
         # human history — while a WeChat/remote-agent turn is running.
-        # All native tools share one ToolContext, so a single swap covers the
+        # All builtin tools share one ToolContext, so a single swap covers the
         # concurrent batch; it is restored in the finally below.
         _ctx = None
         for _tc in tool_calls:

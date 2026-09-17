@@ -26,12 +26,12 @@ LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
 ``cabinet_search``, ``cabinet_read``, ``report_save``, ``report_list``,
 ``report_read``. Semantic-index status goes through the plugin's internal
 ``__check`` (probed by the harness's ``system_health``), not an LLM tool.
-The scheduled-task tools (``scheduled_task_*`` / ``scheduled_run_*``) are native
+The scheduled-task tools (``scheduled_task_*`` / ``scheduled_run_*``) are builtin
 in ``slife/tools/schedule.py`` (category "Schedule"); this plugin only exposes
 the ``__scheduled_*`` data layer they call over the memfiles MCP client.
 Internal tools (``__`` prefix, never LLM-visible): ``__check``,
 ``__memfiles_reload_semantic``, the ``__scheduled_*`` registry ops, and
-``__user_pref_append`` (the USER.md write layer behind the native
+``__user_pref_append`` (the USER.md write layer behind the builtin
 ``add_user_pref`` tool).
 
 Usage::
@@ -604,7 +604,7 @@ async def __memfiles_reload_semantic(enabled: bool = True) -> str:
     file-cabinet semantic index.  ``enabled=True`` → ``SemanticManager.enable()``
     (stops the drainer, migrates vec0 in place, restarts the drainer);
     ``False`` → ``disable()``.  Called by the harness's ``embeddings_*``
-    native tools after a config change."""
+    builtin tools after a config change."""
     try:
         await _ensure_store()
         manager = _manager
@@ -859,10 +859,10 @@ async def __scheduled_mark_run_failed(
 
 
 # Data-layer tools for the schedule registry.  The LLM-visible ``scheduled_*``
-# tools are native (``slife/tools/schedule.py``, category "Schedule") and reach
+# tools are builtin (``slife/tools/schedule.py``, category "Schedule") and reach
 # these over the memfiles MCP client — the main process never touches the
 # plugin's SQLite directly.  Pure validation (safe task-name regex, cron
-# expression check) lives on the native side, not here.
+# expression check) lives on the builtin side, not here.
 
 
 @mcp.tool(
@@ -948,7 +948,7 @@ async def __scheduled_run_skip(name: str, due_at: str) -> str:
 
 
 # ── User Preferences (USER.md) data layer ──────────────────────────────
-# The LLM-visible ``add_user_pref`` tool is native (``slife/tools/
+# The LLM-visible ``add_user_pref`` tool is builtin (``slife/tools/
 # user_prefs.py``) and delegates here over the memfiles MCP client — the
 # main process never touches USER.md directly.  This internal tool is the
 # user-preference store's single writer: a deterministic read-merge-write

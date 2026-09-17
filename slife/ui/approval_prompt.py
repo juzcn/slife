@@ -1,7 +1,7 @@
 """Inline tool-approval prompt — Claude Code style, no modal overlay.
 
 Rendered as a row in the chat stream when the model requests approval
-(``_approve: true`` on any tool, native or MCP-proxied).  The row itself
+(``_approve: true`` on any tool, builtin or MCP-proxied).  The row itself
 carries the "waiting for approval" state and takes focus; the user answers
 with ``Y`` (approve) / ``N`` (deny) / ``Esc`` (deny).  Once approved, the
 agent loop mounts the regular ``ToolCallWidget`` and the tool runs.  A

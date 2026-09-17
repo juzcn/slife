@@ -29,7 +29,7 @@ class ToolContext:
     """
 
     registry: ToolRegistry | None = None
-    """The live :class:`ToolRegistry` (needed by ``list_native_tools``, model
+    """The live :class:`ToolRegistry` (needed by ``system_tools_list``, model
     switching, etc.)"""
 
     catalog: "ToolCatalogService | None" = None
@@ -60,7 +60,7 @@ class ToolContext:
     plugin's internal ``__check`` tool."""
 
     memdb_client: object | None = None
-    """The memdb plugin's MCP client — used by the ``embeddings_*`` native
+    """The memdb plugin's MCP client — used by the ``embeddings_*`` builtin
     tools to hot-reload the semantic index (``__memory_reload_semantic``)
     after a config change, and by ``check_memdb`` to probe ``__check``."""
 

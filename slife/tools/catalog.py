@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 import struct
 from pathlib import Path
 from typing import Any
@@ -51,10 +52,19 @@ logger = logging.getLogger(__name__)
 #: Server-backed categories — a tool whose ``source_id`` names an external
 #: server.  There is no ``server`` row to join: the tool's OWN ``status``
 #: carries the connectivity verdict (``error`` when its server is down).
+#:
+#: ``plugin`` is deliberately NOT here even though those rows also carry a
+#: ``source_id`` (the plugin that owns them): a plugin is not an *external*
+#: server, so the gateway's death must not mark its tools unusable
+#: (``mark_all_external_error``), its rows keep a config-mirrored ``enabled``,
+#: and it stays out of the "servers" count and the unconfigured-source purge.
 SERVER_CATEGORIES = frozenset({"mcp", "rest-api"})
 
 #: Function-tool categories — the only ones with a load/unload status.
-FUNCTION_CATEGORIES = frozenset({"builtin", "job", "mcp", "rest-api"})
+#: ``plugin`` = a built-in plugin's own tool; ``job`` = one function from the
+#: jobs directory (exposed by the job-coding plugin, whose OWN tools are
+#: ``plugin`` — see ``catalog_service.plugin_category``).
+FUNCTION_CATEGORIES = frozenset({"builtin", "job", "plugin", "mcp", "rest-api"})
 
 #: The row's ``type`` — the coarse kind behind ``category``: a function tool
 #: (loadable: builtin / job / mcp / rest-api), a skill, or a cli entry.
@@ -94,10 +104,34 @@ EFF_NA = "n/a"
 
 #: Schema revision this store expects (``catalog_schema.sql`` sets it; the
 #: migration in :meth:`CatalogStore._migrate` moves an older file up to it).
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+
+#: The category values the code can write — the set the live table's ``CHECK``
+#: must accept (checked at open, see :meth:`CatalogStore._check_categories`).
+ALL_CATEGORIES = FUNCTION_CATEGORIES | {"skill", "cli"}
 
 #: Local ISO-seconds timestamp — the shared store convention.
 _now = now_local_seconds
+
+
+#: The ``tool`` table's category constraint, parsed rather than substring-matched.
+_CATEGORY_CHECK_RE = re.compile(
+    r"check\s*\(\s*category\s+in\s*\(([^)]*)\)", re.IGNORECASE,
+)
+
+
+def _category_check_values(ddl: str) -> "set[str] | None":
+    """The category values a ``tool`` DDL accepts; ``None`` when it has no CHECK.
+
+    Scoped to the ``category`` clause on purpose: the ``type`` CHECK lists
+    ``'skill'`` and ``'cli'`` too, so a substring test over the whole statement
+    would report those two as present even in a table whose category list has
+    never heard of them.
+    """
+    m = _CATEGORY_CHECK_RE.search(ddl or "")
+    if m is None:
+        return None
+    return {v.strip().strip("'\"") for v in m.group(1).split(",") if v.strip()}
 
 
 def _deserialize_f32(blob: bytes) -> list[float]:
@@ -294,12 +328,50 @@ class CatalogStore:
         self._conn = conn
         await self._migrate()
         await self._run_schema()
-        cursor = await self._c.execute("PRAGMA user_version")
-        row = await cursor.fetchone()
-        version = row[0] if row else 0
-        if version != SCHEMA_VERSION:
-            logger.warning("catalog_schema_version_unknown version=%s", version)
+        await self._check_categories()
         logger.info("catalog_ready path=%s", self._path)
+
+    async def _check_categories(self) -> None:
+        """Verify the live ``tool`` table accepts every category the code writes.
+
+        An older file keeps the ``CHECK`` it was created with — ``CREATE TABLE
+        IF NOT EXISTS`` never touches it, and there is no migration (a stale
+        catalog is DELETED and rebuilt, not upgraded: every row is derived
+        from the registry, ``tools.json5``, the skills dir and the plugin
+        children).  The file's ``user_version`` reads current either way, so
+        the DDL itself is the only honest signal.
+
+        Why it matters: a category the constraint rejects fails the INSERT —
+        and the plugin mirror is best-effort, so the tools would silently stay
+        uncatalogued (invisible to ``tool_search`` and to the per-turn
+        injection).  Report it loudly and let ``system_health`` carry it.
+        """
+        try:
+            cursor = await self._c.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='tool'",
+            )
+            row = await cursor.fetchone()
+        except Exception as e:  # a probe failure is never fatal
+            logger.debug("catalog_ddl_probe_failed err=%s", e)
+            return
+        allowed = _category_check_values((row[0] or "") if row else "")
+        if allowed is None:  # no constraint at all → nothing can be rejected
+            return
+        missing = sorted(ALL_CATEGORIES - allowed)
+        if not missing:
+            return
+        logger.error(
+            "catalog_schema_stale path=%s missing_categories=%s action=delete_the_file",
+            self._path, ",".join(missing),
+        )
+        from slife.health import record
+        record(
+            "tool_catalog", "warning", key="schema",
+            value=f"stale (no {'/'.join(missing)} category)",
+            hint=f"Delete {self._path} and restart slife. The catalog is "
+                 f"rebuilt from the tool registry, tools.json5 and the plugins, "
+                 f"so nothing is lost but the loaded/unloaded state.",
+        )
 
     async def _migrate(self) -> None:
         """Bring an older db up to ``SCHEMA_VERSION`` before the schema runs.
@@ -314,6 +386,12 @@ class CatalogStore:
         from the schema; an existing one is ALTERed and backfilled from
         ``category`` here, since the schema's ``IF NOT EXISTS`` never touches
         a table that is already there.
+
+        v4 added the ``plugin`` value to the ``category`` CHECK and has NO
+        step here on purpose: a wider CHECK needs the table rebuilt, and a
+        stale catalog is deleted and rebuilt from its sources instead of
+        upgraded in place.  :meth:`_check_categories` reports such a file
+        rather than letting its writes fail silently.
         """
         cursor = await self._c.execute("PRAGMA user_version")
         row = await cursor.fetchone()
@@ -587,11 +665,23 @@ class CatalogStore:
             purged.add(source_id)
         return purged
 
-    async def list_source_ids(self) -> "set[str]":
-        """Every server name that currently owns tool rows."""
-        cursor = await self._c.execute(
-            "SELECT DISTINCT source_id FROM tool WHERE source_id IS NOT NULL",
-        )
+    async def list_source_ids(
+        self, categories: "frozenset[str] | set[str] | None" = SERVER_CATEGORIES,
+    ) -> "set[str]":
+        """Every source name that currently owns tool rows.
+
+        Defaults to :data:`SERVER_CATEGORIES` — "which servers own rows", the
+        question the health count asks and the one ``purge_missing_sources``
+        must ask, since its ``keep`` set is the *configured* server list and
+        would otherwise delete every plugin-owned row.  Pass ``None`` for
+        every source regardless of category.
+        """
+        sql = "SELECT DISTINCT source_id FROM tool WHERE source_id IS NOT NULL"
+        params: list = []
+        if categories:
+            sql += f" AND category IN ({in_placeholders(len(categories))})"
+            params = sorted(categories)
+        cursor = await self._c.execute(sql, params)
         return {row[0] for row in await cursor.fetchall()}
 
     async def mark_source_error(self, source_id: str) -> int:
@@ -639,6 +729,31 @@ class CatalogStore:
             )
             await self._c.commit()
         return cursor.rowcount
+
+    async def reset_source_error_rows(
+        self, source_id: str, status_by_name: "dict[str, str]",
+    ) -> int:
+        """Reset a source's ``error`` rows, one status per row, in one transaction.
+
+        :meth:`reset_source_status` writes ONE status for the whole source,
+        which is right for a server (every tool of it shares the server's
+        default) but wrong for a plugin: each of a plugin's tools carries its
+        own default.  Only ``error`` rows move, so a tool the model had loaded
+        keeps that state across a plugin restart.
+        """
+        if not status_by_name:
+            return 0
+        changed = 0
+        async with self._write_lock:
+            for name, status in status_by_name.items():
+                cursor = await self._c.execute(
+                    "UPDATE tool SET status = ?"
+                    " WHERE name = ? AND source_id = ? AND status = ?",
+                    (status, name, source_id, STATUS_ERROR),
+                )
+                changed += cursor.rowcount
+            await self._c.commit()
+        return changed
 
     async def remove_tool(self, name: str) -> None:
         """Delete a single tool row plus its embedding chunks.

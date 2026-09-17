@@ -19,7 +19,6 @@ from slife.tools._config_io import (
     format_source_info,
     read_config,
     with_fetched_at,
-    write_config,
 )
 from slife.tools.base import Tool
 
@@ -127,10 +126,29 @@ def _extract_zip_safely(zf: zipfile.ZipFile, dest: Path) -> None:
             shutil.copyfileobj(src, dst)
 
 
-def _disabled_skill_names(config_path: Path | None) -> set[str]:
-    """Return skill names disabled via ``skill_set_enabled`` — the ``skills:``
-    config section entries with ``enabled: false``. Empty set when nothing is
-    disabled or the config is unreadable."""
+def _disabled_skill_names(config) -> set[str]:
+    """Skill names disabled by config — ``tools.json5``'s ``skill`` section.
+
+    One section per category: a skill is disabled by its own entry there
+    (``{name, enabled: false}`` — the same per-entry shape as ``builtin`` /
+    ``plugin`` / ``job`` / ``cli``), which ``Config.disabled_skills`` already
+    carries.  An install predating the section kept the same toggle as a
+    ``skills: {name: {enabled: false}}`` dict in slife.json5; that form is
+    still honoured so an existing disable never silently stops working.
+
+    Takes the live ``Config``; a missing one means nothing is disabled.
+    """
+    config_path = getattr(config, "_path", None)
+    names = set(getattr(config, "disabled_skills", ()) or ())
+    legacy = _legacy_disabled_skills(config_path)
+    if legacy - names:
+        logger.debug("skills_disabled_in_legacy_location names=%s",
+                     sorted(legacy - names))
+    return names | legacy
+
+
+def _legacy_disabled_skills(config_path: Path | None) -> set[str]:
+    """The retired ``skills: {name: {enabled: false}}`` dict in slife.json5."""
     if config_path is None:
         return set()
     try:
@@ -243,10 +261,9 @@ async def sync_skill_catalog(ctx, skills_dir: str | Path) -> None:
     from slife.tools.catalog_service import mirror_source_rows
 
     config = getattr(ctx, "config", None)
-    config_path = getattr(config, "_path", None)
     await mirror_source_rows(
         ctx, "skill",
-        skill_catalog_rows(skills_dir, _disabled_skill_names(config_path)),
+        skill_catalog_rows(skills_dir, _disabled_skill_names(config)),
     )
 
 
@@ -303,9 +320,7 @@ class ListSkillsTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibl
 
     async def execute(self, **kwargs) -> str:
         ctx = getattr(self, "_ctx", None)
-        config = ctx.config if ctx is not None else None
-        config_path = config._path if config is not None else None
-        disabled = _disabled_skill_names(config_path)
+        disabled = _disabled_skill_names(ctx.config if ctx is not None else None)
         result = get_skills_summary(self.skills_dir, disabled=disabled)
         return result if result else "No skills available."
 
@@ -327,9 +342,7 @@ class UseSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
     async def execute(self, **kwargs) -> str:
         skill_name: str = kwargs["skill_name"]
         ctx = getattr(self, "_ctx", None)
-        config = ctx.config if ctx is not None else None
-        config_path = config._path if config is not None else None
-        disabled = _disabled_skill_names(config_path)
+        disabled = _disabled_skill_names(ctx.config if ctx is not None else None)
         if skill_name in disabled:
             return (
                 f"Skill '{skill_name}' is disabled. "
@@ -664,22 +677,10 @@ class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompati
 
         ctx = getattr(self, "_ctx", None)
         config = ctx.config if ctx is not None else None
-        config_path = config._path if config is not None else None
-        if config_path is None:
+        if config is None or not config.save_skill_enabled(name, enabled):
             return "Error: config path unavailable — cannot persist the toggle."
-        raw = read_config(config_path)
-        entries = raw.get("skills")
-        if not isinstance(entries, dict):
-            entries = {}
-            raw["skills"] = entries
-        entry = entries.get(name)
-        if not isinstance(entry, dict):
-            entry = {}
-            entries[name] = entry
-        entry["enabled"] = enabled
-        write_config(config_path, raw)
-        # The row's enabled mirror lives in the catalog too (read from the
-        # file we just wrote — the in-memory config does not track skills).
+        # The row's `enabled` mirror lives in the catalog too — re-mirror from
+        # the file just written (the in-memory config does not track skills).
         await sync_skill_catalog(ctx, self.skills_dir)
         state = "enabled" if enabled else "disabled"
         logger.info("skill_set_enabled name=%s enabled=%s", name, enabled)

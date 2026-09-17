@@ -251,7 +251,7 @@ async def __memory_reload_semantic(enabled: bool = True) -> str:
     semantic index.  ``enabled=True`` → ``SemanticManager.enable()`` (stops
     the drainer, migrates vec0 in place, restarts the drainer); ``False`` →
     ``disable()`` (stops the drainer, keeps embeddings on disk).  Called by
-    the harness's ``embeddings_*`` native tools after a config change."""
+    the harness's ``embeddings_*`` builtin tools after a config change."""
     try:
         manager = await _ensure_manager_for_reload()
         if enabled:

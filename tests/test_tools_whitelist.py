@@ -55,7 +55,7 @@ def test_is_meta_tool_covers_every_class():
     assert is_meta_tool("skill_use")
     assert is_meta_tool("system_health")
     # NOT whitelisted — evictable/config-management/other-diagnostic tools.
-    assert not is_meta_tool("list_native_tools")
+    assert not is_meta_tool("system_tools_list")
     assert not is_meta_tool("cli_set")
     assert not is_meta_tool("mcp_set")
     assert not is_meta_tool("execute_shell")

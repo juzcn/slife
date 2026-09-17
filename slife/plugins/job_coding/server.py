@@ -1,7 +1,8 @@
 """job-coding plugin — deterministic, code-defined Jobs as MCP tools.
 
 A job is a plain public function in ``<data_dir>/jobs/*.py``; each becomes
-an MCP tool named after the function (schema from its signature/docstring).
+an MCP tool named ``job-<function>`` (schema from its signature/docstring),
+so it can never collide with another system tool.
 Job tools are registered **dynamically** by the management tools:
 
   job-list      — list registered jobs
@@ -45,12 +46,23 @@ from slife.server_utils import (
     tools_changed_bus,
 )
 
-#: Job names that would collide with this plugin's own tools.
+#: Tool names this plugin owns — a job may never take one of them.
 _RESERVED_NAMES = frozenset({
     "job-write", "job-remove", "job-list", "job-run", "__check",
 })
 
 _NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _is_reserved(job_name: str) -> bool:
+    """True when a job name collides with one of this plugin's own tools.
+
+    The EXPOSED name is what collides: a job called ``write`` is exposed as
+    ``job-write`` — the plugin's own management tool — so the prefixed name is
+    tested too.  ``job-write`` itself stays rejected as well: it would be
+    exposed as ``job-job-write``, which helps nobody.
+    """
+    return job_name in _RESERVED_NAMES or registry.tool_name(job_name) in _RESERVED_NAMES
 
 # ── Plugin state ──────────────────────────────────────────────────────
 
@@ -106,14 +118,22 @@ def _register_tool(job: registry.Job) -> None:
 
     ``runner.wrap`` preserves the job function's ``__name__``/docstring/
     annotations (via ``functools.wraps``), so FastMCP derives the schema
-    from the ORIGINAL function.  The LLM client is passed as a lazy
-    ``_LLMClientRef``: registration happens in the lifespan, which must
-    stay handshake-fast — constructing the real ``LLMClient`` cold-imports
-    the provider SDK (30s+ on a slow machine) and is deferred to the job's
-    first ``llm.chat``.
+    from the ORIGINAL function; the tool NAME is the prefixed one
+    (``job-translate``), which is what the LLM sees and calls.  The LLM client
+    is passed as a lazy ``_LLMClientRef``: registration happens in the
+    lifespan, which must stay handshake-fast — constructing the real
+    ``LLMClient`` cold-imports the provider SDK (30s+ on a slow machine) and is
+    deferred to the job's first ``llm.chat``.
     """
     try:
-        mcp.add_tool(runner.wrap(job.fn, runner._LLMClientRef(_get_llm_client)))
+        wrapped = runner.wrap(job.fn, runner._LLMClientRef(_get_llm_client))
+        # FastMCP takes the tool name from ``fn.__name__`` (its ``add_tool`` has
+        # no ``name=``); ``functools.wraps`` inside ``runner.wrap`` is what put
+        # the job's bare name there, and the signature/docstring the schema is
+        # derived from ride on ``__wrapped__``, so renaming here renames the
+        # tool without touching its schema.
+        wrapped.__name__ = registry.tool_name(job.name)
+        mcp.add_tool(wrapped)
     except Exception as e:
         logger.warning("job_tool_register_failed name=%s err=%s", job.name, e)
         return
@@ -122,14 +142,18 @@ def _register_tool(job: registry.Job) -> None:
 
 
 def _unregister_tool(name: str) -> None:
-    """Remove a job's MCP tool (idempotent)."""
-    if name in _registry:
-        del _registry[name]
+    """Remove a job's MCP tool (idempotent).
+
+    Accepts the bare job name (how the registry keys jobs) or the exposed tool
+    name — callers iterate ``_registry``, so both spellings arrive here.
+    """
+    bare = registry.bare_name(name)
+    _registry.pop(bare, None)
     try:
-        mcp.local_provider.remove_tool(name)
+        mcp.local_provider.remove_tool(registry.tool_name(bare))
     except KeyError:
         pass
-    logger.info("job_tool_unregistered name=%s", name)
+    logger.info("job_tool_unregistered name=%s", bare)
 
 
 def _load_file(path: Path) -> str:
@@ -151,7 +175,7 @@ def _load_file(path: Path) -> str:
     # nothing already registered is unregistered.  (Matches the whole-file
     # skip _reload_all applies at startup, so a restart and a live edit
     # always agree for the same file.)
-    invalid = next((j.name for j in jobs if j.name in _RESERVED_NAMES), None)
+    invalid = next((j.name for j in jobs if _is_reserved(j.name)), None)
     if invalid is not None:
         return f"Error: job '{invalid}' collides with a reserved name"
     # A file can define MANY public functions; functions removed from it
@@ -195,7 +219,7 @@ def _reload_all() -> str:
     # diverge for the same file.
     jobs = registry.scan_jobs_dir(_jobs_dir)
     reserved_files = {
-        str(j.path.resolve()) for j in jobs if j.name in _RESERVED_NAMES
+        str(j.path.resolve()) for j in jobs if _is_reserved(j.name)
     }
     for job in jobs:
         if str(job.path.resolve()) in reserved_files or job.name in _registry:
@@ -267,6 +291,7 @@ async def _execute(job: registry.Job, kwargs: dict) -> str:
 def _job_status() -> list[dict]:
     return [{
         "name": j.name,
+        "tool": registry.tool_name(j.name),
         "description": j.description,
         "file": j.path.name,
     } for j in sorted(_registry.values(), key=lambda j: j.name)]
@@ -279,7 +304,7 @@ def _validate_name(name: str) -> str | None:
             "Error: job name must be a Python identifier "
             "(letters/digits/underscore, not starting with a digit)"
         )
-    if name.startswith("_") or name in _RESERVED_NAMES:
+    if name.startswith("_") or _is_reserved(name):
         return f"Error: '{name}' is a reserved job name"
     return None
 
@@ -325,7 +350,10 @@ async def job_list(ctx: Context | None = None) -> str:
 )
 async def job_run(job: str, params: str = "{}", ctx: Context | None = None) -> str:
     """Execute a job deterministically with the given JSON arguments."""
-    entry = _registry.get(job)
+    # Also accept the exposed tool name (``job-translate``): the LLM reads the
+    # job's schema as that name, and job-list reports it, so both spellings
+    # must resolve.
+    entry = _registry.get(registry.bare_name(job))
     if entry is None:
         return (
             f"Error: unknown job '{job}'. Registered: "
@@ -344,7 +372,7 @@ async def job_run(job: str, params: str = "{}", ctx: Context | None = None) -> s
     name="job-write",
     description=(
         "Write a job's code — create or replace; the job file becomes its own "
-        "durable native tool (callable directly, persists across restarts)."
+        "durable tool of your own (callable directly, persists across restarts)."
     ),
 )
 async def job_write(name: str, code: str, ctx: Context | None = None) -> str:

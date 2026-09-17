@@ -1,7 +1,7 @@
 """MCP tool adapter — bridges MCP tools into Slife's Tool interface.
 
 Enables MCP tools (discovered via the slife-mcp wrapper) to be registered
-in slife's ToolRegistry and called like native tools.
+in slife's ToolRegistry and called like builtin tools.
 """
 
 import json
@@ -91,10 +91,10 @@ class MCPProxyTool(Tool):
         # Tool name: built-in plugin tools (DIRECT/WRAPPER) register under
         # their bare name (semantic, self-describing — e.g. "turn_search",
         # "note_save", "mcp_set", "wechat_login"); they are first-class like
-        # native tools and the `{server}_` prefix inside the name is preserved
+        # builtin tools and the `{server}_` prefix inside the name is preserved
         # as-is where the plugin chose it.  External MCP server tools ALWAYS
         # keep the full "{server}__{tool}" namespace: applying a bare-name
-        # rule to them would let a server-supplied tool shadow a native tool
+        # rule to them would let a server-supplied tool shadow a builtin tool
         # (e.g. an external server named `check` advertising `check_mcp`) and
         # broke `{name}__` unregistration.
         if self._route == ProxyRoute.EXTERNAL:
@@ -133,7 +133,7 @@ class MCPProxyTool(Tool):
         The registry refuses to let a tool from one origin replace a
         different-origin tool under the same name — a bare-named plugin tool
         (e.g. a job defined as ``mcp_set``) must never silently shadow a live
-        native tool.
+        builtin tool.
         """
         return self._server
 

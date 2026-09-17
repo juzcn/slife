@@ -60,7 +60,7 @@ def create_tools_from_config(
 
         # Note: the cabinet + sharing tools (note_save / share_file)
         # live in their plugins (registered as proxy tools), not here — so
-        # there is no tunnel-gating needed at native-tool load time.
+        # there is no tunnel-gating needed at builtin-tool load time.
 
         tool = tool_cls.from_config(cfg, config, ctx)
 

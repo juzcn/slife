@@ -1,4 +1,4 @@
-"""Tool-system meta tools — the unified, catalog-native surface.
+"""Tool-system meta tools — the unified surface built on the catalog.
 
 ``tool_search``     — cross-category hybrid search over the shared catalog
 ``func-tool-load``  — load a function tool (flip status + materialize proxy)
@@ -47,13 +47,13 @@ def _require_catalog(
 
 
 class ToolSearchTool(Tool):
-    """Cross-category catalog search (builtin/job/mcp/rest-api/skill/cli)."""
+    """Cross-category catalog search (builtin/job/plugin/mcp/rest-api/skill/cli)."""
 
     name = "tool_search"
     category: ClassVar[str] = TOOL_META_CATEGORY
     description = (
         "Search the unified tool catalog across all six categories "
-        "(builtin/job/mcp/rest-api/skill/cli). Returns name, category, source "
+        "(builtin/job/plugin/mcp/rest-api/skill/cli). Returns name, category, source "
         "server, and effective status per tool — load a function tool with "
         "func-tool-load."
     )
@@ -64,7 +64,7 @@ class ToolSearchTool(Tool):
         },
         category={
             "type": "string",
-            "description": "Filter by category (builtin|job|mcp|rest-api|skill|cli); empty = all.",
+            "description": "Filter by category (builtin|job|plugin|mcp|rest-api|skill|cli); empty = all.",
             "default": "",
         },
         status={
@@ -152,7 +152,7 @@ class FuncToolLoadTool(Tool):
     name = "func-tool-load"
     category: ClassVar[str] = TOOL_META_CATEGORY
     description = (
-        "Load a function tool (builtin/job/mcp/rest-api) into the LLM's tool "
+        "Load a function tool (builtin/job/plugin/mcp/rest-api) into the LLM's tool "
         "list by name (find it with tool_search). Server-backed tools need "
         "their server connected."
     )
@@ -218,7 +218,7 @@ class UnloadFuncTool(Tool):
     name = "_unload_func_tool"
     category: ClassVar[str] = TOOL_META_CATEGORY
     description = (
-        "Unload a function tool (builtin/job/mcp/rest-api) from the loaded set "
+        "Unload a function tool (builtin/job/plugin/mcp/rest-api) from the loaded set "
         "by name, freeing a slot in the tool list. Whitelisted tools stay loaded."
     )
     parameters = make_params(
@@ -239,7 +239,7 @@ class UnloadFuncTool(Tool):
         ok, msg = await catalog.unload_tool(full_name)
         if not ok:
             return msg
-        # Drop the EXTERNAL proxy (it holds a live client); stateless natives /
+        # Drop the EXTERNAL proxy (it holds a live client); stateless builtin tools /
         # plugin proxies stay in the execution pool — the A4 gate refuses calls.
         registry = getattr(ctx, "registry", None)
         if registry is not None:

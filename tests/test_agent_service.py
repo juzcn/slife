@@ -2534,3 +2534,58 @@ class TestReloadActiveModelContextUsage:
         # Genuinely fresh start: no API call, no restore → 0, even after a switch.
         service.reload_active_model("deepseek/deepseek-v4-pro")
         assert service.current_context_tokens == 0
+
+
+class TestReloadActiveModelHealthFact:
+    """A live switch re-records the health report's model line.
+
+    ``system_health``'s ``model`` entry is the only place the model describes
+    itself (the system prompt carries no model name), and it comes from a
+    startup record — which named the model the session began with until the
+    switch superseded it.
+
+    The two models are built HERE rather than taken from the shared
+    ``sample_model_config`` fixture: that one is session-scoped and other
+    tests mutate its ``context_window``, so its value depends on test
+    order."""
+
+    @staticmethod
+    def _model(ref, *, thinking, vision, context_window=131072):
+        from slife.config import ModelConfig
+        return ModelConfig(
+            ref=ref, provider="deepseek", api_model=ref.split("/", 1)[1],
+            display_name=ref, api_key="sk-x",
+            base_url="https://api.deepseek.com", api="openai-completions",
+            supports_vision=vision, thinking_enabled=thinking,
+            context_window=context_window,
+        )
+
+    def test_switch_supersedes_the_startup_record(self):
+        from slife.config import Config
+        from slife.health import clear, get_report, record_active_model
+
+        clear()
+        service = AgentService(Config(
+            models=[
+                self._model("deepseek/deepseek-v4-flash", thinking=False, vision=False),
+                self._model("deepseek/deepseek-v4-pro", thinking=True, vision=True),
+            ],
+            active_model_ref="deepseek/deepseek-v4-flash",
+            tools=[],
+        ))
+        # Exactly what slife/__init__ records at startup.
+        record_active_model(service.config.active_model)
+        assert get_report()[-1]["value"] == (
+            "deepseek/deepseek-v4-flash (thinking=off, vision=off, ctx 131072)"
+        )
+
+        # The pair differs in both capability flags, so a switch that forgot
+        # to re-record is caught by either one.
+        service.reload_active_model("deepseek/deepseek-v4-pro")
+
+        models = [e for e in get_report() if e["component"] == "model"]
+        assert len(models) == 1  # superseded, not appended
+        assert models[0]["value"] == (
+            "deepseek/deepseek-v4-pro (thinking=on, vision=on, ctx 131072)"
+        )
+        assert models[0]["level"] == "ok"

@@ -3,7 +3,7 @@ preferences.
 
 ``USER.md`` is a plain markdown file in the per-agent File Cabinet directory,
 hand-edited directly by the user and appended to by the LLM-visible
-``add_user_pref`` native tool.  The plugin process is its only host, so every
+``add_user_pref`` builtin tool.  The plugin process is its only host, so every
 writer — the main agent, subagents, and the user's own editor — serialises
 through one read-modify-write; the main process never touches the file
 directly.

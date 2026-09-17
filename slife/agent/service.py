@@ -606,6 +606,13 @@ class AgentService:
         # history AND every persistent one (WeChat) and future ones.
         self.refresh_system_prompt()
 
+        # Re-record the health fact: the startup record described the model
+        # this session began with, and the report's ``model`` line is the
+        # only place the model describes itself.  ``replace=True`` inside the
+        # recorder keeps it a single entry.
+        from slife.health import record_active_model
+        record_active_model(model)
+
     @property
     def mcp_enabled(self) -> bool:
         """Whether the MCP gateway plugin is connected (its tools active)."""
@@ -686,6 +693,14 @@ class AgentService:
         if allow_gate and bhv is not None and bhv.enable is not None:
             if not await bhv.enable():
                 logger.info("plugin_skipped name=%s", name)
+                # A plugin that does not start owns no tools: drop its rows, or
+                # tool_search keeps offering tools that cannot run until the
+                # last session's file is replaced.
+                if self._catalog is not None:
+                    try:
+                        await self._catalog.purge_source(name)
+                    except Exception as e:
+                        logger.debug("catalog_skipped_purge_failed name=%s err=%s", name, e)
                 return PluginStartStatus.SKIPPED
 
         try:
@@ -705,7 +720,7 @@ class AgentService:
         if not started:
             return PluginStartStatus.FAILED
         if spec.ctx_field is not None:
-            # Expose the plugin's live client where its native tools/health
+            # Expose the plugin's live client where its health checks and
             # checks read it.
             setattr(self._tool_ctx, spec.ctx_field, lc.client)
         bhv = self._plugin_behaviors.get(spec.name)
@@ -889,9 +904,11 @@ class AgentService:
         for stale in old_names - new_names:
             self.tool_registry.unregister(stale)
         lifecycle.registered_tools = new_names
-        if not self.is_subagent:
-            await self._mirror_plugin_tools_catalog(name, tagged)
-            await self._purge_plugin_tool_rows(name, old_names - new_names)
+        if not self.is_subagent and self._catalog is not None:
+            # One sync for the plugin's whole tool set: rows go in, and a tool
+            # it dropped loses its row (source-scoped, so only this plugin's).
+            await self._catalog.sync_system_tools(proxy_tools, source=name)
+            await self._catalog.mark_plugin_connected(name)
         logger.debug(
             "plugin_tools_resync name=%s added=%d removed=%d total=%d",
             name, len(new_names - old_names), len(old_names - new_names),
@@ -1029,7 +1046,7 @@ class AgentService:
             # Canonical marker: a plugin tool named ``__*`` (double underscore)
             # is internal — called programmatically via call_tool(), never
             # exposed to the LLM.  (Single ``_`` = harness but LLM-visible,
-            # e.g. the native `_turn_prompt`.)
+            # e.g. the builtin `_turn_prompt`.)
             tagged = [
                 {**t, "server": name}
                 for t in plugin_tools
@@ -1046,6 +1063,25 @@ class AgentService:
             self._plugins[name].registered_tools = {t.name for t in proxy_tools}
             for tool in proxy_tools:
                 self.tool_registry.register(tool)
+            # …and mirror them into the shared catalog.  Without this the
+            # plugin's tools have no row, and a row is what makes a tool
+            # SEARCHABLE and injectable (the per-turn set is the catalog's
+            # loaded set, not the registry) — the spawn path is the one every
+            # plugin actually takes, so a mirror confined to the rescan and
+            # HTTP-connect twins left them invisible to the model.
+            if not self.is_subagent and self._catalog is not None:
+                # Best-effort by contract, and it MUST NOT escape: this block
+                # sits inside the spawn's ``except BaseException`` handler,
+                # which stops the child — a catalog hiccup would otherwise kill
+                # a plugin that just came up healthy.
+                try:
+                    # One sync for the plugin's whole tool set (rows in, a
+                    # dropped tool's row out), then clear the ``error`` mark its
+                    # exit left — the child is serving again.
+                    await self._catalog.sync_system_tools(proxy_tools, source=name)
+                    await self._catalog.mark_plugin_connected(name)
+                except Exception as e:
+                    logger.debug("plugin_catalog_sync_failed name=%s err=%s", name, e)
 
             logger.info("plugin_ready name=%s tools=%d",
                          name, len(self.tool_registry.list_tools()))
@@ -1094,7 +1130,7 @@ class AgentService:
     # servers on startup.  This is the ONE bounded, mcp-aware integration
     # left in the harness: expose
     # the wrapper client to slife tools and register the external servers'
-    # ``{server}__{tool}`` proxies as native tools.  Persistence, auto-connect
+    # ``{server}__{tool}`` proxies as system tools.  Persistence, auto-connect
     # and reconciliation happen inside the plugin, not here.  The lifecycle
     # itself (spawn / connect / watchdog) is the generic one all plugins use.
 
@@ -1266,17 +1302,19 @@ class AgentService:
         If it was the mcp gateway, every external server it managed is now
         unreachable — mark ALL external tools ``error`` so they leave the
         injection set immediately (the restart's reconcile clears the mark as
-        each server comes back).  Best-effort.
+        each server comes back).  Either way the plugin's OWN tools are
+        unreachable, so mark them too, by source; ``mark_plugin_connected``
+        clears that mark when the child is back.  Best-effort.
         """
-        if name != "mcp-gateway":
-            return
         catalog = self._catalog
         if catalog is None or self.is_subagent:
             return
         try:
-            await catalog.mark_all_external_error()
+            if name == "mcp-gateway":
+                await catalog.mark_all_external_error()
+            await catalog.mark_source_error(name)
         except Exception as e:
-            logger.debug("catalog_gateway_down_mark_failed err=%s", e)
+            logger.debug("catalog_plugin_down_mark_failed name=%s err=%s", name, e)
 
     async def _mark_server_connectivity(
         self, client, configured: set[str],
@@ -1483,7 +1521,7 @@ class AgentService:
 
         Filters out internal tools (names starting with ``__``), creates
         proxy tools, and registers them under their bare semantic names
-        (built-in plugin tools are first-class, like native tools — no
+        (built-in plugin tools are first-class, like builtin tools — no
         ``server__tool`` prefix; only external MCP server tools keep it).  The
         ToolContext client re-point is the caller's job (via spec.ctx_field),
         not this function's.
@@ -1520,82 +1558,15 @@ class AgentService:
         self._plugins[name].registered_tools = new_names
         for tool in proxy_tools:
             self.tool_registry.register(tool)
-        if not self.is_subagent:
-            await self._mirror_plugin_tools_catalog(name, tagged)
-            await self._purge_plugin_tool_rows(name, old_names - new_names)
+        if not self.is_subagent and self._catalog is not None:
+            # One sync for the plugin's whole tool set: rows go in, and a tool
+            # it dropped loses its row (source-scoped, so only this plugin's).
+            await self._catalog.sync_system_tools(proxy_tools, source=name)
+            await self._catalog.mark_plugin_connected(name)
         logger.debug(
             "%s_tools_registered count=%d removed=%d", name, len(proxy_tools),
             len(old_names - new_names),
         )
-
-    async def _mirror_plugin_tools_catalog(self, name: str, tagged: list[dict]) -> None:
-        """Mirror a plugin's bare-name tools into the shared catalog.
-
-        The job-coding plugin's proxies are the ``job`` category, every other
-        built-in plugin tool is ``builtin``.  Status follows the same rule as
-        the native seed: a NEW row is ``loaded`` only for the always-loaded
-        whitelist (plus the entries marked ``autoload``), ``unloaded``
-        otherwise, and an
-        existing row keeps the state the model set.  Best-effort.
-        """
-        if self._catalog is None:
-            return
-        import slife.tools.catalog_service as _cs
-
-        cat = "job" if name == _cs.JOB_PLUGIN_NAME else "builtin"
-        # Each category's disable set comes from ITS OWN section: ``job`` from
-        # the job section, ``builtin`` from the builtin section — NOT from the
-        # skill section's disabled names (a coincidental skill name must not
-        # disable a plugin tool, and builtin-section disables must apply).
-        disabled = (
-            self.config.disabled_jobs
-            if cat == "job" else self.config.disabled_builtin
-        )
-        rows = []
-        for t in tagged:
-            tname = t.get("name", "")
-            if not tname:
-                continue
-            rows.append({
-                "name": tname,
-                "description": t.get("description", "") or "",
-                "category": cat,
-                "schema": _cs.descriptor_json(
-                    tname,
-                    t.get("description", "") or "",
-                    t.get("inputSchema", {"type": "object", "properties": {}}),
-                ),
-                "enabled": tname not in disabled,
-                "status": self._catalog.default_status(tname),
-            })
-        try:
-            changed = (await self._catalog.store.reconcile(rows))["schema_changed"]
-        except Exception as e:
-            logger.debug("plugin_catalog_reconcile_failed name=%s err=%s", name, e)
-            return
-        # A plugin tool whose schema moved has just lost its vectors — wake
-        # the drainer, or they stay missing until the next MCP reconcile.
-        self._catalog.wake_indexer(changed)
-
-    async def _purge_plugin_tool_rows(self, name: str, removed) -> None:
-        """Delete catalog rows for plugin tools that no longer exist.
-
-        ``_mirror_plugin_tools_catalog`` is upsert-only — a job file removed
-        or a plugin dropping a tool would otherwise leave a stale ``job``/
-        ``builtin`` row that tool_search keeps returning (§8.5 "remove 清理
-        干净"). Best-effort; a remove failure is logged, never fatal.
-        """
-        removed = set(removed or ())
-        if not removed or self.is_subagent or self._catalog is None:
-            return
-        for tool_name in removed:
-            try:
-                await self._catalog.store.remove_tool(tool_name)
-            except Exception as e:
-                logger.debug(
-                    "plugin_catalog_row_remove_failed name=%s tool=%s err=%s",
-                    name, tool_name, e,
-                )
 
     # ── MCP tool discovery & registration ────────────────────────────
 
@@ -2458,17 +2429,21 @@ class AgentService:
                 # whole tool set, whose names are unknown until it connects.
                 autoload=tuple(self.config.autoload_tools),
                 autoload_servers=tuple(self.config.autoload_servers),
+                # The per-entry `enabled: false` mirrors, one section per
+                # category: a job from `job`, a plugin's own tool from `plugin`.
+                disabled_jobs=tuple(self.config.disabled_jobs),
+                disabled_plugin=tuple(self.config.disabled_plugin),
             )
-            # Session seed from everything currently registered (natives +
-            # built-in plugin tools).  External mcp/rest-api rows are seeded
-            # by the reconcile extension as their servers connect.
-            await svc.seed_inventory(self.tool_registry.list_tools())
+            # Session seed from everything currently registered (the system
+            # tools: builtin + built-in plugin tools).  External mcp/rest-api
+            # rows are seeded by the reconcile as their servers connect.
+            await svc.sync_system_tools(self.tool_registry.list_tools())
             self._catalog = svc
             self._tool_ctx.catalog = svc
             self.tool_registry.set_catalog(svc)
             # Skill and cli rows come from their own live sources (the skills
             # dir, the cli section of tools.json5), not from the registry —
-            # seed_inventory cannot see them, so they are mirrored here.  Same
+            # sync_system_tools cannot see them, so they are mirrored here.  Same
             # rows as any other tool: that is how tool_search reaches a skill,
             # with no load state (type skill/cli instead of func).
             await self._mirror_local_rows(svc)
@@ -2852,7 +2827,7 @@ class AgentService:
         from slife.subagent.process import SubagentManager, set_manager
         self._subagent_manager = SubagentManager(self.config)
 
-        # Set module-level transport reference so native subagent tools
+        # Set module-level transport reference so builtin subagent tools
         # (Slife.tools.subagent) can access the live manager at call time.
         set_manager(self._subagent_manager)
 

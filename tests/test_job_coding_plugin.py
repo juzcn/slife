@@ -277,7 +277,10 @@ async def test_job_write_creates_registers_tool_and_persists(srv, tmp_path):
     )
     assert "created" in out
     tools = {t.name for t in await srv.mcp.list_tools()}
-    assert "shout" in tools
+    # A job is exposed under the prefixed tool name, never the bare one — the
+    # whole point is that a job can't take a native tool's name.
+    assert "job-shout" in tools
+    assert "shout" not in tools
     assert (tmp_path / "jobs" / "shout.py").exists()
 
 
@@ -314,6 +317,29 @@ async def test_job_write_rejects_invalid_names(srv):
 
 
 @pytest.mark.asyncio
+async def test_job_write_rejects_a_name_whose_exposed_form_collides(srv):
+    """A job called ``run`` would be exposed as ``job-run`` — the plugin's own
+    management tool.  The reservation is checked on the EXPOSED name."""
+    out = await srv.job_write(name="run", code="def run():\n    return 1")
+    assert "reserved" in out
+    assert "run" not in srv._registry
+
+
+@pytest.mark.asyncio
+async def test_a_job_is_exposed_under_the_prefixed_name(srv):
+    await srv.job_write(
+        name="translate",
+        code="def translate(text: str) -> str:\n    return text",
+    )
+    tools = {t.name for t in await srv.mcp.list_tools()}
+    assert "job-translate" in tools          # the job, prefixed
+    assert "translate" not in tools          # never the bare function name
+    # (The four management tools are declared on the real server, not on the
+    # fixture's stub instance — their names are pinned by the reserved-set
+    # test in test_catalog_plugin_rows.py.)
+
+
+@pytest.mark.asyncio
 async def test_job_run_executes(srv):
     await srv.job_write(
         name="echo",
@@ -321,6 +347,28 @@ async def test_job_run_executes(srv):
     )
     out = await srv.job_run(job="echo", params='{"text": "ab", "times": 3}')
     assert out == "ABABAB"
+
+
+@pytest.mark.asyncio
+async def test_job_run_accepts_the_exposed_tool_name(srv):
+    """The LLM reads the job's schema as ``job-echo`` (and job-list reports
+    that name), so job-run must resolve the spelling it was shown."""
+    await srv.job_write(
+        name="echo",
+        code="def echo(text: str) -> str:\n    return text.upper()",
+    )
+    assert await srv.job_run(job="job-echo", params='{"text": "ab"}') == "AB"
+
+
+@pytest.mark.asyncio
+async def test_job_list_reports_the_exposed_tool_name(srv):
+    await srv.job_write(
+        name="echo",
+        code="def echo(text: str) -> str:\n    return text",
+    )
+    data = json.loads(await srv.job_list())
+    assert data["jobs"][0]["name"] == "echo"
+    assert data["jobs"][0]["tool"] == "job-echo"
 
 
 @pytest.mark.asyncio
@@ -656,6 +704,37 @@ async def test_check_reflects_opened_gateway(srv, monkeypatch):
     data = json.loads(await srv.__check())
 
     assert data["mcp_gateway"] == {"port": "7777", "source": "env", "connected": True}
+
+
+@pytest.mark.asyncio
+async def test_check_reports_the_env_port_before_any_call(srv, monkeypatch):
+    """The port is a readable fact, not a by-product of connecting: a child
+    spawned after the gateway inherits ``SLIFE_MCP_GATEWAY_PORT``, and the
+    host's push only reaches a job-coding client that is already up.  The
+    probe reported port=None for that whole wiring until it was resolved
+    the same way a call resolves it."""
+    monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "7777")
+
+    data = json.loads(await srv.__check())
+
+    assert data["mcp_gateway"] == {"port": "7777", "source": "env", "connected": False}
+    assert runner._gateway_client is None  # resolving the port never connects
+
+
+def test_port_is_none_without_push_or_env(monkeypatch):
+    monkeypatch.delenv("SLIFE_MCP_GATEWAY_PORT", raising=False)
+
+    assert runner.mcp.port is None
+    assert runner.mcp.port_source == ""
+
+
+def test_port_resolution_prefers_the_host_push(monkeypatch):
+    monkeypatch.setenv("SLIFE_MCP_GATEWAY_PORT", "7777")
+    runner._gateway_port = "1234"
+    runner._gateway_port_source = "push"
+
+    assert runner.mcp.port == "1234"
+    assert runner.mcp.port_source == "push"
 
 
 # ── Host port push (AgentService) ────────────────────────────────────

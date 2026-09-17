@@ -68,7 +68,7 @@ async def test_seed_defaults_new_rows_unloaded_except_whitelist(db):
     """Discovery alone never injects: a NEW row is unloaded unless it is
     always-loaded (the whitelist) — or marked ``autoload: true``."""
     svc = ToolCatalogService(db, write_owner=True, autoload=("native_b",))
-    await svc.seed_inventory([_Native(), _NativeB(), _TurnPromptStub()])
+    await svc.sync_system_tools([_Native(), _NativeB(), _TurnPromptStub()])
 
     loaded = set(await db.loaded_names())
     assert loaded == {"native_b", "_turn_prompt"}   # the autoload + the whitelist
@@ -81,13 +81,13 @@ async def test_seed_defaults_new_rows_unloaded_except_whitelist(db):
 @pytest.mark.asyncio
 async def test_seed_preserves_user_unload_across_re_seed(db):
     svc = ToolCatalogService(db, write_owner=True)
-    await svc.seed_inventory([_Native()])
+    await svc.sync_system_tools([_Native()])
     ok, _ = await svc.load_tool("native_a")              # the model loads it
     assert ok
     await svc.unload_tool("native_a")                    # …and unloads it again
     # A later seed re-upserts the row but must NOT reset the state: the sync
     # mirrors WHICH tools are registered, never what the model decided.
-    await svc.seed_inventory([_Native()])
+    await svc.sync_system_tools([_Native()])
     assert await db.get_effective("native_a") == "unloaded"
 
 
@@ -102,7 +102,7 @@ async def test_load_unload_refusal_matrix(db):
     ok, msg = await svc.unload_tool("nope")
     assert not ok and "unknown" in msg
 
-    await svc.seed_inventory([_Native()])
+    await svc.sync_system_tools([_Native()])
     # whitelist refuse on unload
     ok, msg = await svc.unload_tool("_turn_prompt")
     assert not ok and "whitelisted" in msg
@@ -159,7 +159,7 @@ async def test_injected_schema_comes_from_catalog_not_instance(db):
     registry = ToolRegistry()
     registry.register(_Native())  # instance parameters = {} (empty)
     svc = ToolCatalogService(db, write_owner=True)
-    await svc.seed_inventory([_Native()])
+    await svc.sync_system_tools([_Native()])
 
     # Overwrite the DB row's schema with a DIFFERENT descriptor.
     await db.upsert_tool(
@@ -212,7 +212,7 @@ async def test_autoload_server_tools_are_born_loaded_and_protected(db):
     await svc.upsert_external_tool("lazy__search", server="lazy",
                                    description="search",
                                    schema=json.dumps({"name": "search", "description": "search", "inputSchema": {"type": "object", "properties": {}}}))
-    await svc.seed_inventory([_Native()])
+    await svc.sync_system_tools([_Native()])
 
     assert await db.get_effective("eager__search") == "loaded"
     assert await db.get_effective("lazy__search") == "unloaded"
@@ -229,7 +229,7 @@ async def test_evict_to_threshold_respects_whitelist_and_owner(db):
     svc = ToolCatalogService(
         db, threshold=2, write_owner=True, autoload=("native_a",),
     )
-    await svc.seed_inventory([_Native(), _NativeB(), _NativeC()])
+    await svc.sync_system_tools([_Native(), _NativeB(), _NativeC()])
     for name in ("native_b", "native_c"):        # the model loads the rest
         ok, _ = await svc.load_tool(name)
         assert ok
@@ -254,7 +254,7 @@ async def test_registry_execute_hints_with_catalog(db):
     registry.register(_TurnPromptStub())
 
     svc = ToolCatalogService(db, write_owner=True)
-    await svc.seed_inventory([_Native(), _TurnPromptStub()])
+    await svc.sync_system_tools([_Native(), _TurnPromptStub()])
     registry.set_catalog(svc)
 
     # 1. meta runs even when the gate would object (it stays loaded anyway)
@@ -291,7 +291,7 @@ async def test_worker_reads_shared_loaded_set_and_can_flip_status(tmp_path):
     agent_store = CatalogStore(path)
     await agent_store.open()
     agent = ToolCatalogService(agent_store, write_owner=True)
-    await agent.seed_inventory([_Native(), _NativeB()])
+    await agent.sync_system_tools([_Native(), _NativeB()])
     for name in ("native_a", "native_b"):
         ok, _ = await agent.load_tool(name)
         assert ok

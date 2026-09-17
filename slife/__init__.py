@@ -177,14 +177,8 @@ def main(config_path: str | None = None):
     logger.debug("model=%s provider=%s", active.ref, active.display_name)
     logger.debug("thinking=%s", "on" if active.thinking_enabled else "off")
     logger.debug("tools=%d", len(config.tools))
-    record(
-        "model", "ok",
-        key="active", value=(
-            f"{active.ref} (thinking="
-            f"{'on' if active.thinking_enabled else 'off'}, "
-            f"ctx {active.context_window})"
-        ),
-    )
+    from slife.health import record_active_model
+    record_active_model(active)
 
     # Logs never reach the terminal: setup_logging() runs the console stderr
     # handler at CRITICAL+1 (a no-op), so all diagnostics go to the per-session

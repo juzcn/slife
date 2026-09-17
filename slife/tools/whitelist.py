@@ -22,7 +22,7 @@ none unloadable via ``_unload_func_tool``:
 - :data:`PINNED_WHITELIST` — tools outside the tool system that are pinned
   always-loaded because the agent's own workflow keeps needing them.
 
-Everything else — the other diagnostics (``list_native_tools``, async
+Everything else — the other diagnostics (``system_tools_list``, async
 poll…), config management (``cli_*``, ``skill_set``…) — is NOT whitelisted:
 it seeds loaded and the agent can reload it via ``func-tool-load``, but the
 LRU squeeze may evict it.  The whitelist is a design constant, not
@@ -80,6 +80,6 @@ def is_meta_tool(name: str) -> bool:
     return name in ALWAYS_LOADED
 
 
-#: New tool-system tools share one category label so ``list_native_tools``
+#: New tool-system tools share one category label so ``system_tools_list``
 #: groups them coherently (distinct from System / Models / Skills).
 TOOL_META_CATEGORY = "ToolSystem"

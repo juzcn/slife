@@ -3,7 +3,13 @@
 config_env_set    — write env var to slife.json5
 config_env_get    — read env var (shell → slife.json5)
 config_env_remove — remove env var from slife.json5
-native_tool_set   — enable/disable a built-in tool
+
+Enabling/disabling a tool is NOT here: the per-tool switch is the ``enabled``
+entry in `tools.json5`'s category section (what ``disabled_builtin`` /
+``disabled_jobs`` mirror onto the catalog rows), and the runtime side is
+``func-tool-load`` / ``_unload_func_tool``.  The retired ``native_tool_set``
+wrote a ``tools:`` array into slife.json5 that nothing read — it reported
+success and changed nothing.
 """
 
 from __future__ import annotations
@@ -97,18 +103,6 @@ def _format_one(key: str, value: str) -> str:
     is_placeholder = str(value).startswith(_PLACEHOLDER_PREFIX)
     note = " [PLACEHOLDER]" if is_placeholder else " [unset]"
     return f"  {key} = {value}{note}"
-
-
-def _toggle_native_enabled(raw: dict, name: str, enabled: bool) -> None:
-    tools_override: list = raw.setdefault("tools", [])
-    if not isinstance(tools_override, list):
-        tools_override = []
-        raw["tools"] = tools_override
-    for entry in tools_override:
-        if isinstance(entry, dict) and entry.get("name") == name:
-            entry["enabled"] = enabled
-            return
-    tools_override.append({"name": name, "enabled": enabled})
 
 
 # ── Config Env Set ───────────────────────────────────────────────────
@@ -211,31 +205,3 @@ class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportInco
             write_config(self._config_path, raw)
         logger.info("env_removed key=%s", key)
         return f"[OK] Removed '{key}' from slife.json5."
-
-
-# ── Native Tool Set ──────────────────────────────────────────────────
-
-
-class NativeToolSet(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
-    name = "native_tool_set"
-    category: ClassVar[str] = "Config"
-    description = "Enable or disable a built-in tool. Takes effect after restart."
-    parameters = {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Tool name, from list_native_tools."},
-            "enabled": {"type": "boolean", "description": "Enable or disable."},
-        },
-        "required": ["name", "enabled"],
-    }
-
-    async def execute(self, **kwargs) -> str:
-        name: str = kwargs["name"]
-        enabled: bool = kwargs["enabled"]
-        with config_read_modify_write(self._config_path):
-            raw = read_config(self._config_path)
-            _toggle_native_enabled(raw, name, enabled)
-            write_config(self._config_path, raw)
-        state = "enabled" if enabled else "disabled"
-        logger.info("native_tool_set name=%s enabled=%s", name, enabled)
-        return f"[OK] Native tool '{name}' {state}. Restart for the change to take effect."

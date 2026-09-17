@@ -5,7 +5,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import pytest
 
-from slife.health import record, get_report, clear
+from slife.health import record, record_active_model, get_report, clear
 
 
 class TestRecord:
@@ -100,6 +100,58 @@ class TestGetReport:
         record("b", "warning")
         entries = get_report()
         assert [e["component"] for e in entries] == ["c", "a", "b"]
+
+
+class TestRecordActiveModel:
+    """Tests for record_active_model() — the one definition of the model fact
+    both producers write (startup and a live model switch)."""
+
+    def setup_method(self):
+        clear()
+
+    def teardown_method(self):
+        clear()
+
+    @staticmethod
+    def _model(**overrides):
+        from slife.config import ModelConfig
+        fields = {
+            "ref": "deepseek/deepseek-flash",
+            "provider": "deepseek",
+            "api_model": "deepseek-flash",
+            "display_name": "DeepSeek V4.1 Flash",
+            "api_key": "sk-x",
+            "supports_vision": True,
+            "thinking_enabled": True,
+            "context_window": 1000000,
+        }
+        fields.update(overrides)
+        return ModelConfig(**fields)
+
+    def test_records_the_facts_the_report_prints(self):
+        record_active_model(self._model())
+        e = get_report()[-1]
+        assert e["component"] == "model" and e["key"] == "active"
+        assert e["level"] == "ok"
+        assert e["value"] == (
+            "deepseek/deepseek-flash (thinking=on, vision=on, ctx 1000000)"
+        )
+        # The value/hint rule: a healthy fact carries no remedy.
+        assert "hint" not in e
+
+    def test_a_capability_off_is_stated(self):
+        """`off` is a fact, not an absence — the report says so explicitly."""
+        record_active_model(self._model(supports_vision=False, thinking_enabled=False))
+        assert get_report()[-1]["value"] == (
+            "deepseek/deepseek-flash (thinking=off, vision=off, ctx 1000000)"
+        )
+
+    def test_a_later_record_supersedes_the_earlier_one(self):
+        record_active_model(self._model())
+        record_active_model(self._model(ref="deepseek/deepseek-v4-pro"))
+        entries = get_report()
+        assert len(entries) == 1
+        assert entries[0]["value"].startswith("deepseek/deepseek-v4-pro ")
 
 
 class TestClear:

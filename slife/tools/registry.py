@@ -1,7 +1,7 @@
 """Tool registry for managing and executing tools.
 
 The registry is the EXECUTION-instance pool: every materialized ``Tool``
-(a native built via ``from_config``, a plugin/mcp proxy holding a live
+(a builtin created via ``from_config``, a plugin/mcp proxy holding a live
 client) registers here.  The loaded/unloaded *state* lives in the shared
 catalog (``slife.tools.catalog``) — this registry deliberately keeps no
 second bookkeeping.  When a catalog is attached via :meth:`set_catalog`,
@@ -61,9 +61,9 @@ class ToolRegistry:
         Same-owner re-registration replaces (a plugin reconnect, an idempotent
         re-load).  A tool from a DIFFERENT origin is never silently replaced:
         a bare-named plugin tool (e.g. a job function named ``mcp_set``) must
-        not displace a live native tool or another plugin's tool, or the LLM's
+        not displace a live builtin tool or another plugin's tool, or the LLM's
         ``mcp_set`` would run the job.  ``server`` (the owning plugin / MCP
-        server) is the owner key; native tools carry no ``server``.
+        server) is the owner key; builtin tools carry no ``server``.
         """
         existing = self._tools.get(tool.name)
         if existing is not None and existing is not tool:

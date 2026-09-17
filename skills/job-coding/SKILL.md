@@ -1,6 +1,6 @@
 ---
 name: job-coding
-description: Create and manage the agent's own native tools — deterministic, code-defined Jobs, each exposed as its own MCP tool (job-write / job-list / job-remove / job-run + a per-job tool). Jobs may call the LLM (llm) and any external MCP tool on configured servers (mcp, bare MCP via the gateway). Load this skill when the user asks for a reusable tool or automation that is well-specified, repeatable, and data-in/result-out (translate, extract, format, convert) — especially when it should drive an external MCP server. The body covers when a Job fits vs an existing skill vs doing it inline.
+description: Create and manage tools the user codes themselves — deterministic, code-defined Jobs, each exposed as its own MCP tool (job-write / job-list / job-remove / job-run + a per-job tool). Jobs may call the LLM (llm) and any external MCP tool on configured servers (mcp, bare MCP via the gateway). Load this skill when the user asks for a reusable tool or automation that is well-specified, repeatable, and data-in/result-out (translate, extract, format, convert) — especially when it should drive an external MCP server. The body covers when a Job fits vs an existing skill vs doing it inline.
 ---
 
 # job-coding — how to write a Job
@@ -77,7 +77,7 @@ the two call paths behave differently:
 
 - **`job-run`** normalizes any return value to text internally — dict, list,
   str all work.
-- **The direct per-job tool** (the tool named after the function) derives its
+- **The direct per-job tool** (`job-<function>`) derives its
   output schema from your **return annotation**. The runner wraps dict/list
   returns into a JSON string, which then **mismatches** a `-> dict` / `-> list`
   schema and fails with `structured_content must be a dict or None. Got str`.
@@ -251,6 +251,10 @@ async def folder_to_md(folder: str, recursive: bool = False) -> str:
 - **One file = one public function.** A second public `def` in the same
   file becomes a second job tool too — usually unintended. Private helpers
   are `_`-prefixed so they stay helpers.
+- **A job's exposed tool name is `job-` + the job name** (`translate` →
+  `job-translate`), so a job can never displace a system tool or another plugin's
+  tool. A name whose PREFIXED form collides is rejected too: a job called
+  `run` would be exposed as `job-run`, so it is refused.
 - **Reserved names are rejected** by `job-write`: `job-list`,
   `job-write`, `job-remove`, `job-run`, `__check`, and any
   name starting with `_`. Pick a lowercase identifier like `translate`.
@@ -285,13 +289,13 @@ same endpoint family's smallest flash model (e.g. `bailian_personal/qwen3.6-flas
 
 | Tool | Purpose |
 |---|---|
-| `job-list` | List registered jobs: name, description, source file. Call this first. |
+| `job-list` | List registered jobs: name, exposed `tool` name, description, source file. Call this first. |
 | `job-run` | `job-run(job, params)` — run a job by name with a JSON object of args. |
 | `job-write` | `job-write(name, code)` — write a job's code, creating it or replacing it; the tool (re)registers now and a broken write restores the previous version. |
 | `job-remove` | `job-remove(name)` — delete a job file and unregister its tool. |
 
-Each job also appears as its **own tool** (named after the function) with a
-native parameter schema — call it directly instead of `job-run` when you
+Each job also appears as its **own tool** (`job-<function>`) with a
+its own parameter schema — call it directly instead of `job-run` when you
 want typed arguments.
 
 ## Workflow

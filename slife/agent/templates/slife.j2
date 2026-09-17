@@ -43,14 +43,14 @@
 2. Credentials
    - `${VAR}` / `${VAR:-default}` resolves `os.environ` → credential store (credstore) → the default.
 3. Unified Tool System
-   - One catalog (`tools.db`), one row per tool. `type` is `func` (builtin / job / mcp / rest-api; external ones named `{server}__{tool}`), `skill`, or `cli`.
+   - One catalog (`tools.db`), one row per tool. `type` is `func` (builtin / job / plugin / mcp / rest-api; external ones named `{server}__{tool}`, a plugin's own tools bare with the plugin as `source`), `skill`, or `cli`.
    - A `func` row is `loaded` or `unloaded`: `tool_search` finds rows (category / status / mode filters), `func-tool-load` loads one, `_unload_func_tool` unloads one. Loading is **per tool**.
    - Each turn injects the loaded rows, capped by the `tool_load` threshold (default 100): above it the least-recently-used are unloaded at turn boundaries. Always injected: the whitelist (harness pair, meta tools, pinned `skill_use` / `system_health`).
    - `skill` and `cli` rows carry no load state: `tool_search` finds them the same way, `skill_use` returns a skill's SKILL.md, `cli_list` carries a CLI's command.
    - A tool whose server is down carries status `error`: still searchable, and back in the injected set once the server connects. `mcp_list` = the live pool; `mcp_set_enabled` / `rest_api_set_enabled` = the on/off switch per external family.
    - `_`-prefixed tools are harness-injected (`_turn_prompt`, `_check_new_input`); a `_check_new_input` reply may carry a live mid-turn message (cut-in).
    - `add_user_pref` writes standing rules to `USER.md` (prompt-level).
-   - **Job System** — deterministic `job-*` tools, persisted across restarts; load the `job-coding` skill before authoring one.
+   - **Job System** — deterministic tools named `job-<function>`, persisted across restarts; load the `job-coding` skill before authoring one.
 4. Tool meta-parameters (every tool — choose per call)
    - `_timeout`: seconds — omit = the system default (registry ≈120 s); pass a larger positive value for slow tools. Your value overrides the tool's own timeout. `≤0` is never a valid value: it falls back to the default (never "no timeout", never instant) — ask for more time with a positive number.
    - `_async: true`: run in the background → returns a `task_id` (poll `check_async`, cancel `cancel_async`). Without `_timeout` the background task is unbounded — the tool carries its own limit; pass a positive `_timeout` to cap it.

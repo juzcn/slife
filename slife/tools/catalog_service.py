@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from slife.tools.catalog import (
@@ -31,8 +32,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: The job-coding plugin name — its bare proxy tools are the ``job`` category.
+#: The job-coding plugin name — the plugin that exposes jobs as tools.
 JOB_PLUGIN_NAME = "job-coding"
+
+#: Tool-name prefix a job is exposed under (``translate`` → ``job-translate``).
+#: Mirrors ``slife.plugins.job_coding.registry.JOB_TOOL_PREFIX`` — the plugin
+#: owns the naming, this side reads it to tell a job row from the plugin's own
+#: tool; ``tests/test_job_coding_plugin.py`` pins the two together.
+JOB_TOOL_PREFIX = "job-"
+
+#: job-coding's OWN tools.  They share the ``job-`` namespace with the jobs
+#: themselves, so the prefix alone cannot separate the two — and a job may never
+#: take one of these names (the plugin refuses them at ``job-write``).
+JOB_PLUGIN_OWN_TOOLS = frozenset({"job-write", "job-remove", "job-list", "job-run"})
+
+
+def plugin_category(plugin: str, tool_name: str) -> str:
+    """Catalog category for a built-in plugin's tool.
+
+    ``job`` = one function from the jobs directory (exposed by job-coding
+    under the ``job-`` prefix); ``plugin`` = a built-in plugin's own tool,
+    job-coding's four management tools included.  Both are function tools
+    (``type='func'``) owned by the plugin named in ``source_id``.
+    """
+    if (plugin == JOB_PLUGIN_NAME
+            and tool_name.startswith(JOB_TOOL_PREFIX)
+            and tool_name not in JOB_PLUGIN_OWN_TOOLS):
+        return "job"
+    return "plugin"
 
 
 def descriptor_json(name: str, description: str, input_schema) -> str:
@@ -66,9 +93,9 @@ def tool_descriptor(tool: "Tool") -> str:
 def catalog_category(tool: "Tool") -> str:
     """Catalog category of a registered tool instance.
 
-    - natives → ``builtin``;
-    - built-in plugin proxies (DIRECT/WRAPPER, bare names) → ``job`` for the
-      job-coding plugin, else ``builtin``;
+    - builtin tools → ``builtin``;
+    - built-in plugin proxies (DIRECT/WRAPPER, bare names) → :func:`plugin_category`
+      (``job`` for a job file's function, ``plugin`` for the plugin's own tool);
     - external MCP proxies → ``mcp`` (the reconcile corrects ``rest-api``
       from the server config's ``source.type``).
     """
@@ -77,8 +104,9 @@ def catalog_category(tool: "Tool") -> str:
     if isinstance(tool, MCPProxyTool):
         if getattr(tool, "_route", None) == ProxyRoute.EXTERNAL:
             return "mcp"
-        server = getattr(tool, "server", "") or ""
-        return "job" if server == JOB_PLUGIN_NAME else "builtin"
+        return plugin_category(
+            getattr(tool, "server", "") or "", getattr(tool, "name", "") or "",
+        )
     return "builtin"
 
 
@@ -93,6 +121,8 @@ class ToolCatalogService:
         write_owner: bool = True,
         autoload: tuple[str, ...] = (),
         autoload_servers: tuple[str, ...] = (),
+        disabled_jobs: tuple[str, ...] = (),
+        disabled_plugin: tuple[str, ...] = (),
     ):
         self._store = store
         self.threshold = threshold
@@ -103,6 +133,12 @@ class ToolCatalogService:
         #: Servers marked ``autoload: true`` — the same contract for tools
         #: whose names are unknown until their server connects.
         self.autoload_servers = frozenset(autoload_servers)
+        #: Per-entry ``enabled: false`` names, by their own section: a job in
+        #: ``job`` (the user's tools), a plugin's own tool in ``plugin``.  Both
+        #: are registered whatever the config says, so the disable is mirrored
+        #: onto the row instead.
+        self._disabled_jobs = frozenset(disabled_jobs)
+        self._disabled_plugin = frozenset(disabled_plugin)
         #: The host's semantic actor (set by AgentService after startup) —
         #: tool_search reads its embedder for hybrid retrieval.
         self.semantic_manager: "SemanticManager | None" = None
@@ -126,47 +162,89 @@ class ToolCatalogService:
 
     # ── Session lifecycle ──────────────────────────────────────────
 
-    async def seed_inventory(self, tools: list["Tool"]) -> list[str]:
-        """Reconcile the registered tool set into the catalog.
+    def _row_for(self, tool: "Tool") -> dict:
+        """The catalog row for one registered tool — the ONE row builder.
 
-        Returns the names whose schema moved — the caller uses a non-empty
-        result to wake the semantic drainer.
+        The boot seed and a plugin's (re)connect both come through here, so a
+        row's provenance (``category`` + ``source_id``), its schema and its
+        ``enabled`` mirror cannot drift between the two paths.
+        """
+        name = _tool_name(tool)
+        return {
+            "name": name,
+            "description": _own_description(tool),
+            "category": catalog_category(tool),
+            "source_id": _source_id(tool),
+            "schema": tool_descriptor(tool),
+            "enabled": self._row_enabled(tool),
+            # Only a brand-new row sees this — reconcile applies status on
+            # INSERT alone, which is exactly the keep-existing rule.
+            "status": self.default_status(name),
+        }
 
-        A NEW row gets the session default: ``loaded`` for the always-loaded
-        set (the whitelist — harness pair, meta surface, pinned, plus anything
-        listed under ``autoload``), ``unloaded`` for everything else
-        — discovery alone never puts a tool into the injection set.  An
-        EXISTING row keeps its state: this sync mirrors WHICH tools are
-        registered, it never overrides what the model (or a previous session)
-        decided to load.
+    def _row_enabled(self, tool: "Tool") -> bool | None:
+        """The row's ``enabled``: config for a local tool, ``None`` for external.
 
-        Main-owner only (a subagent worker never reseeds).
+        An external tool's availability is its own ``status`` (a down server),
+        never a config flag.  A job and a plugin's own tool are registered
+        whatever the config says, so their section's disable is mirrored here;
+        a BUILTIN tool disabled in the config is never registered at all, so
+        whatever reaches this method is enabled by definition.
+        """
+        if _is_external(tool):
+            return None
+        category = catalog_category(tool)
+        if category == "job":
+            return _tool_name(tool) not in self._disabled_jobs
+        if category == "plugin":
+            return _tool_name(tool) not in self._disabled_plugin
+        return True
+
+    async def sync_system_tools(
+        self, tools: Sequence["Tool"], *, source: str = "",
+    ) -> list[str]:
+        """Mirror registered system tools into the catalog. Returns schema movers.
+
+        One entry point for both writers: the boot seed (no ``source`` — the
+        whole registry) and a plugin's (re)connect / rescan (``source=<plugin>``
+        — that plugin's tools only).  A NEW row gets the session default:
+        ``loaded`` for the always-loaded set (the whitelist — harness pair, meta
+        surface, pinned — plus anything marked ``autoload``), ``unloaded`` for
+        everything else: discovery alone never puts a tool into the injection
+        set.  An EXISTING row keeps its state — this mirrors WHICH tools exist,
+        never what the model decided to load.
+
+        ``source`` scopes the call, and that scoping is the only difference: a
+        row of that source whose tool is gone is REMOVED (the plugin dropped a
+        job), so ``tool_search`` cannot return a tool that no longer exists.
+        The unscoped call purges nothing — a name missing from the registry may
+        be a builtin disabled in the config, or an external row whose server has
+        not connected yet.
+
+        Main-owner only (a subagent worker never syncs).
         """
         if not self.write_owner:
             return []
-        rows = []
-        for tool in tools:
-            name = _tool_name(tool)
-            if not name:
-                continue
-            external = _is_external(tool)
-            rows.append({
-                "name": name,
-                "description": getattr(tool, "description", "") or "",
-                "category": catalog_category(tool),
-                "source_id": getattr(tool, "server", None) if external else None,
-                "schema": tool_descriptor(tool),
-                "enabled": None if external else True,
-                # Only a brand-new row sees this — reconcile applies status on
-                # INSERT alone, which is exactly the keep-existing rule.
-                "status": self.default_status(name),
-            })
-        # No purge: this set is "everything registered right now", and a name
-        # missing from it may be an mcp row that simply has not connected.
-        # _purge_plugin_tool_rows owns the plugin-removal cleanup.
+        rows = [self._row_for(t) for t in tools if _tool_name(t)]
         result = await self._store.reconcile(rows)
-        self.wake_indexer(result["schema_changed"])
-        return result["schema_changed"]
+        changed = list(result["schema_changed"])
+        if source:
+            # Upsert-then-purge: after the upsert this source owns exactly its
+            # incoming names plus whatever vanished.
+            vanished = sorted(
+                await self._store.names_for_sources([source])
+                - {r["name"] for r in rows}
+            )
+            for name in vanished:
+                await self._store.remove_tool(name)
+            if vanished:
+                logger.info(
+                    "catalog_system_tools_purged source=%s tools=%d",
+                    source, len(vanished),
+                )
+            changed += vanished
+        self.wake_indexer(changed)
+        return changed
 
     def default_status(self, name: str, *, server: str = "") -> str:
         """What a NEW catalog row starts as: autoload → loaded, else unloaded.
@@ -273,7 +351,7 @@ class ToolCatalogService:
         Write-owner only: the worker/seeding subagent never evicts, so the
         main agent alone feeds the order.  The registry calls this after a
         successful ``execute`` so a just-used tool is never the first eviction
-        victim (the pre-fix behavior evicted the alphabetically-first natives).
+        victim (the pre-fix behavior evicted the alphabetically-first builtin tools).
         """
         if not self.write_owner:
             return
@@ -392,8 +470,32 @@ class ToolCatalogService:
             return 0
         return await self._store.reset_source_status(source, STATUS_UNLOADED)
 
+    async def mark_plugin_connected(self, plugin: str) -> int:
+        """A plugin (re)connected — its ``error`` rows return to their default.
+
+        The per-row default is the one difference from
+        :meth:`mark_server_connected`: a server's tools share one status, while
+        each plugin tool carries its own (whitelisted / ``autoload`` → loaded,
+        else unloaded).  Only ``error`` rows move, so a tool the model had
+        loaded keeps that state across a plugin restart.
+        """
+        if not self.write_owner or not plugin:
+            return 0
+        names = await self._store.names_for_sources([plugin])
+        if not names:
+            return 0
+        return await self._store.reset_source_error_rows(
+            plugin, {n: self.default_status(n) for n in names},
+        )
+
     async def purge_source(self, source: str) -> int:
-        """Drop every row of a server that left the config (main-owner only)."""
+        """Drop every row of a server or plugin that is gone (main-owner only).
+
+        ``source`` is the owner name — the server for ``mcp``/``rest-api``, the
+        plugin for ``plugin``/``job`` rows.  A plugin that never started owns no
+        rows, so this is how a skipped or removed plugin's tools stop being
+        offered by ``tool_search``.
+        """
         if not self.write_owner:
             return 0
         return await self._store.purge_source(source)
@@ -421,6 +523,37 @@ def _is_external(tool: "Tool") -> bool:
     from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 
     return isinstance(tool, MCPProxyTool) and getattr(tool, "_route", None) == ProxyRoute.EXTERNAL
+
+
+def _own_description(tool: "Tool") -> str:
+    """A tool's own description, without the ``[<owner>] `` prefix a proxy stamps.
+
+    Provenance is already the row's ``source_id`` and ``category``; leaving the
+    prefix on would put it in front of the model (the injected schema *is* this
+    column) and in every search hit.
+    """
+    desc = getattr(tool, "description", "") or ""
+    source = _source_id(tool)
+    if source:
+        prefix = f"[{source}] "
+        if desc.startswith(prefix):
+            return desc[len(prefix):]
+    return desc
+
+
+def _source_id(tool: "Tool") -> str | None:
+    """The owning source of a tool row — a server name, a plugin name, or None.
+
+    Every ``MCPProxyTool`` carries the name it came from in ``server``: an
+    external server for ``mcp``/``rest-api`` rows, the plugin itself for a
+    built-in plugin's bare-named tool.  ``None`` = the row is the harness's
+    own (a builtin module tool, or a skill/cli mirror row).
+    """
+    from slife.mcp.tool_adapter import MCPProxyTool
+
+    if not isinstance(tool, MCPProxyTool):
+        return None
+    return getattr(tool, "server", "") or None
 
 
 async def mirror_source_rows(ctx, category: str, rows: dict) -> None:

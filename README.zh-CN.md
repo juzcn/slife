@@ -1,9 +1,9 @@
 # Slife
 
-> **工具分层，一句话。** Slife 向 LLM 呈现三类工具，调用侧无差别：**原生**
-> 工具（`slife/tools/` 自带、自动发现）、**内置插件**工具（一等公民、裸名——
-> 如 `turn_search`、`mcp_set`）、**外部 MCP server** 工具（`{server}__{tool}`，
-> 按需加载）。
+> **工具家族，一句话。** Slife 向 LLM 呈现三个家族的工具，调用侧无差别：开发者的
+> **系统工具**——内置（`slife/tools/` 自动发现）与内置插件工具（一等公民、裸名，
+> 如 `turn_search`、`mcp_set`）；用户自己 coding 的 **job**（`job-<函数名>`）；以及第三方的
+> **外部 MCP server** 工具（`{server}__{tool}`，按需加载）。
 
 **终端 AI 智能体** — 基于函数调用循环的最小化框架。与 LLM 对话，它能调用工具、永久记忆每一轮对话、协调其他智能体。
 
@@ -14,7 +14,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：**默认 59 个原生工具**、横跨 12 个类别（含保留的 harness 工具 `_turn_prompt` 与 `_check_new_input`——由循环自动调用），**八个内部插件服务**（memdb、wechat、memfiles、sharefile、a2a、media、job-coding，以及 MCP 网关 `mcp-gateway`）、**`local-embed`** 嵌入守护进程（手动启动）、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：**默认 59 个内置工具**、横跨 12 个类别（含保留的 harness 工具 `_turn_prompt` 与 `_check_new_input`——由循环自动调用），**八个内部插件服务**（memdb、wechat、memfiles、sharefile、a2a、media、job-coding，以及 MCP 网关 `mcp-gateway`）、**`local-embed`** 嵌入守护进程（手动启动）、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -231,20 +231,20 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 
 ### 工具
 
-全部统一为 OpenAI 函数定义——LLM 看不出原生、内置插件与外部 MCP 工具的区别。每个工具还额外接受三个元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（内联批准提示——Y 批准 / N 拒绝，Esc 拒绝）。
+全部统一为 OpenAI 函数定义——LLM 看不出系统工具（内置 + 内置插件）与外部 MCP 工具的区别。每个工具还额外接受三个元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（内联批准提示——Y 批准 / N 拒绝，Esc 拒绝）。
 
-**12 个类别共 59 个原生工具**（从 `slife/tools/` 自动发现 60 个类；`install_python_package` 在随附配置中默认禁用）。保留的 harness 工具 `_turn_prompt`（每轮提示词）与 `_check_new_input`（插队模式下的轮中消息注入）由循环自动调用；`attach_image` 在 `@` 附件时自动调用——模型会读取它们的产出，但被嘱咐不要调用它们。`attach_image` 对无视觉模型会在调用时拒绝（它从不被隐藏）。
+**12 个类别共 59 个内置工具**（从 `slife/tools/` 自动发现 60 个类；`install_python_package` 在随附配置中默认禁用）。保留的 harness 工具 `_turn_prompt`（每轮提示词）与 `_check_new_input`（插队模式下的轮中消息注入）由循环自动调用；`attach_image` 在 `@` 附件时自动调用——模型会读取它们的产出，但被嘱咐不要调用它们。`attach_image` 对无视觉模型会在调用时拒绝（它从不被隐藏）。
 
 | 类别 | 工具 |
 |----------|-------|
-| System | `system_health`, `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user`, `wait_minutes`（暂停本轮，稍后自动继续）, `add_user_pref`（把偏好记录到 `USER.md`） |
+| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user`, `wait_minutes`（暂停本轮，稍后自动继续）, `add_user_pref`（把偏好记录到 `USER.md`） |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package`（默认禁用） |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
-| Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
+| Config | `config_env_set`, `config_env_get`, `config_env_remove` |
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image`（给视觉模型喂图片）, `_turn_prompt`（每轮提示词，自动调用）, `_check_new_input`（轮中消息注入，自动调用） |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | embeddings | `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_enable` |
@@ -263,7 +263,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | `sharefile` | `share_file`, `sharefile_unshare` |
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_send_message`, `a2a_send_message_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`, `a2a_set_task_done`（完成收到的任务并发布结果） |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
-| `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `translate`） |
+| `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `job-translate`） |
 
 **外部 MCP 服务器按需加载。** 第三方能力只能作为 `tools.json5` 里的标准 MCP 服务器接入（任何 stdio / SSE / Streamable HTTP 服务器都可以——无需 Slife SDK）。LLM 用 `mcp_tool_search` 发现工具（对网关的实时工具目录做混合关键词/语义搜索），并用 `mcp_tool_load(full_name)` 载入——`auto_load: true` 的服务器仍保留旧的整批注册方式。启用/禁用是服务器粒度的（`mcp_set_enabled`）。目录每次（重）连接时由连接实时重建，因此永远精确反映运行时能用什么——不存在离线重建步骤。
 
@@ -282,7 +282,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | `hybrid` | 语义召回（FTS5 + 向量 → RRF 融合） |
 | `time` | 按日期浏览 |
 
-Embeddings 是 `slife.json5` 中**一级顶层的 `embeddings` 配置段**（由 `memdb` + `memfiles` 共享），由原生 `embeddings_*` 工具管理；运行时索引状态由 `system_health` 上报。每个 provider 都是 **OpenAI 兼容端点**（`base_url` + `api_key`）；`active_model`（"provider"——例如 `"local_embed"` 或 `"siliconflow"`）以配置为准。**`local-embed` 守护进程**（手动启动，类似 Mosquitto——不是 slife 插件）在 `http://127.0.0.1:17347/v1` 提供本地 GGUF/transformer 模型，每个模型**加载一次**、由 `memdb` 与 `memfiles` 共享——不重复加载——它自己没有 "active model"（客户端请求它想要的模型，因此一个模型绝不会被加载两次）。**没有嵌入后端时关键词搜索照样工作。** 语义（hybrid）结果只在当前模型的索引完整构建后才返回——重建运行期间 hybrid 退回关键词搜索，索引进度完成时自动恢复。
+Embeddings 是 `slife.json5` 中**一级顶层的 `embeddings` 配置段**（由 `memdb` + `memfiles` 共享），由内置 `embeddings_*` 工具管理；运行时索引状态由 `system_health` 上报。每个 provider 都是 **OpenAI 兼容端点**（`base_url` + `api_key`）；`active_model`（"provider"——例如 `"local_embed"` 或 `"siliconflow"`）以配置为准。**`local-embed` 守护进程**（手动启动，类似 Mosquitto——不是 slife 插件）在 `http://127.0.0.1:17347/v1` 提供本地 GGUF/transformer 模型，每个模型**加载一次**、由 `memdb` 与 `memfiles` 共享——不重复加载——它自己没有 "active model"（客户端请求它想要的模型，因此一个模型绝不会被加载两次）。**没有嵌入后端时关键词搜索照样工作。** 语义（hybrid）结果只在当前模型的索引完整构建后才返回——重建运行期间 hybrid 退回关键词搜索，索引进度完成时自动恢复。
 
 每轮对话还记录两个时间戳——你的输入时间（`created_at`，敲下回车的那一刻）和 assistant 的完成时间（`completed_at`）——以灰色 `[HH:MM]` 标记显示。用户消息带一条紧凑的 **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** 脚注（turn id 加发生时间），让 agent 能用 turn id 引用轮次（`turn_read` / `turn_summarize`）——你在 TUI 里也读到同一行。
 
@@ -333,7 +333,7 @@ job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱
 | **sharefile** | 公开文件分享——`share_file` 把本地文件发布为公开 HTTPS URL（同端口的 `/share` 路由；隧道从 `sharefile.json5` 配置，可插拔） |
 | **a2a** | 基于 MQTT 的 A2A 网格通道（仅在 broker 可达时启动） |
 | **media** | 来自任意 provider 的非聊天式 AI 生成（图片、视频、TTS、ASR）——自持 `media:` 配置段与跟 provider 无关的适配层。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio` |
-| **job-coding** | 确定性 jobs 作为 MCP 工具——`~/.slife/jobs/` 里的代码定义函数按声明的参数精确执行；一次性 LLM 调用走 `llm.chat`、用 `job_coding_model`。工具：`job-list`、`job-write`、`job-remove`、`job-run` + 每个 job 一个 |
+| **job-coding** | 确定性 jobs 作为 MCP 工具——`~/.slife/jobs/` 里的代码定义函数按声明的参数精确执行；一次性 LLM 调用走 `llm.chat`、用 `job_coding_model`。工具：`job-list`、`job-write`、`job-remove`、`job-run` + 每个 job 一个 `job-<函数名>` |
 
 所有内置插件都跑一个**看门狗（watchdog）**，崩溃时自动重启（指数退避 1s→30s，最多连续 5 次失败），只有在插件稳定运行约 60 秒后才恢复重启计数。就绪遵循 MCP 标准（`initialize` 握手只在插件自身 init 成功后才完成）；**必需插件**（`plugins.required`——随附配置里是 `memdb` 与 `memfiles`）是核心：无法就绪时**中止启动**而不是带病运行。外部/从属依赖——外部 MCP 服务器、隧道、微信登录、媒体 provider、A2A broker、`local-embed` 守护进程——从不阻塞就绪：它们不可控、运行时会自愈，并经由 `system_health` 里的状态工具单独上报。
 

@@ -1,4 +1,4 @@
-"""Tests for slife.tools.system — ListNativeToolsTool, CheckAsyncTool, CancelAsyncTool, ClearContextTool."""
+"""Tests for slife.tools.system — SystemToolsListTool, CheckAsyncTool, CancelAsyncTool, ClearContextTool."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -9,12 +9,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from slife.tools.system import (
-    ListNativeToolsTool,
+    SystemToolsListTool,
     CheckAsyncTool,
     CancelAsyncTool,
     ClearContextTool,
     SetMaxIterationsTool,
-    _native_category,
+    _system_category,
     _strip_server_prefix,
     _tasks,
     schedule,
@@ -23,13 +23,13 @@ from slife.tools.system import (
 )
 
 
-# ── _native_category ──────────────────────────────────────────────────────
+# ── _system_category ──────────────────────────────────────────────────────
 
 
-class TestNativeCategory:
+class TestSystemCategory:
     """Tests for the source-based category helper (T-12)."""
 
-    def test_native_tool_uses_its_own_category(self):
+    def test_builtin_tool_uses_its_own_category(self):
         from slife.tools.base import Tool
 
         class _T(Tool):
@@ -39,7 +39,7 @@ class TestNativeCategory:
             category = "Custom"
             async def execute(self, **kwargs): return "ok"
 
-        assert _native_category(_T()) == "Custom"
+        assert _system_category(_T()) == "Custom"
 
     def test_plugin_tool_groups_by_plugin_name(self):
         from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
@@ -47,16 +47,16 @@ class TestNativeCategory:
         tool = MagicMock(spec=MCPProxyTool)
         tool._server = "wechat"
         tool._route = ProxyRoute.DIRECT
-        assert _native_category(tool) == "wechat"
+        assert _system_category(tool) == "wechat"
 
     def test_plugin_tool_without_server_falls_back_to_plugins(self):
         from slife.mcp.tool_adapter import MCPProxyTool
 
         tool = MagicMock(spec=MCPProxyTool)
         del tool._server
-        assert _native_category(tool) == "Plugins"
+        assert _system_category(tool) == "Plugins"
 
-    def test_unknown_native_tool_defaults_to_other(self):
+    def test_unknown_builtin_tool_defaults_to_other(self):
         from slife.tools.base import Tool
 
         class _T(Tool):
@@ -66,7 +66,7 @@ class TestNativeCategory:
             category = ""
             async def execute(self, **kwargs): return "ok"
 
-        assert _native_category(_T()) == "Other"
+        assert _system_category(_T()) == "Other"
 
 
 # ── _strip_server_prefix ───────────────────────────────────────────────
@@ -74,7 +74,7 @@ class TestNativeCategory:
 
 class TestStripServerPrefix:
     """Plugin proxy tools stamp `[<server>] ` on their description; the
-    group heading already carries the plugin name, so list_native_tools
+    group heading already carries the plugin name, so system_tools_list
     strips it — tools are bare names, no prefix."""
 
     def _proxy(self, server: str, desc: str):
@@ -105,22 +105,22 @@ class TestStripServerPrefix:
         assert _strip_server_prefix(tool, "[other] Search turns.") == "[other] Search turns."
 
 
-# ── ListNativeToolsTool ──────────────────────────────────────────────────
+# ── SystemToolsListTool ──────────────────────────────────────────────────
 
 
-class TestListNativeToolsTool:
-    """Tests for ListNativeToolsTool."""
+class TestSystemToolsListTool:
+    """Tests for SystemToolsListTool."""
 
     def test_metadata(self):
-        tool = ListNativeToolsTool()
-        assert tool.name == "list_native_tools"
+        tool = SystemToolsListTool()
+        assert tool.name == "system_tools_list"
         assert tool.category == "System"
         assert tool.parameters == {"type": "object", "properties": {}, "required": []}
 
     @pytest.mark.asyncio
     async def test_registry_unavailable(self):
         """When registry is None, returns clear message."""
-        tool = ListNativeToolsTool()
+        tool = SystemToolsListTool()
         try:
             result = await tool.execute()
             assert "not available" in result.lower()
@@ -131,7 +131,7 @@ class TestListNativeToolsTool:
     async def test_registry_empty(self):
         """When registry has no tools, returns appropriate message."""
         from slife.tools.registry import ToolRegistry
-        tool = ListNativeToolsTool()
+        tool = SystemToolsListTool()
         from slife.tools.context import ToolContext
         try:
             tool._ctx = ToolContext(registry=ToolRegistry())
@@ -141,7 +141,7 @@ class TestListNativeToolsTool:
             tool._ctx = None
 
     @pytest.mark.asyncio
-    async def test_native_tools_listed(self):
+    async def test_builtin_tools_listed(self):
         """Native tools are listed under their own category."""
         from slife.tools.registry import ToolRegistry
         from slife.tools.base import Tool
@@ -156,7 +156,7 @@ class TestListNativeToolsTool:
         registry = ToolRegistry()
         registry.register(_TestNative())
 
-        tool = ListNativeToolsTool()
+        tool = SystemToolsListTool()
         from slife.tools.context import ToolContext
         try:
             tool._ctx = ToolContext(registry=registry)
@@ -195,7 +195,7 @@ class TestListNativeToolsTool:
         registry.register(mock_tool)
         registry.register(_Native())
 
-        tool = ListNativeToolsTool()
+        tool = SystemToolsListTool()
         from slife.tools.context import ToolContext
         try:
             tool._ctx = ToolContext(registry=registry)
@@ -223,13 +223,47 @@ class TestListNativeToolsTool:
         registry = ToolRegistry()
         registry.register(plugin_tool)
 
-        tool = ListNativeToolsTool()
+        tool = SystemToolsListTool()
         from slife.tools.context import ToolContext
         try:
             tool._ctx = ToolContext(registry=registry)
             result = await tool.execute()
             assert "`wechat_login`" in result
             assert "wechat" in result  # grouped under the plugin name
+        finally:
+            tool._ctx = None
+
+    @pytest.mark.asyncio
+    async def test_job_tools_are_not_system_tools(self):
+        """A job (``job-<function>``) is the USER's tool, not the system's:
+        it is inventoried by ``job-list`` and searchable in the catalog, so it
+        stays out of this listing — while the job-coding plugin's own tools
+        (job-write …) are system tools and stay in."""
+        from slife.tools.registry import ToolRegistry
+        from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
+        from slife.tools.context import ToolContext
+
+        def _job_tool(name):
+            tool = MagicMock(spec=MCPProxyTool)
+            tool.name = name
+            tool._server = "job-coding"
+            tool._route = ProxyRoute.DIRECT
+            tool.description = "A job."
+            tool.parameters = {"type": "object", "properties": {}}
+            return tool
+
+        registry = ToolRegistry()
+        registry.register(_job_tool("job-translate"))     # the user's
+        registry.register(_job_tool("job-write"))         # the plugin's own
+        registry.register(_job_tool("turn_search"))       # another plugin's
+
+        tool = SystemToolsListTool()
+        try:
+            tool._ctx = ToolContext(registry=registry)
+            result = await tool.execute()
+            assert "`job-translate`" not in result
+            assert "`job-write`" in result
+            assert "`turn_search`" in result
         finally:
             tool._ctx = None
 
@@ -248,7 +282,7 @@ class TestListNativeToolsTool:
         registry = ToolRegistry()
         registry.register(_Harness())
 
-        tool = ListNativeToolsTool()
+        tool = SystemToolsListTool()
         from slife.tools.context import ToolContext
         try:
             tool._ctx = ToolContext(registry=registry)

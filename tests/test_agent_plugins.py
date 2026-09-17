@@ -195,6 +195,112 @@ class TestPluginLifecycleSpawn:
         os.environ.pop("SLIFE_TEST_PLUGIN_PORT", None)
 
     @pytest.mark.asyncio
+    async def test_spawn_mirrors_the_plugins_tools_into_the_catalog(
+        self, sample_config, tmp_path,
+    ):
+        """The spawn path is the one every plugin takes — the mirror used to be
+        wired only to the rescan and HTTP-connect twins, so a plugin's tools had
+        no row and (a row is what makes a tool searchable and injectable) never
+        reached the model."""
+        from slife.agent.service import AgentService
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+
+        store = CatalogStore(tmp_path / "tools.db")
+        await store.open()
+        service = AgentService(sample_config)
+        service._catalog = ToolCatalogService(store, write_owner=True)
+
+        def _proxy(name, description):
+            """A REAL proxy — the sync reads the tool INSTANCE (name, stamped
+            description, parameters, owner), so the fixture is the production
+            class rather than a mock that would fake its way past the fields
+            the row is built from."""
+            from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
+
+            return MCPProxyTool(
+                None,
+                {"server": "memdb", "name": name, "description": description,
+                 "inputSchema": {"type": "object", "properties": {}}},
+                route=ProxyRoute.DIRECT,
+            )
+
+        mock_process = MagicMock()
+        mock_process.port = 8888
+        mock_process.start = AsyncMock()
+        mock_process.create_client = AsyncMock(return_value=self._client_with([
+            {"name": "turn_search", "description": "Search turns."},
+            {"name": "__check", "description": "Internal."},
+        ]))
+
+        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
+             patch("slife.agent.service.create_proxy_tools") as mock_create:
+            MockProc.return_value = mock_process
+            mock_create.return_value = [_proxy("turn_search", "Search turns.")]
+            assert await service._spawn_plugin_generic(
+                "memdb", "slife.plugins.mcp_gateway.server",
+            ) is True
+
+        row = await store.get_tool("turn_search")
+        assert row["category"] == "plugin"
+        assert row["source_id"] == "memdb"
+        assert row["type"] == "func"
+        assert row["status"] == "unloaded"      # searchable, not injected
+        # The row carries the tool's OWN description: the `[memdb] ` prefix the
+        # proxy stamps is provenance, and provenance is source_id's job.
+        assert row["description"] == "Search turns."
+        assert await store.get_tool("__check") is None   # internal: never a row
+
+        # A respawn that comes back without a tool drops its row.
+        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
+             patch("slife.agent.service.create_proxy_tools") as mock_create:
+            MockProc.return_value = mock_process
+            mock_create.return_value = []
+            service._plugins["memdb"].process = None   # not "already running"
+            assert await service._spawn_plugin_generic(
+                "memdb", "slife.plugins.mcp_gateway.server",
+            ) is True
+
+        assert await store.get_tool("turn_search") is None
+        await store.close()
+
+    @pytest.mark.asyncio
+    async def test_spawn_mirror_failure_never_kills_a_healthy_child(
+        self, sample_config,
+    ):
+        """The mirror runs inside the spawn's ``except BaseException`` handler,
+        which STOPS the child — a catalog hiccup must not take down a plugin
+        that just came up."""
+        from slife.agent.service import AgentService
+
+        service = AgentService(sample_config)
+        service._catalog = MagicMock()
+        service._catalog.default_status = MagicMock(return_value="unloaded")
+        service._catalog.store.reconcile = AsyncMock(
+            side_effect=RuntimeError("catalog is on fire"),
+        )
+
+        mock_process = MagicMock()
+        mock_process.port = 8888
+        mock_process.start = AsyncMock()
+        mock_process.create_client = AsyncMock(return_value=self._client_with([
+            {"name": "turn_search", "description": "Search turns."},
+        ]))
+        proxy = MagicMock()
+        proxy.name = "turn_search"
+
+        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
+             patch("slife.agent.service.create_proxy_tools") as mock_create:
+            MockProc.return_value = mock_process
+            mock_create.return_value = [proxy]
+            started = await service._spawn_plugin_generic(
+                "memdb", "slife.plugins.mcp_gateway.server",
+            )
+
+        assert started is True
+        assert service._plugins["memdb"].process is mock_process
+
+    @pytest.mark.asyncio
     async def test_spawn_failure_resets_process_and_stops_child(self, sample_config):
         """REVIEW M2 — a failed spawn must not leave the lifecycle pointing at
         a live-but-unconnected child (the watchdog would block on its wait()

@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ── Module-level current-manager reference ───────────────────────────
-# Set by AgentService.start_subagent() / stop_subagent() so that native
+# Set by AgentService.start_subagent() / stop_subagent() so that builtin
 # tools (Slife.tools.subagent) can look up the live SubagentManager.
 _current_manager: "SubagentManager | None" = None
 

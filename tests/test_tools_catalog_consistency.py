@@ -34,7 +34,7 @@ class _NativeShell(Tool):
 
 
 class _NativeToolList(Tool):
-    name = "list_native_tools"
+    name = "system_tools_list"
     description = "list the registered native tools"
     parameters = {"type": "object", "properties": {}, "required": []}
     category = "System"
@@ -147,7 +147,7 @@ async def test_empty_db_opens_and_seeds(_isolate):
     store = CatalogStore(_isolate / "tools.db")
     await store.open()
     svc = ToolCatalogService(store, threshold=cfg.tool_load_threshold, write_owner=True)
-    await svc.seed_inventory([_NativeShell(), _NativeToolList()])
+    await svc.sync_system_tools([_NativeShell(), _NativeToolList()])
 
     # self-consistent empty state: rows exist, but seeding alone injects
     # NOTHING except the always-loaded whitelist
@@ -222,7 +222,7 @@ async def test_gateway_death_marks_every_external_tool_error(_isolate):
     store = CatalogStore(_isolate / "tools.db")
     await store.open()
     svc = ToolCatalogService(store, write_owner=True)
-    await svc.seed_inventory([_NativeShell()])
+    await svc.sync_system_tools([_NativeShell()])
     await _mirror_server(svc, "serper", ["search"])
     await _mirror_server(svc, "weather", ["temp"])
     ok, _ = await svc.load_tool("serper__search")
@@ -370,7 +370,7 @@ async def test_gateway_child_exit_marks_external_tools_error(_isolate):
     await store.open()
     try:
         svc = ToolCatalogService(store, write_owner=True)
-        await svc.seed_inventory([_NativeShell()])
+        await svc.sync_system_tools([_NativeShell()])
         await _mirror_server(svc, "serper", ["search"])
         ok, _ = await svc.load_tool("serper__search")
         assert ok

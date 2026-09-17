@@ -163,7 +163,10 @@ entry for every plugin:
 3. **uniform start** (`_start_plugin_uniform`):
    - `_spawn_plugin_generic` — spawn the child, set `SLIFE_<NAME>_PORT`,
      connect (host params when `host_params`), register the plugin's tools as
-     bare-name proxies, filter `__`-internal tools, `mark_initialized`;
+     bare-name proxies, filter `__`-internal tools, mirror them into the
+     shared catalog (`category='plugin'`, `source_id=<plugin>`; job-coding's
+     `job-<function>` tools instead land as `category='job'`), clear any
+     `error` mark, `mark_initialized`;
    - re-point `ToolContext.<ctx_field>` at the live client;
    - run the spec's **after-ready** hook (wechat poll/restore, a2a drain,
      sharefile tunnel watch, mcp enrichment);
@@ -283,7 +286,10 @@ A plugin's `server.py` must:
    `sockets=[sock]`) wraps the lifespan and emits the port only **after** the
    app is ready to serve MCP; a plugin must never signal early;
 3. start FastMCP on Streamable HTTP with the pre-bound socket;
-4. expose `@mcp.tool`s — bare names = public, `__`-prefixed = internal
+4. expose `@mcp.tool`s — bare names = public, `__`-prefixed = internal.
+   A public tool becomes a catalog row the moment the child is ready,
+   so it is findable by `tool_search` (born `unloaded`: searchable, not
+   injected, until `func-tool-load`).
    (called programmatically via `call_tool("__…")`, never exposed to the LLM);
    heavy post-handshake work goes through `warm_after_handshake`;
 5. be importable: `python -m <module>`.

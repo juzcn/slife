@@ -461,7 +461,7 @@ class TestRenderReport:
             {"component": "config", "level": "ok", "key": "path",
              "value": r"D:\Dev\Workspace\slife\slife.json5 (16 models, 20 MCP servers, embeddings=enabled)"},
             {"component": "model", "level": "ok", "key": "active",
-             "value": "deepseek/deepseek-flash (thinking=on, ctx 1000000)"},
+             "value": "deepseek/deepseek-flash (thinking=on, vision=on, ctx 1000000)"},
         ]
         entries += [{"component": c, "level": "ok", "key": "version", "value": "v1"}
                     for c in ("node", "npm", "bun", "uv")]
@@ -1470,6 +1470,9 @@ class TestCheckJobCoding:
         client.call_tool.assert_called_once_with("__check")
         keys = {e["key"] for e in result}
         assert keys == {"jobs", "llm_model", "mcp_gateway"}
+        gw = next(e for e in result if e["key"] == "mcp_gateway")
+        assert gw["level"] == "ok"
+        assert gw["value"] == "connected (port 1234)"
         jobs = next(e for e in result if e["key"] == "jobs")
         assert jobs["level"] == "ok"
         assert jobs["value"] == "2 (summarize, translate)"
@@ -1489,9 +1492,12 @@ class TestCheckJobCoding:
         assert "job_coding_model" in model["hint"]
 
     @pytest.mark.asyncio
-    async def test_disconnected_gateway_is_reported(self):
-        """Jobs reach MCP tools through the plugin's gateway — the fact was
-        probed and thrown away before."""
+    async def test_known_port_without_a_live_client_is_not_a_problem(self):
+        """Jobs reach MCP tools through the plugin's gateway, and the
+        connection opens on the job's first ``mcp.call`` — a client that has
+        never been built is the design.  The check used to warn here on every
+        fresh session and prescribe "re-run system_health shortly", which no
+        probe could ever clear (the probe never connects)."""
         payload = {"jobs_dir": r"C:\jobs", "jobs": 1, "job_names": ["x"],
                    "llm_model": "m", "error": "",
                    "mcp_gateway": {"port": 1, "source": "env", "connected": False}}
@@ -1499,9 +1505,24 @@ class TestCheckJobCoding:
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         result = await check_job_coding(client=client)
         gw = next(e for e in result if e["key"] == "mcp_gateway")
+        assert gw["level"] == "ok"
+        assert gw["value"] == "connects on demand (port 1)"
+        assert "hint" not in gw
+
+    @pytest.mark.asyncio
+    async def test_no_gateway_port_is_the_failure(self):
+        """Without a port every ``mcp.call`` fails — the one state worth a
+        warning, and the fact the probe can actually distinguish."""
+        payload = {"jobs_dir": r"C:\jobs", "jobs": 1, "job_names": ["x"],
+                   "llm_model": "m", "error": "",
+                   "mcp_gateway": {"port": None, "source": "", "connected": False}}
+        client = MagicMock()
+        client.call_tool = AsyncMock(return_value=json.dumps(payload))
+        result = await check_job_coding(client=client)
+        gw = next(e for e in result if e["key"] == "mcp_gateway")
         assert gw["level"] == "warning"
-        assert gw["value"] == "disconnected"
-        assert "MCP tools" in gw["hint"]
+        assert gw["value"] == "unavailable (no gateway port)"
+        assert "mcp.call" in gw["hint"]
 
     @pytest.mark.asyncio
     async def test_jobs_dir_is_named_when_there_are_no_jobs(self):
