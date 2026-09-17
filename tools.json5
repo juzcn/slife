@@ -1,60 +1,11 @@
 {
-  // ═══════════════════════════════════════════════════════════════════════
-  //  tools.json5 — the tool system's whole configuration: one section per
-  //  category, plus the `tool_load` knob.  Every entry carries the same two
-  //  policy flags, siblings of each other:
-  //    enabled:  false = off.  A builtin tool is then never registered (no row
-  //              at all); for plugin / job / skill the catalog row reads
-  //              `disabled`; for mcp / rest-api the server is not connected.
-  //    autoload: true = born `loaded`: injected from session start, and never
-  //              evicted (by default only the whitelist is).
-  //  An entry is optional — a tool with none keeps its defaults.
-  //  Unloaded is not unavailable: `tool_search` finds every row, and
-  //  `func-tool-load` puts one into the injected set from that turn onward.
-  //  The section order is for reading, not a contract.
-  // ═══════════════════════════════════════════════════════════════════════
-
-  // ── builtin ────────────────────────────────────────────────────────────
-  // The tools slife ships as Python modules in `slife/tools/` — category
-  // `builtin`, the developer's half of the `system` family.  An entry is needed
-  // only to change a default, and `enabled: false` is the hard off switch: the
-  // tool is never registered, so it has no catalog row and never appears in
-  // `tool_search`.
-  //   builtin: [
-  //     { name: "install_python_package", enabled: false },
-  //     { name: "execute_shell", autoload: true }        // always injected
-  //   ]
   builtin: [
     {
       name: "install_python_package",
       enabled: false
     }
   ],
-
-  // ── plugin ─────────────────────────────────────────────────────────────
-  // The built-in plugins' OWN tools — category `plugin`, the other half of the
-  // `system` family: memdb's `turn_search`, the gateway's `mcp_set`, wechat's
-  // `wechat_login`, job-coding's `job-write`…  Bare names; the catalog records
-  // the exposing plugin as the row's `source`.
-  // A plugin always registers its tool set, so `enabled: false` marks the ROW
-  // `disabled` (kept out of the injected set) instead of unregistering it.
-  // A JOB is not here: a job is the user's own code — see `job` below.
-  //   plugin: [
-  //     { name: "turn_search", autoload: true },
-  //     { name: "wechat_login", enabled: false }
-  //   ]
   plugin: [],
-
-  // ── mcp ────────────────────────────────────────────────────────────────
-  // External MCP servers — category `mcp`, family `external` — keyed by server
-  // name.  A server's tools reach the model as `{server}__{tool}`, born
-  // `unloaded` unless the SERVER carries `autoload: true`, which covers its
-  // whole tool set (an external tool's name is unknown until it connects).
-  // `enabled: false` = the server is not connected.  Its rows are KEPT and
-  // read `disabled` (a state of its own — distinct from `error`, which means
-  // the server is on but down), so re-enabling restores a tool set that still
-  // remembers what was loaded.  Only a server REMOVED from here loses its
-  // rows, and a server that was never connected has none to begin with.
   mcp: {
     servers: {
       filesystem: {
@@ -313,13 +264,6 @@
       }
     }
   },
-
-  // ── rest-api ───────────────────────────────────────────────────────────
-  // An OpenAPI service run as an MCP server through mcp-openapi-proxy —
-  // category `rest-api`, family `external`.  The same `enabled` / `autoload`
-  // rules as `mcp` (per server).  **This section is what makes one** — an
-  // entry here is a REST API, no tag needed; `rest_api_set` writes here and
-  // upserts write back here.
   "rest-api": {
     github: {
       command: "uvx",
@@ -345,25 +289,7 @@
       description: "A community driven registry service for Model Context Protocol (MCP) servers. Provides APIs to list/search MCP servers, view server details, versions, and server.json metadata."
     }
   },
-
-  // ── skill ──────────────────────────────────────────────────────────────
-  // Skills: markdown playbooks in the skills directory.  Not tools — a row
-  // exists (`type: skill`, no load state) so `tool_search` can find it, and
-  // `skill_use` returns its SKILL.md.  `enabled: false` hides it from search
-  // and makes `skill_use` refuse it.
-  //   skill: [{ name: "job-coding", enabled: false }]
   skill: {},
-
-  // Unified tool-system knob (DESIGNER_NOTES §8.5) — the loaded-function-tool
-  // threshold the turn-boundary LRU eviction enforces.  `autoload` is NOT a
-  // knob here: it is a per-entry flag, the sibling of `enabled`, written on
-  // the tool itself — e.g. `builtin: [{ name: "execute_shell", autoload: true }]`
-  // or a server entry (`autoload: true` = every tool of that server).  An
-  // autoloaded tool is born `loaded` and never evicted.
-
-  // ── cli ────────────────────────────────────────────────────────────────
-  // Command-line tools the agent may run — a reference card rather than an LLM
-  // tool: `cli_list` enumerates them and `execute_shell` runs the command.
   cli: {
     "yt-dlp": {
       command: "yt-dlp",
@@ -403,26 +329,7 @@
       }
     }
   },
-
-  // ── job ────────────────────────────────────────────────────────────────
-  // Jobs — the user's OWN tools: a public function in `jobs/*.py`, exposed by
-  // the job-coding plugin as `job-<function>` (category `job`, family `user`).
-  // The code and its parameter schema live in the file, not here — an entry
-  // only carries policy, and `enabled: false` mirrors onto the job's row.
-  //   job: [{ name: "translate", autoload: true }]
   job: {},
-
-  // ── tool_load ──────────────────────────────────────────────────────────
-  // How many function tools may stay loaded.  At each turn boundary the
-  // least-recently-used loaded tools are unloaded until the count fits; the
-  // whitelist and anything marked `autoload` are never evicted.
-
-  // Unified tool-system knob (DESIGNER_NOTES §8.5) — the loaded-function-tool
-  // threshold the turn-boundary LRU eviction enforces.  `autoload` is NOT a
-  // knob here: it is a per-entry flag, the sibling of `enabled`, written on
-  // the tool itself — e.g. `builtin: [{ name: "execute_shell", autoload: true }]`
-  // or a server entry (`autoload: true` = every tool of that server).  An
-  // autoloaded tool is born `loaded` and never evicted.
   tool_load: {
     threshold: 100
   }
