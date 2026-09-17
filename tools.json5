@@ -50,7 +50,11 @@
   // name.  A server's tools reach the model as `{server}__{tool}`, born
   // `unloaded` unless the SERVER carries `autoload: true`, which covers its
   // whole tool set (an external tool's name is unknown until it connects).
-  // `enabled: false` = the server is not connected, and its rows are purged.
+  // `enabled: false` = the server is not connected.  Its rows are KEPT and
+  // read `disabled` (a state of its own — distinct from `error`, which means
+  // the server is on but down), so re-enabling restores a tool set that still
+  // remembers what was loaded.  Only a server REMOVED from here loses its
+  // rows, and a server that was never connected has none to begin with.
   mcp: {
     servers: {
       filesystem: {

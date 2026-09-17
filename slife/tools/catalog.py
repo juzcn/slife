@@ -733,6 +733,44 @@ class CatalogStore:
         logger.info("catalog_source_purged source=%s tools=%d", source_id, count)
         return count
 
+    async def purge_source_except(self, source_id: str, keep: "set[str]") -> list[str]:
+        """Delete one owner's rows for every name NOT in *keep*.
+
+        The per-tool half of :meth:`purge_source`: the owner is still
+        configured and still reachable, it simply stopped publishing one of
+        its tools.  Without this the vanished tool keeps its row, so
+        ``tool_search`` goes on offering it and ``func-tool-load`` materializes
+        a proxy with nothing behind it.
+
+        *keep* MUST be the complete set the owner publishes now — a partial
+        list deletes the difference, which is why both callers refuse to call
+        this on an empty listing (empty means "not ready yet", never "owns
+        nothing"; the registry diff skips the same case for the same reason).
+
+        Returns the removed names.
+        """
+        async with self._write_lock:
+            cursor = await self._c.execute(
+                "SELECT name FROM tool WHERE source_id = ?", (source_id,),
+            )
+            gone = sorted(r[0] for r in await cursor.fetchall() if r[0] not in keep)
+            if gone:
+                ph = in_placeholders(len(gone))
+                await self._c.execute(
+                    f"DELETE FROM tool WHERE name IN ({ph})", gone,
+                )
+                # Same explicit cleanup as purge_source / remove_tool — the
+                # delete must not depend on the FK cascade being enabled.
+                await self._c.execute(
+                    f"DELETE FROM tool_embeddings WHERE name IN ({ph})", gone,
+                )
+                await self._c.commit()
+        if gone:
+            logger.info(
+                "catalog_source_purged_except source=%s tools=%d", source_id, len(gone),
+            )
+        return gone
+
     async def purge_missing_sources(self, keep: "set[str]") -> "set[str]":
         """Purge the rows of every server NOT in *keep*; returns what was purged."""
         purged: set[str] = set()

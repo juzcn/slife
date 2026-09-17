@@ -1410,6 +1410,15 @@ class AgentService:
         Each row also carries its server's on/off switch — tools.json5 is the
         authority for that column, and a mirrored row that omitted it would
         read as merely ``down`` when its server is in fact switched off.
+
+        Upsert-then-purge over the server's WHOLE tool set, the same contract
+        every other family's mirror follows: a tool this server no longer
+        publishes loses its row (it already lost its registry proxy), or
+        ``tool_search`` keeps offering one that cannot run and
+        ``func-tool-load`` materializes a proxy with nothing behind it.  Both
+        callers return early on an empty listing, which means "not ready yet"
+        — never "owns nothing" — so a transient empty list cannot wipe a
+        server's rows.
         """
         catalog = self._catalog
         if catalog is None:
@@ -1424,6 +1433,7 @@ class AgentService:
             # Unreadable config is not a reason to call a server disabled.
             server_enabled = True
 
+        incoming: set[str] = set()
         for t in tools:
             tname = t.get("name")
             if not tname:
@@ -1434,6 +1444,7 @@ class AgentService:
                 t.get("description", "") or "",
                 t.get("inputSchema", {"type": "object", "properties": {}}),
             )
+            incoming.add(full_name)
             await catalog.upsert_external_tool(
                 full_name,
                 server=server_name,
@@ -1442,6 +1453,16 @@ class AgentService:
                 category=category,
                 enabled=server_enabled,
             )
+        # Only ever reached with a non-empty listing (both callers return early
+        # on an empty one) — the guard keeps the "delete the difference"
+        # contract off a set that does not yet describe the server.
+        if incoming:
+            gone = await catalog.purge_source_except(server_name, incoming)
+            if gone:
+                logger.info(
+                    "catalog_external_tools_purged server=%s tools=%d",
+                    server_name, len(gone),
+                )
 
     async def _mirror_on_demand_server_tools(self, server_name: str) -> None:
         """Upsert a non-auto-load server's tool rows into the shared catalog.

@@ -198,8 +198,18 @@ category：Builin | Job | MCP | REST-API | SKILL | CLI
 source：null | null | null | <mcp-server> | <mcp-server> | null | null
 schema: Tool def(name,description, schema)|Tool def|Tool def|Tool def|SKILL.md|null
 
-status: loaded | unloaded | error | disabled | null
-loaded unloaded只针对function tool，即 builin, mcp, job, rest-api，对于skill和cli都为null
+status: loaded | unloaded | null  （**存储列**，只有这三个值）
+loaded unloaded只针对function tool，即 builtin, plugin, mcp, job, rest-api，对于skill和cli都为null
+
+effective status: loaded | unloaded | error | disabled | n/a  （**推导值，不落库**）
+由行上的三个事实按序推导，后者不覆盖前者：
+  1. enabled == 0        → disabled （tools.json5 的开关；对每个category都适用）
+  2. unavailable == 1    → error    （运行时判决：拥有者此刻不可用。**独立列**，
+                                      绝不写进 status —— 写进去会把 model 的
+                                      loaded 决定抹掉，掉线一次就丢）
+  3. status              → loaded / unloaded，为空则 n/a
+
+unavailable: 1 | NULL   — 拥有者（server / plugin）此刻不可用，由 host 写，清掉时不动 status
 
 last-loaded: <Time> | null
 只针对function tool。
@@ -250,21 +260,27 @@ status：为空时，搜索所有状态的， status=status, 只搜索status的t
 
 - 为builtin function tool 配置preload，tool search 和 tool load必须配置为true，其它工具可以用户自配置。
 
-做完以后的几件事项：
+9. 同步逻辑
 
-- whitelist是什么意思？
-- 
-- 确认 tools.db 是 toolregsitry是唯一真相，agent和subagent都没有创建内存副本或其它副本。
-- 创建 TOOL_SYSTEM.md 设计文档，更新DESIGN.md
-- 注入到Loop中的tool schema，是从db中读的，而不是重新从mcp中读或tools code中读的。
-- cli set remove, skill set remove, rest api set remove. job create or update or remove 都能动态更新tools.db，remove 该清理的都清理干净，特别是server 连接。
-- watch dog 
-- 把所有出现mcp-plugin的地方改为 mcp-gateway
-- 更新两个安装脚本， seed tools.json5
-- 确认新安装的slife，带着seeded tools.json5 能与空db 自洽，也能和已有db自洽。
+原则：
 
+1 tools.json5 是唯一真相，tools.db 是tools.json5的运行时镜像，它与 tools.json5的主要区别：
 
-9. Issues
+1）加了 type 数据（func | skill | cli），它是 category 的**派生投影**，不由 json5 配置，全库只有 reconcile 一个写入点。
+2）增加了运行态列：status（loaded/unloaded，skill/cli 为 NULL）、last_loaded（LRU 排序），以及两列 json5 里也没有的：
+   unavailable（拥有者此刻不可用的判决，独立列）和 enabled 的三态镜像（NULL=不表态，视为开启）。
+3）mcp server / rest-api server 扩展成 tools 进入 db：命名 `{server}__{tool}`，source_id 指 server，
+   v2 起**没有 server 表**（该表已 drop），server 的状态就记在它自己那些 tool 行上。
+   注意 source_id 不等于"外部 server"：plugin/job 行也带 source_id，但网关子进程死亡时**不得**
+   把它们标成不可用，所以 SERVER_CATEGORIES 只含 mcp / rest-api。
+
+tools.db 里唯一 json5 无法重建的东西是 status + last_loaded（model 的决定）；其余每一行都是派生数据，
+所以 schema 变了就删库重建，不做原地升级（旧文件由 _check_categories / _check_columns 报出来）。
+
+2 cli的同步机制：
+
+- 忽略 autoload
+- 检查json5与
 
 原则 tools.json5 是唯一真相， tools.db 是真相的扩展版（增加了mcp和restapi连接后的工具）。
 
@@ -282,6 +298,12 @@ skill:
     1.1 同步办法：对于每一个 server， 新工具db add, server中不存在的工具，db delete, 
     存在，但tool有变更，db update， 不update tool的状态 loaded unloaded，但要把disabled update为enabled。
 
+    实现位置：_upsert_external_catalog_rows（host）——一次 upsert 该 server 的**全部**工具，
+    再用 purge_source_except(server, incoming) 删掉"库里有、这次列表里没有"的行（注册表侧
+    早已同样摘掉 proxy）。安全前提：空列表一律提前返回（"还没就绪"，不是"一个工具都没有"），
+    所以禁用/未连上的 server 不会被清空。同一条"消失的工具必须丢行"的约定，plugin/job 由
+    sync_system_tools(source=…) 提供，skill/cli 由 sync_category(purge=True) 提供。
+
 
 
 
@@ -290,4 +312,9 @@ skill:
 
  要确定启动时，和所有crud操作 mcp， skill， restapi， cli， job， 能同步到 tools.json5, 和 tools.db
 
-唯一例外， 启动时只同步enable tool到tools.db，动态enable和disable只更新tool.db中的enable和disable属性值，不删除disable的行
+唯一例外， 动态enable和disable只更新tool.db中的enable和disable属性值，不删除disable的行。
+
+（早期写法"启动时只同步 enable tool 到 tools.db"对本地家族已不成立：config 关掉的 builtin 也会拿到一行并标
+disabled，这样 json5 和 db 对同一个工具的说法一致。对 mcp/rest-api，disable 的 server 不连接，所以"没有行"
+只发生在**从未连上过**的情况；曾经连上过的 server 被 disable，行保留并标 disabled —— 这正是上面那条
+"不删除 disable 的行"约定。disable ≠ error：前者是 json5 的开关，后者是"开着但此刻连不上"。）

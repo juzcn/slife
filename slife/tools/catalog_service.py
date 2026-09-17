@@ -580,6 +580,20 @@ class ToolCatalogService:
             logger.info("catalog_purged_config_removed servers=%r", sorted(purged))
         return purged
 
+    async def purge_source_except(self, source: str, keep: "set[str]") -> list[str]:
+        """Drop one owner's rows for tools it no longer publishes (main-owner only).
+
+        The per-tool counterpart of :meth:`purge_source`: the owner is still
+        configured and still connected — it just stopped offering one of its
+        tools.  Every other family gets this from its own mirror (a plugin's
+        source-scoped ``sync_system_tools``, a skill/cli ``sync_category``);
+        this is how the external families get the same "a vanished tool loses
+        its row" contract.
+        """
+        if not self.write_owner:
+            return []
+        return await self._store.purge_source_except(source, keep)
+
 
 def _tool_name(tool: "Tool") -> str:
     return getattr(tool, "name", "") or ""

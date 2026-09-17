@@ -362,6 +362,81 @@ async def test_purge_unconfigured_sources(_isolate):
     await store.close()
 
 
+@pytest.mark.asyncio
+async def test_a_tool_a_server_stopped_publishing_loses_its_row(_isolate):
+    """Upsert-then-purge over the server's whole set — the contract every other
+    family's mirror already follows (a plugin's source-scoped sync, a skill/cli
+    ``sync_category``).
+
+    A tool the registry already dropped (its proxy went with it) must not keep a
+    catalog row, or ``tool_search`` goes on offering it and ``func-tool-load``
+    materializes a proxy with nothing behind it."""
+    from types import SimpleNamespace
+
+    from slife.agent.service import AgentService
+
+    store = CatalogStore(_isolate / "tools.db")
+    await store.open()
+    try:
+        svc = ToolCatalogService(store, write_owner=True)
+        stub = SimpleNamespace(_catalog=svc)
+        listed = [
+            {"name": t, "description": f"{t} desc",
+             "inputSchema": {"type": "object", "properties": {}}}
+            for t in ("search", "scrape")
+        ]
+        await AgentService._upsert_external_catalog_rows(
+            stub, "serper", listed, category="mcp")
+        assert await store.get_tool("serper__scrape") is not None
+        await store.replace_embedding_chunks(
+            {"doc_id": "serper__scrape"}, [[0.1, 0.2]], model="test-model")
+        assert await store.count_embedded() == 1
+
+        # the server republishes only `search`
+        await AgentService._upsert_external_catalog_rows(
+            stub, "serper", listed[:1], category="mcp")
+
+        assert await store.get_tool("serper__scrape") is None
+        assert await svc.effective_status("serper__scrape") is None
+        assert await store.count_embedded() == 0        # vectors went too
+        # …and the survivors are untouched: a sibling's removal is not a reason
+        # to reset what the model loaded
+        assert await store.get_tool("serper__search") is not None
+        ok, _ = await svc.load_tool("serper__search")
+        assert ok
+        assert "serper__search" in await svc.snapshot_loaded()
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_listing_never_purges_a_servers_rows(_isolate):
+    """The "not ready yet" guard — an empty tool list means the server has not
+    listed yet, NEVER that it owns nothing, so it must not wipe its rows.
+
+    Both real callers already return early on an empty listing; this pins the
+    second line of defence, so a future caller cannot turn the purge into a
+    wipe by handing it an empty set."""
+    from types import SimpleNamespace
+
+    from slife.agent.service import AgentService
+
+    store = CatalogStore(_isolate / "tools.db")
+    await store.open()
+    try:
+        svc = ToolCatalogService(store, write_owner=True)
+        stub = SimpleNamespace(_catalog=svc)
+        await _mirror_server(svc, "serper", ["search", "scrape"])
+
+        await AgentService._upsert_external_catalog_rows(
+            stub, "serper", [], category="mcp")
+
+        assert await store.get_tool("serper__search") is not None
+        assert await store.get_tool("serper__scrape") is not None
+    finally:
+        await store.close()
+
+
 # ── D: restart — the row state survives, no snapshot involved ───────────
 
 
