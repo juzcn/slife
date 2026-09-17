@@ -777,7 +777,7 @@ class SlifeApp(App):
 
         A non-STARTED outcome is split on the plugin contract's ``required``
         marker (``plugins.required`` in slife.json5): a required (core)
-        plugin that fails — ``FAILED``, a raised spawn, or the 30 s spawn
+        plugin that fails — ``FAILED``, a raised spawn, or the spawn
         hang-guard in ``AgentService.start_plugin_server`` — aborts startup
         via :meth:`_abort_required_plugin` (red message, stop all plugins,
         exit).  All other failures stay a warning: the missing service is
@@ -787,13 +787,20 @@ class SlifeApp(App):
         try:
             status = await coro
         except Exception as e:
+            # The spawn hang-guard surfaces as a bare ``TimeoutError`` whose
+            # ``str()`` is empty, and EVERY plugin can hit it — the guard wraps
+            # the whole spawn (MCP handshake included), not just a required
+            # one.  Without a fallback the reason line reads
+            # "⚠ Plugin start failed (mcp-gateway): " and says nothing at all
+            # about why, which is exactly the case that needs a reason.
+            reason = str(e) or (
+                f"timed out after {_timeouts.timeouts.ready.plugin_start:.0f}s"
+            )
             if name in self.service.config.plugins_required:
-                # The 30 s hang-guard surfaces as a bare TimeoutError whose
-                # str() is empty — fall back so the reason line reads clean.
-                await self._abort_required_plugin(name, str(e) or "timed out")
+                await self._abort_required_plugin(name, reason)
                 return
             self._show_system_message(
-                t("plugin_start_failed", name=name, err=e), color="#d29922",
+                t("plugin_start_failed", name=name, err=reason), color="#d29922",
             )
             return
         if status is PluginStartStatus.STARTED:

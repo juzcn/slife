@@ -81,17 +81,16 @@ _TUNNEL_PROBE_INTERVAL = 1.0  # seconds — cadence between __check probes (not 
 def _server_category(name: str) -> str:
     """An external server's catalog category (``mcp`` vs ``rest-api``).
 
-    tools.json5 is the only source now: the provenance tag used to be
-    mirrored into a ``server`` row (``source.type == "rest_api"``), and that
-    table is gone.  The config was the authority for it all along, so reading
-    it directly is both simpler and impossible to desync.
+    tools.json5 is the only source, and inside it the ``rest-api`` SECTION is
+    the whole answer — an entry there is a REST API, wherever its file may
+    have been hand-moved since.  Nothing is tagged for it: ``source`` records
+    where a definition was DOWNLOADED from (github / registry / hand), which
+    is a different question, so the category is read off the placement.
     """
     try:
         from slife.plugins.mcp_gateway import config as _cfg
-        from slife.plugins.mcp_gateway.config import _is_rest_api_entry
 
-        entry = _cfg.get_server(name)
-        return "rest-api" if _is_rest_api_entry(entry) else "mcp"
+        return "rest-api" if _cfg.is_rest_api(name) else "mcp"
     except Exception:
         logger.debug("catalog_server_category_lookup_failed server=%s", name, exc_info=True)
         return "mcp"
@@ -668,8 +667,20 @@ class AgentService:
             # a stuck child, so the service can still open.  Not a
             # readiness deadline: the normal path settles as fast as the
             # real spawn, no timing guess involved.
-            async with asyncio.timeout(_timeouts.timeouts.ready.plugin_start):
-                return await self._start_plugin_server_impl(name, module)
+            try:
+                async with asyncio.timeout(_timeouts.timeouts.ready.plugin_start):
+                    return await self._start_plugin_server_impl(name, module)
+            except TimeoutError:
+                # Log BEFORE it propagates: the guard sits outside the impl's
+                # own try/except, and the UI is what catches the TimeoutError,
+                # so without this line a child stuck past the guard leaves no
+                # trace in the session log at all (only "… ({name}): " in the
+                # TUI) — the one failure that most needs a trail.
+                logger.warning(
+                    "plugin_start_timeout name=%s after=%.0fs",
+                    name, _timeouts.timeouts.ready.plugin_start,
+                )
+                raise
         finally:
             self._startup_plugins.discard(name)
             if not self._startup_plugins:
@@ -863,8 +874,31 @@ class AgentService:
 
     async def _after_ready_mcp(self, lc) -> None:
         """After the gateway child is ready: wire the mcp enrichment (expose
-        the wrapper client, register external-server tool proxies)."""
-        await self._wire_mcp_glue()
+        the wrapper client, register external-server tool proxies).
+
+        The WIRING is immediate; the SYNC IS DISPATCHED, never awaited here.
+        The gateway is ready when its own MCP handshake completes — its
+        external servers are the gateway's business, and they come up in the
+        background (its lifespan schedules auto-connect and returns for
+        exactly this reason).  ``_wire_mcp_glue`` reads ``mcp_list`` /
+        ``__check`` and then lists every configured server's tools, which for
+        a peer the pool holds nothing for is itself the spawn.  Awaiting that
+        put the whole external mirror inside the spawn await, which the spawn
+        hang guard wraps: a slow server then turned a READY gateway into
+        "⚠ plugin start failed" once the guard expired, a message that says
+        nothing about why.
+        """
+        client = lc.client
+        # Ordering-sensitive and cheap: expose the client before a health
+        # check can read a stale one, and arm the notification handler before
+        # the first server's ``tools/list_changed`` can arrive (the gateway
+        # starts connecting the moment it serves).
+        self._tool_ctx.mcp_client = client
+        if client is not None:
+            client.on_notification = self._on_mcp_tools_changed
+        # Reaped by ``cancel_tasks()``: a restart cancels the stale sync
+        # before re-arming, and shutdown takes it down with the lifecycle.
+        lc.extra_task = asyncio.create_task(self._wire_mcp_glue())
 
     # ══ Runtime tool-set resync ══════════════════════════════════════
     # Unified mechanism for plugins that mutate their own tool set at
@@ -1153,19 +1187,29 @@ class AgentService:
 
         Idempotent — re-arming after a watchdog respawn re-points the tool
         context and re-registers the external servers' tools.
+
+        Runs as the gateway lifecycle's background task (see
+        :meth:`_after_ready_mcp`), so it never holds the plugin start open.
+        The body is best-effort end to end and must never raise: an escaping
+        error would surface only as an unretrieved task exception.
         """
-        lc = self._gateway_lifecycle()
-        if lc is None:
-            return
-        client = lc.client
-        self._tool_ctx.mcp_client = client
-        if client is not None:
-            client.on_notification = self._on_mcp_tools_changed
-        await self._sync_mcp_proxies()
-        # Jobs reach external MCP servers via the gateway's persistent
-        # connections; keep their lazy ``mcp`` handle pointed at the live
-        # port (the push lands on every gateway connect, restart included).
-        await self._push_gateway_port_to_jobs(lc)
+        try:
+            lc = self._gateway_lifecycle()
+            if lc is None:
+                return
+            client = lc.client
+            self._tool_ctx.mcp_client = client
+            if client is not None:
+                client.on_notification = self._on_mcp_tools_changed
+            await self._sync_mcp_proxies()
+            # Jobs reach external MCP servers via the gateway's persistent
+            # connections; keep their lazy ``mcp`` handle pointed at the live
+            # port (the push lands on every gateway connect, restart included).
+            await self._push_gateway_port_to_jobs(lc)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("mcp_glue_failed", exc_info=True)
 
     async def _push_gateway_port_to_jobs(self, lc) -> None:
         """Best-effort push of the gateway's port to the job-coding plugin.
@@ -1272,24 +1316,49 @@ class AgentService:
                     client, configured, enabled_servers,
                 )
 
-            # 2 — auto_load servers: full-diff register + catalog upsert.
-            for name in auto_servers:
+            # 2/2b — every configured server's rows, off ONE pass over the
+            # servers: auto_load ones also get their proxies (re)registered,
+            # on-demand ones are mirrored only (proxies arrive with
+            # ``func-tool-load``, which materializes from the catalog row).
+            #
+            # CONCURRENTLY: each of these awaits a ``__mcp_list_tools``, i.e.
+            # a real ``tools/list`` on the far side — and, for a peer the pool
+            # holds nothing for, the SPAWN that makes one possible.  Sequential,
+            # every server waited on all the servers before it; twenty of them
+            # made a cold reconcile a minute-plus of pure queueing.  One
+            # server's failure still never sinks the pass.
+            async def _mirror(name: str, coro, tag: str) -> None:
                 try:
-                    await self._discover_and_register_external_tools(server_name=name)
+                    await coro
                 except Exception:
-                    logger.debug("mcp_auto_load_sync_failed server=%s", name, exc_info=True)
+                    logger.debug("%s server=%s", tag, name, exc_info=True)
 
-            # 2b — on-demand (non-auto-load) servers: mirror their tool rows
-            # into the catalog so tool_search can find them and func-tool-load
-            # can materialize them.  No proxies are registered here — the caller
-            # must have a catalog and the server must be connected.
-            for name in configured:
-                if name in auto_servers:
-                    continue
+            await asyncio.gather(
+                *(
+                    _mirror(n, self._discover_and_register_external_tools(server_name=n),
+                            "mcp_auto_load_sync_failed")
+                    for n in sorted(auto_servers)
+                ),
+                *(
+                    _mirror(n, self._mirror_on_demand_server_tools(n),
+                            "mcp_on_demand_sync_failed")
+                    for n in sorted(configured - auto_servers)
+                ),
+            )
+
+            # Re-project the verdict: the mirrors above are what ASK for the
+            # tool lists (a boot that only spawns holds none yet), so every
+            # peer was still `error` when step 1 looked.  This second pass sees
+            # the lists the mirrors just produced — one `__check` plus the
+            # guarded per-server write, which now costs nothing where nothing
+            # moved.  Best-effort: a failed probe is not a verdict.
+            if not self.is_subagent and self._catalog is not None:
                 try:
-                    await self._mirror_on_demand_server_tools(name)
-                except Exception:
-                    logger.debug("mcp_on_demand_sync_failed server=%s", name, exc_info=True)
+                    await self._mark_server_connectivity(
+                        client, configured, enabled_servers,
+                    )
+                except Exception as e:
+                    logger.debug("mcp_connectivity_recheck_failed err=%s", e)
 
             # 3 — a proxy whose server left the CONFIG is dropped; a merely
             # disconnected/disabled server keeps it (its rows are `error`).
@@ -1419,12 +1488,14 @@ class AgentService:
         callers return early on an empty listing, which means "not ready yet"
         — never "owns nothing" — so a transient empty list cannot wipe a
         server's rows.
+
+        The rows go over as ONE delta (:meth:`mirror_external_tools`): a
+        per-tool upsert re-read the catalog's whole table for every tool, so a
+        thousand-tool server cost a thousand scans per listing.
         """
         catalog = self._catalog
         if catalog is None:
             return
-        import slife.tools.catalog_service as _cs
-
         try:
             from slife.plugins.mcp_gateway import config as _gw_cfg
             _entry = _gw_cfg.get_server(server_name) or {}
@@ -1433,36 +1504,9 @@ class AgentService:
             # Unreadable config is not a reason to call a server disabled.
             server_enabled = True
 
-        incoming: set[str] = set()
-        for t in tools:
-            tname = t.get("name")
-            if not tname:
-                continue
-            full_name = t.get("full_name") or f"{server_name}__{tname}"
-            descriptor = _cs.descriptor_json(
-                tname,
-                t.get("description", "") or "",
-                t.get("inputSchema", {"type": "object", "properties": {}}),
-            )
-            incoming.add(full_name)
-            await catalog.upsert_external_tool(
-                full_name,
-                server=server_name,
-                description=t.get("description", "") or "",
-                schema=descriptor,
-                category=category,
-                enabled=server_enabled,
-            )
-        # Only ever reached with a non-empty listing (both callers return early
-        # on an empty one) — the guard keeps the "delete the difference"
-        # contract off a set that does not yet describe the server.
-        if incoming:
-            gone = await catalog.purge_source_except(server_name, incoming)
-            if gone:
-                logger.info(
-                    "catalog_external_tools_purged server=%s tools=%d",
-                    server_name, len(gone),
-                )
+        await catalog.mirror_external_tools(
+            server_name, tools, category=category, enabled=server_enabled,
+        )
 
     async def _mirror_on_demand_server_tools(self, server_name: str) -> None:
         """Upsert a non-auto-load server's tool rows into the shared catalog.

@@ -203,8 +203,14 @@ class ToolCatalogService:
             "schema": tool_descriptor(tool),
             "enabled": self._row_enabled(tool, disabled_servers),
             # Only a brand-new row sees this — reconcile applies status on
-            # INSERT alone, which is exactly the keep-existing rule.
+            # INSERT alone, which is exactly the keep-existing rule…
             "status": self.default_status(name),
+            # …unless the entry is marked ``autoload``: that is the config
+            # saying "this tool stays loaded", so its status is an authority
+            # and may overwrite what the model decided.  (Meta tools are born
+            # loaded too, but they are protected by the whitelist, not by a
+            # config switch — a row of theirs is never unloaded to begin with.)
+            "override_status": name in self.autoload,
         }
 
     def _row_enabled(
@@ -336,6 +342,10 @@ class ToolCatalogService:
         entry is (re)written, and a name that vanished from the source loses
         its row — a deleted skill must not linger as a hit `tool_search` keeps
         returning.  Returns the purged names.
+
+        ``status`` is written as ``None`` (the column stays NULL) and
+        ``override_status`` is left off: neither family has a load state, so
+        an ``autoload`` flag on a skill/cli entry has nothing to own.
         """
         result = await self._store.reconcile(
             [
@@ -476,10 +486,15 @@ class ToolCatalogService:
     ) -> bool:
         """Upsert a server-backed tool row (schema-change detection → re-embed).
 
-        A newly seen tool lands ``unloaded`` — unless its server is marked
-        ``preload: true``, which seeds the whole set loaded — while an existing
-        row keeps whatever the model decided.  For everything else
+        A newly seen tool lands ``unloaded`` — unless its server entry is
+        marked ``autoload: true``, which seeds the whole set loaded — while an
+        existing row keeps whatever the model decided.  For everything else
         ``func-tool-load`` is the only way into the injection set.
+
+        An ``autoload`` server owns its tools' status (there is no per-tool
+        autoload for mcp/rest-api — the flag is on the server, so it is one
+        decision covering the whole set): ``override_status`` lets the row's
+        status be rewritten when it differs.
 
         ``enabled`` is the server's own on/off switch (``None`` = no opinion);
         it moves independently of ``status`` — see
@@ -493,7 +508,76 @@ class ToolCatalogService:
             schema=schema,
             enabled=enabled,
             status=self.default_status(name, server=server),
+            override_status=server in self.autoload_servers,
         )
+
+    async def mirror_external_tools(
+        self,
+        server: str,
+        tools: "list[dict]",
+        *,
+        category: str = "mcp",
+        enabled: bool | None = None,
+    ) -> list[str]:
+        """Mirror ONE server's whole tool set in a single reconcile.
+
+        The batch face of :meth:`upsert_external_tool`, and it exists for cost:
+        ``reconcile`` reads the catalog's rows once per call, so the per-tool
+        form pays a full-table scan PER TOOL — a server with ~1100 tools paid
+        ~1100 of them on every listing, sequentially, which is most of what a
+        cold reconcile spends its time on.  Batched, the same server costs one
+        read of the table, one write of the columns that moved, and one purge.
+
+        *tools* are the engine's own shape (``name``, ``description``,
+        ``inputSchema``, optional ``full_name``) — the row's ``schema`` column
+        is built here, so no caller assembles a descriptor by hand.  Rows land
+        with :meth:`default_status`; an existing row keeps the load state the
+        model chose (``reconcile`` applies ``status`` on INSERT alone).
+
+        Returns the names purged — tools this server no longer publishes.  An
+        EMPTY *tools* is "not ready yet", never "owns nothing": it mirrors
+        nothing and purges nothing, so a transient empty listing cannot wipe a
+        server's rows.
+        """
+        rows: list[dict] = []
+        for t in tools:
+            tname = t.get("name")
+            if not tname:
+                continue
+            description = t.get("description", "") or ""
+            full_name = t.get("full_name") or f"{server}__{tname}"
+            rows.append({
+                "name": full_name,
+                "description": description,
+                "category": category,
+                "source_id": server,
+                "schema": descriptor_json(
+                    tname, description,
+                    t.get("inputSchema", {"type": "object", "properties": {}}),
+                ),
+                "enabled": enabled,
+                "status": self.default_status(full_name, server=server),
+                # The autoload flag lives on the SERVER entry (mcp/rest-api
+                # have no per-tool one), so it is one decision over the whole
+                # set: every row of such a server owns its status.
+                "override_status": server in self.autoload_servers,
+            })
+        if not rows:
+            return []
+        result = await self._store.reconcile(rows)
+        # Upsert-then-purge: after the reconcile this server owns exactly its
+        # incoming names plus whatever vanished — the same "a tool a server
+        # stopped publishing loses its row" contract every other family's
+        # mirror keeps.
+        gone = await self._store.purge_source_except(
+            server, {r["name"] for r in rows},
+        )
+        if gone:
+            logger.info(
+                "catalog_external_tools_purged server=%s tools=%d", server, len(gone),
+            )
+        self.wake_indexer([*result["schema_changed"], *gone])
+        return gone
 
     async def set_source_enabled(self, source: str, enabled: bool) -> int:
         """Mirror a server's on/off switch onto its rows' ``enabled`` flag.

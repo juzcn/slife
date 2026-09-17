@@ -91,6 +91,73 @@ async def test_seed_preserves_user_unload_across_re_seed(db):
     assert await db.get_effective("native_a") == "unloaded"
 
 
+@pytest.mark.asyncio
+async def test_autoload_entry_overrides_the_db_status(db):
+    """``autoload: true`` is a CONFIG decision, not just a new-row default:
+    the entry says "this tool stays loaded", so a sync puts it back — the one
+    place a mirror may overwrite what the model decided."""
+    svc = ToolCatalogService(db, write_owner=True, autoload=("native_b",))
+    await svc.sync_system_tools([_Native(), _NativeB()])
+    assert await db.get_effective("native_b") == "loaded"
+
+    await svc.unload_tool("native_b")                    # the model unloads it
+    assert await db.get_effective("native_b") == "unloaded"
+    await svc.sync_system_tools([_Native(), _NativeB()])  # config wins again
+    assert await db.get_effective("native_b") == "loaded"
+    # …and the row carries a recency, so a later sync (or a dropped autoload)
+    # does not leave it as the oldest thing in the table.
+    assert (await db.get_tool("native_b"))["last_loaded"] is not None
+
+
+@pytest.mark.asyncio
+async def test_autoload_override_writes_nothing_when_already_loaded(db):
+    """An override that overrides nothing is not a write — the same rule the
+    rest of the sync follows (``tool_au`` re-indexes on any UPDATE)."""
+    svc = ToolCatalogService(db, write_owner=True, autoload=("native_b",))
+    await svc.sync_system_tools([_Native(), _NativeB()])
+    stored = await db.get_tool("native_b")
+
+    # The very same row again — nothing moved, so nothing is written.
+    result = await db.reconcile([{
+        "name": "native_b", "description": stored["description"],
+        "category": "builtin", "schema": stored["schema"],
+        "status": "loaded", "override_status": True,
+    }])
+    assert result["skipped"] == 1
+    assert (await db.get_tool("native_b"))["last_loaded"] == stored["last_loaded"]
+
+
+@pytest.mark.asyncio
+async def test_a_server_autoload_covers_its_whole_tool_set(db):
+    """mcp/rest-api have no per-tool autoload: the flag is on the SERVER entry,
+    so one decision owns every row of that server."""
+    svc = ToolCatalogService(db, write_owner=True, autoload_servers=("svcA",))
+    tools = [{"name": "x", "description": "d",
+              "inputSchema": {"type": "object", "properties": {}}}]
+    await svc.mirror_external_tools("svcA", tools, category="mcp")
+    assert await db.get_effective("svcA__x") == "loaded"
+
+    await svc.unload_tool("svcA__x")
+    await svc.mirror_external_tools("svcA", tools, category="mcp")
+    assert await db.get_effective("svcA__x") == "loaded"
+
+    # A server without the flag keeps the model's decision.
+    await svc.mirror_external_tools("svcB", tools, category="mcp")
+    await svc.unload_tool("svcB__x")
+    await svc.mirror_external_tools("svcB", tools, category="mcp")
+    assert await db.get_effective("svcB__x") == "unloaded"
+
+
+@pytest.mark.asyncio
+async def test_skill_and_cli_rows_have_no_status_to_override(db):
+    """Neither family has a load state, so an ``autoload`` flag on one has
+    nothing to own: the column stays NULL either way."""
+    svc = ToolCatalogService(db, write_owner=True, autoload=("a-skill",))
+    await svc.sync_category("skill", {"a-skill": {"description": "d", "schema": "S"}})
+    row = await db.get_tool("a-skill")
+    assert row["status"] is None and row["type"] == "skill"
+
+
 # ── Load / unload matrix ───────────────────────────────────────────
 
 @pytest.mark.asyncio

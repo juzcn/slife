@@ -539,7 +539,9 @@ class CatalogStore:
         tri-state: ``None`` means *no opinion* and leaves the column alone —
         the contract mcp/rest-api rows rely on to keep it NULL.  ``status``
         applies to a NEW row only: an existing row keeps its loaded/unloaded
-        state, so a plugin re-register can never clobber a user unload.
+        state, so a plugin re-register can never clobber a user unload.  The
+        one exception is ``override_status`` (see below): the config's autoload
+        statement, which owns the row's state and rewrites it when it differs.
         ``type`` is derived from ``category`` here — the one place it is
         written, so the two columns cannot drift.
 
@@ -635,6 +637,24 @@ class CatalogStore:
                 ):
                     sets.append("enabled = ?")
                     vals.append(1 if new_enabled else 0)
+                # ``override_status`` is the config's autoload statement: the
+                # row is loaded because tools.json5 says so, so the incoming
+                # status is an AUTHORITY rather than an insert default and may
+                # overwrite what the model decided.  Owned here (not by the
+                # caller) for the same reason as every other column: one
+                # place compares, and only a value that MOVES is written.
+                new_status = row.get("status")
+                if row.get("override_status") and new_status is not None and (
+                    (prev["status"] or None) != new_status
+                ):
+                    sets.append("status = ?")
+                    vals.append(new_status)
+                    if new_status == STATUS_LOADED:
+                        # The same recency bump ``set_status(bump=True)`` does,
+                        # so a tool the config loaded is not the first eviction
+                        # victim if the autoload flag is ever dropped.
+                        sets.append("last_loaded = ?")
+                        vals.append(_now())
 
                 if not sets:
                     skipped += 1
@@ -695,18 +715,19 @@ class CatalogStore:
         schema: str | None = None,
         enabled: bool | None = None,
         status: str | None = None,
+        override_status: bool = False,
     ) -> bool:
         """Upsert one tool row; returns True iff its ``schema`` text changed.
 
         The single-row face of :meth:`reconcile`, so the comparison that
         decides "re-embed or not" has exactly one implementation.  See that
         method for the column contracts (``enabled=None`` = no opinion,
-        ``status`` on a NEW row only).
+        ``status`` on a NEW row only — unless ``override_status``).
         """
         result = await self.reconcile([{
             "name": name, "description": description, "category": category,
             "source_id": source_id, "schema": schema, "enabled": enabled,
-            "status": status,
+            "status": status, "override_status": override_status,
         }])
         return name in result["schema_changed"]
 
