@@ -45,9 +45,9 @@
 3. Unified Tool System
    - One catalog (`tools.db`), one row per tool. `type` is `func` (builtin / job / plugin / mcp / rest-api; external ones named `{server}__{tool}`, a plugin's own tools bare with the plugin as `source`), `skill`, or `cli`.
    - A `func` row is `loaded` or `unloaded`: `tool_search` finds rows (category / status / mode filters), `func-tool-load` loads one, `_unload_func_tool` unloads one. Loading is **per tool**.
-   - Each turn injects the loaded rows, capped by the `tool_load` threshold (default 100): above it the least-recently-used are unloaded at turn boundaries. Always injected: the whitelist (harness pair, meta tools, pinned `skill_use` / `system_health`).
+   - Each turn injects the enabled, loaded `func` rows, capped by the `tool_load` threshold (default 100): above it the least-recently-used are unloaded at turn boundaries. Always injected: the whitelist (harness pair, meta tools, pinned `skill_use` / `system_health`).
    - `skill` and `cli` rows carry no load state: `tool_search` finds them the same way, `skill_use` returns a skill's SKILL.md, `cli_list` carries a CLI's command.
-   - A tool whose server is down carries status `error`: still searchable, and back in the injected set once the server connects. `mcp_list` = the live pool; `mcp_set_enabled` / `rest_api_set_enabled` = the on/off switch per external family.
+   - A tool whose server is down carries status `error`: still searchable, and back in the injected set once the server connects (with whatever was loaded before). A tool switched off in the config carries status `disabled` — searchable, not loadable. `mcp_list` = the live pool; `mcp_set_enabled` / `rest_api_set_enabled` = the on/off switch per external family (it moves all of that server's tools at once).
    - A server's tools list via `mcp_list_tools` / `rest_api_list_tools` — capped (`mcp.tool_list_limit`, default 20) with the real total reported; `tool_search` finds any tool behind the cap.
    - `_`-prefixed tools are harness-injected (`_turn_prompt`, `_check_new_input`); a `_check_new_input` reply may carry a live mid-turn message (cut-in).
    - `add_user_pref` writes standing rules to `USER.md` (prompt-level).

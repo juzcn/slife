@@ -123,6 +123,7 @@ class ToolCatalogService:
         autoload_servers: tuple[str, ...] = (),
         disabled_jobs: tuple[str, ...] = (),
         disabled_plugin: tuple[str, ...] = (),
+        disabled_builtins: tuple[str, ...] = (),
     ):
         self._store = store
         self.threshold = threshold
@@ -133,10 +134,12 @@ class ToolCatalogService:
         #: Servers marked ``autoload: true`` — the same contract for tools
         #: whose names are unknown until their server connects.
         self.autoload_servers = frozenset(autoload_servers)
-        #: Per-entry ``enabled: false`` names, by their own section: a job in
-        #: ``job`` (the user's tools), a plugin's own tool in ``plugin``.  Both
-        #: are registered whatever the config says, so the disable is mirrored
-        #: onto the row instead.
+        #: Per-entry ``enabled: false`` names, by their own section: a builtin,
+        #: a job in ``job`` (the user's tools), a plugin's own tool in
+        #: ``plugin``.  A builtin's disable keeps it out of the REGISTRY (the
+        #: factory skips it) but not out of the catalog — its row is mirrored
+        #: with ``enabled=0``, so json5 and the db agree on it.
+        self._disabled_builtins = frozenset(disabled_builtins)
         self._disabled_jobs = frozenset(disabled_jobs)
         self._disabled_plugin = frozenset(disabled_plugin)
         #: The host's semantic actor (set by AgentService after startup) —
@@ -146,6 +149,26 @@ class ToolCatalogService:
     @property
     def store(self) -> CatalogStore:
         return self._store
+
+    def reload_disabled(
+        self,
+        *,
+        builtins: "frozenset[str] | set[str] | None" = None,
+        jobs: "frozenset[str] | set[str] | None" = None,
+        plugin: "frozenset[str] | set[str] | None" = None,
+    ) -> None:
+        """Re-read the per-entry ``enabled: false`` sets from a fresh config.
+
+        The sets are captured when the service is built, so a hand-edit to
+        ``tools.json5`` mid-session would otherwise wait for the next boot.
+        ``None`` keeps a set as it was (the caller re-read only some sections).
+        """
+        if builtins is not None:
+            self._disabled_builtins = frozenset(builtins)
+        if jobs is not None:
+            self._disabled_jobs = frozenset(jobs)
+        if plugin is not None:
+            self._disabled_plugin = frozenset(plugin)
 
     def wake_indexer(self, changed: list[str]) -> None:
         """A reconcile invalidated these rows' vectors — wake the drainer.
@@ -191,11 +214,9 @@ class ToolCatalogService:
 
         There is no per-tool enable anywhere in the system: a family's section
         decides, and for an external server that decision is the SERVER's
-        switch (all of its tools move together).  A job / plugin tool mirrors
-        its section's disable; a BUILTIN tool disabled in the config is never
-        registered at all, so whatever reaches this method is enabled by
-        definition.  ``None`` only for a tool whose owner the config does not
-        name — "not known to be off" is not "off".
+        switch (all of its tools move together).  A builtin / job / plugin tool
+        mirrors its own section's disable.  ``None`` only for a tool whose owner
+        the config does not name — "not known to be off" is not "off".
 
         *disabled_servers* is passed in (not looked up per tool) because one
         pass can carry a four-figure number of an external server's tools, and
@@ -207,6 +228,8 @@ class ToolCatalogService:
                 return None
             return server not in disabled_servers
         category = catalog_category(tool)
+        if category == "builtin" and _tool_name(tool) in self._disabled_builtins:
+            return False
         if category == "job":
             return _tool_name(tool) not in self._disabled_jobs
         if category == "plugin":

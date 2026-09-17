@@ -140,10 +140,10 @@ async def test_plugin_tool_disabled_in_its_section_reports_disabled(db, svc):
 # ── Plugin down / up ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_plugin_down_marks_its_rows_and_ready_resets_them(db, svc):
-    """A dead plugin's tools must not read as merely unloaded: rows go
-    ``error`` (searchable, not loadable), and the reconnect clears the mark —
-    per row, since each tool carries its own default."""
+async def test_plugin_down_marks_its_rows_and_ready_clears_them(db, svc):
+    """A dead plugin's tools must not read as merely unloaded: they go
+    ``error`` (searchable, not loadable), and the restart gives back exactly
+    what the outage took."""
     rows = _plugin_rows("memdb", ["turn_search", "turn_count"])
     await db.reconcile(rows)
     await svc.load_tool("turn_count")
@@ -155,25 +155,33 @@ async def test_plugin_down_marks_its_rows_and_ready_resets_them(db, svc):
     assert ok is False and "is not up right now" in reason
 
     reset = await svc.mark_plugin_connected("memdb")
-    # The autoloaded/loaded one is NOT remembered — a plugin restart resets to
-    # the default, exactly as an MCP server reconnect does.
     assert reset == 2
     assert await svc.effective_status("turn_search") == "unloaded"
-    assert await svc.effective_status("turn_count") == "unloaded"
+    # The one the model had loaded is still loaded — the verdict was never
+    # written into the load state.
+    assert await svc.effective_status("turn_count") == "loaded"
 
 
 @pytest.mark.asyncio
-async def test_mark_plugin_connected_honours_per_tool_autoload(db, svc):
-    """Per-row defaults are why a plugin uses its own reset: an ``autoload``
-    tool comes back loaded, its neighbour does not."""
-    svc.autoload = frozenset({"turn_count"})
-    await db.reconcile(_plugin_rows("memdb", ["turn_search", "turn_count"]))
-    await svc.mark_source_error("memdb")
+async def test_plugin_restart_does_not_re_derive_the_load_state(db, svc):
+    """No per-tool reset on a plugin restart, deliberately.
 
+    A plugin's tools are born with their own status (whitelisted / ``autoload``
+    → loaded, else unloaded), and re-deriving it on every restart would undo
+    the model's own decision: a tool born ``loaded`` that the model had
+    UNLOADED came back ``loaded``.  Clearing the verdict instead leaves every
+    row saying exactly what it said before.
+    """
+    # Both born loaded — what an autoloaded plugin's rows look like.
+    await db.reconcile(_plugin_rows("memdb", ["turn_search", "turn_count"],
+                                    status="loaded"))
+    await svc.unload_tool("turn_count")            # the model's call
+
+    await svc.mark_source_error("memdb")
     await svc.mark_plugin_connected("memdb")
 
-    assert await svc.effective_status("turn_count") == "loaded"
-    assert await svc.effective_status("turn_search") == "unloaded"
+    assert await svc.effective_status("turn_count") == "unloaded"   # kept
+    assert await svc.effective_status("turn_search") == "loaded"    # kept
 
 
 @pytest.mark.asyncio

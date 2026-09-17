@@ -56,12 +56,13 @@ async def test_upsert_tool_and_effective_truth_table(store):
         schema=_descriptor("search", "full-text search", None),
         status="loaded",
     )
-    # …and an unusable server's rows carry `error` (written by the reconcile,
-    # never derived: there is no server table left to join).
+    # …and an unusable server's rows read `error`: the verdict is its own
+    # column, written by the reconcile (never derived — there is no server
+    # table to join) and never written into the load state.
     await store.upsert_tool(
         "svcC__ping", category="mcp", source_id="svcC", status="loaded",
     )
-    await store.mark_source_error("svcC")
+    await store.mark_source_unavailable("svcC")
     # builtin disabled by config → DISABLED; enabled → loaded/unloaded
     await store.upsert_tool("native_a", category="builtin", enabled=False, status="loaded")
     await store.upsert_tool("native_b", category="builtin", enabled=True, status="unloaded")
@@ -77,8 +78,12 @@ async def test_upsert_tool_and_effective_truth_table(store):
     assert eff["skill-xyz"] == EFF_NA
     assert eff["cli-foo"] == EFF_NA
 
-    # loaded_names() yields exactly the loaded rows that are not config-disabled
-    # (native_a is disabled despite status='loaded'; svcC__ping is `error`)
+    # the verdict did not cost svcC__ping its load state — it is still loaded
+    assert (await store.get_tool("svcC__ping"))["status"] == "loaded"
+
+    # loaded_names() yields exactly the rows that are loaded, enabled and
+    # available (native_a is switched off despite status='loaded'; svcC__ping
+    # is loaded but its server is not up)
     assert set(await store.loaded_names()) == {"svcA__search"}
     assert await store.count_loaded() == 1
 
@@ -117,47 +122,52 @@ async def test_a_switched_off_server_is_disabled_not_error(store):
     """``disabled`` outranks ``error``: a server that was down when it was
     switched off is off, and that is the fact the model needs to act on."""
     await store.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="loaded")
-    await store.mark_source_error("svcA")
+    await store.mark_source_unavailable("svcA")
     await store.set_source_enabled("svcA", False)
 
     eff = {r["name"]: r["eff"] for r in await store.scan_effective()}
     assert eff["svcA__x"] == EFF_DISABLED
-    assert (await store.get_tool("svcA__x"))["status"] == EFF_ERROR   # the fact is kept
+    # Both facts are kept, in their own columns.
+    row = await store.get_tool("svcA__x")
+    assert row["status"] == "loaded"
+    assert row["unavailable"] == 1
 
 
 @pytest.mark.asyncio
-async def test_mark_and_reset_source_error(store):
-    """The connect/disconnect cycle as the store sees it."""
+async def test_mark_and_clear_source_unavailable(store):
+    """The connect/disconnect cycle as the store sees it — and what it costs."""
     for name, status in (("svcA__x", "loaded"), ("svcA__y", "unloaded")):
         await store.upsert_tool(name, category="mcp", source_id="svcA", status=status)
 
-    marked = await store.mark_source_error("svcA")
+    marked = await store.mark_source_unavailable("svcA")
     assert marked == 2
-    assert await store.loaded_names() == []
+    assert await store.loaded_names() == []          # out of the injected set
+    assert await store.get_effective("svcA__x") == EFF_ERROR
 
-    # A reconnect clears the mark ONLY on error rows — the unloaded one keeps
-    # its state, and a user-loaded row would keep `loaded`.
-    cleared = await store.reset_source_status("svcA", "unloaded")
+    cleared = await store.clear_source_unavailable("svcA")
     assert cleared == 2
+    # The point of the separate column: the reconnect gives back exactly what
+    # the server blip took — the load state was never written over.
+    assert (await store.get_tool("svcA__x"))["status"] == "loaded"
     assert (await store.get_tool("svcA__y"))["status"] == "unloaded"
+    assert set(await store.loaded_names()) == {"svcA__x"}
 
-    # A row the user loaded keeps its state across a blip.
-    await store.set_status("svcA__x", "loaded")
-    await store.mark_source_error("svcA")
-    assert await store.loaded_names() == []
-    await store.reset_source_status("svcA", "unloaded")
-    assert (await store.get_tool("svcA__x"))["status"] == "unloaded"   # was error → reset
+    # A second pass over an available source is a no-op.
+    assert await store.clear_source_unavailable("svcA") == 0
 
 
 @pytest.mark.asyncio
-async def test_mark_all_external_error_spares_local_rows(store):
+async def test_mark_all_external_unavailable_spares_local_rows(store):
     await store.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="loaded")
     await store.upsert_tool("native", category="builtin", enabled=True, status="loaded")
 
-    marked = await store.mark_all_external_error()
+    marked = await store.mark_all_external_unavailable()
 
     assert marked == 1
-    assert (await store.get_tool("svcA__x"))["status"] == "error"
+    assert (await store.get_tool("svcA__x"))["unavailable"] == 1
+    # The startup sweep is what a restart does to every external row: it must
+    # leave the load state alone, or a restart would cost the model its set.
+    assert (await store.get_tool("svcA__x"))["status"] == "loaded"
     assert (await store.get_tool("native"))["status"] == "loaded"
     assert set(await store.loaded_names()) == {"native"}
 
@@ -407,11 +417,15 @@ async def test_migration_adds_and_backfills_tool_type(tmp_path):
 
     path = tmp_path / "tools.db"
     conn = await aiosqlite.connect(str(path))
+    # The drift under test is the missing `type`; the other columns are current
+    # so this file reaches the migration instead of being reported stale (a
+    # file missing a COLUMN has its own test below).
     await conn.execute(
         """CREATE TABLE tool (
                name TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '',
                category TEXT NOT NULL, source_id TEXT, schema TEXT,
-               enabled INTEGER, status TEXT, last_loaded TEXT)""",
+               enabled INTEGER, status TEXT, last_loaded TEXT,
+               unavailable INTEGER)""",
     )
     for name, category in (
         ("execute_shell", "builtin"), ("job_x", "job"),
@@ -480,7 +494,8 @@ CREATE TABLE tool (
                 CHECK (category IN ('builtin','job','mcp','rest-api','skill','cli')),
     type        TEXT NOT NULL DEFAULT 'func'
                 CHECK (type IN ('func','skill','cli')),
-    source_id   TEXT, schema TEXT, enabled INTEGER, status TEXT, last_loaded TEXT)
+    source_id   TEXT, schema TEXT, enabled INTEGER, status TEXT, last_loaded TEXT,
+    unavailable INTEGER)
 """
 
 
@@ -529,6 +544,49 @@ async def test_stale_category_check_is_reported_not_silently_broken(tmp_path):
     assert (await store.get_tool("execute_shell"))["category"] == "builtin"
     await store.close()
     clear()
+
+
+@pytest.mark.asyncio
+async def test_missing_column_is_reported_not_left_as_a_query_error(tmp_path):
+    """A file from before a column was added is stale — and this revision has
+    no migration for it, by design (the catalog is derived data).
+
+    So the open-time probe must say which column is missing and what to do,
+    because the alternative is every scan failing with ``no such column``,
+    which reads as a code bug rather than "delete the derived file".
+    """
+    import aiosqlite
+    from slife.health import clear, get_report
+
+    clear()
+    path = tmp_path / "tools.db"
+    conn = await aiosqlite.connect(str(path))
+    await conn.execute(
+        """CREATE TABLE tool (
+               name TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '',
+               category TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'func',
+               source_id TEXT, schema TEXT, enabled INTEGER, status TEXT,
+               last_loaded TEXT)""",
+    )
+    await conn.execute("PRAGMA user_version = 4")
+    await conn.commit()
+    await conn.close()
+
+    store = CatalogStore(path)
+    await store.open()
+    try:
+        entry = next(e for e in get_report() if e.get("component") == "tool_catalog")
+        assert entry["level"] == "warning"
+        assert entry["value"] == "stale (no unavailable column)"
+        assert "Delete" in entry["hint"] and str(path) in entry["hint"]
+
+        # …and why it has to be loud: the file cannot answer a scan at all.
+        import sqlite3
+        with pytest.raises(sqlite3.OperationalError, match="unavailable"):
+            await store.get_tool("anything")
+    finally:
+        await store.close()
+        clear()
 
 
 @pytest.mark.asyncio

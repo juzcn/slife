@@ -70,24 +70,37 @@ db records the RESULT on the tool rows.  A server table would be a third copy
 of facts that already have owners — and one that goes stale the moment the
 gateway child dies.
 
-The connectivity verdict therefore lives in `tool.status`:
+The connectivity verdict therefore lives on the row — in a column of its own:
 
 ```
 status = 'loaded'   -- injected (the model loaded it, or the session seeded it)
        | 'unloaded' -- registered and available, not injected
-       | 'error'    -- its server is unusable (not up yet, disconnected,
-                       connect failed, or the gateway child died)
        | NULL       -- skill/cli rows: no load concept at all
+
+unavailable = 1     -- its owner (a server, or a plugin) is unusable right now:
+                       not up yet, disconnected, connect failed, or the
+                       gateway child died.  A SEPARATE column on purpose —
+                       writing the verdict into `status` destroyed the load
+                       state it landed on, so a blip (or the boot sweep) reset
+                       every tool the model had loaded.
+
+enabled = 0 / 1     -- tools.json5's switch: per SERVER for mcp/rest-api (all
+                       of its tools move together — there is no per-tool
+                       enable), per entry for the other families.
 ```
 
-Every transition is written by the HOST as it reconciles:
+The load state is the db's whole reason to exist (json5 is the authority for
+everything else, including `enabled`); the verdict is runtime, and the two are
+never written into each other.  Every transition is written by the HOST as it
+reconciles:
 
 | event | action |
 |---|---|
-| catalog init (before any server is up) | every external row → `error` |
-| a server connects (or reconnects) | mirror its tool rows — new rows `unloaded`, existing `error` rows reset to `unloaded` |
-| a server is down / failed / disabled | that server's rows → `error` |
-| the gateway child dies | every `mcp`/`rest-api` row → `error` |
+| catalog init (before any server is up) | every external row flagged `unavailable` — the persisted load state stands |
+| a server connects (or reconnects) | mirror its tool rows — new rows `unloaded`; the `unavailable` flags clear |
+| a server is down / failed | that server's rows flagged `unavailable` |
+| a server is switched off in `tools.json5` | its rows keep everything they had; `enabled = 0` → effective `disabled` |
+| the gateway child dies | every `mcp`/`rest-api` row flagged `unavailable` |
 | a server leaves `tools.json5` | its rows are purged |
 
 ### `tool` — one row per tool
@@ -139,19 +152,27 @@ Chunked vector rows for semantic search (one tool → several chunks; closest-ch
 
 ### Effective status
 
-A tool's *effective* status is the raw `tool.status` — there is nothing to join:
+A tool's *effective* status is derived from its own row — there is nothing to
+join — and the three facts are resolved in a fixed order, each one outranking
+the one below it:
 
 | condition | effective |
 |---|---|
-| function tool, `status='loaded'`, not config-disabled | `loaded` |
+| `enabled = 0` (any family) | `disabled` |
+| `unavailable` (its server / plugin is not usable) | `error` |
+| function tool, `status='loaded'` | `loaded` |
 | function tool, `status='unloaded'` | `unloaded` |
-| function tool, `status='error'` (its server is unusable) | `error` |
-| local tool disabled in config (`enabled = 0`) | `disabled` |
 | skill / cli (no state) | `n/a` |
 
-One state per fact, no precedence rules: "what the model asked for" is
-`loaded`/`unloaded`, "the server is not usable" is `error`, and "the config
-turned it off" is `disabled`.  Injection takes exactly the `loaded` rows.
+One state per fact: "the config turned it off" is `disabled` (and it outranks
+`error` — a server switched off while it was down is off, not broken), "its
+server is not usable" is `error`, and "what the model asked for" is
+`loaded`/`unloaded`.  Neither of the first two overwrites the third, which is
+what lets a loaded tool come back loaded.
+
+**Injection takes the `func` rows that are `enabled` and `loaded`** — and not
+`unavailable`.  That is the whole predicate (`catalog._INJECTABLE_SQL`), and
+it is also `_effective_status`'s rule; the two move together.
 
 ---
 

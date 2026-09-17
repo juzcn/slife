@@ -41,7 +41,7 @@ from slife.a2a.identity import HUMAN
 
 if TYPE_CHECKING:
     from slife.tools.catalog_service import ToolCatalogService
-from slife.tools.factory import create_tools_from_config
+from slife.tools.factory import create_tools_from_config, disabled_tool_instances
 from slife.tools._config_io import config_read_modify_write
 from slife.mcp.tool_adapter import create_proxy_tools
 from slife.platform import terminate_process_sync
@@ -425,6 +425,10 @@ class AgentService:
         # On-demand reconcile guard: prevents concurrent mcp_tool_load /
         # tools/list_changed reconciliation from racing.
         self._mcp_reconciling: bool = False
+        # Last-seen mtimes of the registry-less families' sources (tools.json5,
+        # the skills dir) — the reconcile re-mirrors them when one moves, so a
+        # hand-edit lands without a restart.
+        self._local_rows_mtimes: tuple[float, float] | None = None
 
         # A2A integration state
         self._subagent_manager = None
@@ -1311,6 +1315,11 @@ class AgentService:
                     )
                 except Exception as e:
                     logger.debug("catalog_live_purge_failed err=%s", e)
+                # 3c — the same "tools.json5 is the authority" rule for the
+                # families the registry cannot see: a hand-edited cli entry or
+                # SKILL.md lands here, not at the next restart.  mtime-gated,
+                # so an unchanged file costs two stats.
+                await self._refresh_local_rows_if_changed(self._catalog)
         finally:
             self._mcp_reconciling = False
 
@@ -2482,11 +2491,21 @@ class AgentService:
                 # category: a job from `job`, a plugin's own tool from `plugin`.
                 disabled_jobs=tuple(self.config.disabled_jobs),
                 disabled_plugin=tuple(self.config.disabled_plugin),
+                disabled_builtins=tuple(self.config.disabled_builtins),
             )
             # Session seed from everything currently registered (the system
-            # tools: builtin + built-in plugin tools).  External mcp/rest-api
-            # rows are seeded by the reconcile as their servers connect.
-            await svc.sync_system_tools(self.tool_registry.list_tools())
+            # tools: builtin + built-in plugin tools), PLUS the builtins an
+            # override switched off: they are not registered (the factory skips
+            # them) but tools.json5 still declares them, so the db carries their
+            # row marked `disabled` rather than omitting a tool json5 names.
+            # External mcp/rest-api rows are seeded by the reconcile as their
+            # servers connect.
+            await svc.sync_system_tools([
+                *self.tool_registry.list_tools(),
+                *disabled_tool_instances(
+                    self.config.tools, config=self.config, ctx=self._tool_ctx,
+                ),
+            ])
             self._catalog = svc
             self._tool_ctx.catalog = svc
             self.tool_registry.set_catalog(svc)
@@ -2551,6 +2570,61 @@ class AgentService:
             )
         except Exception as e:
             logger.debug("catalog_local_mirror_failed err=%s", e)
+
+    async def _refresh_local_rows_if_changed(self, svc) -> None:
+        """Re-mirror the registry-less families when their source moved.
+
+        The mutation TOOLS re-mirror right after they write, so the agent's own
+        edits are never stale — this exists for the other editor, a person with
+        ``tools.json5`` or a ``SKILL.md`` open.  mtimes are the cheap, precise
+        signal: a pass that finds them unchanged costs two stats.
+
+        **The cli section is re-read from DISK**, not from ``self.config`` —
+        that object is the boot snapshot, and re-pushing it would write the
+        stale rows back.  Same for the per-entry disable flags, which are
+        otherwise captured when the catalog service is built.
+        """
+        from slife.paths import get_skills_dir
+        from slife.plugins.mcp_gateway import config as _gw_cfg
+        from slife.tools.cli import sync_cli_catalog
+        from slife.tools.skill import sync_skill_catalog
+
+        def _mtime(path) -> float:
+            """0.0 for a source that is not there — a missing skills dir must
+            not also freeze the cli mirror."""
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return 0.0
+
+        mtimes = (_mtime(_gw_cfg.current_path()), _mtime(get_skills_dir()))
+        if mtimes == self._local_rows_mtimes:
+            return
+        self._local_rows_mtimes = mtimes
+
+        try:
+            raw = _gw_cfg.load_config()
+            cli_section = raw.get("cli") if isinstance(raw, dict) else None
+            await sync_cli_catalog(
+                self._tool_ctx, cli_section if isinstance(cli_section, dict) else {},
+            )
+            await sync_skill_catalog(self._tool_ctx, get_skills_dir())
+            # The in-memory disable flags move with the file too — otherwise a
+            # hand-edited `enabled: false` would wait for the next boot.
+            from slife.config import _disabled_names
+            svc.reload_disabled(
+                builtins=_disabled_names(raw.get("builtin") or []),
+                jobs=_disabled_names(raw.get("job") or []),
+                plugin=_disabled_names(raw.get("plugin") or []),
+            )
+            logger.info(
+                "catalog_local_rows_refreshed skills=%d cli=%d",
+                len(await svc.store.names_by_category("skill")),
+                len(await svc.store.names_by_category("cli")),
+            )
+        except Exception as e:
+            # Best-effort, like every other mirror: the previous rows stand.
+            logger.debug("catalog_local_refresh_failed err=%s", e)
 
     async def _sync_catalog_from_config(self) -> None:
         """Startup db ← tools.json5 sync — tools.json5 IS the authority.

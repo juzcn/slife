@@ -131,8 +131,10 @@ async def test_load_refuses_disabled_and_unavailable(db):
     ok, msg = await svc.load_tool("native_dis")
     assert not ok and "disabled" in msg
 
-    # An external tool whose server is down carries `error` on its own row.
-    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="error")
+    # An external tool whose server is down reads `error` — the verdict is its
+    # own column, so the row keeps whatever the model decided.
+    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="loaded")
+    await db.mark_source_unavailable("svcA")
     ok, msg = await svc.load_tool("svcA__x")
     # The refusal points at the ONE lifecycle knob that exists now (there is
     # no mcp_connect to suggest — the modern protocol has no session to open).
@@ -268,7 +270,7 @@ async def test_registry_execute_hints_with_catalog(db):
     assert "known but not loaded" in await registry.execute("svcA__gh")
     # 3b. its server is down → the row says `error`, and the gate names that
     # rather than pretending the tool is merely unloaded.
-    await db.mark_source_error("svcA")
+    await db.mark_source_unavailable("svcA")
     assert "not up" in await registry.execute("svcA__gh")
     # 4. unknown everywhere → historical string
     assert await registry.execute("nope") == "Error: Unknown tool 'nope'"

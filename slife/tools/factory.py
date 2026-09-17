@@ -70,6 +70,39 @@ def create_tools_from_config(
     return registry
 
 
+def disabled_tool_instances(
+    overrides: list[dict] | None = None,
+    config: "Config | None" = None,
+    ctx: "ToolContext | None" = None,
+) -> list[Tool]:
+    """Instances of the tools an override switched OFF — never registered.
+
+    A disabled builtin is skipped by :func:`create_tools_from_config`, so it
+    never reaches the registry.  It still exists as far as ``tools.json5`` is
+    concerned, and the catalog carries a row for every entry (marked
+    ``disabled``, unloadable) — otherwise json5 would declare a tool the db had
+    never heard of, and ``tool_search`` could not report it as switched off.
+
+    Built for the same reason the registry is built (``from_config``), so the
+    row's description/schema are the tool's own, not a stub.
+    """
+    override_map = {
+        entry["name"]: entry for entry in (overrides or []) if entry.get("name")
+    }
+    disabled: list[Tool] = []
+    for tool_cls in _discover_tools():
+        cfg = override_map.get(tool_cls.name, {})
+        if cfg.get("enabled") is not False:
+            continue
+        try:
+            disabled.append(tool_cls.from_config(cfg, config, ctx))
+        except Exception as e:
+            # A tool that cannot be built has no row to mirror — worse than a
+            # missing catalog row is a boot that dies over one disabled tool.
+            logger.warning("disabled_tool_build_failed name=%s err=%s", tool_cls.name, e)
+    return disabled
+
+
 def _discover_tools():
     """Import all modules in Slife.tools and yield every Tool subclass.
 

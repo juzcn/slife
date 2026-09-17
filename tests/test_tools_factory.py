@@ -5,7 +5,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import pytest
 
-from slife.tools.factory import create_tools_from_config
+from slife.tools.factory import create_tools_from_config, disabled_tool_instances
 
 
 class TestCreateToolsFromConfig:
@@ -74,6 +74,37 @@ class TestCreateToolsFromConfig:
         ])
         assert registry.get("execute_shell") is None
         assert registry.get("run_python_script") is not None
+
+    def test_disabled_tool_instance_is_still_buildable(self):
+        """The disabled tool is handed over for the catalog, not registered.
+
+        json5 declares it, so the db carries a row for it (marked ``disabled``)
+        — that needs the tool's own description/schema, which only the instance
+        has.
+        """
+        overrides = [{"name": "execute_shell", "enabled": False}]
+        disabled = disabled_tool_instances(overrides)
+
+        assert [t.name for t in disabled] == ["execute_shell"]
+        assert disabled[0].description  # the real descriptor, not a stub
+        # …and it is still exactly the set the registry leaves out.
+        registry = create_tools_from_config(overrides)
+        assert registry.get("execute_shell") is None
+
+    def test_a_tool_that_cannot_be_built_is_skipped_not_fatal(self, monkeypatch):
+        """One unbuildable disabled tool must not take the boot down — the
+        cost is a missing catalog row, not a dead agent."""
+        import slife.tools.factory as factory
+
+        class _Boom:
+            name = "boom_tool"
+
+            @staticmethod
+            def from_config(*_a, **_kw):
+                raise RuntimeError("no dependency")
+
+        monkeypatch.setattr(factory, "_discover_tools", lambda: iter([_Boom()]))
+        assert disabled_tool_instances([{"name": "boom_tool", "enabled": False}]) == []
 
     def test_skill_tool_custom_skills_dir(self):
         """Each skill tool matched individually by name."""

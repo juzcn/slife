@@ -438,9 +438,14 @@ class Config:
     #: Per-entry ``enabled: false`` names from the ``plugin`` section — the
     #: built-in plugins' own tools.  They are registered whatever the config
     #: says (the plugin decides its tool set), so their disable is carried on
-    #: the catalog row.  The ``builtin`` section needs no such set: a disabled
-    #: builtin tool is never registered, so it has no row to mark.
+    #: the catalog row.
     disabled_plugin: frozenset[str] = field(default_factory=frozenset)
+    #: Per-entry ``enabled: false`` names from the ``builtin`` section.  A
+    #: disabled builtin is never REGISTERED (the factory skips it), but it still
+    #: gets a catalog row, marked ``disabled`` — json5 declaring a tool the db
+    #: had never heard of is a disagreement between the two, and ``tool_search``
+    #: could not even report it as off.
+    disabled_builtins: frozenset[str] = field(default_factory=frozenset)
     _path: Path | None = None
     _tools_path: Path | None = None  # tools.json5 sibling — set by from_json5
 
@@ -1078,6 +1083,7 @@ class Config:
         disabled_jobs = _disabled_names(job_overrides)
         disabled_skills = _disabled_names(skill_overrides)
         disabled_plugin = _disabled_names(plugin_overrides)
+        disabled_builtins = _disabled_names(builtin_overrides)
         # ``autoload`` is a per-ENTRY flag, the sibling of ``enabled``: on a
         # builtin/job entry it names a tool; on an mcp/rest-api entry it names
         # a server (an external tool's name is unknown until it connects).
@@ -1150,6 +1156,7 @@ class Config:
             disabled_jobs=disabled_jobs,
             disabled_skills=disabled_skills,
             disabled_plugin=disabled_plugin,
+            disabled_builtins=disabled_builtins,
         )
         config._path = path
         config._tools_path = tools_path
