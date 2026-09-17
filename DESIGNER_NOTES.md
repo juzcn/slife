@@ -266,6 +266,28 @@ status：为空时，搜索所有状态的， status=status, 只搜索status的t
 
 9. Issues
 
-credstore 在开发环境不读写本地 D:\Dev\Workspace\slife\credentials.crypt， fixed， use ~/.credstore
+原则 tools.json5 是唯一真相， tools.db 是真相的扩展版（增加了mcp和restapi连接后的工具）。
+
+1、启动时 
+
+skill: 
+
+1、自动发现skill， skill按skill规范解析，记下解析错误，让system health 能报告它。如果有错误，但解析到了名字，而这个名字在tools db中存在，则update这条记录的status 为error.
 
 
+
+, 如果tools.db 中没有，则add
+
+1、启动时连接所有 enabled servers和restapi servers, 把它们的工具同步到tools.db
+    1.1 同步办法：对于每一个 server， 新工具db add, server中不存在的工具，db delete, 
+    存在，但tool有变更，db update， 不update tool的状态 loaded unloaded，但要把disabled update为enabled。
+
+
+
+
+2、动态enable和disable更新 只更新tool.db中的enable和disable属性值，不删除disable的行
+
+
+ 要确定启动时，和所有crud操作 mcp， skill， restapi， cli， job， 能同步到 tools.json5, 和 tools.db
+
+唯一例外， 启动时只同步enable tool到tools.db，动态enable和disable只更新tool.db中的enable和disable属性值，不删除disable的行

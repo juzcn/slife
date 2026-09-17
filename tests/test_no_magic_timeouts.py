@@ -34,7 +34,6 @@ EXEMPT = "timeouts.py"
 ALLOWLIST = {
     "agent/schedules.py": frozenset({"POLL_INTERVAL", "MISS_GRACE"}),              # cadence / downtime grace
     "agent/heartbeat.py": frozenset({"HEARTBEAT_INTERVAL"}),                       # cadence (also user-config)
-    "plugins/mcp_gateway/connection.py": frozenset({"_HEALTH_CHECK_INTERVAL"}),    # cadence
     "plugins/wechat/server.py": frozenset({"_TYPING_MAX_LIFETIME"}),               # typing UX lifetime
     "tools/timer.py": frozenset({"MAX_WAIT_MINUTES"}),                             # product bound (24h)
 }

@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from slife.plugins.mcp_gateway.connection import ServerConfig, ServerStatus
+from slife.plugins.mcp_gateway.connection import ServerConfig
 
 
 @pytest.fixture
@@ -104,17 +104,17 @@ class TestPersistEntry:
 
 
 class TestMcpSetEnabled:
-    """mcp_set_enabled toggles connect state — the connect attempt itself is
-    the probe (no persisted healthy verdict gates enable anymore)."""
+    """mcp_set_enabled toggles the server — enabling reads its tool list, and
+    the read itself is the check (no persisted healthy verdict to gate on)."""
 
     @pytest.mark.asyncio
-    async def test_enable_connected_returns_connected(self, restore_root_logger):
+    async def test_enable_with_a_list_returns_connected(self, restore_root_logger):
         import json as _json
 
         srv = _import_mcp_server()
         conn = MagicMock()
         conn.config = ServerConfig(name="live", command="echo")
-        conn.status = ServerStatus.CONNECTED
+        conn.tools_ok = True
         conn.list_tools.return_value = []
         pool = MagicMock()
         pool.get_server.return_value = conn
@@ -129,7 +129,6 @@ class TestMcpSetEnabled:
 
         srv = _import_mcp_server()
         conn = MagicMock()
-        conn.status = ServerStatus.CONNECTED
         pool = MagicMock()
         pool.get_server.return_value = conn
         pool.disconnect_server = AsyncMock()
@@ -153,7 +152,7 @@ class TestMcpSetEnabled:
         srv = _import_mcp_server()
         conn = MagicMock()
         conn.config = ServerConfig(name="live", command="echo")
-        conn.status = ServerStatus.CONNECTED
+        conn.tools_ok = True
         conn.list_tools.return_value = []
         pool = MagicMock()
         pool.get_server.return_value = conn
@@ -205,6 +204,7 @@ class TestAddServerToolRegistration:
             "mcp_remove",
             "mcp_list",
             "mcp_list_tools",
+            "__mcp_list_tools",
             "__mcp_call_tool",
             "__check",
         }
@@ -253,8 +253,8 @@ class TestWrapperNotifyToolsChanged:
     @pytest.mark.asyncio
     async def test_pool_is_wired_to_notify(self, restore_root_logger):
         srv = _import_mcp_server()
-        # The pool fires on_connected(server_name) → catalog sync + notify.
-        assert srv._pool._on_connected is srv._on_connected
+        # The pool fires on_tools_changed(server_name) → catalog sync + notify.
+        assert srv._pool._on_tools_changed is srv._on_tools_changed
 
     @pytest.mark.asyncio
     async def test_notify_publishes_tools_changed(self, restore_root_logger):
@@ -298,14 +298,23 @@ class TestMCPListToolsSingleRead:
     """
 
     @staticmethod
-    async def _list(srv, *, connected=True, live=None, live_raise="", autoload=False):
-        """Call mcp_list_tools with a patched pool (no real catalog store)."""
+    async def _list(srv, *, connected=True, live=None, live_raise="", autoload=False,
+                    limit=0, tool="mcp_list_tools"):
+        """Call a listing tool with a patched pool (no real catalog store).
+
+        ``connected`` here means "a tool list is held"; with none, the tool
+        re-reads the server before answering.  ``tool`` picks which of the two
+        listings to drive — the capped ``mcp_list_tools`` (the model's) or the
+        uncapped ``__mcp_list_tools`` (the host's).
+        """
         import contextlib
         import json as _json
 
         conn = MagicMock()
-        conn.status = ServerStatus.CONNECTED if connected else ServerStatus.DISCONNECTED
         conn.config = ServerConfig(name="fs", command="x", auto_load=autoload)
+        conn.has_tools = MagicMock(return_value=connected)
+        conn.refresh_tools = AsyncMock(return_value=connected)
+        conn.error = None if connected else "connect failed"
         pool = MagicMock()
         pool.get_server.return_value = conn
         if live_raise:
@@ -315,7 +324,11 @@ class TestMCPListToolsSingleRead:
 
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(srv, "_pool", pool))
-            raw = await srv.mcp_list_tools(server="fs")
+            fn = getattr(srv, tool)
+            if tool == "mcp_list_tools":
+                raw = await fn(server="fs", limit=limit)
+            else:
+                raw = await fn(server="fs")
         return _json.loads(raw)
 
     @staticmethod
@@ -356,13 +369,80 @@ class TestMCPListToolsSingleRead:
         assert out["tool_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_not_connected_returns_note(self, restore_root_logger):
+    async def test_the_listing_is_capped(self, restore_root_logger):
+        """A many-tool server must not spend the model's context on names it
+        never asked for: the tail is replaced by the one instruction that
+        finds a specific tool, and the real total is still reported."""
+        srv = _import_mcp_server()
+        live = [self._live(f"op{i}") for i in range(30)]
+        out = await self._list(srv, live=live, limit=5)
+
+        assert out["tool_count"] == 30      # the server's real total
+        assert len(out["tools"]) == 5       # what the caller was shown
+        assert out["truncated"] is True
+        assert "tool_search" in out["note"]
+
+    @pytest.mark.asyncio
+    async def test_the_cap_defaults_to_the_configured_value(self, restore_root_logger):
+        """``mcp.tool_list_limit`` (default 20) is what an unqualified listing
+        gets — the model never has to know a number."""
+        from slife.plugins.mcp_gateway import config as gateway_config
+
+        srv = _import_mcp_server()
+        live = [self._live(f"op{i}") for i in range(30)]
+        out = await self._list(srv, live=live)
+
+        assert len(out["tools"]) == gateway_config.DEFAULT_TOOL_LIST_LIMIT
+        assert gateway_config.tool_list_limit() == gateway_config.DEFAULT_TOOL_LIST_LIMIT
+        assert out["truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_internal_twin_is_uncapped(self, restore_root_logger):
+        """The host's catalog sync writes a row per tool, so a truncated
+        listing would silently drop the rest of the server's tools — it reads
+        ``__mcp_list_tools`` instead, which no cap touches."""
+        srv = _import_mcp_server()
+        live = [self._live(f"op{i}") for i in range(30)]
+        out = await self._list(srv, live=live, tool="__mcp_list_tools")
+
+        assert len(out["tools"]) == 30
+        assert out["tool_count"] == 30
+        assert out["truncated"] is False
+        assert "tool_search" not in out["note"]
+
+    @pytest.mark.asyncio
+    async def test_the_internal_twin_is_hidden_from_the_model(self, restore_root_logger):
+        """``__``-prefixed tools are filtered out of the model's tool set
+        (``is_internal_tool``) — that prefix is the whole hiding mechanism."""
+        from slife.server_utils import is_internal_tool
+
+        srv = _import_mcp_server()
+        names = {t.name for t in await srv.mcp.list_tools()}
+
+        assert "__mcp_list_tools" in names      # registered for the host …
+        assert is_internal_tool("__mcp_list_tools")   # … and not for the model
+        assert not is_internal_tool("mcp_list_tools")
+
+    @pytest.mark.asyncio
+    async def test_a_small_server_is_not_truncated(self, restore_root_logger):
+        srv = _import_mcp_server()
+        live = [self._live("a"), self._live("b")]
+        out = await self._list(srv, live=live)
+
+        assert out["truncated"] is False
+        assert len(out["tools"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_no_tool_list_returns_note(self, restore_root_logger):
+        """No list — after a re-read attempt — is reported as such, with the
+        reason, rather than as an empty success."""
         srv = _import_mcp_server()
         out = await self._list(srv, connected=False)
         assert out["connected"] is False
         assert out["tools"] == []
         assert out["tool_count"] == 0
-        assert "not connected" in out["note"]
+        assert "no tool list" in out["note"]
+        assert "connect failed" in out["note"]
 
     @pytest.mark.asyncio
     async def test_live_read_failure_reports_unavailable(self, restore_root_logger):

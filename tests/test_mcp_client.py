@@ -423,30 +423,6 @@ class TestMCPClientLinkRecovery:
         assert [t["name"] for t in tools] == ["t"]
 
 
-class TestMCPClientPing:
-    """Tests for ping."""
-
-    @pytest.mark.asyncio
-    async def test_ping_success(self):
-        client = MCPClient()
-        client._connected = True
-        client._session = MagicMock()
-        client._session.send_ping = AsyncMock()
-
-        result = await client.ping()
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_ping_failure(self):
-        client = MCPClient()
-        client._connected = True
-        client._session = MagicMock()
-        client._session.send_ping = AsyncMock(side_effect=Exception("timeout"))
-
-        result = await client.ping()
-        assert result is False
-
-
 class TestMCPClientConnect:
     """Tests for connect() (Streamable HTTP transport with retry)."""
 

@@ -263,7 +263,7 @@ Driven by connect events / `mcp_*` mutations / `tools/list_changed`:
 
 1. **Project the connectivity verdict**: read the wrapper's live `__check`; a server that is `connected` has its `error` marks cleared, every other configured server (down, failed, or disabled) has its tools marked `error`.  A failed probe is *not* a verdict — the rows are left untouched rather than marking every server broken;
 2. **auto_load servers** — register their proxies (full diff) and mirror their tool rows (new rows `unloaded`, or `loaded` when the server is marked `autoload`);
-3. **on-demand servers** (the default) — mirror their tool rows with **no proxies**: this is what makes `tool_search` find their tools and `func-tool-load` materialize them one at a time.  Only connected servers yield rows (`mcp_list_tools` answers empty otherwise); a disconnected server's rows stay and its `error` mark keeps them out of injection;
+3. **on-demand servers** (the default) — mirror their tool rows with **no proxies**: this is what makes `tool_search` find their tools and `func-tool-load` materialize them one at a time.  Only a server with a working tool list yields rows (`__mcp_list_tools` answers empty otherwise); a down server's rows stay and its `error` mark keeps them out of injection;
 4. **drop** registered proxies whose server left the config (`mcp_remove` is the only unregister path — a merely disabled server keeps its proxy, and its rows are marked `error`);
 5. **purge the removed server's catalog rows.** Comparing against **tools.json5** (the authority) rather than the pool keeps a transient empty pool — a gateway restart — from wiping a still-configured server's rows.
 
@@ -297,7 +297,7 @@ When the wrapper child dies, `on_plugin_child_exit` marks **every `mcp`/`rest-ap
 | `slife/tools/skill.py` | the Skills family + `skill_catalog_rows` / `sync_skill_catalog` (skills dir → `skill` rows) |
 | `slife/tools/cli.py` | the CLI family + `cli_catalog_rows` / `sync_cli_catalog` (config section → `cli` rows) |
 | `slife/tools/_config_io.py` | json5 read/write, atomic replace, cross-process `config_read_modify_write` lock |
-| `slife/plugins/mcp_gateway/*` | the server pool, the boot pass that connects every enabled server, `mcp_list`/`__check`/`mcp_list_tools`, `mcp_set`/`mcp_set_enabled`/`mcp_remove`, the merged config view (it never touches `tools.db`) |
+| `slife/plugins/mcp_gateway/*` | the server pool, the boot pass that reads every enabled server's tool list, `mcp_list`/`__check`/`mcp_list_tools`/`__mcp_list_tools`, `mcp_set`/`mcp_set_enabled`/`mcp_remove`, the merged config view (it never touches `tools.db`) |
 | `slife/agent/loop.py` | per-turn snapshot + injection from the catalog; boundary eviction (`_maybe_evict`) |
 | `slife/agent/service.py` | `_init_catalog`, `_mirror_local_rows` (skill/cli rows at boot), `_sync_mcp_proxies` reconcile (incl. the live removal purge), `_sync_catalog_from_config`, `_mirror_plugin_tools_catalog` + `_purge_plugin_tool_rows`, the on-demand row mirror |
 

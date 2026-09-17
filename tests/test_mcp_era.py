@@ -127,8 +127,10 @@ class TestWatchToolsChanged:
             await asyncio.wait_for(
                 era.watch_tools_changed(MagicMock(), handler, link="test"), 1)
 
-        # 2 events + 1 event, across a drop and a re-listen
-        assert handler.await_count == 3
+        # 2 events + 1 event, across a drop and a re-listen.  The drop fires
+        # the handler once more (4 total): an event may have gone down with
+        # the stream, and the handler is a level trigger that re-reads.
+        assert handler.await_count == 4
         assert fake.entered == 3   # two rounds + the refusing third
 
     @pytest.mark.asyncio

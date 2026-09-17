@@ -8,13 +8,27 @@ mechanism ``client.MCPClient`` uses to reach slife's own plugin children):
 
 Every transport enters an ``AsyncExitStack`` that yields ``(read, write)``
 streams for one ``mcp.ClientSession``.  This class supplies the connection
-lifecycle the SDK does not: OAuth device flow, health monitor (ping +
-reconnect with backoff), stderr relay, per-server connect locking, and the
+lifecycle the SDK does not: OAuth device flow, transport establishment and
+re-establishment, stdio stderr relay, per-server connect locking, and the
 review-driven ``needs_user_auth`` pause (F5).
 
-The raw-JSON-RPC client these methods replaced (a ~1200-line hand-rolled
-stack that duplicated ClientSession's protocol layer) was consolidated onto
-the SDK — E2.
+**Health is a tool list, not a connection.**  A 2026-07-28 peer is stateless —
+no session id, no handshake, per-request ``_meta`` — and that revision removed
+``ping`` from the protocol outright: ``mcp_types``'s per-version method maps
+carry no ``ping`` at 2026-07-28 in either direction, so a modern peer answers
+``-32601 Method not found`` to one.  A probe that reads that as death tears
+healthy servers down and respawns their children forever (1ba354e: eight
+servers, 167 spawns in 11 minutes); a probe that reads it as life can never
+report anything at all.  There is no third reading — so there is no probe.
+
+What does answer the question is ``tools/list``, the very call the host's
+reconcile already makes to feed the shared catalog (``tools.db``).  A list
+that succeeds IS the health verdict and a list that fails IS the record, so
+this module keeps a per-server **tool snapshot** instead of a connection state
+machine.  The snapshot is re-read on the peer's own signals — a
+``tools/list_changed`` event, a dead transport, a failed call — never on a
+timer, and a failure is repaired by the failing request itself, the same
+policy ``MCPClient`` already applies to plugin links (DESIGN.md).
 """
 
 import asyncio
@@ -27,17 +41,20 @@ import time as _time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
 import httpx2
 
-from mcp import ClientSession, MCPError
+from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from slife.mcp.era import negotiate_era, peer_era, watch_tools_changed
-from slife.plugins.mcp_gateway.client import close_exit_stack_bounded, make_local_http_client
+from slife.plugins.mcp_gateway.client import (
+    _is_link_down,
+    close_exit_stack_bounded,
+    make_local_http_client,
+)
 from mcp.types import (
     TextContent,
     ImageContent,
@@ -50,27 +67,19 @@ import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/pa
 
 logger = logging.getLogger(__name__)
 
-# ── Health check / reconnect ────────────────────────────────────────────
-# Cadence (health ping period) and the hand-rolled reconnect backoff profile
-# stay local — they are pacing, not per-await budgets.  The ping *deadline*
-# is developer-owned (registry ready.probe_endpoint).
-_HEALTH_CHECK_INTERVAL = 30.0      # seconds between health pings
-_RECONNECT_BACKOFF_INITIAL = 5.0   # first reconnect retry delay (s)
-_RECONNECT_BACKOFF_MAX = 60.0      # cap on exponential backoff (s)
-_RECONNECT_BACKOFF_MULTIPLIER = 2.0
-# The ONLY timer on connect(): bounds the whole transport-establishment +
-# handshake span (spawn / socket / SSE negotiation — the phases the server
-# cannot answer for while it is still coming up).  Once ``CONNECTED``, the
-# protocol period carries no client timer (per the timeout architecture);
-# a server that stops answering is the health monitor's concern.
-# Value is developer-owned (registry ready.connect_startup).
-# Max time to tear down the SDK transport (AsyncExitStack.aclose()) after a
-# failed/cancelled connect — a request hung against a not-yet-ready server
-# can keep aclose() from returning promptly; the retry must progress.
-# (registry grace.cleanup).
+# ── Pacing ──────────────────────────────────────────────────────────────
+# Cadence, not per-await budgets, so these stay local (docs/TIMEOUT.md
+# §"What intentionally stays local"): the backoff profile of the one
+# background job this module has — acquiring a tool list for a server that
+# has none.  It stops the moment a list succeeds; a healthy server is never
+# polled.  Deadlines it needs are the registry's (ready.connect_startup for
+# establishment, ready.list_tools for one listing).
+_REFRESH_RETRY_INITIAL = 5.0    # first retry delay (s)
+_REFRESH_RETRY_MAX = 60.0       # cap on the exponential backoff (s)
+_REFRESH_RETRY_MULTIPLIER = 2.0
 
 # stdio stderr capture: poll interval for the errlog-file drain task, and how
-# many lines of the tail connect()'s error path may read back.
+# many lines of the tail an error path may read back.
 _STDERR_POLL_INTERVAL = 0.05
 _STDERR_BUFFER_LIMIT = 500
 
@@ -78,18 +87,11 @@ _STDERR_BUFFER_LIMIT = 500
 class NeedsUserAuthError(RuntimeError):
     """OAuth needs a human (device flow) — not a retriable transport failure.
 
-    Carried out of the OAuth pre-check so the health monitor can tell a
-    "give it 5 seconds and retry" failure from a "someone must approve this"
-    failure.  The former backs off and retries; the latter stops
-    auto-reconnect until the user re-adds the server (F5).
+    Carried out of the OAuth pre-check so a caller can tell a "give it 5
+    seconds and retry" failure from a "someone must approve this" failure.
+    The former is recorded and retried in the background; the latter stops
+    auto-repair until the user re-adds the server (F5).
     """
-
-
-class ServerStatus(Enum):
-    DISCONNECTED = "disconnected"
-    CONNECTING = "connecting"
-    CONNECTED = "connected"
-    FAILED = "failed"
 
 
 @dataclass
@@ -114,26 +116,31 @@ class ServerConfig:
 
 
 class MCPServerConnection:
-    """Persistent MCP client connection over the official SDK sessions.
+    """One external MCP server: its transport, its session, its tool list.
 
-    Owns one external MCP server's lifecycle: OAuth, transport selection,
-    tool catalog cache, health monitor (ping + reconnect with backoff), and
-    the review-driven ``needs_user_auth`` pause.  All protocol is the mcp
-    SDK's ``ClientSession`` — no hand-rolled JSON-RPC (E2).
+    Owns the lifecycle the SDK does not — OAuth, transport selection and
+    re-establishment, the stdio stderr relay, connect locking, and the
+    review-driven ``needs_user_auth`` pause.  All protocol is the mcp SDK's
+    ``ClientSession``; no hand-rolled JSON-RPC (E2).
+
+    The live state it publishes is the :meth:`snapshot` of its last tool
+    list.  Whether a transport happens to be up between calls is not a fact
+    anyone needs: a stateless peer is reachable or it is not, and the next
+    request is what finds out.
     """
 
     def __init__(
         self,
         config: ServerConfig,
-        on_connected: Callable[[str], Awaitable[None]] | None = None,
+        on_tools_changed: Callable[[str], Awaitable[None]] | None = None,
     ):
         self.config = config
-        self._status = ServerStatus.DISCONNECTED
-        self._on_connected = on_connected
-        self._exit_stack: AsyncExitStack | None = None
+        self._on_tools_changed = on_tools_changed
         self._session: ClientSession | None = None
-        #: Protocol version negotiated at connect (None before) — a modern
-        #: peer is session-less and pushes changes on a listen stream only.
+        self._exit_stack: AsyncExitStack | None = None
+        #: Protocol version negotiated at establishment (None before) — a
+        #: modern peer is session-less and pushes changes on a listen stream
+        #: only.
         self._era: str | None = None
         #: Supervisor for that listen stream (modern peers only).
         self._watch_task: "asyncio.Task | None" = None
@@ -147,36 +154,122 @@ class MCPServerConnection:
         self._stderr_dump: Any | None = None
         self._stderr_task: "asyncio.Task | None" = None
         self._stderr_buffer: list[str] = []
-        self._tools_cache: list[dict] = []
-        self._error: str | None = None
-        self._connect_lock = asyncio.Lock()  # serializes connect()
-        # Set by disconnect() so an in-flight connect aborts at its next check
-        # point instead of resuming after cleanup and spawning an orphaned
-        # transport + health monitor.
+        # ── The tool snapshot: the live state this class publishes ──────
+        self._tools: list[dict] = []
+        self._tools_fetched_at: float | None = None   # monotonic; None = never listed
+        self._tools_ttl_ms: int = 0                   # the peer's cache hint (0 = none)
+        self._tools_stale: bool = False               # the peer said the list changed
+        self._last_error: str | None = None           # last failed read/call
+        self._connect_lock = asyncio.Lock()  # serializes session establishment
+        # Set by disconnect() so an in-flight attempt aborts at its next check
+        # point instead of resuming after cleanup and leaving an orphaned
+        # transport behind.
         self._disconnecting = False
-        # Background health monitor (ping + reconnect) — started on first
-        # successful connect, cancelled by disconnect()/remove_server().
-        self._health_task: "asyncio.Task | None" = None
+        # The session under us died (the SDK delivered the transport fault, or
+        # a send was refused on a transport already gone).  Consumed under
+        # _connect_lock by the next establishment, which tears the corpse down
+        # first — see _handle_notification's note on why the fault is not
+        # handled inline.
+        self._link_dead = False
+        # Background re-list — see _refresh_until_listed.  Started only while
+        # no working tool list is held; cancelled by disconnect().
+        self._refresh_task: "asyncio.Task | None" = None
         # OAuth: the refresh token was revoked / never granted and the device
-        # flow needs a human.  While set, the health monitor STOPS auto-
-        # reconnecting (F5).  Cleared by a fresh mcp_set / mcp_remove.
+        # flow needs a human.  While set, nothing auto-repairs the server (a
+        # device-flow prompt must never be raised by a background retry, F5).
+        # Cleared by a fresh mcp_set / mcp_remove.
         self._needs_user_auth: bool = False
 
-    @property
-    def status(self) -> ServerStatus:
-        return self._status
+    # ── Published state ─────────────────────────────────────────────────
 
     @property
     def needs_user_auth(self) -> bool:
         return self._needs_user_auth
 
     @property
-    def tool_count(self) -> int:
-        return len(self._tools_cache)
+    def error(self) -> str | None:
+        return self._last_error
 
     @property
-    def error(self) -> str | None:
-        return self._error
+    def tool_count(self) -> int:
+        return len(self._tools)
+
+    @property
+    def era(self) -> str | None:
+        """``"modern"`` / ``"legacy"`` — the negotiated generation, or None."""
+        if self._session is None:
+            return None
+        return peer_era(self._session)
+
+    @property
+    def tools_ok(self) -> bool:
+        """True when a working tool list is held — this link's health verdict."""
+        return self._tools_fetched_at is not None and self._last_error is None
+
+    def has_tools(self) -> bool:
+        """True when a tool list is held (it may be stale, or from a dead peer)."""
+        return self._tools_fetched_at is not None
+
+    def list_tools(self) -> list[dict]:
+        return list(self._tools)
+
+    def snapshot(self) -> dict:
+        """This server's raw live facts — one ``__check`` row.
+
+        Facts, no verdict: the harness interprets them into health levels
+        (DESIGN.md §Health — a plugin ``__check`` has no levels of its own),
+        and it never connects, so ``tools_age_s`` is whatever the last real
+        read left behind.  The config view is ``list_configured``'s; a fact
+        belongs in exactly one place.
+        """
+        return {
+            "name": self.config.name,
+            "transport": self.config.transport,
+            "era": self.era,
+            "enabled": self.config.enabled,
+            "tools_ok": self.tools_ok,
+            "tool_count": len(self._tools),
+            "tools_age_s": (
+                None if self._tools_fetched_at is None
+                else round(_time.monotonic() - self._tools_fetched_at, 1)
+            ),
+            "last_error": self._last_error,
+            "needs_user_auth": self._needs_user_auth,
+            "source": self.config.source,
+        }
+
+    def _record_error(self, err: BaseException) -> None:
+        """Record *err* as this server's failure — the fact ``__check`` reports.
+
+        The stdio child's own stderr rides along: a spawn that dies at import
+        time says why there and nowhere else.
+        """
+        stderr_tail = "".join(self._stderr_buffer[-20:]).strip()
+        self._last_error = (
+            f"{err}\n\n[server stderr]\n{stderr_tail}" if stderr_tail else str(err)
+        )
+
+    def _needs_fetch(self) -> bool:
+        """Whether the held list must be re-read before it can be trusted.
+
+        The peer's own ``ttlMs`` decides, when it gives one (the modern wire
+        requires it): a list still inside its window is served as-is, which is
+        what keeps a chatty peer's notification bursts from re-fetching a
+        1239-tool payload on every event.  A legacy peer sends no hint, and
+        its change events are explicit, so its snapshot stands until one
+        arrives.
+        """
+        if self._tools_fetched_at is None or self._tools_stale:
+            return True
+        if self._tools_ttl_ms <= 0:
+            return False
+        age_ms = (_time.monotonic() - self._tools_fetched_at) * 1000.0
+        return age_ms >= self._tools_ttl_ms
+
+    def _mark_tools_stale(self, reason: str) -> None:
+        """Flag the held list as possibly superseded (a change event, a rebuild)."""
+        self._tools_stale = True
+        logger.debug("mcp_tools_stale server=%s reason=%s", self.config.name, reason)
 
     # ── OAuth ──────────────────────────────────────────────────────────
 
@@ -190,9 +283,8 @@ class MCPServerConnection:
         When the token is gone AND the refresh failed, the ONLY way forward is
         the interactive device flow.  That needs a human at the desktop — it
         must run once, on a real (re)connect attempt the user drives, never on
-        every health-monitor backoff cycle.  So after a failed device flow the
-        connection is marked :attr:`needs_user_auth` and the monitor stops
-        auto-reconnecting (F5).
+        a background retry cycle.  So after a failed device flow the connection
+        is marked :attr:`needs_user_auth` and nothing auto-repairs it (F5).
         """
         from slife.plugins.mcp_gateway.oauth import (
             get_valid_token,
@@ -213,9 +305,9 @@ class MCPServerConnection:
             except Exception:
                 if self._needs_user_auth:
                     # The user was already asked and the flow did not complete —
-                    # do NOT re-run it (a monitor reconnect would otherwise pop
-                    # a fresh desktop prompt every backoff cycle, F5).  Surface
-                    # the state for call_tool / mcp_set_enabled instead.
+                    # do NOT re-run it (a retry would otherwise pop a fresh
+                    # desktop prompt every cycle, F5).  Surface the state for
+                    # call_tool / mcp_set_enabled instead.
                     raise NeedsUserAuthError(
                         f"Server '{name}' needs OAuth re-authorization — "
                         "use mcp_remove / mcp_set to re-add it and run the "
@@ -227,7 +319,7 @@ class MCPServerConnection:
                     tokens = await run_device_code_flow(auth, name)
                 except Exception as e:
                     logger.warning("oauth_device_flow_failed server=%s err=%s", name, e)
-                    # Still needs the user — keep the flag so the monitor stops.
+                    # Still needs the user — keep the flag so nothing retries.
                     raise NeedsUserAuthError(
                         f"Server '{name}' OAuth device flow failed: {e}"
                     ) from e
@@ -351,11 +443,11 @@ class MCPServerConnection:
             self._sse_mode = True
             logger.info("mcp_sse_connected server=%s url=%s", self.config.name, url)
         except asyncio.TimeoutError:
-            # The OUTER connect() asyncio.timeout has already fired — every
+            # The OUTER establishment asyncio.timeout has already fired — every
             # subsequent await inside that context re-raises immediately, so
             # the Streamable-HTTP fallback below could never succeed.  Re-raise
-            # so connect() handles a genuinely slow/hung SSE endpoint as a
-            # failure, not as "SSE unsupported, try the other transport".
+            # so ensure_session() handles a genuinely slow/hung SSE endpoint as
+            # a failure, not as "SSE unsupported, try the other transport".
             raise
         except Exception:
             # SSE not supported — release anything the failed enter opened and
@@ -378,7 +470,7 @@ class MCPServerConnection:
                 # timeout of our own — enforcement lives in the agent loop's
                 # tool_timeout (per the timeout architecture).  Only
                 # connect/pool are bounded so a dead endpoint can't hang the
-                # handshake; ping carries its own wait_for (probe_endpoint).
+                # establishment; a request carries the caller's own bound.
                 self._http_client = make_local_http_client(headers=headers)
             read_stream, write_stream = await self._exit_stack.enter_async_context(
                 streamable_http_client(url, http_client=self._http_client),
@@ -407,32 +499,61 @@ class MCPServerConnection:
         )
 
     async def _handle_notification(self, message) -> None:
-        """Forward a LEGACY peer's session-channel notifications.
+        """Take what the SDK surfaces on the session channel.
 
-        Modern peers never reach here — the 2026-07-28 era forbids an
-        unrequested push, so their changes arrive on the listen stream
-        instead (:meth:`_start_tools_watch`).  Read-only path — never called
-        from a tool call.
+        Two kinds of thing arrive here.  A LEGACY peer's notifications — the
+        modern era forbids pushing one the client did not ask for, so a modern
+        peer's changes ride the listen stream instead
+        (:meth:`_start_tools_watch`).  And, at either era, a transport-level
+        exception, which is how the SDK reports that the link under us died
+        (``mcp``'s ``IncomingMessage`` is exactly those two cases).
+
+        That exception is the ONLY death signal a modern peer gives, and this
+        handler used to drop it — leaving a dead session indistinguishable from
+        a live one until something happened to call it.  It is not handled
+        inline: this runs inside the session's own task group, and tearing that
+        session down from within it desyncs the SDK's cancel-scope stack (the
+        failure mode DESIGN.md records).  The fault is recorded, the teardown
+        is deferred to the next establishment under the connect lock, and the
+        host is told to re-reconcile so the catalog marks the failure now.
         """
-        method = getattr(message, "method", None)
-        if not isinstance(method, str):
+        if self._disconnecting:
             return
-        if method == "notifications/tools/list_changed":
+        method = getattr(message, "method", None)
+        if isinstance(method, str):
+            if method == "notifications/tools/list_changed":
+                # The peer says its list is superseded.  A level trigger: the
+                # host re-reads the list rather than trusting a payload, so a
+                # burst collapses into the reconcile's own coalescing.
+                self._mark_tools_stale("tools/list_changed")
+                await self._notify_tools_changed()
+            return
+        if isinstance(message, BaseException):
+            self._link_dead = True
+            self._record_error(message)
+            logger.warning(
+                "mcp_transport_fault server=%s err=%s action=rebuild",
+                self.config.name, message,
+            )
             await self._notify_tools_changed()
+            self._start_refresh_task()
 
     async def _notify_tools_changed(self) -> None:
-        """An external server's tool surface changed → re-discover upstream.
+        """Tell listeners this server's tool surface may have changed.
 
-        Both eras funnel here (listen stream or session channel), so the host
-        sees one behaviour: ``on_connected`` → its reconcile.
+        One funnel for every reason it can: a successful re-list, a
+        ``tools/list_changed`` event at either era, a dead transport.  The
+        listener's job is to re-read (``on_tools_changed`` → the host's
+        reconcile → ``__mcp_list_tools`` → the shared catalog), never to trust a
+        payload — which is what makes the missed-during-a-gap case harmless.
         """
-        if self._on_connected is None:
+        if self._on_tools_changed is None:
             return
         try:
-            await self._on_connected(self.config.name)
+            await self._on_tools_changed(self.config.name)
         except Exception as exc:
             logger.warning(
-                "mcp_notification_handler_failed server=%s err=%s",
+                "mcp_tools_changed_handler_failed server=%s err=%s",
                 self.config.name, exc,
             )
 
@@ -448,57 +569,60 @@ class MCPServerConnection:
         if self._session is None:
             return
         self._watch_task = asyncio.create_task(
-            watch_tools_changed(self._session, self._notify_tools_changed,
+            watch_tools_changed(self._session, self._on_listen_event,
                                 link=self.config.name),
             name=f"mcp-listen:{self.config.name}",
         )
 
-    # ── Connection lifecycle ────────────────────────────────────────────
+    async def _on_listen_event(self) -> None:
+        """A listen-stream event — see :meth:`_handle_notification`."""
+        self._mark_tools_stale("listen event")
+        await self._notify_tools_changed()
 
-    async def connect(self) -> None:
-        if self._status == ServerStatus.CONNECTED:
-            logger.info("mcp_already_connected server=%s", self.config.name)
-            return
+    # ── Session lifecycle ───────────────────────────────────────────────
 
-        # Serialize connects — the health monitor, call_tool's lazy reconnect,
-        # and mcp_set_enabled can otherwise each spawn their own transport,
-        # orphaning the loser (and starting duplicate monitors).
+    async def ensure_session(self) -> bool:
+        """Establish a transport + one negotiated ``ClientSession``.
+
+        Idempotent and lock-serialized.  Never raises for an unreachable peer:
+        the verdict belongs to whatever the caller wanted the session for (a
+        tool list, a tool call), and the failure is recorded here for both.
+        :class:`NeedsUserAuthError` is the exception — that is not an
+        unreachable peer but a decision only a human can make, so it travels
+        to the caller unchanged (F5).
+
+        Returns True when a session is live.
+        """
         async with self._connect_lock:
-            # A concurrent connect can win the race while we wait for the
-            # lock.  Re-check before touching anything: without this, the
-            # loser would overwrite CONNECTING and establish a second
-            # transport, orphaning the winner's AsyncExitStack (never
-            # aclose()d — leaked h2/SSE socket or duplicate stdio child).
-            if self._status in (
-                ServerStatus.CONNECTED, ServerStatus.CONNECTING,
-            ):
-                return
-            # A disconnect() that raced an in-flight connect must not be
-            # undone by this fresh connect.
             if self._disconnecting:
-                return
-            self._status = ServerStatus.CONNECTING
-            self._error = None
-            self._stderr_buffer.clear()
+                return False
+            if self._link_dead:
+                # The deferred half of _handle_notification: the corpse is
+                # dropped here, in a task that is not the dying session's own.
+                self._link_dead = False
+                await self._cleanup_resources()
+            if self._session is not None:
+                return True
 
             # ── OAuth pre-check ───────────────────────────────────────
-            if self.config.auth and self.config.auth.get("type") == "oauth":
-                await self._ensure_oauth_token()
-            if self._disconnecting:
-                return  # disconnect() ran mid-OAuth — don't spawn a transport
-
-            t0 = _time.monotonic()
-            transport = self.config.transport
-            logger.info("mcp_connect server=%s transport=%s", self.config.name, transport)
-
-            self._exit_stack = AsyncExitStack()
             try:
+                if self.config.auth and self.config.auth.get("type") == "oauth":
+                    await self._ensure_oauth_token()
+                if self._disconnecting:
+                    return False  # disconnect() ran mid-OAuth
+
+                t0 = _time.monotonic()
+                logger.info(
+                    "mcp_connect server=%s transport=%s",
+                    self.config.name, self.config.transport,
+                )
+                self._exit_stack = AsyncExitStack()
                 # Transport establishment is the one client-owned wait (spawn
                 # + socket/SSE setup).  asyncio.timeout, not wait_for: on
                 # Windows/Proactor a stuck transport op can defeat wait_for's
                 # cancellation and block past the deadline.
                 async with asyncio.timeout(_timeouts.timeouts.ready.connect_startup):
-                    if transport == "stdio":
+                    if self.config.transport == "stdio":
                         await self._connect_stdio()
                     else:
                         await self._connect_http()
@@ -511,94 +635,34 @@ class MCPServerConnection:
                     # per-request `_meta`), legacy peers keep the initialize
                     # handshake.  See slife/mcp/era.py.
                     self._era = await negotiate_era(self._session)
-
-                    # Discover tools
-                    tools_result = await self._session.list_tools()
-                    self._tools_cache = [
-                        {
-                            "name": t.name,
-                            "description": t.description or "",
-                            # input_schema is the canonical attr in mcp-types ≥2.0;
-                            # the proxy contract is the wire name (camelCase).
-                            "inputSchema": t.input_schema,
-                        }
-                        for t in tools_result.tools
-                    ]
-
-                self._status = ServerStatus.CONNECTED
-                elapsed = (_time.monotonic() - t0) * 1000
-                logger.info(
-                    "mcp_connected server=%s tools=%d took_ms=%.0f",
-                    self.config.name, len(self._tools_cache), elapsed,
-                )
-
-                # Start the health monitor once per connection object — a
-                # running monitor is reused across reconnects, so never spawn
-                # a second.  A disconnect() that landed mid-connect must not
-                # leave an orphaned monitor pinging a torn-down transport.
-                if self._disconnecting:
-                    self._status = ServerStatus.DISCONNECTED
-                    return
-
-                # A connect (first or reconnect) can mean the server's tool
-                # surface appeared or changed — notify listeners so they
-                # re-discover and re-register (idempotent full-diff).
-                await self._fire_on_reconnect()
-
-                # A modern peer pushes later changes ONLY on a listen stream;
-                # a legacy one keeps the session channel (_handle_notification).
-                if peer_era(self._session) == "modern":
-                    self._start_tools_watch()
-
-                if self._health_task is None or self._health_task.done():
-                    self._health_task = asyncio.create_task(self._health_monitor())
-
-                # Run post-connect setup (best-effort, never blocks on failure)
-                await self._post_connect_setup()
-
             except asyncio.CancelledError:
-                # A cancelled connect must not leave the status stuck in
-                # CONNECTING.  Reset to DISCONNECTED unconditionally — a
-                # CONNECTED-with-dead-transport wedge makes __check report
-                # "running" while call_tool skips its lazy reconnect (F5/A6).
-                self._status = ServerStatus.DISCONNECTED
+                # A cancelled establishment must not leave a half-open
+                # transport behind for the next attempt to trip over.
                 await self._cleanup_resources()
-                # A cancelled mid-sync connect (e.g. a host tool-timeout on
-                # mcp_set) must still recover: start a health monitor when
-                # none is running so DISCONNECTED is reconnected in background.
-                if (
-                    not self._disconnecting
-                    and self.config.enabled
-                    and (self._health_task is None or self._health_task.done())
-                ):
-                    self._health_task = asyncio.create_task(self._health_monitor())
                 raise
-
-            except Exception as e:
-                self._status = ServerStatus.FAILED
-                stderr_tail = "".join(self._stderr_buffer[-20:]).strip()
-                self._error = f"{e}\n\n[server stderr]\n{stderr_tail}" if stderr_tail else str(e)
-                logger.exception("mcp_connect_failed server=%s err=%s", self.config.name, e)
+            except NeedsUserAuthError:
                 await self._cleanup_resources()
-                # Start the health monitor even on a failed initial connect so
-                # a server that was down at startup is retried in background.
-                if self.config.enabled and (
-                    self._health_task is None or self._health_task.done()
-                ):
-                    self._health_task = asyncio.create_task(self._health_monitor())
+                raise
+            except Exception as e:
+                self._record_error(e)
+                logger.warning("mcp_connect_failed server=%s err=%s", self.config.name, e)
+                await self._cleanup_resources()
+                return False
 
-    async def _fire_on_reconnect(self) -> None:
-        """Notify listeners that the server is connected.
+            # A fresh session is a fresh peer: its tool list must be re-read
+            # (the process may have restarted with a different surface).
+            self._mark_tools_stale("new session")
+            elapsed = (_time.monotonic() - t0) * 1000
+            logger.info("mcp_session_ready server=%s took_ms=%.0f", self.config.name, elapsed)
 
-        Fires on EVERY successful connect (first and reconnects).  Best-effort:
-        a failing listener never breaks the connection.
-        """
-        logger.info("mcp_connected server=%s", self.config.name)
-        if self._on_connected is not None:
-            try:
-                await self._on_connected(self.config.name)
-            except Exception:
-                logger.exception("mcp_on_connected_failed server=%s", self.config.name)
+            # A modern peer pushes later changes ONLY on a listen stream; a
+            # legacy one keeps the session channel (_handle_notification).
+            if peer_era(self._session) == "modern":
+                self._start_tools_watch()
+
+            # Run post-connect setup (best-effort, never blocks on failure)
+            await self._post_connect_setup()
+            return True
 
     async def _post_connect_setup(self) -> None:
         """Run server-specific post-connect setup (best-effort).
@@ -654,203 +718,200 @@ class MCPServerConnection:
         except Exception:
             logger.debug("fetch_npm_setup_error", exc_info=True)
 
-    # ── Tool operations (SDK session) ────────────────────────────────────
+    # ── The tool list: the health check, and its record ─────────────────
 
-    def list_tools(self) -> list[dict]:
-        return list(self._tools_cache)
-
-    async def ping(self, timeout: float | None = None) -> bool:
-        """Return True if the server is ALIVE (SDK ``send_ping``).
-
-        Liveness, not protocol compliance.  A server that answers with a
-        JSON-RPC error is alive — it simply does not implement ``ping``, which
-        the protocol leaves optional, and a whole class of publicly published
-        servers answers ``Method not found``.  Reading that as death made the
-        health monitor tear such a server down and respawn it every interval,
-        forever (eight configured servers here, each looping every 30 s with a
-        fresh child process).  Only silence (the timeout) or a transport
-        failure means dead.
-
-        ``timeout`` defaults to the registry's ready.probe_endpoint; a caller
-        may pass a shorter bound explicitly.
-        """
-        if timeout is None:
-            timeout = _timeouts.timeouts.ready.probe_endpoint
-        if self._status != ServerStatus.CONNECTED or self._session is None:
-            return False
-        try:
-            await asyncio.wait_for(self._session.send_ping(), timeout=timeout)
-            return True
-        except MCPError as e:
-            logger.debug(
-                "mcp_ping_unsupported server=%s code=%s msg=%s",
-                self.config.name, e.code, e.message,
+    def _absorb(self, result: Any) -> None:
+        """Store a successful listing (+ the peer's cache hint) as the snapshot."""
+        self._tools = [
+            {
+                "name": t.name,
+                "description": t.description or "",
+                # input_schema is the canonical attr in mcp-types ≥2.0;
+                # the proxy contract is the wire name (camelCase).
+                "inputSchema": t.input_schema,
+            }
+            for t in result.tools
+        ]
+        self._tools_fetched_at = _time.monotonic()
+        # The modern wire REQUIRES ttlMs; a legacy peer sends none and the
+        # model default is 0, which reads as "no hint" here either way.
+        self._tools_ttl_ms = int(getattr(result, "ttl_ms", 0) or 0)
+        self._tools_stale = False
+        self._last_error = None
+        if getattr(result, "next_cursor", None):
+            # One call, one page — the cursor is not followed (see the module
+            # docstring).  A peer that paginates therefore contributes its
+            # first page only, which must be visible in the log rather than
+            # show up as tools that mysteriously do not exist.
+            logger.warning(
+                "mcp_tools_list_truncated server=%s tools=%d — the peer "
+                "returned next_cursor; the remainder of its listing is not read",
+                self.config.name, len(self._tools),
             )
-            return True
-        except Exception as e:
-            # The health monitor's warning says what it is about to do; this is
-            # the why, which it cannot see (the exception dies here).
-            logger.warning("mcp_ping_failed server=%s err=%s", self.config.name, e)
-            return False
 
-    async def _health_monitor(self) -> None:
-        """Background health check: ping the server and reconnect when dead.
+    async def refresh_tools(self, *, force: bool = False) -> bool:
+        """Read this server's tool list; True when a working list is held.
 
-        Covers both failure modes:
-          - CONNECTED but unresponsive (process died or hung): mark
-            DISCONNECTED, tear down the transport, and reconnect.
-          - DISCONNECTED/FAILED (e.g. a prior connect attempt failed): keep
-            retrying with exponential backoff while the server is enabled.
+        This is the health check — there is no separate probe, because this is
+        the call the host's reconcile makes anyway to feed the catalog.  A
+        success stores the snapshot; a failure records it (:attr:`error`) and
+        leaves the background re-list running.
 
-        Runs for the connection object's lifetime — cancelled by
-        ``disconnect()``/``remove_server()``.  Reconnect attempts are paced by
-        backoff (5s → … → 60s) so a server that is down for a while isn't
-        hammered.
+        A list still inside the peer's ``ttlMs`` window is served from the
+        snapshot without a request; ``force`` overrides that for the callers
+        that know better (a rebuild, a repair pass).
         """
-        backoff = _RECONNECT_BACKOFF_INITIAL
+        if not force and not self._needs_fetch():
+            return self.tools_ok
 
-        async def _try_reconnect() -> bool:
-            nonlocal backoff
+        for attempt in (1, 2):
             try:
-                await self.connect()
-                backoff = _RECONNECT_BACKOFF_INITIAL
-                return True
+                if not await self.ensure_session():
+                    # ensure_session already recorded why.
+                    self._start_refresh_task()
+                    return False
+                session = self._session
+                assert session is not None  # post-condition of a True ensure_session
+                async with asyncio.timeout(_timeouts.timeouts.ready.list_tools):
+                    result = await session.list_tools()
             except asyncio.CancelledError:
+                # A cancelled read (a host tool-timeout on mcp_set) must still
+                # recover: the list was never read, so arm the retry — unless
+                # this is a deliberate teardown, which disconnect() marks
+                # first (and which refuses the arm for exactly this reason).
+                self._start_refresh_task()
+                raise
+            except NeedsUserAuthError:
                 raise
             except Exception as e:
-                self._status = ServerStatus.DISCONNECTED
-                self._error = f"Reconnect failed: {e}"
+                if attempt == 1 and _is_link_down(e):
+                    # The dispatcher refused a send on a transport already
+                    # gone — the request never reached the peer, which is what
+                    # makes ONE rebuild-and-retry safe (the same rule
+                    # ``MCPClient._request_with_recovery`` follows).
+                    self._link_dead = True
+                    continue
+                self._record_error(e)
                 logger.warning(
-                    "mcp_health_reconnect_failed server=%s backoff=%.1fs err=%s",
-                    self.config.name, backoff, e,
+                    "mcp_tools_list_failed server=%s err=%s", self.config.name, e,
                 )
+                self._start_refresh_task()
                 return False
 
+            self._absorb(result)
+            logger.info(
+                "mcp_tools_listed server=%s tools=%d ttl_ms=%d",
+                self.config.name, len(self._tools), self._tools_ttl_ms,
+            )
+            # A list is the moment the catalog's rows are known stale: tell
+            # the host to re-read (it owns the catalog, not this process).
+            await self._notify_tools_changed()
+            return True
+
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def _start_refresh_task(self) -> None:
+        """Ensure the background re-list runs — see :meth:`_refresh_until_listed`.
+
+        Every closed path already calls this, so the retry is armed by the
+        failure itself rather than by a monitor that has to guess when to look.
+        """
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
+        if self._disconnecting or not self.config.enabled or self._needs_user_auth:
+            return
+        self._refresh_task = asyncio.create_task(
+            self._refresh_until_listed(), name=f"mcp-refresh:{self.config.name}",
+        )
+
+    async def _refresh_until_listed(self) -> None:
+        """Re-list until a working tool list is held, then stop.
+
+        The ONLY background job this module has, and the one gap a
+        request-driven policy cannot cover on its own: a server that is down
+        when nobody is calling it has no tool list, and with no tool list it is
+        absent from the catalog — so nothing would ever ask it again.  Forcing
+        the read (``force=True``) is deliberate: this task exists precisely
+        because the snapshot is not to be trusted, so the cache hint that
+        would skip a fetch does not apply.
+
+        A healthy server is never polled — the loop's own success ends it.
+        """
+        wait = _REFRESH_RETRY_INITIAL
         try:
             while True:
-                # OAuth needs a human (F5): do not keep re-running the device
-                # flow on every backoff cycle — that would pop a desktop
-                # prompt over and over.  The user re-adds the server after
-                # authorizing; the flag is cleared then.
-                if self._needs_user_auth:
-                    logger.warning(
-                        "mcp_needs_user_auth server=%s — auto-reconnect paused",
-                        self.config.name,
-                    )
-                    await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
-                    continue
-                wait = _HEALTH_CHECK_INTERVAL
-                if not self.config.enabled:
+                if self._disconnecting or not self.config.enabled or self._needs_user_auth:
                     return
-                if self._status == ServerStatus.CONNECTING:
-                    pass  # a manual connect is already in progress — wait
-                elif self._status == ServerStatus.CONNECTED:
-                    if self._connect_lock.locked():
-                        pass  # a connect is in flight — don't interrupt it
-                    elif await self.ping():
-                        backoff = _RECONNECT_BACKOFF_INITIAL
-                    else:
-                        # Died or hung — mark disconnected, tear down, reconnect.
-                        logger.warning(
-                            "mcp_health_check_failed server=%s action=reconnect",
-                            self.config.name,
-                        )
-                        self._status = ServerStatus.DISCONNECTED
-                        self._error = (
-                            "Health check failed — server not responding to ping."
-                        )
-                        await self._cleanup_resources()
-                        if not await _try_reconnect():
-                            wait = backoff
-                            backoff = min(
-                                backoff * _RECONNECT_BACKOFF_MULTIPLIER,
-                                _RECONNECT_BACKOFF_MAX,
-                            )
-                else:
-                    # DISCONNECTED or FAILED → (re)connect with backoff pacing.
-                    if not await _try_reconnect():
-                        wait = backoff
-                        backoff = min(
-                            backoff * _RECONNECT_BACKOFF_MULTIPLIER,
-                            _RECONNECT_BACKOFF_MAX,
-                        )
+                if await self.refresh_tools(force=True):
+                    return
+                logger.debug(
+                    "mcp_refresh_retry server=%s in=%.1fs", self.config.name, wait,
+                )
                 await asyncio.sleep(wait)
+                wait = min(wait * _REFRESH_RETRY_MULTIPLIER, _REFRESH_RETRY_MAX)
+        except NeedsUserAuthError:
+            # The first attempt can discover that this server needs a human
+            # (a device flow that did not complete).  The flag is set, nothing
+            # may retry it (F5), and the state surfaces through __check.
+            logger.info(
+                "mcp_refresh_paused server=%s reason=needs_user_auth", self.config.name,
+            )
         except asyncio.CancelledError:
             pass
 
+    # ── Tool calls ──────────────────────────────────────────────────────
+
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
-        if self._status != ServerStatus.CONNECTED:
-            # The health monitor marks a dead/hung server DISCONNECTED.  If
-            # the server is enabled, try a lazy reconnect first.  Connecting IS
-            # the probe — EXCEPT OAuth: a needs-auth server must not be lazily
-            # reconnected (that re-runs the device flow; F5).
-            if (
-                self.config.enabled
-                and not self._needs_user_auth
-                and self._status == ServerStatus.DISCONNECTED
-            ):
-                try:
-                    await self.connect()
-                except Exception:
-                    pass
-            if self._status != ServerStatus.CONNECTED:
-                if self._needs_user_auth:
-                    raise NeedsUserAuthError(
-                        f"Server '{self.config.name}' needs OAuth re-authorization — "
-                        "use mcp_remove / mcp_set to re-add it and run the "
-                        "device flow again."
-                    )
-                raise ValueError(
-                    f"Server '{self.config.name}' is not connected "
-                    f"(status: {self._status.value})"
-                )
+        """Call one tool on this server, rebuilding the link once if it died."""
+        if self._needs_user_auth:
+            raise NeedsUserAuthError(
+                f"Server '{self.config.name}' needs OAuth re-authorization — "
+                "use mcp_remove / mcp_set to re-add it and run the "
+                "device flow again."
+            )
+        if not self.config.enabled:
+            raise ValueError(f"Server '{self.config.name}' is not connected (disabled)")
+        # Connecting IS the reachability check: a stateless peer either answers
+        # or does not, and the call below is what finds out.
+        if not await self.ensure_session():
+            raise ValueError(
+                f"Server '{self.config.name}' is not connected "
+                f"({self._last_error or 'no session'})"
+            )
 
         logger.debug("mcp_tool_call server=%s tool=%s", self.config.name, tool_name)
 
-        session = self._session
-        if session is None:
-            raise ValueError(
-                f"Server '{self.config.name}' has no live session "
-                f"(status: {self._status.value})"
-            )
         try:
-            result = await session.call_tool(tool_name, arguments or {})
+            result = await self._call_on_session(tool_name, arguments)
         except (ConnectionError, OSError):
-            # Transport error — the server may have died.  Attempt one reconnect
-            # before giving up.
+            # The link died under the call.  Rebuild once and retry — the
+            # failure is a transport one, so the peer cannot have run it.
             logger.warning(
-                "mcp_tool_call_transport_error server=%s tool=%s action=reconnect",
+                "mcp_tool_call_transport_error server=%s tool=%s action=rebuild",
                 self.config.name, tool_name,
             )
+            self._link_dead = True
             try:
-                await self._cleanup_resources()
-                self._status = ServerStatus.DISCONNECTED
-                await self.connect()
-                if self._status != ServerStatus.CONNECTED:
-                    raise ConnectionError(
-                        f"Reconnect to '{self.config.name}' failed: "
-                        f"status is {self._status.value}"
-                    )
-                if self._session is None:
-                    raise ConnectionError(
-                        f"Reconnect to '{self.config.name}' produced no session"
-                    )
-                result = await self._session.call_tool(tool_name, arguments or {})
-                logger.info(
-                    "mcp_tool_call_reconnect_ok server=%s tool=%s",
-                    self.config.name, tool_name,
+                if not await self.ensure_session():
+                    raise ConnectionError(self._last_error or "rebuild produced no session")
+                result = await self._call_on_session(tool_name, arguments)
+            except Exception as rebuild_error:
+                self._record_error(rebuild_error)
+                logger.warning(
+                    "mcp_tool_call_rebuild_failed server=%s err=%s",
+                    self.config.name, rebuild_error,
                 )
-            except Exception as reconnect_error:
-                self._status = ServerStatus.FAILED
-                self._error = str(reconnect_error)
-                logger.exception(
-                    "mcp_tool_call_reconnect_failed server=%s err=%s",
-                    self.config.name, reconnect_error,
-                )
+                self._start_refresh_task()
                 raise ConnectionError(
                     f"Server '{self.config.name}' connection lost and "
-                    f"reconnect failed: {reconnect_error}"
-                ) from reconnect_error
+                    f"rebuild failed: {rebuild_error}"
+                ) from rebuild_error
+            logger.info(
+                "mcp_tool_call_rebuild_ok server=%s tool=%s", self.config.name, tool_name,
+            )
+            # The peer is a new process/instance — its tool surface may differ.
+            self._mark_tools_stale("rebuild after link loss")
+            await self._notify_tools_changed()
 
         # Format content blocks (SDK typed blocks → strings).  The SDK's
         # CallToolResult carries ``is_error`` (snake_case, mcp-types ≥2.1).
@@ -871,28 +932,39 @@ class MCPServerConnection:
                     parts.append(str(block))
         return "\n".join(parts) if parts else json.dumps(result.model_dump())
 
+    async def _call_on_session(self, tool_name: str, arguments: dict) -> Any:
+        session = self._session
+        if session is None:
+            raise ConnectionError(
+                f"Server '{self.config.name}' has no live session"
+            )
+        return await session.call_tool(tool_name, arguments or {})
+
     # ── Teardown ────────────────────────────────────────────────────────
 
     async def disconnect(self) -> None:
         logger.info("mcp_disconnect server=%s", self.config.name)
-        # Flag any in-flight connect to abort at its next check point, then
-        # serialize with it under the connect lock — otherwise a slow connect
-        # (OAuth, HTTP handshake) resumes after this cleanup and spawns an
-        # orphaned transport + health monitor that nothing references.
+        # Flag any in-flight attempt to abort at its next check point, then
+        # stop the retry BEFORE taking the connect lock: the task may be
+        # waiting on that lock, and awaiting it while holding it would
+        # deadlock (its cancellation is what releases the wait).
         self._disconnecting = True
+        task = self._refresh_task
+        self._refresh_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         async with self._connect_lock:
-            self._status = ServerStatus.DISCONNECTED
-            # Stop the health monitor first — it must not keep pinging a
-            # deliberately-disconnected server.
-            if self._health_task is not None and not self._health_task.done():
-                self._health_task.cancel()
-                try:
-                    await self._health_task
-                except asyncio.CancelledError:
-                    pass
-                self._health_task = None
             await self._cleanup_resources()
-            self._tools_cache = []
+            self._tools = []
+            self._tools_fetched_at = None
+            self._tools_ttl_ms = 0
+            self._tools_stale = False
+            self._last_error = None
+            self._link_dead = False
         self._disconnecting = False
         logger.info("mcp_disconnected server=%s", self.config.name)
 
@@ -941,27 +1013,32 @@ class MCPServerConnection:
 class ConnectionPool:
     """Manages a collection of MCP server connections."""
 
-    def __init__(self, on_connected: Callable[[str], Awaitable[None]] | None = None):
+    def __init__(
+        self, on_tools_changed: Callable[[str], Awaitable[None]] | None = None,
+    ):
         self._connections: dict[str, MCPServerConnection] = {}
-        # Fired on every successful connect (first and reconnects — see
-        # MCPServerConnection._fire_on_reconnect).  The wrapper wires this to
-        # a tools/list_changed notification so the agent re-syncs.
-        self._on_connected = on_connected
+        # Fired whenever a server's tool surface may have changed — a fresh
+        # list, a change event, a dead transport (see
+        # MCPServerConnection._notify_tools_changed).  The wrapper wires this
+        # to a tools/list_changed notification so the host re-syncs.
+        self._on_tools_changed = on_tools_changed
 
     async def add_server(
-    self, config: ServerConfig, *, connect: bool | None = None,
-) -> MCPServerConnection:
+        self, config: ServerConfig, *, connect: bool | None = None,
+    ) -> MCPServerConnection:
         if config.name in self._connections:
             logger.info("mcp_replace server=%s", config.name)
             await self.remove_server(config.name)
-        conn = MCPServerConnection(config=config, on_connected=self._on_connected)
+        conn = MCPServerConnection(config=config, on_tools_changed=self._on_tools_changed)
         self._connections[config.name] = conn
         # ``connect`` overrides the config default: the host's startup
-        # eager-connect set registers enabled-but-skipped servers as
-        # DISCONNECTED (no connect attempt) until enabled or used.
+        # eager-connect set registers enabled-but-skipped servers without an
+        # attempt until they are enabled or used.
         should_connect = config.enabled if connect is None else connect
         if should_connect:
-            await conn.connect()
+            # The read IS the connect: establishing the session and reading the
+            # tool list are one operation, and its failure arms the retry.
+            await conn.refresh_tools()
         else:
             logger.info("mcp_server_not_connected name=%s enabled=%s", config.name, config.enabled)
         return conn
@@ -983,37 +1060,18 @@ class ConnectionPool:
             return
         await conn.disconnect()
 
-    async def connect_server(self, name: str) -> None:
-        """Force a fresh connect attempt on a registered server.
-
-        A server in DISCONNECTED/FAILED state is re-tried now rather than
-        waiting for the health monitor's backoff; a fresh ``connect()`` clears
-        its stuck error/backoff and (on success) fires the host's
-        list_changed reconcile.  No-op if already CONNECTED.
-        """
-        conn = self._connections.get(name)
-        if conn is None:
-            return
-        if conn.status == ServerStatus.CONNECTED:
-            return
-        await conn.connect()
-
     def get_server(self, name: str) -> MCPServerConnection | None:
         return self._connections.get(name)
-
-    def server_names(self) -> list[str]:
-        """Names of all registered servers (connected, disabled, or failed)."""
-        return list(self._connections.keys())
 
     def list_configured(self) -> list[dict]:
         """List configured servers — static config fields only, no live state.
 
         This is the *config view*: what servers are configured, their transport,
         command/args or URL, enabled/disabled, and description.
-        It deliberately excludes live connection state (connected/disconnected,
-        tool counts, errors) — that is reported by :meth:`list_servers` for the
-        ``__check`` internal tool.  Secret-holding fields (``env``,
-        ``headers``, ``auth``) are omitted so the listing never leaks tokens.
+        It deliberately excludes live connection state (tool counts, errors) —
+        that is reported by :meth:`list_servers` for the ``__check`` internal
+        tool.  Secret-holding fields (``env``, ``headers``, ``auth``) are
+        omitted so the listing never leaks tokens.
         """
         return [
             {
@@ -1031,29 +1089,13 @@ class ConnectionPool:
         ]
 
     def list_servers(self) -> list[dict]:
-        return [
-            {
-                "name": name,
-                "state": "running" if conn.status == ServerStatus.CONNECTED else "stopped",
-                "status": conn.status.value,
-                "enabled": conn.config.enabled,
-                "tool_count": conn.tool_count,
-                "error": conn.error,
-                "needs_user_auth": conn.needs_user_auth,
-                "transport": conn.config.transport,
-                "command": conn.config.command,
-                "args": conn.config.args,
-                "url": conn.config.url,
-                "description": conn.config.description,
-                "source": conn.config.source,
-            }
-            for name, conn in self._connections.items()
-        ]
+        """Live tool-list facts per server — the ``__check`` payload."""
+        return [conn.snapshot() for conn in self._connections.values()]
 
     def list_all_tools(self, server_name: str) -> list[dict]:
         """List all tools from a specific server, regardless of active state."""
         conn = self._connections.get(server_name)
-        if conn is None or conn.status != ServerStatus.CONNECTED:
+        if conn is None or not conn.has_tools():
             return []
         return [
             {**tool, "server": server_name, "full_name": f"{server_name}__{tool['name']}"}

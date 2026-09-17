@@ -4,17 +4,68 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import asyncio
+import logging
+import time as _time
 from contextlib import asynccontextmanager, AsyncExitStack
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from slife.plugins.mcp_gateway.connection import (
     ServerConfig,
-    ServerStatus,
     MCPServerConnection,
     ConnectionPool,
 )
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _mock_session(tools=(), *, ttl_ms=0, next_cursor=None):
+    """A stand-in for the SDK ClientSession holding a ``tools/list`` answer.
+
+    Mirrors the real result's fields — ``tools``, ``ttl_ms`` and
+    ``next_cursor`` are all read by the snapshot absorb path.  Bare strings
+    are accepted and built into real ``Tool`` objects.
+    """
+    from mcp.types import Tool
+
+    session = AsyncMock()
+    result = MagicMock()
+    result.tools = [
+        t if not isinstance(t, str)
+        else Tool(name=t, description="", inputSchema={"type": "object"})
+        for t in tools
+    ]
+    result.ttl_ms = ttl_ms
+    result.next_cursor = next_cursor
+    session.list_tools = AsyncMock(return_value=result)
+    return session
+
+
+def _listed(conn, tools=(), *, ttl_ms=0, age_s=0.0):
+    """Give *conn* a tool snapshot as if ``tools/list`` had just answered."""
+    conn._tools = [
+        {"name": t, "description": "", "inputSchema": {"type": "object"}}
+        for t in tools
+    ]
+    conn._tools_fetched_at = _time.monotonic() - age_s
+    conn._tools_ttl_ms = ttl_ms
+    conn._tools_stale = False
+    conn._last_error = None
+    return conn
+
+
+async def _stop(task):
+    """Cancel a background task and wait for it to finish."""
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 # ── ServerConfig ────────────────────────────────────────────────────────────
@@ -48,19 +99,6 @@ class TestServerConfig:
         assert cfg.transport == "stdio"
 
 
-# ── ServerStatus ─────────────────────────────────────────────────────────────
-
-
-class TestServerStatus:
-    """Tests for ServerStatus enum."""
-
-    def test_values(self):
-        assert ServerStatus.DISCONNECTED.value == "disconnected"
-        assert ServerStatus.CONNECTING.value == "connecting"
-        assert ServerStatus.CONNECTED.value == "connected"
-        assert ServerStatus.FAILED.value == "failed"
-
-
 # ── MCPServerConnection ──────────────────────────────────────────────────────
 
 
@@ -72,9 +110,46 @@ class TestMCPServerConnectionInit:
         conn = MCPServerConnection(cfg)
 
         assert conn.config is cfg
-        assert conn.status == ServerStatus.DISCONNECTED
+        # No tool list yet — and that IS the health verdict (there is no
+        # separate connection state to be in).
+        assert conn.has_tools() is False
+        assert conn.tools_ok is False
         assert conn.tool_count == 0
         assert conn.error is None
+        assert conn.era is None
+
+
+class TestMCPServerConnectionSnapshot:
+    """Tests for the published facts — the __check row."""
+
+    def test_facts_of_a_never_listed_server(self):
+        cfg = ServerConfig(name="test", command="echo", description="D")
+        conn = MCPServerConnection(cfg)
+        snap = conn.snapshot()
+        assert snap["name"] == "test"
+        assert snap["transport"] == "stdio"
+        assert snap["era"] is None
+        assert snap["enabled"] is True
+        assert snap["tools_ok"] is False
+        assert snap["tool_count"] == 0
+        assert snap["tools_age_s"] is None
+        assert snap["last_error"] is None
+        assert snap["needs_user_auth"] is False
+        # The config view owns these — a fact belongs in exactly one place.
+        assert "description" not in snap
+        assert "command" not in snap
+        assert "args" not in snap
+
+    def test_facts_of_a_listed_server(self):
+        conn = _listed(
+            MCPServerConnection(ServerConfig(name="s", command="echo")),
+            ["a", "b"], ttl_ms=60000, age_s=3.0,
+        )
+        snap = conn.snapshot()
+        assert snap["tools_ok"] is True
+        assert snap["tool_count"] == 2
+        assert 3.0 <= snap["tools_age_s"] < 10.0
+        assert snap["last_error"] is None
 
 
 class TestMCPServerConnectionListTools:
@@ -88,7 +163,7 @@ class TestMCPServerConnectionListTools:
     def test_list_tools_cached(self):
         cfg = ServerConfig(name="test", command="echo")
         conn = MCPServerConnection(cfg)
-        conn._tools_cache = [
+        conn._tools = [
             {"name": "tool_a", "description": "A"},
             {"name": "tool_b", "description": "B"},
         ]
@@ -103,13 +178,12 @@ class TestMCPServerConnectionDisconnect:
     @pytest.mark.asyncio
     async def test_disconnect_resets_state(self):
         cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
-        conn._tools_cache = [{"name": "t1"}]
+        conn = _listed(MCPServerConnection(cfg), ["t1"])
 
         await conn.disconnect()
 
-        assert conn.status == ServerStatus.DISCONNECTED
+        assert conn.has_tools() is False
+        assert conn.tools_ok is False
         assert conn.tool_count == 0
 
 
@@ -140,22 +214,25 @@ class TestConnectionPoolGetServer:
 
 
 class TestConnectionPoolListServers:
-    """Tests for list_servers."""
+    """Tests for list_servers — the __check payload."""
 
     def test_list_returns_info_dicts(self):
         pool = ConnectionPool()
         cfg = ServerConfig(name="srv1", command="cmd1", description="First")
-        conn = MCPServerConnection(cfg)
-        conn._tools_cache = [{"name": "t1"}, {"name": "t2"}]
+        conn = _listed(MCPServerConnection(cfg), ["t1", "t2"])
         pool._connections["srv1"] = conn
 
         servers = pool.list_servers()
         assert len(servers) == 1
         s = servers[0]
         assert s["name"] == "srv1"
-        assert s["status"] == "disconnected"
+        assert s["tools_ok"] is True
         assert s["tool_count"] == 2
-        assert s["description"] == "First"
+        assert s["transport"] == "stdio"
+        # Facts only — no state word, no level (the harness interprets).
+        assert "status" not in s
+        assert "state" not in s
+        assert "error" not in s
 
 
 class TestConnectionPoolListConfigured:
@@ -166,10 +243,7 @@ class TestConnectionPoolListConfigured:
         cfg = ServerConfig(
             name="srv1", command="cmd1", args=["-a"], description="First",
         )
-        conn = MCPServerConnection(cfg)
-        conn._tools_cache = [{"name": "t1"}, {"name": "t2"}]
-        conn._status = ServerStatus.CONNECTED
-        conn._error = "boom"
+        conn = _listed(MCPServerConnection(cfg), ["t1", "t2"])
         pool._connections["srv1"] = conn
 
         servers = pool.list_configured()
@@ -183,8 +257,7 @@ class TestConnectionPoolListConfigured:
         assert s["enabled"] is True
         assert s["description"] == "First"
         # No live state — those belong to list_servers / __check
-        assert "status" not in s
-        assert "state" not in s
+        assert "tools_ok" not in s
         assert "tool_count" not in s
         assert "error" not in s
         assert "active" not in s
@@ -209,34 +282,37 @@ class TestConnectionPoolListConfigured:
 
 
 class TestConnectionPoolAddServerGate:
-    """add_server's connect gate — only the enabled flag governs.  Connecting IS
-    the probe; there is no persisted healthy verdict to gate on anymore."""
+    """add_server's read gate — only the enabled flag governs.
+
+    Reading the tool list IS connecting, so there is no separate connect step
+    and no persisted healthy verdict to gate on.
+    """
 
     @pytest.mark.asyncio
-    async def test_disabled_server_registered_but_not_connected(self):
+    async def test_disabled_server_registered_but_not_read(self):
         pool = ConnectionPool()
         with patch(
-            "slife.plugins.mcp_gateway.connection.MCPServerConnection.connect",
+            "slife.plugins.mcp_gateway.connection.MCPServerConnection.refresh_tools",
             new=AsyncMock(),
-        ) as mock_connect:
+        ) as mock_refresh:
             conn = await pool.add_server(
                 ServerConfig(name="off", command="npx", enabled=False),
             )
         assert pool.get_server("off") is conn
-        assert conn.status == ServerStatus.DISCONNECTED
-        mock_connect.assert_not_awaited()
+        assert conn.has_tools() is False
+        mock_refresh.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_enabled_server_connects(self):
+    async def test_enabled_server_is_read(self):
         pool = ConnectionPool()
         with patch(
-            "slife.plugins.mcp_gateway.connection.MCPServerConnection.connect",
+            "slife.plugins.mcp_gateway.connection.MCPServerConnection.refresh_tools",
             new=AsyncMock(),
-        ) as mock_connect:
+        ) as mock_refresh:
             await pool.add_server(
                 ServerConfig(name="ok", command="npx"),
             )
-        mock_connect.assert_awaited_once()
+        mock_refresh.assert_awaited_once()
 
 
 class TestConnectionPoolListAllTools:
@@ -246,12 +322,17 @@ class TestConnectionPoolListAllTools:
         pool = ConnectionPool()
         assert pool.list_all_tools("unknown") == []
 
+    def test_empty_for_a_server_with_no_list(self):
+        pool = ConnectionPool()
+        conn = MCPServerConnection(ServerConfig(name="filesystem", command="npx"))
+        pool._connections["filesystem"] = conn
+        assert pool.list_all_tools("filesystem") == []
+
     def test_adds_full_name(self):
         pool = ConnectionPool()
         cfg = ServerConfig(name="filesystem", command="npx")
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
-        conn._tools_cache = [{"name": "read_file", "description": "Read a file"}]
+        conn = _listed(MCPServerConnection(cfg), ["read_file"])
+        conn._tools[0]["description"] = "Read a file"
         pool._connections["filesystem"] = conn
 
         tools = pool.list_all_tools("filesystem")
@@ -342,14 +423,13 @@ class TestServerConfigTransport:
 
 
 class TestMCPServerConnectionHTTP:
-    """Tests for HTTP transport connection lifecycle (SDK-backed, E2).
+    """Tests for HTTP transport establishment (SDK-backed, E2).
 
     The previous raw JSON-RPC ``_request_http``/SSE-detection implementation
     was consolidated onto the mcp SDK transports (``sse_client`` /
     ``streamable_http_client`` + ``ClientSession``).  These tests exercise the
-    SDK-wired path: connect() negotiates the peer's protocol era, then
-    list_tools, and the transport fallback logic still resolves
-    config.url/headers.
+    SDK-wired path: establishing a session negotiates the peer's protocol era,
+    and reading the tool list is what follows from it.
     """
 
     @pytest.fixture(autouse=True)
@@ -370,41 +450,27 @@ class TestMCPServerConnectionHTTP:
         ):
             yield negotiate
 
-    @staticmethod
-    def _mock_session(tools=None, initialize_result=None):
-        from mcp.types import Tool
-        session = AsyncMock()
-        session.initialize = AsyncMock(return_value=initialize_result)
-        session.send_notification = AsyncMock()
-        result = MagicMock()
-        result.tools = tools or []
-        session.list_tools = AsyncMock(return_value=result)
-        return session
-
     @pytest.mark.asyncio
-    async def test_connect_runs_handshake_and_discovers_tools(self, era_stub):
-        """connect() negotiates the peer's protocol era + list_tools."""
+    async def test_establish_then_list_tools(self, era_stub):
+        """Establishment negotiates the peer's era; refresh_tools lists."""
         from mcp.types import Tool
-        from mcp.types import TextContent
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
-        session = self._mock_session(
-            tools=[Tool(name="tool1", description="A tool", inputSchema={"type": "object"})],
-        )
-        conn._session = session
+        session = _mock_session([
+            Tool(name="tool1", description="A tool", inputSchema={"type": "object"}),
+        ])
 
-        # Short-circuit transport establishment; the handshake runs in connect().
+        # Short-circuit transport establishment; the session it would have
+        # produced is handed over directly.
         async def _already_connected():
-            return
+            conn._session = session
 
         conn._connect_http = _already_connected
-        with patch.object(conn, "_cleanup_resources", new=AsyncMock()):
-            with patch.object(conn, "_health_monitor", new=AsyncMock()):
-                await conn.connect()
+        assert await conn.refresh_tools() is True
 
         session.list_tools.assert_awaited_once()
-        assert conn.status == ServerStatus.CONNECTED
+        assert conn.tools_ok is True
         assert conn.tool_count == 1
         assert conn.list_tools()[0]["name"] == "tool1"
 
@@ -414,10 +480,10 @@ class TestMCPServerConnectionHTTP:
         session channel carries no change notification at all."""
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
-        conn._session = self._mock_session()
+        session = _mock_session()
 
         async def _already_connected():
-            return
+            conn._session = session
 
         conn._connect_http = _already_connected
         watch = AsyncMock()
@@ -431,9 +497,8 @@ class TestMCPServerConnectionHTTP:
                 MagicMock(return_value="modern"),
             ),
             patch("slife.plugins.mcp_gateway.connection.watch_tools_changed", watch),
-            patch.object(conn, "_health_monitor", new=AsyncMock()),
         ):
-            await conn.connect()
+            assert await conn.refresh_tools() is True
             assert conn._watch_task is not None
             watch.assert_called_once()
             await conn._cleanup_resources()      # stops the supervisor
@@ -447,7 +512,6 @@ class TestMCPServerConnectionHTTP:
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
         session = AsyncMock()
         session.call_tool = AsyncMock(return_value=CallToolResult(
             content=[TextContent(type="text", text="hello")],
@@ -465,7 +529,6 @@ class TestMCPServerConnectionHTTP:
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
         session = AsyncMock()
         session.call_tool = AsyncMock(return_value=CallToolResult(
             content=[TextContent(type="text", text="nope")],
@@ -478,12 +541,11 @@ class TestMCPServerConnectionHTTP:
 
     @pytest.mark.asyncio
     async def test_transport_error_reconnect(self):
-        """A transport failure in call_tool triggers one reconnect, then retry."""
+        """A transport failure in call_tool triggers one rebuild, then retry."""
         from mcp.types import CallToolResult, TextContent
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
         session = AsyncMock()
         session.call_tool = AsyncMock(
             side_effect=[ConnectionError("died"), CallToolResult(
@@ -491,20 +553,25 @@ class TestMCPServerConnectionHTTP:
             )],
         )
         conn._session = session
-        reconnected = {"n": 0}
+        rebuilt = {"n": 0}
 
-        async def fake_connect():
-            reconnected["n"] += 1
+        async def fake_ensure_session():
+            rebuilt["n"] += 1
+            conn._link_dead = False
             conn._session = session
-            conn._status = ServerStatus.CONNECTED
+            return True
 
-        conn.connect = fake_connect
-        with patch.object(conn, "_cleanup_resources", new=AsyncMock()):
-            result = await conn.call_tool("g", {})
+        conn.ensure_session = fake_ensure_session
+        result = await conn.call_tool("g", {})
 
         assert result == "recovered"
-        assert reconnected["n"] == 1
+        # One call to check reachability before the call, one to rebuild
+        # after the transport failure — and the tool is issued exactly twice.
+        assert rebuilt["n"] == 2
         assert session.call_tool.await_count == 2
+        # The rebuilt peer may have a different tool surface — the catalog is
+        # told to re-read rather than left with the dead one's list.
+        assert conn._tools_stale is True
 
     @pytest.mark.asyncio
     async def test_http_headers_passed_to_client(self):
@@ -591,8 +658,8 @@ class TestMCPServerConnectionHTTP:
         assert conn._exit_stack is None
 
     @pytest.mark.asyncio
-    async def test_connect_failure_sets_failed_state(self):
-        """A transport establishment failure → FAILED (and cleanup ran)."""
+    async def test_failed_establishment_records_the_error(self):
+        """A transport failure is recorded as the fact __check reports."""
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
 
@@ -601,201 +668,278 @@ class TestMCPServerConnectionHTTP:
 
         conn._connect_http = boom
         with patch.object(conn, "_cleanup_resources", new=AsyncMock()):
-            await conn.connect()
+            assert await conn.refresh_tools() is False
 
-        assert conn.status == ServerStatus.FAILED
+        assert conn.tools_ok is False
         assert "down" in (conn.error or "")
+        await _stop(conn._refresh_task)
 
 
-# ── Health check / reconnect (REVIEW C2) ──────────────────────────────────
+# ── The tool list: the health check, and its record ───────────────────────
 
 
-class TestMCPServerConnectionPing:
-    """Tests for ping() — now via the SDK session's send_ping (E2)."""
+class TestMCPServerConnectionRefresh:
+    """Tests for refresh_tools — health is the tool list, not a connection.
 
-    @pytest.mark.asyncio
-    async def test_ping_false_when_not_connected(self):
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        assert await conn.ping() is False
-
-    @pytest.mark.asyncio
-    async def test_ping_success(self):
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
-        session = AsyncMock()
-        session.send_ping = AsyncMock()
-        conn._session = session
-        assert await conn.ping() is True
-        session.send_ping.assert_awaited_once()
+    There is no probe: ``tools/list`` is what the catalog needs anyway, so its
+    outcome is the verdict and its failure is the record.
+    """
 
     @pytest.mark.asyncio
-    async def test_ping_transport_error(self):
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
-        session = AsyncMock()
-        session.send_ping = AsyncMock(side_effect=ConnectionError("server died"))
-        conn._session = session
-        assert await conn.ping() is False
+    async def test_stores_the_snapshot(self, caplog):
+        from mcp.types import Tool
 
-    @pytest.mark.asyncio
-    async def test_ping_answered_with_an_error_is_alive(self):
-        """A server that answers "Method not found" is alive — ``ping`` is
-        optional, and reading the error as death put 8 real servers into a
-        respawn-every-30s loop (the health monitor reconnects on a False)."""
-        from mcp import MCPError
-
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
-        session = AsyncMock()
-        session.send_ping = AsyncMock(
-            side_effect=MCPError(-32601, "Method not found"),
+        conn = MCPServerConnection(ServerConfig(name="s", url="http://remote/mcp"))
+        conn._session = _mock_session(
+            [Tool(name="t1", description="A", inputSchema={"type": "object"})],
+            ttl_ms=30000,
         )
-        conn._session = session
-        assert await conn.ping() is True
+        with patch.object(conn, "_notify_tools_changed", new=AsyncMock()) as notify:
+            await conn.refresh_tools()
+
+        assert conn.tools_ok is True
+        assert conn.has_tools() is True
+        assert conn.tool_count == 1
+        assert conn._tools_ttl_ms == 30000
+        assert conn.snapshot()["tools_age_s"] is not None
+        notify.assert_awaited()          # the host re-reads the catalog
 
     @pytest.mark.asyncio
-    async def test_ping_hung_server_times_out(self):
-        """A hung server (no ping answer) makes ping() False, not hang."""
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
-        session = AsyncMock()
+    async def test_a_list_inside_its_ttl_is_served_from_the_snapshot(self):
+        """A chatty peer must not cost a re-fetch of a 1239-tool payload."""
+        conn = _listed(
+            MCPServerConnection(ServerConfig(name="s", command="echo")),
+            ["t1"], ttl_ms=60000,
+        )
+        session = _mock_session()
+        conn._session = session
 
-        async def _hang(*_args, **_kwargs):
+        assert await conn.refresh_tools() is True
+        session.list_tools.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_force_bypasses_the_ttl(self):
+        conn = _listed(
+            MCPServerConnection(ServerConfig(name="s", command="echo")),
+            ["t1"], ttl_ms=60000,
+        )
+        session = _mock_session()
+        conn._session = session
+
+        assert await conn.refresh_tools(force=True) is True
+        session.list_tools.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_expired_list_is_re_read(self):
+        conn = _listed(
+            MCPServerConnection(ServerConfig(name="s", command="echo")),
+            ["t1"], ttl_ms=500, age_s=5.0,
+        )
+        session = _mock_session()
+        conn._session = session
+
+        assert await conn.refresh_tools() is True
+        session.list_tools.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_change_event_marks_the_list_stale(self):
+        conn = _listed(
+            MCPServerConnection(ServerConfig(name="s", command="echo")),
+            ["t1"], ttl_ms=60000,
+        )
+        assert conn._needs_fetch() is False
+
+        await conn._handle_notification(
+            SimpleNamespace(method="notifications/tools/list_changed"),
+        )
+        assert conn._needs_fetch() is True
+
+    @pytest.mark.asyncio
+    async def test_failure_records_the_error_and_arms_the_retry(self):
+        conn = MCPServerConnection(ServerConfig(name="s", command="echo"))
+        conn._connect_stdio = AsyncMock(side_effect=ConnectionError("down"))
+
+        assert await conn.refresh_tools() is False
+        assert conn.tools_ok is False
+        assert "down" in (conn.error or "")
+        assert conn._refresh_task is not None and not conn._refresh_task.done()
+        await _stop(conn._refresh_task)
+
+    @pytest.mark.asyncio
+    async def test_a_hung_list_does_not_hang_the_caller(self, monkeypatch):
+        """A server that answers nothing is a failure, not a wedge."""
+        import slife.timeouts as _T
+
+        conn = MCPServerConnection(ServerConfig(name="s", command="echo"))
+
+        async def _hang():
             await asyncio.sleep(3600)
 
-        session.send_ping = _hang
+        session = _mock_session()
+        session.list_tools = _hang
         conn._session = session
-        assert await conn.ping(timeout=0.01) is False
+        monkeypatch.setattr(_T.timeouts.ready, "list_tools", 0.01)
 
-
-class TestMCPServerConnectionHealthMonitor:
-    """Tests for the background health monitor."""
+        assert await conn.refresh_tools() is True or conn.tools_ok is False
+        assert conn.tools_ok is False
+        await _stop(conn._refresh_task)
 
     @pytest.mark.asyncio
-    async def test_reconnects_a_dead_server(self):
-        """CONNECTED + unresponsive → marked DISCONNECTED, then reconnected."""
+    async def test_a_truncated_listing_is_reported(self, caplog):
+        """We read one page — a peer that paginates must not be silent."""
+        conn = MCPServerConnection(ServerConfig(name="s", command="echo"))
+        conn._session = _mock_session(["t1"], next_cursor="page2")
+
+        with caplog.at_level(logging.WARNING):
+            await conn.refresh_tools()
+
+        assert conn.tool_count == 1
+        assert any("truncated" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_transport_fault_is_recorded_and_kicks_a_rebuild(self):
+        """The SDK hands us the death signal on the session channel.
+
+        Dropping it (as the handler once did) left a dead link looking exactly
+        like a live one until something happened to call it.  The teardown is
+        deferred, not done here — this handler runs inside the dying session's
+        own task group (see the method's note).
+        """
+        conn = _listed(MCPServerConnection(ServerConfig(name="s", command="echo")), ["t1"])
+        conn._session = _mock_session()
+
+        await conn._handle_notification(ConnectionError("Transport closed"))
+
+        assert conn._link_dead is True
+        assert "Transport closed" in (conn.error or "")
+        assert conn.tools_ok is False
+        assert conn._refresh_task is not None
+        await _stop(conn._refresh_task)
+
+    @pytest.mark.asyncio
+    async def test_a_dead_link_is_torn_down_by_the_next_establishment(self):
+        """The deferred half of the fault path — under the connect lock, in a
+        task that is not the dying session's own."""
+        conn = _listed(MCPServerConnection(ServerConfig(name="s", command="echo")), ["t1"])
+        conn._session = _mock_session()
+        conn._link_dead = True
+
+        with patch.object(conn, "_cleanup_resources", new=AsyncMock()) as cleanup:
+            assert await conn.ensure_session() is True
+
+        assert cleanup.await_count == 1
+        assert conn._link_dead is False
+
+
+class TestMCPServerConnectionRepair:
+    """The background re-list — the one case a request-driven policy misses.
+
+    A server that is down while nobody is calling it has no tool list, and
+    with no tool list it is invisible to the catalog — so nothing would ever
+    ask again.  The loop exists for that, and only that: it stops the moment a
+    list succeeds, so a healthy server is never polled.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_retry_stops_once_a_list_succeeds(self):
         from slife.plugins.mcp_gateway import connection as conn_mod
 
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
-        conn._error = None
+        conn = MCPServerConnection(ServerConfig(name="s", command="echo"))
+        attempts = {"n": 0}
+        session = _mock_session(["t1"])
 
-        calls = {"n": 0}
+        async def _flaky(*, force=False):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                conn._session = None
+                return False            # refresh_tools records + returns
+            conn._session = session
+            return True
 
-        async def fake_ping():
-            calls["n"] += 1
-            return calls["n"] > 1  # first ping fails (server died), then recovers
+        conn.refresh_tools = _flaky
+        with patch.object(conn_mod, "_REFRESH_RETRY_INITIAL", 0.01):
+            await conn._refresh_until_listed()
 
-        async def fake_connect():
-            conn._status = ServerStatus.CONNECTED
-            conn._error = None
-
-        conn.ping = fake_ping
-        conn.connect = fake_connect
-
-        with patch.object(conn_mod, "_HEALTH_CHECK_INTERVAL", 0.01):
-            task = asyncio.create_task(conn._health_monitor())
-            await asyncio.sleep(0.1)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        assert calls["n"] >= 2
-        assert conn.status == ServerStatus.CONNECTED
+        assert attempts["n"] == 2      # failed once, succeeded, stopped
 
     @pytest.mark.asyncio
-    async def test_exits_when_server_disabled(self):
-        """A deliberately-disabled server stops the monitor, no reconnect."""
-        from slife.plugins.mcp_gateway import connection as conn_mod
+    async def test_the_loop_stops_when_oauth_needs_a_human(self):
+        """The first attempt can discover that this server needs a human —
+        the loop must end there, not die with an unretrieved exception."""
+        from slife.plugins.mcp_gateway.connection import NeedsUserAuthError
 
-        cfg = ServerConfig(name="test", command="echo", enabled=False)
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
-        conn.ping = AsyncMock(return_value=True)
-        conn.connect = AsyncMock()
+        conn = MCPServerConnection(ServerConfig(name="s", command="echo"))
 
-        with patch.object(conn_mod, "_HEALTH_CHECK_INTERVAL", 0.01):
-            await conn._health_monitor()
+        async def _needs_auth(*, force=False):
+            conn._needs_user_auth = True
+            raise NeedsUserAuthError("device flow not completed")
 
-        conn.connect.assert_not_called()
+        conn.refresh_tools = _needs_auth
+        await conn._refresh_until_listed()   # returns; does not raise
 
-    @pytest.mark.asyncio
-    async def test_retries_a_failed_initial_connect(self):
-        """A server in FAILED state is retried (with backoff) until it recovers."""
-        from slife.plugins.mcp_gateway import connection as conn_mod
-
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.FAILED
-        conn._error = "boom"
-        conn.ping = AsyncMock(return_value=True)
-
-        calls = {"n": 0}
-
-        async def fake_connect():
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise ConnectionError("still down")
-            conn._status = ServerStatus.CONNECTED
-            conn._error = None
-
-        conn.connect = fake_connect
-
-        with patch.object(conn_mod, "_HEALTH_CHECK_INTERVAL", 0.01), \
-                patch.object(conn_mod, "_RECONNECT_BACKOFF_INITIAL", 0.01):
-            task = asyncio.create_task(conn._health_monitor())
-            await asyncio.sleep(0.05)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        assert calls["n"] >= 2
-        assert conn.status == ServerStatus.CONNECTED
+        assert conn._needs_user_auth is True
 
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_needs_user_auth_pauses_auto_reconnect(self):
-        """F5 regression: once OAuth needs a human, the health monitor must
-        NOT keep re-running connect() (each reconnect would re-run the device
-        flow and pop another desktop prompt).  It sleeps through the interval
-        instead."""
-        from slife.plugins.mcp_gateway import connection as conn_mod
+    async def test_no_retry_for_a_disabled_server(self):
+        conn = MCPServerConnection(ServerConfig(name="s", command="echo", enabled=False))
+        conn._start_refresh_task()
+        assert conn._refresh_task is None
 
-        cfg = ServerConfig(name="test", command="echo", enabled=True)
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.FAILED
+    @pytest.mark.asyncio
+    async def test_no_retry_when_oauth_needs_a_human(self):
+        """F5: a background retry must never re-run the device flow."""
+        conn = MCPServerConnection(ServerConfig(name="s", command="echo"))
         conn._needs_user_auth = True
+        conn._start_refresh_task()
+        assert conn._refresh_task is None
 
-        connect_calls = {"n": 0}
+    @pytest.mark.asyncio
+    async def test_the_loop_exits_when_the_server_is_disabled(self):
+        conn = MCPServerConnection(ServerConfig(name="s", command="echo"))
+        conn.refresh_tools = AsyncMock(return_value=False)
+        conn.config.enabled = False
 
-        async def fake_connect():
-            connect_calls["n"] += 1
-            conn._status = ServerStatus.CONNECTED
+        await conn._refresh_until_listed()
 
-        conn.connect = fake_connect
+        conn.refresh_tools.assert_not_awaited()
 
-        with patch.object(conn_mod, "_HEALTH_CHECK_INTERVAL", 0.01):
-            task = asyncio.create_task(conn._health_monitor())
-            await asyncio.sleep(0.05)
-            task.cancel()
+    @pytest.mark.asyncio
+    async def test_a_cancelled_read_still_recovers(self):
+        """A6 regression, restated for the snapshot model: a read cancelled
+        mid-flight (a host tool-timeout on mcp_set) leaves no tool list, so
+        the retry must be armed — otherwise the server stays invisible until
+        something happens to ask again."""
+        conn = MCPServerConnection(ServerConfig(name="s", command="echo"))
+
+        async def _cancel_mid_read():
+            raise asyncio.CancelledError
+
+        conn.ensure_session = AsyncMock(side_effect=_cancel_mid_read)
+        with pytest.raises(asyncio.CancelledError):
+            await conn.refresh_tools()
+
+        assert conn._refresh_task is not None and not conn._refresh_task.done()
+        await _stop(conn._refresh_task)
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_the_retry(self):
+        conn = MCPServerConnection(ServerConfig(name="s", command="echo"))
+        cancelled = {"done": False}
+
+        async def fake_retry():
             try:
-                await task
+                await asyncio.sleep(3600)
             except asyncio.CancelledError:
-                pass
+                cancelled["done"] = True
+                raise
 
-        # The monitor paused — connect() was never (re)called.
-        assert connect_calls["n"] == 0
-        assert conn.status == ServerStatus.FAILED
+        conn._refresh_task = asyncio.create_task(fake_retry())
+        await asyncio.sleep(0)  # let the task start
+
+        await conn.disconnect()
+
+        assert cancelled["done"] is True
+        assert conn._refresh_task is None
 
     @pytest.mark.asyncio
     async def test_ensure_oauth_token_sets_needs_user_auth(self):
@@ -840,94 +984,66 @@ class TestMCPServerConnectionHealthMonitor:
             assert conn._needs_user_auth is False
             assert conn.config.headers["Authorization"] == "Bearer tok"
 
-    @pytest.mark.asyncio
-    async def test_connect_failure_starts_monitor(self):
-        """A failed initial connect still spawns the health monitor."""
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        conn._connect_stdio = AsyncMock(side_effect=ConnectionError("down"))
-
-        await conn.connect()
-
-        assert conn.status == ServerStatus.FAILED
-        assert conn._health_task is not None and not conn._health_task.done()
-
-        conn._health_task.cancel()
-        try:
-            await conn._health_task
-        except asyncio.CancelledError:
-            pass
-        conn._health_task = None
-
-    @pytest.mark.asyncio
-    async def test_disconnect_cancels_health_monitor(self):
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
-        cancelled = {"done": False}
-
-        async def fake_monitor():
-            try:
-                await asyncio.sleep(3600)
-            except asyncio.CancelledError:
-                cancelled["done"] = True
-                raise
-
-        conn._health_task = asyncio.create_task(fake_monitor())
-        await asyncio.sleep(0)  # let the task start
-
-        await conn.disconnect()
-
-        assert cancelled["done"] is True
-        assert conn._health_task is None
-
 
 class TestMCPServerConnectionLazyReconnect:
-    """Tests for call_tool's lazy reconnect of a DISCONNECTED server."""
+    """call_tool establishes a session on demand — the same lazy policy
+    ``MCPClient`` uses for plugin links."""
 
     @pytest.mark.asyncio
-    async def test_call_tool_reconnects_disconnected_server(self):
+    async def test_call_tool_establishes_a_session_lazily(self):
+        from mcp.types import CallToolResult, TextContent
+
         cfg = ServerConfig(name="test", command="echo")
         conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.DISCONNECTED
-        reconnected = {"done": False}
-
-        async def fake_connect():
-            reconnected["done"] = True
-            conn._status = ServerStatus.CONNECTED
-
+        established = {"done": False}
         session = AsyncMock()
-        from mcp.types import CallToolResult, TextContent
         session.call_tool = AsyncMock(return_value=CallToolResult(
             content=[TextContent(type="text", text="ok")],
         ))
-        conn._session = session
 
-        conn.connect = fake_connect
+        async def fake_ensure_session():
+            established["done"] = True
+            conn._session = session
+            return True
+
+        conn.ensure_session = fake_ensure_session
 
         result = await conn.call_tool("echo", {"m": "x"})
         assert result == "ok"
-        assert reconnected["done"] is True
+        assert established["done"] is True
 
     @pytest.mark.asyncio
-    async def test_call_tool_does_not_reconnect_disabled(self):
+    async def test_call_tool_does_not_connect_disabled(self):
         cfg = ServerConfig(name="test", command="echo", enabled=False)
         conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.DISCONNECTED
-        conn.connect = AsyncMock()
+        conn.ensure_session = AsyncMock()
 
         with pytest.raises(ValueError, match="not connected"):
             await conn.call_tool("echo", {})
 
-        conn.connect.assert_not_called()
+        conn.ensure_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_call_tool_refuses_when_oauth_needs_a_human(self):
+        from slife.plugins.mcp_gateway.connection import NeedsUserAuthError
+
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        conn._needs_user_auth = True
+        conn.ensure_session = AsyncMock()
+
+        with pytest.raises(NeedsUserAuthError):
+            await conn.call_tool("echo", {})
+
+        conn.ensure_session.assert_not_called()
+
 
 class TestMCPServerConnectionCancelCleanup:
-    """A cancelled connect must tear its transport down.
+    """A cancelled establishment must tear its transport down.
 
-    An asyncio.timeout around add_server/connect cancels connect()
-    mid-flight.  Before this, the CancelledError path did
-    not run _cleanup_resources — the spawned npx/uvx process, http client
-    and stderr relay leaked.
+    An asyncio.timeout around add_server cancels it mid-flight.  Before this,
+    the CancelledError path did not run _cleanup_resources — the spawned
+    npx/uvx process, http client and stderr relay leaked.
     """
 
     @pytest.mark.asyncio
@@ -941,52 +1057,12 @@ class TestMCPServerConnectionCancelCleanup:
         conn._connect_stdio = _cancel_mid_connect
         with patch.object(conn, "_cleanup_resources", new=AsyncMock()) as mock_cleanup:
             with pytest.raises(asyncio.CancelledError):
-                await conn.connect()
+                await conn.refresh_tools()
 
         mock_cleanup.assert_awaited_once()
-        assert conn.status == ServerStatus.DISCONNECTED
+        assert conn._session is None
+        await _stop(conn._refresh_task)
 
-    @pytest.mark.asyncio
-    async def test_cancel_after_connected_resets_to_disconnected(self):
-        """A6 regression: connect() marks CONNECTED *before* the post-connect
-        sync.  If that sync is cancelled (a host tool-timeout on mcp_set), the
-        status must drop back to DISCONNECTED — never stay CONNECTED over a
-        torn-down transport (a half-open wedge where __check reports running
-        and call_tool skips lazy reconnect) — and a health monitor must be
-        (re)armed so the DISCONNECTED state recovers in the background."""
-        from mcp.types import Tool
-
-        cfg = ServerConfig(name="test", command="echo")
-        cfg.enabled = True
-        conn = MCPServerConnection(cfg)
-        conn._disconnecting = False
-        conn._health_task = None
-
-        async def _connect_ok():
-            pass
-
-        session = AsyncMock()
-        session.initialize = AsyncMock()
-        session.send_notification = AsyncMock()
-        list_result = MagicMock()
-        list_result.tools = []
-        session.list_tools = AsyncMock(return_value=list_result)
-        conn._session = session
-
-        async def _cancel_mid_sync():
-            raise asyncio.CancelledError
-
-        conn._connect_stdio = _connect_ok
-        conn._fire_on_reconnect = _cancel_mid_sync
-        with patch.object(conn, "_cleanup_resources", new=AsyncMock()):
-            with pytest.raises(asyncio.CancelledError):
-                await conn.connect()
-
-        assert conn.status == ServerStatus.DISCONNECTED
-        assert conn._health_task is not None and not conn._health_task.done()
-        conn._health_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await conn._health_task
 
 class TestMCPServerConnectionStdio:
     """stdio teardown + spawn semantics — now delegated to the SDK's
@@ -1043,34 +1119,25 @@ class TestMCPServerConnectionStdio:
         assert conn._http_client is None
 
 
-class TestMCPServerConnectionReconnectNotify:
-    """on_connected fires on EVERY successful connect (first and reconnects).
+class TestMCPServerConnectionNotify:
+    """The change funnel fires on EVERY event that may supersede a list.
 
-    The standalone server connects asynchronously from tools.json5 on
+    The standalone server reads its servers' tool lists asynchronously on
     startup — a listener (a host re-syncing its tool registry) must be told
-    about first connects too.  Full-diff registration on the listener side
+    about the first read too.  Full-diff registration on the listener side
     keeps the extra notification idempotent.
     """
 
     @pytest.mark.asyncio
-    async def test_first_connect_notifies(self):
+    async def test_first_and_later_events_both_notify(self):
         cb = AsyncMock()
         conn = MCPServerConnection(
-            ServerConfig(name="test", command="echo"), on_connected=cb,
+            ServerConfig(name="test", command="echo"), on_tools_changed=cb,
         )
-        await conn._fire_on_reconnect()
+        await conn._notify_tools_changed()
         cb.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_reconnect_notifies(self):
-        cb = AsyncMock()
-        conn = MCPServerConnection(
-            ServerConfig(name="test", command="echo"), on_connected=cb,
-        )
-        await conn._fire_on_reconnect()  # first connect — notifies
-        cb.assert_awaited_once()
-        await conn._fire_on_reconnect()  # reconnect — notifies again
-        cb.assert_awaited()
+        await conn._notify_tools_changed()
+        assert cb.await_count == 2
 
     @pytest.mark.asyncio
     async def test_listener_error_is_swallowed(self):
@@ -1078,18 +1145,18 @@ class TestMCPServerConnectionReconnectNotify:
             raise RuntimeError("listener failed")
 
         conn = MCPServerConnection(
-            ServerConfig(name="test", command="echo"), on_connected=boom,
+            ServerConfig(name="test", command="echo"), on_tools_changed=boom,
         )
-        # A failing listener must never propagate into connect().
-        await conn._fire_on_reconnect()
-        await conn._fire_on_reconnect()
+        # A failing listener must never propagate into a refresh.
+        await conn._notify_tools_changed()
+        await conn._notify_tools_changed()
 
     @pytest.mark.asyncio
     async def test_pool_passes_callback_to_connections(self):
         cb = AsyncMock()
-        pool = ConnectionPool(on_connected=cb)
-        # enabled=False so add_server doesn't attempt a real connect.
+        pool = ConnectionPool(on_tools_changed=cb)
+        # enabled=False so add_server doesn't attempt a real read.
         conn = await pool.add_server(
             ServerConfig(name="test", command="echo", enabled=False),
         )
-        assert conn._on_connected is cb
+        assert conn._on_tools_changed is cb

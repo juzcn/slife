@@ -1334,12 +1334,13 @@ class AgentService:
     ) -> None:
         """Project each configured server's liveness onto its tool rows.
 
-        The live state comes from the wrapper's ``__check``; a server that is
-        not ``connected`` — down, failed, or disabled in the config — has its
-        tools marked ``error``, and a connected one has that mark cleared
-        (leaving any per-tool ``loaded`` state the user set).  This is the
-        whole liveness story now: there is no server table to join, so the
-        verdict has to land on the rows.
+        The live state comes from the wrapper's ``__check``, whose verdict is
+        ``tools_ok``: the server answered a ``tools/list`` and its result is
+        still held.  A server that is not — down, never listed, or disabled in
+        the config — has its tools marked ``error``, and a working one has that
+        mark cleared (leaving any per-tool ``loaded`` state the user set).
+        This is the whole liveness story now: there is no server table to join,
+        so the verdict has to land on the rows.
         """
         catalog = self._catalog
         if catalog is None:
@@ -1354,7 +1355,7 @@ class AgentService:
             return
         live: set[str] = set()
         for s in (data.get("servers") or []) if isinstance(data, dict) else []:
-            if isinstance(s, dict) and s.get("name") and s.get("status") == "connected":
+            if isinstance(s, dict) and s.get("name") and s.get("tools_ok"):
                 live.add(s["name"])
         for name in sorted(configured):
             try:
@@ -1410,7 +1411,7 @@ class AgentService:
         The reconciliation feeds their rows so ``tool_search`` can discover
         them and ``func-tool-load`` can materialize them — without this an
         on-demand server's tools would never enter the catalog and would be
-        unreachable.  Only a CONNECTED server yields rows (``mcp_list_tools``
+        unreachable.  Only a server with a working tool list yields rows (``__mcp_list_tools``
         answers ``tools=[]`` otherwise); a disconnected server's existing rows
         stay and are kept out of injection by its ``error`` mark (written by
         :meth:`_mark_server_connectivity`).
@@ -1422,7 +1423,9 @@ class AgentService:
         if client is None or not client.is_connected:
             return
         tools_json = await client.call_tool(
-            "mcp_list_tools", {"server": server_name}
+            # __mcp_list_tools, not mcp_list_tools: this writes a catalog row
+            # per tool, so the context-protecting cap must not apply.
+            "__mcp_list_tools", {"server": server_name}
         )
         tools_data = json.loads(tools_json)
         external = (
@@ -1602,7 +1605,9 @@ class AgentService:
         self._mcp_syncing.add(server_name)
         try:
             tools_json = await client.call_tool(
-                "mcp_list_tools", {"server": server_name}
+                # __mcp_list_tools: registration is a full diff over every tool
+                # the server publishes — a capped listing would drop the rest.
+                "__mcp_list_tools", {"server": server_name}
             )
             tools_data = json.loads(tools_json)
             external = tools_data.get("tools", [])

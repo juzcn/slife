@@ -891,58 +891,65 @@ class TestCheckMcpFunction:
         return _FakeMcpClient({"servers": payload})
 
     @staticmethod
-    def _server(name, state="running", **extra):
+    def _server(name, tools_ok=True, **extra):
+        """One raw ``__check`` row — facts only, no state word (the wrapper's
+        ``__check`` has no levels of its own; this is where they are made)."""
         server = {
             "name": name,
-            "state": state,
-            "status": "connected" if state == "running" else "failed",
-            "enabled": True,
-            "tool_count": 2 if state == "running" else 0,
-            "error": "" if state == "running" else "boom",
             "transport": "stdio",
+            "era": "legacy",
+            "enabled": True,
+            "tools_ok": tools_ok,
+            "tool_count": 2 if tools_ok else 0,
+            "tools_age_s": 1.0 if tools_ok else None,
+            "last_error": None if tools_ok else "boom",
+            "needs_user_auth": False,
+            "source": None,
         }
         server.update(extra)
         return server
 
     @pytest.mark.asyncio
     async def test_checks_all_by_default(self):
-        payload = [self._server("fs"), self._server("github", state="stopped")]
+        payload = [self._server("fs"), self._server("github", tools_ok=False)]
         entries = await check_mcp_gateway(client=self._client(payload))
         assert [e["key"] for e in entries] == ["fs", "github"]
 
     @pytest.mark.asyncio
     async def test_checks_single_server(self):
-        payload = [self._server("fs"), self._server("github", state="stopped")]
+        payload = [self._server("fs"), self._server("github", tools_ok=False)]
         entries = await check_mcp_gateway(server="github", client=self._client(payload))
         assert len(entries) == 1
         assert entries[0]["key"] == "github"
         assert entries[0]["level"] == "warning"
 
     @pytest.mark.asyncio
-    async def test_connected_server_carries_its_facts_in_the_value(self):
+    async def test_working_server_carries_its_facts_in_the_value(self):
         entries = await check_mcp_gateway(client=self._client([self._server("fs")]))
         entry = entries[0]
         assert entry["level"] == "ok"
-        assert entry["value"] == "connected (2 tools, stdio)"
+        assert entry["value"] == "tool list current (2 tools, stdio)"
         assert "hint" not in entry
 
     @pytest.mark.asyncio
-    async def test_stopped_server_is_disconnected(self):
-        """A stopped-but-enabled server reports 'disconnected' with a
-        retry hint — there is no build-owned healthy verdict anymore."""
-        payload = [self._server("broken", state="stopped")]
+    async def test_a_server_with_no_tool_list_is_a_warning(self):
+        """The verdict is the tool list: no list means its tools are absent
+        from the catalog, so it is a problem with a retry hint — there is no
+        build-owned healthy verdict to disagree with."""
+        payload = [self._server("broken", tools_ok=False)]
         entries = await check_mcp_gateway(client=self._client(payload))
         entry = entries[0]
         assert entry["level"] == "warning"
-        assert entry["value"].startswith("disconnected")
+        assert entry["value"].startswith("no working tool list")
+        assert "boom" in entry["value"]      # the recorded reason rides along
         assert "retries in the background" in entry["hint"]
         assert "healthy" not in entry
 
     @pytest.mark.asyncio
-    async def test_disconnected_hint_never_names_a_retired_tool(self):
+    async def test_failed_server_hint_never_names_a_retired_tool(self):
         """The old hint said "use check_mcp_gateway" — a tool that does not
         exist (the standalone checks were deleted as dead code)."""
-        payload = [self._server("broken", state="stopped")]
+        payload = [self._server("broken", tools_ok=False)]
         entries = await check_mcp_gateway(client=self._client(payload))
         assert "check_mcp_gateway" not in entries[0]["hint"]
 
@@ -953,29 +960,30 @@ class TestCheckMcpFunction:
         a REST-API server *is* an MCP server, but the operator's next move
         differs and the remedy has to name the right tool set."""
         payload = [
-            self._server("fs", state="stopped", error=""),
-            self._server("github", state="stopped", error="",
+            self._server("fs", tools_ok=False, last_error=""),
+            self._server("github", tools_ok=False, last_error="",
                          source={"type": "rest_api"}),
         ]
         entries = await check_mcp_gateway(client=self._client(payload))
         by_key = {e["key"]: e for e in entries}
         assert by_key["fs"]["component"] == "mcp_servers"
         assert by_key["github"]["component"] == "rest-api"
-        assert by_key["fs"]["value"] == by_key["github"]["value"] == "disconnected"
+        assert (by_key["fs"]["value"] == by_key["github"]["value"]
+                == "no working tool list")
         assert "mcp_list" in by_key["fs"]["hint"]
         assert "rest_api_list" in by_key["github"]["hint"]
         assert "mcp_list" not in by_key["github"]["hint"]
 
     @pytest.mark.asyncio
-    async def test_connected_rest_api_server_keeps_its_family_component(self):
+    async def test_working_rest_api_server_keeps_its_family_component(self):
         payload = [self._server("github", source={"type": "rest_api"})]
         entries = await check_mcp_gateway(client=self._client(payload))
         assert entries[0]["component"] == "rest-api"
-        assert entries[0]["value"] == "connected (2 tools, stdio)"
+        assert entries[0]["value"] == "tool list current (2 tools, stdio)"
 
     @pytest.mark.asyncio
     async def test_disabled_server_is_info_without_a_hint(self):
-        payload = [self._server("slack", enabled=False, state="stopped")]
+        payload = [self._server("slack", enabled=False, tools_ok=False)]
         entries = await check_mcp_gateway(client=self._client(payload))
         assert entries[0]["level"] == "info"
         assert entries[0]["value"] == "disabled"

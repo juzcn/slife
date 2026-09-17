@@ -8,15 +8,17 @@ throwaway config file located via ``$TOOLS_FILE``.
 
 import pytest; pytestmark = pytest.mark.unit
 
+import json
 import json5
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from slife.plugins.mcp_gateway import config as mcp_gateway_config
 from slife.tools.rest_api import (
     RestApiListTool,
+    RestApiListToolsTool,
     RestApiRemoveTool,
     RestApiSetEnabledTool,
     RestApiSetTool,
@@ -315,6 +317,158 @@ class TestRestApiListTool:
 
 
 # ── RestApiSetEnabledTool ────────────────────────────────────────────────
+
+
+class TestRestApiListToolsTool:
+    """Tests for rest_api_list_tools — one API's operations, capped."""
+
+    @staticmethod
+    def _client(payload, *, raw=None):
+        """A gateway client answering ``__mcp_list_tools`` with *payload*.
+
+        Mirrors the real tool's contract — a positive ``limit`` trims ``tools``
+        and sets ``truncated``, while ``tool_count`` stays the server's real
+        total.  The cap lives in the gateway, so a double that ignored
+        ``limit`` would let a broken cap pass.
+        """
+        from slife.tools.context import ToolContext
+
+        def _answer(_tool, arguments=None):
+            if raw is not None:
+                return raw
+            data = dict(payload)
+            limit = (arguments or {}).get("limit") or 0
+            tools = list(data.get("tools") or [])
+            if 0 < limit < len(tools):
+                data["tools"] = tools[:limit]
+                data["truncated"] = True
+            return json.dumps(data)
+
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=_answer)
+        return ToolContext(mcp_client=client, config=None), client
+
+    @staticmethod
+    def _ops(n):
+        return [
+            {"name": f"op{i}", "description": f"Operation {i}",
+             "inputSchema": {"type": "object"}}
+            for i in range(n)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_metadata(self):
+        tool = RestApiListToolsTool()
+        assert tool.name == "rest_api_list_tools"
+        assert tool.category == "REST API"
+        assert "name" in tool.parameters["required"]
+
+    @pytest.mark.asyncio
+    async def test_lists_operations(self, mcp_config_path):
+        _write_config(mcp_config_path, {
+            "github": _entry("https://api.github.com/openapi.json",
+                             "https://api.github.com"),
+        })
+        ctx, client = self._client(
+            {"connected": True, "tool_count": 2, "tools": self._ops(2)},
+        )
+        tool = RestApiListToolsTool(config_path=mcp_config_path)
+        tool._ctx = ctx
+        try:
+            result = await tool.execute(name="github")
+        finally:
+            tool._ctx = None
+
+        assert "github" in result
+        assert "2 operations" in result
+        assert "op0 — Operation 0" in result
+        # The read is the gateway's internal listing for THIS server, asked
+        # for at the configured cap — the cap lives there, not here.
+        tool_name, arguments = client.call_tool.await_args.args
+        assert tool_name == "__mcp_list_tools"
+        assert arguments["server"] == "github"
+        assert arguments["limit"] == mcp_gateway_config.DEFAULT_TOOL_LIST_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_caps_the_list_and_points_at_tool_search(self, mcp_config_path):
+        """1000 operations of names is context the caller did not ask for."""
+        _write_config(mcp_config_path, {
+            "github": _entry("https://api.github.com/openapi.json",
+                             "https://api.github.com"),
+        })
+        ctx, _ = self._client(
+            {"connected": True, "tool_count": 1000, "tools": self._ops(1000)},
+        )
+        tool = RestApiListToolsTool(config_path=mcp_config_path)
+        tool._ctx = ctx
+        try:
+            result = await tool.execute(name="github", limit=5)
+        finally:
+            tool._ctx = None
+
+        assert "1000 operations" in result          # the real total
+        assert result.count("- op") == 5            # what was printed
+        assert "tool_search" in result
+        assert "995 more" in result
+
+    @pytest.mark.asyncio
+    async def test_default_cap_is_the_configured_one(self, mcp_config_path):
+        _write_config(mcp_config_path, {
+            "github": _entry("https://api.github.com/openapi.json",
+                             "https://api.github.com"),
+        })
+        ctx, _ = self._client(
+            {"connected": True, "tool_count": 100, "tools": self._ops(100)},
+        )
+        tool = RestApiListToolsTool(config_path=mcp_config_path)
+        tool._ctx = ctx
+        try:
+            result = await tool.execute(name="github")
+        finally:
+            tool._ctx = None
+
+        assert result.count("- op") == mcp_gateway_config.DEFAULT_TOOL_LIST_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_not_registered(self, mcp_config_path):
+        tool = RestApiListToolsTool(config_path=mcp_config_path)
+        result = await tool.execute(name="nope")
+        assert "not found" in result.lower()
+        assert "rest_api_list" in result
+
+    @pytest.mark.asyncio
+    async def test_no_gateway_client(self, mcp_config_path):
+        _write_config(mcp_config_path, {
+            "github": _entry("https://api.github.com/openapi.json",
+                             "https://api.github.com"),
+        })
+        tool = RestApiListToolsTool(config_path=mcp_config_path)
+        tool._ctx = None
+        result = await tool.execute(name="github")
+        assert "[ERROR]" in result
+        assert "gateway unavailable" in result
+
+    @pytest.mark.asyncio
+    async def test_server_without_a_spec_reports_why(self, mcp_config_path):
+        """The API is registered but serving no operations — say so rather
+        than answer with an empty list."""
+        _write_config(mcp_config_path, {
+            "github": _entry("https://api.github.com/openapi.json",
+                             "https://api.github.com"),
+        })
+        ctx, _ = self._client(
+            {"connected": False, "tools": [], "tool_count": 0,
+             "note": "Server 'github' returned no tool list — unreachable."},
+        )
+        tool = RestApiListToolsTool(config_path=mcp_config_path)
+        tool._ctx = ctx
+        try:
+            result = await tool.execute(name="github")
+        finally:
+            tool._ctx = None
+
+        assert "[ERROR]" in result
+        assert "unreachable" in result
 
 
 class TestRestApiSetEnabledTool:

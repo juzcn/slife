@@ -732,15 +732,6 @@ class MCPClient:
                 parts.append(str(block))
         return "\n".join(parts)
 
-    async def ping(self) -> bool:
-        if self._session is None:
-            return False
-        try:
-            await self._session.send_ping()
-            return True
-        except Exception:
-            return False
-
     def _ensure_connected(self) -> None:
         if not self._connected or self._session is None:
             raise RuntimeError("MCP client is not connected.")

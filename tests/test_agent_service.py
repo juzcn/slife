@@ -193,9 +193,9 @@ class TestAgentServiceMCPEnrichment:
                     ])
                 if name == "__check":
                     return _json.dumps({"servers": [
-                        {"name": "ondemand", "status": "connected"},
+                        {"name": "ondemand", "tools_ok": True},
                     ]})
-                if name == "mcp_list_tools":
+                if name in ("mcp_list_tools", "__mcp_list_tools"):
                     return _json.dumps({
                         "server": "ondemand", "connected": True,
                         "tools": [
@@ -357,7 +357,7 @@ class TestAgentServiceMCPDiscovery:
         async def fake_call_tool(name, arguments=None):
             if name == "__check":
                 return _json.dumps(status_servers, ensure_ascii=False)
-            if name == "mcp_list_tools":
+            if name in ("mcp_list_tools", "__mcp_list_tools"):
                 return _json.dumps(
                     {"tools": tools_by_server.get(arguments.get("server"), [])},
                     ensure_ascii=False,

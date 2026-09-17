@@ -490,34 +490,37 @@ def _server_family(server: dict) -> str:
 def _diagnose_mcp_server(server: dict) -> dict:
     """Diagnose a single MCP server from raw ``__check`` data.
 
-    Pure data transformation — no side effects, no external calls.  Maps the
-    raw server state to a health entry: the state (plus the family tag, the
-    tool count and the transport) is the fact in ``value``, and only a broken
-    server carries a ``hint``.  The machine-only keys the probe returns
-    (``enabled``/``state``/``tool_count``/``transport``) are deliberately not
+    Pure data transformation — no side effects, no external calls.  This is
+    where an MCP server's raw facts become a health level: the wrapper reports
+    only what it measured (``tools_ok`` / ``tool_count`` / ``last_error`` …)
+    and never a state word of its own (DESIGN.md §Health).
+
+    The verdict is the tool list, because that is what everything downstream
+    needs: a server that answered ``tools/list`` has its tools in the catalog
+    and callable, and one that did not is absent from it.  Only a broken
+    server carries a ``hint``; the machine-only keys are deliberately not
     copied onto the entry — a fact belongs in exactly one place, and
     ``mcp_list`` owns the config view.
     """
     name = server.get("name", "?")
-    state = server.get("state", "unknown")
+    tools_ok = server.get("tools_ok", False)
     enabled = server.get("enabled", True)
     tool_count = server.get("tool_count", 0)
     transport = server.get("transport", "")
-    error_msg = server.get("error", "")
+    error_msg = server.get("last_error", "")
     needs_user_auth = server.get("needs_user_auth", False)
     family = _server_family(server)
     # The family decides the reported component (and therefore the tool set its
     # remedy names); the rest of the entry is identical.
     component = family or "mcp_servers"
     retry_hint = _REST_API_RETRY_HINT if family else _MCP_RETRY_HINT
-    manage_tool = "rest_api_list" if family else "mcp_list"
     remove_tool, add_tool = (
         ("rest_api_remove", "rest_api_set") if family else ("mcp_remove", "mcp_set")
     )
 
     if needs_user_auth:
-        # OAuth device flow needs a human — auto-reconnect is PAUSED (F5),
-        # so "wait for the background reconnect" is not the right advice.
+        # OAuth device flow needs a human — nothing repairs this in the
+        # background (F5), so "wait for the retry" is not the right advice.
         return _entry(
             component, "warning", name,
             f"needs_user_auth ({error_msg or 'device flow not completed'})",
@@ -527,23 +530,15 @@ def _diagnose_mcp_server(server: dict) -> dict:
     if not enabled:
         return _entry(component, "info", name, "disabled")
 
-    if state == "running":
+    if tools_ok:
         return _entry(
             component, "ok", name,
-            f"connected ({tool_count} tools, {transport})",
+            f"tool list current ({tool_count} tools, {transport})",
         )
 
-    if state == "stopped":
-        detail = f" — {error_msg}" if error_msg else ""
-        return _entry(component, "warning", name,
-                      f"disconnected{detail}", retry_hint)
-
-    # Unknown / other states (e.g. "connecting", "failed")
-    return _entry(
-        component, "warning", name, f"unexpected state: {state}",
-        f"Re-run system_health shortly, and inspect it with {manage_tool} "
-        f"if it persists.",
-    )
+    detail = f" — {error_msg}" if error_msg else ""
+    return _entry(component, "warning", name,
+                  f"no working tool list{detail}", retry_hint)
 
 
 async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:

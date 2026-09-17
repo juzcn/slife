@@ -48,6 +48,7 @@
    - Each turn injects the loaded rows, capped by the `tool_load` threshold (default 100): above it the least-recently-used are unloaded at turn boundaries. Always injected: the whitelist (harness pair, meta tools, pinned `skill_use` / `system_health`).
    - `skill` and `cli` rows carry no load state: `tool_search` finds them the same way, `skill_use` returns a skill's SKILL.md, `cli_list` carries a CLI's command.
    - A tool whose server is down carries status `error`: still searchable, and back in the injected set once the server connects. `mcp_list` = the live pool; `mcp_set_enabled` / `rest_api_set_enabled` = the on/off switch per external family.
+   - A server's tools list via `mcp_list_tools` / `rest_api_list_tools` — capped (`mcp.tool_list_limit`, default 20) with the real total reported; `tool_search` finds any tool behind the cap.
    - `_`-prefixed tools are harness-injected (`_turn_prompt`, `_check_new_input`); a `_check_new_input` reply may carry a live mid-turn message (cut-in).
    - `add_user_pref` writes standing rules to `USER.md` (prompt-level).
    - **Job System** — deterministic tools named `job-<function>`, persisted across restarts; load the `job-coding` skill before authoring one.

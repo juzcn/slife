@@ -204,7 +204,9 @@ llm = _LLMProxy()
 # ``__mcp_call_tool(server, tool_name, arguments)`` reaches any tool
 # on any connected external server, including tools never loaded into the
 # main agent's tool registry (only ``auto_load`` servers are; unloaded tool
-# names are probed at authoring time via the host's ``mcp_list_tools``).
+# names are found at authoring time with the host's ``tool_search`` — a
+# server's own listing is capped, so it is not the way to find one among
+# hundreds).
 #
 # NO CLIENT IS HELD between calls.  A 2026-07-28 (modern) MCP connection is
 # stateless — no session id, no handshake, per-request ``_meta``, and the

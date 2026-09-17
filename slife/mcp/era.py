@@ -101,7 +101,10 @@ async def watch_tools_changed(
     The event is a bare level trigger: a listener re-reads the tool list
     rather than trusting a payload, so a missed-during-reconnect change is
     harmless (the next event, or the reconcile that the reconnect itself
-    triggers, covers it).
+    triggers, covers it).  A stream that DROPS fires the handler once on the
+    way out for the same reason — an event may have gone with it, and one
+    re-read closes that gap; the two terminal answers below never do, because
+    a stream that never existed had nothing to lose.
     """
     from mcp.client.subscriptions import ListenNotSupportedError, listen
 
@@ -111,9 +114,7 @@ async def watch_tools_changed(
             async with listen(session, tools_list_changed=True) as subscription:
                 wait = _timeouts.timeouts.ready.relisten  # accepted — full cadence
                 async for _event in subscription:
-                    result = handler()
-                    if inspect.isawaitable(result):
-                        await result
+                    await _fire(handler)
         except ListenNotSupportedError:
             logger.debug("mcp_listen_unsupported link=%s era=%s", link,
                          peer_era(session))
@@ -124,12 +125,21 @@ async def watch_tools_changed(
                             peer_era(session), e.message)
                 return
             logger.debug("mcp_listen_stream_lost link=%s err=%s", link, e)
+            await _fire(handler)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.debug("mcp_listen_stream_lost link=%s err=%s", link, e)
+            await _fire(handler)
         await asyncio.sleep(wait)
         wait = min(
             wait * _timeouts.timeouts.ready.watchdog_backoff_multiplier,
             _timeouts.timeouts.ready.relisten_max,
         )
+
+
+async def _fire(handler: Callable[[], Awaitable[None] | None]) -> None:
+    """Run a link's change handler, sync or async."""
+    result = handler()
+    if inspect.isawaitable(result):
+        await result

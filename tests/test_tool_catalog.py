@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 import pytest_asyncio
 
-from slife.plugins.mcp_gateway.connection import ServerConfig, ServerStatus
+from slife.plugins.mcp_gateway.connection import ServerConfig
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ def _import_mcp_server():
 
 
 class _FakeConn:
-    status = ServerStatus.CONNECTED
+    tools_ok = True
 
     def __init__(self, tools, enabled=True):
         self.config = ServerConfig(name="x", command="x", enabled=enabled)
@@ -57,9 +57,6 @@ class _FakePool:
 
     def get_server(self, name):
         return self._connections.get(name)
-
-    def server_names(self):
-        return list(self._connections.keys())
 
     async def call_tool(self, server, tool_name, arguments):
         self.calls.append((server, tool_name))

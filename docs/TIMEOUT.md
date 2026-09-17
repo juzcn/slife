@@ -163,8 +163,9 @@ These are **not** timeout budgets and live on outside the registry (the AST
 gate allowlists them — see below):
 
 - **Cadences**: poll/keepalive/health *intervals* (`POLL_INTERVAL`,
-  `MISS_GRACE`, `HEARTBEAT_INTERVAL`, `_HEALTH_CHECK_INTERVAL`,
-  `_TYPING_MAX_LIFETIME`, `_TUNNEL_PROBE_INTERVAL`, `_QR_POLL_INTERVAL`, …).
+  `MISS_GRACE`, `HEARTBEAT_INTERVAL`, `_REFRESH_RETRY_*` (the MCP gateway's
+  re-list backoff), `_TYPING_MAX_LIFETIME`, `_TUNNEL_PROBE_INTERVAL`,
+  `_QR_POLL_INTERVAL`, …).
 - **Counts / profiles**: retry *attempts* (mcp connect `_CONNECT_RETRY_ATTEMPTS`,
   A2A `_MAX_ATTEMPTS`, watchdog `_WATCHDOG_MAX_RESTARTS`), backoff profile
   shapes (`_BACKOFF_BASE_S = [1, 2, 4]` is the SDK's list, kept verbatim),

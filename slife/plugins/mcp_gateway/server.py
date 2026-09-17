@@ -20,7 +20,7 @@ from fastmcp.server.context import Context
 
 from slife.plugins.mcp_gateway import config as plugin_config
 from slife.plugins.spec import mcp_child_reserved_names
-from slife.plugins.mcp_gateway.connection import ConnectionPool, ServerConfig, ServerStatus
+from slife.plugins.mcp_gateway.connection import ConnectionPool, ServerConfig
 from slife.logfmt import error_json, ok_json
 from slife.server_utils import (
     ToolsChangedNotifier,
@@ -88,12 +88,12 @@ async def _auto_connect_configured() -> None:
                 await _pool.add_server(cfg, connect=False)
                 return
             conn = await _pool.add_server(cfg)
-            # ``add_server``'s connect() SWALLOWS connect exceptions (it lands
-            # FAILED with ``_error`` and starts a health monitor).  Announce it
+            # ``add_server`` SWALLOWS the failure (it is recorded as the
+            # server's ``last_error`` and the retry is armed).  Announce it
             # anyway: the host's reconcile turns an unreachable server into
             # `status='error'` on its tools, which only happens if it hears
             # about the failure.
-            if conn.status == ServerStatus.FAILED:
+            if not conn.tools_ok:
                 logger.warning(
                     "mcp_auto_connect_failed server=%s err=%s",
                     name, getattr(conn, "_error", "") or "connect failed",
@@ -147,15 +147,17 @@ async def _notify_tools_changed() -> None:
 # The wrapper owns the CONNECTION, not a catalog: unified tool discovery /
 # search / load lives in the shared host ``tools.db``
 # (``slife.tools.catalog`` — the single catalog per DESIGNER_NOTES §8.5).
-# On a successful connect the host is told to re-list, and reconciles server
-# runtime + tool rows from ``mcp_list_tools`` / ``__check`` itself.
+# Whenever a server's tool surface may have changed — a list read, a
+# ``tools/list_changed`` event, a dead transport — the host is told to
+# re-list, and reconciles server runtime + tool rows from ``__mcp_list_tools`` /
+# ``__check`` itself.
 
-async def _on_connected(server_name: str) -> None:
-    """A server connected — notify the host so it re-syncs tools/runtime."""
+async def _on_tools_changed(server_name: str) -> None:
+    """A server's tool list may have changed — tell the host to re-sync."""
     _request_tools_changed()
 
 
-_pool = ConnectionPool(on_connected=_on_connected)
+_pool = ConnectionPool(on_tools_changed=_on_tools_changed)
 
 # Built-in Slife plugin server names — reserved: an external MCP server must
 # not take one of these, or its tools would collide / misroute in the host's
@@ -312,7 +314,7 @@ async def mcp_set(
 
     try:
         if existing is not None and _server_config_equal(existing.config, config):
-            if existing.status == ServerStatus.CONNECTED:
+            if existing.tools_ok:
                 tools = existing.list_tools()
                 return ok_json(
                     status="already_connected",
@@ -329,7 +331,7 @@ async def mcp_set(
             description, source, auth, enabled,
         )
 
-        if conn.status.value == "connected":
+        if conn.tools_ok:
             tools = conn.list_tools()
             return ok_json(
                 status="connected",
@@ -347,7 +349,7 @@ async def mcp_set(
         else:
             return error_json(
                 conn.error or "Unknown error",
-                status=conn.status.value,
+                status="failed",
                 server=name,
             )
     except Exception as e:
@@ -381,7 +383,7 @@ async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) 
         # ``enabled: false`` a prior disable wrote — otherwise the re-enable
         # would be lost on the next restart (the server would load disabled).
         plugin_config.set_server_enabled(name, True)
-        if existing.status == ServerStatus.CONNECTED:
+        if existing.tools_ok:
             tools = existing.list_tools()
             return ok_json(
                 status="connected",
@@ -391,16 +393,16 @@ async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) 
                 tools=[t["name"] for t in tools],
                 note="Server enabled.",
             )
-        # Not connected — fan the (re)connect out behind a fast response.
-        # connect() owns its per-connection lock and, on success, fires
-        # ``_on_connected`` -> catalog sync + one coalesced list_changed the
-        # host re-lists from.  Returning immediately keeps this control call
-        # off the slow path that previously held the request open for seconds
-        # while notification bursts interleaved with its cancel scope (the
-        # mcp 2.1.1 dispatcher crash this module guards against).
+        # No working tool list — fan the (re)read out behind a fast response.
+        # refresh_tools() owns its per-connection lock and, on success, fires
+        # ``_on_tools_changed`` -> catalog sync + one coalesced list_changed
+        # the host re-lists from.  Returning immediately keeps this control
+        # call off the slow path that previously held the request open for
+        # seconds while notification bursts interleaved with its cancel scope
+        # (the mcp 2.1.1 dispatcher crash this module guards against).
         async def _connect_async() -> None:
             try:
-                await existing.connect()
+                await existing.refresh_tools()
             except Exception as e:
                 logger.warning("mcp_enable_connect_failed server=%s err=%s", name, e)
 
@@ -461,50 +463,91 @@ async def mcp_list(ctx: Context | None = None) -> str:
 @mcp.tool(
     name="__check",
     description=(
-        "Live connection status of MCP servers: running/stopped, tool counts, "
-        "errors. Internal — probed by the harness's system_health."
+        "Per-server tool-list facts: tools_ok, tool_count, tools_age_s, "
+        "last_error. Internal — probed by the harness's system_health."
     ),
 )
 async def __check(ctx: Context | None = None) -> str:
-    """Report live server connection status.
+    """Report per-server tool-list facts.
 
-    Returns ``{"servers": [...]}``.  Authoritative for server health:
-    ``state=running`` means the server is connected and its tools are
-    registered on the agent (the agent re-syncs on reconnect via
-    ``notifications/tools/list_changed``).  Catalog semantic-index status is
-    reported host-side (the host owns the shared catalog's SemanticManager)."""
+    Returns ``{"servers": [...]}``.  Authoritative for server health, and
+    deliberately fact-only — no state word, no level: the harness interprets
+    (DESIGN.md §Health; PLUGIN_CONTRACT.md §Health).  ``tools_ok`` is the
+    verdict to read: a ``tools/list`` succeeded and its result is still held,
+    which is also what makes this server's tools usable in the catalog.
+    ``tools_age_s`` is the age of the list being served and ``last_error``
+    the reason the last read failed, if it did.  Catalog semantic-index status
+    is reported host-side (the host owns the shared catalog's
+    SemanticManager).
+
+    Never connects: probing must not be what brings a server up, so a
+    re-read is the background repair's job and the numbers here are whatever
+    the last real read left behind."""
     servers = _pool.list_servers()
     return json.dumps({"servers": servers}, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
-    name="mcp_list_tools",
+    name="__mcp_list_tools",
     description=(
-        "List a connected server's tools (full_name server__tool). Use "
-        "mcp_list to discover server names."
+        "A server's tool list (uncapped by default). Internal — the host's "
+        "catalog sync writes a row per tool."
     ),
 )
-async def mcp_list_tools(server: str, ctx: Context | None = None) -> str:
-    """List a connected server's tools (single, always-live read).
+async def __mcp_list_tools(
+    server: str, limit: int = 0, ctx: Context | None = None,
+) -> str:
+    """The listing itself, uncapped unless asked otherwise — host-side only.
 
-    The shared catalog is fed by the HOST (the agent's reconcile calls this
-    tool on connect — ``mcp_list_tools`` is the live source), so there is no
-    wrapper-side catalog branch anymore.  Each tool carries its full
-    ``{name, description, inputSchema}`` descriptor.
+    The ONE implementation.  ``mcp_list_tools`` and the REST-API family's
+    ``rest_api_list_tools`` call this with the configured cap; the catalog
+    sync calls it with none, because it needs every tool (a trimmed listing
+    would silently drop the rest from the catalog).  One read, one cap, one
+    place that can arm the background repair.
+
+    Reading IS the liveness check: no tool list means the server is absent
+    from the catalog, so this is the place worth paying a ``tools/list`` for.
+    A list already held and still inside the peer's cache window is served
+    as-is — the peer's own change events are what mark it stale, so an
+    unchanged server costs nothing here.
+
+    ``limit`` is how many tools are shown (0 = every one).  ``tool_count``
+    always reports the server's real total, so a capped answer still says how
+    much is behind it, and the trimmed tail is replaced by the one instruction
+    that finds a specific tool.  Internal: the ``__`` prefix keeps this out of
+    the model's tool set (``is_internal_tool``).
 
     Args:
         server: Server name (from mcp_list).
+        limit: Max tools to list (0 = every tool).
     """
+    # 0 (the tool default) means "no cap" — None here, so the trim below is a
+    # single comparison rather than a second sentinel to keep in step.
+    cap: int | None = limit if limit > 0 else None
     conn = _pool.get_server(server)
-    if conn is None or conn.status != ServerStatus.CONNECTED:
+    if conn is None:
         return ok_json(
             server=server,
             connected=False,
             tools=[],
             tool_count=0,
             note=(
-                f"Server '{server}' is not connected — its tools load when it "
-                "connects. Use mcp_list to see configured servers."
+                f"Server '{server}' is not configured — use mcp_list to see "
+                "the configured servers."
+            ),
+        )
+    if not conn.has_tools():
+        await conn.refresh_tools()
+    if not conn.has_tools():
+        return ok_json(
+            server=server,
+            connected=False,
+            tools=[],
+            tool_count=0,
+            note=(
+                f"Server '{server}' returned no tool list — "
+                f"{conn.error or 'unreachable'}. The wrapper retries in the "
+                "background. Use mcp_list to see configured servers."
             ),
         )
 
@@ -517,14 +560,50 @@ async def mcp_list_tools(server: str, ctx: Context | None = None) -> str:
             server=server,
         )
 
+    truncated = cap is not None and cap < len(live)
+    shown = live[:cap] if truncated else live
     return ok_json(
         server=server,
         connected=True,
         source="live",
-        tools=live,
+        tools=shown,
         tool_count=len(live),
-        note="Live tool list from the connected server (built-in MCP tools/list).",
+        truncated=truncated,
+        note=(
+            f"Showing {len(shown)} of {len(live)} tools from the live MCP "
+            "tools/list — use tool_search to find a specific one."
+            if truncated else
+            "Live tool list from the connected server (built-in MCP tools/list)."
+        ),
     )
+
+
+@mcp.tool(
+    name="mcp_list_tools",
+    description=(
+        "List a server's tools (full_name server__tool). Capped at "
+        "mcp.tool_list_limit — use tool_search to find a specific one. "
+        "Use mcp_list to discover server names."
+    ),
+)
+async def mcp_list_tools(server: str, limit: int = 0, ctx: Context | None = None) -> str:
+    """List a server's tools, capped for the caller's context.
+
+    ``__mcp_list_tools`` with the configured cap — the SAME read and the SAME
+    cap code; this tool differs only in what it passes and who it is for.  The
+    shared catalog is fed by the HOST (the agent's reconcile reads the
+    internal twin), so there is no wrapper-side catalog branch here.
+
+    The cap is the point of this tool: a published server can carry four
+    figures of tools (github: 1239), and printing them all spends the model's
+    context on names it never asked for.
+
+    Args:
+        server: Server name (from mcp_list).
+        limit: Max tools to list (0 = the configured cap, ``mcp.tool_list_limit``).
+    """
+    cap = plugin_config.tool_list_limit() if limit <= 0 else limit
+    return await __mcp_list_tools(server, limit=cap)
 
 
 @mcp.tool(

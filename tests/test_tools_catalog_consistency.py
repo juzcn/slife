@@ -311,11 +311,14 @@ async def test_connectivity_projection_follows_check(_isolate, sample_config):
         client = AsyncMock()
         client.is_connected = True
 
-        states = {"serper": "connected", "weather": "failed"}
+        # The verdict is ``tools_ok`` — a server that answered tools/list and
+        # whose result is still held.  A "failed" server is simply one with no
+        # working tool list.
+        states = {"serper": True, "weather": False}
 
         async def _check(*_a, **_kw):
             return json.dumps({"servers": [
-                {"name": name, "status": status} for name, status in states.items()
+                {"name": name, "tools_ok": ok} for name, ok in states.items()
             ]})
 
         client.call_tool = _check
@@ -326,7 +329,7 @@ async def test_connectivity_projection_follows_check(_isolate, sample_config):
         assert (await store.get_tool("weather__temp"))["status"] == "error"
 
         # weather comes up on the next pass → its mark clears
-        states["weather"] = "connected"
+        states["weather"] = True
         await service._mark_server_connectivity(client, {"serper", "weather"})
         assert (await store.get_tool("weather__temp"))["status"] == "unloaded"
     finally:

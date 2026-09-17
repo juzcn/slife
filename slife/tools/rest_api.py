@@ -1,6 +1,7 @@
 """REST API management — register external APIs backed by mcp-openapi-proxy.
 
-rest_api_set / rest_api_remove / rest_api_list / rest_api_set_enabled.
+rest_api_set / rest_api_remove / rest_api_list / rest_api_list_tools /
+rest_api_set_enabled.
 
 Server definitions live in ``tools.json5`` (owned by the mcp gateway,
 resolved via ``$TOOLS_FILE``); REST APIs are ordinary ``command: uvx``
@@ -10,6 +11,7 @@ and keeps a live ``mcp_set``-style warm-up through the mcp plugin so an API
 connects immediately.
 """
 
+import json
 import logging
 from urllib.parse import urlparse
 
@@ -213,6 +215,107 @@ class RestApiListTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibl
 
     async def execute(self, **kwargs) -> str:
         return _format_rest_apis(mcp_gateway_config.list_rest_apis())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# rest_api_list_tools
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _format_operations(name: str, data: dict) -> str:
+    """Render one API's operations as a context-cheap text list.
+
+    The cap is NOT applied here: the gateway owns it (``__mcp_list_tools``'s
+    ``limit``), so this only reports what it was given.  A second cap in this
+    file would be two places deciding how much context a listing may spend.
+    """
+    if not data.get("connected", False):
+        detail = data.get("note") or data.get("error") or "no tool list"
+        return f"[ERROR] REST API '{name}' is not serving a spec — {detail}"
+
+    tools = data.get("tools") or []
+    if not tools:
+        return f"REST API '{name}' exposes no operations."
+
+    total = data.get("tool_count", len(tools))
+    lines = [f"REST API '{name}' — {total} operations:"]
+    for tool in tools:
+        desc = (tool.get("description") or "").strip().splitlines()
+        summary = desc[0] if desc else ""
+        lines.append(f"- {tool.get('name', '?')}" + (f" — {summary}" if summary else ""))
+    if len(tools) < total:
+        lines.append(
+            f"\n{total - len(tools)} more operations not listed — "
+            "use tool_search to find the one you need."
+        )
+    return "\n".join(lines)
+
+
+class RestApiListToolsTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
+    """List the operations one REST API exposes — its OpenAPI-derived tools.
+
+    The REST-API-shaped twin of ``mcp_list_tools``: same live read through the
+    gateway (a REST API *is* an MCP server, an ``mcp-openapi-proxy`` one), but
+    answering in this family's vocabulary so the model never has to know which
+    transport an API rides (DESIGNER NOTES §8.5).
+    """
+
+    name = "rest_api_list_tools"
+    category = "REST API"
+    description = (
+        "List the operations a REST API exposes (from its OpenAPI spec). "
+        f"Capped at mcp.tool_list_limit ({mcp_gateway_config.DEFAULT_TOOL_LIST_LIMIT}) "
+        "— use tool_search to find a specific one."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "API name, from rest_api_list."},
+            "limit": {
+                "type": "integer",
+                "description": (
+                    "Max operations to list (0 = the configured cap, "
+                    "mcp.tool_list_limit)."
+                ),
+            },
+        },
+        "required": ["name"],
+    }
+
+    async def execute(self, **kwargs) -> str:
+        name: str = kwargs["name"]
+        limit: int = kwargs.get("limit") or 0
+
+        if name not in mcp_gateway_config.list_rest_apis():
+            return f"'{name}' not found in rest_apis. Use rest_api_list."
+
+        ctx = getattr(self, "_ctx", None)
+        mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
+        if mcp is None:
+            return (
+                f"[ERROR] mcp gateway unavailable — cannot read '{name}'s "
+                "operations right now."
+            )
+        # The gateway applies the cap, so this tool never slices a list: one
+        # implementation decides how much context a listing may spend, and it
+        # is the same one mcp_list_tools uses.
+        cap = mcp_gateway_config.tool_list_limit() if limit <= 0 else limit
+        try:
+            raw = await mcp.call_tool(  # type: ignore[union-attr]
+                "__mcp_list_tools", {"server": name, "limit": cap},
+            )
+        except Exception as e:
+            logger.warning("rest_api_list_tools_failed name=%s err=%s", name, e)
+            return f"[ERROR] Could not list '{name}'s operations: {e}"
+
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            return f"[ERROR] Unexpected listing for '{name}': {raw}"
+        if not isinstance(data, dict):
+            return f"[ERROR] Unexpected listing for '{name}'."
+
+        return _format_operations(name, data)
 
 
 # ═══════════════════════════════════════════════════════════════════════

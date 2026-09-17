@@ -180,6 +180,30 @@ def count_servers() -> int:
     return len(servers())
 
 
+# ── Tool-listing cap ───────────────────────────────────────────────────
+
+#: Default cap on how many of a server's tools a listing tool prints.
+#: A published server can carry four figures of tools (github: 1239), and
+#: printing them all spends the model's context on names it never asked for
+#: — so a listing is capped and points at ``tool_search`` instead.  The read
+#: itself is uncapped (the host's catalog sync needs every tool).
+DEFAULT_TOOL_LIST_LIMIT = 20
+
+
+def tool_list_limit() -> int:
+    """The configured tool-listing cap (``mcp.tool_list_limit``, default 20).
+
+    A malformed or negative value falls back to the default rather than
+    raising — this is presentation, not a contract.
+    """
+    raw = load_config()
+    section = raw.get("mcp") if isinstance(raw, dict) else None
+    value = section.get("tool_list_limit") if isinstance(section, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return DEFAULT_TOOL_LIST_LIMIT
+    return value
+
+
 # ── Server-entry persistence (shared by CLI + server management tools) ──
 
 
