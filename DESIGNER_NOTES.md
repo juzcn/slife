@@ -256,7 +256,15 @@ status：为空时，搜索所有状态的， status=status, 只搜索status的t
 
 创建harness 工具， _unload_function_tool
 
-每一轮当loaded 工具数超过阈值，则调用 _unload_function_tool，把loaded时间最旧的tool 从tool list中移除, 将其状态重设为unloaded, 同时检查涉及的服务器是否还有loaded tool, 如果没有自动断连该服务器。
+每一轮当loaded 工具数超过阈值，就淘汰到阈值：`loop._maybe_evict` → `ToolCatalogService.evict_to_threshold`
+→ `CatalogStore.evict_lru`（按 last_loaded 升序、NULL 最先，一次批量 UPDATE status='unloaded'；保护
+ALWAYS_LOADED ∪ autoload ∪ autoload server 的全部工具）。这是 status 的第三个写点（另两个是
+func-tool-load / _unload_func_tool），模型侧仍然只有那两个工具能动 load 状态。
+
+淘汰只动 status，不碰 server：**宿主侧没有"服务器的连接"这个东西**。连接由 mcp-gateway 进程的连接池自己
+持有与回收，宿主对 server 只有两个事实 —— json5 的 enabled 开关，和网关 __check 给出的判决（记在
+unavailable 列）。所以"没有 loaded tool 就断连它"不是一条待实现的规则：既没有 connect/disconnect 这个动作，
+也不该由 load 状态去驱动连接生命周期（load 是 model 的决定，连接是网关的事）。
 
 - 为builtin function tool 配置preload，tool search 和 tool load必须配置为true，其它工具可以用户自配置。
 
@@ -318,3 +326,27 @@ skill:
 disabled，这样 json5 和 db 对同一个工具的说法一致。对 mcp/rest-api，disable 的 server 不连接，所以"没有行"
 只发生在**从未连上过**的情况；曾经连上过的 server 被 disable，行保留并标 disabled —— 这正是上面那条
 "不删除 disable 的行"约定。disable ≠ error：前者是 json5 的开关，后者是"开着但此刻连不上"。）
+### 同步六原则（逐条对代码核对，2026-09-17）
+
+1. **schema 是新值或发生变化 → embed / re-embed**。判据是 flatten 后的文本（`_flatten_schema`）：新行只有
+   "可嵌入 schema"（非空）才失效；已有行 raw schema 变了、flatten 结果没变（enum/default/pattern/format、
+   一层以上嵌套）就不重嵌 —— 否则会删掉向量再嵌回一条字节相同的向量。落点在 `CatalogStore.reconcile`，
+   失效即删向量，drainer 依 `count_unembedded` 重嵌；非 mcp 路径要 `wake_indexer` 唤醒 drainer。
+2. **启动时 config 的 enable 值 override db 的 enable 值 —— 值不同才 override**。本地家族经 `_row_enabled`
+   + reconcile 的逐列比较；mcp/rest-api 经 `set_source_enabled`（也只写真会变的行）。NULL 算"不同"：
+   列上的 NULL 是"不表态"（读作开启），把开关的显式值写上去正是 config-wins 本身。
+3. **所有工具同步都判断相同时跳过，不同才 update**。四个家族汇流到同一个 `reconcile`（内存比较、只拼变化的
+   SET，稳态启动一行不写）。三列 verdict 同理（`mark_source_unavailable` / `mark_all_external_unavailable` /
+   `clear_source_unavailable` 都只写会变的行）：任何 UPDATE 都触发 `tool_au` 把该行重新索引进 `tool_fts`，
+   白写就是白 churn。
+4. **永不 update db 的 status**。写点只有三个：`func-tool-load`（`load_tool`，含 materialize 失败的回滚）、
+   `_unload_func_tool`（`unload_tool`）、harness 的阈值 LRU（`evict_lru`）。`reconcile` 只在 INSERT 时落
+   status（已有行保留 model 的决定）；拥有者不可用的判决走独立的 `unavailable` 列，绝不写进 status。
+5. **db remove 掉 json5 中不再配置的 tool**。对 mcp / rest-api server，整源批量 `purge_source`
+   （`purge_unconfigured_sources`：启动一次 + 每轮 reconcile 一次）；server 还在但少发布一个工具走
+   `purge_source_except`（upsert-then-purge，空列表提前返回 = "还没就绪"）。plugin/job 走 source 限定的
+   `sync_system_tools`，skill/cli 走 `sync_category(purge=True)`。
+6. **所有 tool 的 set**：新工具 db add 默认 enabled（config 对它有表态就按 config —— config 里 disable 的
+   builtin 也是这样拿到一行标 disabled 的）；已有工具的 enable 只在 config 表态且与 db 不同时才 override
+   （同 2），config 不表态（`enabled=None`）就整行不写。CRUD 的 update 路径不得改变 enable —— `cli.py`
+   更新条目时保留 `old_enabled` 即此例。
