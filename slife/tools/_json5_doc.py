@@ -36,22 +36,10 @@ import json
 import re
 import textwrap
 
-try:
-    import json5
-    import json5.model as M
-    from json5.dumper import ModelDumper
-    from json5.loader import ModelLoader
-except ImportError as exc:  # pragma: no cover — a broken install, not a branch
-    # `json5` and `json-five` both ship a top-level `json5/` package, so
-    # whichever installs last overwrites the other's `__init__.py` and
-    # `parser.py` — and only json-five's parser has `parse_source`, which its
-    # own loader imports.  The raw failure names neither distribution.
-    raise ImportError(
-        "slife's config writer needs json-five, but another distribution "
-        "claiming the same `json5` import name has overwritten part of it.  "
-        "Look in site-packages for a second `json5*.dist-info` (the `json5` "
-        "and `pyjson5` distributions both ship this module) and uninstall it."
-    ) from exc
+import json5
+import json5.model as M
+from json5.dumper import ModelDumper
+from json5.loader import ModelLoader
 
 #: An ECMAScript identifier — the keys a JSON5 file may leave unquoted.
 #: Anything else (``rest-api``, ``tavily-mcp``) must be quoted or the dump is
