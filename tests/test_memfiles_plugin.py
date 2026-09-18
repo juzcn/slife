@@ -22,6 +22,7 @@ import json
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import slife.plugins.memfiles.server as plugin
 from slife.plugins.memfiles.store import MemfilesStore
@@ -282,54 +283,40 @@ class TestUrlSave:
         assert result.startswith("Error: refusing URL")
         store.add_file.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_name_is_derived_from_the_url_not_invented(self, tmp_path):
-        """The saved path is built from what the URL actually says.
+    def test_name_is_derived_from_the_url_not_invented(self):
+        """The file name is built from what the URL actually says.
 
         Two ways that used to go wrong: a root or directory URL has no
         basename and was filed as the literal "untitled"; and a URL *with* an
-        extension had the whole basename slugified — which drops the dot —
-        and then had the extension appended again, so "paper.pdf" landed as
+        extension had the whole basename slugified — which drops the dot — and
+        then had the extension appended again, so "paper.pdf" landed as
         "paperpdf.pdf".
+
+        Tested through the pure derivation rather than a live ``url_save``:
+        the real path runs an SSRF guard that resolves the host via
+        ``socket.getaddrinfo``, so driving it with invented hostnames makes
+        the assertion depend on the CI machine's DNS.  The wiring from these
+        parts to the written file is covered by ``test_downloads_and_records``.
         """
-        mem_dir = tmp_path / "files"
-        mem_dir.mkdir()
-        store = _fake_store(mem_dir)
-
-        class _Content:
-            async def iter_chunked(self, chunk_size):
-                yield b"<html>Page</html>"
-
-        class _Resp:
-            status = 200
-            @property
-            def content(self):
-                return _Content()
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): return None
-            async def read(self): return b"<html>Page</html>"
-
-        for url, expected in (
+        for url, title, expected in (
             # no basename: fall back to the path segment, else the host
-            ("https://example.com/", "files/other/example-com"),
-            ("https://example.com/docs/", "files/other/docs"),
+            ("https://example.com/", "", "example-com"),
+            ("https://example.com/docs/", "", "docs"),
             # a host that reads like a filename must not be taken for one —
             # dots become dashes, keeping it out of the archive category
-            ("https://example.zip/", "files/other/example-zip"),
-            # an extension appears exactly once, and still picks the category
-            ("https://example.com/paper.pdf", "files/documents/paper.pdf"),
-            ("https://example.com/a/report.html", "files/code/report.html"),
+            ("https://example.zip/", "", "example-zip"),
+            # an extension appears exactly once
+            ("https://example.com/paper.pdf", "", "paper.pdf"),
+            ("https://example.com/a/report.html", "", "report.html"),
+            # a title supplies the STEM and the URL still supplies the
+            # extension — the same division file_save makes between a title
+            # and src.suffix
+            ("https://example.com/dl", "My Paper", "my-paper"),
+            ("https://example.com/other.pdf", "My Paper", "my-paper.pdf"),
         ):
-            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-                 patch("aiohttp.ClientSession") as sess_cls:
-                sess = MagicMock()
-                sess.get.side_effect = lambda *a, **k: _Resp()
-                sess.__aenter__ = AsyncMock(return_value=sess)
-                sess.__aexit__ = AsyncMock(return_value=None)
-                sess_cls.return_value = sess
-                result = await plugin.url_save(url=url)
-            assert "untitled" not in result, url
-            assert store.add_file.await_args.kwargs["saved_path"] == expected, url
+            _, _, stem, ext = plugin._url_name_parts(urlparse(url), title)
+            assert stem + ext == expected, (url, title)
+            assert "untitled" not in stem, url
 
 
 # ═══════════════════════════════════════════════════════════════════════

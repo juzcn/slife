@@ -385,6 +385,46 @@ async def file_save(
     return "\n".join(results)
 
 
+def _url_name_parts(parsed, title: str) -> tuple[str, str, str, str]:
+    """Derive ``(url_name, display_title, stem, ext)`` for a downloaded URL.
+
+    Pure — no network, no filesystem — so the naming rules are testable
+    without a live download.
+
+    ``url_name`` is the URL's own basename, named after something that
+    identifies the resource rather than the literal "untitled": a root or
+    directory URL (``https://host/``, ``https://host/docs/``) has no basename
+    at all, which is exactly the case when saving a site or a landing page.
+    It falls back to the last non-empty path segment, else the host, with dots
+    as dashes so the host survives ``_slugify``'s punctuation strip
+    ("example.com" → "example-com", not "examplecom") and so a host that reads
+    like a filename ("example.zip") cannot be taken for one by the extension
+    logic below.
+
+    ``stem`` must not carry the extension, which is appended separately:
+    slugifying the whole basename dropped the dot (``_slugify`` strips
+    punctuation) and then the extension went on again, saving "paper.pdf" as
+    "paperpdf.pdf".  ``file_save`` splits the same two pieces off its source
+    path (``src.stem`` + ``src.suffix``); a URL basename is the same kind of
+    name and gets the same treatment.  An explicit title is a stem already,
+    exactly as it is there.
+    """
+    url_name = parsed.path.rsplit("/", 1)[-1] if parsed.path else ""
+    if not url_name:
+        segment = next((s for s in reversed(parsed.path.split("/")) if s), "")
+        url_name = segment or parsed.netloc.replace(".", "-")
+    display_title = title or url_name or "untitled"
+    stem = _slugify(title or url_name.rpartition(".")[0] or url_name) or "untitled"
+    if url_name and "." in url_name:
+        ext = "." + url_name.rsplit(".", 1)[-1].split("?")[0]
+        ext = re.sub(r"[^\w.]", "", ext)[:10]
+        if not ext.startswith("."):
+            ext = ""
+    else:
+        ext = ""
+    return url_name, display_title, stem, ext
+
+
 @mcp.tool(
     name="url_save",
     description=(
@@ -468,34 +508,7 @@ async def url_save(
     if raw is None:
         return f"Error: too many redirects — {url}"
 
-    url_name = parsed.path.rsplit("/", 1)[-1] if parsed.path else ""
-    # Name the file after something that identifies the resource instead of
-    # the literal "untitled": a root or directory URL (https://host/,
-    # https://host/docs/) has no basename at all, which is exactly the case
-    # the user hits when saving a site or a landing page.  Use its last
-    # non-empty path segment, else the host.  Dots become dashes so the host
-    # survives _slugify's punctuation strip ("example.com" → "example-com"
-    # rather than "examplecom") and so a host that reads like a filename
-    # ("example.zip") cannot be taken for one by the extension logic below.
-    if not url_name:
-        segment = next((s for s in reversed(parsed.path.split("/")) if s), "")
-        url_name = segment or parsed.netloc.replace(".", "-")
-    display_title = title or url_name or "untitled"
-    # The stem must not carry the extension — it is appended separately
-    # below.  Slugifying the whole basename dropped the dot (``_slugify``
-    # strips punctuation) and then the extension went on again, so
-    # "paper.pdf" was saved as "paperpdf.pdf".  ``file_save`` splits the same
-    # two pieces off its source path (``src.stem`` + ``src.suffix``); a URL
-    # basename is the same kind of name and gets the same treatment.  An
-    # explicit title is a stem already, exactly as it is there.
-    stem = _slugify(title or url_name.rpartition(".")[0] or url_name) or "untitled"
-    if url_name and "." in url_name:
-        ext = "." + url_name.rsplit(".", 1)[-1].split("?")[0]
-        ext = re.sub(r"[^\w.]", "", ext)[:10]
-        if not ext.startswith("."):
-            ext = ""
-    else:
-        ext = ""
+    url_name, display_title, stem, ext = _url_name_parts(parsed, title)
     async with _save_lock:
         cat_dir = files_dir / _detect_category(url_name or display_title, category)
         cat_dir.mkdir(parents=True, exist_ok=True)
