@@ -20,7 +20,7 @@ One TUI window around an LLM tool loop: **63 builtin tools by default** across 1
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
-**Bilingual interface.** The TUI follows your OS language — Chinese on a Chinese system, English everywhere else. Detected at startup via [`sys-lang`](https://pypi.org/project/sys-lang/) (Windows `Get-Culture` / *nix locale); all in-TUI text — system messages, the approval prompt, the model picker, tool-call labels, the status bar — renders in the right language. What the LLM sees (system prompt, tool schemas) stays uniformly English; so do logs.
+**Bilingual interface.** The TUI follows your OS language — Chinese on a Chinese system, English everywhere else. Detected at startup from the OS itself (Windows `GetUserDefaultUILanguage` / *nix locale variables); all in-TUI text — system messages, the approval prompt, the model picker, tool-call labels, the status bar — renders in the right language. What the LLM sees (system prompt, tool schemas) stays uniformly English; so do logs.
 
 > **Reader's map** — pick your lane:
 >

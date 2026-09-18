@@ -1,9 +1,11 @@
-"""TUI internationalization — English + Chinese, detected via sys-lang.
+"""TUI internationalization — English + Chinese, detected from the OS locale.
 
 A single translation table plus a :func:`t` accessor.  Two languages only
-(``en`` / ``zh``) — no YAML, no catalogs, no Pydantic.  The point of using
-``sys-lang`` over a full i18n framework is to keep this trivial: the whole
-TUI surface is ~40 strings.
+(``en`` / ``zh``) — no YAML, no catalogs, no Pydantic.  Detection is the OS's
+own answer in a dozen lines of stdlib rather than a dependency: the whole TUI
+surface is ~40 strings, and the packages in this space either shell out to
+PowerShell on Windows (``sys-lang``) or read the same environment variables
+this does.
 
 Language is resolved once at import from the OS locale (Chinese → ``zh``,
 everything else → ``en``).  Tests override it via :func:`set_language` —
@@ -13,20 +15,44 @@ assertions stay valid regardless of the dev machine's locale.
 
 from __future__ import annotations
 
-from sys_lang import get_sys_lang
+import locale
+import os
+import sys
+
+
+def _os_language() -> str:
+    """The OS display language tag — ``zh_CN``, ``en_US``, ...
+
+    Windows keeps the UI language out of the C locale (an English Windows in
+    Spain reports ``es_ES`` from ``locale.getlocale()``), so the Win32 API is
+    asked directly.  ``GetUserDefaultUILanguage`` is the *user's* own setting,
+    falling back to the system's when none is set — which is the language the
+    TUI should follow.  Elsewhere the POSIX variables are the authority, most
+    specific first.
+    """
+    if sys.platform == "win32":  # pragma: no cover — Windows-only
+        import ctypes
+
+        langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+        return locale.windows_locale.get(langid, "")
+    return (
+        os.environ.get("LC_ALL")
+        or os.environ.get("LC_MESSAGES")
+        or os.environ.get("LANG")
+        or ""
+    )
 
 
 def _detect_language() -> str:
     """``"zh"`` for any Chinese locale, else ``"en"``.
 
-    ``sys-lang`` returns an ISO code like ``zh`` / ``zh_CN`` / ``zh_HK``;
-    any ``zh*`` prefix counts as Chinese (Simplified / Traditional / region
-    variants share the same zh strings here).  Detection never raises —
-    ``get_sys_lang`` can raise (missing ``powershell``, non-zero subprocess,
-    undetectable locale), and any failure degrades to ``en`` here.
+    A tag like ``zh`` / ``zh_CN`` / ``zh_HK`` counts as Chinese on its ``zh``
+    prefix (Simplified / Traditional / region variants share the same zh
+    strings here).  Detection never raises: the OS query can fail (an unknown
+    language id, an unset environment), and any failure degrades to ``en``.
     """
     try:
-        code = get_sys_lang(region=False).lower()
+        code = _os_language().lower()
     except Exception:  # noqa: BLE001 - degrade to English on any detection failure
         return "en"
     return "zh" if code.startswith("zh") else "en"

@@ -47,11 +47,10 @@ except ImportError as exc:  # pragma: no cover — a broken install, not a branc
     # `parser.py` — and only json-five's parser has `parse_source`, which its
     # own loader imports.  The raw failure names neither distribution.
     raise ImportError(
-        "slife's config writer needs json-five, but the json5 distribution "
-        "(via sys-lang -> is-unicode-supported -> is-legacy-terminal) claims "
-        "the same import name and overwrote part of it.  Uninstall json5; "
-        "pyproject.toml's [tool.uv] override-dependencies drops it from this "
-        "project's lock."
+        "slife's config writer needs json-five, but another distribution "
+        "claiming the same `json5` import name has overwritten part of it.  "
+        "Look in site-packages for a second `json5*.dist-info` (the `json5` "
+        "and `pyjson5` distributions both ship this module) and uninstall it."
     ) from exc
 
 #: An ECMAScript identifier — the keys a JSON5 file may leave unquoted.

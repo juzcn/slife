@@ -30,7 +30,6 @@ dependencies = [
     "ngrok",
     "croniter>=6.2.4",
     "tzdata>=2026.3",
-    "sys-lang>=1.0.1",
     "filelock>=3.12.0",
     "a2a-over-mqtt>=0.1.0",
     "aiomqtt>=2.5.0",
@@ -102,18 +101,6 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
 ]
-
-[tool.uv]
-# `json5` and `json-five` both ship a top-level `json5/` package, so whichever
-# installs last overwrites the other's `__init__.py` and `parser.py` — and only
-# json-five's parser has `parse_source`, which its own loader imports.  The
-# loser is left importing a file it does not own, and the failure surfaces on
-# whichever platform happened to install them in that order (Linux CI first).
-# `json5` is here transitively — sys-lang -> is-unicode-supported ->
-# is-legacy-terminal — and their only use is `json5.loads` / `json5.load`,
-# both of which json-five also exports.  So the duplicate is dropped rather
-# than kept and raced; the never-true marker is how uv spells "don't install".
-override-dependencies = ["json5 ; python_version < '0'"]
 
 [tool.uv.workspace]
 members = ["credstore", "cc-switch", "local-embed"]

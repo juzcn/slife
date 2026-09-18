@@ -18,7 +18,7 @@
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
-**双语界面。** TUI 跟随系统语言——中文系统显示中文，其它一律英文。启动时通过 [`sys-lang`](https://pypi.org/project/sys-lang/) 检测（Windows `Get-Culture` / *nix locale）；界面内的系统消息、批准提示、模型选择器、工具调用标签、状态栏均按系统语言渲染。LLM 可见内容（系统提示词、工具 schema）始终为英文，日志亦然。
+**双语界面。** TUI 跟随系统语言——中文系统显示中文，其它一律英文。启动时直接读取系统（Windows `GetUserDefaultUILanguage` / *nix 环境变量）；界面内的系统消息、批准提示、模型选择器、工具调用标签、状态栏均按系统语言渲染。LLM 可见内容（系统提示词、工具 schema）始终为英文，日志亦然。
 
 > **读者地图** — 挑一个适合你的入口：
 >

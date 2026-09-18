@@ -122,7 +122,7 @@ Two audiences, two languages. The model input reads uniformly in English; the hu
 
 **TUI — bilingual (English / Chinese), by OS locale:**
 
-- Detected once at import via [`sys-lang`](https://pypi.org/project/sys-lang/) (`get_sys_lang(region=False)`): `zh*` → Chinese, everything else → English, degrading to English on detection failure.
+- Detected once at import from the OS itself, in stdlib: `GetUserDefaultUILanguage` on Windows (the UI language is not in the C locale — an English Windows in Spain reports `es_ES`), else `LC_ALL` / `LC_MESSAGES` / `LANG`. `zh*` → Chinese, everything else → English, degrading to English on detection failure.
 - `--lang en|zh` overrides detection — `python -m slife --lang zh` forces Chinese regardless of the OS locale (`parse_cli_lang` → `set_language` in `slife.ui.i18n`).
 - The translation layer is `slife/ui/i18n.py` — a single `t(key, **fmt)` accessor over an `en`/`zh` string table. No catalogs, no YAML, no Pydantic.
 - Everything the human reads is localized: system messages (plugin load results, memory health, restore outcomes), the approval prompt, the model picker, the tool-call widget labels, the status bar, thinking blocks.
