@@ -17,6 +17,7 @@ from pathlib import Path
 import filelock
 
 from slife.paths import get_config_path
+from slife.tools._json5_doc import render_document
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from typing import TYPE_CHECKING
 
@@ -63,40 +64,6 @@ class ConfigLockTimeout(TimeoutError):
     """
 
 
-_comment_warned: set[str] = set()
-
-
-def _warn_comment_loss(path: Path) -> None:
-    """Warn (once per path) if *path* contains JSON5 comments that a rewrite
-    would silently strip.  Cheap scan — read only when the file exists."""
-    try:
-        if not path.exists():
-            return
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return
-    # Comment markers that are not part of a quoted string would be
-    # over-detected by a naive pass (a URL like "https://" trips "//"); a
-    # conservative line-scan for comment-start patterns is enough to reach
-    # the "it has comments" verdict the warning needs.  False positives only
-    # cost a log line.
-    key = str(path)
-    if key in _comment_warned:
-        return
-    # Any line carrying '//' outside a URL, or any block comment.
-    has_comment = (
-        any("//" in line and "://" not in line for line in text.splitlines())
-        or "/*" in text
-    )
-    if has_comment:
-        _comment_warned.add(key)
-        logger.warning(
-            "config_rewrite_strips_comments path=%s — tool writes "
-            "re-serialize as plain JSON and drop // /* */ comments",
-            path,
-        )
-
-
 def read_config(path: Path) -> dict:
     """Read and parse a JSON5 config file.
 
@@ -127,12 +94,17 @@ def write_config(path: Path, raw: dict) -> None:
     the parent directory on first write (the mcp-gateway fork's behaviour —
     both config paths sit in a data dir that may not exist yet).
 
-    Note: ``json5.dumps`` emits plain JSON, so a tool write strips any
-    ``//``/``/* */`` comments from the file.  Warn once per path so a user
-    isn't surprised their annotated config just got rewritten flat.
+    Atomic, and the file's **comments survive**: the write edits the existing
+    document rather than re-serializing the dict, so ``//`` annotations,
+    indentation and key order stay put (see ``slife/tools/_json5_doc.py``).
+    A file that does not exist yet — or one that cannot be read as a document
+    — is rendered fresh.
     """
-    _warn_comment_loss(path)
-    text = json5.dumps(raw, indent=2, trailing_commas=False, ensure_ascii=False)
+    try:
+        current = path.read_text(encoding="utf-8")
+    except OSError:
+        current = ""
+    text = render_document(current, raw)
     path.parent.mkdir(parents=True, exist_ok=True)
     with _write_lock:
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")

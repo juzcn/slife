@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from slife.plugins.mcp_gateway import config as mcp_gateway_config
+from slife.tools._json5_doc import render
 from slife.tools.rest_api import (
     RestApiListTool,
     RestApiListToolsTool,
@@ -63,10 +64,10 @@ def _entry(spec_url: str, base_url: str, *, api_key: str = "", description: str 
 
 def _write_config(path: Path, servers: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json5.dumps({"rest-api": servers}, indent=2, trailing_commas=False, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    # The same renderer the config layer writes with — json-five's ``dumps``
+    # is not a drop-in (no trailing_commas/ensure_ascii, and it escapes
+    # non-ASCII and quotes every key).
+    path.write_text(render({"rest-api": servers}), encoding="utf-8")
 
 
 def _entries_from_file(path: Path) -> dict:

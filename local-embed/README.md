@@ -45,7 +45,8 @@ Requires Python ≥ 3.13.
 
 ## Install
 
-The core package is `fastmcp` + `starlette` + `json5`; the model backends are
+The core package is `fastmcp` + `starlette` + `json-five` (the JSON5 parser,
+imported as `json5`); the model backends are
 optional extras.
 
 One-click installers (install `uv` if needed, then `uv tool install --force
