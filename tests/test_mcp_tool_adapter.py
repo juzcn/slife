@@ -123,6 +123,52 @@ class TestMCPProxyToolConstruction:
 
         assert tool.parameters["type"] == "object"
 
+    def test_adopted_schema_is_not_closed(self):
+        """A remote schema is adopted verbatim — the base class's
+        close-a-harness-schema rule must not reach it.
+
+        This is the exemption the whole two-exception design rests on:
+        ``Tool.__init_subclass__`` closes every schema the harness authors, and
+        the only reason that is safe to do wholesale is that a proxied tool
+        never passes through it — ``parameters`` is assigned per INSTANCE from
+        the server's ``inputSchema``.  A server that omits
+        ``additionalProperties`` keeps it omitted; we do not tighten a
+        third-party contract on its behalf.
+
+        Deliberately built from a real ``MCPProxyTool`` rather than a local
+        ``Tool`` subclass: a stand-in would instantiate the harness-authored
+        rule, not this one, and would pass whatever the base class did.
+        """
+        info = make_tool_info(input_schema={
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+        })
+        tool = MCPProxyTool(make_mock_mcp_client(), info)
+
+        assert "additionalProperties" not in tool.parameters
+        assert tool.parameters["properties"] == {"a": {"type": "string"}}
+        # The wire form too: closure could equally be applied on the way out
+        # (to_openai_function) rather than at class definition.
+        wire = tool.to_openai_function()["function"]["parameters"]
+        assert "additionalProperties" not in wire
+        # And the behaviour that follows from it: an unknown name on a proxied
+        # tool is the remote server's to accept or reject, never refused here.
+        from slife.tools.base import validate_args
+        assert validate_args(tool.parameters, "srv__test_tool",
+                             {"a": "1", "anything": "2"}) is None
+
+    def test_adopted_schema_keeps_its_own_answer(self):
+        """A server that states ``additionalProperties`` keeps that answer —
+        open or closed — rather than being normalized either way."""
+        for declared in (True, False):
+            info = make_tool_info(input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": declared,
+            })
+            tool = MCPProxyTool(make_mock_mcp_client(), info)
+            assert tool.parameters["additionalProperties"] is declared
+
     def test_skip_auto_register_is_true(self):
         info = make_tool_info()
         client = make_mock_mcp_client()

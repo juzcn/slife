@@ -115,7 +115,10 @@ class TestSystemToolsListTool:
         tool = SystemToolsListTool()
         assert tool.name == "system_tools_list"
         assert tool.category == "System"
-        assert tool.parameters == {"type": "object", "properties": {}, "required": []}
+        assert tool.parameters == {
+            "type": "object", "properties": {}, "required": [],
+            "additionalProperties": False,
+        }
 
     @pytest.mark.asyncio
     async def test_registry_unavailable(self):
@@ -538,7 +541,10 @@ class TestClearContextTool:
         tool = ClearContextTool()
         assert tool.name == "clear_context"
         assert tool.category == "System"
-        assert tool.parameters == {"type": "object", "properties": {}, "required": []}
+        assert tool.parameters == {
+            "type": "object", "properties": {}, "required": [],
+            "additionalProperties": False,
+        }
 
     @pytest.mark.asyncio
     async def test_message_history_not_initialised(self):

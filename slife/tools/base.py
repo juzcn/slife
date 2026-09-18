@@ -131,6 +131,12 @@ def make_params(**fields: dict) -> dict:
     Fields WITHOUT a ``"default"`` key are automatically marked as
     ``required``.  Fields WITH a ``"default"`` are optional.
 
+    The schema is closed (``additionalProperties: false``): a parameter the
+    tool does not declare is a mistake, not something to swallow.  The same
+    helper that names the fields is the one that declares the surface, so
+    an undeclared key can never be silently accepted —
+    :func:`validate_args` enforces this at dispatch.
+
     Example::
 
         make_params(
@@ -139,7 +145,8 @@ def make_params(**fields: dict) -> dict:
         )
         # → {"type": "object",
         #    "properties": {...},
-        #    "required": ["query"]}
+        #    "required": ["query"],
+        #    "additionalProperties": False}
 
     For complex nested schemas (arrays of objects, oneOf, etc.) write
     the JSON Schema dict directly — ``make_params`` covers the 90 %
@@ -150,6 +157,7 @@ def make_params(**fields: dict) -> dict:
         "type": "object",
         "properties": dict(fields),
         "required": required,
+        "additionalProperties": False,
     }
 
 
@@ -188,6 +196,59 @@ def require_params(
     return f"Error: {' and '.join(missing)} are required."
 
 
+def validate_args(parameters: dict, tool_name: str, args: dict) -> str | None:
+    """Validate a call's arguments against the tool's own schema.
+
+    The complement of :func:`require_params`, one level up: ``require_params``
+    checks *values* inside a tool that already received its arguments, while
+    this checks the *call* — that the argument names exist and that nothing
+    required is absent — before the tool runs at all.
+
+    Returns an error string if the call does not match the schema, or ``None``
+    if it does.  Two rules, both read off ``parameters``:
+
+    * a key the schema declares ``required`` must be PRESENT (an empty value
+      present is the tool's business — ``require_params`` speaks to that);
+    * when the schema is closed (``additionalProperties: false``), a key
+      outside ``properties`` is refused, and the error names the parameters
+      that do exist.
+
+    The second rule is why ``make_params`` closes its schemas: a model that
+    guesses a parameter name gets corrected on the spot instead of having the
+    argument dropped on the floor by the tool's ``**kwargs``.
+
+    Schemas that leave ``additionalProperties`` unset stay permissive — remote
+    (MCP / REST) schemas are adopted verbatim from their server and are the
+    server's contract to declare, not ours to tighten.
+    """
+    props = parameters.get("properties") or {}
+    problems: list[str] = []
+
+    # Unknown names first: a guessed parameter is usually *why* a required one
+    # is missing, so naming it — next to the names that do exist — is the
+    # part that lets the caller correct the call in one step.
+    if parameters.get("additionalProperties") is False:
+        unknown = [k for k in args if k not in props]
+        if unknown:
+            names = ", ".join(repr(k) for k in unknown)
+            plural = "s" if len(unknown) > 1 else ""
+            problems.append(
+                f"unknown parameter{plural} {names} — {tool_name} accepts: "
+                f"{', '.join(props) or '(none)'}"
+            )
+
+    missing = [k for k in parameters.get("required") or [] if k not in args]
+    if missing:
+        if len(missing) == 1:
+            problems.append(f"{missing[0]} is required")
+        else:
+            problems.append(f"{' and '.join(missing)} are required")
+
+    if problems:
+        return f"Error: {'. '.join(problems)}."
+    return None
+
+
 class Tool(ABC):
     """Abstract base class for all tools.
 
@@ -220,6 +281,24 @@ class Tool(ABC):
                     f"{cls.__name__} must define a non-empty '{attr}' "
                     f"class attribute."
                 )
+        # A harness-authored schema is CLOSED: a parameter the tool does not
+        # declare is a mistake, not something for the tool's ``**kwargs`` to
+        # swallow.  Applied here, at the one place every tool class passes
+        # through, so it holds for all three authoring styles — the hand-
+        # written ``parameters = {...}`` literal, ``make_params``, and the
+        # ``NO_PARAMS`` postcard — instead of only the ones that remembered.
+        #
+        # Own-dict only (``cls.__dict__``): a schema inherited from a parent
+        # class belongs to that parent, and closing it twice is a no-op the
+        # second time anyway.  A schema that states its own answer — an
+        # explicit ``additionalProperties`` — keeps it: a tool that genuinely
+        # takes free-form keys says so, and ``MCPProxyTool`` (which sets
+        # ``parameters`` per INSTANCE from a remote server's inputSchema)
+        # never reaches this rule at all, since a remote schema is the
+        # server's contract to declare, not ours to tighten.
+        own = cls.__dict__.get("parameters")
+        if isinstance(own, dict) and "additionalProperties" not in own:
+            cls.parameters = {**own, "additionalProperties": False}
 
     @abstractmethod
     async def execute(self, **kwargs) -> str:

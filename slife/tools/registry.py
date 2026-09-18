@@ -13,7 +13,7 @@ import logging
 import time as _time
 from typing import TYPE_CHECKING, AbstractSet, Callable
 
-from slife.tools.base import Tool
+from slife.tools.base import Tool, validate_args
 from slife.tools.catalog import EFF_UNAVAILABLE
 from slife.tools.whitelist import is_meta_tool
 
@@ -188,6 +188,13 @@ class ToolRegistry:
                     f"Error: tool '{tool_name}' is not loaded — "
                     f"use tool_search + func-tool-load."
                 )
+        # The tool's own schema is the contract for the call: a required
+        # parameter that never arrived, or a name the tool does not declare
+        # (a guessed `prompt` for `description`), is refused here rather than
+        # silently absorbed by the tool's `**kwargs`.
+        if err := validate_args(tool.parameters, tool_name, kwargs):
+            logger.info("tool_args_invalid name=%s err=%s", tool_name, err)
+            return err
         try:
             t0 = _time.monotonic()
             logger.debug("tool_start name=%s", tool_name)

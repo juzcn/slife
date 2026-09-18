@@ -57,7 +57,13 @@ class MCPProxyTool(Tool):
     # Real values are set per-instance in __init__.
     name = "_mcp_proxy"
     description = "MCP proxy tool (placeholder)"
-    parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+    # Open, and explicitly so: this class adopts a REMOTE server's
+    # inputSchema per instance, so the class-level placeholder is a
+    # placeholder only.  Stating `additionalProperties` is also what keeps
+    # the base class's close-a-harness-schema rule off it.
+    parameters: ClassVar[dict] = {
+        "type": "object", "properties": {}, "additionalProperties": True,
+    }
 
     # Excluded from auto-discovery — instances are created manually by
     # create_proxy_tools() with per-server configuration.

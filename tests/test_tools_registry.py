@@ -6,7 +6,7 @@ import pytest; pytestmark = pytest.mark.unit
 import pytest
 
 from slife.tools.registry import ToolRegistry
-from slife.tools.base import Tool
+from slife.tools.base import Tool, make_params
 
 
 class TestToolRegistry:
@@ -189,3 +189,113 @@ class TestToolRegistry:
         """The tool_name parameter is positional-only — kwargs don't collide."""
         result = await tool_registry.execute("echo", message="positional_test")
         assert result == "Echo: positional_test"
+
+
+# ── Argument validation at dispatch ────────────────────────────────────
+
+
+class TestExecuteValidatesArgs:
+    """The registry enforces a tool's own schema before dispatch.
+
+    The case this exists for: a model guesses a parameter name (``prompt``
+    for ``description``).  Without this the name landed in the tool's
+    ``**kwargs``, the required parameter fell back to its default, and the
+    tool ran anyway — a scheduled task stored with an empty instruction, a
+    worker dispatched with nothing to do.
+    """
+
+    @pytest.fixture
+    def strict_registry(self):
+        """A registry whose tool declares a closed schema via make_params."""
+        class _StrictTool(Tool):
+            name = "strict"
+            description = "Echoes the args it received."
+            parameters = make_params(
+                name={"type": "string", "description": "Name."},
+                description={"type": "string", "description": "Instruction."},
+                schedule={"type": "string", "description": "Cron.", "default": ""},
+            )
+
+            async def execute(
+                self, name: str = "", description: str = "", schedule: str = "",
+                **kwargs,
+            ) -> str:
+                return f"ran:{name}:{description}:{schedule}"
+
+        registry = ToolRegistry()
+        registry.register(_StrictTool())
+        return registry
+
+    @pytest.mark.asyncio
+    async def test_unknown_parameter_is_refused_and_named(self, strict_registry):
+        """A guessed name is refused, and the error names the real ones."""
+        result = await strict_registry.execute(
+            "strict", name="t", prompt="do a thing", schedule="0 4 * * *",
+        )
+        assert result.startswith("Error:")
+        assert "'prompt'" in result
+        assert "description" in result  # the parameters it does accept
+        assert not result.startswith("ran:")  # the tool never ran
+
+    @pytest.mark.asyncio
+    async def test_missing_required_parameter_is_refused(self, strict_registry):
+        result = await strict_registry.execute("strict", name="t")
+        assert result == "Error: description is required."
+
+    @pytest.mark.asyncio
+    async def test_valid_call_reaches_the_tool(self, strict_registry):
+        result = await strict_registry.execute(
+            "strict", name="t", description="d", schedule="0 4 * * *",
+        )
+        assert result == "ran:t:d:0 4 * * *"
+
+    @pytest.mark.asyncio
+    async def test_hand_written_schema_is_closed_too(self):
+        """Closure is a property of AUTHORING A TOOL, not of make_params.
+
+        A hand-written ``parameters`` literal — the style 44 of the builtin
+        tools use — is closed by the base class exactly like a make_params
+        one, so a guessed name cannot vanish into `**kwargs` just because the
+        tool was written the other way.
+        """
+        class _LiteralTool(Tool):
+            name = "literal"
+            description = "Hand-written schema literal."
+            parameters = {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "required": ["a"],
+            }
+
+            async def execute(self, **kwargs) -> str:
+                return f"ran:{sorted(kwargs)}"
+
+        assert _LiteralTool.parameters["additionalProperties"] is False
+        registry = ToolRegistry()
+        registry.register(_LiteralTool())
+        result = await registry.execute("literal", a="1", anything="2")
+        assert "'anything'" in result
+        assert not result.startswith("ran:")
+
+    @pytest.mark.asyncio
+    async def test_explicitly_open_schema_is_left_alone(self):
+        """A schema that states its own answer keeps it — the escape hatch,
+        and the contract MCPProxyTool relies on for remote schemas."""
+        class _OpenTool(Tool):
+            name = "open"
+            description = "Explicitly permissive."
+            parameters = {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "additionalProperties": True,
+            }
+
+            async def execute(self, **kwargs) -> str:
+                return f"ran:{sorted(kwargs)}"
+
+        assert _OpenTool.parameters["additionalProperties"] is True
+        registry = ToolRegistry()
+        registry.register(_OpenTool())
+        assert await registry.execute("open", a="1", anything="2") == (
+            "ran:['a', 'anything']"
+        )
