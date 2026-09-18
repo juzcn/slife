@@ -397,11 +397,17 @@ speaks stdio can reach it through a stdio→HTTP bridge (e.g. `mcp-remote`).
 
 ## Running as a slife embedding backend
 
-local-embed is a **standalone daemon** — slife does not spawn it, manage it,
-or mount it as a plugin. Start it yourself (`local-embed` on PATH, or
-`python -m local_embed.server`), like Mosquitto; slife consumes it purely as
-an OpenAI-compatible HTTP endpoint, never through slife's plugin lifecycle or
-MCP tools.
+local-embed is a **plugin** — one row in slife's central plugin spec, so
+slife spawns it, watches it, and reports it like every other child plugin. It
+is also runnable standalone (`local-embed` on PATH), which is what the CLI is
+for; slife still consumes the MODEL SERVICE purely as an OpenAI-compatible
+HTTP endpoint (never through MCP tools).
+
+Because its config pins a port that a static embeddings `base_url` points at,
+it is the one plugin with a **fixed** port: it binds that port itself and a
+taken port is a hard error (no fallback — a second instance would double the
+model in memory and serve nothing new). The host then reports the plugin as
+failed to load, with the reason, and the running instance keeps serving.
 
 Point slife's embedding config at the daemon's stable port:
 

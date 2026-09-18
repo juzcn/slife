@@ -19,6 +19,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -874,3 +875,31 @@ class TestMemfilesLifespan:
                 entered = True
         assert entered
         store.close.assert_awaited_once()
+
+
+class TestCabinetGrep:
+    """``mode="grep"`` is a real grep — a regex, not a LIKE substring.
+
+    Before this it was SQL ``LIKE %pattern%``: ``summ.rize`` matched nothing
+    and a ``|`` was a literal pipe, which made the name a misnomer.
+    """
+
+    @pytest.mark.asyncio
+    async def test_regex_matches_what_like_could_not(self, tmp_path):
+        store = await _real_store(tmp_path, dim=0)
+        await store.upsert_note("Deploy runbook", "how to deploy the service", "")
+        await store.upsert_note("Unrelated", "nothing to see", "")
+
+        assert [r["id"] for r in await store.search("depl.y", mode="grep")] == ["note:1"]
+        # Alternation and a wildcard — the two things LIKE cannot express.
+        assert len(await store.search("runbook|noth.ng", mode="grep")) == 2
+        # …and the FTS path cannot do it, which is why the mode exists.
+        assert await store.search("depl.y", mode="fts5") == []
+        await store.close()
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_pattern_raises(self, tmp_path):
+        store = await _real_store(tmp_path, dim=0)
+        with pytest.raises(re.error):
+            await store.search("a(b", mode="grep")
+        await store.close()

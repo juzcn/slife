@@ -10,6 +10,7 @@ Agent isolation is at the file level — each agent_name has its own .db file.
 import asyncio
 import json
 import logging
+import re
 import struct
 from collections.abc import Callable
 from pathlib import Path
@@ -560,6 +561,17 @@ class SessionStore(VecStoreLifecycleMixin):
         count_row = await row.fetchone()
         total = count_row[0] if count_row else 0
 
+        if query and query.strip() and mode.lower() == "grep":
+            # grep is a regex, so the count goes through the SAME scan the
+            # search does — otherwise turn_count and turn_search would report
+            # different numbers for one query, which is the disagreement the
+            # fts5 fallback below already guards against.
+            hits = await self._grep_scan(
+                re.compile(query), since, until, hard_limit=self._GREP_SCAN_LIMIT,
+            )
+            return {"total": total, "filtered": len(hits), "query": query,
+                    "mode": "grep", "since": since, "until": until}
+
         if query and query.strip():
             mode = mode.lower()
             if mode == "fts5" and _contains_cjk(query):
@@ -969,36 +981,80 @@ class SessionStore(VecStoreLifecycleMixin):
         logger.debug("search_time since=%s until=%s hits=%s", since, until, len(results))
         return results
 
+    #: Rows examined per regex ``grep``.  A regex cannot use an index, so grep
+    #: scans (newest first); the cap keeps the worst case bounded on a
+    #: long-lived diary while sitting far above any realistic hit count.
+    _GREP_SCAN_LIMIT = 20000
+
+    async def _grep_scan(
+        self, rx: "re.Pattern", since: str | None, until: str | None,
+        hard_limit: int,
+    ) -> list[dict]:
+        """Rows whose text matches *rx*, newest first, at most *hard_limit*.
+
+        The time bounds stay in SQL (indexed, and they need no regex); only
+        the TEXT predicate runs here, because SQLite has no regexp engine.
+        The search and the count both go through this, so
+        ``turn_search(mode="grep")`` and ``turn_count(mode="grep")`` cannot
+        disagree about what matched.
+        """
+        where = ""
+        params: list = []
+        if since:
+            since = normalize_time_bound(since, role="since")
+            where += " AND created_at >= ?"
+            params.append(since)
+        if until:
+            until = normalize_time_bound(until, role="until")
+            where += " AND created_at <= ?"
+            params.append(until)
+        cursor = await self._c.execute(
+            f"""SELECT rowid, user_message, summary, tags, created_at, messages
+                FROM diary WHERE 1=1{where}
+                ORDER BY rowid DESC LIMIT ?""",
+            (*params, self._GREP_SCAN_LIMIT),
+        )
+        hits: list[dict] = []
+        for row in await _fetch_all_bounded(cursor):
+            r = dict(row)
+            if not (rx.search(r.get("user_message") or "")
+                    or rx.search(r.get("messages") or "")):
+                continue
+            hits.append(r)
+            if len(hits) >= hard_limit:
+                break
+        return hits
+
+    @staticmethod
+    def _grep_snippet(row: dict, rx: "re.Pattern") -> str:
+        """A window of text around the match, for the result's ``context``."""
+        for field in ("user_message", "messages"):
+            text = row.get(field) or ""
+            m = rx.search(text)
+            if m is not None:
+                start = max(0, m.start() - 40)
+                return text[start:start + 160]
+        return ""
+
     async def search_grep(
         self, pattern: str, limit: int = 20,
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
-        """Exact substring search over user_message + messages."""
+        """REGEX search over user_message + messages — a real ``grep``.
+
+        ``translat(e|or)`` and ``summ.rize`` match; an invalid pattern raises
+        ``re.error`` for the caller to report.  See :meth:`_grep_scan` for why
+        the match runs in Python and how the count stays in step.
+        """
+        rx = re.compile(pattern)
         limit = _clamp_limit(limit)
-        # Escape LIKE metacharacters so a pattern containing %/_ matches them
-        # literally.  The ESCAPE '\' clause is required or the escapes are a
-        # no-op ; backslashes themselves must be doubled first.
-        like_pattern = f"%{_like_escape(pattern)}%"
-        time_clauses = ""
-        time_params: list[str] = []
-        if since:
-            since = normalize_time_bound(since, role="since")
-            time_clauses += " AND created_at >= ?"
-            time_params.append(since)
-        if until:
-            until = normalize_time_bound(until, role="until")
-            time_clauses += " AND created_at <= ?"
-            time_params.append(until)
-        cursor = await self._c.execute(
-            f"""SELECT rowid, user_message, summary, tags, created_at,
-                      substr(messages, max(0, instr(messages, ?) - 40), 160) AS context
-               FROM diary
-               WHERE (user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\')
-                     {time_clauses}
-               ORDER BY rowid DESC LIMIT ?""",
-            (pattern, like_pattern, like_pattern, *time_params, limit),
-        )
-        results = [dict(row) for row in await _fetch_all_bounded(cursor)]
+        rows = await self._grep_scan(rx, since, until, hard_limit=limit)
+        results = []
+        for row in rows:
+            r = dict(row)
+            r.pop("messages", None)
+            r["context"] = self._grep_snippet(row, rx)
+            results.append(r)
         logger.debug("search_grep pattern=%s hits=%s", pattern[:80], len(results))
         return results
 

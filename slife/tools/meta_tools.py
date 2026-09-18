@@ -14,12 +14,13 @@ working during the wrapper retirement.
 from __future__ import annotations
 
 import json
+import re
 import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from slife.tools.base import Tool, make_params, require_params
 from slife.tools.catalog import NA, effective_from_row
-from slife.tools.catalog_search import merge_hybrid
+from slife.tools.catalog_search import SCORE_BAND_HINT, annotate_scores, merge_hybrid
 from slife.tools.whitelist import TOOL_META_CATEGORY
 
 if TYPE_CHECKING:
@@ -109,7 +110,7 @@ class ToolSearchTool(Tool):
         },
         mode={
             "type": "string",
-            "description": "hybrid (semantic+keyword) | keyword | grep.",
+            "description": "hybrid (semantic+keyword) | keyword (FTS5) | grep (regex).",
             "default": "hybrid",
         },
         limit={"type": "integer", "description": "Max results.", "default": 10},
@@ -138,8 +139,16 @@ class ToolSearchTool(Tool):
         store = catalog.store
 
         hint = ""
-        if mode == "grep":
-            results = await store.search_grep(query, limit=limit, filters=filters)
+        if not query.strip():
+            # No query, no text to match: browse the catalog instead.  The
+            # legs below would answer with whatever the semantic index holds
+            # (unreachable for a row with no embedding) or nothing at all.
+            results = await store.browse(limit=limit, filters=filters)
+        elif mode == "grep":
+            try:
+                results = await store.search_grep(query, limit=limit, filters=filters)
+            except re.error as e:
+                return f"Error: invalid regex {query!r}: {e}"
         else:
             keyword_hits = await store.search_keyword(
                 query, limit=limit * 2, filters=filters,
@@ -163,17 +172,32 @@ class ToolSearchTool(Tool):
                                 "semantic search unavailable — keyword only.")
                 else:
                     hint = "semantic search unavailable — keyword only."
+        # The shared scoring contract, used by every other hybrid path
+        # (turn_search, cabinet_search): a normalized 0-1 `similarity` per
+        # result plus the band legend.  Without it this tool was the one place
+        # where "nothing matched" and "the nearest neighbours are weak" looked
+        # identical — a semantic leg always returns its k nearest, however far
+        # away they are.
+        if mode == "hybrid" and results:
+            annotate_scores(results, metric="cosine")
+            hint = SCORE_BAND_HINT if not hint else f"{hint} · {SCORE_BAND_HINT}"
+
         rows = []
         for r in results:
             row = dict(r)
-            rows.append({
+            entry = {
                 "name": row.get("name", ""),
                 "description": row.get("description", "").split(".")[0].strip()[:120],
                 "category": row.get("category", ""),
                 "source_id": row.get("source_id"),
                 "schema_bytes": _schema_bytes(row.get("schema")),
                 "status": effective_from_row(row),
-            })
+            }
+            # Only the semantic leg produces one — a keyword-only hit is not
+            # scored, and inventing a number for it would be a lie.
+            if row.get("similarity") is not None:
+                entry["similarity"] = round(float(row["similarity"]), 3)
+            rows.append(entry)
 
         # The filters ran in SQL, so this truncation only trims the ranked
         # result — it can no longer drop qualifying rows that a post-hoc

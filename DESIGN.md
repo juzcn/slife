@@ -364,7 +364,7 @@ Picker rules (hard-won, kept with the code):
 
 ## Part 5 · Plugins & the MCP Gateway
 
-Eight internal plugins run as independent child processes (mcp-gateway, memdb, wechat, memfiles, sharefile, a2a, media, job-coding). Every plugin is declared by one row in the central plugin spec (`slife/plugins/spec.py`) and driven by one uniform lifecycle (spawn → era-negotiated readiness → watchdog → health); the authoritative contract — the spec table, the registry, readiness, the lifecycle, health, and the child-process `server.py` shape — is **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)**. There is **no `plugins.external` mechanism** — third-party capability enters only as a standard MCP server in `tools.json5`, connected by the internal **mcp-gateway** plugin. `local-embed` is **not** a plugin: a standalone daemon (started manually, like Mosquitto) serving OpenAI-compatible `/v1/embeddings`. Communication is **Streamable HTTP** (MCP protocol) for all plugins; the sharefile plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`).
+Nine internal plugins run as independent child processes (local-embed, mcp-gateway, memdb, wechat, memfiles, sharefile, a2a, media, job-coding). Every plugin is declared by one row in the central plugin spec (`slife/plugins/spec.py`) and driven by one uniform lifecycle (spawn → era-negotiated readiness → watchdog → health); the authoritative contract — the spec table, the registry, readiness, the lifecycle, health, and the child-process `server.py` shape — is **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)**. There is **no `plugins.external` mechanism** — third-party capability enters only as a standard MCP server in `tools.json5`, connected by the internal **mcp-gateway** plugin. `local-embed` **is** one of them, from its own package (a separate workspace member, also runnable standalone) serving OpenAI-compatible `/v1/embeddings`; it declares `fixed_port` because its config pins the port a static embeddings `base_url` points at. Communication is **Streamable HTTP** (MCP protocol) for all plugins; the sharefile plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`).
 
 ### The spec and the uniform lifecycle
 
@@ -862,7 +862,7 @@ slife/
 
 credstore/             # Standalone package — cross-platform credential store (system keyring + cryptfile+backup)
 cc-switch/             # Standalone package — generate ~/.claude/settings.json
-local-embed/           # Standalone package — local OpenAI-compatible embeddings daemon (started manually)
+local-embed/           # Separate package — the local-embed plugin: OpenAI-compatible embeddings service (+ standalone CLI)
 skills/                # On-demand SKILL.md skills (seeded to ~/.slife/skills/)
 jobs/                  # Bundled sample jobs (seeded to ~/.slife/jobs/) — translate, summarize, total_tokens
 scripts/               # Standalone helper scripts (e.g. migrate_context_tokens.py)

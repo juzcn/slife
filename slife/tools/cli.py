@@ -10,6 +10,7 @@ section of the unified tools config — the host reads it at startup into
 These tools only manage the registry — they don't execute commands.
 """
 
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -101,18 +102,31 @@ def get_cli_tools_summary(config_path: Path) -> str:
 def cli_catalog_rows(cli_tools: dict) -> dict[str, dict]:
     """The catalog rows the ``cli`` section implies — name → {description, schema, enabled}.
 
-    A cli entry has no tool def to store (``schema`` stays NULL): the
-    description is what identifies it to ``tool_search``, and ``cli_list``
-    carries the command / install detail.  ``enabled`` mirrors the entry's own
-    flag.
+    A cli entry has no tool def, but the ``schema`` column is not only the
+    injected definition — it is also the semantic index's DOCUMENT (the
+    drainer embeds its flattened text).  Leaving it empty made the row
+    unembeddable, so it was invisible to everything that goes through the
+    semantic leg: an empty query first of all, since a search with no text to
+    match falls back on the index.  A descriptor carrying what identifies the
+    entry keeps the row in the same index as every other tool, so a query by
+    MEANING ("download a video") reaches it, not just one that repeats its
+    words.
+
+    ``cli_list`` still carries the command / install detail; ``enabled``
+    mirrors the entry's own flag.
     """
     rows: dict[str, dict] = {}
     for name, cfg in cli_tools.items():
         if not isinstance(cfg, dict):
             continue
+        description = cfg.get("description", "")
         rows[name] = {
-            "description": cfg.get("description", ""),
-            "schema": None,
+            "description": description,
+            # The name matters as much as the description: it is what a caller
+            # types, and the flattener emits both.
+            "schema": json.dumps(
+                {"name": name, "description": description}, ensure_ascii=False,
+            ),
             "enabled": cfg.get("enabled", True) is not False,
         }
     return rows

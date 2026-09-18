@@ -319,7 +319,7 @@ Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs a
 
 ### Plugins
 
-Eight internal plugins run as independent child processes, each declared by one row in the central plugin spec and driven by the same uniform lifecycle (spawn → MCP-handshake readiness → watchdog → health). One of them — **mcp-gateway** — is the gateway to external MCP servers: third-party capability enters only as a standard MCP server in `tools.json5`, never as a Python plugin.
+Nine internal plugins run as independent child processes, each declared by one row in the central plugin spec and driven by the same uniform lifecycle (spawn → MCP-handshake readiness → watchdog → health). One of them — **mcp-gateway** — is the gateway to external MCP servers: third-party capability enters only as a standard MCP server in `tools.json5`, never as a Python plugin.
 
 | Plugin | Role |
 |--------|------|

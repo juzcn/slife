@@ -16,10 +16,16 @@ service internals (enable gates, post-ready glue like poll/drain loops) is
 in ``AgentService.__init__`` — the spec stays import-safe, the runtime still
 iterates the registry with no ``if name == ...``.
 
-Only child plugins under ``slife.plugins.*`` belong here.  The main agent's
-in-process host server (``slife.mcp.host_server``, the "slife-as-plugin"
-face) and the ``local-embed`` standalone daemon are NOT plugins and are
-deliberately absent — they are not spawned and never enter the registry.
+Only child plugins belong here.  The main agent's in-process host server
+(``slife.mcp.host_server``, the "slife-as-plugin" face) is NOT a plugin and is
+deliberately absent — it is not spawned and never enters the registry.
+
+``local-embed`` IS one, from its own package rather than ``slife.plugins.*``
+(it ships as a separate workspace member and is also runnable standalone): it
+speaks the same contract — ``create_plugin_server`` port signal, an internal
+``__check``, a ``main()`` spawn target — so it gets the same spawn, readiness,
+watchdog and health as everything else.  Its ``fixed_port`` is the one thing
+that differs, and it is declared, not special-cased.
 """
 
 from __future__ import annotations
@@ -53,6 +59,13 @@ class PluginSpec:
             watch, or the mcp enrichment glue.  Re-run on every restart.
         health: Whether ``system_health`` enumerates this plugin via its
             ``check_<name>`` function.
+        fixed_port: The port is one the plugin must KNOW before it serves,
+            not an OS-assigned one.  local-embed is the case: its config
+            pins a port so a host can point a static embeddings ``base_url``
+            at it.  Such a child pre-binds in ``main()`` and hands the socket
+            to ``run_plugin_server(sockets=[...])``; every other plugin lets
+            the OS assign one and signals it.  Declared here so the loader
+            states the contract instead of a docstring claiming an exception.
     """
 
     name: str
@@ -63,13 +76,21 @@ class PluginSpec:
     enable_method: str | None = None
     after_ready_method: str | None = None
     health: bool = True
+    fixed_port: bool = False
 
 
-#: The 8 built-in child plugins, in deterministic start order.
+#: The built-in child plugins, in deterministic start order.
 #: ``ctx_field`` names are the ``ToolContext`` attributes each plugin's live
 #: client is exposed on (note the two non-uniform names: ``a2a_mcp_client``
 #: and ``job_coding_client``).
 _PLUGIN_DEFS: tuple[PluginSpec, ...] = (
+    # First: memdb / memfiles embed against it when it is the active
+    # provider, so its endpoint is up before its consumers start.
+    PluginSpec(
+        "local-embed", "local_embed.server",
+        ctx_field="local_embed_client",
+        fixed_port=True,
+    ),
     PluginSpec(
         "mcp-gateway", "slife.plugins.mcp_gateway.server",
         ctx_field="mcp_client",

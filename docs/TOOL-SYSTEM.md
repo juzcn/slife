@@ -222,7 +222,7 @@ each read one-to-one.
 
 Three retrieval routes, one row shape (the effective status is computed per row — nothing to join):
 
-- `grep` — exact substring over name/description/category/schema;
+- `grep` — **regex** over name/description/category/source_id/schema.  A real grep (`re.search`), so `summ.rize` and `translat(e|or)` match; an invalid pattern is reported, never a silent no-match.  SQLite has no regexp engine, so the match runs in Python after the column filters narrow in SQL — a scan rather than an index seek, which is also why it examines *every* filtered row instead of the first `limit` candidates.
 - `keyword` — FTS5 BM25, CJK-routed to a LIKE multi-word AND fallback;
 - `hybrid` — keyword + semantic KNN (sleepy `tool_embeddings`, closest-chunk per tool) merged by RRF.
 

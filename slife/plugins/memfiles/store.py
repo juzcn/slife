@@ -847,7 +847,11 @@ class MemfilesStore(VecStoreLifecycleMixin):
         self, query: str, kind: str = "all", limit: int = 20,
         mode: str = "hybrid", embed_query: list[float] | None = None,
     ) -> list[dict]:
-        """Hybrid (FTS5 + vec0, RRF) or keyword search across selected kinds.
+        """Hybrid (FTS5 + vec0, RRF), keyword, or regex search across kinds.
+
+        ``mode="grep"`` is a real grep: the pattern is a Python regex and the
+        match runs here (SQLite has no regexp engine).  An unusable pattern
+        raises ``re.error`` for the caller to report.
 
         Each result carries ``id`` (``"note:5"`` etc.), ``file_path``, the
         kind's key/text, ``snippet`` and the RRF annotations from
@@ -860,9 +864,13 @@ class MemfilesStore(VecStoreLifecycleMixin):
             "all": ["note", "diary", "file", "report"],
         }[kind]
         use_semantic = mode == "hybrid" and bool(embed_query)
+        rx = re.compile(query) if mode == "grep" else None
         out: list[dict] = []
         for k in kinds:
-            key_hits = await self._keyword_search_kind(k, query, limit)
+            key_hits = (
+                await self._regex_search_kind(k, rx, limit) if rx is not None
+                else await self._keyword_search_kind(k, query, limit)
+            )
             sem_hits: list[dict] = []
             if use_semantic:
                 assert embed_query is not None  # guaranteed by use_semantic
@@ -918,6 +926,39 @@ class MemfilesStore(VecStoreLifecycleMixin):
             text = r.get("text", "")
             r["snippet"] = text[:80] + ("…" if len(text) > 80 else "")
             hits.append(r)
+        return hits
+
+    async def _regex_search_kind(
+        self, kind: str, rx: "re.Pattern", limit: int,
+    ) -> list[dict]:
+        """REGEX search over the kind's text columns — a real ``grep``.
+
+        SQLite has no regexp engine, so the match runs here: the kind's own
+        row count is what bounds the scan (a cabinet is small, and the
+        alternative — SQL ``LIKE`` — is what made ``grep`` a misnomer).
+        """
+        spec = _KIND_SPECS[kind]
+        cursor = await self._c.execute(
+            f"SELECT t.id, t.{spec['key_col']} AS key, "
+            f"t.{spec['text_col']} AS text, t.tags, t.created_at, "
+            f"t.{spec['file_col']} AS file_path "
+            f"FROM {spec['table']} t ORDER BY t.id DESC",
+        )
+        hits: list[dict] = []
+        for row in await cursor.fetchall():
+            r = dict(row)
+            m = (rx.search(str(r.get("key") or ""))
+                 or rx.search(str(r.get("text") or "")))
+            if m is None:
+                continue
+            r["id"] = f"{spec['id_label']}:{r['id']}"
+            text = str(r.get("text") or "")
+            start = max(0, m.start() - 40)
+            r["snippet"] = text[start:start + 80] + ("…" if len(text) > start + 80 else "")
+            r["rank"] = 0
+            hits.append(r)
+            if len(hits) >= limit:
+                break
         return hits
 
     async def _semantic_search_kind(

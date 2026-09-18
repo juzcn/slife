@@ -11,7 +11,8 @@ Registered LLM tools:
     notify_user              — push a desktop notification to the human operator
 
 The per-subsystem ``check_*`` functions (memdb, wechat, memfiles,
-embeddings, sharefile, watchdog, mcp_gateway, a2a, media, job-coding,
+embeddings, local-embed, sharefile, watchdog, mcp_gateway, a2a, media,
+job-coding,
 tool_catalog) are NOT registered as tools — ``system_health`` aggregates
 them, plus the startup records, into one report.  They exist as functions
 so the harness (and tests) can probe a single subsystem.  ``check_mcp_gateway``
@@ -368,6 +369,58 @@ async def check_memfiles(client=None) -> list[dict]:
 # Endpoint probe deadline is developer-owned (registry ready.probe_endpoint).
 
 
+async def check_local_embed(client=None) -> list[dict]:
+    """Report the local-embed service: up? which models? are they usable?
+
+    local-embed is an ordinary child plugin — spawned, watched and probed like
+    every other — so this is the same ``__check`` call the rest of them get.
+    Its ``__check`` reports the engine's per-model facts (backend, dimension,
+    loaded, available) and this layer interprets them, which is what makes a
+    *failed load* legible: the plugin line says whether the service is up, and
+    a model whose backend dependency is missing is a warning with the remedy.
+
+    The ENDPOINT fact (what this session embeds with) is
+    :func:`check_embeddings`' business — this component is the SERVICE.
+    """
+    data, entries = await _probe_plugin(
+        client, "local-embed",
+        offline_hint=("Restart slife to respawn the plugin. If another "
+                      "local-embed holds its port, stop that first — its log "
+                      "has the reason if it stays down."),
+    )
+    if entries:
+        return entries
+    assert data is not None
+    models = data.get("models")
+    if not isinstance(models, list) or not models:
+        return [_entry("local-embed", "warning", "models", "none configured",
+                       "Add one with the local-embed CLI, or point the "
+                       "embeddings section at a cloud endpoint.")]
+    out: list[dict] = []
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        name = m.get("name") or "?"
+        dim = m.get("dimension") or 0
+        if not m.get("available", True):
+            # The backend dependency (llama-cpp / sentence-transformers) is
+            # missing, so a request naming this model would 503.
+            out.append(_entry(
+                "local-embed", "warning", name,
+                f"backend unavailable ({m.get('backend') or '?'})",
+                "Install the backend for this model (see the local-embed "
+                "README), then restart slife. Keyword search keeps working "
+                "meanwhile.",
+            ))
+        elif m.get("loaded"):
+            out.append(_entry("local-embed", "ok", name,
+                              f"loaded (dim={dim})" if dim else "loaded"))
+        else:
+            # Not an error: models load on the first request that names them.
+            out.append(_entry("local-embed", "info", name, "not loaded"))
+    return out
+
+
 async def check_embeddings(base_url: str = "") -> list[dict]:
     """Probe the ACTIVE embedding endpoint.
 
@@ -385,9 +438,9 @@ async def check_embeddings(base_url: str = "") -> list[dict]:
     about us.  The entry is keyed by provider id, so the line names which
     endpoint answered.
 
-    Only the ACTIVE provider is probed.  A configured-but-inactive provider
-    (e.g. the local-embed daemon while a cloud API is active) is never
-    touched or warned about.
+    Only the ACTIVE provider is probed: an inactive one is idle by choice.
+    The local-embed DAEMON has a component of its own (``check_local_embed``),
+    because it is a plugin slife starts and supervises.
     """
     provider = "endpoint"
     base_url = base_url.strip()
@@ -769,12 +822,16 @@ async def check_tool_catalog(ctx=None) -> list[dict]:
         return [{"component": "tool_catalog", "level": "warning", "key": "db",
                  "value": "probe failed", "hint": str(facts["error"])}]
 
+    # "servers WITH ROWS", and no family split.  The count is over catalog
+    # rows, so a configured server whose tool list has not been read yet owns
+    # none and is absent — while `mcp_servers` / `rest-api` still list it.
+    # Naming the population is what keeps the two lines from reading as one
+    # number; splitting it by family only put the mcp/rest-api implementation
+    # detail back on a surface where it means nothing.
     entries = [_entry(
         "tool_catalog", "ok", "db",
         f"{facts.get('tools', 0)} tools, {facts.get('servers', 0)} servers "
-        f"({facts.get('servers_mcp', 0)} mcp, "
-        f"{facts.get('servers_rest_api', 0)} rest-api), "
-        f"{facts.get('loaded', 0)} loaded",
+        f"with rows, {facts.get('loaded', 0)} loaded",
     )]
     sem_level, sem_value, sem_hint = _semantic_facts(
         facts.get("semantic") or {}, pending_noun="tools",
@@ -1015,6 +1072,7 @@ _ORDER: dict[str, int] = {
     "mcp_servers": 1, "rest-api": 2, "tool_catalog": 3, "memdb": 4,
     "memfiles": 5, "wechat": 6, "sharefile": 7, "a2a": 8, "media": 9,
     "job-coding": 10, "embeddings": 11, "watchdog": 12,
+    "local-embed": 13,
 }
 
 #: Static startup records (environment facts) — last by design.

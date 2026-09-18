@@ -3,6 +3,7 @@ mcp_tool_load delegation."""
 
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -202,3 +203,48 @@ async def test_the_flag_filters_read_booleans_both_ways(db, ctx):
     # Nothing is flagged yet, so every row answers unavailable=false.
     assert names(await tool.execute(query="flagtest", unavailable=False)) == {"flag-on", "flag-off"}
     assert names(await tool.execute(query="flagtest", unavailable=True)) == set()
+
+
+class TestScoreBands:
+    """A semantic leg always returns its k nearest — so the payload must say
+    HOW near.  The catalog was the one hybrid path not using the shared
+    scoring contract (``annotate_scores`` + ``SCORE_BAND_HINT``), which left
+    "nothing matched" and "the nearest neighbours are unrelated" identical on
+    the wire: grep-mode returned 0 for a nonsense query while hybrid returned
+    five arbitrary tools with nothing to tell them apart.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_weak_match_carries_its_similarity_and_the_band_legend(self, monkeypatch):
+        store = AsyncMock()
+        store.search_keyword.return_value = []
+        # Cosine distance ~1.0 = unrelated; the annotator maps it to ~0.0.
+        store.search_semantic.return_value = [{
+            "name": "playwright__browser_close", "description": "close the browser",
+            "category": "mcp", "source_id": "playwright", "schema": "{}",
+            "status": "unloaded", "enabled": 1, "unavailable": 0, "distance": 0.99,
+        }]
+        catalog = MagicMock(store=store)
+        tool = ToolSearchTool()
+        object.__setattr__(tool, "_ctx", SimpleNamespace(catalog=catalog))
+        catalog.semantic_manager = MagicMock(semantic_ready=True)
+        catalog.semantic_manager.embedder = MagicMock(available=True)
+        catalog.semantic_manager.embedder.embed_one = AsyncMock(return_value=[0.1, 0.2])
+
+        payload = json.loads(await tool.execute(query="zzqx-nonexistent-thing-7788"))
+        row = payload["results"][0]
+        # The number is what distinguishes this from "no match at all"…
+        assert row["similarity"] == 0.01
+        # …and the legend is what makes the number readable.
+        assert "0.1–0.5 weak" in payload["hint"]
+
+    @pytest.mark.asyncio
+    async def test_a_keyword_only_hit_carries_no_similarity(self, db, ctx):
+        """A hit the semantic leg did not score gets no number — inventing one
+        would be a lie about a match nothing measured."""
+        await db.upsert_tool("translate_tool", category="builtin",
+                             description="translate text")
+        tool = ToolSearchTool()
+        object.__setattr__(tool, "_ctx", ctx)
+        payload = json.loads(await tool.execute(query="translate"))
+        assert "similarity" not in payload["results"][0]

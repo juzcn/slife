@@ -1254,8 +1254,9 @@ class AgentService:
     async def _sync_mcp_proxies(self) -> None:
         """Reconcile external MCP proxies + the catalog's tool rows.
 
-        Reads the configured server list LIVE from the wrapper (``mcp_list``),
-        so neither slife nor a subagent needs tools.json5:
+        Reads the configured server list LIVE from the wrapper
+        (``__mcp_list`` — both families; the model's ``mcp_list`` is scoped to
+        one), so neither slife nor a subagent needs tools.json5:
 
         1. **Connectivity verdict** (main agent): ``__check`` says which servers
            are up; each one's tools are marked ``error`` or cleared —
@@ -1287,7 +1288,12 @@ class AgentService:
         self._mcp_reconciling = True
         try:
             try:
-                raw = await client.call_tool("mcp_list")
+                # __mcp_list, not mcp_list: the model's listing is scoped to
+                # its own family, and the reconcile mirrors EVERY configured
+                # server.  Using the filtered one dropped the REST APIs from
+                # the pass — no catalog rows, so tool_search and func-tool-load
+                # could not reach 1271 endpoints that were connected all along.
+                raw = await client.call_tool("__mcp_list")
                 servers = json.loads(raw)
             except Exception as e:
                 logger.debug("mcp_reconcile_list_failed err=%s", e)

@@ -15,6 +15,7 @@ Usage:
 
 import asyncio
 import json
+import re
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -454,7 +455,7 @@ async def turn_search(
 
     Args:
         query: Search text (not needed for mode="time").
-        mode: grep | fts5 | hybrid (default) | time.
+        mode: grep (regex) | fts5 | hybrid (default) | time.
         limit: Maximum results.
         since: Lower bound — ISO datetime/date or today/yesterday/tomorrow.
         until: Upper bound — ISO datetime/date or today/yesterday/tomorrow.
@@ -486,8 +487,15 @@ async def turn_search(
 
     try:
         if mode == "grep":
-            hits = await store.search_grep(pattern=query, limit=limit,
-                                           since=since, until=until)
+            try:
+                hits = await store.search_grep(pattern=query, limit=limit,
+                                               since=since, until=until)
+            except re.error as e:
+                # grep is a regex: an unusable pattern is the caller's to fix,
+                # and saying so beats a silent empty result.
+                return json.dumps(
+                    {"error": f"invalid regex {query!r}: {e}"}, ensure_ascii=False,
+                )
             _rename_rowid_to_turn_id(hits)
             return json.dumps({"mode": "grep", "query": query, "results": hits,
                                "hint": "" if hits else f"no memories contain '{query}'"},

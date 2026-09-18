@@ -1,5 +1,6 @@
 """Tests for slife.plugins.memdb.store — SessionStore and helpers."""
 
+import re
 import pytest; pytestmark = pytest.mark.unit
 
 
@@ -1134,41 +1135,54 @@ class TestSessionStoreSearchGrep:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_search_grep_escapes_like_metachars(self):
-        """REVIEW M5 — %/_ in the pattern are escaped and the LIKE carries an
-        ESCAPE '\\' clause, so they match literally instead of acting as
-        wildcards (previously the escape was a no-op and '50%' matched nothing)."""
+    async def test_search_grep_is_regex_not_like(self):
+        """``grep`` is a real grep: the pattern is a regex (``re.search``), so
+        alternation and wildcards work — and `%`/`_`, which were LIKE
+        metacharacters needing an ESCAPE clause, are simply literals now."""
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": 1, "user_message": "please summarize this",
+             "summary": "", "tags": "", "created_at": "x", "messages": ""},
+            {"rowid": 2, "user_message": "unrelated turn",
+             "summary": "", "tags": "", "created_at": "x", "messages": ""},
+        ])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        await store.search_grep(pattern="50%_done")
+        # `summ.rize` and alternation — the two things LIKE could not do.
+        assert [r["rowid"] for r in await store.search_grep("summ.rize")] == [1]
+        assert {r["rowid"] for r in await store.search_grep("summarize|unrelated")} == {1, 2}
+        # `%` and `_` are ordinary characters in a regex, not wildcards — the
+        # LIKE predicate and its ESCAPE clause are gone.
+        sql, _ = mock_conn.execute.call_args[0]
+        assert "LIKE" not in sql and "ESCAPE" not in sql
+        # Recency ordering is the SQL's job (the mock returns a fixed order).
+        assert "ORDER BY rowid DESC" in sql
 
-        sql, params = mock_conn.execute.call_args[0]
-        assert "ESCAPE '\\'" in sql
-        # instr context uses the raw pattern (literal); the LIKEs use the
-        # escaped pattern so %/_ are literal.
-        assert params[0] == "50%_done"
-        assert params[1] == "%50\\%\\_done%"
-        assert params[2] == "%50\\%\\_done%"
+    @pytest.mark.asyncio
+    async def test_search_grep_rejects_an_invalid_pattern(self):
+        """A bad pattern is the caller's to report — never a silent no-match."""
+        store = SessionStore(Path("/tmp/test.db"))
+        with pytest.raises(re.error):
+            await store.search_grep("a(b")
 
     @pytest.mark.asyncio
     async def test_search_clamps_negative_limit(self):
-        """REVIEW M6 — a negative limit is clamped (SQLite LIMIT -1 = unlimited)."""
+        """REVIEW M6 — a negative limit is clamped (it would otherwise slice
+        from the tail)."""
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": i, "user_message": "hit", "summary": "", "tags": "",
+             "created_at": "x", "messages": ""} for i in range(30)
+        ])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        await store.search_grep(pattern="x", limit=-5)
-
-        sql, params = mock_conn.execute.call_args[0]
-        assert params[-1] == 20  # clamped to the default, not -5
+        assert len(await store.search_grep("hit", limit=-5)) == 20
 
 
 class TestSessionStoreSearchTime:

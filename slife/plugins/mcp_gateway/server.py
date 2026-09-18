@@ -652,6 +652,27 @@ async def mcp_list(ctx: Context | None = None) -> str:
 
 
 @mcp.tool(
+    name="__mcp_list",
+    description=(
+        "List configured servers of BOTH families — the host's catalog "
+        "reconcile enumerates with this. Internal: the model gets "
+        "mcp_list / rest_api_list, each scoped to its own family."
+    ),
+)
+async def __mcp_list(ctx: Context | None = None) -> str:
+    """The unfiltered config view — both families, one list.
+
+    ``mcp_list`` and ``rest_api_list`` are each scoped to their own family for
+    the model.  The host's reconcile is not a family: it mirrors every
+    configured server's rows into the catalog, so pointing it at the filtered
+    listing silently stopped it mirroring the REST APIs — their rows vanished
+    from the catalog and neither ``tool_search`` nor ``func-tool-load`` could
+    reach them.
+    """
+    return json.dumps(_pool.list_configured(), ensure_ascii=False, indent=2)
+
+
+@mcp.tool(
     name="__check",
     description=(
         "Per-server tool-list facts: tools_ok, tool_count, tools_age_s, "

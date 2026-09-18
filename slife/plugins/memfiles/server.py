@@ -498,7 +498,7 @@ async def url_save(
     name="cabinet_search",
     description=(
         "Search the cabinet (notes, diary, saved files): kind "
-        "note/diary/file/all, mode hybrid (default)/fts5."
+        "note/diary/file/all, mode hybrid (default)/fts5/grep (regex)."
     ),
 )
 async def cabinet_search(
@@ -509,13 +509,13 @@ async def cabinet_search(
     Args:
         query: The search text.
         kind: note | diary | file | all (default).
-        mode: hybrid (default) | fts5.
+        mode: hybrid (default) | fts5 | grep (regex).
         limit: Maximum results.
     """
     store = await _ensure_store()
     manager = _manager
     mode = mode.lower()
-    if mode not in ("hybrid", "fts5"):
+    if mode not in ("hybrid", "fts5", "grep"):
         mode = "hybrid"
     if kind not in ("all", "note", "diary", "file"):
         kind = "all"
@@ -533,6 +533,11 @@ async def cabinet_search(
         hits = await store.search(
             query, kind=kind, limit=limit, mode=mode, embed_query=emb,
         )
+    except re.error as e:
+        # grep is a regex: an unusable pattern is the caller's to fix, and
+        # saying so beats a generic failure.
+        return json.dumps({"error": f"invalid regex {query!r}: {e}"},
+                          ensure_ascii=False)
     except Exception as e:
         logger.exception("memfiles_search_failed query=%s kind=%s", query, kind)
         return json.dumps({"error": str(e)}, ensure_ascii=False)

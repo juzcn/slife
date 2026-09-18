@@ -3,6 +3,7 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
+import json
 import json5
 import pytest
 from pathlib import Path
@@ -336,6 +337,7 @@ class TestCliCatalogRows:
 
     def test_rows_carry_description_and_enabled(self):
         from slife.tools.cli import cli_catalog_rows
+        from slife.tools.catalog import _flatten_schema
 
         rows = cli_catalog_rows({
             "gh": {"command": "gh", "description": "GitHub CLI"},
@@ -343,11 +345,18 @@ class TestCliCatalogRows:
             "malformed": "not a dict",
         })
 
-        assert rows["gh"] == {
-            "description": "GitHub CLI", "schema": None, "enabled": True,
-        }
+        assert rows["gh"]["description"] == "GitHub CLI"
+        assert rows["gh"]["enabled"] is True
         assert rows["off"]["enabled"] is False
         assert "malformed" not in rows
+        # The schema is NOT NULL and not a bare sentinel: it is the semantic
+        # index's document for this row, so a cli entry is embedded like every
+        # other tool instead of being invisible to anything that reaches the
+        # catalog through the index (an empty query first of all).
+        assert json.loads(rows["gh"]["schema"]) == {
+            "name": "gh", "description": "GitHub CLI",
+        }
+        assert _flatten_schema(rows["gh"]["schema"]).strip()
 
     def test_empty_section_is_no_rows(self):
         from slife.tools.cli import cli_catalog_rows

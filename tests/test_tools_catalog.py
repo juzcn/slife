@@ -685,6 +685,36 @@ async def test_search_keyword_and_cjk_fallback(store):
 
 
 @pytest.mark.asyncio
+async def test_search_grep_is_a_real_regex(store):
+    """``grep`` matches like grep: alternation, wildcards, and a pattern that
+    LIKE could not express.  It was SQL ``LIKE %pattern%`` — a literal
+    substring — which made the name a misnomer (a ``|`` was a literal pipe).
+    """
+    await store.upsert_tool("translate_tool", category="builtin",
+                            description="translate text")
+    await store.upsert_tool("summarize_tool", category="builtin",
+                            description="summarize it")
+    await store.upsert_tool("mcp_set", category="plugin",
+                            description="configure servers")
+
+    names = lambda hits: sorted(r["name"] for r in hits)
+    assert names(await store.search_grep("translat(e|or)")) == ["translate_tool"]
+    assert names(await store.search_grep("summ.rize")) == ["summarize_tool"]
+    assert names(await store.search_grep("translate|summarize")) == [
+        "summarize_tool", "translate_tool"]
+    # `_` is an ordinary character in a regex, not a LIKE wildcard.
+    assert names(await store.search_grep("mcp_set")) == ["mcp_set"]
+
+
+@pytest.mark.asyncio
+async def test_search_grep_rejects_an_invalid_pattern(store):
+    """A bad pattern is the caller's to report — never a silent no-match."""
+    import re as _re
+    with pytest.raises(_re.error):
+        await store.search_grep("a(b")
+
+
+@pytest.mark.asyncio
 async def test_search_grep_and_category_filter(store):
     await store.upsert_tool("svcA__search", category="mcp", source_id="svcA",
                             description="full-text search tool")

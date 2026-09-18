@@ -20,7 +20,8 @@ RRF_K = 60
 SCORE_BAND_HINT = (
     "similarity is a normalized 0–1 readout (higher = more relevant; "
     "≈1 identical, ≥0.5 close, 0.1–0.5 weak, <0.1 mostly unrelated) — "
-    "compare within one result set, not across embedding backends"
+    "the same scale in every search, comparable across them; only scores "
+    "from one embedding model are comparable to each other"
 )
 
 
@@ -28,12 +29,25 @@ def annotate_scores(results: list[dict], metric: str = "l2") -> list[dict]:
     """Add a normalized 0–1 ``similarity`` next to each result's raw
     ``distance`` (mutates *results* in place, returns it for chaining).
 
-    One contract across all hybrid searches — vec0/L2 distances
-    (turn_search, cabinet_search) map via ``1/(1+d)``; cosine distances
-    (mcp_tool_search) map as the true cosine similarity ``max(0, 1-d)``.
-    Keyword-only results (``distance`` None) get no ``similarity`` key.
-    The mapping is strictly monotonic, so ranking is preserved; it only
-    rescales the raw distance onto a readable 0–1 axis.
+    **One scale, all three hybrid paths**: whatever the store's raw distance
+    is, ``similarity`` reports the same quantity — the COSINE similarity.
+    That is what a neighbourhood in an embedding space actually means, and it
+    is what :data:`SCORE_BAND_HINT` reads.  Two stores, two metrics, one
+    number, so a caller comparing across searches is not comparing apples to
+    oranges.
+
+    - ``l2`` — the vec0 stores (``turn_search``, ``cabinet_search``), which
+      rank by Euclidean distance: ``cos = 1 - d²/2``.  Exact, not an
+      approximation, because the stores hold **unit-norm** vectors — every
+      backend normalizes (``normalize_embeddings=True`` in the local
+      backends; the hosted models return unit vectors), which is the
+      identity ``d² = 2 - 2·cos``.
+    - ``cosine`` — the tool catalog, which scores in Python: ``cos = 1 - d``.
+
+    Either way the map is strictly monotonic, so ranking is untouched; it
+    only rescales onto the readable axis.  Keyword-only results (``distance``
+    None) get no ``similarity`` key — nothing measured them, and inventing a
+    number would be a lie about the match.
     """
     for r in results:
         d = r.get("distance")
@@ -42,7 +56,9 @@ def annotate_scores(results: list[dict], metric: str = "l2") -> list[dict]:
         if metric == "cosine":
             r["similarity"] = round(max(0.0, 1.0 - d), 4)
         else:
-            r["similarity"] = round(1.0 / (1.0 + d), 4)
+            # 1 - d²/2, clamped: a unit-vector distance of 2 is exactly
+            # opposite (cos = -1), which reads as 0 on the 0-1 axis.
+            r["similarity"] = round(max(0.0, 1.0 - (d * d) / 2.0), 4)
     return results
 
 

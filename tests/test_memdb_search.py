@@ -128,13 +128,23 @@ class TestAnnotateScores:
     the LLM — one contract shared with cabinet_search / mcp_tool_search
     (the MCP plugin mirrors this function)."""
 
-    def test_l2_maps_via_1_over_1_plus_d(self):
-        # Typical vec0 L2 distances (the raw 18–22 range) map to a
-        # low-but-readable score; a near-identical match → ~1.0.
+    def test_l2_maps_to_the_SAME_cosine_the_cosine_metric_reports(self):
+        """One scale across all three hybrid paths — a turn hit and a tool hit
+        scored 0.9 mean the same thing.
+
+        ``d² = 2 - 2·cos`` holds because the stores hold unit-norm vectors, so
+        the L2 store can report the true cosine rather than an arbitrary
+        monotone rescale of its own distance.
+        """
         assert annotate_scores([{"distance": 0.0}])[0]["similarity"] == 1.0
         assert annotate_scores([{"distance": 1.0}])[0]["similarity"] == 0.5
-        r = annotate_scores([{"distance": 20.0}])[0]
-        assert r["similarity"] == round(1.0 / 21.0, 4)
+        assert annotate_scores([{"distance": 2.0}])[0]["similarity"] == 0.0
+
+        # The same vector pair, as each store's own metric reports it
+        # (measured on the live db: euclid 0.252029 / cosine 0.031759).
+        l2 = annotate_scores([{"distance": 0.252029}], metric="l2")[0]
+        cos = annotate_scores([{"distance": 0.031759}], metric="cosine")[0]
+        assert l2["similarity"] == cos["similarity"] == 0.9682
 
     def test_cosine_metric_maps_as_true_cosine_similarity(self):
         r = annotate_scores([{"distance": 0.2}], metric="cosine")[0]

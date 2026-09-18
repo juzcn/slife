@@ -14,6 +14,10 @@ from slife.plugins.spec import (
 
 #: (public name, module, ctx field) — the full built-in contract.
 _EXPECTED = [
+    # local-embed is a plugin from its OWN package (a separate workspace
+    # member, also runnable standalone) — it leads the order because
+    # memdb/memfiles embed against it.
+    ("local-embed", "local_embed.server", "local_embed_client"),
     ("mcp-gateway", "slife.plugins.mcp_gateway.server", "mcp_client"),
     ("memdb", "slife.plugins.memdb.server", "memdb_client"),
     ("memfiles", "slife.plugins.memfiles.server", "memfiles_client"),
@@ -26,7 +30,7 @@ _EXPECTED = [
 
 
 class TestPluginSpecs:
-    def test_all_eight_builtins_present(self):
+    def test_every_builtin_is_present(self):
         assert list(PLUGIN_SPECS) == [n for n, _, _ in _EXPECTED]
 
     def test_deterministic_order(self):
@@ -84,10 +88,20 @@ class TestSpecFor:
     def test_known_returns_canonical(self):
         assert spec_for("memdb") is PLUGIN_SPECS["memdb"]
 
+    def test_a_registered_plugin_returns_its_own_spec(self):
+        """local-embed is no longer the example of an UNKNOWN plugin — it has
+        a row, from its own package rather than ``slife.plugins.*``."""
+        spec = spec_for("local-embed")
+        assert spec is PLUGIN_SPECS["local-embed"]
+        assert spec.module == "local_embed.server"
+        assert spec.fixed_port is True
+
     def test_unknown_returns_generic_default(self):
-        spec = spec_for("local-embed", "slife.plugins.local_embed.server")
-        assert spec.name == "local-embed"
-        assert spec.module == "slife.plugins.local_embed.server"
+        # A package under slife.plugins.* with no spec row still gets the
+        # generic child contract.
+        spec = spec_for("my-plug", "slife.plugins.my_plug.server")
+        assert spec.name == "my-plug"
+        assert spec.module == "slife.plugins.my_plug.server"
         assert spec.ctx_field is None
         assert spec.gateway is False
         assert spec.enable_method is None

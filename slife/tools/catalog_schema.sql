@@ -9,7 +9,9 @@
 --  落盘 + WAL（多进程：主 agent 写、subagent 只读/短写），busy_timeout
 --  兜底 SQLITE_BUSY。无运行时 DDL 迁移：schema 版本走 PRAGMA user_version；
 --  这个库是派生数据（行来自 tool registry / tools.json5 / skills 目录 / 插件子进程），
---  所以 CHECK 变了就删库重建，不原地升级 —— 旧文件由 _check_categories 报出来。
+--  所以**结构变了就删库重建，不原地升级** —— 改 CHECK、加列、改列名都算（v5 的
+--  status→load_status、v6/v7 的 NOT NULL 都没有迁移步骤）。旧文件由 _check_columns
+--  （列）与 _check_categories（CHECK）报出来，提示里写着删哪个文件。
 --
 --  tool.load_status 只存 loaded|unloaded|n/a（type='func' 的前两者是 model 的
 --  决定，也是这个库唯一要持久化的东西；skill/cli 无 load 概念，存 'n/a' 而
@@ -31,14 +33,24 @@
 -- （"没有意见"是 *调用方* 的概念 —— upsert 传 None 表示"别动这列" —— 不是列里
 -- 的一个取值。）
 CREATE TABLE IF NOT EXISTS tool (
-    name        TEXT PRIMARY KEY,            -- mcp: '{server}__{tool}'；否则裸名
+    -- NOT NULL is explicit: a TEXT PRIMARY KEY is NOT implicitly NOT NULL in
+    -- SQLite (only INTEGER PRIMARY KEY is), so without it a nameless row is
+    -- storable.  Every column carries a default, this one included, so an
+    -- insert that names only what it knows never fails on a column it has no
+    -- opinion about.  A nameless row is still not something anyone writes —
+    -- the reconcile skips one before it reaches here — and '' being the
+    -- primary key means a second one would collide rather than accumulate.
+    name        TEXT PRIMARY KEY NOT NULL DEFAULT '',  -- mcp: '{server}__{tool}'；否则裸名
     description TEXT NOT NULL DEFAULT '',
     category    TEXT NOT NULL               -- builtin | job | plugin | mcp | rest-api | skill | cli
                 CHECK (category IN ('builtin','job','plugin','mcp','rest-api','skill','cli')),
     type        TEXT NOT NULL DEFAULT 'func' -- func | skill | cli（粗粒度种类，由 category 派生）
                 CHECK (type IN ('func','skill','cli')),
     source_id   TEXT NOT NULL DEFAULT 'n/a', -- 拥有者：server 名 / 插件名；'n/a' = 本地（builtin/job/skill/cli）
-    schema      TEXT NOT NULL DEFAULT 'n/a', -- func：Tool def JSON；skill：SKILL.md 全文；cli：'n/a'（无 schema）
+    schema      TEXT NOT NULL DEFAULT 'n/a', -- func：Tool def JSON；skill：SKILL.md 全文；
+                                             -- cli：合成的 {name, description} 描述符 ——
+                                             -- 没有 tool def，但这一列同时是语义索引的**文档**，
+                                             -- 空了就不可嵌入（见文件末尾），row 会对语义腿隐形
     enabled     INTEGER NOT NULL DEFAULT 1,  -- 布尔，来自 tools.json5 的 enabled（1 = 开）
     load_status TEXT NOT NULL DEFAULT 'n/a', -- 'loaded'|'unloaded'（type='func'）|'n/a'（skill/cli）
     unavailable INTEGER NOT NULL DEFAULT 0,  -- 布尔：1 = 拥有者此刻不可用（effective status 记 unavailable）
@@ -53,8 +65,8 @@ CREATE INDEX IF NOT EXISTS idx_tool_type ON tool(type);
 -- 没有 server 表：哪些 server 该连由 tools.json5 的 enabled 决定，此刻谁活着由
 -- 网关的 pool（mcp_list / __check）回答，这个库只把结果记在 tool 行上 ——
 -- 服务器不可用（未连上 / 掉线 / 连接失败 / 网关子进程死亡）时，它的 tool 行
--- unavailable 置 1（effective status 记 'error'，退出注入集）；连上后清掉这个
--- 标记，**不动 load_status** —— model 之前 loaded 的工具连上后仍然是 loaded。
+-- unavailable 置 1（effective status 记 'unavailable'，退出注入集）；连上后清掉
+-- 这个标记，**不动 load_status** —— model 之前 loaded 的工具连上后仍然是 loaded。
 
 
 -- ── 关键词搜索（FTS5 external-content，列取 tool 的前缀列，顺序一致）──
@@ -88,6 +100,9 @@ END;
 
 
 -- ── 语义搜索（over schema 文本：name+description+参数+返回说明）──
+-- **可嵌入 = schema 不是 '' 也不是 'n/a'**（CatalogStore._EMBEDDABLE_SCHEMA）：
+-- 哨兵值是可空列的替代品，不是文档；把它当文本嵌入会给"没有 schema"的行
+-- 造一个毫无意义的向量。
 -- 长 schema 按嵌入模型 token 上限切块（同 memdb/memfiles），一块一行；
 -- 检索按块取最小距离、每工具聚合成一条。向量 f32 BLOB + Python 余弦。
 CREATE TABLE IF NOT EXISTS tool_embeddings (

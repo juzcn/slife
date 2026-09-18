@@ -16,6 +16,7 @@ from slife.tools.system import (
     check_memfiles,
     check_sharefile,
     check_embeddings,
+    check_local_embed,
     check_mcp_gateway,
     check_a2a,
     check_media,
@@ -1293,7 +1294,8 @@ class TestCheckEmbeddings:
     @pytest.mark.asyncio
     async def test_no_base_url_offline(self):
         """No configured endpoint → offline/not configured."""
-        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
                    return_value={"base_url": "", "api_key": "", "model": ""}):
             entries = await check_embeddings()
         assert entries[0]["component"] == "embeddings"
@@ -1308,7 +1310,8 @@ class TestCheckEmbeddings:
         """Active = siliconflow: probed with the RESOLVED Bearer key — the old
         401 (probe without a key) is the regression being guarded."""
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
                    return_value=self._endpoint()), \
              patch("slife.tools.system.httpx2.AsyncClient", self._http(
                  seen, models=[{"id": "BAAI/bge-m3"}])), \
@@ -1329,7 +1332,8 @@ class TestCheckEmbeddings:
         nowhere near the head, so "first entry + a model count" named a model
         this session never embeds with."""
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
                    return_value=self._endpoint()), \
              patch("slife.tools.system.httpx2.AsyncClient", self._http(
                  seen, models=[{"id": "tencent/Hy4-preview"},
@@ -1349,7 +1353,8 @@ class TestCheckEmbeddings:
         EmbeddingClient pins the listing's first entry, so that IS the model
         this session embeds with — reported as such."""
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
                    return_value=self._endpoint(model="")), \
              patch("slife.tools.system.httpx2.AsyncClient", self._http(
                  seen, models=[{"id": "bge-m3"}, {"id": "bge-small"}])), \
@@ -1363,7 +1368,8 @@ class TestCheckEmbeddings:
         """A key credstore can't resolve is never sent as a literal token —
         the probe still runs (header just absent)."""
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
                    return_value=self._endpoint()), \
              patch("slife.tools.system.httpx2.AsyncClient", self._http(
                  seen, models=[{"id": "BAAI/bge-m3"}])), \
@@ -1380,7 +1386,8 @@ class TestCheckEmbeddings:
         a "model not loaded" warning.  It is the PROVIDER key here, which is
         the only place the daemon's name belongs."""
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
                    return_value={
                        "provider": "local_embed",
                        "base_url": "http://127.0.0.1:17347/v1",
@@ -1401,7 +1408,8 @@ class TestCheckEmbeddings:
     @pytest.mark.asyncio
     async def test_probe_error_reports_unreachable(self):
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
                    return_value=self._endpoint()), \
              patch("slife.tools.system.httpx2.AsyncClient", self._http(
                  seen, error=RuntimeError("Connection error."))), \
@@ -1602,7 +1610,6 @@ class TestCheckToolCatalog:
 
     _FACTS = {
         "tools": 1538, "servers": 19, "loaded": 12,
-        "servers_mcp": 17, "servers_rest_api": 2,
         "semantic": {"configured": True, "available": True,
                      "semantic_ready": True, "state": "ready", "reason": "",
                      "model": "BAAI/bge-m3", "dimension": 1024, "unembedded": 0},
@@ -1632,8 +1639,11 @@ class TestCheckToolCatalog:
         assert keys == {"db", "semantic"}
         db = next(e for e in entries if e["key"] == "db")
         assert db["level"] == "ok"
-        assert db["value"] == ("1538 tools, 19 servers (17 mcp, 2 rest-api), "
-                              "12 loaded")
+        # "servers WITH ROWS", one number: the count is over catalog rows, so
+        # it is NOT the same population as the mcp_servers / rest-api
+        # components (which count configured servers), and it is not split by
+        # family — the catalog holds tools, not families.
+        assert db["value"] == "1538 tools, 19 servers with rows, 12 loaded"
         sem = next(e for e in entries if e["key"] == "semantic")
         assert sem["level"] == "ok"
         assert sem["value"] == "ready (BAAI/bge-m3, dim=1024)"
@@ -1710,3 +1720,114 @@ class TestOkEntriesCarryNoHint:
         with patch("slife.tools.system.get_startup_records", return_value=[]):
             entries = system_mod.check_watchdog()
         assert entries[0]["level"] == "ok" and not entries[0].get("hint")
+
+
+class TestCheckLocalEmbed:
+    """The local-embed SERVICE component — the same ``__check`` probe every
+    plugin gets, now that it is registered like one.
+
+    Before that it was a standalone daemon with no registry row: nothing in
+    the startup path could report that it was down, so a failed load was
+    silent.  These lock the two facts that made it legible — the plugin line
+    when it is not up, and the per-model backend state.
+    """
+
+    @staticmethod
+    def _client(payload):
+        client = MagicMock()
+        client.call_tool = AsyncMock(return_value=json.dumps(payload))
+        return client
+
+    @pytest.mark.asyncio
+    async def test_no_client_is_offline_with_the_spawn_remedy(self):
+        entries = await check_local_embed(client=None)
+        assert entries[0]["component"] == "local-embed"
+        assert entries[0]["level"] == "warning"
+        assert entries[0]["value"] == "offline"
+        # The reason a restart can fail: something else holds the port.
+        assert "port" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_a_loaded_model_is_ok(self):
+        client = self._client({"models": [
+            {"name": "bge-m3", "backend": "gguf", "dimension": 1024,
+             "loaded": True, "available": True},
+        ]})
+        entries = await check_local_embed(client=client)
+        assert entries[0]["key"] == "bge-m3"
+        assert entries[0]["level"] == "ok"
+        assert entries[0]["value"] == "loaded (dim=1024)"
+
+    @pytest.mark.asyncio
+    async def test_a_model_that_loads_on_demand_is_not_a_problem(self):
+        client = self._client({"models": [
+            {"name": "bge-m3", "backend": "gguf", "loaded": False,
+             "available": True},
+        ]})
+        entries = await check_local_embed(client=client)
+        assert entries[0]["level"] == "info"
+        assert entries[0]["value"] == "not loaded"
+
+    @pytest.mark.asyncio
+    async def test_a_missing_backend_is_a_warning_with_the_remedy(self):
+        client = self._client({"models": [
+            {"name": "bge-m3", "backend": "llama-cpp", "loaded": False,
+             "available": False},
+        ]})
+        entries = await check_local_embed(client=client)
+        assert entries[0]["level"] == "warning"
+        assert "backend unavailable" in entries[0]["value"]
+        assert "local-embed" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_no_models_configured(self):
+        entries = await check_local_embed(client=self._client({"models": []}))
+        assert entries[0]["level"] == "warning"
+        assert entries[0]["value"] == "none configured"
+
+    @pytest.mark.asyncio
+    async def test_a_probe_that_raises_reports_unavailable(self):
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=RuntimeError("pipe closed"))
+        entries = await check_local_embed(client=client)
+        assert entries[0]["level"] == "warning"
+        assert entries[0]["value"] == "unavailable"
+
+
+class TestInactiveCloudProviderIsLeftAlone:
+    """The embeddings check probes the ACTIVE provider only — an inactive one
+    is idle by choice, and probing it would need a key to say nothing useful.
+    The local-embed daemon is covered by its own component instead."""
+
+    @pytest.mark.asyncio
+    async def test_an_inactive_cloud_provider_gets_no_line(self):
+        cfg = {"providers": {
+            "siliconflow": {"base_url": "https://api.siliconflow.cn/v1",
+                            "model": "BAAI/bge-m3", "api_key": ""},
+            "other-cloud": {"base_url": "https://api.example.com/v1",
+                            "model": "m", "api_key": ""},
+        }, "active_model": "siliconflow"}
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"data": [{"id": "BAAI/bge-m3"}]}
+
+        class _Fake:
+            def __init__(self, *a, **k):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def get(self, url, headers=None):
+                return _Resp()
+
+        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value={"provider": "siliconflow",
+                                 "base_url": "https://api.siliconflow.cn/v1",
+                                 "api_key": "", "model": "BAAI/bge-m3"}),              patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value=cfg),              patch("slife.tools.system.httpx2.AsyncClient", _Fake):
+            entries = await check_embeddings()
+        assert {e["key"] for e in entries} == {"siliconflow"}

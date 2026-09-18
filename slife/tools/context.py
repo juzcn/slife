@@ -72,6 +72,13 @@ class ToolContext:
     """The media plugin's MCP client — used by ``check_media`` to query
     generation-capability status via the plugin's internal ``__check`` tool."""
 
+    local_embed_client: object | None = None
+    """The local-embed plugin's MCP client — used by ``check_local_embed``.
+
+    Only its internal ``__check`` is reached through this: the host consumes
+    the embedding SERVICE over HTTP (that is what ``embeddings.base_url``
+    points at), never through MCP tools.
+    """
     job_coding_client: object | None = None
     """The job-coding plugin's MCP client — used by ``check_job_coding`` to
     query registered-job status via the plugin's internal ``__check`` tool."""

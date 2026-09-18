@@ -250,6 +250,7 @@ class TestAddServerToolRegistration:
             "__mcp_set",
             "__mcp_set_enabled",
             "__mcp_remove",
+            "__mcp_list",
             "__mcp_list_tools",
             "__mcp_call_tool",
             "__check",

@@ -1211,17 +1211,68 @@ class CatalogStore:
             params.extend([like, like, like, like])
         return await self._search_by_sql(and_clauses, params, filters, limit)
 
+    #: The text `grep` matches against — the same columns the FTS index
+    #: carries, so the two text modes see one corpus.
+    _GREP_COLUMNS = ("name", "description", "category", "source_id", "schema")
+
+    async def browse(
+        self, limit: int = 20, filters: "dict | None" = None,
+    ) -> list[dict]:
+        """Rows passing the column filters, in report order — no text match.
+
+        What an EMPTY query means.  Running the search legs on an empty string
+        was worse than useless: the semantic leg answers with whatever the
+        index happens to hold, so a row with no embedding (a cli entry has no
+        tool def to embed) could never be listed, while the keyword leg
+        matched nothing at all.  "No query" is not "no results" — it is the
+        catalog itself, which is also how a family gets enumerated.
+        """
+        limit = _clamp_limit(limit)
+        filter_clauses, params = column_filters(filters)
+        where = " AND ".join(filter_clauses) if filter_clauses else "1=1"
+        cursor = await self._c.execute(
+            f"SELECT {_SCAN_COLS} FROM tool t WHERE {where} "
+            f"ORDER BY t.category, t.name LIMIT ?",
+            (*params, limit),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def search_grep(
         self, pattern: str, limit: int = 20, filters: "dict | None" = None,
     ) -> list[dict]:
-        """Exact substring search over the catalog columns."""
+        """REGEX search over the catalog's text columns.
+
+        A real ``grep``: the pattern is a Python regex (``re.search``), so
+        ``translat(e|or)`` and ``summ.rize`` match.  SQLite has no regexp
+        engine, so the match runs in Python — the column filters still narrow
+        in SQL, and only the text predicate is evaluated here.  That means a
+        scan rather than an index seek, which the catalog can afford (bounded
+        by its own row count) and which buys the property the LIKE version
+        could not have: every filtered row is examined, so the result is the
+        first *limit* matches, not the first limit candidates.
+
+        Raises ``re.error`` for an unusable pattern — the caller turns that
+        into a message rather than an empty result.
+        """
+        rx = re.compile(pattern)
         limit = _clamp_limit(limit)
-        safe = _like_escape(pattern)
-        like_pattern = f"%{safe}%"
-        params: list = [
-            pattern, like_pattern, like_pattern, like_pattern, like_pattern,
-        ]
-        return await self._search_by_sql([_LIKE_WHERE], params, filters, limit)
+        filter_clauses, filter_params = column_filters(filters)
+        where = " AND ".join(filter_clauses) if filter_clauses else "1=1"
+        cursor = await self._c.execute(
+            f"SELECT {_SCAN_COLS} FROM tool t WHERE {where} "
+            f"ORDER BY t.category, t.name",
+            filter_params,
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+        hits: list[dict] = []
+        for row in rows:
+            if any(rx.search(str(row.get(col) or "")) for col in self._GREP_COLUMNS):
+                hits.append(row)
+                if len(hits) >= limit:
+                    break
+        logger.debug("catalog_search_grep pattern=%s scanned=%s hits=%s",
+                     pattern[:80], len(rows), len(hits))
+        return hits
 
     async def _search_by_sql(
         self, clauses: list[str], params: list, filters: "dict | None", limit: int,

@@ -15,10 +15,14 @@ a design note in `DESIGN.md` ever disagree, this document and the code win.
 
 ## Roles: what is and isn't a plugin
 
-- **Child plugins** are the only true plugins.  Each is a Python package under
-  `slife.plugins.*` that ships a `server.py` with a `main()`; the harness
-  spawns it as a child process (`sys.executable -m <module>`), connects over
-  MCP **Streamable HTTP**, registers its tools, and supervises it.
+- **Child plugins** are the only true plugins.  Each ships a `server.py` with
+  a `main()`; the harness spawns it as a child process
+  (`sys.executable -m <module>`), connects over MCP **Streamable HTTP**,
+  registers its tools, and supervises it.  Most live under `slife.plugins.*`;
+  **`local-embed` is the exception** — it ships from its own workspace package
+  (`local_embed.server`) because it is also runnable standalone, and it is the
+  one plugin with a `fixed_port` (its config pins the port a static
+  embeddings `base_url` points at).
 - The **MCP gateway** (`mcp-gateway`) is one of those child plugins.  It is the
   *gateway to external MCP servers*: it self-hosts `tools.json5`,
   connects third-party MCP servers, and re-exposes their tools as
@@ -31,8 +35,6 @@ a design note in `DESIGN.md` ever disagree, this document and the code win.
     published as `SLIFE_HOST_PORT` so concurrent agents never collide on
     one host).  It runs **in** the main process and is deliberately placed
     outside `slife.plugins.*` so discovery can't spawn it;
-  - **local-embed** — a manually-started standalone daemon serving
-    OpenAI-compatible `/v1/embeddings`.
 - Third-party capability enters *only* as a standard MCP server registered in
   `tools.json5` through the `mcp-gateway`.  There is no
   `plugins.external` mechanism.
@@ -60,12 +62,14 @@ class PluginSpec:
     enable_method: str | None   # AgentService coroutine name -> bool (gate)
     after_ready_method: str | None  # AgentService coroutine name -> glue
     health: bool = True         # enumerated by system_health
+    fixed_port: bool = False    # the child binds a port it must KNOW first
 ```
 
 The current built-ins (in `PLUGIN_SPECS` order):
 
 | name | module | ToolContext field | notes |
 |---|---|---|---|
+| `local-embed` | `local_embed.server` | `local_embed_client` | `fixed_port`; first, because memdb/memfiles embed against it when it is the active provider |
 | `mcp-gateway` | `slife.plugins.mcp_gateway.server` | `mcp_client` | `gateway`, `host_params`; after-ready = mcp glue |
 | `memdb` | `slife.plugins.memdb.server` | `memdb_client` | turns DB + semantic search |
 | `memfiles` | `slife.plugins.memfiles.server` | `memfiles_client` | private file cabinet |
@@ -80,7 +84,7 @@ Naming rules the table normalises:
 - public name → hyphenated where the package cannot be: package
   `slife.plugins.job_coding`, public name `job-coding`; package
   `slife.plugins.mcp_gateway`, public name `mcp-gateway`.
-- ToolContext field name is per-plugin (two historical non-uniformities are
+- ToolContext field name is per-plugin (the historical non-uniformities are
   kept: `a2a → a2a_mcp_client`, `job-coding → job_coding_client`).
 - port env: `plugin_port_env(name)` → `SLIFE_{NAME}_PORT` (dashes→underscores),
   e.g. `SLIFE_MCP_GATEWAY_PORT`, `SLIFE_JOB_CODING_PORT`.  This is the key the
@@ -230,7 +234,7 @@ in-band channel for these before the first request:
 | `SLIFE_SESSION_ID` / `SLIFE_AGENT_NAME` | Log correlation, agent identity |
 | `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` / `SLIFE_LOG_DIR` | Directory overrides |
 | `SLIFE_PLUGIN_NAME` | Which plugin this child is |
-| `SLIFE_{NAME}_PORT` | Published port of each plugin (`MCP_GATEWAY` / `MEMDB` / `WECHAT` / `MEMFILES` / `A2A` / `MEDIA` / `JOB_CODING` / `SHAREFILE`). Key is the uppercased plugin name with dashes normalised to underscores (`job-coding` → `SLIFE_JOB_CODING_PORT`) — via `plugin_port_env`. Subagents read this env to share the parent's plugins. `local-embed` is a daemon, not a plugin, so it publishes no port. |
+| `SLIFE_{NAME}_PORT` | Published port of each plugin (`LOCAL_EMBED` / `MCP_GATEWAY` / `MEMDB` / `WECHAT` / `MEMFILES` / `A2A` / `MEDIA` / `JOB_CODING` / `SHAREFILE`). Key is the uppercased plugin name with dashes normalised to underscores (`job-coding` → `SLIFE_JOB_CODING_PORT`) — via `plugin_port_env`. Subagents read this env to share the parent's plugins. `local-embed`'s port is the one the plugin's own config pins (its `fixed_port`), so it is the same value in a spawned child and a standalone one — the host's embeddings `base_url` depends on that. |
 | `SLIFE_SHAREFILE_URL` | Public tunnel URL (set inside the sharefile plugin process) |
 
 **WSL note:** custom env vars set via `create_subprocess_exec(env=…)` are NOT

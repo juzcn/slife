@@ -356,51 +356,40 @@ class TestLiveSync:
         finally:
             await stop()
 
-class TestCatalogFactsFamilies:
-    """The catalog's server count carries its family split.
+class TestCatalogFacts:
+    """The catalog's server count is ONE number, over the sources that own rows.
 
-    The catalog is the one place both families meet, and the health report
-    renders the families as separate components.  A bare total there sat next
-    to `mcp_servers` / `rest-api` and was read back as the MCP count — 20 for
-    what is 18 MCP servers + 2 REST APIs.
+    It is deliberately not split by family: the catalog holds tools, and
+    "an MCP server vs a REST API" is a distinction of how the config
+    implements something, not of what the catalog contains.  A split put an
+    implementation detail on a surface the agent reads, and its "0 rest-api"
+    contradicted the `rest-api` component beside it — which counts CONFIGURED
+    servers, a different population.  The report says "servers with rows" for
+    the same reason: the two must not read as one number.
     """
 
     @staticmethod
-    def _catalog(source_ids_by_call):
-        """A catalog whose store answers list_source_ids per category filter."""
-        calls: list = []
-
+    def _catalog(source_ids):
         async def _list_source_ids(categories=None):
-            calls.append(categories)
-            return set(source_ids_by_call.get(
-                tuple(sorted(categories)) if categories else None, (),
-            ))
+            return set(source_ids)
 
         store = MagicMock()
         store.list_source_ids = _list_source_ids
         store.scan_effective = AsyncMock(return_value=[1] * 1596)
         store.count_loaded = AsyncMock(return_value=16)
-        catalog = MagicMock(store=store, semantic_manager=None)
-        return catalog, calls
+        return MagicMock(store=store, semantic_manager=None)
 
     @pytest.mark.asyncio
-    async def test_counts_each_family(self):
-        catalog, calls = self._catalog({
-            None: [f"m{i}" for i in range(18)] + ["github", "mcp-registry"],
-            ("mcp",): [f"m{i}" for i in range(18)],
-            ("rest-api",): ["github", "mcp-registry"],
-        })
+    async def test_it_counts_sources_that_own_rows(self):
+        catalog = self._catalog([f"m{i}" for i in range(18)])
         facts = await _host_catalog_facts(catalog)
-        assert facts["servers"] == 20
-        assert facts["servers_mcp"] == 18
-        assert facts["servers_rest_api"] == 2
-        # The whole-catalog read is still the unfiltered one.
-        assert calls[0] is None
+        assert facts["servers"] == 18
+        assert facts["tools"] == 1596 and facts["loaded"] == 16
 
     @pytest.mark.asyncio
-    async def test_no_rest_apis_reports_zero(self):
-        catalog, _calls = self._catalog({
-            None: ["m0", "m1"], ("mcp",): ["m0", "m1"], ("rest-api",): [],
-        })
-        facts = await _host_catalog_facts(catalog)
-        assert (facts["servers"], facts["servers_mcp"], facts["servers_rest_api"]) == (2, 2, 0)
+    async def test_there_is_no_family_split(self):
+        """A configured server whose tool list has not been read owns no rows
+        and is absent here — the components are what list it.  Splitting this
+        count by family is what made the two look comparable."""
+        facts = await _host_catalog_facts(self._catalog(["a", "b"]))
+        assert not {k for k in facts if k.startswith("servers_")}
