@@ -348,11 +348,19 @@ class ToolCatalogService:
         load state, and "no load state applies" is a value in the column's
         domain, not a NULL.  ``override_status`` is left off for the same
         reason: an ``autoload`` flag on a skill/cli entry has nothing to own.
+
+        **The row name is namespaced** (``skill:browser-harness``).  A name is
+        the row's identity — the primary key, the embeddings' foreign key, the
+        key every search result is merged by — so two families cannot share
+        one, and sharing is not a mistake to prevent: ``browser-harness`` is a
+        CLI and the skill that documents it.  Qualifying here keeps ``name``
+        unique by construction, and the prefix is self-evident to a reader —
+        the tool to call is the part after the colon.
         """
         result = await self._store.reconcile(
             [
                 {
-                    "name": name,
+                    "name": f"{category}:{name}",
                     "description": spec.get("description", ""),
                     "category": category,
                     "schema": spec.get("schema"),

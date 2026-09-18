@@ -154,7 +154,8 @@ async def test_skill_and_cli_rows_have_no_status_to_override(db):
     nothing to own: the column stays ``'n/a'`` either way."""
     svc = ToolCatalogService(db, write_owner=True, autoload=("a-skill",))
     await svc.sync_category("skill", {"a-skill": {"description": "d", "schema": "S"}})
-    row = await db.get_tool("a-skill")
+    # The row name is namespaced — a skill and a cli may share a bare name.
+    row = await db.get_tool("skill:a-skill")
     assert row["load_status"] == "n/a" and row["type"] == "skill"
 
 
@@ -395,23 +396,24 @@ async def test_sync_category_mirrors_and_purges(db):
     })
     assert purged == []
 
-    row = await db.get_tool("deploy")
+    row = await db.get_tool("skill:deploy")
     assert row["category"] == "skill"
     assert row["type"] == "skill"
     assert row["load_status"] == "n/a"                    # skills have no load state
     assert "# Deploy" in row["schema"]              # SKILL.md, as stored
-    assert (await db.get_tool("quiet"))["enabled"] == 0
+    assert (await db.get_tool("skill:quiet"))["enabled"] == 0
     # discoverable exactly like a function tool, and never injected
-    assert [r["name"] for r in await db.search_keyword("deploy")] == ["deploy"]
+    # Searchable by its bare words, stored under its namespaced name.
+    assert [r["name"] for r in await db.search_keyword("deploy")] == ["skill:deploy"]
     assert "deploy" not in await svc.snapshot_loaded()
 
     # a skill that left the dir loses its row (the §8.5 "清理干净" contract)
     purged = await svc.sync_category("skill", {
         "deploy": {"description": "Ship it", "schema": "# Deploy\nrun x", "enabled": True},
     })
-    assert purged == ["quiet"]
-    assert await db.get_tool("quiet") is None
-    assert await db.get_tool("deploy") is not None
+    assert purged == ["skill:quiet"]      # row names are namespaced
+    assert await db.get_tool("skill:quiet") is None
+    assert await db.get_tool("skill:deploy") is not None
 
 
 @pytest.mark.asyncio
@@ -419,7 +421,7 @@ async def test_sync_category_cli_rows_have_no_schema(db):
     svc = ToolCatalogService(db, write_owner=True)
     await svc.sync_category("cli", {"gh": {"description": "GitHub CLI", "schema": None}})
 
-    row = await db.get_tool("gh")
+    row = await db.get_tool("cli:gh")
     assert row["type"] == "cli"
     assert row["load_status"] == "n/a"
     # "No schema text" is a VALUE in a NOT NULL column, not an absence — the
@@ -433,7 +435,7 @@ async def test_sync_category_refuses_load_and_unload(db):
     svc = ToolCatalogService(db, write_owner=True)
     await svc.sync_category("skill", {"deploy": {"description": "Ship it", "schema": "# Deploy"}})
 
-    ok, msg = await svc.load_tool("deploy")
+    ok, msg = await svc.load_tool("skill:deploy")
     assert not ok and "no load/unload state" in msg and "skill" in msg
-    ok, msg = await svc.unload_tool("deploy")
+    ok, msg = await svc.unload_tool("skill:deploy")
     assert not ok and "no load/unload state" in msg

@@ -108,14 +108,26 @@ reconciles:
 
 ```
 name        -- unique; external tools are "{server}__{tool}", a job is
-               "job-" + its function name (job-translate), system tools bare
+               "job-" + its function name (job-translate), system tools bare,
+               and the two source-fed families are NAMESPACED: a skill row is
+               "skill:<dir>", a cli row is "cli:<entry>".  A name is the row's
+               identity — the primary key, the embeddings' foreign key, the
+               key every search result is merged by — so two families cannot
+               share one, and sharing is not a mistake to prevent:
+               `browser-harness` is a CLI *and* the skill documenting it.
 description -- used by search
 category    -- builtin | job | plugin | mcp | rest-api | skill | cli (where it came from)
 type        -- func | skill | cli  (what kind of thing it is; derived from category)
 source_id   -- owning server name for mcp/rest-api, owning PLUGIN name for
                plugin/job rows, 'n/a' for builtin (no separate component owns them)
+               — and for skill/cli too: neither is owned by a server
 schema      -- the tool def {name, description, inputSchema} for func rows;
-               the SKILL.md text for skill rows; 'n/a' for cli rows
+               the SKILL.md text for skill rows; a synthesized
+               {name, description} for cli rows.  This column is not only the
+               injected definition — it is also the semantic index's DOCUMENT,
+               so an empty one keeps the row out of the index and out of any
+               search that reaches the catalog through it.  'n/a' means "no
+               schema text" and is excluded from embedding
 enabled     -- config mirror, every category: the per-entry switch for
                builtin/job/plugin/skill/cli, the SERVER's switch for mcp/rest-api
                (all of a server's rows move together).  1 = on; a caller with
@@ -209,7 +221,7 @@ source_id    -- owning server / plugin name ('n/a' = local)
 load_status  -- loaded|unloaded|n/a
 enabled      -- boolean (false = switched off in tools.json5)
 unavailable  -- boolean (true = its owner is not reachable right now)
-mode         -- hybrid (default) | keyword | grep
+mode         -- hybrid (default) | keyword (FTS5) | grep (regex)
 limit        -- max results
 ```
 
@@ -219,6 +231,22 @@ is a real SQL predicate, so filtering happens before the LIMIT — the older
 silently returned 7 of the 14 qualifying rows. There is no `status` parameter:
 its three questions are the columns `enabled` / `unavailable` / `load_status`,
 each read one-to-one.
+
+**An empty query BROWSEs.** With no text to match it returns the rows passing
+the filters, in report order — which is also how a family gets enumerated
+(`query=""` + `category=cli`).  Running the legs on `""` instead answered with
+whatever the semantic index happened to hold, so a row without an embedding
+was unreachable and the keyword leg matched nothing at all.
+
+**Results are scored on one scale.** A hybrid result carries `similarity`, a
+normalized 0–1 cosine (≈1 identical, ≥0.5 close, 0.1–0.5 weak, <0.1 mostly
+unrelated) plus that legend in the payload's `hint` — the same scale
+`turn_search` and `cabinet_search` report, so the numbers are comparable
+across the three.  A semantic leg always returns its k nearest, however far
+away they are, so without the number "nothing matched" and "the nearest
+neighbours are unrelated" look identical.  A keyword-only hit carries no
+`similarity`: nothing measured it, and inventing a number would be a lie about
+the match.
 
 Three retrieval routes, one row shape (the effective status is computed per row — nothing to join):
 

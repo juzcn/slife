@@ -4,6 +4,9 @@
 --  一行 = 一个 tool：function tool（builtin | job | plugin | mcp | rest-api）、
 --  skill（skills 目录里的一个 SKILL.md）、cli（tools.json5 里的一条 cli 配置）；
 --  mcp/rest-api 用 ``{server}__{tool}`` 全名标识（source_id 指 server）；
+--  skill/cli 加家族前缀（``skill:browser-harness`` / ``cli:browser-harness``）——
+--  name 是行的身份（主键、embeddings 的外键、搜索结果的合并键），两个家族不能共用一个，
+--  而共用也不是错误：browser-harness 既是一个 CLI，也是记录它的那个 skill。
 --  plugin = 内置插件自己的工具，source_id 指该插件名（job-coding 的 job 工具仍是 job）。
 --  type 是 category 的粗粒度投影：func | skill | cli —— load/unload 只属于 func。
 --  落盘 + WAL（多进程：主 agent 写、subagent 只读/短写），busy_timeout
@@ -40,7 +43,7 @@ CREATE TABLE IF NOT EXISTS tool (
     -- opinion about.  A nameless row is still not something anyone writes —
     -- the reconcile skips one before it reaches here — and '' being the
     -- primary key means a second one would collide rather than accumulate.
-    name        TEXT PRIMARY KEY NOT NULL DEFAULT '',  -- mcp: '{server}__{tool}'；否则裸名
+    name        TEXT PRIMARY KEY NOT NULL DEFAULT '',  -- mcp: '{server}__{tool}'；skill/cli: '{category}:{name}'；其余裸名
     description TEXT NOT NULL DEFAULT '',
     category    TEXT NOT NULL               -- builtin | job | plugin | mcp | rest-api | skill | cli
                 CHECK (category IN ('builtin','job','plugin','mcp','rest-api','skill','cli')),

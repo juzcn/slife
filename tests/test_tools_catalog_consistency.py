@@ -181,7 +181,7 @@ async def test_a_hand_edited_cli_entry_lands_without_a_restart(_isolate, sample_
 
         # First pass primes the mtimes (and mirrors the seeded `mycmd`).
         await service._refresh_local_rows_if_changed(svc)
-        assert "mycmd" in await store.names_by_category("cli")
+        assert "cli:mycmd" in await store.names_by_category("cli")
 
         # A hand-edit: a new cli entry, written straight to the file.
         tools_path = _isolate / "tools.json5"
@@ -199,7 +199,7 @@ async def test_a_hand_edited_cli_entry_lands_without_a_restart(_isolate, sample_
 
         await service._refresh_local_rows_if_changed(svc)
 
-        assert "byhand" in await store.names_by_category("cli")
+        assert "cli:byhand" in await store.names_by_category("cli")
         # …and an unchanged file is a no-op (two stats, nothing rewritten).
         before = [
             dict(r) for r in await store.scan_effective()
