@@ -166,7 +166,15 @@ def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, s
                 "Enable with embeddings_enable true, or edit the top-level "
                 "embeddings section in slife.json5.")
     if sem.get("semantic_ready"):
-        return ("ok", f"ready ({sem.get('model') or '?'}, dim={sem.get('dimension')})", "")
+        # A width nobody has measured is NOT 0.  Each semantic index has its
+        # own embedder, and only the one that has probed its endpoint knows
+        # the dimension — so printing the raw number showed "dim=0" beside
+        # another component reporting dim=1024 for the same model.  "?" is
+        # this report's marker for "not known" (the model uses it too).
+        dim = sem.get("dimension") or 0
+        return ("ok",
+                f"ready ({sem.get('model') or '?'}, "
+                f"{f'dim={dim}' if dim else 'dim=?'})", "")
     state = sem.get("state") or "building"
     return ("warning",
             f"{state} ({sem.get('unembedded', 0)} {pending_noun} pending; "

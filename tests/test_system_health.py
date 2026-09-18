@@ -24,6 +24,7 @@ from slife.tools.system import (
     check_tool_catalog,
     check_watchdog,
     _group_by_component,
+    _semantic_facts,
     _component_status,
     _collapse,
     _format_fact,
@@ -1831,3 +1832,26 @@ class TestInactiveCloudProviderIsLeftAlone:
                    return_value=cfg),              patch("slife.tools.system.httpx2.AsyncClient", _Fake):
             entries = await check_embeddings()
         assert {e["key"] for e in entries} == {"siliconflow"}
+
+
+class TestSemanticFacts:
+    """``_semantic_facts`` renders all three semantic indexes (memdb,
+    memfiles, tool_catalog) — one place, so one rule."""
+
+    def test_a_measured_width_is_reported(self):
+        assert _semantic_facts(
+            {"semantic_ready": True, "model": "BAAI/bge-m3", "dimension": 1024}
+        )[1] == "ready (BAAI/bge-m3, dim=1024)"
+
+    def test_an_unmeasured_width_is_not_reported_as_zero(self):
+        """Each index has its own embedder, so only the one that has probed
+        its endpoint knows the width — the others printed ``dim=0`` beside a
+        sibling reporting ``dim=1024`` for the same model.  A zero nobody
+        measured is not a fact; ``?`` is this report's marker for unknown.
+        """
+        level, value, hint = _semantic_facts(
+            {"semantic_ready": True, "model": "BAAI/bge-m3", "dimension": 0}
+        )
+        assert level == "ok" and hint == ""
+        assert value == "ready (BAAI/bge-m3, dim=?)"
+        assert "dim=0" not in value

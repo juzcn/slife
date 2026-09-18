@@ -22,7 +22,11 @@ import httpx2
 
 from slife.config import _resolve_secret
 from slife.env import is_env_ref
-from slife.plugins.memdb.embeddings import _guess_max_tokens  # shared token-limit guess
+from slife.plugins.memdb.embeddings import (  # shared model knowledge
+    _guess_dim,
+    _guess_max_tokens,
+    _known_model,
+)
 from slife.plugins.memdb.semantic import SemanticManager as _BaseSemanticManager
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
@@ -91,9 +95,21 @@ class EmbeddingClient:
             resolved = _resolve_secret(api_key, accept_keyring_uri=True)
             api_key = "" if is_env_ref(resolved) else resolved
         enabled = bool(base_url) and not is_env_ref(base_url)
+        # The width follows the same two-step rule as the memdb client: a
+        # KNOWN model brings its width with it (bge-m3 -> 1024, no probe
+        # needed), and an unknown one stays provisional (`dim_known=False`) so
+        # `load()` probes the endpoint for the real number.
+        #
+        # This call used to pass `dim_known=bool(model)` and no `dim` at all —
+        # which broke BOTH halves: a known model's width was never consulted
+        # (the catalog reported `dim=0` for the model memdb reported as 1024),
+        # and an unknown one was never probed, because claiming to know is
+        # exactly what makes `load()` skip `_probe_api_dim`.
         return cls(
             model=model, api_key=api_key, base_url=base_url,
-            dim_known=bool(model), enabled=enabled,
+            dim=_guess_dim(model, None),
+            dim_known=_known_model(model) is not None,
+            enabled=enabled,
         )
 
     # ── Status ──────────────────────────────────────────────────────
