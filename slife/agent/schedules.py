@@ -91,6 +91,25 @@ _SCHEDULE_WORKERS: set[str] = set()
 _pending_fires: dict[str, float] = {}
 
 
+#: Shown to the WORKER when the stored task carries no description, in place
+#: of the instruction.  ``schedule.j2`` branches on the same condition to drop
+#: its "carry out the task fully" mandate, so the two never contradict: a task
+#: with no instruction must stop, not improvise.  The worker has the full
+#: toolset and the parent's mesh identity, so a blank task otherwise becomes
+#: self-invented work with real side effects.  ``scheduled_task_set`` refuses
+#: an empty description, so this covers only a legacy row or a task written
+#: straight through the plugin's internal tool.
+_NO_DESCRIPTION_WORKER = "(none — this task was stored with no description)"
+
+#: Shown to the MAIN AGENT on a trigger for a description-less task — the
+#: dispatch decision is theirs, so the trigger names the fix rather than
+#: hiding the gap behind a neutral placeholder.
+_NO_DESCRIPTION_TRIGGER = (
+    "(no description — this task is misconfigured: give it one with "
+    "scheduled_task_set, or drop it with scheduled_task_remove)"
+)
+
+
 def trigger_text(name: str, description: str) -> str:
     """Build the trigger message injected into the inbox when a task fires.
 
@@ -100,7 +119,7 @@ def trigger_text(name: str, description: str) -> str:
     the ``[Schedule `` prefix — ``SCHEDULE_MARK`` / ``is_autonomous_trigger``
     rely on it).
     """
-    desc = (description or "").strip() or "(no description)"
+    desc = (description or "").strip() or _NO_DESCRIPTION_TRIGGER
     return render_template(
         "schedule_trigger.j2",
         name=name,
@@ -117,12 +136,13 @@ def build_worker_task(name: str, description: str, due_at: str = "") -> str:
     *due_at* is the exact run the worker must confirm in ``report_save``
     — a backfill's missed/failed run, or the cron fire's dispatch time.
     """
-    desc = (description or "").strip() or "(no description)"
+    instruction = (description or "").strip()
     now = datetime.now().astimezone()
     return render_template(
         "schedule.j2",
         name=name,
-        description=desc,
+        description=instruction or _NO_DESCRIPTION_WORKER,
+        instruction=bool(instruction),
         month_day=now.strftime("%m-%d"),
         due_at=due_at,
     )

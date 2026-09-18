@@ -39,8 +39,12 @@ def test_trigger_text_has_mark_name_and_dispatch_hint():
 
 
 def test_trigger_text_handles_empty_description():
+    """A description-less task (a legacy row, or one written straight through
+    the plugin's internal tool) is surfaced to the dispatcher as misconfigured
+    rather than behind a placeholder that reads like ordinary content."""
     text = S.trigger_text("t", "")
-    assert "(no description)" in text
+    assert "no description" in text
+    assert "scheduled_task_set" in text
 
 
 # ── build_worker_task ───────────────────────────────────────────────
@@ -56,8 +60,18 @@ def test_build_worker_task_self_contained():
 
 
 def test_build_worker_task_handles_empty_description():
+    """The worker must be told to STOP, not handed a blank task: with the full
+    toolset and the parent's mesh identity, an un-instructed worker invents
+    work and emits real side effects."""
     task = S.build_worker_task("t", "")
-    assert "(no description)" in task
+    low = task.lower()
+    assert "no description" in low
+    assert "no instruction" in low
+    assert "do not invent work" in low
+    # report_save is the one tool it may still use — the run must be closed.
+    assert "report_save" in task
+    # It is not given the "carry out the task fully" mandate.
+    assert "carry out the task fully" not in low
 
 
 # ── _parse_iso ───────────────────────────────────────────────────────

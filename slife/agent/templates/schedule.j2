@@ -3,7 +3,7 @@ You are executing the scheduled task "{{ name }}".
 Task description:
 {{ description }}
 
-Carry out the task fully, using whatever tools you need. When done, you MUST finish up as follows:
+{% if instruction %}Carry out the task fully, using whatever tools you need.{% else %}There is no instruction here to carry out, so there is nothing to do: do not invent work, and do not use any tool other than report_save.{% endif %} When done, you MUST finish up as follows:
 
 1. Write the report: draft a one-line title that summarizes the result (e.g. "{{ name }}: {{ month_day }} summary") and a complete, well-structured Markdown body (sections/lists/tables).
 2. Complete the run: call report_save(name="{{ name }}"{% if due_at %}, due_at="{{ due_at }}"{% endif %}, title=<your one-line title>, content=<your Markdown body>).

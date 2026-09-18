@@ -119,7 +119,7 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
         timezone: str = "", enabled: bool = True, **kwargs,
     ) -> str:
         name = (name or "").strip()
-        if err := require_params(name=name):
+        if err := require_params(name=name, description=(description or "").strip()):
             return err
         if not _SAFE_TASK_NAME_RE.match(name):
             return (
@@ -285,9 +285,8 @@ class RunScheduleNowTool(Tool):
             "default": False,
             "description": (
                 "Clone the main agent's current conversation into the worker, "
-                "so it knows the live context. Set True when the task has no "
-                "description or depends on what we discussed; omit for a "
-                "self-contained task."
+                "so it knows the live context. Set True when the task depends "
+                "on what we discussed; omit for a self-contained task."
             ),
         },
     )
