@@ -39,7 +39,7 @@ async def svc(db):
     return ToolCatalogService(db, write_owner=True)
 
 
-def _plugin_rows(plugin, tools, *, status="unloaded", enabled=True):
+def _plugin_rows(plugin, tools, *, load_status="unloaded", enabled=True):
     """The rows ``_mirror_plugin_tools_catalog`` builds for one plugin."""
     return [{
         "name": name,
@@ -49,7 +49,7 @@ def _plugin_rows(plugin, tools, *, status="unloaded", enabled=True):
         "schema": json.dumps({"name": name, "description": "",
                               "inputSchema": {"type": "object", "properties": {}}}),
         "enabled": enabled,
-        "status": status,
+        "load_status": load_status,
     } for name in tools]
 
 
@@ -116,7 +116,7 @@ async def test_plugin_rows_are_searchable_born_unloaded(db, svc):
     assert [h["name"] for h in hits] == ["turn_search"]
     assert hits[0]["category"] == "plugin"
     assert hits[0]["source_id"] == "memdb"
-    assert hits[0]["status"] == "unloaded"
+    assert hits[0]["load_status"] == "unloaded"
     assert "turn_search" not in await svc.snapshot_loaded()
 
     ok, _ = await svc.load_tool("turn_search")
@@ -150,7 +150,7 @@ async def test_plugin_down_marks_its_rows_and_ready_clears_them(db, svc):
 
     marked = await svc.mark_source_error("memdb")
     assert marked == 2
-    assert await svc.effective_status("turn_search") == "error"
+    assert await svc.effective_status("turn_search") == "unavailable"
     ok, reason = await svc.load_tool("turn_search")
     assert ok is False and "is not up right now" in reason
 
@@ -174,7 +174,7 @@ async def test_plugin_restart_does_not_re_derive_the_load_state(db, svc):
     """
     # Both born loaded — what an autoloaded plugin's rows look like.
     await db.reconcile(_plugin_rows("memdb", ["turn_search", "turn_count"],
-                                    status="loaded"))
+                                    load_status="loaded"))
     await svc.unload_tool("turn_count")            # the model's call
 
     await svc.mark_source_error("memdb")
@@ -193,10 +193,10 @@ async def test_plugin_rows_are_spared_by_the_unconfigured_source_purge(db, svc):
     await db.reconcile([
         {"name": "gh__search", "description": "", "category": "mcp",
          "source_id": "gh", "schema": "", "enabled": None,
-         "status": "unloaded"},
+         "load_status": "unloaded"},
         {"name": "gone__tool", "description": "", "category": "mcp",
          "source_id": "gone", "schema": "", "enabled": None,
-         "status": "unloaded"},
+         "load_status": "unloaded"},
     ])
 
     assert await db.list_source_ids() == {"gh", "gone"}          # servers only
@@ -216,13 +216,13 @@ async def test_gateway_death_does_not_touch_plugin_rows(db, svc):
     await db.reconcile([
         {"name": "gh__search", "description": "", "category": "mcp",
          "source_id": "gh", "schema": "", "enabled": None,
-         "status": "unloaded"},
+         "load_status": "unloaded"},
     ])
 
     marked = await svc.mark_all_external_error()
 
     assert marked == 1
-    assert await svc.effective_status("gh__search") == "error"
+    assert await svc.effective_status("gh__search") == "unavailable"
     assert await svc.effective_status("turn_search") == "unloaded"
 
 

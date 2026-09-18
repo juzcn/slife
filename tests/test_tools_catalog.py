@@ -10,7 +10,7 @@ from slife.tools.catalog import (
     SCHEMA_VERSION,
     CatalogStore,
     EFF_DISABLED,
-    EFF_ERROR,
+    EFF_UNAVAILABLE,
     EFF_NA,
     TYPE_CLI,
     TYPE_FUNC,
@@ -54,32 +54,32 @@ async def test_upsert_tool_and_effective_truth_table(store):
     await store.upsert_tool(
         "svcA__search", category="mcp", source_id="svcA",
         schema=_descriptor("search", "full-text search", None),
-        status="loaded",
+        load_status="loaded",
     )
     # …and an unusable server's rows read `error`: the verdict is its own
     # column, written by the reconcile (never derived — there is no server
     # table to join) and never written into the load state.
     await store.upsert_tool(
-        "svcC__ping", category="mcp", source_id="svcC", status="loaded",
+        "svcC__ping", category="mcp", source_id="svcC", load_status="loaded",
     )
     await store.mark_source_unavailable("svcC")
     # builtin disabled by config → DISABLED; enabled → loaded/unloaded
-    await store.upsert_tool("native_a", category="builtin", enabled=False, status="loaded")
-    await store.upsert_tool("native_b", category="builtin", enabled=True, status="unloaded")
+    await store.upsert_tool("native_a", category="builtin", enabled=False, load_status="loaded")
+    await store.upsert_tool("native_b", category="builtin", enabled=True, load_status="unloaded")
     # skill/cli → n/a (no load state)
     await store.upsert_tool("skill-xyz", category="skill")
     await store.upsert_tool("cli-foo", category="cli")
 
     eff = {r["name"]: r["eff"] for r in await store.scan_effective()}
     assert eff["svcA__search"] == "loaded"
-    assert eff["svcC__ping"] == EFF_ERROR
+    assert eff["svcC__ping"] == EFF_UNAVAILABLE
     assert eff["native_a"] == EFF_DISABLED
     assert eff["native_b"] == "unloaded"
     assert eff["skill-xyz"] == EFF_NA
     assert eff["cli-foo"] == EFF_NA
 
     # the verdict did not cost svcC__ping its load state — it is still loaded
-    assert (await store.get_tool("svcC__ping"))["status"] == "loaded"
+    assert (await store.get_tool("svcC__ping"))["load_status"] == "loaded"
 
     # loaded_names() yields exactly the rows that are loaded, enabled and
     # available (native_a is switched off despite status='loaded'; svcC__ping
@@ -97,14 +97,14 @@ async def test_set_source_enabled_moves_the_flag_and_nothing_else(store):
     it reports ``disabled`` rather than looking merely down, and a tool the
     model had loaded is still loaded when the server comes back.
     """
-    await store.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="loaded")
-    await store.upsert_tool("svcA__y", category="mcp", source_id="svcA", status="unloaded")
+    await store.upsert_tool("svcA__x", category="mcp", source_id="svcA", load_status="loaded")
+    await store.upsert_tool("svcA__y", category="mcp", source_id="svcA", load_status="unloaded")
 
     moved = await store.set_source_enabled("svcA", False)
     assert moved == 2
     x = await store.get_tool("svcA__x")
     assert x["enabled"] == 0
-    assert x["status"] == "loaded"                      # untouched
+    assert x["load_status"] == "loaded"                      # untouched
     eff = {r["name"]: r["eff"] for r in await store.scan_effective()}
     assert eff["svcA__x"] == EFF_DISABLED               # switched off…
     assert eff["svcA__y"] == EFF_DISABLED
@@ -113,24 +113,26 @@ async def test_set_source_enabled_moves_the_flag_and_nothing_else(store):
     await store.set_source_enabled("svcA", True)
     x = await store.get_tool("svcA__x")
     assert x["enabled"] == 1
-    assert x["status"] == "loaded"                      # the round trip cost nothing
+    assert x["load_status"] == "loaded"                      # the round trip cost nothing
     assert set(await store.loaded_names()) == {"svcA__x"}
 
     # An override that overrides nothing is not a write: the sync re-projects
     # every configured server on every pass, and ``tool_au`` fires on any
     # UPDATE — re-indexing the server's rows into tool_fts each time.
     assert await store.set_source_enabled("svcA", True) == 0
-    # A NULL row still MOVES: the column's NULL means "no opinion", so pinning
-    # it to the switch's explicit value is exactly the config-wins rule.
+    # A row born with no opinion is ENABLED — the column is a boolean with a
+    # default, so "no opinion" is a fact about the caller (it asked for no
+    # write), never a NULL in the table. Pinning it to 1 therefore moves
+    # nothing; the config-wins rule that remains is the explicit False above.
     await store.upsert_tool("svcA__z", category="mcp", source_id="svcA")
-    assert await store.set_source_enabled("svcA", True) == 1
+    assert await store.set_source_enabled("svcA", True) == 0
 
 
 @pytest.mark.asyncio
 async def test_a_switched_off_server_is_disabled_not_error(store):
     """``disabled`` outranks ``error``: a server that was down when it was
     switched off is off, and that is the fact the model needs to act on."""
-    await store.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="loaded")
+    await store.upsert_tool("svcA__x", category="mcp", source_id="svcA", load_status="loaded")
     await store.mark_source_unavailable("svcA")
     await store.set_source_enabled("svcA", False)
 
@@ -138,7 +140,7 @@ async def test_a_switched_off_server_is_disabled_not_error(store):
     assert eff["svcA__x"] == EFF_DISABLED
     # Both facts are kept, in their own columns.
     row = await store.get_tool("svcA__x")
-    assert row["status"] == "loaded"
+    assert row["load_status"] == "loaded"
     assert row["unavailable"] == 1
 
 
@@ -146,7 +148,7 @@ async def test_a_switched_off_server_is_disabled_not_error(store):
 async def test_mark_and_clear_source_unavailable(store):
     """The connect/disconnect cycle as the store sees it — and what it costs."""
     for name, status in (("svcA__x", "loaded"), ("svcA__y", "unloaded")):
-        await store.upsert_tool(name, category="mcp", source_id="svcA", status=status)
+        await store.upsert_tool(name, category="mcp", source_id="svcA", load_status=status)
 
     marked = await store.mark_source_unavailable("svcA")
     assert marked == 2
@@ -154,14 +156,14 @@ async def test_mark_and_clear_source_unavailable(store):
     # is already flagged is not written (and not re-indexed) again.
     assert await store.mark_source_unavailable("svcA") == 0
     assert await store.loaded_names() == []          # out of the injected set
-    assert await store.get_effective("svcA__x") == EFF_ERROR
+    assert await store.get_effective("svcA__x") == EFF_UNAVAILABLE
 
     cleared = await store.clear_source_unavailable("svcA")
     assert cleared == 2
     # The point of the separate column: the reconnect gives back exactly what
     # the server blip took — the load state was never written over.
-    assert (await store.get_tool("svcA__x"))["status"] == "loaded"
-    assert (await store.get_tool("svcA__y"))["status"] == "unloaded"
+    assert (await store.get_tool("svcA__x"))["load_status"] == "loaded"
+    assert (await store.get_tool("svcA__y"))["load_status"] == "unloaded"
     assert set(await store.loaded_names()) == {"svcA__x"}
 
     # A second pass over an available source is a no-op.
@@ -170,8 +172,8 @@ async def test_mark_and_clear_source_unavailable(store):
 
 @pytest.mark.asyncio
 async def test_mark_all_external_unavailable_spares_local_rows(store):
-    await store.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="loaded")
-    await store.upsert_tool("native", category="builtin", enabled=True, status="loaded")
+    await store.upsert_tool("svcA__x", category="mcp", source_id="svcA", load_status="loaded")
+    await store.upsert_tool("native", category="builtin", enabled=True, load_status="loaded")
 
     marked = await store.mark_all_external_unavailable()
 
@@ -181,21 +183,21 @@ async def test_mark_all_external_unavailable_spares_local_rows(store):
     assert (await store.get_tool("svcA__x"))["unavailable"] == 1
     # The startup sweep is what a restart does to every external row: it must
     # leave the load state alone, or a restart would cost the model its set.
-    assert (await store.get_tool("svcA__x"))["status"] == "loaded"
-    assert (await store.get_tool("native"))["status"] == "loaded"
+    assert (await store.get_tool("svcA__x"))["load_status"] == "loaded"
+    assert (await store.get_tool("native"))["load_status"] == "loaded"
     assert set(await store.loaded_names()) == {"native"}
 
 
 @pytest.mark.asyncio
 async def test_upsert_tool_keeps_status_on_reupdate(store):
-    await store.upsert_tool("native_a", category="builtin", enabled=True, status="loaded")
-    await store.set_status("native_a", "unloaded")
+    await store.upsert_tool("native_a", category="builtin", enabled=True, load_status="loaded")
+    await store.set_load_status("native_a", "unloaded")
     # a plugin re-register (reconcile upsert) must NOT clobber the unload
     changed = await store.upsert_tool(
-        "native_a", category="builtin", enabled=True, status="loaded",
+        "native_a", category="builtin", enabled=True, load_status="loaded",
     )
     assert changed is False
-    assert (await store.get_tool("native_a"))["status"] == "unloaded"
+    assert (await store.get_tool("native_a"))["load_status"] == "unloaded"
 
 
 @pytest.mark.asyncio
@@ -203,7 +205,7 @@ async def test_upsert_schema_change_drops_embedding(store):
     s1 = {"type": "object", "properties": {"repo": {"type": "string"}}}
     await store.upsert_tool(
         "svcA__search", category="mcp", source_id="svcA",
-        schema=_descriptor("search", "full-text search", s1), status="unloaded",
+        schema=_descriptor("search", "full-text search", s1), load_status="unloaded",
     )
     await _set_embedding(store, "svcA__search", [0.1, 0.2])
     assert await store.count_unembedded() == 0
@@ -211,7 +213,7 @@ async def test_upsert_schema_change_drops_embedding(store):
     # description edit → part of the descriptor → stale vector dropped
     await store.upsert_tool(
         "svcA__search", category="mcp", source_id="svcA",
-        schema=_descriptor("search", "semantic vector search", s1), status="unloaded",
+        schema=_descriptor("search", "semantic vector search", s1), load_status="unloaded",
     )
     assert await store.count_unembedded() == 1
 
@@ -219,7 +221,7 @@ async def test_upsert_schema_change_drops_embedding(store):
     await _set_embedding(store, "svcA__search", [0.3, 0.4])
     await store.upsert_tool(
         "svcA__search", category="mcp", source_id="svcA",
-        schema=_descriptor("search", "semantic vector search", s1), status="unloaded",
+        schema=_descriptor("search", "semantic vector search", s1), load_status="unloaded",
     )
     assert await store.count_unembedded() == 0
 
@@ -233,11 +235,11 @@ async def test_upsert_schema_change_drops_embedding(store):
 # re-indexed every row into tool_fts on every boot).
 
 def _row(name, *, description="", category="builtin", schema=None,
-         source_id=None, enabled=None, status=None):
+         source_id=None, enabled=None, load_status=None):
     return {
         "name": name, "description": description, "category": category,
         "source_id": source_id, "schema": schema, "enabled": enabled,
-        "status": status,
+        "load_status": load_status,
     }
 
 
@@ -245,9 +247,9 @@ def _row(name, *, description="", category="builtin", schema=None,
 async def test_reconcile_noop_writes_nothing(store):
     rows = [
         _row("native_a", description="A", schema="schema-a", enabled=True,
-             status="unloaded"),
+             load_status="unloaded"),
         _row("native_b", description="B", schema="schema-b", enabled=True,
-             status="unloaded"),
+             load_status="unloaded"),
     ]
     first = await store.reconcile(rows)
     assert sorted(first["inserted"]) == ["native_a", "native_b"]
@@ -327,18 +329,20 @@ async def test_reconcile_enabled_none_is_no_opinion_and_status_survives(store):
     """`enabled=None` leaves the column alone (the mcp/rest-api contract),
     and a re-reconcile never clobbers the model's load state."""
     await store.reconcile([_row("svc__t", category="mcp", source_id="svc",
-                                schema="s", enabled=None, status="loaded")])
+                                schema="s", enabled=None, load_status="loaded")])
     row = await store.get_tool("svc__t")
-    assert row["enabled"] is None and row["status"] == "loaded"
+    # "No opinion" is about the CALLER not writing, not about a NULL value:
+    # the column is a boolean and a fresh row takes its default.
+    assert row["enabled"] == 1 and row["load_status"] == "loaded"
 
-    # An explicit value DOES land, even over a NULL column — the behaviour the
-    # old COALESCE(excluded.enabled, tool.enabled) provided.
+    # An explicit value still lands — the behaviour the old
+    # COALESCE(excluded.enabled, tool.enabled) provided.
     result = await store.reconcile([_row("svc__t", category="mcp", source_id="svc",
-                                         schema="s", enabled=False, status="unloaded")])
+                                         schema="s", enabled=False, load_status="unloaded")])
     assert result["updated"] == ["svc__t"]
     row = await store.get_tool("svc__t")
     assert row["enabled"] == 0
-    assert row["status"] == "loaded"      # untouched by an update
+    assert row["load_status"] == "loaded"      # untouched by an update
 
 
 @pytest.mark.asyncio
@@ -375,9 +379,9 @@ async def test_reconcile_ignores_nameless_rows(store):
 @pytest.mark.asyncio
 async def test_purge_source_drops_its_tools(store):
     """A server that left the config owns no rows."""
-    await store.upsert_tool("svcA__a", category="mcp", source_id="svcA", status="loaded")
-    await store.upsert_tool("svcA__b", category="mcp", source_id="svcA", status="loaded")
-    await store.upsert_tool("svcB__c", category="mcp", source_id="svcB", status="loaded")
+    await store.upsert_tool("svcA__a", category="mcp", source_id="svcA", load_status="loaded")
+    await store.upsert_tool("svcA__b", category="mcp", source_id="svcA", load_status="loaded")
+    await store.upsert_tool("svcB__c", category="mcp", source_id="svcB", load_status="loaded")
 
     assert await store.purge_source("svcA") == 2
 
@@ -391,7 +395,7 @@ async def test_purge_source_drops_its_tools(store):
 @pytest.mark.asyncio
 async def test_purge_missing_sources_keeps_the_configured_set(store):
     for sid in ("keep", "gone"):
-        await store.upsert_tool(f"{sid}__x", category="mcp", source_id=sid, status="unloaded")
+        await store.upsert_tool(f"{sid}__x", category="mcp", source_id=sid, load_status="unloaded")
 
     purged = await store.purge_missing_sources({"keep"})
 
@@ -438,7 +442,7 @@ async def test_migration_adds_and_backfills_tool_type(tmp_path):
         """CREATE TABLE tool (
                name TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '',
                category TEXT NOT NULL, source_id TEXT, schema TEXT,
-               enabled INTEGER, status TEXT, last_loaded TEXT,
+               enabled INTEGER, load_status TEXT, last_loaded TEXT,
                unavailable INTEGER)""",
     )
     for name, category in (
@@ -508,7 +512,7 @@ CREATE TABLE tool (
                 CHECK (category IN ('builtin','job','mcp','rest-api','skill','cli')),
     type        TEXT NOT NULL DEFAULT 'func'
                 CHECK (type IN ('func','skill','cli')),
-    source_id   TEXT, schema TEXT, enabled INTEGER, status TEXT, last_loaded TEXT,
+    source_id   TEXT, schema TEXT, enabled INTEGER, load_status TEXT, last_loaded TEXT,
     unavailable INTEGER)
 """
 
@@ -579,7 +583,7 @@ async def test_missing_column_is_reported_not_left_as_a_query_error(tmp_path):
         """CREATE TABLE tool (
                name TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '',
                category TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'func',
-               source_id TEXT, schema TEXT, enabled INTEGER, status TEXT,
+               source_id TEXT, schema TEXT, enabled INTEGER, load_status TEXT,
                last_loaded TEXT)""",
     )
     await conn.execute("PRAGMA user_version = 4")
@@ -608,8 +612,8 @@ async def test_remove_tool_deletes_single_row(store):
     """A vanished non-server tool (a removed job, a dropped plugin tool) must
     lose its row — the mirror is upsert-only, so without this it lingers and
     tool_search keeps returning a tool that no longer exists."""
-    await store.upsert_tool("job_a", category="job", status="loaded")
-    await store.upsert_tool("job_b", category="job", status="loaded")
+    await store.upsert_tool("job_a", category="job", load_status="loaded")
+    await store.upsert_tool("job_b", category="job", load_status="loaded")
 
     await store.remove_tool("job_a")
 
@@ -623,25 +627,25 @@ async def test_remove_tool_deletes_single_row(store):
 @pytest.mark.asyncio
 async def test_evict_lru_orders_by_last_loaded_and_skips_protected(store):
     for name in ("t1", "t2", "t3", "t4"):
-        await store.upsert_tool(name, category="builtin", enabled=True, status="loaded")
+        await store.upsert_tool(name, category="builtin", enabled=True, load_status="loaded")
     # bump in a defined order: t2 oldest, then t3, t1, t4 newest
     for name in ("t2", "t3", "t1", "t4"):
         await asyncio.sleep(0)  # ensure distinct second? no — force order below
-    await store.set_status("t2", "loaded", bump=True)
-    await store.set_status("t3", "loaded", bump=True)
-    await store.set_status("t1", "loaded", bump=True)
-    await store.set_status("t4", "loaded", bump=True)
+    await store.set_load_status("t2", "loaded", bump=True)
+    await store.set_load_status("t3", "loaded", bump=True)
+    await store.set_load_status("t1", "loaded", bump=True)
+    await store.set_load_status("t4", "loaded", bump=True)
 
     evicted = await store.evict_lru(2, protected=frozenset({"t1"}))
     assert set(evicted) == {"t2", "t3"}
-    assert (await store.get_tool("t2"))["status"] == "unloaded"
-    assert (await store.get_tool("t1"))["status"] == "loaded"
+    assert (await store.get_tool("t2"))["load_status"] == "unloaded"
+    assert (await store.get_tool("t1"))["load_status"] == "loaded"
 
     # a NULL last_loaded sorts oldest — evict it first
-    await store.upsert_tool("t5", category="builtin", enabled=True, status="loaded")
+    await store.upsert_tool("t5", category="builtin", enabled=True, load_status="loaded")
     evicted = await store.evict_lru(1)
     assert evicted == ["t5"]
-    assert (await store.get_tool("t5"))["status"] == "unloaded"
+    assert (await store.get_tool("t5"))["load_status"] == "unloaded"
 
 
 @pytest.mark.asyncio
@@ -653,10 +657,10 @@ async def test_evict_lru_zero_and_skill_rows_untouchable(store):
     assert await store.evict_lru(0) == []
 
     # a loaded function tool is a candidate; limit 0 is a no-op
-    await store.upsert_tool("native_a", category="builtin", enabled=True, status="loaded")
+    await store.upsert_tool("native_a", category="builtin", enabled=True, load_status="loaded")
     assert await store.evict_lru(0) == []
     assert await store.evict_lru(10) == ["native_a"]
-    assert (await store.get_tool("native_a"))["status"] == "unloaded"
+    assert (await store.get_tool("native_a"))["load_status"] == "unloaded"
 
 
 # ── Search ──────────────────────────────────────────────────────────
@@ -667,11 +671,11 @@ async def test_search_keyword_and_cjk_fallback(store):
         "svcA__search", category="mcp", source_id="svcA",
         description="跨仓库全文搜索工具",
         schema=_descriptor("search", "full-text search across repos", None),
-        status="unloaded",
+        load_status="unloaded",
     )
     await store.upsert_tool(
         "native_exec", category="builtin", enabled=True,
-        description="run a shell command", status="loaded",
+        description="run a shell command", load_status="loaded",
     )
     eng = await store.search_keyword("search")
     assert {r["name"] for r in eng} == {"svcA__search"}
@@ -689,18 +693,18 @@ async def test_search_grep_and_category_filter(store):
     await store.upsert_tool("cli-foo", category="cli", description="foo cli help")
     hits = await store.search_grep("foo")
     assert {r["name"] for r in hits} == {"cli-foo"}
-    hits = await store.search_grep("search", category="mcp")
+    hits = await store.search_grep("search", filters={"category": "mcp"})
     assert {r["name"] for r in hits} == {"svcA__search"}
-    hits = await store.search_grep("search", category="cli")
+    hits = await store.search_grep("search", filters={"category": "cli"})
     assert hits == []
 
 
 @pytest.mark.asyncio
 async def test_search_semantic_closest_chunk_per_tool(store):
     await store.upsert_tool("svcA__search", category="mcp", source_id="svcA",
-                            schema=_descriptor("search", "search", None), status="unloaded")
+                            schema=_descriptor("search", "search", None), load_status="unloaded")
     await store.upsert_tool("native_exec", category="builtin", enabled=True,
-                            description="exec", status="loaded")
+                            description="exec", load_status="loaded")
     await _set_embedding(store, "svcA__search", [1.0, 0.0, 0.0])
     await _set_embedding(store, "native_exec", [0.0, 1.0, 0.0])
     hits = await store.search_semantic([0.9, 0.1, 0.0], limit=2)
@@ -719,7 +723,7 @@ async def test_search_semantic_closest_chunk_per_tool(store):
 async def test_drainer_roundtrip_and_model_meta(store):
     await store.upsert_tool("svcA__search", category="mcp", source_id="svcA",
                             schema=_descriptor("search", "search things", None),
-                            status="unloaded")
+                            load_status="unloaded")
     # a skill row's doc IS its SKILL.md — a playbook is text worth searching
     await store.upsert_tool("skill-xyz", category="skill", schema="# Skill notes")
     # a cli row holds no tool def, so it has nothing to embed
@@ -833,7 +837,7 @@ async def test_schemaless_rows_do_not_starve_the_drainer(store):
     for name in ("browser-harness", "npm", "npx", "uv", "uvx"):
         await store.upsert_tool(name, category="cli")
     await store.upsert_tool(
-        "wait_minutes", category="builtin", status="loaded",
+        "wait_minutes", category="builtin", load_status="loaded",
         schema=_descriptor("wait_minutes", "pause and resume later", None),
     )
 

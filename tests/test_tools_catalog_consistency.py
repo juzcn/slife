@@ -154,7 +154,7 @@ async def test_empty_db_opens_and_seeds(_isolate):
     assert await store.count_loaded() == 0
     snap = await svc.snapshot_loaded()
     assert snap == set(ALWAYS_LOADED)
-    assert (await store.get_tool("execute_shell"))["status"] == "unloaded"
+    assert (await store.get_tool("execute_shell"))["load_status"] == "unloaded"
     assert await store.list_source_ids() == set()     # no server has connected
     await store.close()
 
@@ -268,12 +268,12 @@ async def test_nothing_external_is_usable_before_a_connect(_isolate):
     await store.open()
     svc = ToolCatalogService(store, write_owner=True)
     await store.upsert_tool("serper__search", category="mcp", source_id="serper",
-                            status="loaded")
+                            load_status="loaded")
 
     await svc.mark_all_external_error()
 
     assert (await store.get_tool("serper__search"))["unavailable"] == 1
-    assert (await store.get_tool("serper__search"))["status"] == "loaded"
+    assert (await store.get_tool("serper__search"))["load_status"] == "loaded"
     assert await svc.snapshot_loaded() >= ALWAYS_LOADED
     assert "serper__search" not in await svc.snapshot_loaded()
     await store.close()
@@ -292,7 +292,7 @@ async def test_connect_mirrors_unloaded_and_disconnect_marks_error(_isolate):
     await _mirror_server(svc, "weather", ["temp"])
 
     # registered tools land UNLOADED and carry the config-derived category
-    assert (await store.get_tool("serper__search"))["status"] == "unloaded"
+    assert (await store.get_tool("serper__search"))["load_status"] == "unloaded"
     assert (await store.get_tool("serper__search"))["category"] == "mcp"
     assert (await store.get_tool("weather__temp"))["category"] == "rest-api"
     assert await store.get_tool("weather__temp") is not None
@@ -305,8 +305,8 @@ async def test_connect_mirrors_unloaded_and_disconnect_marks_error(_isolate):
     await svc.mark_source_error("serper")
     snap = await svc.snapshot_loaded()
     assert "serper__search" not in snap            # gone from the tool list
-    assert await svc.effective_status("serper__search") == "error"
-    assert (await store.get_tool("serper__search"))["status"] == "loaded"
+    assert await svc.effective_status("serper__search") == "unavailable"
+    assert (await store.get_tool("serper__search"))["load_status"] == "loaded"
     # the OTHER server is untouched by its neighbour's outage
     assert await svc.effective_status("weather__temp") == "unloaded"
 
@@ -331,10 +331,10 @@ async def test_gateway_death_marks_every_external_tool_error(_isolate):
     marked = await svc.mark_all_external_error()
 
     assert marked == 2
-    assert await svc.effective_status("serper__search") == "error"
-    assert await svc.effective_status("weather__temp") == "error"
+    assert await svc.effective_status("serper__search") == "unavailable"
+    assert await svc.effective_status("weather__temp") == "unavailable"
     # only the verdict moved — the load state the model set is still there
-    assert (await store.get_tool("serper__search"))["status"] == "loaded"
+    assert (await store.get_tool("serper__search"))["load_status"] == "loaded"
     # and only external rows were flagged
     assert await svc.effective_status("execute_shell") == "unloaded"
     await store.close()
@@ -351,7 +351,7 @@ async def test_purge_unconfigured_sources(_isolate):
     svc = ToolCatalogService(store, write_owner=True)
     await _mirror_server(svc, "serper", ["search"])
     await store.upsert_tool("ghost__x", category="mcp", source_id="ghost",
-                            schema=_descriptor("x", "x"), status="unloaded")
+                            schema=_descriptor("x", "x"), load_status="unloaded")
 
     from slife.plugins.mcp_gateway import config as _cfg
     purged = await svc.purge_unconfigured_sources(set(_cfg.servers()))
@@ -463,7 +463,7 @@ async def test_row_state_survives_a_restart(_isolate):
     await store2.open()
     svc2 = ToolCatalogService(store2, write_owner=True)
     # The intent persisted, and the fresh session re-asserts the verdict.
-    assert (await store2.get_tool("serper__search"))["status"] == "loaded"
+    assert (await store2.get_tool("serper__search"))["load_status"] == "loaded"
     await svc2.mark_all_external_error()
     assert await svc2.snapshot_loaded() >= ALWAYS_LOADED
     assert "serper__search" not in await svc2.snapshot_loaded()
@@ -512,7 +512,7 @@ async def test_connectivity_projection_follows_check(_isolate, sample_config):
         await service._mark_server_connectivity(client, {"serper", "weather"})
 
         assert await svc.effective_status("serper__search") == "unloaded"
-        assert await svc.effective_status("weather__temp") == "error"
+        assert await svc.effective_status("weather__temp") == "unavailable"
         assert (await store.get_tool("weather__temp"))["unavailable"] == 1
 
         # weather comes up on the next pass → its mark clears
@@ -542,7 +542,7 @@ async def test_switching_a_server_off_keeps_its_rows_and_the_load_state(
     try:
         svc = ToolCatalogService(store, write_owner=True)
         await _mirror_server(svc, "serper", ["search"])
-        await store.set_status("serper__search", "loaded")
+        await store.set_load_status("serper__search", "loaded")
 
         service = AgentService(sample_config)
         service._catalog = svc
@@ -559,7 +559,7 @@ async def test_switching_a_server_off_keeps_its_rows_and_the_load_state(
 
         row = await store.get_tool("serper__search")
         assert row["enabled"] == 0            # the switch
-        assert row["status"] == "loaded"      # the model's decision, untouched
+        assert row["load_status"] == "loaded"      # the model's decision, untouched
         assert effective_from_row(row) == "disabled"
 
         # Switched back on while still down: now it IS the liveness verdict
@@ -568,8 +568,8 @@ async def test_switching_a_server_off_keeps_its_rows_and_the_load_state(
         row = await store.get_tool("serper__search")
         assert row["enabled"] == 1
         assert row["unavailable"] == 1
-        assert effective_from_row(row) == "error"
-        assert row["status"] == "loaded"
+        assert effective_from_row(row) == "unavailable"
+        assert row["load_status"] == "loaded"
     finally:
         await store.close()
 
@@ -594,7 +594,7 @@ async def test_connectivity_probe_failure_is_not_a_verdict(_isolate, sample_conf
 
         await service._mark_server_connectivity(client, {"serper"})
 
-        assert (await store.get_tool("serper__search"))["status"] == "loaded"
+        assert (await store.get_tool("serper__search"))["load_status"] == "loaded"
         assert "serper__search" in await svc.snapshot_loaded()
     finally:
         await store.close()
@@ -622,10 +622,10 @@ async def test_gateway_child_exit_marks_external_tools_error(_isolate):
         assert await svc.effective_status("serper__search") == "loaded"
 
         await AgentService.on_plugin_child_exit(stub, "mcp-gateway")
-        assert await svc.effective_status("serper__search") == "error"
+        assert await svc.effective_status("serper__search") == "unavailable"
         assert "serper__search" not in await svc.snapshot_loaded()
         # the crash flags the row; what the model loaded is still on it, so the
         # gateway's restart brings it back rather than resetting it
-        assert (await store.get_tool("serper__search"))["status"] == "loaded"
+        assert (await store.get_tool("serper__search"))["load_status"] == "loaded"
     finally:
         await store.close()

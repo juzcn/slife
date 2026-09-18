@@ -229,14 +229,14 @@ class TestAgentServiceMCPEnrichment:
                 row = await store.get_tool("ondemand__search")
                 assert row is not None
                 assert row["category"] == "mcp"
-                assert row["status"] == "unloaded"
+                assert row["load_status"] == "unloaded"
                 assert row["schema"]
 
                 # A reloaded row (func-tool-load flips loaded) survives the next
                 # reconcile: upsert_tool only applies status to a NEW row.
-                await store.set_status("ondemand__search", "loaded", bump=True)
+                await store.set_load_status("ondemand__search", "loaded", bump=True)
                 await service._sync_mcp_proxies()
-                assert (await store.get_tool("ondemand__search"))["status"] == "loaded"
+                assert (await store.get_tool("ondemand__search"))["load_status"] == "loaded"
         finally:
             # An unclosed aiosqlite connection keeps its thread alive and
             # hangs pytest at exit — close on the failure path too.

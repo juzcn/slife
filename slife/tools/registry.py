@@ -14,7 +14,7 @@ import time as _time
 from typing import TYPE_CHECKING, AbstractSet, Callable
 
 from slife.tools.base import Tool
-from slife.tools.catalog import EFF_ERROR
+from slife.tools.catalog import EFF_UNAVAILABLE
 from slife.tools.whitelist import is_meta_tool
 
 if TYPE_CHECKING:
@@ -160,7 +160,7 @@ class ToolRegistry:
             if self._catalog is not None:
                 eff = await self._catalog.effective_status(tool_name)
                 if eff is not None:
-                    if eff == EFF_ERROR:
+                    if eff == EFF_UNAVAILABLE:
                         logger.info("tool_server_down name=%s", tool_name)
                         return self._server_down_message(tool_name)
                     logger.info("tool_known_not_loaded name=%s eff=%s", tool_name, eff)
@@ -176,7 +176,7 @@ class ToolRegistry:
         # (except the meta whitelist, which always runs).
         if self._catalog is not None and not is_meta_tool(tool_name):
             eff = await self._catalog.effective_status(tool_name)
-            if eff == EFF_ERROR:
+            if eff == EFF_UNAVAILABLE:
                 # Its server is down: saying "not loaded" would send the model
                 # to func-tool-load, which refuses for the same unreachable
                 # reason.

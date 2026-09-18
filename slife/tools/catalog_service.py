@@ -18,11 +18,12 @@ from typing import TYPE_CHECKING
 
 from slife.tools.catalog import (
     STATUS_LOADED,
+    STATUS_NA,
     STATUS_UNLOADED,
     TYPE_FUNC,
     CatalogStore,
     EFF_DISABLED,
-    EFF_ERROR,
+    EFF_UNAVAILABLE,
 )
 from slife.tools.whitelist import ALWAYS_LOADED, is_meta_tool
 
@@ -204,7 +205,7 @@ class ToolCatalogService:
             "enabled": self._row_enabled(tool, disabled_servers),
             # Only a brand-new row sees this — reconcile applies status on
             # INSERT alone, which is exactly the keep-existing rule…
-            "status": self.default_status(name),
+            "load_status": self.default_status(name),
             # …unless the entry is marked ``autoload``: that is the config
             # saying "this tool stays loaded", so its status is an authority
             # and may overwrite what the model decided.  (Meta tools are born
@@ -343,9 +344,10 @@ class ToolCatalogService:
         its row — a deleted skill must not linger as a hit `tool_search` keeps
         returning.  Returns the purged names.
 
-        ``status`` is written as ``None`` (the column stays NULL) and
-        ``override_status`` is left off: neither family has a load state, so
-        an ``autoload`` flag on a skill/cli entry has nothing to own.
+        ``load_status`` is written as ``STATUS_NA`` — neither family has a
+        load state, and "no load state applies" is a value in the column's
+        domain, not a NULL.  ``override_status`` is left off for the same
+        reason: an ``autoload`` flag on a skill/cli entry has nothing to own.
         """
         result = await self._store.reconcile(
             [
@@ -355,7 +357,7 @@ class ToolCatalogService:
                     "category": category,
                     "schema": spec.get("schema"),
                     "enabled": spec.get("enabled"),
-                    "status": None,
+                    "load_status": STATUS_NA,
                 }
                 for name, spec in rows.items()
             ],
@@ -393,7 +395,7 @@ class ToolCatalogService:
         eff = await self._store.get_effective(name)
         if eff == EFF_DISABLED:
             return False, f"Error: tool '{name}' is disabled — enable it first."
-        if eff == EFF_ERROR:
+        if eff == EFF_UNAVAILABLE:
             server = row.get("source_id") or "?"
             return False, (
                 f"Error: tool '{name}' is unavailable — server '{server}' is "
@@ -404,7 +406,7 @@ class ToolCatalogService:
         if eff == "loaded":
             return True, f"tool '{name}' is already loaded."
 
-        await self._store.set_status(name, "loaded", bump=True)
+        await self._store.set_load_status(name, "loaded", bump=True)
         logger.info("catalog_tool_loaded name=%s", name)
         return True, f"[OK] Loaded '{name}'."
 
@@ -435,9 +437,9 @@ class ToolCatalogService:
                 f"Error: tool '{name}' has no load/unload state "
                 f"(type '{row.get('type')}')."
             )
-        if row.get("status") != "loaded":
+        if row.get("load_status") != STATUS_LOADED:
             return True, f"tool '{name}' is already unloaded."
-        await self._store.set_status(name, "unloaded")
+        await self._store.set_load_status(name, "unloaded")
         logger.info("catalog_tool_unloaded name=%s", name)
         return True, f"[OK] Unloaded '{name}'."
 
@@ -507,7 +509,7 @@ class ToolCatalogService:
             source_id=server,
             schema=schema,
             enabled=enabled,
-            status=self.default_status(name, server=server),
+            load_status=self.default_status(name, server=server),
             override_status=server in self.autoload_servers,
         )
 
@@ -556,7 +558,7 @@ class ToolCatalogService:
                     t.get("inputSchema", {"type": "object", "properties": {}}),
                 ),
                 "enabled": enabled,
-                "status": self.default_status(full_name, server=server),
+                "load_status": self.default_status(full_name, server=server),
                 # The autoload flag lives on the SERVER entry (mcp/rest-api
                 # have no per-tool one), so it is one decision over the whole
                 # set: every row of such a server owns its status.

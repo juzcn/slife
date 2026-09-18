@@ -18,7 +18,7 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from slife.tools.base import Tool, make_params, require_params
-from slife.tools.catalog import effective_from_row
+from slife.tools.catalog import NA, effective_from_row
 from slife.tools.catalog_search import merge_hybrid
 from slife.tools.whitelist import TOOL_META_CATEGORY
 
@@ -46,6 +46,18 @@ def _require_catalog(
     return catalog, ""
 
 
+def _schema_bytes(schema) -> int:
+    """Descriptor size; the "no schema" sentinel reports 0 bytes.
+
+    The column is NOT NULL and spells "no schema text" as ``'n/a'``, so a bare
+    ``len()`` would report 3 bytes for every cli row — a size for something
+    that has no size.
+    """
+    if not schema or schema == NA:
+        return 0
+    return len(schema)
+
+
 class ToolSearchTool(Tool):
     """Cross-category catalog search (builtin/job/plugin/mcp/rest-api/skill/cli)."""
 
@@ -62,15 +74,38 @@ class ToolSearchTool(Tool):
             "type": "string",
             "description": "Search query (matches name/description/schema).",
         },
+        # The filters ARE the catalog's columns — one parameter per column, so
+        # the surface cannot drift from the table and every filter is a real
+        # predicate the query sees.
         category={
             "type": "string",
             "description": "Filter by category (builtin|job|plugin|mcp|rest-api|skill|cli); empty = all.",
             "default": "",
         },
-        status={
+        type={
             "type": "string",
-            "description": "Filter by effective status: all|loaded|unloaded|disabled|error|n/a.",
-            "default": "all",
+            "description": "Filter by kind (func|skill|cli); empty = all.",
+            "default": "",
+        },
+        source_id={
+            "type": "string",
+            "description": "Filter by owner: an mcp/rest-api server name, or a plugin name; empty = all.",
+            "default": "",
+        },
+        load_status={
+            "type": "string",
+            "description": "Filter by load state (loaded|unloaded|n/a); empty = all.",
+            "default": "",
+        },
+        enabled={
+            "type": "boolean",
+            "description": "Filter by the config switch: false = switched off in tools.json5; omitted = all.",
+            "default": None,
+        },
+        unavailable={
+            "type": "boolean",
+            "description": "Filter by whether the owner is reachable: true = its server/plugin is down; omitted = all.",
+            "default": None,
         },
         mode={
             "type": "string",
@@ -82,9 +117,16 @@ class ToolSearchTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         query: str = kwargs.get("query", "") or ""
-        category: str = kwargs.get("category", "") or ""
-        status: str = kwargs.get("status", "all") or "all"
         mode: str = kwargs.get("mode", "hybrid") or "hybrid"
+        # One dict, straight from the parameters to the columns: absent and
+        # empty mean "no filter", and False is a real value (enabled=false is
+        # how you ask for what is switched off).
+        filters = {
+            key: kwargs.get(key)
+            for key in ("category", "type", "source_id", "load_status",
+                        "enabled", "unavailable")
+            if kwargs.get(key) not in (None, "")
+        }
         try:
             limit = max(1, min(int(kwargs.get("limit", 10) or 10), 50))
         except (TypeError, ValueError):
@@ -97,10 +139,10 @@ class ToolSearchTool(Tool):
 
         hint = ""
         if mode == "grep":
-            results = await store.search_grep(query, limit=limit, category=category)
+            results = await store.search_grep(query, limit=limit, filters=filters)
         else:
             keyword_hits = await store.search_keyword(
-                query, limit=limit * 2, category=category,
+                query, limit=limit * 2, filters=filters,
             )
             results = keyword_hits
             if mode == "hybrid":
@@ -111,7 +153,7 @@ class ToolSearchTool(Tool):
                         emb = await embedder.embed_one(query)
                         if emb:
                             semantic_hits = await store.search_semantic(
-                                emb, limit=limit * 2, category=category,
+                                emb, limit=limit * 2, filters=filters,
                             )
                             results = merge_hybrid(
                                 keyword_hits, semantic_hits, key_field="name",
@@ -124,21 +166,18 @@ class ToolSearchTool(Tool):
         rows = []
         for r in results:
             row = dict(r)
-            eff = effective_from_row(row)
-            if status != "all" and eff != status:
-                continue
             rows.append({
                 "name": row.get("name", ""),
                 "description": row.get("description", "").split(".")[0].strip()[:120],
                 "category": row.get("category", ""),
                 "source_id": row.get("source_id"),
-                "schema_bytes": len(row.get("schema") or ""),
-                "status": eff,
+                "schema_bytes": _schema_bytes(row.get("schema")),
+                "status": effective_from_row(row),
             })
 
-        # Truncate AFTER the status filter so a filtered search keeps the top
-        # matching rows instead of dropping qualifying rows beyond a premature
-        # relevance cutoff (the filter-after-limit shape the drainer has).
+        # The filters ran in SQL, so this truncation only trims the ranked
+        # result — it can no longer drop qualifying rows that a post-hoc
+        # filter would have had to look past the candidate cutoff to find.
         rows = rows[:limit]
         payload = {"count": len(rows), "results": rows}
         if hint:
@@ -185,10 +224,10 @@ class FuncToolLoadTool(Tool):
 
         if cat in ("mcp", "rest-api"):
             if registry is None or mcp is None:
-                await catalog.store.set_status(full_name, "unloaded")
+                await catalog.store.set_load_status(full_name, "unloaded")
                 return f"Error: '{full_name}' loaded but the MCP client is unavailable — no execution route."
             if not row.get("schema"):
-                await catalog.store.set_status(full_name, "unloaded")
+                await catalog.store.set_load_status(full_name, "unloaded")
                 return (
                     f"Error: '{full_name}' schema isn't synced yet — ensure its "
                     f"server is connected, then retry."
@@ -206,7 +245,7 @@ class FuncToolLoadTool(Tool):
                 registry.register(proxy)
                 logger.info("tool_load_materialized name=%s", full_name)
             except Exception as e:
-                await catalog.store.set_status(full_name, "unloaded")
+                await catalog.store.set_load_status(full_name, "unloaded")
                 logger.warning("tool_load_materialize_failed name=%s err=%s", full_name, e)
                 return f"Error: failed to materialize '{full_name}': {e}"
         return msg

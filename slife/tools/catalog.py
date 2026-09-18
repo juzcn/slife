@@ -9,16 +9,16 @@ short load/unload writes.  Ops are deliberately store-shaped (upserts,
 search, LRU, embed drainer contract) — policy lives in
 :mod:`slife.tools.catalog_service`.
 
-State model (see DESIGNER_NOTES §8.5): ``tool.status`` holds
-``loaded | unloaded | error | NULL`` (NULL for skill/cli — no load concept),
-and everything the injection gate needs is ON THE ROW.  ``error`` is the
+State model (see DESIGNER_NOTES §8.5): ``tool.load_status`` holds
+``loaded | unloaded | n/a`` (``n/a`` for skill/cli — no load concept), and
+everything the injection gate needs is ON THE ROW.  ``error`` is the
 connectivity verdict: whenever an external server is unusable — at startup
 before it connects, on a disconnect, on a failed connect, when its gateway
 child dies — the host marks that server's tools ``error``, and a successful
 (re)connect resets them to their class default.  There is deliberately no
 ``server`` table: which servers to bring up lives in ``tools.json5``, what is
 live right now lives in the gateway's pool, and this db only records the
-result on the tool rows.  Writes: status flips (load/unload) and those
+result on the tool rows.  Writes: load-status flips (load/unload) and those
 connectivity marks; eviction is the main agent's job.
 """
 
@@ -50,8 +50,8 @@ import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/pa
 logger = logging.getLogger(__name__)
 
 #: Server-backed categories — a tool whose ``source_id`` names an external
-#: server.  There is no ``server`` row to join: the tool's OWN ``status``
-#: carries the connectivity verdict (``error`` when its server is down).
+#: server.  There is no ``server`` row to join: the tool's OWN ``unavailable``
+#: column carries the connectivity verdict (``error`` when its server is down).
 #:
 #: ``plugin`` is deliberately NOT here even though those rows also carry a
 #: ``source_id`` (the plugin that owns them): a plugin is not an *external*
@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 #: and it stays out of the "servers" count and the unconfigured-source purge.
 SERVER_CATEGORIES = frozenset({"mcp", "rest-api"})
 
-#: Function-tool categories — the only ones with a load/unload status.
+#: Function-tool categories — the only ones with a load state.
 #: ``plugin`` = a built-in plugin's own tool; ``job`` = one function from the
 #: jobs directory (exposed by the job-coding plugin, whose OWN tools are
 #: ``plugin`` — see ``catalog_service.plugin_category``).
@@ -84,31 +84,45 @@ def type_for_category(category: str) -> str:
 
     ``category`` says where a tool came from (a builtin module, a job file, an
     external server, a skill dir, a cli config entry); ``type`` says what kind
-    of thing it is, which is what decides whether ``status`` applies at all.
+    of thing it is, which is what decides whether ``load_status`` applies.
     """
     return _TYPE_BY_CATEGORY[category]
 
 
-# The stored status values for function tools.  ONLY the load state lives here
-# — the model's decision, and the one thing the db exists to persist
-# (``loaded`` / ``unloaded``).  The connectivity verdict is a SEPARATE column
-# (``unavailable``): writing it into ``status`` destroyed the load state it
-# landed on, so a server blip — or the startup sweep — reset every external
-# tool the model had loaded.
+# The stored load-status values — the column's whole closed domain.  ONLY
+# the load state lives here — the model's decision, and the one thing the db
+# exists to persist (``loaded`` / ``unloaded``).  The connectivity verdict is
+# a SEPARATE column (``unavailable``): writing it into ``load_status``
+# destroyed the load state it landed on, so a server blip — or the startup
+# sweep — reset every external tool the model had loaded.
 STATUS_LOADED = "loaded"
 STATUS_UNLOADED = "unloaded"
-
+#: skill / cli have no load concept — a VALUE, not NULL, so the column's
+#: domain matches the vocabulary the model sees and a filter is a plain
+#: equality.  The same literal as the effective label: one spelling.
 # Effective status labels (derived, never stored).
 EFF_DISABLED = "disabled"
-EFF_ERROR = "error"
+#: The effective label for ``unavailable`` — the column is the fact, this is
+#: its name.  Not "error": the state IS unavailability, and one concept must
+#: not have two names (the same rule ``STATUS_NA`` follows).
+EFF_UNAVAILABLE = "unavailable"
 EFF_NA = "n/a"
+
+#: The stored spelling of "no load state applies" — the SAME literal the model
+#: sees in an effective status, because one concept must not have two names.
+#: The column-spelled "not applicable" — one literal for every column that
+#: would otherwise be NULL: no load state, no owner, no schema text.  The same
+#: string the model sees in an effective status, so one concept keeps one name.
+NA = "n/a"
+STATUS_NA = NA
 
 #: Schema revision this store expects (``catalog_schema.sql`` sets it; the
 #: migration in :meth:`CatalogStore._migrate` moves an older file up to it).
-#: Deliberately NOT bumped for the ``unavailable`` column: that revision has no
-#: migration step — the file is derived data, so a stale one is reported and
-#: rebuilt (``_check_columns``), never upgraded in place.
-SCHEMA_VERSION = 4
+#: Deliberately NOT bumped for the ``unavailable`` column, and v5
+#: (``status`` → ``load_status``), and v6 (the two flag columns become
+#: ``NOT NULL``) have no step either: the file is derived data, so a stale one
+#: is reported and rebuilt (``_check_columns``), never upgraded in place.
+SCHEMA_VERSION = 7
 
 #: The category values the code can write — the set the live table's ``CHECK``
 #: must accept (checked at open, see :meth:`CatalogStore._check_categories`).
@@ -122,7 +136,7 @@ _now = now_local_seconds
 #: the live table (:meth:`CatalogStore._check_columns`).
 _REQUIRED_COLUMNS = frozenset({
     "name", "description", "category", "type", "source_id", "schema",
-    "enabled", "status", "unavailable", "last_loaded",
+    "enabled", "load_status", "unavailable", "last_loaded",
 })
 
 #: The ``tool`` table's category constraint, parsed rather than substring-matched.
@@ -277,9 +291,9 @@ def _flatten_schema(schema_text: str) -> str:
 #: It is ``_effective_status``'s rule and MUST move with it.
 _INJECTABLE_SQL = (
     "type = 'func'"
-    " AND status = 'loaded'"
-    " AND (enabled IS NULL OR enabled = 1)"
-    " AND (unavailable IS NULL OR unavailable = 0)"
+    " AND load_status = 'loaded'"
+    " AND enabled = 1"
+    " AND unavailable = 0"
 )
 
 
@@ -302,8 +316,8 @@ def _effective_status(trow: dict) -> str:
     if trow.get("enabled") == 0:
         return EFF_DISABLED
     if trow.get("unavailable"):
-        return EFF_ERROR
-    status = trow.get("status")
+        return EFF_UNAVAILABLE
+    status = trow.get("load_status")
     return status if status else EFF_NA
 
 
@@ -312,10 +326,49 @@ def effective_from_row(row: dict) -> str:
     return _effective_status(row)
 
 
+#: The columns a search may filter on — the tool's filter parameters ARE
+#: these, one-to-one, so the surface cannot drift from the table, and every
+#: filter is a real predicate the SQL sees.  That is the fix for a filter
+#: applied POST-hoc in Python: one ran after the ``limit * 2`` candidate
+#: cutoff and returned 7 of the 14 qualifying rows, silently.
+FILTER_COLUMNS = ("category", "type", "source_id", "load_status")
+
+
+def column_filters(filters: "dict | None") -> tuple[list[str], list]:
+    """``(clauses, params)`` for a column filter dict — AND-ed by the caller.
+
+    A filter the caller did not supply contributes NO clause at all — not
+    ``= NULL``, not a default value.  The string columns read that as emptiness;
+    the two flag columns must read it as ``is not None``, because ``False`` is
+    a value and a truthiness test would silently drop ``enabled=false``.
+
+    Every column is NOT NULL, so every clause is a plain equality — the flag
+    columns included.  That is what removing NULL bought: the old form had to
+    spell ``unavailable`` as ``(unavailable IS NULL OR unavailable = 0)``,
+    because NULL was how "available" was stored, and a caller who wrote the
+    obvious ``= 0`` got an empty result set instead of an error.
+    """
+    f = filters or {}
+    clauses: list[str] = []
+    params: list = []
+    for column in FILTER_COLUMNS:
+        value = f.get(column)
+        if value:
+            clauses.append(f"t.{column} = ?")
+            params.append(value)
+    if f.get("enabled") is not None:
+        clauses.append("t.enabled = ?")
+        params.append(1 if f["enabled"] else 0)
+    if f.get("unavailable") is not None:
+        clauses.append("t.unavailable = ?")
+        params.append(1 if f["unavailable"] else 0)
+    return clauses, params
+
+
 # Row prefix used by the scan/search queries.
 _SCAN_COLS = (
     "t.name, t.description, t.category, t.type, t.source_id, t.schema, "
-    "t.enabled, t.status, t.last_loaded, t.unavailable"
+    "t.enabled, t.load_status, t.last_loaded, t.unavailable"
 )
 # The four-column substring predicate shared by _search_like / search_grep
 # (4 ``?`` placeholders per column ANDed into name/description/category/schema).
@@ -453,7 +506,7 @@ class CatalogStore:
         """Bring an older db up to ``SCHEMA_VERSION`` before the schema runs.
 
         v2 dropped the ``server`` table: connection state lives on the tool
-        rows now (``status='error'`` when a server is unusable), so the
+        rows now (``unavailable`` when a server is unusable), so the
         table is dead weight AND a stale source of truth.  ``CREATE TABLE IF
         NOT EXISTS`` would leave it in place forever — the only place a
         retired table can be removed is a migration step like this one.
@@ -468,6 +521,14 @@ class CatalogStore:
         stale catalog is deleted and rebuilt from its sources instead of
         upgraded in place.  :meth:`_check_categories` reports such a file
         rather than letting its writes fail silently.
+
+        v5 renamed ``status`` → ``load_status`` and gave the column a closed
+        domain — ``loaded | unloaded | n/a`` — so "no load state applies"
+        (skill / cli) is a value rather than NULL.  Like v4 it has NO step
+        here: the column is simply a different one, so an older file fails
+        :meth:`_check_columns` and is reported for deletion, which is the
+        catalog's standing trade — it is derived data, and the rebuild costs
+        only the load decisions the model made this session.
         """
         cursor = await self._c.execute("PRAGMA user_version")
         row = await cursor.fetchone()
@@ -577,15 +638,15 @@ class CatalogStore:
                 if prev is None:
                     await self._c.execute(
                         """INSERT INTO tool(name, description, category, type,
-                                            source_id, schema, enabled, status,
+                                            source_id, schema, enabled, load_status,
                                             last_loaded)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             name, row.get("description") or "",
                             row.get("category", "") or "", new_type,
-                            row.get("source_id"), new_schema,
-                            (1 if new_enabled else 0) if new_enabled is not None else None,
-                            row.get("status"), None,
+                            row.get("source_id") or NA, new_schema or NA,
+                            1 if new_enabled is None else (1 if new_enabled else 0),
+                            row.get("load_status") or STATUS_NA, "",
                         ),
                     )
                     inserted.append(name)
@@ -604,7 +665,10 @@ class CatalogStore:
                 # enum/default/pattern/format and nesting past one level, so a
                 # change only in a dropped field would otherwise delete the
                 # vectors and re-embed to a byte-identical vector.
-                schema_moved = (prev["schema"] or "") != (new_schema or "")
+                # ``or NA`` on BOTH sides: "the caller said nothing" and "the
+                # column holds 'n/a'" are the same fact, so a steady-state
+                # reconcile still writes nothing (the no-op contract).
+                schema_moved = (prev["schema"] or NA) != (new_schema or NA)
                 # ``embed_stale`` implies ``schema_moved`` (the flattener is a
                 # pure function of the text), so short-circuit: an unchanged
                 # row — every row on a steady-state boot — costs one string
@@ -624,12 +688,12 @@ class CatalogStore:
                 if prev["type"] != new_type:
                     sets.append("type = ?")
                     vals.append(new_type)
-                if (prev["source_id"] or "") != (row.get("source_id") or ""):
+                if (prev["source_id"] or NA) != (row.get("source_id") or NA):
                     sets.append("source_id = ?")
-                    vals.append(row.get("source_id"))
+                    vals.append(row.get("source_id") or NA)
                 if schema_moved:
                     sets.append("schema = ?")
-                    vals.append(new_schema)
+                    vals.append(new_schema or NA)
                 # An explicit value differs from NULL too — the old COALESCE
                 # wrote 0/1 over a NULL column, and that must keep happening.
                 if new_enabled is not None and (
@@ -643,14 +707,14 @@ class CatalogStore:
                 # overwrite what the model decided.  Owned here (not by the
                 # caller) for the same reason as every other column: one
                 # place compares, and only a value that MOVES is written.
-                new_status = row.get("status")
+                new_status = row.get("load_status")
                 if row.get("override_status") and new_status is not None and (
-                    (prev["status"] or None) != new_status
+                    (prev["load_status"] or None) != new_status
                 ):
-                    sets.append("status = ?")
+                    sets.append("load_status = ?")
                     vals.append(new_status)
                     if new_status == STATUS_LOADED:
-                        # The same recency bump ``set_status(bump=True)`` does,
+                        # The same recency bump ``set_load_status(bump=True)`` does,
                         # so a tool the config loaded is not the first eviction
                         # victim if the autoload flag is ever dropped.
                         sets.append("last_loaded = ?")
@@ -714,7 +778,7 @@ class CatalogStore:
         source_id: str | None = None,
         schema: str | None = None,
         enabled: bool | None = None,
-        status: str | None = None,
+        load_status: str | None = None,
         override_status: bool = False,
     ) -> bool:
         """Upsert one tool row; returns True iff its ``schema`` text changed.
@@ -727,7 +791,7 @@ class CatalogStore:
         result = await self.reconcile([{
             "name": name, "description": description, "category": category,
             "source_id": source_id, "schema": schema, "enabled": enabled,
-            "status": status, "override_status": override_status,
+            "load_status": load_status, "override_status": override_status,
         }])
         return name in result["schema_changed"]
 
@@ -811,11 +875,11 @@ class CatalogStore:
         would otherwise delete every plugin-owned row.  Pass ``None`` for
         every source regardless of category.
         """
-        sql = "SELECT DISTINCT source_id FROM tool WHERE source_id IS NOT NULL"
-        params: list = []
+        sql = "SELECT DISTINCT source_id FROM tool WHERE source_id != ?"
+        params: list = [NA]
         if categories:
             sql += f" AND category IN ({in_placeholders(len(categories))})"
-            params = sorted(categories)
+            params += sorted(categories)
         cursor = await self._c.execute(sql, params)
         return {row[0] for row in await cursor.fetchall()}
 
@@ -845,7 +909,7 @@ class CatalogStore:
         async with self._write_lock:
             cursor = await self._c.execute(
                 "UPDATE tool SET enabled = ? "
-                "WHERE source_id = ? AND (enabled IS NULL OR enabled != ?)",
+                "WHERE source_id = ? AND enabled != ?",
                 (value, source_id, value),
             )
             await self._c.commit()
@@ -866,7 +930,7 @@ class CatalogStore:
         async with self._write_lock:
             cursor = await self._c.execute(
                 "UPDATE tool SET unavailable = 1 "
-                "WHERE source_id = ? AND status IS NOT NULL AND unavailable IS NULL",
+                "WHERE source_id = ? AND type = 'func' AND unavailable = 0",
                 (source_id,),
             )
             await self._c.commit()
@@ -886,8 +950,8 @@ class CatalogStore:
             placeholders = ",".join("?" * len(SERVER_CATEGORIES))
             cursor = await self._c.execute(
                 f"UPDATE tool SET unavailable = 1 "
-                f"WHERE category IN ({placeholders}) AND status IS NOT NULL "
-                f"AND unavailable IS NULL",
+                f"WHERE category IN ({placeholders}) AND type = 'func' "
+                f"AND unavailable = 0",
                 (*sorted(SERVER_CATEGORIES),),
             )
             await self._c.commit()
@@ -902,8 +966,8 @@ class CatalogStore:
         """
         async with self._write_lock:
             cursor = await self._c.execute(
-                "UPDATE tool SET unavailable = NULL "
-                "WHERE source_id = ? AND unavailable IS NOT NULL",
+                "UPDATE tool SET unavailable = 0 "
+                "WHERE source_id = ? AND unavailable = 1",
                 (source_id,),
             )
             await self._c.commit()
@@ -945,19 +1009,19 @@ class CatalogStore:
 
     # ── Status flips ───────────────────────────────────────────────
 
-    async def set_status(self, name: str, status: str | None, *, bump: bool = False) -> int:
+    async def set_load_status(self, name: str, load_status: str, *, bump: bool = False) -> int:
         """Set a tool's ``status`` (loaded/unloaded/NULL); bump → LRU refresh.
 
         Only meaningful for ``type='func'`` rows (skill/cli stay NULL); the
         store is lenient — callers guard with the type.
         """
-        last_loaded = _now() if (bump and status == "loaded") else None
+        last_loaded = _now() if (bump and load_status == STATUS_LOADED) else None
         async with self._write_lock:
             cursor = await self._c.execute(
-                "UPDATE tool SET status = ?, last_loaded = "
+                "UPDATE tool SET load_status = ?, last_loaded = "
                 "CASE WHEN ? IS NULL THEN last_loaded ELSE ? END"
                 " WHERE name = ?",
-                (status, last_loaded, last_loaded, name),
+                (load_status, last_loaded, last_loaded, name),
             )
             await self._c.commit()
         return cursor.rowcount
@@ -974,7 +1038,7 @@ class CatalogStore:
         async with self._write_lock:
             await self._c.execute(
                 "UPDATE tool SET last_loaded = ?"
-                " WHERE name = ? AND status = 'loaded'",
+                " WHERE name = ? AND load_status = 'loaded'",
                 (_now(), name),
             )
             await self._c.commit()
@@ -1073,8 +1137,8 @@ class CatalogStore:
         async with self._write_lock:
             cursor = await self._c.execute(
                 f"""SELECT name FROM tool
-                    WHERE status = 'loaded'{protected_expr}
-                    ORDER BY (last_loaded IS NULL) DESC, last_loaded ASC, name
+                    WHERE load_status = 'loaded'{protected_expr}
+                    ORDER BY last_loaded ASC, name
                     LIMIT ?""",
                 params,
             )
@@ -1082,8 +1146,8 @@ class CatalogStore:
             if names:
                 ph = in_placeholders(len(names))
                 await self._c.execute(
-                    f"UPDATE tool SET status = 'unloaded'"
-                    f" WHERE name IN ({ph}) AND status = 'loaded'",
+                    f"UPDATE tool SET load_status = 'unloaded'"
+                    f" WHERE name IN ({ph}) AND load_status = 'loaded'",
                     names,
                 )
             await self._c.commit()
@@ -1094,7 +1158,7 @@ class CatalogStore:
     # ── Search ─────────────────────────────────────────────────────
 
     async def search_keyword(
-        self, query: str, limit: int = 20, category: str = "",
+        self, query: str, limit: int = 20, filters: "dict | None" = None,
     ) -> list[dict]:
         """FTS5 keyword search, CJK-routed to :meth:`_search_like`.
 
@@ -1103,14 +1167,11 @@ class CatalogStore:
         """
         limit = _clamp_limit(limit)
         if _contains_cjk(query):
-            return await self._search_like(query, limit=limit, category=category)
+            return await self._search_like(query, limit=limit, filters=filters)
         fts_query = _to_fts5_query(query)
-        clauses = ""
-        params: list = [fts_query]
-        if category:
-            clauses += " AND t.category = ?"
-            params.append(category)
-        params.append(limit)
+        filter_clauses, filter_params = column_filters(filters)
+        clauses = "".join(f" AND {c}" for c in filter_clauses)
+        params: list = [fts_query] + filter_params + [limit]
         try:
             cursor = await self._c.execute(
                 f"""SELECT {_SCAN_COLS},
@@ -1131,7 +1192,7 @@ class CatalogStore:
 
     async def _search_like(
         self, pattern: str, limit: int,
-        category: str = "",
+        filters: "dict | None" = None,
     ) -> list[dict]:
         """Substring (LIKE) search — CJK fallback for :meth:`search_keyword`.
 
@@ -1148,10 +1209,10 @@ class CatalogStore:
             like = f"%{safe}%"
             and_clauses.append(_LIKE_WHERE)
             params.extend([like, like, like, like])
-        return await self._search_by_sql(and_clauses, params, category, limit)
+        return await self._search_by_sql(and_clauses, params, filters, limit)
 
     async def search_grep(
-        self, pattern: str, limit: int = 20, category: str = "",
+        self, pattern: str, limit: int = 20, filters: "dict | None" = None,
     ) -> list[dict]:
         """Exact substring search over the catalog columns."""
         limit = _clamp_limit(limit)
@@ -1160,10 +1221,10 @@ class CatalogStore:
         params: list = [
             pattern, like_pattern, like_pattern, like_pattern, like_pattern,
         ]
-        return await self._search_by_sql([_LIKE_WHERE], params, category, limit)
+        return await self._search_by_sql([_LIKE_WHERE], params, filters, limit)
 
     async def _search_by_sql(
-        self, clauses: list[str], params: list, category: str, limit: int,
+        self, clauses: list[str], params: list, filters: "dict | None", limit: int,
     ) -> list[dict]:
         """Run one keyword ``AND``-clause search against the shared spine.
 
@@ -1171,11 +1232,9 @@ class CatalogStore:
         *params* is the snippet anchor — the first search term), then append
         the optional category filter and the LIMIT here.
         """
-        where = " AND ".join(clauses)
-        if category:
-            where += " AND t.category = ?"
-            params.append(category)
-        params.append(limit)
+        filter_clauses, filter_params = column_filters(filters)
+        where = " AND ".join(clauses + filter_clauses)
+        params = params + filter_params + [limit]
         cursor = await self._c.execute(
             f"{_SEARCH_SELECT} WHERE {where} ORDER BY t.category, t.name LIMIT ?",
             params,
@@ -1183,7 +1242,7 @@ class CatalogStore:
         return [dict(row) for row in await cursor.fetchall()]
 
     async def search_semantic(
-        self, vec: list[float], limit: int = 20, category: str = "",
+        self, vec: list[float], limit: int = 20, filters: "dict | None" = None,
     ) -> list[dict]:
         """Brute-force cosine KNN over stored BLOB vectors — one row per tool.
 
@@ -1192,11 +1251,8 @@ class CatalogStore:
         are skipped (stale rows from a previous embedding model).
         """
         limit = _clamp_limit(limit)
-        clauses = ""
-        params: list = []
-        if category:
-            clauses = " AND t.category = ?"
-            params.append(category)
+        filter_clauses, params = column_filters(filters)
+        clauses = "".join(f" AND {c}" for c in filter_clauses)
         cursor = await self._c.execute(
             f"""SELECT {_SCAN_COLS}, te.embedding
                FROM tool_embeddings te
@@ -1228,7 +1284,7 @@ class CatalogStore:
     # no-progress bound and gave up — leaving the semantic gate closed with
     # every other tool embedded.  (memdb/memfiles carry the same predicate for
     # the same reason.)
-    _EMBEDDABLE_SCHEMA = "trim(coalesce(schema, '')) != ''"
+    _EMBEDDABLE_SCHEMA = f"trim(schema) NOT IN ('', '{NA}')"
 
     async def count_unembedded(self) -> int:
         """Tools with no embedding chunk and an embeddable (non-empty) schema."""

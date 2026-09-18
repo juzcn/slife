@@ -121,7 +121,7 @@ async def test_autoload_override_writes_nothing_when_already_loaded(db):
     result = await db.reconcile([{
         "name": "native_b", "description": stored["description"],
         "category": "builtin", "schema": stored["schema"],
-        "status": "loaded", "override_status": True,
+        "load_status": "loaded", "override_status": True,
     }])
     assert result["skipped"] == 1
     assert (await db.get_tool("native_b"))["last_loaded"] == stored["last_loaded"]
@@ -151,11 +151,11 @@ async def test_a_server_autoload_covers_its_whole_tool_set(db):
 @pytest.mark.asyncio
 async def test_skill_and_cli_rows_have_no_status_to_override(db):
     """Neither family has a load state, so an ``autoload`` flag on one has
-    nothing to own: the column stays NULL either way."""
+    nothing to own: the column stays ``'n/a'`` either way."""
     svc = ToolCatalogService(db, write_owner=True, autoload=("a-skill",))
     await svc.sync_category("skill", {"a-skill": {"description": "d", "schema": "S"}})
     row = await db.get_tool("a-skill")
-    assert row["status"] is None and row["type"] == "skill"
+    assert row["load_status"] == "n/a" and row["type"] == "skill"
 
 
 # ── Load / unload matrix ───────────────────────────────────────────
@@ -194,20 +194,20 @@ async def test_load_unload_refusal_matrix(db):
 @pytest.mark.asyncio
 async def test_load_refuses_disabled_and_unavailable(db):
     svc = ToolCatalogService(db, write_owner=True)
-    await db.upsert_tool("native_dis", category="builtin", enabled=False, status="unloaded")
+    await db.upsert_tool("native_dis", category="builtin", enabled=False, load_status="unloaded")
     ok, msg = await svc.load_tool("native_dis")
     assert not ok and "disabled" in msg
 
     # An external tool whose server is down reads `error` — the verdict is its
     # own column, so the row keeps whatever the model decided.
-    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="loaded")
+    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", load_status="loaded")
     await db.mark_source_unavailable("svcA")
     ok, msg = await svc.load_tool("svcA__x")
     # The refusal points at the ONE lifecycle knob that exists now (there is
     # no mcp_connect to suggest — the modern protocol has no session to open).
     assert not ok and "not up" in msg and "mcp_list" in msg
 
-    await db.upsert_tool("svcB__x", category="mcp", source_id="svcB", status="unloaded")
+    await db.upsert_tool("svcB__x", category="mcp", source_id="svcB", load_status="unloaded")
     ok, msg = await svc.load_tool("svcB__x")
     assert ok
 
@@ -232,7 +232,7 @@ async def test_injected_schema_comes_from_catalog_not_instance(db):
 
     # Overwrite the DB row's schema with a DIFFERENT descriptor.
     await db.upsert_tool(
-        "native_a", category="builtin", enabled=True, status="loaded",
+        "native_a", category="builtin", enabled=True, load_status="loaded",
         schema=json.dumps({"name": "native_a", "description": "a native tool",
                             "inputSchema": {"type": "object",
                                             "properties": {"q": {"type": "string"}}}}),
@@ -333,7 +333,7 @@ async def test_registry_execute_hints_with_catalog(db):
     assert "not loaded" in await registry.execute("native_a")
     assert "tool_search" in await registry.execute("native_a")
     # 3. catalog-known but not in the pool → different hint
-    await db.upsert_tool("svcA__gh", category="mcp", source_id="svcA", status="unloaded")
+    await db.upsert_tool("svcA__gh", category="mcp", source_id="svcA", load_status="unloaded")
     assert "known but not loaded" in await registry.execute("svcA__gh")
     # 3b. its server is down → the row says `error`, and the gate names that
     # rather than pretending the tool is merely unloaded.
@@ -398,7 +398,7 @@ async def test_sync_category_mirrors_and_purges(db):
     row = await db.get_tool("deploy")
     assert row["category"] == "skill"
     assert row["type"] == "skill"
-    assert row["status"] is None                    # skills have no load state
+    assert row["load_status"] == "n/a"                    # skills have no load state
     assert "# Deploy" in row["schema"]              # SKILL.md, as stored
     assert (await db.get_tool("quiet"))["enabled"] == 0
     # discoverable exactly like a function tool, and never injected
@@ -421,8 +421,10 @@ async def test_sync_category_cli_rows_have_no_schema(db):
 
     row = await db.get_tool("gh")
     assert row["type"] == "cli"
-    assert row["status"] is None
-    assert row["schema"] is None
+    assert row["load_status"] == "n/a"
+    # "No schema text" is a VALUE in a NOT NULL column, not an absence — the
+    # drainer and the search both read it as the sentinel rather than NULL.
+    assert row["schema"] == "n/a"
 
 
 @pytest.mark.asyncio

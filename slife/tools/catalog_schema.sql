@@ -11,18 +11,25 @@
 --  这个库是派生数据（行来自 tool registry / tools.json5 / skills 目录 / 插件子进程），
 --  所以 CHECK 变了就删库重建，不原地升级 —— 旧文件由 _check_categories 报出来。
 --
---  tool.status 只存 loaded|unloaded（type='func' 才有行，故不用 NULL）——
---  这是 model 的决定，也是这个库唯一要持久化的东西。
+--  tool.load_status 只存 loaded|unloaded|n/a（type='func' 的前两者是 model 的
+--  决定，也是这个库唯一要持久化的东西；skill/cli 无 load 概念，存 'n/a' 而
+--  不是 NULL —— 列域与 model 看到的词汇表一一对应，过滤就是普通等值）。
 --  tool.unavailable = 该 tool 的拥有者（server / plugin）此刻不可用
 --  （未连上/掉线/连接失败/网关子进程死亡），由 host 写；它是一列**独立**的
---  运行态，不写进 status：写进去会把 model 的 loaded 决定抹掉（掉线一次、
+--  运行态，不写进 load_status：写进去会把 model 的 loaded 决定抹掉（掉线一次、
 --  重启一次就丢）。两者都不覆盖对方的存储。
 --  FTS5（关键词）+ BLOB 向量（语义，over schema 文本）混合检索。
 -- ═══════════════════════════════════════════════════════════════
 
 
 -- 工具目录。enabled 一律来自 tools.json5（mcp/rest-api 也一样，就是该 server
--- 的开关）；可用性由 unavailable 单独表达，两者都不动 status。
+-- 的开关）；可用性由 unavailable 单独表达，两者都不动 load_status。
+-- **没有可空列**："本地"（source_id）、"无 schema"（schema）、"无 load 概念"
+-- （load_status）都是真实取值，用 'n/a' 表达。NULL 的代价是每个读点都要多写一个
+-- IS NULL 分支（`(unavailable IS NULL OR unavailable = 0)`），漏一个就静默返回
+-- 空集；改用列上的默认值，同一个意思只有一种读法。
+-- （"没有意见"是 *调用方* 的概念 —— upsert 传 None 表示"别动这列" —— 不是列里
+-- 的一个取值。）
 CREATE TABLE IF NOT EXISTS tool (
     name        TEXT PRIMARY KEY,            -- mcp: '{server}__{tool}'；否则裸名
     description TEXT NOT NULL DEFAULT '',
@@ -30,14 +37,14 @@ CREATE TABLE IF NOT EXISTS tool (
                 CHECK (category IN ('builtin','job','plugin','mcp','rest-api','skill','cli')),
     type        TEXT NOT NULL DEFAULT 'func' -- func | skill | cli（粗粒度种类，由 category 派生）
                 CHECK (type IN ('func','skill','cli')),
-    source_id   TEXT,                        -- 拥有者：mcp/rest-api 为 server 名，plugin 为插件名，其余 NULL
-    schema      TEXT,                        -- function tool：Tool def JSON；skill：SKILL.md 全文；cli：NULL
-    enabled     INTEGER,                     -- 0/1，来自 tools.json5 的 enabled
-    status      TEXT,                        -- 'loaded'|'unloaded'（type='func'）；skill/cli NULL
-    unavailable INTEGER,                     -- 1 = 拥有者此刻不可用（effective status 记 error）；NULL = 可用
-    last_loaded TEXT                         -- 本地 ISO，LRU evict 排序
+    source_id   TEXT NOT NULL DEFAULT 'n/a', -- 拥有者：server 名 / 插件名；'n/a' = 本地（builtin/job/skill/cli）
+    schema      TEXT NOT NULL DEFAULT 'n/a', -- func：Tool def JSON；skill：SKILL.md 全文；cli：'n/a'（无 schema）
+    enabled     INTEGER NOT NULL DEFAULT 1,  -- 布尔，来自 tools.json5 的 enabled（1 = 开）
+    load_status TEXT NOT NULL DEFAULT 'n/a', -- 'loaded'|'unloaded'（type='func'）|'n/a'（skill/cli）
+    unavailable INTEGER NOT NULL DEFAULT 0,  -- 布尔：1 = 拥有者此刻不可用（effective status 记 unavailable）
+    last_loaded TEXT NOT NULL DEFAULT ''     -- 本地 ISO；'' = 从未 load（LRU 里排最旧）
 );
-CREATE INDEX IF NOT EXISTS idx_tool_status ON tool(status);
+CREATE INDEX IF NOT EXISTS idx_tool_load_status ON tool(load_status);
 CREATE INDEX IF NOT EXISTS idx_tool_source ON tool(source_id);
 CREATE INDEX IF NOT EXISTS idx_tool_category ON tool(category);
 CREATE INDEX IF NOT EXISTS idx_tool_type ON tool(type);
@@ -47,7 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_tool_type ON tool(type);
 -- 网关的 pool（mcp_list / __check）回答，这个库只把结果记在 tool 行上 ——
 -- 服务器不可用（未连上 / 掉线 / 连接失败 / 网关子进程死亡）时，它的 tool 行
 -- unavailable 置 1（effective status 记 'error'，退出注入集）；连上后清掉这个
--- 标记，**不动 status** —— model 之前 loaded 的工具连上后仍然是 loaded。
+-- 标记，**不动 load_status** —— model 之前 loaded 的工具连上后仍然是 loaded。
 
 
 -- ── 关键词搜索（FTS5 external-content，列取 tool 的前缀列，顺序一致）──
@@ -99,4 +106,4 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
-PRAGMA user_version = 4;
+PRAGMA user_version = 7;

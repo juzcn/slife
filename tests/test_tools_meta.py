@@ -53,9 +53,9 @@ async def ctx(db):
 # ── tool_search ────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_tool_search_filters_by_category_and_status(db, ctx):
+async def test_tool_search_filters_by_columns(db, ctx):
     await db.upsert_tool(
-        "svcA__search", category="mcp", source_id="svcA", status="unloaded",
+        "svcA__search", category="mcp", source_id="svcA", load_status="unloaded",
         description="full-text search",
         schema=json.dumps({"name": "search", "description": "find things",
                             "inputSchema": {"type": "object", "properties": {}}}),
@@ -76,14 +76,17 @@ async def test_tool_search_filters_by_category_and_status(db, ctx):
     payload = json.loads(await tool.execute(query="xyz", category="skill"))
     assert [r["name"] for r in payload["results"]] == ["skill-xyz"]
 
-    # status filter hides the loaded native (native_a eff=loaded)
-    payload = json.loads(await tool.execute(query="", status="unloaded"))
-    names = [r["name"] for r in payload["results"]]
-    assert "native_a" not in names
+    # load_status: the column, asked for directly, and read BOTH ways.  The
+    # query has to match something — the legs are FTS/semantic, so an empty
+    # query is not "browse all".
+    payload = json.loads(await tool.execute(query="native", load_status="unloaded"))
+    assert [r["name"] for r in payload["results"]] == ["native_a"]
+    payload = json.loads(await tool.execute(query="native", load_status="loaded"))
+    assert payload["count"] == 0
 
 
 @pytest.mark.asyncio
-async def test_tool_search_grep_mode_and_disabled_status(db, ctx):
+async def test_tool_search_grep_mode_and_effective_status(db, ctx):
     await db.upsert_tool("grepme", category="builtin", enabled=False, description="zzz")
     tool = ToolSearchTool()
     object.__setattr__(tool, "_ctx", ctx)
@@ -114,11 +117,14 @@ async def test_tool_load_and_unload_roundtrip_opts(ctx):
 
 @pytest.mark.asyncio
 async def test_tool_load_refuses_meta_and_unavailable(db, ctx):
-    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", status="error")
+    # The server is down: the verdict is its own column, not a load status.
+    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA",
+                         load_status="unloaded")
+    await db.mark_source_unavailable("svcA")
     t_load = FuncToolLoadTool()
     object.__setattr__(t_load, "_ctx", ctx)
     msg = await t_load.execute(full_name="svcA__x")
-    # The server's row was marked `error` — the refusal says so and names the
+    # The server's row is marked unavailable — the refusal says so and names the
     # diagnostic (mcp_list) rather than a retired connect tool.
     assert "not up" in msg and "mcp_list" in msg
     msg = await t_load.execute(full_name="_turn_prompt")
@@ -156,3 +162,43 @@ async def test_mcp_tool_load_delegates_to_func_tool_load(ctx):
     msg = await t.execute(full_name="native_a")
     assert "Loaded" in msg or "already loaded" in msg
     assert await ctx.catalog.effective_status("native_a") == "loaded"
+
+@pytest.mark.asyncio
+async def test_a_column_filter_is_not_truncated_by_the_candidate_cutoff(db, ctx):
+    """The regression the column filters exist for.
+
+    ``status`` used to be filtered in Python AFTER the ``limit * 2`` candidate
+    fetch, so a filtered search silently under-reported: with 14 unavailable
+    rows out of 40, ``limit=10`` returned 7.  A filter that is a real SQL
+    predicate runs before the LIMIT, so the count is the count.
+    """
+    for i in range(40):
+        await db.upsert_tool(
+            f"report_{i:02d}", category="mcp",
+            source_id="down" if i % 3 == 0 else "up",
+            description="report generator", load_status="unloaded",
+        )
+    await db.mark_source_unavailable("down")
+    tool = ToolSearchTool()
+    object.__setattr__(tool, "_ctx", ctx)
+
+    payload = json.loads(await tool.execute(query="report", unavailable=True, limit=10))
+    assert payload["count"] == 10          # a full page of qualifying rows
+    assert all(r["status"] == "unavailable" for r in payload["results"])
+
+
+@pytest.mark.asyncio
+async def test_the_flag_filters_read_booleans_both_ways(db, ctx):
+    """``enabled`` / ``unavailable`` are booleans — and ``false`` must match
+    the rows that were never flagged, which a naive ``= 0`` would miss."""
+    await db.upsert_tool("flag-on", category="builtin", enabled=True, description="flagtest")
+    await db.upsert_tool("flag-off", category="builtin", enabled=False, description="flagtest")
+    tool = ToolSearchTool()
+    object.__setattr__(tool, "_ctx", ctx)
+
+    names = lambda p: {r["name"] for r in json.loads(p)["results"]}
+    assert names(await tool.execute(query="flagtest", enabled=True)) == {"flag-on"}
+    assert names(await tool.execute(query="flagtest", enabled=False)) == {"flag-off"}
+    # Nothing is flagged yet, so every row answers unavailable=false.
+    assert names(await tool.execute(query="flagtest", unavailable=False)) == {"flag-on", "flag-off"}
+    assert names(await tool.execute(query="flagtest", unavailable=True)) == set()
