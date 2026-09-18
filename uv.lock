@@ -1344,7 +1344,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/c1/2f/46487e949da42b318
 
 [[package]]
 name = "local-embed"
-version = "0.2.3"
+version = "0.2.4"
 source = { editable = "local-embed" }
 dependencies = [
     { name = "fastmcp" },
