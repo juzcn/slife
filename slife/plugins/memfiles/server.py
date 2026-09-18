@@ -469,8 +469,26 @@ async def url_save(
         return f"Error: too many redirects — {url}"
 
     url_name = parsed.path.rsplit("/", 1)[-1] if parsed.path else ""
+    # Name the file after something that identifies the resource instead of
+    # the literal "untitled": a root or directory URL (https://host/,
+    # https://host/docs/) has no basename at all, which is exactly the case
+    # the user hits when saving a site or a landing page.  Use its last
+    # non-empty path segment, else the host.  Dots become dashes so the host
+    # survives _slugify's punctuation strip ("example.com" → "example-com"
+    # rather than "examplecom") and so a host that reads like a filename
+    # ("example.zip") cannot be taken for one by the extension logic below.
+    if not url_name:
+        segment = next((s for s in reversed(parsed.path.split("/")) if s), "")
+        url_name = segment or parsed.netloc.replace(".", "-")
     display_title = title or url_name or "untitled"
-    stem = _slugify(display_title) or "untitled"
+    # The stem must not carry the extension — it is appended separately
+    # below.  Slugifying the whole basename dropped the dot (``_slugify``
+    # strips punctuation) and then the extension went on again, so
+    # "paper.pdf" was saved as "paperpdf.pdf".  ``file_save`` splits the same
+    # two pieces off its source path (``src.stem`` + ``src.suffix``); a URL
+    # basename is the same kind of name and gets the same treatment.  An
+    # explicit title is a stem already, exactly as it is there.
+    stem = _slugify(title or url_name.rpartition(".")[0] or url_name) or "untitled"
     if url_name and "." in url_name:
         ext = "." + url_name.rsplit(".", 1)[-1].split("?")[0]
         ext = re.sub(r"[^\w.]", "", ext)[:10]
@@ -556,9 +574,16 @@ async def cabinet_search(
         annotate_scores(hits)
         hint = SCORE_BAND_HINT if not hint else f"{hint} · {SCORE_BAND_HINT}"
 
+    # Report the mode that actually RAN.  Deriving it from `semantic_available`
+    # alone made this envelope lie about the other two modes: a request for
+    # ``mode="grep"`` came back saying ``"fts5"``, so a caller reading an empty
+    # result concluded the keyword search had found nothing — when what ran was
+    # the regex.  Only hybrid has a degraded spelling; grep and fts5 ran what
+    # they were asked for.
+    ran_mode = "fts5" if mode == "hybrid" and not semantic_available else mode
     return json.dumps(
         {
-            "mode": "hybrid" if semantic_available else "fts5",
+            "mode": ran_mode,
             "query": query, "kind": kind, "results": hits, "hint": hint,
         },
         ensure_ascii=False, indent=2,
@@ -948,8 +973,18 @@ async def __scheduled_run_skip(name: str, due_at: str) -> str:
     if task_id is None:
         return f"Scheduled task not found: {name}"
     store = await _ensure_store()
-    await store.mark_run_skipped(task_id, due_at)
-    return f"Run '{name}' @ {due_at} marked skipped."
+    # Report the outcome the store actually reached.  Announcing "marked
+    # skipped" unconditionally told a caller its pending run was closed when
+    # the UPDATE had matched nothing — the run stayed pending in the db.
+    if await store.mark_run_skipped(task_id, due_at):
+        return f"Run '{name}' @ {due_at} marked skipped."
+    status = await store.run_status(task_id, due_at)
+    if status is None:
+        return f"No run of '{name}' is recorded at {due_at} — nothing changed."
+    return (
+        f"Run '{name}' @ {due_at} is '{status}', which is not skippable — "
+        "only a missed or failed run is; nothing changed."
+    )
 
 
 # ── User Preferences (USER.md) data layer ──────────────────────────────

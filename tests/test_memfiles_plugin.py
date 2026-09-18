@@ -282,6 +282,55 @@ class TestUrlSave:
         assert result.startswith("Error: refusing URL")
         store.add_file.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_name_is_derived_from_the_url_not_invented(self, tmp_path):
+        """The saved path is built from what the URL actually says.
+
+        Two ways that used to go wrong: a root or directory URL has no
+        basename and was filed as the literal "untitled"; and a URL *with* an
+        extension had the whole basename slugified — which drops the dot —
+        and then had the extension appended again, so "paper.pdf" landed as
+        "paperpdf.pdf".
+        """
+        mem_dir = tmp_path / "files"
+        mem_dir.mkdir()
+        store = _fake_store(mem_dir)
+
+        class _Content:
+            async def iter_chunked(self, chunk_size):
+                yield b"<html>Page</html>"
+
+        class _Resp:
+            status = 200
+            @property
+            def content(self):
+                return _Content()
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            async def read(self): return b"<html>Page</html>"
+
+        for url, expected in (
+            # no basename: fall back to the path segment, else the host
+            ("https://example.com/", "files/other/example-com"),
+            ("https://example.com/docs/", "files/other/docs"),
+            # a host that reads like a filename must not be taken for one —
+            # dots become dashes, keeping it out of the archive category
+            ("https://example.zip/", "files/other/example-zip"),
+            # an extension appears exactly once, and still picks the category
+            ("https://example.com/paper.pdf", "files/documents/paper.pdf"),
+            ("https://example.com/a/report.html", "files/code/report.html"),
+        ):
+            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
+                 patch("aiohttp.ClientSession") as sess_cls:
+                sess = MagicMock()
+                sess.get.side_effect = lambda *a, **k: _Resp()
+                sess.__aenter__ = AsyncMock(return_value=sess)
+                sess.__aexit__ = AsyncMock(return_value=None)
+                sess_cls.return_value = sess
+                result = await plugin.url_save(url=url)
+            assert "untitled" not in result, url
+            assert store.add_file.await_args.kwargs["saved_path"] == expected, url
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # cabinet_search / cabinet_read
@@ -308,6 +357,50 @@ class TestCabinetSearch:
         data = json.loads(out)
         assert data["mode"] == "fts5"
         assert "hybrid degraded" in data["hint"]
+
+    @pytest.mark.asyncio
+    async def test_grep_reports_grep_not_fts5(self, tmp_path):
+        """The envelope reports the mode that RAN.
+
+        Derived from `semantic_available` alone it answered "fts5" for a grep
+        request — so a caller reading an empty result concluded the keyword
+        search had found nothing, when the regex was what ran.  A ready
+        manager must not change the answer either: grep never consults it.
+        """
+        store = _fake_store(tmp_path / "files")
+        manager = MagicMock()
+        manager.semantic_ready = True
+        embedder = MagicMock()
+        embedder.available = True
+        embedder.embed_one = AsyncMock(return_value=[0.1, 0.2])
+        manager.embedder = embedder
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
+             patch.object(plugin, "_manager", manager):
+            out = await plugin.cabinet_search(query="depl.y", mode="grep")
+        data = json.loads(out)
+        assert data["mode"] == "grep"
+        # The mode reached the store, so the search really was a regex…
+        assert store.search.await_args.kwargs["mode"] == "grep"
+        # …and it never touched the embedding path.
+        assert store.search.await_args.kwargs["embed_query"] is None
+        embedder.embed_one.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fts5_is_not_reported_as_hybrid(self, tmp_path):
+        """The mirror case: an explicit fts5 request with a ready manager is
+        fts5, not the hybrid the manager could have served."""
+        store = _fake_store(tmp_path / "files")
+        manager = MagicMock()
+        manager.semantic_ready = True
+        embedder = MagicMock()
+        embedder.available = True
+        embedder.embed_one = AsyncMock(return_value=[0.1, 0.2])
+        manager.embedder = embedder
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
+             patch.object(plugin, "_manager", manager):
+            out = await plugin.cabinet_search(query="python", mode="fts5")
+        assert json.loads(out)["mode"] == "fts5"
+        embedder.embed_one.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_hybrid_with_ready_manager_embeds_query(self, tmp_path):

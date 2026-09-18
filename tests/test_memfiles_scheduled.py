@@ -122,17 +122,26 @@ async def test_mark_run_skipped_closes_missed_and_failed(tmp_path):
         await store.mark_run_missed(task["task_id"], "2026-08-26T00:00:00")
         await store.record_scheduled_run(task["task_id"], "2026-08-27T00:00:00")
 
-        await store.mark_run_skipped(task["task_id"], "2026-08-26T00:00:00")
-        await store.mark_run_skipped(task["task_id"], "2026-08-25T00:00:00")
+        # The return value IS the verdict the caller reports on.
+        assert await store.mark_run_skipped(task["task_id"], "2026-08-26T00:00:00") is True
+        assert await store.mark_run_skipped(task["task_id"], "2026-08-25T00:00:00") is True
         runs = await store.list_scheduled_runs(status="skipped")
         assert {r["due_at"] for r in runs} == {
             "2026-08-25T00:00:00", "2026-08-26T00:00:00",
         }
 
         # a pending (unconfirmed) run is not closed by skip — only missed/failed
-        await store.mark_run_skipped(task["task_id"], "2026-08-27T00:00:00")
+        assert await store.mark_run_skipped(task["task_id"], "2026-08-27T00:00:00") is False
         runs = await store.list_scheduled_runs(status="pending")
         assert len(runs) == 1
+        # an already-skipped run is not re-closed either
+        assert await store.mark_run_skipped(task["task_id"], "2026-08-26T00:00:00") is False
+        # …and neither is a due_at no run carries
+        assert await store.mark_run_skipped(task["task_id"], "2027-01-01T00:00:00") is False
+
+        assert await store.run_status(task["task_id"], "2026-08-27T00:00:00") == "pending"
+        assert await store.run_status(task["task_id"], "2026-08-26T00:00:00") == "skipped"
+        assert await store.run_status(task["task_id"], "2027-01-01T00:00:00") is None
     finally:
         await store.close()
 
@@ -233,6 +242,38 @@ async def test_upsert_report_mirrors_md_and_backfills_run(tmp_path):
         runs = await store.list_scheduled_runs(task_id=task["task_id"])
         assert runs[0]["report_id"] == rep["doc_id"]
         assert runs[0]["status"] == "ran"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_late_report_clears_the_failure_reason(tmp_path):
+    """A run confirmed by a late report must not stay 'ran' *with* an error.
+
+    The real sequence: the worker's teardown finds no confirmed run and marks
+    it failed ("worker finished without confirming the run"); the report then
+    lands and backfills the run to 'ran'.  The status is rewritten but the
+    failure reason used to survive, leaving a self-contradicting row that the
+    backfill reminder kept surfacing.
+    """
+    store = await _real_store(tmp_path)
+    try:
+        task = await store.upsert_scheduled_task("daily", schedule="0 0 * * *")
+        due = "2026-08-25T00:00:00"
+        await store.record_scheduled_run(task["task_id"], due)
+        await store.mark_run_failed(
+            task["task_id"], due, "worker finished without confirming the run",
+        )
+        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        assert runs[0]["status"] == "failed" and runs[0]["error"]
+
+        await store.upsert_report(
+            task_id=task["task_id"], due_at=due, title="Daily Report",
+            content="Late but real.",
+        )
+        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        assert runs[0]["status"] == "ran"
+        assert runs[0]["error"] == ""
     finally:
         await store.close()
 
@@ -403,7 +444,7 @@ class TestScheduledServerTools:
         tool = ScheduledTaskSetTool()
         object.__setattr__(tool, "_ctx", ctx)
 
-        bad = await tool.execute(name="x", schedule="61 * * * *")
+        bad = await tool.execute(name="x", description="d", schedule="61 * * * *")
         assert "invalid cron" in bad.lower()
         assert calls == []  # validation failed ⇒ nothing delegated
 
@@ -414,7 +455,7 @@ class TestScheduledServerTools:
 
         # 'manual' bypasses cron validation
         calls.clear()
-        manual = await tool.execute(name="m", schedule="manual")
+        manual = await tool.execute(name="m", description="d", schedule="manual")
         assert "task_id" in json.loads(manual)
 
     @pytest.mark.asyncio
@@ -437,11 +478,11 @@ class TestScheduledServerTools:
         object.__setattr__(tool, "_ctx", ctx)
 
         for bad in ("每日日报", "Daily Report", "-lead", ".dot", "x" * 65):
-            err = await tool.execute(name=bad, schedule="0 9 * * *")
+            err = await tool.execute(name=bad, description="d", schedule="0 9 * * *")
             assert "not a valid task/worker name" in err, bad
         assert calls == []
 
-        ok = await tool.execute(name="daily_report", schedule="0 9 * * *")
+        ok = await tool.execute(name="daily_report", description="d", schedule="0 9 * * *")
         assert "task_id" in json.loads(ok)
 
     @pytest.mark.asyncio
@@ -486,6 +527,37 @@ class TestScheduledServerTools:
                 assert skipped["total"] == 1
                 # unknown task
                 assert "not found" in await _sched_runs(name="nope")
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_skip_reports_a_pending_run_as_unchanged(self, tmp_path):
+        """The reply reports what the store did, not what was asked for.
+
+        It used to be unconditional — "marked skipped" for a run the db left
+        pending — so a caller believed it had closed a run that was still in
+        flight.
+        """
+        store = await _real_store(tmp_path)
+        try:
+            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+                await _sched_upsert(name="daily", schedule="0 0 * * *")
+                task = await store.get_scheduled_task("daily")
+                await store.record_scheduled_run(task["id"], "2026-08-27T00:00:00")
+
+                reply = await _sched_skip("daily", "2026-08-27T00:00:00")
+                assert "nothing changed" in reply
+                assert "'pending'" in reply  # names the status it found
+                assert "marked skipped" not in reply
+                # The db agrees with the reply.
+                assert await store.run_status(
+                    task["id"], "2026-08-27T00:00:00") == "pending"
+                assert await store.list_scheduled_runs(status="skipped") == []
+
+                # A run that does not exist is reported as absent, not skipped.
+                absent = await _sched_skip("daily", "2027-01-01T00:00:00")
+                assert "No run of" in absent
+                assert "marked skipped" not in absent
         finally:
             await store.close()
 

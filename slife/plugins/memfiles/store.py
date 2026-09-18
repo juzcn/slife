@@ -376,16 +376,24 @@ class MemfilesStore(VecStoreLifecycleMixin):
             # targets the exact run — the backfilled failed/missed run — so a newer
             # stale run is never grabbed; without one it links the newest un-linked
             # run (cron fire).
+            # ``error`` is cleared with the status: the column records why a
+            # run FAILED, and this write is the run being confirmed as done.
+            # A report that lands after the worker's teardown already marked
+            # the run failed ("worker finished without confirming") would
+            # otherwise leave a row reading status='ran' next to a failure
+            # reason — a row that contradicts itself, and one the backfill
+            # reminder would keep surfacing.
             if task_id is not None:
                 if due_at is not None:
                     await self._c.execute(
-                        "UPDATE scheduled_runs SET report_id=?, status='ran' "
+                        "UPDATE scheduled_runs SET report_id=?, status='ran', error='' "
                         "WHERE task_id=? AND due_at=? AND report_id IS NULL",
                         (doc_id, task_id, due_at),
                     )
                 else:
                     await self._c.execute(
-                        "UPDATE scheduled_runs SET report_id=?, status='ran' WHERE id = ("
+                        "UPDATE scheduled_runs SET report_id=?, status='ran', error='' "
+                        "WHERE id = ("
                         "  SELECT id FROM scheduled_runs WHERE task_id=? AND report_id IS NULL "
                         "  ORDER BY due_at DESC LIMIT 1)",
                         (doc_id, task_id),
@@ -512,14 +520,31 @@ class MemfilesStore(VecStoreLifecycleMixin):
         )
         await self._c.commit()
 
-    async def mark_run_skipped(self, task_id: int, due_at: str) -> None:
-        """Close a missed/failed run the user decided not to backfill."""
-        await self._c.execute(
+    async def mark_run_skipped(self, task_id: int, due_at: str) -> bool:
+        """Close a missed/failed run the user decided not to backfill.
+
+        Returns whether a row actually changed.  Only ``missed`` and
+        ``failed`` are skippable: a ``pending`` run is still in flight (the
+        worker's report, or the startup sweep, settles it) and a ``ran`` one
+        is already closed.  The caller reports this verdict instead of
+        assuming the write landed.
+        """
+        cursor = await self._c.execute(
             "UPDATE scheduled_runs SET status='skipped' "
             "WHERE task_id=? AND due_at=? AND status IN ('missed', 'failed')",
             (task_id, due_at),
         )
         await self._c.commit()
+        return cursor.rowcount > 0
+
+    async def run_status(self, task_id: int, due_at: str) -> str | None:
+        """The status of one run, or ``None`` when no such run is recorded."""
+        cursor = await self._c.execute(
+            "SELECT status FROM scheduled_runs WHERE task_id=? AND due_at=?",
+            (task_id, due_at),
+        )
+        row = await cursor.fetchone()
+        return row["status"] if row else None
 
     async def fail_unconfirmed_runs(self) -> list[dict]:
         """Startup sweep: dispatch-only runs from a previous process lifetime
