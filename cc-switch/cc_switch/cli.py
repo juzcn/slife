@@ -196,7 +196,9 @@ def _cmd_activate(args) -> int:
 
     # --custom never touches the stored config; the overrides are one-shot.
     try:
-        settings = _activate.activate(
+        # Return value is the written settings dict; this command reports via
+        # SETTINGS_PATH below, so it is deliberately not bound here.
+        _activate.activate(
             provider, model_name, overrides=overrides,
             shell=args.shell,
         )
