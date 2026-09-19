@@ -526,6 +526,16 @@ class NgrokTunnel(_TunnelProviderBase):
 _LHR_MARKER = "tunneled with tls termination,"
 _LHR_URL_RE = re.compile(r"https://[0-9A-Za-z.\-]+")
 
+#: cloudflared reports each connector by index, and the index is what pairs a
+#: "Registered tunnel connection connIndex=2" with its later "Unregistered…".
+_CONN_INDEX_RE = re.compile(r"connIndex=(\d+)")
+
+
+def _conn_index(line: str) -> str:
+    """The connector index named in *line*, or ``""`` when it names none."""
+    match = _CONN_INDEX_RE.search(line)
+    return match.group(1) if match else ""
+
 
 class _CliTunnelProvider(_TunnelProviderBase):
     """A tunnel built by spawning a CLI and reading its public URL off stdout.
@@ -539,6 +549,23 @@ class _CliTunnelProvider(_TunnelProviderBase):
     #: Binary name to look up when the config names none.
     default_binary: str = ""
 
+    #: Whether printing the URL is itself proof the tunnel is reachable.
+    #: True for a transport that can only print the URL once the forward is
+    #: up (localhost.run's ``ssh -R`` reports the hostname the edge handed
+    #: it).  False for one that announces the hostname BEFORE the edge
+    #: connection exists: cloudflared's Quick Tunnel banner comes first, and
+    #: for the moment in between the hostname answers HTTP 530 — so the URL
+    #: must not be published yet.
+    url_proves_ready: bool = True
+
+    #: Output lines that report one edge connection appearing / disappearing.
+    #: Only read where :attr:`url_proves_ready` is False.  Case matters:
+    #: cloudflared prints "Registered tunnel connection connIndex=N" and
+    #: "Unregistered tunnel connection connIndex=N", and the lowercase
+    #: "registered" inside the second must not read as the first.
+    registration_marker: str = ""
+    unregistration_marker: str = ""
+
     def __init__(self, options: dict | None = None) -> None:
         super().__init__()
         opts = options or {}
@@ -550,6 +577,10 @@ class _CliTunnelProvider(_TunnelProviderBase):
         self._recent: collections.deque = collections.deque(maxlen=_TAIL_LINES)
         self._url_event = threading.Event()
         self._eof_event = threading.Event()
+        #: Edge connections this child currently holds, by connector index —
+        #: the transport's own answer to "is the tunnel actually reachable",
+        #: which the process being alive does not give.
+        self._registered: set[str] = set()
 
     # ── Subclass hooks ─────────────────────────────────────────────
 
@@ -585,12 +616,62 @@ class _CliTunnelProvider(_TunnelProviderBase):
         if proc is None:
             return False
         try:
-            return proc.poll() is None
+            if proc.poll() is not None:
+                return False
         except Exception:  # noqa: BLE001 — a broken probe must not flap the tunnel
             return True
+        return self._transport_alive()
+
+    def _transport_alive(self) -> bool:
+        """Whether the transport itself is still up, past "the process runs".
+
+        The base answer is that the process IS the whole signal — true for a
+        provider whose child exists only to serve the tunnel.  A provider
+        whose child survives a lost tunnel (cloudflared keeps running, and
+        keeps serving nothing) overrides this: without it the health monitor
+        reports a healthy tunnel forever while every published link answers
+        530, which is exactly the state a restart cannot fix.
+        """
+        return True
+
+    def _ready(self) -> bool:
+        """Whether the child has said enough for its URL to be publishable.
+
+        Readiness is deliberately the EDGE's view — a registered connector —
+        and not a local fetch of the published URL.  Measured on a fresh
+        Quick Tunnel: a public resolver answers for the hostname the moment
+        the URL is printable, while this machine's own resolver is still
+        negative-caching it and the local fetch fails for seconds after.
+        Self-probing would therefore gate publication on the local resolver's
+        lag rather than on whether anyone else can reach the tunnel, and
+        would refuse URLs that work.
+        """
+        return self.url_proves_ready or bool(self._registered)
+
+    def _note_connections(self, line: str) -> None:
+        """Track this child's edge connections off its own output.
+
+        Only meaningful where :attr:`registration_marker` is set; a provider
+        whose URL already proves readiness ignores it entirely.
+        """
+        if not self.registration_marker:
+            return
+        if self.registration_marker in line:
+            self._registered.add(_conn_index(line))
+            # The pending start may now be published — this is the line the
+            # URL was waiting for.
+            if self._pending_url is not None:
+                self._url_event.set()
+        elif self.unregistration_marker and self.unregistration_marker in line:
+            self._registered.discard(_conn_index(line))
 
     def _spawn(self, binary: str, port: int) -> str:
-        """Spawn the CLI and block until it prints the public URL (or fails)."""
+        """Spawn the CLI and block until its URL is publishable (or fails).
+
+        Publishable is :meth:`_ready` — the URL alone for a transport whose
+        URL proves the forward, plus the edge's own registration signal for
+        one that prints its hostname before it can serve it.
+        """
         argv = self._argv(binary, port)
         kwargs: dict[str, Any] = {}
         if os.name == "nt":
@@ -603,6 +684,10 @@ class _CliTunnelProvider(_TunnelProviderBase):
         self._url_event.clear()
         self._eof_event.clear()
         self._pending_url = None
+        # Per-attempt: a previous child's connectors say nothing about this
+        # one, and leaving them behind would let a dead attempt pass the
+        # readiness gate.
+        self._registered.clear()
 
         logger.info("tunnel_spawn provider=%s port=%s", self.label, port)
         proc = subprocess.Popen(
@@ -636,10 +721,7 @@ class _CliTunnelProvider(_TunnelProviderBase):
                     f"{self.label} closed its output without a tunnel URL:{self._tail()}"
                 )
             if time.monotonic() > deadline:
-                raise RuntimeError(
-                    f"timed out after {_timeouts.timeouts.ready.tunnel_read_url:.0f}s waiting for the "
-                    f"{self.label} tunnel URL:{self._tail()}"
-                )
+                raise RuntimeError(self._timeout_error())
 
         url = self._pending_url
         self._pending_url = None
@@ -647,24 +729,67 @@ class _CliTunnelProvider(_TunnelProviderBase):
             raise RuntimeError(f"{self.label} reported no tunnel URL:{self._tail()}")
         return url
 
+    def _timeout_error(self) -> str:
+        """Why the start timed out — naming the half that never arrived.
+
+        A URL with no registered edge connection is the failure that looks
+        like success: the hostname exists, so it gets handed out, and every
+        fetch of it answers HTTP 530 until the connector comes up — which may
+        be never, or minutes later.  Saying so is the difference between a
+        dead link and a clear "the tunnel is not reachable from here".
+        """
+        budget = _timeouts.timeouts.ready.tunnel_read_url
+        if self._pending_url is not None and not self._transport_alive():
+            return (
+                f"the {self.label} tunnel printed its URL "
+                f"({self._pending_url}) but registered no connection to the "
+                f"edge within {budget:.0f}s — every request to that URL would "
+                f"answer HTTP 530 (nothing routes from the edge to this "
+                f"machine):{self._tail()}"
+            )
+        return (
+            f"timed out after {budget:.0f}s waiting for the "
+            f"{self.label} tunnel URL:{self._tail()}"
+        )
+
     def _read_output(self, proc: subprocess.Popen) -> None:
         """Consume the child's output for the lifetime of the tunnel.
 
-        The first URL satisfies the pending start; a later one means the
-        service rotated the published hostname (localhost.run's anonymous tier
-        does, every few hours), so the URL is swapped in place and re-exported
-        rather than dropped.
+        A URL satisfies the pending start once the child is
+        :meth:`_ready`; a later one means the service rotated the published
+        hostname (localhost.run's anonymous tier does, every few hours), so
+        the URL is swapped in place and re-exported rather than dropped.
+        The child's edge-connection lines are tracked here too — they are
+        what tells readiness and liveness apart from "the process runs".
         """
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
+                # A superseded attempt must not feed the current one: after a
+                # retry this thread still holds the OLD child's pipe, and a
+                # stale "registered" line arriving after the new attempt reset
+                # its state would mark a dead tunnel ready.
+                if self._proc is not None and proc is not self._proc:
+                    break
                 self._recent.append(line.rstrip())
+                # The child narrates what it is doing with the edge ("Retrying
+                # connection", "Registered tunnel connection").  Nothing else
+                # records that: without it a tunnel that is up but unreachable
+                # leaves no trace anywhere in the log.
+                logger.debug(
+                    "tunnel_output provider=%s line=%s", self.label, line.rstrip()[:300],
+                )
+                self._note_connections(line)
                 url = self._parse_url(line)
                 if url is None:
                     continue
                 if self._public_url is None:
                     self._pending_url = url
-                    self._url_event.set()
+                    # Where the URL is not its own proof of readiness, the
+                    # start waits for the registration line instead — the
+                    # reader will set the event from _note_connections.
+                    if self._ready():
+                        self._url_event.set()
                 elif url != self._public_url:
                     logger.info(
                         "tunnel_url_rotated provider=%s old=%s new=%s",
@@ -810,6 +935,25 @@ class CloudflareQuickTunnel(_CliTunnelProvider):
 
     label = "cloudflare"
     default_binary = "cloudflared"
+
+    # The banner carrying the URL is printed BEFORE the edge connection is
+    # negotiated, so the URL alone means nothing here: for the moment in
+    # between, the hostname resolves and answers HTTP 530.  Readiness is the
+    # connector registration the child logs a beat later.
+    url_proves_ready = False
+    registration_marker = "Registered tunnel connection"
+    unregistration_marker = "Unregistered tunnel connection"
+
+    def _transport_alive(self) -> bool:
+        """A cloudflared with no connectors serves only 530s, however alive.
+
+        The process keeps running through a lost edge connection, so process
+        liveness alone would report a healthy tunnel while every published
+        link is dead — and the monitor, seeing "alive", would never restart
+        it.  Zero connectors is the honest answer, and the monitor's own
+        restart is what fixes it.
+        """
+        return bool(self._registered)
 
     def _find_binary(self) -> str | None:
         return _which(self._binary, _cloudflared_fallbacks())

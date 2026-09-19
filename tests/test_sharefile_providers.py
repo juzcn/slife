@@ -123,6 +123,17 @@ CF_BANNER = (
     "2026-09-10T20:00:00Z INF |  https://random-words-here.trycloudflare.com  |\n"
 )
 
+#: The connector registration cloudflared logs a beat AFTER the banner — the
+#: line that says the edge can actually route to this machine.  Between the
+#: two, the hostname exists and answers HTTP 530.
+CF_REGISTERED = (
+    "2026-09-10T20:00:01Z INF Registered tunnel connection connIndex=0 "
+    "connection=2f1e location=lax01 protocol=quic\n"
+)
+CF_UNREGISTERED = (
+    "2026-09-10T20:00:09Z INF Unregistered tunnel connection connIndex=0\n"
+)
+
 
 @pytest.fixture(autouse=True)
 def _clean_tunnel_env(monkeypatch):
@@ -181,6 +192,97 @@ class TestLocalhostRunUrlParsing:
     def test_strips_a_trailing_slash(self):
         line = "x.lhr.life tunneled with tls termination, https://x.lhr.life/\n"
         assert providers.LocalhostRunTunnel()._parse_url(line) == "https://x.lhr.life"
+
+
+class _BannerThenSilent:
+    """A child that prints its URL banner and then never registers."""
+
+    def __init__(self, banner: str):
+        self._banner = banner
+        self._sent = False
+        self._release = threading.Event()
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if not self._sent:
+            self._sent = True
+            return self._banner
+        self._release.wait()  # never set — the daemon reader dies with the test
+        raise StopIteration
+
+    def close(self):
+        self.closed = True
+
+
+class TestCloudflareReadiness:
+    """The banner is not readiness.
+
+    cloudflared prints its hostname before it holds an edge connection, and
+    for that window the hostname answers HTTP 530 — a URL published off the
+    banner is a dead link the caller only discovers by fetching it.
+    """
+
+    def test_a_url_without_a_connector_is_never_published(self, monkeypatch):
+        monkeypatch.setattr("slife.timeouts.timeouts.ready.sharefile_retry_delay", 0.0)
+        monkeypatch.setattr("slife.timeouts.timeouts.ready.tunnel_read_url", 0.3)
+        _install_fake_popen(monkeypatch, lambda: _BannerThenSilent(CF_BANNER))
+        tunnel = providers.CloudflareQuickTunnel()
+
+        with pytest.raises(RuntimeError, match="registered no connection"):
+            tunnel.start(8080)
+
+        assert tunnel._public_url is None
+        assert tunnel.status()["state"] == "failed"
+        # The failure has to say what the link would have done, or the next
+        # reader of the log learns nothing from it.
+        assert "530" in tunnel.status()["reason"]
+
+    def test_the_url_publishes_once_a_connector_registers(self, monkeypatch):
+        _install_fake_popen(
+            monkeypatch, lambda: _LinesStdout([CF_BANNER, CF_REGISTERED]),
+        )
+        tunnel = providers.CloudflareQuickTunnel()
+        try:
+            url = tunnel.start(8080)
+
+            assert url == "https://random-words-here.trycloudflare.com"
+            assert tunnel._registered == {"0"}
+            assert tunnel.is_alive() is True
+        finally:
+            tunnel.stop()
+
+    def test_losing_every_connector_reads_as_not_alive(self):
+        """The process outlives the tunnel — "alive" must not mean "running"."""
+        proc = _FakeProcess(_LinesStdout([CF_BANNER, CF_REGISTERED, CF_UNREGISTERED]))
+        tunnel = providers.CloudflareQuickTunnel()
+        tunnel._proc = proc
+        tunnel._read_output(proc)
+
+        assert tunnel._registered == set()
+        assert tunnel.is_alive() is False  # process up, transport gone
+
+    def test_a_superseded_attempt_cannot_feed_the_current_one(self):
+        """After a retry the old reader still holds the dead child's pipe: a
+        late registration line must not mark the new attempt ready."""
+        tunnel = providers.CloudflareQuickTunnel()
+        tunnel._proc = _FakeProcess(_LinesStdout([]))  # the CURRENT attempt
+        tunnel._read_output(_FakeProcess(_LinesStdout([CF_REGISTERED])))  # stale child
+
+        assert tunnel._registered == set()
+        assert not tunnel._url_event.is_set()
+
+    def test_localhost_run_needs_no_registration_vocabulary(self, monkeypatch):
+        """Its hostname can only be printed once the forward is up, so the
+        base contract still publishes on the URL alone."""
+        _install_fake_popen(monkeypatch, lambda: _LinesStdout([_lhr_line("a.lhr.life")]))
+        tunnel = providers.LocalhostRunTunnel()
+        try:
+            assert tunnel.start(8080) == "https://a.lhr.life"
+        finally:
+            tunnel.stop()
 
 
 class TestCloudflareUrlParsing:
@@ -299,7 +401,9 @@ class TestLocalhostRunArgv:
 
 class TestCloudflareArgv:
     def test_runs_the_quick_tunnel_for_the_local_port(self, monkeypatch):
-        captured = _install_fake_popen(monkeypatch, _LinesStdout([CF_BANNER]))
+        captured = _install_fake_popen(
+            monkeypatch, _LinesStdout([CF_BANNER, CF_REGISTERED]),
+        )
         url = providers.CloudflareQuickTunnel().start(8080)
 
         assert url == "https://random-words-here.trycloudflare.com"
