@@ -102,6 +102,37 @@ class TestMCPWrapperProcessStart:
                 assert wp._process is mock_proc
 
     @pytest.mark.asyncio
+    async def test_start_assigns_child_to_kill_on_close_job(self):
+        """The child joins the job before it can spawn anything of its own.
+
+        That ordering IS the guarantee: a process joins a job only through
+        its parent, so descendants born afterwards inherit it, while anything
+        the plugin already spawned would be missed.
+        """
+        wp = MCPWrapperProcess()
+        mock_proc = MagicMock(spec=asyncio.subprocess.Process)
+        mock_proc.pid = 100
+        mock_proc.stderr = MagicMock()
+
+        order: list[str] = []
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            with patch("slife.plugins.mcp_gateway.process.logger"):
+                with patch.object(
+                    wp, "_read_port_signal",
+                    AsyncMock(side_effect=lambda: order.append("port_signal")),
+                ), patch.object(wp, "_log_stderr", MagicMock()), \
+                   patch("slife.plugins.mcp_gateway.process.asyncio.create_task", lambda c: None), \
+                   patch("slife.plugins.mcp_gateway.process.assign_to_job_object") as assign:
+                    assign.side_effect = lambda *a, **kw: order.append("job") or True
+                    await wp.start()
+
+        assign.assert_called_once_with(100, label=wp._command)
+        assert order == ["job", "port_signal"], (
+            "the job assignment must precede any plugin-side spawn"
+        )
+
+    @pytest.mark.asyncio
     async def test_start_passes_env_vars(self):
         wp = MCPWrapperProcess()
         mock_proc = MagicMock(spec=asyncio.subprocess.Process)

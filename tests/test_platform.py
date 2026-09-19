@@ -13,6 +13,11 @@ from slife.platform import (
     IS_WINDOWS,
     get_os_info,
     detect_current_shell,
+    _taskkill_tree_sync,
+    assign_to_job_object,
+    terminate_process,
+    terminate_process_sync,
+    _windows_job,
 )
 
 
@@ -179,6 +184,14 @@ class TestRunPythonScriptEdgeCases:
 class TestTerminateProcess:
     """Tests for terminate_process async function."""
 
+    @pytest.fixture(autouse=True)
+    def _no_real_taskkill(self):
+        """On Windows these ladders shell out to ``taskkill`` — never from a
+        test.  The patch is autouse so every case here stays hermetic; the
+        tree-kill behaviour itself is asserted in :class:`TestTreeKill`."""
+        with patch("slife.platform._taskkill_tree_sync") as mock:
+            yield mock
+
     @pytest.mark.asyncio
     async def test_none_process_noop(self):
         """Terminating None is a no-op."""
@@ -264,6 +277,110 @@ class TestTerminateProcess:
         if IS_WINDOWS:
             await terminate_process(proc, label="test")
             # Should not raise — RuntimeError is caught
+
+
+# ── tree kill & kill-on-close job (the orphaned-child guarantee) ─────
+
+
+class TestTreeKill:
+    """The terminate ladders take the whole tree, not just the direct child.
+
+    A single-process kill is what left a plugin's own children — the sharefile
+    tunnel's cloudflared, the external MCP servers the gateway runs — alive
+    after the owner that could have reached them was gone.
+    """
+
+    def test_taskkill_argv_kills_the_tree(self):
+        """``/T`` is the whole point: the children die with the child."""
+        with patch("slife.platform._subprocess.run") as run:
+            _taskkill_tree_sync(4242, "sharefile")
+        assert run.call_args[0][0] == ["taskkill", "/F", "/T", "/PID", "4242"]
+
+    def test_missing_taskkill_is_not_a_failure(self):
+        """A missing taskkill / already-dead pid never propagates."""
+        with patch("slife.platform._subprocess.run", side_effect=OSError("gone")):
+            _taskkill_tree_sync(4242)  # must not raise
+
+    def test_wedged_taskkill_is_bounded(self):
+        """A hung taskkill is bounded by its timeout and swallowed."""
+        import subprocess as _sp
+
+        with patch("slife.platform._subprocess.run",
+                   side_effect=_sp.TimeoutExpired("taskkill", 1)):
+            _taskkill_tree_sync(4242)  # must not raise
+
+    @pytest.mark.skipif(not IS_WINDOWS, reason="Windows-only branch")
+    def test_sync_ladder_kills_the_tree(self):
+        """The Ctrl+C ``finally`` path goes through taskkill, not terminate()."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        proc = MagicMock(spec=asyncio.subprocess.Process)
+        proc.returncode = None
+        proc.pid = 4242
+        with patch("slife.platform._taskkill_tree_sync") as tk:
+            terminate_process_sync(proc, label="sharefile")
+        tk.assert_called_once_with(4242, "sharefile")
+        proc.terminate.assert_not_called()
+
+    @pytest.mark.skipif(not IS_WINDOWS, reason="Windows-only branch")
+    @pytest.mark.asyncio
+    async def test_async_ladder_kills_the_tree(self):
+        """The wrapper's stop path goes through taskkill, not terminate()."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        proc = MagicMock(spec=asyncio.subprocess.Process)
+        proc.returncode = None
+        proc.stdin = None
+        proc.pid = 4242
+        proc.wait = AsyncMock(return_value=0)
+        with patch("slife.platform._taskkill_tree_sync") as tk:
+            await terminate_process(proc, label="mcp_wrapper")
+        tk.assert_called_once_with(4242, "mcp_wrapper")
+        proc.terminate.assert_not_called()
+
+
+class TestKillOnCloseJob:
+    """The Windows job that covers a hard-killed parent.
+
+    taskkill can only run while slife is alive to run it.  A kill-on-close job
+    is the kernel's answer for the paths that run no Python at all: Task
+    Manager, ``TerminateProcess``, a crash.
+    """
+
+    @pytest.mark.skipif(not IS_WINDOWS, reason="Windows only")
+    def test_job_is_created_with_kill_on_close(self):
+        """A created job proves the struct layout was accepted — a wrong
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION fails SetInformationJobObject,
+        which returns None here instead of an unusable handle."""
+        assert _windows_job() is not None
+
+    @pytest.mark.skipif(not IS_WINDOWS, reason="Windows only")
+    def test_real_child_is_assigned(self):
+        """A live child joins the job (its own children inherit it)."""
+        import subprocess as _sp
+
+        proc = _sp.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+        )
+        try:
+            assert assign_to_job_object(proc.pid, label="test-child") is True
+        finally:
+            proc.kill()
+            proc.wait(timeout=10)
+
+    @pytest.mark.skipif(not IS_WINDOWS, reason="Windows only")
+    def test_unopenable_pid_is_not_a_failure(self):
+        """A pid that cannot be opened returns False rather than raising."""
+        assert assign_to_job_object(99_999_999) is False
+
+    def test_non_windows_is_a_noop(self):
+        """POSIX has no job object: False, no exception, nothing created."""
+        with patch("slife.platform.IS_WINDOWS", False):
+            assert _windows_job() is None
+            assert assign_to_job_object(1234) is False
 
 
 # ── resolve_command — Windows-specific ───────────────────────────────

@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from slife.plugins.mcp_gateway.client import MCPClient
 
 from slife.logfmt import get_session_id, sanitize_secrets
-from slife.platform import terminate_process
+from slife.platform import assign_to_job_object, terminate_process
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
@@ -126,6 +126,17 @@ class MCPWrapperProcess:
             )
             self._running = True
             logger.info("wrapper_started pid=%s", self._process.pid)
+
+            # Windows: make this child's whole tree the kernel's problem.  A
+            # kill-on-close job object takes the plugin AND everything it goes
+            # on to spawn — the sharefile tunnel's cloudflared, every external
+            # MCP server the gateway runs — when slife dies for ANY reason,
+            # including the hard kills (Task Manager, TerminateProcess) that
+            # run no Python cleanup at all.  Assigned here, before the child
+            # has served anything: a process joins a job only through its
+            # parent, so descendants born afterwards inherit it, and anything
+            # the plugin already spawned would be missed.
+            assign_to_job_object(self._process.pid, label=self._command)
 
             # Read the port signal from stdout (single JSON line)
             await self._read_port_signal()

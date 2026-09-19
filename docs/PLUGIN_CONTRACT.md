@@ -211,6 +211,20 @@ app's shutdown and a subagent's teardown both call the same registry-wide
 stop; the per-name `start_wechat`/`start_a2a`/`stop_memdb`/… methods no
 longer exist.
 
+**Stopping a plugin stops its whole tree, and a dead slife stops it too.**
+The registry owns one process per plugin, but a plugin may spawn children of
+its own — the sharefile tunnel's `cloudflared`, every external MCP server the
+gateway runs — and those are reachable only through it.  Both stop ladders
+therefore kill the tree rather than the child (`taskkill /F /T` on Windows,
+where `terminate()` is a single-process TerminateProcess; the signal ladder
+plus process-group kill on POSIX).  The stop path, however, only runs while
+slife is alive to run it: a hard-killed parent (Ctrl+C, Task Manager, a
+crash) unwinds no Python at all, so each spawned child is additionally
+assigned to a **kill-on-close job object** at spawn — before it can spawn
+anything of its own — and the kernel then terminates whatever is still inside
+when slife dies, for any reason.  The assignment happens in the uniform spawn
+(`MCPWrapperProcess.start`), so no plugin carries cleanup code for it.
+
 ### Subagents share the parent's plugins
 
 A subagent (worker) never spawns its own plugins.  It runs the same manifest

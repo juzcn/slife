@@ -1,6 +1,7 @@
 """Platform detection and platform-aware utilities."""
 
 import asyncio
+import ctypes
 import logging
 import os
 import shutil
@@ -16,6 +17,26 @@ from slife.threads import run_daemon
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
+
+
+def _taskkill_tree_sync(pid: int, label: str = "") -> None:
+    """Kill *pid* and its whole process tree (Windows).  Never raises.
+
+    Best-effort and bounded: a wedged ``taskkill`` must not block the caller
+    forever, and a missing ``taskkill`` or an already-dead pid is not a
+    cleanup failure.  The one sync primitive every Windows tree kill goes
+    through — :func:`kill_process_tree` (async callers), and the two
+    terminate ladders below (which otherwise kill the direct child alone).
+    """
+    try:
+        _subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdout=_subprocess.DEVNULL,
+            stderr=_subprocess.DEVNULL,
+            timeout=_timeouts.timeouts.grace.force,
+        )
+    except Exception as e:  # noqa: BLE001 — a cleanup path must never raise
+        logger.debug("taskkill_failed pid=%s label=%s err=%s", pid, label, e)
 
 
 async def kill_process_tree(process: asyncio.subprocess.Process) -> None:
@@ -40,21 +61,7 @@ async def kill_process_tree(process: asyncio.subprocess.Process) -> None:
     if process is None:
         return
     if os.name == "nt":
-        def _taskkill() -> None:
-            """Best-effort tree kill — bounded (a wedged taskkill must not
-            block the caller forever) and error-swallowing (a missing
-            taskkill or an already-dead pid is not a cleanup failure)."""
-            try:
-                _subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-                    stdout=_subprocess.DEVNULL,
-                    stderr=_subprocess.DEVNULL,
-                    timeout=_timeouts.timeouts.grace.force,
-                )
-            except (OSError, _subprocess.TimeoutExpired) as e:
-                logger.debug("taskkill_failed pid=%s err=%s", process.pid, e)
-
-        await run_daemon(_taskkill)
+        await run_daemon(_taskkill_tree_sync, process.pid, name="taskkill-tree")
     else:
         try:
             pgid = os.getpgid(process.pid)
@@ -76,6 +83,150 @@ async def kill_process_tree(process: asyncio.subprocess.Process) -> None:
         await process.wait()
     except (ProcessLookupError, OSError):
         pass
+
+
+# ── Windows: kill-on-close job object ───────────────────────────────
+#
+# The explicit kill paths above share one blind spot: they only run while
+# slife is alive and unwinding.  A hard-killed parent runs no code at all —
+# Windows ``terminate()`` is TerminateProcess, Task Manager's End Task is the
+# same, and neither unwinds a Python ``finally``.  Everything a plugin had
+# spawned underneath it (the sharefile tunnel's cloudflared, every external
+# MCP server the gateway runs) is then orphaned: still connected, still
+# holding resources, and — for the tunnel — still handing out a public URL
+# whose origin port died with its owner.
+#
+# A job object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE closes that hole at
+# the kernel: the job owns the processes, and when the last handle to it
+# closes — which happens when slife's process dies, for ANY reason — the
+# kernel terminates whatever is still inside.  Children inherit the job, so
+# grandchildren are covered without naming any of them.
+
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+_PROCESS_TERMINATE = 0x0001
+_PROCESS_SET_QUOTA = 0x0100
+
+#: The process-wide job every spawned child is assigned to.  Created once and
+#: deliberately never closed: the handle IS the job's lifetime, so holding it
+#: for the whole run is what makes "slife dies → its tree dies" true.
+_job_handle: int | None = None
+
+
+class _JobObjectBasicLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_int64),
+        ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", ctypes.c_uint32),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_uint64),
+        ("WriteOperationCount", ctypes.c_uint64),
+        ("OtherOperationCount", ctypes.c_uint64),
+        ("ReadTransferCount", ctypes.c_uint64),
+        ("WriteTransferCount", ctypes.c_uint64),
+        ("OtherTransferCount", ctypes.c_uint64),
+    ]
+
+
+class _JobObjectExtendedLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _JobObjectBasicLimitInformation),
+        ("IoInfo", _IoCounters),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+def _windows_job() -> int | None:
+    """The process-wide kill-on-close job object, or ``None`` when unavailable.
+
+    Never raises: a job that cannot be created (an ancient Windows, a
+    restricted token) degrades to the explicit-kill behaviour, which is what
+    every platform had before this existed.
+    """
+    global _job_handle
+    if not IS_WINDOWS:
+        return None
+    if _job_handle is not None:
+        return _job_handle
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            logger.debug("job_create_failed err=%s", ctypes.get_last_error())
+            return None
+        info = _JobObjectExtendedLimitInformation()
+        info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        kernel32.SetInformationJobObject.restype = ctypes.c_int
+        kernel32.SetInformationJobObject.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+        ]
+        if not kernel32.SetInformationJobObject(
+            handle, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(info), ctypes.sizeof(info),
+        ):
+            logger.debug("job_set_info_failed err=%s", ctypes.get_last_error())
+            return None
+        _job_handle = handle
+        logger.debug("job_created kill_on_close=1")
+        return handle
+    except Exception as e:  # noqa: BLE001 — a missing guarantee is not a crash
+        logger.debug("job_unavailable err=%s", e)
+        return None
+
+
+def assign_to_job_object(pid: int, label: str = "") -> bool:
+    """Put *pid* (and everything it spawns) into the kill-on-close job.
+
+    Returns whether the assignment took.  Never raises — a child that cannot
+    be assigned keeps the older explicit-kill cleanup instead of failing its
+    own startup.  Windows-only; a no-op returning False elsewhere.
+    """
+    if not IS_WINDOWS or pid <= 0:
+        return False
+    handle = _windows_job()
+    if handle is None:
+        return False
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.AssignProcessToJobObject.restype = ctypes.c_int
+        kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        process_handle = kernel32.OpenProcess(
+            _PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid,
+        )
+        if not process_handle:
+            logger.debug("job_open_process_failed pid=%s label=%s err=%s",
+                         pid, label, ctypes.get_last_error())
+            return False
+        try:
+            if not kernel32.AssignProcessToJobObject(handle, process_handle):
+                logger.debug("job_assign_failed pid=%s label=%s err=%s",
+                             pid, label, ctypes.get_last_error())
+                return False
+        finally:
+            kernel32.CloseHandle(process_handle)
+        logger.debug("job_assigned pid=%s label=%s", pid, label)
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.debug("job_assign_error pid=%s label=%s err=%s", pid, label, e)
+        return False
 
 
 def resolve_command(command: str) -> str:
@@ -255,9 +406,14 @@ async def terminate_process(
                 except Exception:
                     pass
 
-            # Graceful termination
+            # Graceful termination.  Windows has no graceful signal to send —
+            # terminate() IS TerminateProcess — and killing the direct child
+            # alone leaves whatever it spawned running, so the whole tree goes
+            # in one taskkill (the same fix the sync ladder below carries).
             if IS_WINDOWS:
-                process.terminate()
+                await run_daemon(
+                    _taskkill_tree_sync, process.pid, label, name="taskkill-tree",
+                )
             else:
                 process.send_signal(signal.SIGTERM)
 
@@ -312,13 +468,23 @@ def terminate_process_sync(
     if process is None or process.returncode is not None:
         return
     tag = f"label={label} " if label else ""
+    if IS_WINDOWS:
+        # TerminateProcess kills ONE process, and this ladder runs from the
+        # Ctrl+C `finally` — where the children a plugin spawned underneath
+        # itself (the sharefile tunnel's cloudflared, the external MCP servers
+        # the gateway runs) would be orphaned by a single-process kill.  One
+        # taskkill /T takes the tree; nothing to wait for, TerminateProcess is
+        # not refusable.
+        try:
+            _taskkill_tree_sync(process.pid, label)
+        except Exception as e:  # noqa: BLE001 — this runs in a shutdown finally
+            logger.debug("terminate_process_sync_kill_error %spid=%s err=%s",
+                         tag, process.pid, e)
+        return
     try:
         process.terminate()
     except Exception:
         logger.debug("terminate_process_sync_terminate_error %spid=%s", tag, process.pid, exc_info=True)
-        return
-    if IS_WINDOWS:
-        # TerminateProcess — nothing to wait for.
         return
     pid = process.pid
     deadline = time.monotonic() + timeout

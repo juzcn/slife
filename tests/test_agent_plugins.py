@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 import pytest
 
 from slife.agent.plugins import PluginLifecycle, PluginRegistry, plugin_port_env
+from slife.platform import IS_WINDOWS
 from slife.plugins.spec import PLUGIN_SPECS, SPEC_ORDER
 
 
@@ -482,29 +483,45 @@ class TestPluginLifecycleKill:
         lifecycle.kill()  # Should not raise
 
     def test_kill_terminates_process(self, lifecycle):
-        """kill() terminates a running process."""
+        """kill() takes the child's whole tree, not just the child.
+
+        On Windows ``terminate()`` is TerminateProcess — one process, no
+        cleanup — which is what left a plugin's own children (the sharefile
+        tunnel's cloudflared) running after their owner was gone.  The tree
+        kill is the fix; POSIX keeps the signal ladder.
+        """
         mock_subprocess = MagicMock()
         mock_subprocess.terminate = MagicMock()
         mock_subprocess.returncode = None
+        mock_subprocess.pid = 4242
 
         mock_process = MagicMock()
         mock_process._process = mock_subprocess
         lifecycle.process = mock_process
 
-        lifecycle.kill()
-        mock_subprocess.terminate.assert_called_once()
+        with patch("slife.platform._taskkill_tree_sync") as taskkill:
+            lifecycle.kill()
 
-    def test_kill_terminate_error_does_not_crash(self, lifecycle):
-        """kill() swallows terminate errors."""
+        if IS_WINDOWS:
+            taskkill.assert_called_once_with(4242, lifecycle.name)
+            mock_subprocess.terminate.assert_not_called()
+        else:
+            mock_subprocess.terminate.assert_called_once()
+
+    def test_kill_error_does_not_crash(self, lifecycle):
+        """kill() swallows a failing kill — it runs in a shutdown finally."""
         mock_subprocess = MagicMock()
         mock_subprocess.returncode = None
+        mock_subprocess.pid = 4242
         mock_subprocess.terminate = MagicMock(side_effect=RuntimeError("boom"))
 
         mock_process = MagicMock()
         mock_process._process = mock_subprocess
         lifecycle.process = mock_process
 
-        lifecycle.kill()  # Should not raise
+        with patch("slife.platform._taskkill_tree_sync",
+                   side_effect=RuntimeError("boom")):
+            lifecycle.kill()  # Should not raise
 
     def test_kill_already_exited_is_noop(self, lifecycle):
         """kill() skips a process that already exited (returncode set)."""
