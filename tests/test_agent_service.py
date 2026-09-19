@@ -145,9 +145,13 @@ class TestAgentServiceMCPEnrichment:
         mock_sync.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_sync_proxies_bulk_registers_auto_load_only(self, sample_config):
-        """_sync_mcp_proxies bulk-registers ONLY servers with auto_load: true
-        (external tools are on-demand by default)."""
+    async def test_sync_proxies_registers_every_enabled_server(self, sample_config):
+        """_sync_mcp_proxies registers proxies for EVERY enabled server.
+
+        ``auto_load`` is not a registration gate: it decides what the catalog
+        seeds as loaded, not whether an execution instance exists.  A disabled
+        server is mirrored instead — rows, no proxies.
+        """
         service = AgentService(sample_config)
         client = AsyncMock()
         client.is_connected = True
@@ -159,87 +163,144 @@ class TestAgentServiceMCPEnrichment:
         ]))
         service._plugins["mcp-gateway"].client = client
 
-        with patch.object(service, "_discover_and_register_external_tools", AsyncMock()) as mock_reg:
+        with patch.object(
+            service, "_discover_and_register_external_tools", AsyncMock(),
+        ) as mock_reg, patch.object(
+            service, "_mirror_disabled_server_tools", AsyncMock(),
+        ) as mock_mirror:
             await service._sync_mcp_proxies()
 
-        client.call_tool.assert_awaited_once_with("__mcp_list")
-        mock_reg.assert_awaited_once_with(server_name="autol")
+        client.call_tool.assert_any_await("__mcp_list")
+        assert {c.kwargs["server_name"] for c in mock_reg.await_args_list} == {
+            "autol", "ondemand",   # auto_load no longer decides
+        }
+        mock_mirror.assert_awaited_once_with("disabled")
 
-    @pytest.mark.asyncio
-    async def test_sync_proxies_mirrors_on_demand_rows_only(self, sample_config, tmp_path):
-        """An on-demand (non-auto-load) server's tools enter the CATALOG
-        (the tool_search / func-tool-load surface) but no proxy is registered
-        — proxies materialize via ``func-tool-load``.  Without this,
-        on-demand external tools were unreachable (T1a)."""
+    @staticmethod
+    def _fake_gateway(tools_server: str, *, enabled: bool = True):
+        """A gateway client whose __mcp_list holds one server, whose tool list
+        holds one tool.  ``tools_server`` is stamped onto the tool dict because
+        the registering path (``create_proxy_tools``) reads it, exactly as the
+        wrapper's own ``__mcp_list_tools`` payload supplies it."""
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def fake_call_tool(name, arguments=None):
+            if name == "__mcp_list":
+                return _json.dumps([
+                    {"name": tools_server, "enabled": enabled, "auto_load": False},
+                ])
+            if name == "__check":
+                return _json.dumps({"servers": [
+                    {"name": tools_server, "tools_ok": True},
+                ]})
+            if name in ("mcp_list_tools", "__mcp_list_tools"):
+                return _json.dumps({
+                    "server": tools_server, "connected": True,
+                    "tools": [
+                        {"server": tools_server, "name": "search",
+                         "description": "Search stuff",
+                         "inputSchema": {"type": "object",
+                                         "properties": {"q": {"type": "string"}}}},
+                    ],
+                    "tool_count": 1,
+                })
+            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+        client.call_tool = fake_call_tool
+        return client
+
+    async def _sync_with_catalog(self, sample_config, tmp_path, server: str, *,
+                                 enabled: bool = True):
+        """Run one reconcile against a real catalog; return (service, store)."""
         from slife.tools.catalog import CatalogStore
         from slife.tools.catalog_service import ToolCatalogService
 
         store = CatalogStore(tmp_path / "tools.db")
         await store.open()
+        service = AgentService(sample_config)
+        service._catalog = ToolCatalogService(store, write_owner=True)
+        service._catalog_semantic = None
+        service._plugins["mcp-gateway"].client = self._fake_gateway(
+            server, enabled=enabled,
+        )
+        # The reconcile also purges catalog servers that left tools.yaml — pin
+        # the gateway config view to the mocked pool so this test's server
+        # counts as configured (no TOOLS_FILE isolation here, so the real repo
+        # config would otherwise read as the truth).
+        with patch(
+            "slife.plugins.mcp_gateway.config.servers", return_value={server: {}},
+        ):
+            await service._sync_mcp_proxies()
+        return service, store
+
+    @pytest.mark.asyncio
+    async def test_sync_proxies_registers_on_demand_server_proxies(
+        self, sample_config, tmp_path,
+    ):
+        """An ENABLED on-demand server gets proxies at reconcile time, not just
+        catalog rows.
+
+        The registry is the execution pool, so a row the catalog calls
+        ``loaded`` must have an instance behind it.  Otherwise a tool loaded in
+        a previous session — whose ``load_status`` survives the restart while
+        its proxy does not — fails with "known but not loaded" while the
+        catalog insists it is loaded.
+        """
+        service, store = await self._sync_with_catalog(
+            sample_config, tmp_path, "ondemand",
+        )
         try:
-            svc = ToolCatalogService(store, write_owner=True)
+            names = {t.name for t in service.tool_registry.list_tools()}
+            assert "ondemand__search" in names
 
-            service = AgentService(sample_config)
-            service._catalog = svc
-            service._catalog_semantic = None
+            # Registered is not injected: the row still lands unloaded, and
+            # only load_status puts a tool into the turn snapshot.
+            row = await store.get_tool("ondemand__search")
+            assert row is not None
+            assert row["category"] == "mcp"
+            assert row["load_status"] == "unloaded"
+            assert row["schema"]
 
-            client = AsyncMock()
-            client.is_connected = True
-
-            async def fake_call_tool(name, arguments=None):
-                if name == "__mcp_list":
-                    return _json.dumps([
-                        {"name": "ondemand", "enabled": True, "auto_load": False},
-                    ])
-                if name == "__check":
-                    return _json.dumps({"servers": [
-                        {"name": "ondemand", "tools_ok": True},
-                    ]})
-                if name in ("mcp_list_tools", "__mcp_list_tools"):
-                    return _json.dumps({
-                        "server": "ondemand", "connected": True,
-                        "tools": [
-                            {"name": "search", "description": "Search stuff",
-                             "inputSchema": {"type": "object",
-                                             "properties": {"q": {"type": "string"}}}},
-                        ],
-                        "tool_count": 1,
-                    })
-                raise AssertionError(f"unexpected tool call: {name} {arguments}")
-
-            client.call_tool = fake_call_tool
-            service._plugins["mcp-gateway"].client = client
-
-            # The reconcile also purges catalog servers that left tools.yaml —
-            # pin the gateway config view to the mocked pool so this test's
-            # "ondemand" server counts as configured (no TOOLS_FILE isolation
-            # here, so the real repo config would otherwise read as the truth).
+            # ... so the restart case works: a row loaded last session is
+            # immediately executable after the next reconcile.  (Re-pin the
+            # config view — the purge compares against it, and without the
+            # patch this second reconcile reads the real repo config and drops
+            # "ondemand"'s rows as unconfigured.)
+            await store.set_load_status("ondemand__search", "loaded", bump=True)
             with patch(
                 "slife.plugins.mcp_gateway.config.servers",
                 return_value={"ondemand": {}},
             ):
                 await service._sync_mcp_proxies()
-
-                # No proxy materialized at reconcile time...
-                names = {t.name for t in service.tool_registry.list_tools()}
-                assert "ondemand__search" not in names
-
-                # ... but the row is in the catalog and discoverable via
-                # func-tool-load's row source (unloaded — the on-demand state).
-                row = await store.get_tool("ondemand__search")
-                assert row is not None
-                assert row["category"] == "mcp"
-                assert row["load_status"] == "unloaded"
-                assert row["schema"]
-
-                # A reloaded row (func-tool-load flips loaded) survives the next
-                # reconcile: upsert_tool only applies status to a NEW row.
-                await store.set_load_status("ondemand__search", "loaded", bump=True)
-                await service._sync_mcp_proxies()
-                assert (await store.get_tool("ondemand__search"))["load_status"] == "loaded"
+            assert "ondemand__search" in {
+                t.name for t in service.tool_registry.list_tools()
+            }
+            assert (await store.get_tool("ondemand__search"))["load_status"] == "loaded"
         finally:
             # An unclosed aiosqlite connection keeps its thread alive and
             # hangs pytest at exit — close on the failure path too.
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_sync_proxies_mirrors_disabled_server_rows_only(
+        self, sample_config, tmp_path,
+    ):
+        """A DISABLED server keeps its rows (disable-keeps-rows, so
+        tool_search still finds it and re-enabling needs no re-discovery) but
+        registers no proxies — a switched-off server's tools must not be
+        executable."""
+        service, store = await self._sync_with_catalog(
+            sample_config, tmp_path, "off", enabled=False,
+        )
+        try:
+            assert "off__search" not in {
+                t.name for t in service.tool_registry.list_tools()
+            }
+            row = await store.get_tool("off__search")
+            assert row is not None
+            assert row["category"] == "mcp"
+        finally:
             await store.close()
 
     @pytest.mark.asyncio

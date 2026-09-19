@@ -1268,11 +1268,14 @@ class AgentService:
            are up; each one's tools are marked ``error`` or cleared —
            ``_mark_server_connectivity``.  This is the only place liveness
            reaches the injection set (there is no server table to join).
-        2. **auto_load servers**: their proxies are (re)registered and their
+        2. **enabled servers**: their proxies are (re)registered and their
            tool rows mirrored — ``_discover_and_register_external_tools``.
-        2b. **on-demand servers** (the default): their tool rows are mirrored
-           so ``tool_search`` finds them and ``func-tool-load`` materializes them
-           one at a time — no proxies until then.
+           ``auto_load`` does not enter here: it decides which tools the catalog
+           seeds as *loaded* (and so what the turn snapshot injects), not which
+           ones can execute.
+        2b. **disabled servers**: their tool rows are mirrored so
+           ``tool_search`` still finds them and re-enabling needs no
+           re-discovery — ``_mirror_disabled_server_tools``, and no proxies.
         3. A proxy whose server left the CONFIG is unregistered; a merely
            disconnected/disabled server keeps its proxies — its rows carry the
            ``error`` mark, which is what keeps them out of injection.
@@ -1306,7 +1309,6 @@ class AgentService:
                 servers = []
 
             configured: set[str] = set()
-            auto_servers: set[str] = set()
             #: The config's on/off switch per server — the ``enabled`` column,
             #: which moves independently of the liveness verdict.
             enabled_servers: dict[str, bool] = {}
@@ -1316,8 +1318,6 @@ class AgentService:
                         continue
                     configured.add(s["name"])
                     enabled_servers[s["name"]] = s.get("enabled") is not False
-                    if s.get("enabled") is not False and s.get("auto_load") is True:
-                        auto_servers.add(s["name"])
 
             # 1 — the state of every configured server, projected onto its tool
             # rows: the on/off switch onto ``enabled``, the liveness verdict
@@ -1329,9 +1329,17 @@ class AgentService:
                 )
 
             # 2/2b — every configured server's rows, off ONE pass over the
-            # servers: auto_load ones also get their proxies (re)registered,
-            # on-demand ones are mirrored only (proxies arrive with
-            # ``func-tool-load``, which materializes from the catalog row).
+            # servers.  Every ENABLED server also gets its proxies registered:
+            # the registry is the execution pool, so a tool the catalog calls
+            # ``loaded`` must have an instance behind it.  ``auto_load`` governs
+            # what the catalog SEEDS as loaded — and so what the turn snapshot
+            # injects — never whether an execution route exists.  Registering an
+            # on-demand server's proxies does not inject them: injection is the
+            # snapshot's job, and it is driven by ``load_status`` alone.
+            #
+            # A disabled server still gets its rows mirrored (the "disable keeps
+            # rows" contract, so ``tool_search`` and re-enabling both work) but
+            # no proxies — a switched-off server's tools must not be executable.
             #
             # CONCURRENTLY: each of these awaits a ``__mcp_list_tools``, i.e.
             # a real ``tools/list`` on the far side — and, for a peer the pool
@@ -1345,16 +1353,19 @@ class AgentService:
                 except Exception:
                     logger.debug("%s server=%s", tag, name, exc_info=True)
 
+            enabled_configured = {
+                n for n in configured if enabled_servers.get(n, True)
+            }
             await asyncio.gather(
                 *(
                     _mirror(n, self._discover_and_register_external_tools(server_name=n),
-                            "mcp_auto_load_sync_failed")
-                    for n in sorted(auto_servers)
+                            "mcp_sync_failed")
+                    for n in sorted(enabled_configured)
                 ),
                 *(
-                    _mirror(n, self._mirror_on_demand_server_tools(n),
-                            "mcp_on_demand_sync_failed")
-                    for n in sorted(configured - auto_servers)
+                    _mirror(n, self._mirror_disabled_server_tools(n),
+                            "mcp_disabled_sync_failed")
+                    for n in sorted(configured - enabled_configured)
                 ),
             )
 
@@ -1520,15 +1531,18 @@ class AgentService:
             server_name, tools, category=category, enabled=server_enabled,
         )
 
-    async def _mirror_on_demand_server_tools(self, server_name: str) -> None:
-        """Upsert a non-auto-load server's tool rows into the shared catalog.
+    async def _mirror_disabled_server_tools(self, server_name: str) -> None:
+        """Upsert a DISABLED server's tool rows into the shared catalog.
 
-        On-demand servers register NO proxies at reconcile time (proxies are
-        materialized by ``func-tool-load`` from the catalog row on demand).
-        The reconciliation feeds their rows so ``tool_search`` can discover
-        them and ``func-tool-load`` can materialize them — without this an
-        on-demand server's tools would never enter the catalog and would be
-        unreachable.  Only a server with a working tool list yields rows (``__mcp_list_tools``
+        Rows only — no proxies.  A switched-off server keeps its rows (the
+        "disable keeps rows" contract: ``tool_search`` still finds them and
+        flipping it back on needs no re-discovery), and its ``enabled=false``
+        column is what holds them out of the injection set.  No proxy is
+        registered because a disabled server's tools must not be executable —
+        the catalog's ``disabled`` verdict would refuse the call anyway, and an
+        instance that can never run is not worth holding.
+
+        Only a server with a working tool list yields rows (``__mcp_list_tools``
         answers ``tools=[]`` otherwise); a disconnected server's existing rows
         stay and are kept out of injection by its ``error`` mark (written by
         :meth:`_mark_server_connectivity`).
