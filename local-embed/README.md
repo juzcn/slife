@@ -389,7 +389,9 @@ local-embed                 # binds 127.0.0.1:17347 by default
 The CLI takes no model/endpoint flags — the config is the only source of truth.
 A port already in use is a hard error with one actionable line (no silent
 fallback to a free port): stop the other instance or change `port` in the
-config.
+config.  Running the CLI while a service already holds the port is a mistake
+worth reporting — the same situation is handled differently when slife spawns
+the plugin (see [Adopting a running service](#adopting-a-running-service)).
 
 ### `local-embed set` / `set-gguf` — write the config
 
@@ -481,10 +483,38 @@ for; slife still consumes the MODEL SERVICE purely as an OpenAI-compatible
 HTTP endpoint (never through MCP tools).
 
 Because its config pins a port that a static embeddings `base_url` points at,
-it is the one plugin with a **fixed** port: it binds that port itself and a
-taken port is a hard error (no fallback — a second instance would double the
-model in memory and serve nothing new). The host then reports the plugin as
-failed to load, with the reason, and the running instance keeps serving.
+it is the one plugin with a **fixed** port: it binds that port itself, and that
+port is the service's identity — whoever holds it *is* local-embed as far as
+every host is concerned.
+
+A second instance is therefore not automatically a mistake.  When slife spawns
+the plugin and finds a local-embed already serving the port (a daemon in WSL
+shared by several hosts, or one you started by hand), the child **adopts** it
+rather than failing; see below.  The same port held by anything that is *not* a
+local-embed is still a hard error, with the reason, and the running service is
+left untouched.
+
+### Adopting a running service
+
+The spawned child probes `GET /health` on the configured port before serving:
+
+- **A local-embed answers** → it is adopted.  The child serves MCP on an
+  OS-assigned port, loads **no model of its own**, and its `__check` reports the
+  adopted service's facts (re-read on every probe, so a service that stops
+  answering reads as *unavailable*, not as stale good news).  Hosts' `base_url`
+  was already being served — by an instance that may well be warm.
+- **Nothing answers, or something else does** → the child binds the port and
+  serves as usual; a stranger still fails loudly rather than being adopted.
+
+Adoption is automatic and needs no config.  It is what makes one shared
+service practical: slife on Windows and jack on WSL can both point at a single
+local-embed, instead of each holding its own copy of a ~2 GB model.
+
+The adopter also **watches**: if the adopted service goes away, the child takes
+the fixed port over and serves embeddings itself, warming the models flagged
+`autoload`, so hosts keep embedding without a restart.  The reverse is not
+possible — once the child holds the port, the original service cannot come back
+until the child restarts.
 
 Point slife's embedding config at the daemon's stable port:
 

@@ -37,10 +37,18 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from local_embed.adopt import (
+    Adoption,
+    adopted_check_payload,
+    get_adoption,
+    probe_service,
+    set_adoption,
+    watch_and_take_over,
+)
 from local_embed.config import DEFAULT_PORT
 from local_embed.engine import EmbeddingInputEmpty, EmbeddingInputTooLong, Engine
 from local_embed.logging import silence_noisy_loggers, setup_logging
-from local_embed.server_utils import bind_port, create_plugin_server
+from local_embed.server_utils import bind_port, bind_free_port, create_plugin_server
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +77,18 @@ def get_engine() -> Engine:
     return _engine
 
 
+#: The port this process serves MCP on, recorded by the entry points before
+#: serving.  The adopter's takeover watcher needs it — the lifespan that starts
+#: the watcher runs inside the server and has no handle on the socket.
+_serve_port: int = 0
+
+
+def set_serve_port(port: int) -> None:
+    """Record the port this process serves MCP on (called by the entry points)."""
+    global _serve_port
+    _serve_port = port
+
+
 async def _eager_load_autoload() -> None:
     """Background eager-load of the models flagged ``autoload: true``.
 
@@ -76,10 +96,19 @@ async def _eager_load_autoload() -> None:
     true`` is loaded in the background shortly after the server starts, so
     the first embed on it is already warm — every unflagged model stays lazy
     (a local model's weights are large and memory-hungry).
+
+    While ADOPTED this loads nothing: an external local-embed already serves
+    the port hosts embed against, so materialising our own copy would be
+    exactly the duplicated model adoption exists to avoid.  The adopter warms
+    its models only if it later takes the port over (see
+    :func:`local_embed.adopt.watch_and_take_over`).
     """
     engine = _engine
     if engine is None:
         return  # never armed (no build_server) — nothing to preload
+    if get_adoption() is not None:
+        logger.info("autoload_skipped reason=adopted")
+        return
     try:
         await engine.load_autoload()
     except Exception as e:  # noqa: BLE001 — a failed pass must never kill the server
@@ -97,9 +126,19 @@ async def _startup_eager(app):
     ``run_daemon``); a heavy model simply warms up in the background while
     the server already serves.
     """
+    loop = asyncio.get_running_loop()
     # Always schedule it; ``Engine.load_autoload`` skips every model whose
-    # spec is not flagged, so this is a no-op when nothing sets autoload.
-    asyncio.get_running_loop().create_task(_eager_load_autoload())
+    # spec is not flagged (and the whole pass is skipped while adopted), so
+    # this is a no-op when nothing sets autoload.
+    loop.create_task(_eager_load_autoload())
+    # When adopted, also stand watch over the fixed port we declined to take:
+    # the service holding it may go away, and hosts' base_url would then have
+    # nothing behind it.
+    adoption = get_adoption()
+    if adoption is not None:
+        loop.create_task(watch_and_take_over(
+            adoption.host, adoption.port, _serve_port, _engine,
+        ))
     yield
 
 
@@ -152,6 +191,13 @@ async def __check() -> str:
     ``embeddings_*`` native tools for config and the health checks for
     status.
     """
+    if get_adoption() is not None:
+        # Adopted: this process runs no model, so the honest report is the
+        # adopted service's own facts — re-read now, not a startup snapshot
+        # (a probe is asking what is true at probe time).  A service that has
+        # stopped answering raises, which the host renders as `unavailable`
+        # with the reason rather than a stale "healthy".
+        return json.dumps(adopted_check_payload(), ensure_ascii=False)
     engine = get_engine()
     return json.dumps(
         {"models": [_model_status(engine, n) for n in engine.models]},
@@ -443,6 +489,7 @@ def serve_standalone(engine: Engine, *, host: str = "127.0.0.1", port: int = DEF
         logger.error("local_embed_bind_failed err=%s", e)
         print(f"Error: {e}", file=sys.stderr)
         return 1
+    set_serve_port(port)
     return _run(mcp, host=host, port=port, sockets=[sock])
 
 
@@ -458,11 +505,19 @@ def main() -> int:
     discover the port.
 
     local-embed is the only plugin that uses a fixed port (every other
-    plugin takes an OS-assigned one), so a port already in use is a hard
-    error — no fallback.  A second instance would serve nothing (the host's
-    embeddings ``base_url`` is static) while doubling the model in memory;
-    the host reports the plugin as not loaded and the existing instance
-    keeps serving embeddings on the original port.
+    plugin takes an OS-assigned one), because the host's embeddings
+    ``base_url`` is static config pointing at that port.  So a port already
+    being served is not treated as a conflict — if the holder IS a
+    local-embed, this process ADOPTS it (see :mod:`local_embed.adopt`): it
+    serves MCP on an OS-assigned port, loads no model of its own, and reports
+    the adopted service's state.  The hosts' ``base_url`` was already being
+    served, by an instance that may well be warm.
+
+    A port held by anything that is not a local-embed is still a hard error —
+    no fallback.  Adopting a stranger would point the embeddings config at
+    something that does not speak the protocol and hide the real conflict.
+    Fail CLEANLY there (one actionable line, not a raw traceback): the host
+    surfaces it as a plugin start failure and the other service is untouched.
     """
     from local_embed.config import resolve_engine_settings
     from local_embed.server_utils import run_plugin_server
@@ -472,23 +527,41 @@ def main() -> int:
     engine = Engine(specs=settings["specs"])
     build_server(engine)
 
+    host = settings["host"]
+    service_port = int(settings["port"])
+
     # Bind the configured port (default {DEFAULT_PORT} — a STABLE port so a
-    # host can point its OpenAI-compatible client's base_url at it).  A port
-    # already being served is a hard error (no fallback) — see bind_port.
-    # Fail CLEANLY (one actionable line, not a raw traceback): the host
-    # surfaces this as a plugin load failure (加载失败) and the pre-existing
-    # instance keeps serving embeddings.
+    # host can point its OpenAI-compatible client's base_url at it).
     try:
-        sock, port = bind_port(settings["host"], int(settings["port"]))
+        sock, port = bind_port(host, service_port)
     except RuntimeError as e:
-        logger.error("local_embed_load_failed err=%s", e)
-        print(f"local-embed load failed: {e}", file=sys.stderr)
-        return 1
-    logger.info(
-        "local_embed_start port=%s models=%s autoload=%s",
-        port, engine.models,
-        [n for n in engine.models if engine.model_spec(n).autoload] or "-",
-    )
+        payload = probe_service(host, service_port)
+        if payload is None:
+            logger.error("local_embed_load_failed err=%s", e)
+            print(f"local-embed load failed: {e}", file=sys.stderr)
+            return 1
+        models = tuple(
+            str(m.get("name", "?"))
+            for m in payload.get("models", []) if isinstance(m, dict)
+        )
+        set_adoption(Adoption(host=host, port=service_port, models=models))
+        # The fixed port is not ours to serve — take an OS-assigned one for
+        # MCP.  The port signal then carries THAT port, so the host's
+        # MCPWrapperProcess connects here as usual; its embeddings base_url
+        # still resolves to the adopted service.
+        sock, port = bind_free_port(host)
+        logger.info(
+            "local_embed_adopt_existing endpoint=%s models=%s mcp_port=%s",
+            f"http://{host}:{service_port}", ",".join(models) or "-", port,
+        )
+    else:
+        logger.info(
+            "local_embed_start port=%s models=%s autoload=%s",
+            port, engine.models,
+            [n for n in engine.models if engine.model_spec(n).autoload] or "-",
+        )
+
+    set_serve_port(port)
     return run_plugin_server(mcp, sockets=[sock])
 
 

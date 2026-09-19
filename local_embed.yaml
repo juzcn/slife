@@ -46,4 +46,11 @@ models:
     backend: "gguf"
     gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/bge-m3-Q8_0.gguf}"
     autoload: true
+# The port IS the service's identity: slife's embeddings base_url points at it,
+# not at whatever port a given process serves.  So starting a second instance
+# while one already serves this port ADOPTS the running one rather than
+# failing — the spawned process serves MCP on an OS-assigned port, loads no
+# model of its own, and reports the running instance's state (and takes this
+# port over if that instance goes away).  A non-local-embed service on the port
+# is still an error.  This is what lets several hosts share one daemon.
 port: 17347  # uncommon fixed port — see local_embed.config.DEFAULT_PORT

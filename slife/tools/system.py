@@ -406,9 +406,10 @@ async def check_local_embed(client=None) -> list[dict]:
     """
     data, entries = await _probe_plugin(
         client, "local-embed",
-        offline_hint=("Restart slife to respawn the plugin. If another "
-                      "local-embed holds its port, stop that first — its log "
-                      "has the reason if it stays down."),
+        offline_hint=("Restart slife to respawn the plugin. If a NON-local-embed "
+                      "service holds its port, free that port first — an "
+                      "existing local-embed on it is adopted, not a conflict. "
+                      "Its log has the reason if it stays down."),
     )
     if entries:
         return entries

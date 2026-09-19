@@ -40,11 +40,14 @@ def bind_port(host: str, port: int) -> "tuple[socket.socket, int]":
     """Bind a socket to *host*:*port*; fail when the port is already served.
 
     local-embed is the only plugin that uses a fixed port (every other
-    plugin takes an OS-assigned one), so a port already being served is a
-    hard error — no fallback to a free port.  A second instance would serve
-    nothing (the host's embeddings ``base_url`` is static) while doubling
-    the model in memory; the existing instance keeps serving on the original
-    port.
+    plugin takes an OS-assigned one), so this raises rather than silently
+    taking a different port — a service on some other port would be invisible
+    to the hosts whose embeddings ``base_url`` points here.
+
+    Raising is the whole contract this function owes: deciding what a *taken*
+    port means belongs to the caller.  ``main()`` treats a local-embed holding
+    it as something to adopt and anything else as a hard error
+    (:mod:`local_embed.adopt`); the standalone CLI treats both as an error.
 
     On Windows ``SO_REUSEADDR`` lets a raw ``bind`` succeed on a port that
     is already listened on, so we also probe for a live listener before
