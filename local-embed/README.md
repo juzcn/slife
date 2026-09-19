@@ -422,7 +422,7 @@ embeddings:
       base_url: "http://127.0.0.1:17347/v1"  # stable port from local_embed.yaml
       api_key: "local"
       model: "bge-m3"                        # id POSTed on /v1/embeddings
-  active_model: "local"      # provider-id only, or "local/<model>"
+  active_model: "local"      # a provider id — never a "provider/model" ref
   enabled: true
 ```
 
