@@ -16,7 +16,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: **63 builtin tools by default** across 14 categories (including the reserved harness tool `_turn_prompt`, auto-invoked each turn), **eight internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, and the MCP gateway `mcp-gateway`), the **`local-embed`** embedding daemon (started manually), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: **63 builtin tools by default** across 14 categories (including the reserved harness tool `_turn_prompt`, auto-invoked each turn), **nine internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, the MCP gateway `mcp-gateway`, and the **`local-embed`** embedding service), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -123,14 +123,14 @@ The uninstaller removes the `slife` and `credstore` tool commands (they share on
 
 ### Related tools
 
-The repo also ships three standalone packages — install each independently (the MCP gateway ships **inside** slife as an internal plugin; `local-embed` is a standalone daemon you start manually, like Mosquitto — slife never spawns it):
+The repo also ships three standalone packages — install each independently (the MCP gateway ships **inside** slife as an internal plugin; `local-embed` is one too, and *also* runnable as a standalone service — you may start it yourself, and slife will use that instance rather than starting a second one):
 
 | Package | Install | Purpose |
 |---------|---------|---------|
 | `slife` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh \| bash` | The agent (this README) |
 | `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh \| bash` | Cross-platform credential storage |
 | `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | Generate `~/.claude/settings.json` |
-| `local-embed` | installed with slife (standalone daemon) | Local embedding endpoint service |
+| `local-embed` | installed with slife (internal plugin; also runnable standalone) | Local embedding endpoint service |
 
 Installing slife depends on [credstore](credstore/README.md) — it does **not** install cc-switch. See the [cc-switch](cc-switch/README.md), [credstore](credstore/README.md), and [local-embed](local-embed/README.md) READMEs for details. `slife`, `credstore`, and `cc-switch` each have a one-click installer (macOS / Linux / WSL: `install.sh`, Windows: `install.ps1`) and uninstaller kept in their package directories; `local-embed` ships as a slife dependency exposing the `local-embed` CLI.
 
@@ -276,7 +276,7 @@ Every turn is permanently recorded in SQLite (`~/.slife/<agent>.db`) and searche
 | `hybrid` | Semantic recall (FTS5 + vector → RRF merge) |
 | `time` | Browse by date |
 
-Embeddings are a **first-class top-level `embeddings` section** in `slife.yaml` (shared by `memdb` + `memfiles`), managed by the builtin `embeddings_*` tools; runtime index status is surfaced by `system_health`. Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); `active_model` ("provider" — e.g. `"local_embed"` or `"siliconflow"`) is configuration-authoritative. The **`local-embed` daemon** (started manually, like Mosquitto — not a slife plugin) serves local GGUF/transformer models at `http://127.0.0.1:17347/v1`, each loaded **once** and shared by `memdb` and `memfiles` — no double load — with no "active model" of its own (the client requests the model it wants, so a model is never loaded twice). **Keyword search works without any embedding backend.** Semantic (hybrid) results are only served once the index is fully built for the current model — while a reindex runs, hybrid degrades to keyword-only and resumes automatically when indexing finishes.
+Embeddings are a **first-class top-level `embeddings` section** in `slife.yaml` (shared by `memdb` + `memfiles`), managed by the builtin `embeddings_*` tools; runtime index status is surfaced by `system_health`. Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); `active_model` ("provider" — e.g. `"local_embed"` or `"siliconflow"`) is configuration-authoritative. The **`local-embed` service** (an internal plugin slife starts for you — or, if you already run one yourself, the instance you started) serves local GGUF/transformer models at `http://127.0.0.1:17347/v1`, each loaded **once** and shared by `memdb` and `memfiles` — no double load — with no "active model" of its own (the client requests the model it wants, so a model is never loaded twice). **Keyword search works without any embedding backend.** Semantic (hybrid) results are only served once the index is fully built for the current model — while a reindex runs, hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
 Each turn records two timestamps — your input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers. User messages carry a compact **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** footnote (the turn id plus when it happened) so the agent can reference turns by id (`turn_read` / `turn_summarize`) — and you read the same line in the TUI.
 
@@ -329,7 +329,7 @@ Nine internal plugins run as independent child processes, each declared by one r
 | **media** | Non-chat AI generation (image, video, TTS, ASR) from any provider — owns the `media:` config section and a provider-agnostic adapter layer. Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | **job-coding** | Deterministic jobs as MCP tools — code-defined functions in `~/.slife/jobs/` run with exactly their declared args; one-shot LLM calls via `llm.chat` on `job_coding_model`. Tools: `job-list`, `job-write`, `job-remove`, `job-run` + one per job |
 
-All internal plugins run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 consecutive failures) and recovers the restart counter only after a plugin stays up ~60 s. Readiness follows the MCP standard (the `initialize` handshake completes only after the plugin's own init succeeded); **required plugins** (`plugins.required` — `memdb` and `memfiles` in the bundled config) are core: failing to become ready **aborts startup** instead of limping on. External/subordinate dependencies — external MCP servers, the tunnel, WeChat login, media providers, the A2A broker, the `local-embed` daemon — never gate readiness; they are uncontrollable, self-heal at runtime, and are surfaced separately via status tools in `system_health`.
+All internal plugins run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 consecutive failures) and recovers the restart counter only after a plugin stays up ~60 s. Readiness follows the MCP standard (the `initialize` handshake completes only after the plugin's own init succeeded); **required plugins** (`plugins.required` — `memdb` and `memfiles` in the bundled config) are core: failing to become ready **aborts startup** instead of limping on. External/subordinate dependencies — external MCP servers, the tunnel, WeChat login, media providers, the A2A broker — never gate readiness; they are uncontrollable, self-heal at runtime, and are surfaced separately via status tools in `system_health`. `local-embed` is a plugin rather than an external dependency, but is likewise **not** required, so its failure to start never aborts startup either — it is spawned like any other child and reports its state.
 
 ### A2A — agent-to-agent mesh
 
@@ -344,7 +344,7 @@ All messages — human, WeChat, MQTT, subagent results — flow through a single
 
 Semantic (hybrid) memory search — recall by meaning across `memdb` turns and `memfiles` notes — needs **two things** the one-click installer deliberately does not bring: a local embedding **backend** (a Python package, platform-specific) and the **model weights** (downloaded by you — the server never auto-downloads). Keyword search (`grep` / `fts5` / `time`) works without any of this. Setup is a **user-run** step; every piece is fail-open, so a missing backend leaves a working keyword-only core.
 
-**How it fits together.** Slife treats every embedding provider as an OpenAI-compatible endpoint (`base_url` + `api_key`). The `local-embed` daemon — a standalone service you start manually (like Mosquitto), exposing the `local-embed` CLI — loads each local model **once** and serves it at `http://127.0.0.1:17347/v1` (`POST /v1/embeddings`, `GET /v1/models`, `GET /health`). `memdb` and `memfiles` both call that endpoint, so a model is never loaded twice. local-embed has **no "active model"** — every request names the model it wants; slife's `embeddings.active_model` (e.g. `"local_embed"` for the local daemon, `"siliconflow"` for a cloud provider — the seeded config ships `"siliconflow"`) chooses which provider to embed against.
+**How it fits together.** Slife treats every embedding provider as an OpenAI-compatible endpoint (`base_url` + `api_key`). The `local-embed` service — an internal plugin slife spawns, also runnable standalone via the `local-embed` CLI — loads each local model **once** and serves it at `http://127.0.0.1:17347/v1` (`POST /v1/embeddings`, `GET /v1/models`, `GET /health`). `memdb` and `memfiles` both call that endpoint, so a model is never loaded twice. local-embed has **no "active model"** — every request names the model it wants; slife's `embeddings.active_model` (e.g. `"local_embed"` for the local daemon, `"siliconflow"` for a cloud provider — the seeded config ships `"siliconflow"`) chooses which provider to embed against.
 
 ### 1. Install the backend dependency
 
@@ -420,7 +420,9 @@ local-embed set-gguf bge-m3 --path ~/.local-embed/models/bge-m3-Q8_0.gguf
 
 ### 4. Make the service ready — verify
 
-Start the `local-embed` daemon (`local-embed` on PATH — start it manually, like Mosquitto), then start slife. The **model load is deferred** — the first embed loads it (a few seconds for GGUF, up to a minute for the ~2 GB transformer). Verify from inside the chat or over HTTP:
+Just start slife — it spawns `local-embed` for you (the same service is also on PATH as the `local-embed` CLI). Running it yourself first is optional: if one is **already serving the port**, slife uses that instance rather than starting a second copy of the model — which is how one service can be shared by slife on Windows and an agent in WSL. See [local-embed → Adopting a running service](local-embed/README.md#adopting-a-running-service).
+
+The **model load is deferred** — the first embed loads it (a few seconds for GGUF, up to a minute for the ~2 GB transformer). Verify from inside the chat or over HTTP:
 
 - **In the chat** — ask the agent to run `system_health` (the `memdb`/`memfiles` components report the semantic gate: `semantic_ready`, model, pending embeddings).
 - **Over HTTP** (the service is standalone at the fixed port):
@@ -441,7 +443,7 @@ A healthy state: `/health` → `status: ok`; `system_health` → the `embeddings
 | Log: `backend_unavailable … reason=llama_cpp_not_installed` / `sentence_transformers_not_installed` | Run the step-1 install for your platform — the log prints the exact command. |
 | Transformer route won't load with `HF_HUB_OFFLINE=1` | The repo isn't in the cache — run `hf download BAAI/bge-m3` and make sure `HF_HUB_CACHE` points at the cache that holds it. |
 | GGUF route won't load | File missing at `gguf_path` — check `BGE_M3_GGUF_PATH` / `gguf_path`, and that the client requests `"bge-m3"` (all configured models are peers — nothing is gated behind an `active_model`). |
-| `system_health` shows `embeddings` as `unavailable` | The active embedding endpoint didn't answer `GET /v1/models` — start the `local-embed` daemon if that is the active provider (or fix the cloud provider's key: `api_key` resolves `${VAR}` → env → credstore). The component only ever probes the **active** provider, and its line is keyed by that provider's id. |
+| `system_health` shows `embeddings` as `unavailable` | The active embedding endpoint didn't answer `GET /v1/models`. If that provider is `local_embed`, check the `local-embed` line in the same report — slife starts the service itself, so a missing one means the plugin failed to start (its log has the reason; a **non**-local-embed service holding port 17347 will do it). Otherwise fix the cloud provider's key: `api_key` resolves `${VAR}` → env → credstore. The component only ever probes the **active** provider, and its line is keyed by that provider's id. |
 | First embed very slow | A transformer download/warm-up is deferred to the first embed; subsequent calls are fast. |
 
 ### Optional extras (manual installs)

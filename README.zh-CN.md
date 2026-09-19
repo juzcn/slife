@@ -14,7 +14,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：**默认 59 个内置工具**、横跨 12 个类别（含保留的 harness 工具 `_turn_prompt` 与 `_check_new_input`——由循环自动调用），**八个内部插件服务**（memdb、wechat、memfiles、sharefile、a2a、media、job-coding，以及 MCP 网关 `mcp-gateway`）、**`local-embed`** 嵌入守护进程（手动启动）、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：**默认 59 个内置工具**、横跨 12 个类别（含保留的 harness 工具 `_turn_prompt` 与 `_check_new_input`——由循环自动调用），**九个内部插件服务**（memdb、wechat、memfiles、sharefile、a2a、media、job-coding、MCP 网关 `mcp-gateway`，以及 **`local-embed`** 嵌入服务）、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -125,14 +125,14 @@ powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/r
 
 ### 相关工具
 
-本仓库还附带三个独立的包——各自独立安装（MCP 网关作为内部插件**内置**在 slife 中；`local-embed` 是需要手动启动的独立守护进程，像 Mosquitto 一样——slife 从不 spawn 它）：
+本仓库还附带三个独立的包——各自独立安装（MCP 网关作为内部插件**内置**在 slife 中；`local-embed` 同样是一个内部插件，但也**可以**作为独立服务运行——你可以自己先启动它，slife 会直接使用那个实例，而不再启动第二个）：
 
 | 包 | 安装 | 用途 |
 |---------|---------|---------|
 | `slife` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh \| bash` | 智能体（本 README） |
 | `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh \| bash` | 跨平台凭据存储 |
 | `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | 生成 `~/.claude/settings.json` |
-| `local-embed` | 随 slife 安装（独立守护进程） | 本地嵌入端点服务 |
+| `local-embed` | 随 slife 安装（内部插件；亦可独立运行） | 本地嵌入端点服务 |
 
 安装 slife 依赖 [credstore](credstore/README.md)——它**不会**安装 cc-switch。详见 [cc-switch](cc-switch/README.md)、[credstore](credstore/README.md) 和 [local-embed](local-embed/README.md) 各自的 README。`slife`、`credstore`、`cc-switch` 各自带一键安装器（macOS / Linux / WSL 用 `install.sh`，Windows 用 `install.ps1`）和卸载器，都放在各自的包目录下；`local-embed` 作为 slife 依赖发布，提供 `local-embed` CLI。
 
@@ -280,7 +280,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | `hybrid` | 语义召回（FTS5 + 向量 → RRF 融合） |
 | `time` | 按日期浏览 |
 
-Embeddings 是 `slife.yaml` 中**一级顶层的 `embeddings` 配置段**（由 `memdb` + `memfiles` 共享），由内置 `embeddings_*` 工具管理；运行时索引状态由 `system_health` 上报。每个 provider 都是 **OpenAI 兼容端点**（`base_url` + `api_key`）；`active_model`（"provider"——例如 `"local_embed"` 或 `"siliconflow"`）以配置为准。**`local-embed` 守护进程**（手动启动，类似 Mosquitto——不是 slife 插件）在 `http://127.0.0.1:17347/v1` 提供本地 GGUF/transformer 模型，每个模型**加载一次**、由 `memdb` 与 `memfiles` 共享——不重复加载——它自己没有 "active model"（客户端请求它想要的模型，因此一个模型绝不会被加载两次）。**没有嵌入后端时关键词搜索照样工作。** 语义（hybrid）结果只在当前模型的索引完整构建后才返回——重建运行期间 hybrid 退回关键词搜索，索引进度完成时自动恢复。
+Embeddings 是 `slife.yaml` 中**一级顶层的 `embeddings` 配置段**（由 `memdb` + `memfiles` 共享），由内置 `embeddings_*` 工具管理；运行时索引状态由 `system_health` 上报。每个 provider 都是 **OpenAI 兼容端点**（`base_url` + `api_key`）；`active_model`（"provider"——例如 `"local_embed"` 或 `"siliconflow"`）以配置为准。**`local-embed` 服务**（由 slife 作为内部插件启动为你启动——若你自己已经在跑一个，则用你启动的那个实例）在 `http://127.0.0.1:17347/v1` 提供本地 GGUF/transformer 模型，每个模型**加载一次**、由 `memdb` 与 `memfiles` 共享——不重复加载——它自己没有 "active model"（客户端请求它想要的模型，因此一个模型绝不会被加载两次）。**没有嵌入后端时关键词搜索照样工作。** 语义（hybrid）结果只在当前模型的索引完整构建后才返回——重建运行期间 hybrid 退回关键词搜索，索引进度完成时自动恢复。
 
 每轮对话还记录两个时间戳——你的输入时间（`created_at`，敲下回车的那一刻）和 assistant 的完成时间（`completed_at`）——以灰色 `[HH:MM]` 标记显示。用户消息带一条紧凑的 **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** 脚注（turn id 加发生时间），让 agent 能用 turn id 引用轮次（`turn_read` / `turn_summarize`）——你在 TUI 里也读到同一行。
 
@@ -320,7 +320,7 @@ job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱
 
 ### 插件
 
-八个内部插件各自作为独立子进程运行，每个都在中央插件 spec 中声明一行、由同一套统一生命周期驱动（spawn → MCP 握手就绪 → watchdog → health）。其中之一——**mcp-gateway**——是外部 MCP 服务器的网关：第三方能力只能作为 `tools.yaml` 里的标准 MCP 服务器接入，绝不再作为 Python 插件。
+九个内部插件各自作为独立子进程运行，每个都在中央插件 spec 中声明一行、由同一套统一生命周期驱动（spawn → MCP 握手就绪 → watchdog → health）。其中之一——**mcp-gateway**——是外部 MCP 服务器的网关：第三方能力只能作为 `tools.yaml` 里的标准 MCP 服务器接入，绝不再作为 Python 插件。
 
 | 插件 | 角色 |
 |--------|------|
@@ -333,7 +333,7 @@ job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱
 | **media** | 来自任意 provider 的非聊天式 AI 生成（图片、视频、TTS、ASR）——自持 `media:` 配置段与跟 provider 无关的适配层。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio` |
 | **job-coding** | 确定性 jobs 作为 MCP 工具——`~/.slife/jobs/` 里的代码定义函数按声明的参数精确执行；一次性 LLM 调用走 `llm.chat`、用 `job_coding_model`。工具：`job-list`、`job-write`、`job-remove`、`job-run` + 每个 job 一个 `job-<函数名>` |
 
-所有内置插件都跑一个**看门狗（watchdog）**，崩溃时自动重启（指数退避 1s→30s，最多连续 5 次失败），只有在插件稳定运行约 60 秒后才恢复重启计数。就绪遵循 MCP 标准（`initialize` 握手只在插件自身 init 成功后才完成）；**必需插件**（`plugins.required`——随附配置里是 `memdb` 与 `memfiles`）是核心：无法就绪时**中止启动**而不是带病运行。外部/从属依赖——外部 MCP 服务器、隧道、微信登录、媒体 provider、A2A broker、`local-embed` 守护进程——从不阻塞就绪：它们不可控、运行时会自愈，并经由 `system_health` 里的状态工具单独上报。
+所有内置插件都跑一个**看门狗（watchdog）**，崩溃时自动重启（指数退避 1s→30s，最多连续 5 次失败），只有在插件稳定运行约 60 秒后才恢复重启计数。就绪遵循 MCP 标准（`initialize` 握手只在插件自身 init 成功后才完成）；**必需插件**（`plugins.required`——随附配置里是 `memdb` 与 `memfiles`）是核心：无法就绪时**中止启动**而不是带病运行。外部/从属依赖——外部 MCP 服务器、隧道、微信登录、媒体 provider、A2A broker——从不阻塞就绪：它们不可控、运行时会自愈，并经由 `system_health` 里的状态工具单独上报。`local-embed` 属于插件而非外部依赖，但同样**不是**必需插件，所以它启动失败也不会中止启动——它和其他子进程一样被 spawn，并上报自己的状态。
 
 ### A2A — 智能体间网格
 
@@ -350,7 +350,7 @@ A2A 协议运行在可插拔的传输 **binding**（当前为 MQTT）上，让�
 
 语义（混合）记忆搜索——跨越 `memdb` 轮次与 `memfiles` 笔记按含义召回——需要一键安装器**刻意不带**的**两样东西**：一个本地嵌入**后端**（Python 包，依赖平台）和**模型权重**（由你下载——服务器从不自动下载）。关键词搜索（`grep` / `fts5` / `time`）不需要这些即可工作。设置是一个**用户手动**步骤；每个环节都 fail-open，所以缺后端也留下一个可用的纯关键词搜索核心。
 
-**它是怎么拼起来的。** Slife 把每个嵌入 provider 都当成 OpenAI 兼容端点（`base_url` + `api_key`）。`local-embed` 守护进程——一个需要手动启动的独立服务（类似 Mosquitto），提供 `local-embed` CLI——把每个本地模型**加载一次**，并在 `http://127.0.0.1:17347/v1` 提供（`POST /v1/embeddings`、`GET /v1/models`、`GET /health`）。`memdb` 与 `memfiles` 都调用这个端点，所以一个模型永远不会被加载两次。local-embed **没有 "active model"**——每个请求都指名它要的模型；slife 的 `embeddings.active_model`（例如本地守护进程用 `"local_embed"`、云 provider 用 `"siliconflow"`——随附配置默认 `"siliconflow"`）选择用哪个 provider 做嵌入。
+**它是怎么拼起来的。** Slife 把每个嵌入 provider 都当成 OpenAI 兼容端点（`base_url` + `api_key`）。`local-embed` 服务——由 slife 作为内部插件启动，也可以通过 `local-embed` CLI 独立运行——把每个本地模型**加载一次**，并在 `http://127.0.0.1:17347/v1` 提供（`POST /v1/embeddings`、`GET /v1/models`、`GET /health`）。`memdb` 与 `memfiles` 都调用这个端点，所以一个模型永远不会被加载两次。local-embed **没有 "active model"**——每个请求都指名它要的模型；slife 的 `embeddings.active_model`（例如本地守护进程用 `"local_embed"`、云 provider 用 `"siliconflow"`——随附配置默认 `"siliconflow"`）选择用哪个 provider 做嵌入。
 
 ### 1. 安装后端依赖
 
@@ -426,7 +426,9 @@ local-embed set-gguf bge-m3 --path ~/.local-embed/models/bge-m3-Q8_0.gguf
 
 ### 4. 让服务就绪 — 验证
 
-启动 `local-embed` 守护进程（PATH 上的 `local-embed`——手动启动，类似 Mosquitto），然后启动 slife。**模型加载是延迟的**——第一次嵌入时才加载（GGUF 几秒，约 2 GB 的 transformer 最多一分钟）。从聊天里或通过 HTTP 验证：
+直接启动 slife 即可——它会为你启动 `local-embed`（同一个服务也在 PATH 上，即 `local-embed` CLI）。自己先启动它是可选的：如果**端口上已经有实例在服务**，slife 会直接使用那个实例，而不会再加载一份模型——这正是 Windows 上的 slife 与 WSL 里的 agent 共用一个服务的方式。参见 [local-embed → Adopting a running service](local-embed/README.md#adopting-a-running-service)。
+
+**模型加载是延迟的**——第一次嵌入时才加载（GGUF 几秒，约 2 GB 的 transformer 最多一分钟）。从聊天里或通过 HTTP 验证：
 
 - **在聊天里** — 让 agent 运行 `system_health`（`memdb`/`memfiles` 组件会报告语义门：`semantic_ready`、模型、pending embeddings）。
 - **通过 HTTP**（服务独立运行在固定端口上）：
@@ -447,7 +449,7 @@ curl http://127.0.0.1:17347/v1/embeddings -H 'Content-Type: application/json' \
 | 日志：`backend_unavailable … reason=llama_cpp_not_installed` / `sentence_transformers_not_installed` | 按你的平台跑第 1 步安装——日志会打印精确命令。 |
 | Transformer 路线在 `HF_HUB_OFFLINE=1` 下加载失败 | 仓库不在缓存里——跑 `hf download BAAI/bge-m3`，并确保 `HF_HUB_CACHE` 指向持有它的缓存。 |
 | GGUF 路线加载失败 | `gguf_path` 处文件缺失——检查 `BGE_M3_GGUF_PATH` / `gguf_path`，以及客户端请求的是 `"bge-m3"`（所有已配置模型都是对等——没有任何东西被挡在 `active_model` 后面）。 |
-| `system_health` 显示 `embeddings` 为 `unavailable` | 活动嵌入端点没有应答 `GET /v1/models`——如果活动 provider 正是 `local-embed`，启动它的守护进程（或修云 provider 的 key：`api_key` 按 `${VAR}` → env → credstore 解析）。该组件只探测**活动的** provider，行首的 key 就是该 provider 的 id。 |
+| `system_health` 显示 `embeddings` 为 `unavailable` | 活动嵌入端点没有应答 `GET /v1/models`。如果该 provider 是 `local_embed`，请看同一份报告里的 `local-embed` 那一行——服务由 slife 自己启动，所以缺失意味着插件启动失败（原因在它的日志里；**非** local-embed 的服务占着 17347 端口就会这样）。否则修云 provider 的 key：`api_key` 按 `${VAR}` → env → credstore 解析。该组件只探测**活动的** provider，行首的 key 就是该 provider 的 id。 |
 | 首次嵌入非常慢 | transformer 下载/预热延迟到第一次嵌入；后续调用很快。 |
 
 ### 可选扩展（手动安装）
