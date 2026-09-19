@@ -321,13 +321,16 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "✓ A2A {type} from {source} handled",
         "zh": "✓ 来自 {source} 的 A2A {type} 已处理",
     },
-    "task_failed": {
-        "en": "✗ A2A {type} from {source} failed",
-        "zh": "✗ 来自 {source} 的 A2A {type} 处理失败",
-    },
     "loop_error": {
         "en": "✗ {err}",
         "zh": "✗ {err}",
+    },
+    # A turn the provider rejected with a 400-class error is rolled back, not
+    # just failed: the message leaves the context entirely, so the next turn
+    # cannot see it.  Lead with that — the error alone reads as retryable.
+    "turn_dropped": {
+        "en": "✗ Turn dropped (not in context): {err}",
+        "zh": "✗ 该轮已丢弃（未进入上下文）：{err}",
     },
     "turn_error": {
         "en": "✗ Error: {err}",

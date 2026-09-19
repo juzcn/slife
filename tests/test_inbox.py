@@ -634,6 +634,55 @@ class TestInboxProcessOne:
         assert done.kwargs["source"] == "remote"
 
     @pytest.mark.asyncio
+    async def test_process_bad_request_marks_the_turn_dropped(self, mock_loop, mock_store):
+        """A 400-class rejection rolls the turn back — the message leaves the
+        context entirely, so no later turn can see it.  The activity reports
+        that explicitly: a bare error would read as retryable."""
+        from slife.agent.inbox import Inbox
+
+        class _BadRequest(Exception):
+            status_code = 400
+
+        on_activity = AsyncMock()
+        inbox = Inbox(mock_loop, mock_store, on_activity=on_activity)
+
+        mock_loop.run = AsyncMock(side_effect=_BadRequest("bad"))
+        mock_store.get_or_create.return_value = MagicMock()
+
+        msg = self._make_msg(source=AgentName("remote"), content="do it",
+                             reply_to="Slife/human/tasks", corr_id="br-1")
+        await inbox._process_one(msg)
+
+        err = next(
+            c for c in on_activity.call_args_list if c.args[0] == "loop_error"
+        )
+        assert err.kwargs["dropped"] is True
+        # ... and the rollback is real, not merely reported.
+        mock_store.get_or_create.return_value.pop_last_turn.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_process_transient_error_keeps_the_turn(self, mock_loop, mock_store):
+        """A timeout / connection failure is NOT rolled back — the message
+        stays in the context and a later turn completes it, so the activity
+        must not claim it was dropped."""
+        from slife.agent.inbox import Inbox
+        on_activity = AsyncMock()
+        inbox = Inbox(mock_loop, mock_store, on_activity=on_activity)
+
+        mock_loop.run = AsyncMock(side_effect=TimeoutError("timed out"))
+        mock_store.get_or_create.return_value = MagicMock()
+
+        msg = self._make_msg(source=AgentName("remote"), content="do it",
+                             reply_to="Slife/human/tasks", corr_id="to-1")
+        await inbox._process_one(msg)
+
+        err = next(
+            c for c in on_activity.call_args_list if c.args[0] == "loop_error"
+        )
+        assert err.kwargs["dropped"] is False
+        mock_store.get_or_create.return_value.pop_last_turn.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_process_success_has_no_error_flag(self, mock_loop, mock_store):
         """The clean path emits the same kind WITHOUT the flag — the TUI's
         default is success, so only failures opt in."""

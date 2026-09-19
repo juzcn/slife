@@ -426,13 +426,19 @@ class Inbox:
                     rolled_back = True
                 except Exception:
                     pass
-            # Notify TUI so the user sees the error in chat
+            # Notify TUI so the user sees the error in chat.  ``dropped``
+            # carries the rollback verdict explicitly (never re-derived from
+            # the error text): a rolled-back turn is GONE from the context, so
+            # no later turn will see the message.  That is a different fact
+            # from "the call failed" — the obvious reading of a bare error is
+            # "send it again", which is exactly what does not apply here.
             if self._on_activity:
                 try:
                     await self._on_activity(
                         "loop_error",
                         source=msg.source,
                         error=str(e),
+                        dropped=rolled_back,
                     )
                 except Exception:
                     pass

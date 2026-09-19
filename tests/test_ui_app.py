@@ -529,11 +529,12 @@ class TestStatusBar:
         )
 
     @pytest.mark.asyncio
-    async def test_task_completed_line_reports_failure(self):
-        """The same kind is emitted by the inbox's except path — a turn that
-        FAILED to process the message must not paint a green ✓ over the red
-        loop_error line.  The verdict rides the explicit ``error`` flag; the
-        emitter passes it, so nothing is re-derived from ``result`` text."""
+    async def test_task_completed_line_stays_silent_on_failure(self):
+        """A turn that FAILED to process a remote message is a HARNESS
+        failure, not an A2A one — the channel delivered it to the inbox and
+        was done.  Nothing is drawn: a green ✓ would be a lie, and a red
+        "A2A ... failed" would blame the wrong component on top of the
+        loop_error line that already carries the real error."""
         from slife.agent.message_history import a2a_marker
         from slife.ui.app import SlifeApp
 
@@ -547,9 +548,46 @@ class TestStatusBar:
             result="Error: boom", error=True,
         )
 
+        chat_view.add_system_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_loop_error_leads_with_the_dropped_turn(self):
+        """A 400-class rejection rolls the turn back, so the message is GONE
+        from the context.  The line must lead with that: the error alone reads
+        as "send it again", which is the one thing that will not help."""
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_a2a_activity(
+            "loop_error", source="jack", error="Error code: 400 - boom",
+            dropped=True,
+        )
+
         call = chat_view.add_system_message.call_args
-        assert call.args[0] == "✗ A2A task_request from jack failed"
+        assert call.args[0] == \
+            "✗ Turn dropped (not in context): Error code: 400 - boom"
         assert call.kwargs["color"] == "#f85149"
+
+    @pytest.mark.asyncio
+    async def test_loop_error_stays_plain_when_nothing_was_dropped(self):
+        """A transient failure keeps the turn in the context, so it must NOT
+        claim the message was dropped — retrying is the right advice there."""
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_a2a_activity(
+            "loop_error", source="jack", error="Request timed out", dropped=False,
+        )
+
+        call = chat_view.add_system_message.call_args
+        assert call.args[0] == "✗ Request timed out"
+        assert "dropped" not in call.args[0]
 
     @pytest.mark.asyncio
     async def test_process_message_enqueue_does_not_clear_tool_widgets(self):

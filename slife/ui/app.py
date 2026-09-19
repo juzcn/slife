@@ -940,7 +940,12 @@ class SlifeApp(App):
 
         elif kind == "loop_error":
             error = kwargs.get("error", "")
-            chat_view.add_system_message(t("loop_error", err=error), color="#f85149")
+            # A rolled-back turn is not merely a failed call: the message was
+            # removed from the context (``pop_last_turn``), so no later turn
+            # will see it.  A bare error reads as "send it again" — which is
+            # the one thing that will NOT help here — so say what happened.
+            key = "turn_dropped" if kwargs.get("dropped") else "loop_error"
+            chat_view.add_system_message(t(key, err=error), color="#f85149")
 
         elif kind == "task_completed":
             # The turn-end line names the sender AND what arrived —
@@ -953,15 +958,23 @@ class SlifeApp(App):
             # sees), so no parallel field rides the activity event.
             #
             # ``error`` marks the turn that FAILED to process the message
-            # (the inbox's except path emits the same kind) — without it a
-            # failed remote turn painted a green ✓ over the red loop_error.
+            # (the inbox's except path emits the same kind).  Such a turn is
+            # a HARNESS failure, not an A2A one: the channel did its job —
+            # the message was delivered and handed to the inbox — so blaming
+            # "A2A" here misattributes it, and the error is already on screen
+            # as the ``✗ {err}`` loop_error line right above.  Stay silent
+            # rather than print a second red line about the wrong component.
+            #
+            # The one message-layer failure worth a line is the broker being
+            # down; that is `check_a2a`'s business (system_health, tool panel),
+            # not a per-turn line.
+            if kwargs.get("error"):
+                return
             source = _safe_name(kwargs.get("source", "unknown"))
             mtype = a2a_message_type(kwargs.get("content", "")) or "message"
-            failed = bool(kwargs.get("error"))
-            key = "task_failed" if failed else "task_completed"
             chat_view.add_system_message(
-                t(key, source=source, type=mtype),
-                color="#f85149" if failed else "#3fb950",
+                t("task_completed", source=source, type=mtype),
+                color="#3fb950",
             )
 
         elif kind == "busy":

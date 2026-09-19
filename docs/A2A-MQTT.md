@@ -116,6 +116,10 @@ is a conversation (enqueued task-less, no bridge); a `task_response`-typed messa
 harness thinks. External (peer) cancellation is detected in a `try/finally` and surfaces a harness
 preempt (`cancellations` → `inbox.cancel_correlation`, Esc-equivalent) unless shutting down.
 
+**A turn that fails is a HARNESS failure, not an A2A one** — the channel delivered the message and was
+done, so the TUI draws no `✗ A2A … failed` line for it; the harness's own `✗ {err}` line carries the
+error (see the accepted gap below for the one case where nothing recovers).
+
 ### Outbound — thin driver on SDK primitives
 
 - `a2a_send_message` is typed by `message_type`: `task_request` (only type that creates a task —
@@ -215,4 +219,24 @@ message-vs-task `a2a_kind` distinction and its `_message_sends`/`_poll_tasks`/`_
   bookkeeping covers the LLM).
 - Same-name collision detection (two agents, one org/unit/name) is gone with the old client; our card
   carries `extensions.instance` as insurance, face detection is future work.
+- **A turn the provider rejects for its content is rolled back for EVERY source — and the A2A peer is
+  the only party who cannot tell.** Failures normally heal, because the message stays in the context:
+  a timeout, connection drop, 5xx, rate-limit, or 401/403 (deliberately *not* rolled back — the turn is
+  valid, the credentials are the problem) leaves the history intact, so a later turn sees the message
+  again and completes it. An inbound task's `[A2A:…]` marker carries its `task_id`, and the bridge is
+  untouched meanwhile (`on_request` still blocked on the waiter, the keepalive still streaming
+  `working`), so the wire never sees the failed turn at all.
+  The exception is the **400-class** rejection `_is_bad_request` matches (`inbox.py`): `status_code ==
+  400`, or the openai client-side content-filter signal. There the turn **is** rolled back —
+  `pop_last_turn()` removes the last user message *and everything after it*, and `rolled_back`
+  suppresses the save — so the message leaves the context entirely and no later turn sees it.
+  This is not an A2A behaviour: `inbox.py:418` rolls back for any inbox message (human, WeChat,
+  subagent, A2A alike), and that is the point of it — the safety valve that stops one poisoned turn
+  from wedging every turn after it.
+  What is A2A's alone is the consequence. A local user is still in the loop — the turn failed in front
+  of them, and they can send it again. A peer has no such loop: it gets no error and no reclaim, so its
+  task sits at `working`, republished by our keepalive every 25 s, until slife shuts down and cancels
+  it. Accepted as-is.
+  The tool surface stays at the four standard operations — there is no "fail a task" tool, and none is
+  wanted: a model that cannot finish a task says so with a `task_response`, which reaches the peer.
 - Presence is online/offline only (no busy / timeout), by design of the profile.
