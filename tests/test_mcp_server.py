@@ -13,6 +13,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import importlib
+import json
 import logging
 import sys
 from pathlib import Path
@@ -92,6 +93,62 @@ class TestAutoConnectConfigured:
         assert set(added) == {"serper", "disabled_svc"}
         assert added["serper"].enabled is True
         assert added["disabled_svc"].enabled is False
+
+    @pytest.mark.asyncio
+    async def test_boot_gives_no_usability_verdict(self, restore_root_logger):
+        """A spawn-only boot has no verdict to give, so it gives none.
+
+        "Usable" means "its ``tools/list`` succeeds" — this module's premise —
+        and this pass deliberately does not read one (the list belongs to the
+        first reader).  Keying a warning on ``tools_ok`` here therefore
+        announced a failure for EVERY configured server on every start, about a
+        connect the modern era does not even have.  A transport that really
+        failed logs itself where it failed.
+        """
+        srv = _import_mcp_server()
+
+        class _Conn:
+            """What ``add_server`` leaves behind after a spawn-only boot: no
+            tool list at all (nobody has asked for one yet), which is true of a
+            healthy server and a dead one alike."""
+
+            tools_ok = False
+
+        pool = MagicMock()
+        pool.add_server = AsyncMock(return_value=_Conn())
+        pool.list_servers.return_value = []
+        fake_config = MagicMock()
+        fake_config.load_config.return_value = {
+            "mcp": {"servers": {"healthy": {"command": "echo"},
+                                "slow": {"command": "echo"}}},
+        }
+        fake_config._servers_dict.side_effect = (
+            lambda raw: raw.get("mcp", {}).get("servers", {})
+        )
+        fake_config.rest_api_names.return_value = set()
+        fake_config.resolve_server_config.side_effect = (
+            lambda name, entry, **kw: ServerConfig(
+                name=name, command="echo", enabled=True,
+            )
+        )
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv, "plugin_config", fake_config),
+            patch.object(srv, "_request_tools_changed") as mock_ask,
+            patch.object(srv, "logger") as mock_log,
+        ):
+            await srv._auto_connect_configured()
+
+        # No warning at all: the only thing a list-less server can be is unasked.
+        mock_log.warning.assert_not_called()
+        # ONE nudge for the whole pass, not one per server: the host's sync must
+        # start after every spawn has been attempted, never in the middle.
+        mock_ask.assert_called_once()
+        # ...and the flag that says so is what a pass reads to tell a spawn in
+        # flight from one that failed.  (getattr: ``__check`` would be
+        # name-mangled inside this class body.)
+        check = getattr(srv, "__check")
+        assert json.loads(await check())["spawn_settled"] is True
 
 
 class TestPersistEntry:

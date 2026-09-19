@@ -136,6 +136,10 @@ class TestMCPServerConnectionSnapshot:
         assert snap["last_error"] is None
         assert snap["needs_user_auth"] is False
         assert snap["rest_api"] is False   # mcp.servers is the default placement
+        # No transport was ever established, so this one could NOT come up —
+        # the fact that separates a settled failure from a server still to be
+        # read.  ("No list" alone is both.)
+        assert snap["reachable"] is False
         # The config view owns these — a fact belongs in exactly one place.
         assert "description" not in snap
         assert "command" not in snap
@@ -146,11 +150,13 @@ class TestMCPServerConnectionSnapshot:
             MCPServerConnection(ServerConfig(name="s", command="echo")),
             ["a", "b"], ttl_ms=60000, age_s=3.0,
         )
+        conn._session = object()   # a transport had to be up to read that list
         snap = conn.snapshot()
         assert snap["tools_ok"] is True
         assert snap["tool_count"] == 2
         assert 3.0 <= snap["tools_age_s"] < 10.0
         assert snap["last_error"] is None
+        assert snap["reachable"] is True
 
 
 class TestMCPServerConnectionListTools:

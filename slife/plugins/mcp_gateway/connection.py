@@ -244,6 +244,13 @@ class MCPServerConnection:
             ),
             "last_error": self._last_error,
             "needs_user_auth": self._needs_user_auth,
+            #: Whether this peer's transport is established.  The fact that
+            #: tells a settled failure from a pending one: no list + no
+            #: transport is a server that could NOT come up (unavailable),
+            #: while no list + a live transport is one that has simply not
+            #: been read yet — a slow first ``tools/list`` whose retry is
+            #: already armed.  Without it the two are the same row.
+            "reachable": self._session is not None,
             "source": self.config.source,
             # The category the harness splits its health report by — derived
             # from the config section, so the host never has to read a tag out

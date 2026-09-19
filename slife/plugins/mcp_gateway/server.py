@@ -31,6 +31,13 @@ from slife.server_utils import (
 )
 
 
+#: Set when the boot pass has brought every configured server up (or failed to).
+#: Published in ``__check`` because it is the fact that tells a server whose
+#: spawn is still in flight from one that failed to come up: both are a pool row
+#: with no transport.  The host's sync waits on it rather than judging either.
+_spawn_settled = asyncio.Event()
+
+
 @asynccontextmanager
 async def _mcp_lifespan(_app):
     """Self-host config; release all external MCP connections on shutdown.
@@ -99,23 +106,33 @@ async def _auto_connect_configured() -> None:
             # one as it mirrors the catalog).  Reading it here made boot the
             # sum of every server's tools/list — a slow peer delayed the whole
             # set, for a list no one had asked for yet.
-            conn = await _pool.add_server(cfg, read_tools=False)
-            # ``add_server`` SWALLOWS the failure (it is recorded as the
-            # server's ``last_error`` and the retry is armed).  Announce it
-            # anyway: the host's reconcile turns an unreachable server into
-            # `status='error'` on its tools, which only happens if it hears
-            # about the failure.
-            if not conn.tools_ok:
-                logger.warning(
-                    "mcp_auto_connect_failed server=%s err=%s",
-                    name, getattr(conn, "_error", "") or "connect failed",
-                )
-                _request_tools_changed()
+            await _pool.add_server(cfg, read_tools=False)
+            # NO usability verdict here.  "Usable" means "its ``tools/list``
+            # succeeds" — that is this module's whole premise (health is a tool
+            # list, not a connection) — and this pass deliberately does not
+            # read one: the list belongs to the first reader, the host's
+            # reconcile.  A spawn-only boot therefore has nothing to judge
+            # with, and the old ``if not conn.tools_ok`` warned for EVERY
+            # configured server (nobody had asked yet) with a message about a
+            # connect the modern era does not have.  A transport that really
+            # failed says so where it failed (``mcp_connect_failed``, carrying
+            # the error), and the verdict the host acts on arrives from
+            # ``__check`` once a read has run.
+            #
+            # Nor does it nudge per server: the host's sync starts when the
+            # WHOLE boot pass is done (one nudge after the gather), because a
+            # pass woken mid-spawn would judge servers whose transports are
+            # still being established.
         except Exception as e:
-            logger.warning("mcp_auto_connect_failed server=%s err=%s", name, e)
-            _request_tools_changed()
+            logger.warning("mcp_server_setup_failed server=%s err=%s", name, e)
 
     await asyncio.gather(*(_register_one(n, e) for n, e in configured))
+    # The boot pass is over: every configured server has had its transport
+    # attempt, so "no transport" now means "could not come up" rather than
+    # "not asked yet".  Published first, then nudged — the host's sync must see
+    # the settled fact when it wakes.
+    _spawn_settled.set()
+    _request_tools_changed()
 
 
 mcp, _log_path, logger = create_plugin_server(
@@ -676,27 +693,37 @@ async def __mcp_list(ctx: Context | None = None) -> str:
     name="__check",
     description=(
         "Per-server tool-list facts: tools_ok, tool_count, tools_age_s, "
-        "last_error. Internal — probed by the harness's system_health."
+        "last_error, reachable; plus spawn_settled for the boot pass. "
+        "Internal — probed by the harness's system_health."
     ),
 )
 async def __check(ctx: Context | None = None) -> str:
     """Report per-server tool-list facts.
 
-    Returns ``{"servers": [...]}``.  Authoritative for server health, and
-    deliberately fact-only — no state word, no level: the harness interprets
-    (DESIGN.md §Health; PLUGIN_CONTRACT.md §Health).  ``tools_ok`` is the
-    verdict to read: a ``tools/list`` succeeded and its result is still held,
-    which is also what makes this server's tools usable in the catalog.
-    ``tools_age_s`` is the age of the list being served and ``last_error``
-    the reason the last read failed, if it did.  Catalog semantic-index status
-    is reported host-side (the host owns the shared catalog's
-    SemanticManager).
+    Returns ``{"servers": [...], "spawn_settled": bool}``.  Authoritative for
+    server health, and deliberately fact-only — no state word, no level: the
+    harness interprets (DESIGN.md §Health; PLUGIN_CONTRACT.md §Health).
+    ``tools_ok`` is the verdict to read: a ``tools/list`` succeeded and its
+    result is still held, which is also what makes this server's tools usable
+    in the catalog.  ``tools_age_s`` is the age of the list being served and
+    ``last_error`` the reason the last read failed, if it did.
+    ``reachable`` is whether that peer's transport is up — the fact that
+    separates "never listed yet" from "could not come up" while both are
+    ``tools_ok`` false.  Catalog semantic-index status is reported host-side
+    (the host owns the shared catalog's SemanticManager).
+
+    ``spawn_settled`` says the boot pass has finished bringing every configured
+    server up (or failed to): until it is true, a server with no transport is
+    one nobody has asked yet, not one that is down.
 
     Never connects: probing must not be what brings a server up, so a
     re-read is the background repair's job and the numbers here are whatever
     the last real read left behind."""
     servers = _pool.list_servers()
-    return json.dumps({"servers": servers}, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {"servers": servers, "spawn_settled": _spawn_settled.is_set()},
+        ensure_ascii=False, indent=2,
+    )
 
 
 @mcp.tool(
