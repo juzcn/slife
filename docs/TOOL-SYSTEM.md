@@ -351,7 +351,7 @@ Driven by connect events / `mcp_*` mutations / `tools/list_changed` / the gatewa
 3. **disabled servers** — mirror their tool rows with **no proxies**: a switched-off server keeps its rows (so `tool_search` still finds them, and re-enabling needs no re-discovery) but its tools must not be executable.  Only a server with a working tool list yields rows (`__mcp_list_tools` answers empty otherwise — and asking is what reads the list, so this step is also what makes a peer list at all); a down server's rows stay and its verdict keeps them out of injection;
 4. **drop** registered proxies whose server left the config (`mcp_remove` is the only unregister path — a merely disabled server keeps its proxy, and its rows keep the `disabled` report);
 5. **purge the removed server's catalog rows.** Comparing against **tools.yaml** (the authority) rather than the pool keeps a transient empty pool — a gateway restart — from wiping a still-configured server's rows;
-6. **re-project the verdict** after the mirrors: steps 2–3 are what ask for the lists, so a peer that listed during this pass was still flagged when step 1 looked.  One more `__check` plus the guarded per-server write (which costs nothing where nothing moved) settles the pass.
+6. **re-project the verdict** after the mirrors: steps 2–3 are what ask for the lists, so a peer that listed during this pass was still flagged when step 1 looked.  One more `__check` plus the guarded per-server write (which costs nothing where nothing moved) settles the pass.  That same read is what tells the pass whether the set has **converged** — which servers still have no `tools/list` (see *The boot window*) — and the pass arms a `CatalogOpDelta` before step 1 so the startup line can report what it wrote.
 
 Two cost rules the pass follows: the per-server mirrors run **concurrently** (each awaits a real `tools/list`, and for a peer the pool holds nothing for, the spawn that makes one possible — sequentially, every server waited on all the servers before it), and each server's rows go over in **one batched `reconcile` + one `purge_source_except`** (a per-tool upsert re-read the whole table per tool).
 
@@ -363,16 +363,27 @@ The pass runs in the **background** (the gateway's ready glue — it never holds
 
 This is the window that makes a durable `load_status` fragile: the catalog remembers `loaded` across a restart, the registry does not, and registering every enabled server's proxies (step 2) is what re-joins them.
 
-The **`tools_synced` line marks the moment the set is usable**:
+The **`tools_synced` line marks the moment the set is usable**, in one shape for every startup:
 
 ```
-⚙ 工具集同步完成，耗时 12.4s — 64 个工具可用
-⚙ Tool set synced in 12.4s — 64 tools usable
+⚙ 工具集同步完成，耗时 28.4s，新增 1239，更新 0，移除 0 — 1575 个工具可用
+⚙ Tool set synced in 28.4s, 1239 added, 0 updated, 0 removed — 1575 tools usable
 ```
 
-It reports on the **first** pass, on any pass that **changed** the registry, and **always on failure** — never on a no-op re-run, because `tools/list_changed` fires on the gateway's own cadence (a server re-registered every 30 s in a live session) and reporting each pass would be a heartbeat rather than news.  Silence therefore keeps meaning *still syncing*.  `total` counts the whole registry — what is callable — not what the pass added; what a turn *injects* is the narrower `load_status` snapshot, so the line promises availability, never injection.
+It is emitted **once per process**, on the first pass that has **converged**, and **always on failure** — never on a later pass, however much that pass moves: `tools/list_changed` fires on the gateway's own cadence (a server re-registered every 30 s in a live session), so a line each would be a heartbeat rather than news.  Silence therefore keeps meaning *still syncing*.  `total` counts the whole registry — what is callable — not what the pass added; what a turn *injects* is the narrower `load_status` snapshot, so the line promises availability, never injection.
 
-The **add/remove delta rides only later passes**.  The first pass fills an empty registry, so its delta is the entire external tool set — `1465 added` on a restart, which reports a process artefact as a change to the tool set, and a restart is precisely what does not change it.  On later passes the registry is already populated, so a difference there means something really moved.
+**Convergence is "no enabled server is still starting".**  "No list" alone means three different things, so two more facts off the same `__check` the pass projects connectivity from decide it:
+
+- **`spawn_settled`** — the gateway's boot pass has finished bringing every configured server up (or failed to).  It runs the spawns **concurrently**, so it costs the slowest transport rather than the sum, and each attempt is capped by `ready.connect_startup`; a disabled server is registered without any attempt at all.  Until the flag is set, a server with no transport is one whose spawn is still in flight and **nothing is judged** — a pass woken mid-spawn would mark a server unavailable seconds before it came up.  That is also why the boot pass nudges the host **once, after its gather**, instead of once per server.
+- **`reachable`** — that peer's transport is up.  Once the boot has settled, no list + no transport is a spawn that failed: `unavailable`, and the line does **not** wait on it (its recovery needs no reservation — the gateway's armed retry re-syncs it if it ever does come up).  No list + a live transport is a server that simply has not answered yet: a REST proxy installing its environment takes tens of seconds, and its first listing can even exceed `ready.list_tools` and succeed on the retry.
+
+So the pending set is: configured, switched on, not `tools_ok`, not waiting on user auth, and reachable.  The pass reports nothing while it is non-empty, and is woken by the late server's own `tools/list_changed` when it arrives.  The wait on a reachable-but-unlisted server is bounded by `ready.tool_sync_wait`, which follows the gateway's re-list backoff — past it that retry has topped out, and the line reports what the set has rather than staying away for the whole session.
+
+The three counts are a **delta of what the startup WROTE to the catalog** — the config-vs-db comparison the pass performs, expressed as row operations — and they are printed even when all three are zero, so the line keeps one shape.
+
+`CatalogStore` books them into a `CatalogOpDelta` armed for the pass: **insert → 新增** (a name the catalog did not hold), **a config-derived column that moved → 更新**, **delete → 移除** — over every write the pass makes (`reconcile`, `purge_source`, `purge_source_except`, `remove_tool`, `set_source_enabled`).  A name the config still publishes unchanged is *skipped* and counts nothing, which is why a warm restart reads `新增 0，更新 0，移除 0`: the proof that the tool set did not move.
+
+The delta is deliberately **not** a registry before/after.  The registry begins empty in every process, so a set difference reports the entire external tool set as new — `1465 added` on a restart, which announces a process artefact as a change to the tool set, and a restart is precisely what does not change it.  **Runtime state is not a change either**: `load_status` / `last_loaded` / `unavailable` moving is the model's decision and the connectivity verdict, booked nowhere — otherwise a server coming up would report every one of its tools as *updated*.
 
 **The other side of the window**: once the pass has run, a load takes effect **within the same turn** — no waiting for the next one.  For an enabled server the proxy already exists, so `func-tool-load` is a status flip over an execution instance that is already there; the call in that same turn reaches the real server (a *tool-level* error, e.g. a missing required parameter, is the proof — the harness gate is out of the way).  The materialize branch still runs, but registering an existing name is an idempotent overwrite, so it is no longer load-bearing — and its own failure modes (an unsynced `schema`, an unavailable MCP client) can no longer make a successful-looking load silently not take.
 
@@ -396,7 +407,7 @@ When the wrapper child dies, `on_plugin_child_exit` marks **every `mcp`/`rest-ap
 
 | Module | Responsibility |
 |---|---|
-| `slife/tools/catalog.py` | `CatalogStore`: SQL, schema (v4 — `type` + the `unavailable` verdict column, no `server` table), FTS5 + semantic KNN, effective status, `reconcile` (the one delta writer), `evict_lru`, `touch`, `purge_source`/`purge_source_except`/`remove_tool`/`names_by_category`, `mark_source_unavailable` / `mark_all_external_unavailable` / `clear_source_unavailable` |
+| `slife/tools/catalog.py` | `CatalogStore`: SQL, schema (v4 — `type` + the `unavailable` verdict column, no `server` table), FTS5 + semantic KNN, effective status, `reconcile` (the one delta writer), `evict_lru`, `touch`, `purge_source`/`purge_source_except`/`remove_tool`/`names_by_category`, `mark_source_unavailable` / `mark_all_external_unavailable` / `clear_source_unavailable`, `CatalogOpDelta` / `begin_ops`/`end_ops` (the row-operation counter a sync pass arms, per §6) |
 | `slife/tools/catalog_service.py` | `ToolCatalogService`: policy — the boot seed (`sync_system_tools`), `mirror_external_tools` (a server's whole set in one pass), `snapshot_loaded`, `sync_category` (the skill/cli mirror), `load_tool`/`unload_tool` refusal matrix, `evict_to_threshold`, `purge_unconfigured_sources`; `descriptor_json`/`tool_descriptor` (the one tool-def builder) |
 | `slife/tools/catalog_search.py` | hybrid RRF merge + score annotator (thin adapter over `memdb.search`) |
 | `slife/tools/registry.py` | the execution pool; consults the catalog for unloaded-refusal hints; bumps `last_loaded` on successful execute |
@@ -406,9 +417,9 @@ When the wrapper child dies, `on_plugin_child_exit` marks **every `mcp`/`rest-ap
 | `slife/tools/skill.py` | the Skills family + `skill_catalog_rows` / `sync_skill_catalog` (skills dir → `skill` rows) |
 | `slife/tools/cli.py` | the CLI family + `cli_catalog_rows` / `sync_cli_catalog` (config section → `cli` rows) |
 | `slife/tools/_config_io.py` | YAML read/write, atomic replace, cross-process `config_read_modify_write` lock |
-| `slife/plugins/mcp_gateway/*` | the server pool, the boot pass that **spawns** every enabled server (no tool read — that belongs to the first caller), `mcp_list`/`__check`/`mcp_list_tools`/`__mcp_list_tools`, the family-gated `mcp_set`/`mcp_set_enabled`/`mcp_remove` over their family-blind `__mcp_set`/`__mcp_set_enabled`/`__mcp_remove` twins (what `rest_api_*` drives its servers through), the merged config view + `is_rest_api`/`rest_api_names` (it never touches `tools.db`) |
+| `slife/plugins/mcp_gateway/*` | the server pool, the boot pass that **spawns** every enabled server concurrently (no tool read — that belongs to the first caller; it publishes `spawn_settled` and nudges once, when the pass is over), `mcp_list`/`__check` (per-server `reachable`/`tools_ok`…, the facts the sync's convergence gate reads)/`mcp_list_tools`/`__mcp_list_tools`, the family-gated `mcp_set`/`mcp_set_enabled`/`mcp_remove` over their family-blind `__mcp_set`/`__mcp_set_enabled`/`__mcp_remove` twins (what `rest_api_*` drives its servers through), the merged config view + `is_rest_api`/`rest_api_names` (it never touches `tools.db`) |
 | `slife/agent/loop.py` | per-turn snapshot + injection from the catalog; boundary eviction (`_maybe_evict`) |
-| `slife/agent/service.py` | `_init_catalog` (the seed), `_mirror_local_rows` (skill/cli rows at boot), `_sync_mcp_proxies` reconcile (the verdict projection, the batched per-server mirrors, the live removal purge), `_wire_mcp_glue` (the gateway's background ready-glue), `_server_category` |
+| `slife/agent/service.py` | `_init_catalog` (the seed), `_mirror_local_rows` (skill/cli rows at boot), `_sync_mcp_proxies` reconcile (the verdict projection, the batched per-server mirrors, the live removal purge), `_mark_server_connectivity` (projects `enabled`/the verdict, and reports the still-starting servers the sync line waits on), `_report_tool_sync` (once, on convergence), `_wire_mcp_glue` (the gateway's background ready-glue), `_server_category` |
 
 ---
 

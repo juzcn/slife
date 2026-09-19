@@ -65,6 +65,17 @@ class Ready:
     connect_retry_delay: float = 0.5
     sharefile_retry_delay: float = 2.0
     list_tools: float = 20.0
+    tool_sync_wait: float = 75.0  # how long the startup tool-set line waits on a
+                                  # server that is UP but has not managed a
+                                  # tools/list yet before reporting what it has
+                                  # (its first listing can time out and succeed on
+                                  # the retry).  A server whose transport never
+                                  # came up is not waited on at all — a failed
+                                  # spawn is a settled verdict, marked
+                                  # unavailable.  Follows the gateway's re-list
+                                  # backoff (5→10→20→40, capped at 60 —
+                                  # mcp_gateway/connection.py), so the wait ends
+                                  # where that retry stops growing.
     watchdog_backoff_initial: float = 1.0
     watchdog_backoff_max: float = 30.0
     watchdog_backoff_multiplier: float = 2.0

@@ -600,18 +600,22 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "tools_synced", seconds=12.4, total=64, added=64, removed=0,
-            error="",
+            "tools_synced", seconds=12.4, total=64, added=60, updated=3,
+            removed=1, error="",
         )
 
         call = chat_view.add_system_message.call_args
         assert call.args[0] == (
-            "⚙ Tool set synced in 12.4s — 64 tools usable (64 added, 0 removed)"
+            "⚙ Tool set synced in 12.4s, 60 added, 3 updated, 1 removed "
+            "— 64 tools usable"
         )
         assert call.kwargs["color"] == "#3fb950"
 
     @pytest.mark.asyncio
-    async def test_tools_synced_omits_the_delta_when_nothing_moved(self):
+    async def test_tools_synced_shows_a_zero_delta(self):
+        """One shape for every startup: a pass that changed nothing says so
+        with zeros rather than dropping the counts — that IS the answer the
+        user is reading ("我又没有改工具集")."""
         from slife.ui.app import SlifeApp
 
         app = object.__new__(SlifeApp)
@@ -619,11 +623,33 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "tools_synced", seconds=0.3, total=64, added=0, removed=0, error="",
+            "tools_synced", seconds=0.3, total=64, added=0, updated=0, removed=0,
+            error="",
         )
 
         assert chat_view.add_system_message.call_args.args[0] == (
-            "⚙ Tool set synced in 0.3s — 64 tools usable"
+            "⚙ Tool set synced in 0.3s, 0 added, 0 updated, 0 removed "
+            "— 64 tools usable"
+        )
+
+    @pytest.mark.asyncio
+    async def test_tools_synced_shows_an_update_alone(self):
+        """A schema that moved is the middle count — the one no registry
+        before/after could ever report."""
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_activity(
+            "tools_synced", seconds=1.0, total=5, added=0, updated=2, removed=0,
+            error="",
+        )
+
+        assert chat_view.add_system_message.call_args.args[0] == (
+            "⚙ Tool set synced in 1.0s, 0 added, 2 updated, 0 removed "
+            "— 5 tools usable"
         )
 
     @pytest.mark.asyncio

@@ -321,16 +321,17 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "✓ A2A {type} from {source} handled",
         "zh": "✓ 来自 {source} 的 A2A {type} 已处理",
     },
-    # The startup tool-set sync.  `total` counts what is REGISTERED (callable);
-    # the load_status snapshot decides what a turn actually injects, so this
-    # says "usable", never "all loaded".
+    # The startup tool-set sync — ONE shape, every time.  `total` counts what is
+    # REGISTERED (callable); the load_status snapshot decides what a turn
+    # actually injects, so this says "usable", never "all loaded".  The three
+    # counts are what the pass WROTE to the catalog: rows inserted / updated /
+    # deleted (only config-derived columns count as an update — a load, an
+    # eviction or a connectivity mark is runtime state, not a change to the
+    # tool set).  They are printed even at zero: a startup that changed nothing
+    # says so, which is the whole point of showing them.
     "tools_synced": {
-        "en": "⚙ Tool set synced in {seconds}s — {total} tools usable",
-        "zh": "⚙ 工具集同步完成，耗时 {seconds}s — {total} 个工具可用",
-    },
-    "tools_synced_delta": {
-        "en": " ({added} added, {removed} removed)",
-        "zh": "（新增 {added}，移除 {removed}）",
+        "en": "⚙ Tool set synced in {seconds}s, {added} added, {updated} updated, {removed} removed — {total} tools usable",
+        "zh": "⚙ 工具集同步完成，耗时 {seconds}s，新增 {added}，更新 {updated}，移除 {removed} — {total} 个工具可用",
     },
     "tools_synced_failed": {
         "en": "✗ Tool set sync failed after {seconds}s: {err}",

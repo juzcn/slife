@@ -177,11 +177,21 @@ class TestAgentServiceMCPEnrichment:
         mock_mirror.assert_awaited_once_with("disabled")
 
     @staticmethod
-    def _fake_gateway(tools_server: str, *, enabled: bool = True):
+    def _fake_gateway(tools_server: str, *, enabled: bool = True,
+                      listed: bool = True, reachable: bool = True,
+                      spawn_settled: bool = True):
         """A gateway client whose __mcp_list holds one server, whose tool list
         holds one tool.  ``tools_server`` is stamped onto the tool dict because
         the registering path (``create_proxy_tools``) reads it, exactly as the
-        wrapper's own ``__mcp_list_tools`` payload supplies it."""
+        wrapper's own ``__mcp_list_tools`` payload supplies it.
+
+        The two "no list yet" shapes are separate facts, because the host acts
+        on them differently: ``listed=False, reachable=True`` is a server whose
+        transport is up but which has not answered a ``tools/list`` yet (a slow
+        REST proxy at startup — still starting, waited for), while
+        ``reachable=False`` is one that never came up at all (settled: it is
+        unavailable and nothing waits on it).
+        """
         client = AsyncMock()
         client.is_connected = True
 
@@ -191,19 +201,23 @@ class TestAgentServiceMCPEnrichment:
                     {"name": tools_server, "enabled": enabled, "auto_load": False},
                 ])
             if name == "__check":
-                return _json.dumps({"servers": [
-                    {"name": tools_server, "tools_ok": True},
-                ]})
+                return _json.dumps({
+                    "servers": [
+                        {"name": tools_server, "tools_ok": listed,
+                         "reachable": reachable},
+                    ],
+                    "spawn_settled": spawn_settled,
+                })
             if name in ("mcp_list_tools", "__mcp_list_tools"):
                 return _json.dumps({
-                    "server": tools_server, "connected": True,
-                    "tools": [
+                    "server": tools_server, "connected": listed,
+                    "tools": [] if not listed else [
                         {"server": tools_server, "name": "search",
                          "description": "Search stuff",
                          "inputSchema": {"type": "object",
                                          "properties": {"q": {"type": "string"}}}},
                     ],
-                    "tool_count": 1,
+                    "tool_count": 0 if not listed else 1,
                 })
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
@@ -211,11 +225,16 @@ class TestAgentServiceMCPEnrichment:
         return client
 
     async def _sync_with_catalog(self, sample_config, tmp_path, server: str, *,
-                                 enabled: bool = True, activity=None):
+                                 enabled: bool = True, activity=None,
+                                 listed: bool = True, reachable: bool = True,
+                                 spawn_settled: bool = True):
         """Run one reconcile against a real catalog; return (service, store).
 
         *activity* is registered BEFORE that pass, so a test can observe the
-        genuinely-first reconcile rather than a later one.
+        genuinely-first reconcile rather than a later one.  *listed* says
+        whether the fake server has answered a ``tools/list`` yet; *reachable*
+        whether its transport ever came up; *spawn_settled* whether the boot
+        pass that brings servers up has finished.
         """
         from slife.tools.catalog import CatalogStore
         from slife.tools.catalog_service import ToolCatalogService
@@ -226,7 +245,8 @@ class TestAgentServiceMCPEnrichment:
         service._catalog = ToolCatalogService(store, write_owner=True)
         service._catalog_semantic = None
         service._plugins["mcp-gateway"].client = self._fake_gateway(
-            server, enabled=enabled,
+            server, enabled=enabled, listed=listed, reachable=reachable,
+            spawn_settled=spawn_settled,
         )
         if activity is not None:
             service.on_activity(activity)
@@ -234,8 +254,14 @@ class TestAgentServiceMCPEnrichment:
         # the gateway config view to the mocked pool so this test's server
         # counts as configured (no TOOLS_FILE isolation here, so the real repo
         # config would otherwise read as the truth).
+        #
+        # The skill/cli mirror is stubbed for the same reason: it reads the
+        # real tools.yaml and skills dir, and those rows would ride along in
+        # the pass's op delta (which these tests assert on).
         with patch(
             "slife.plugins.mcp_gateway.config.servers", return_value={server: {}},
+        ), patch.object(
+            AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
         ):
             await service._sync_mcp_proxies()
         return service, store
@@ -292,10 +318,10 @@ class TestAgentServiceMCPEnrichment:
     async def test_sync_reports_the_tool_set_once_then_only_on_change(
         self, sample_config, tmp_path,
     ):
-        """The user is waiting to know when tools are callable, so the first
-        reconcile reports with its duration.  Later passes are silent unless
-        the set actually moved — the gateway pushes tools/list_changed on its
-        own cadence, and an unchanged re-list is not news."""
+        """The user is waiting to know when tools are callable, so the pass
+        that converges reports with its duration — and it is the ONLY pass that
+        ever reports: later ones ride the gateway's tools/list_changed cadence,
+        so a line each would be a heartbeat rather than news."""
         # AsyncMock, not a lambda: _notify_activity AWAITS the callback, and a
         # sync callable's None return is swallowed as a failure.  Registered
         # before the helper's pass so this observes the FIRST reconcile.
@@ -310,10 +336,12 @@ class TestAgentServiceMCPEnrichment:
             # ``total`` is the WHOLE registry — the builtins are callable too,
             # so it reports what the user can actually reach.
             assert kw["total"] == len(service.tool_registry.list_tools())
-            # ...and NO delta: the first pass fills an empty registry, so
-            # "1465 added" would report a restart artefact as a change to the
-            # tool set.  A restart is what does not change it.
-            assert kw["added"] == 0 and kw["removed"] == 0
+            # The delta is what the pass WROTE, not what the registry went
+            # from-to: on this cold catalog that is exactly the one row the
+            # server's mirror inserted — never the whole registry, which a
+            # name-set diff would report as "added" on every restart.
+            assert kw["added"] == 1
+            assert kw["updated"] == 0 and kw["removed"] == 0
             assert kw["error"] == ""
             assert isinstance(kw["seconds"], float)
 
@@ -323,22 +351,22 @@ class TestAgentServiceMCPEnrichment:
             await store.close()
 
     @pytest.mark.asyncio
-    async def test_sync_reports_again_when_the_tool_set_changes(
+    async def test_sync_stays_silent_when_a_later_pass_moves_tools(
         self, sample_config, tmp_path,
     ):
+        """One line per process.  A later pass that really does move tools —
+        the server left the config, so its proxies are unregistered and its
+        rows purged — still says nothing: that line belongs to startup, and a
+        session that keeps talking about its tool set is a heartbeat."""
         service, store = await self._sync_with_catalog(
             sample_config, tmp_path, "svc",
         )
         try:
             events = AsyncMock()
             service.on_activity(events)
-            await service._sync_mcp_proxies()
+            await service._sync_mcp_proxies()   # already reported by the helper
             events.reset_mock()
 
-            # The server leaves the config (its listing drops it), so the
-            # reconcile unregisters its proxies — a real change, and this is
-            # a LATER pass, where the delta does mean something.  (A server
-            # that merely reports no tools is read as "not ready yet".)
             client = service._plugins["mcp-gateway"].client
             original = client.call_tool
 
@@ -350,9 +378,116 @@ class TestAgentServiceMCPEnrichment:
             client.call_tool = shrunk
             await service._sync_mcp_proxies()
 
+            events.assert_not_awaited()
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_sync_waits_for_a_server_that_has_not_listed_yet(
+        self, sample_config, tmp_path,
+    ):
+        """A configured server that is up but has not answered ``tools/list``
+        is STILL STARTING, not absent — the startup line waits for it.
+
+        Announcing a half-arrived set would both lie and turn the pass that
+        finally carries the rest into a phantom change ("新增 1239" on every
+        boot, for a REST proxy that takes tens of seconds to install itself).
+        """
+        events = AsyncMock()
+        service, store = await self._sync_with_catalog(
+            sample_config, tmp_path, "slow", activity=events, listed=False,
+        )
+        try:
+            events.assert_not_awaited()     # still starting — silence
+
+            # The server finishes listing; its tools/list_changed wakes the
+            # next pass, which is the one that reports.
+            service._plugins["mcp-gateway"].client = self._fake_gateway("slow")
+            with patch(
+                "slife.plugins.mcp_gateway.config.servers",
+                return_value={"slow": {}},
+            ), patch.object(
+                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            ):
+                await service._sync_mcp_proxies()
+
             assert events.await_count == 1
             kw = events.await_args.kwargs
-            assert kw["removed"] == 1 and kw["added"] == 0
+            assert kw["error"] == ""
+            assert "slow__search" in {
+                t.name for t in service.tool_registry.list_tools()
+            }
+            # The late arrival is what this pass WROTE (the row it mirrored),
+            # not "the rest of the tool set appeared out of nowhere".
+            assert kw["added"] == 1
+            assert kw["updated"] == 0 and kw["removed"] == 0
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_sync_does_not_wait_for_a_server_that_never_came_up(
+        self, sample_config, tmp_path,
+    ):
+        """A server whose transport never came up is SETTLED, not pending: its
+        tools are marked ``unavailable`` and the line reports what the set has.
+
+        Waiting on it would hold the startup line for a server that is simply
+        down — and its recovery needs no reservation, because the gateway's
+        armed retry re-syncs it (silently: this process has already reported).
+        """
+        events = AsyncMock()
+        service, store = await self._sync_with_catalog(
+            sample_config, tmp_path, "dead", activity=events,
+            listed=False, reachable=False,
+        )
+        try:
+            assert events.await_count == 1                     # no waiting
+            kw = events.await_args.kwargs
+            assert kw["error"] == ""
+            assert kw["added"] == 0 and kw["removed"] == 0     # nothing mirrored
+            assert "dead__search" not in {
+                t.name for t in service.tool_registry.list_tools()
+            }
+            # It is configured, so its (absent) tools are not a removal either.
+            row = await store.get_tool("dead__search")
+            assert row is None
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_sync_waits_for_the_spawn_pass_to_finish(
+        self, sample_config, tmp_path,
+    ):
+        """The sync does not start judging until the boot pass is over.
+
+        A server with no transport is one of two things — a spawn still in
+        flight, or one that failed — and only ``spawn_settled`` tells them
+        apart.  So while the pass is running, nothing is a verdict and the line
+        stays away; the moment it settles, the same server is ``unavailable``
+        and the line goes out.
+        """
+        events = AsyncMock()
+        service, store = await self._sync_with_catalog(
+            sample_config, tmp_path, "booting", activity=events,
+            listed=False, reachable=False, spawn_settled=False,
+        )
+        try:
+            events.assert_not_awaited()     # unjudged — the spawn may still win
+
+            # ...and the boot pass finishes without that server coming up.
+            service._plugins["mcp-gateway"].client = self._fake_gateway(
+                "booting", listed=False, reachable=False,
+            )
+            with patch(
+                "slife.plugins.mcp_gateway.config.servers",
+                return_value={"booting": {}},
+            ), patch.object(
+                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            ):
+                await service._sync_mcp_proxies()
+
+            assert events.await_count == 1
+            assert events.await_args.kwargs["error"] == ""
         finally:
             await store.close()
 

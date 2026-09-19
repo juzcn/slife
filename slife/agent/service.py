@@ -40,6 +40,7 @@ from slife.plugins.spec import PLUGIN_SPECS
 from slife.a2a.identity import HUMAN
 
 if TYPE_CHECKING:
+    from slife.tools.catalog import CatalogOpDelta
     from slife.tools.catalog_service import ToolCatalogService
 from slife.tools.factory import create_tools_from_config, disabled_tool_instances
 from slife.tools._config_io import config_read_modify_write
@@ -431,9 +432,13 @@ class AgentService:
         # tools/list_changed reconciliation from racing.
         self._mcp_reconciling: bool = False
         #: Whether the TUI has been told the tool set is ready yet.  The first
-        #: reconcile is the slow one the user waits through; later passes are
-        #: reported only when they actually changed the set.
+        #: reconcile is the slow one the user waits through; once it has
+        #: converged the line is sent, and never again for this process.
         self._tool_sync_reported: bool = False
+        #: When this process's first reconcile pass started — the wait the
+        #: tool-set line reports, and the anchor for how long it may wait for
+        #: servers that are still starting (``ready.tool_sync_wait``).
+        self._tool_sync_started_at: float | None = None
         #: Last WeChat login state seen by the poll loop — ``None`` until the
         #: first drain.  Only TRANSITIONS are announced, so a steady session is
         #: not re-reported every poll, and a session that was never logged in
@@ -1304,11 +1309,22 @@ class AgentService:
         if self._mcp_reconciling:
             return
         self._mcp_reconciling = True
-        # Timing + a before/after of the registry: this pass is what decides
-        # when the agent can actually call things, and on a cold start it is
-        # the long wait.  Reported on the way out (see _report_tool_sync).
+        # Timing + the catalog-op collector: this pass is what decides when the
+        # agent can actually call things, and on a cold start it is the long
+        # wait.  Both are consumed on the way out (see _report_tool_sync) — and
+        # the delta is what this pass WROTE to the catalog, never a registry
+        # before/after: a cold start's registry begins empty, so every tool it
+        # ever holds would read as "added".
         started = _time.monotonic()
-        before = {t.name for t in self.tool_registry.list_tools()}
+        if self._tool_sync_started_at is None:
+            self._tool_sync_started_at = started
+        delta: "CatalogOpDelta | None" = (
+            self._catalog.store.begin_ops() if self._catalog is not None else None
+        )
+        #: Enabled servers that have not answered a ``tools/list`` yet —
+        #: filled in by the post-mirror projection below, the first look that
+        #: can tell a slow server from an absent one.
+        pending: set[str] = set()
         failure = ""
         try:
             try:
@@ -1392,11 +1408,12 @@ class AgentService:
             # moved.  Best-effort: a failed probe is not a verdict.
             if not self.is_subagent and self._catalog is not None:
                 try:
-                    await self._mark_server_connectivity(
+                    pending = await self._mark_server_connectivity(
                         client, configured, enabled_servers,
                     )
                 except Exception as e:
                     logger.debug("mcp_connectivity_recheck_failed err=%s", e)
+                    pending = set()
 
             # 3 — a proxy whose server left the CONFIG is dropped; a merely
             # disconnected/disabled server keeps it (its rows are `error`).
@@ -1432,51 +1449,76 @@ class AgentService:
             raise
         finally:
             self._mcp_reconciling = False
-            await self._report_tool_sync(started, before, failure=failure)
+            if self._catalog is not None:
+                self._catalog.store.end_ops()
+            await self._report_tool_sync(
+                started, delta, pending=pending, failure=failure,
+            )
 
     async def _report_tool_sync(
-        self, started: float, before: set[str], *, failure: str = "",
+        self, started: float, delta: "CatalogOpDelta | None", *,
+        pending: set[str], failure: str = "",
     ) -> None:
-        """Tell the TUI the tool set is ready — and how long the pass took.
+        """Tell the TUI the tool set is ready — once, and only once it has converged.
 
-        Emitted on the FIRST pass and on any pass that changed the registry,
-        never on a no-op re-run: the gateway pushes ``tools/list_changed`` on
-        its own cadence, so reporting every pass would be a heartbeat rather
-        than news.  A failure always reports — silence has to keep meaning
-        "still syncing", or a dead sync reads exactly like a slow one.
+        Emitted on the first pass that has converged and NEVER again for this
+        process: later passes ride the gateway's own ``tools/list_changed``
+        cadence, so reporting each one would be a heartbeat rather than news.
+        A failure always reports, converged or not — silence has to keep
+        meaning "still syncing", or a dead sync reads exactly like a slow one.
+
+        Convergence is "no enabled server is still starting".  ``pending``
+        (from ``_mark_server_connectivity``) names the configured servers that
+        have not answered a ``tools/list`` yet; while one remains the set is
+        still arriving, and announcing it would both lie and make the pass
+        that finally carries those tools look like a change to the tool set.
+        The wait is bounded by ``ready.tool_sync_wait`` so that a server which
+        never comes up cannot keep the line away forever.
 
         ``total`` is what is REGISTERED, i.e. callable.  What the model SEES
         in a turn is the ``load_status`` snapshot, a narrower set — so the
         line promises availability, never injection.
 
-        The add/remove delta rides ONLY later passes: the first pass fills an
-        empty registry, so its delta is the whole external tool set and says
-        nothing about whether the set changed.
+        The delta is what this pass WROTE to the catalog (``CatalogOpDelta`` —
+        insert/update/delete), never a registry before/after: a cold start's
+        registry begins empty, so a registry diff reads every tool as "added"
+        and turns a restart into a change to the tool set.
         """
-        after = {t.name for t in self.tool_registry.list_tools()}
-        added = len(after - before)
-        removed = len(before - after)
-        first = not self._tool_sync_reported
-        if not failure and not first and not (added or removed):
+        if not failure and self._tool_sync_reported:
+            return
+        if not failure and pending and not self._tool_sync_wait_over():
             return
         self._tool_sync_reported = True
-        if first:
-            # The delta counts what is new to THIS process's registry, which on
-            # a cold start is every external tool there is — "1465 added" would
-            # report a restart artefact as a change to the tool set, and a
-            # restart is precisely what does not change it.  Deltas describe
-            # later passes, where the registry is already populated and a
-            # difference means something really moved.
-            added = removed = 0
+        # The wait the user was actually in: measured from this process's first
+        # pass, not from this pass's start — the late pass is the short one.
+        anchor = self._tool_sync_started_at or started
         try:
             await self._notify_activity(
                 "tools_synced",
-                seconds=round(_time.monotonic() - started, 1),
-                total=len(after), added=added, removed=removed,
+                seconds=round(_time.monotonic() - anchor, 1),
+                total=len(self.tool_registry.list_tools()),
+                added=delta.added if delta else 0,
+                updated=delta.updated if delta else 0,
+                removed=delta.removed if delta else 0,
                 error=failure,
             )
         except Exception:
             pass  # a notification must never break the reconcile
+
+    def _tool_sync_wait_over(self) -> bool:
+        """Whether the wait for still-starting servers has run out.
+
+        Follows the gateway's re-list backoff (see ``ready.tool_sync_wait``): a
+        server that has not answered ``tools/list`` by the time that retry
+        stops growing is not "still starting" but down — and the line reports
+        what the set has rather than waiting on a server the gateway is done
+        pacing.  Without a bound, one server that never comes up would mean the
+        startup line never arrives at all.
+        """
+        if self._tool_sync_started_at is None:
+            return True
+        budget = _timeouts.timeouts.ready.tool_sync_wait
+        return (_time.monotonic() - self._tool_sync_started_at) > budget
 
     async def on_plugin_child_exit(self, name: str) -> None:
         """A plugin child exited (its watchdog is about to restart it).
@@ -1500,7 +1542,7 @@ class AgentService:
 
     async def _mark_server_connectivity(
         self, client, configured: set[str], enabled: dict[str, bool] | None = None,
-    ) -> None:
+    ) -> set[str]:
         """Project each configured server's state onto its tool rows.
 
         Two independent facts land here, and they are deliberately different
@@ -1518,23 +1560,70 @@ class AgentService:
         A switched-off server gets no verdict at all: it is not down, so
         marking its tools ``error`` would be a lie the model could not tell
         from the real thing.
+
+        Returns the **pending** set — the configured servers that are switched
+        on, reachable, and have not answered a ``tools/list`` yet.  "No verdict"
+        is not "no tools": a server that is still starting (a REST proxy
+        installing its environment takes tens of seconds, and its first listing
+        can even time out and succeed on the retry) has nothing to mirror yet,
+        so the startup tool-set line waits for it rather than announce a set
+        that is still arriving.
+
+        Two shapes are NOT pending, because they are settled rather than
+        undecided: a server whose transport never came up after the boot pass
+        finished is ``unavailable`` (a failed spawn is the verdict — waiting on
+        it would hold the line for a server that is simply down, and the
+        gateway's own retry re-syncs it if it ever does come up), and a server
+        waiting on USER AUTH cannot come up without a human.  The first needs
+        ``spawn_settled``: until the boot pass reports it, a row with no
+        transport is a spawn still in flight, which is pending like any other
+        server nobody has read yet.
         """
         catalog = self._catalog
         if catalog is None:
-            return
+            return set()
         try:
             raw = await client.call_tool("__check")
             data = json.loads(raw)
         except Exception as e:
             # A failed probe is NOT a verdict — leave the rows alone rather
-            # than marking every server broken on a transient error.
+            # than marking every server broken on a transient error.  It is
+            # also not something to wait on: no pending set, so the report
+            # goes out rather than hanging on a probe that never answers.
             logger.debug("mcp_reconcile_check_failed err=%s", e)
-            return
+            return set()
         live: set[str] = set()
-        for s in (data.get("servers") or []) if isinstance(data, dict) else []:
-            if isinstance(s, dict) and s.get("name") and s.get("tools_ok"):
+        awaiting_auth: set[str] = set()
+        unreachable: set[str] = set()
+        rows = (data.get("servers") or []) if isinstance(data, dict) else []
+        #: The boot pass has brought every configured server up (or failed to).
+        #: Until it has, a server with no transport is one nobody has asked yet
+        #: — the spawn is still in flight — so NOTHING may be called settled.
+        spawn_settled = bool(
+            data.get("spawn_settled") if isinstance(data, dict) else False
+        )
+        for s in rows:
+            if not (isinstance(s, dict) and s.get("name")):
+                continue
+            if s.get("tools_ok"):
                 live.add(s["name"])
+            elif s.get("needs_user_auth"):
+                awaiting_auth.add(s["name"])
+            elif not s.get("reachable"):
+                # No transport: the spawn failed or timed out.  Settled, not
+                # pending — its tools are marked ``unavailable`` below, and the
+                # gateway's armed retry re-syncs it if it comes up later.
+                unreachable.add(s["name"])
         switches = enabled or {}
+        pending = {
+            name for name in configured
+            if switches.get(name, True) is not False
+            and name not in live
+            and name not in awaiting_auth
+            # Only a finished spawn pass makes "no transport" a verdict.  A
+            # server simply ABSENT from the payload stays pending either way.
+            and not (spawn_settled and name in unreachable)
+        }
         for name in sorted(configured):
             try:
                 if switches.get(name, True) is False:
@@ -1549,6 +1638,7 @@ class AgentService:
                 # One server's write failing (a transient lock) must never
                 # crash the reconcile loop — the next pass retries.
                 logger.debug("catalog_connectivity_mark_failed server=%s err=%s", name, se)
+        return pending
 
     async def _upsert_external_catalog_rows(
         self, server_name: str, tools: list[dict], *, category: str,

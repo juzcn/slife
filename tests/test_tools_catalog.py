@@ -261,6 +261,100 @@ async def test_reconcile_noop_writes_nothing(store):
     assert second["skipped"] == 2
 
 
+# ── Op accounting: what a window of writes did ─────────────────────
+
+@pytest.mark.asyncio
+async def test_op_delta_counts_the_row_operations(store):
+    """The tool-sync report's delta is what a window WROTE, by operation.
+
+    Counted inside the store so every write path is covered, whichever
+    service method drives it: a name that was not there is ``added``, one
+    whose config-derived columns moved is ``updated``, a delete is
+    ``removed``.
+    """
+    delta = store.begin_ops()
+
+    await store.reconcile([
+        _row("native_a", description="A", schema="schema-a"),
+        _row("native_b", description="B", schema="schema-b"),
+    ])
+    assert delta.added == 2
+
+    # The no-op contract holds for the count too: an unchanged pass writes
+    # nothing, so it counts nothing.
+    await store.reconcile([
+        _row("native_a", description="A", schema="schema-a"),
+        _row("native_b", description="B", schema="schema-b"),
+    ])
+    assert (delta.added, delta.updated, delta.removed) == (2, 0, 0)
+
+    await store.reconcile([_row("native_a", description="A!", schema="schema-a")])
+    assert delta.updated == 1
+
+    await store.reconcile([_row("svc__tool", category="mcp", source_id="svc")])
+    assert await store.purge_source_except("svc", set()) == ["svc__tool"]
+    assert delta.removed == 1
+
+    await store.remove_tool("native_b")
+    assert delta.removed == 2
+
+
+@pytest.mark.asyncio
+async def test_op_delta_counts_a_switched_off_server(store):
+    """``enabled`` IS config-derived — a server switched off in tools.yaml
+    changes those tools — while a switch that moves nothing is not a write."""
+    await store.reconcile([
+        _row("svc__tool", category="mcp", source_id="svc", enabled=True),
+    ])
+    delta = store.begin_ops()
+
+    assert await store.set_source_enabled("svc", False) == 1
+    assert delta.updated == 1
+
+    assert await store.set_source_enabled("svc", False) == 0
+    assert delta.updated == 1
+
+
+@pytest.mark.asyncio
+async def test_op_delta_ignores_runtime_state_writes(store):
+    """A load, a touch, a connectivity mark, an eviction — runtime state, not
+    a change to the tool set.  Without this a server coming up would report
+    every one of its tools as "modified"."""
+    await store.reconcile([
+        _row("native_a", description="A", schema="schema-a",
+             load_status="unloaded"),
+        _row("svc__tool", category="mcp", source_id="svc",
+             load_status="unloaded"),
+    ])
+    delta = store.begin_ops()
+
+    await store.set_load_status("native_a", "loaded", bump=True)
+    await store.touch("native_a")
+    await store.mark_source_unavailable("svc")
+    await store.clear_source_unavailable("svc")
+    await store.mark_all_external_unavailable()
+    await store.evict_lru(1, protected=frozenset())
+
+    assert (delta.added, delta.updated, delta.removed) == (0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_splits_content_from_status_updates(store):
+    """``override_status`` re-states a row's load state: runtime, so it is
+    reported as ``status_updated`` and never as a modified tool."""
+    await store.reconcile([_row("native_a", description="A", schema="schema-a",
+                                load_status="unloaded")])
+
+    result = await store.reconcile([
+        {**_row("native_a", description="A", schema="schema-a",
+                load_status="loaded"), "override_status": True},
+    ])
+
+    assert result["updated"] == []
+    assert result["status_updated"] == ["native_a"]
+    assert (await store.get_tool("native_a"))["load_status"] == "loaded"
+
+
 @pytest.mark.asyncio
 async def test_reconcile_writes_only_the_column_that_moved(store):
     """An enabled-only flip must not rewrite the schema blob — so the FTS

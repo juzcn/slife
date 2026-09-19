@@ -54,7 +54,7 @@ checked by pyright, not ad-hoc parsing.
 | Role | Holds | Example keys |
 |---|---|---|
 | `work` | per-tool-call execution budgets (the tool chain) | `tool_budget`, `task_budget`, `stall`, `shell`, `pip_install`, `save_memory` |
-| `ready` | startup / spawn / connect / liveness windows | `plugin_start`, `spawn`, `connect_attempt`, `connect_startup`, `signal`, `stderr_line`, `relisten`, `probe_broker`, `probe_endpoint`, `tunnel_*`, `list_tools`, `watchdog_backoff_*` |
+| `ready` | startup / spawn / connect / liveness windows | `plugin_start`, `spawn`, `connect_attempt`, `connect_startup`, `signal`, `stderr_line`, `relisten`, `probe_broker`, `probe_endpoint`, `tunnel_*`, `list_tools`, `tool_sync_wait`, `watchdog_backoff_*` |
 | `grace` | teardown / kill escalation ladder | `gentle`, `force`, `cleanup`, `shutdown`, `tunnel_kill` |
 | `transport` | HTTP / wire client phases | `connect`, `pool`, `read`(null=delegated), `write`(null), `oauth`, `poll_oauth`, `embed`, `embed_api`, `media_*`, `wechat_poll`, `url_download`, `qr_deadline` |
 | `stream` | LLM stream retry ladder | `retries`, `retry_base_delay` |

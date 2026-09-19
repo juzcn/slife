@@ -30,6 +30,7 @@ import logging
 import math
 import re
 import struct
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -387,6 +388,27 @@ _SEARCH_SELECT = (
 )
 
 
+@dataclass
+class CatalogOpDelta:
+    """What a window of catalog writes did to the rows.
+
+    Armed by :meth:`CatalogStore.begin_ops` and taken away by ``end_ops``, so
+    the tool-sync pass can report what a startup changed in the catalog:
+    insert → ``added``, update → ``updated``, delete → ``removed``.
+
+    Only a **config-derived** column moves the counters.  ``load_status`` /
+    ``last_loaded`` / ``unavailable`` are runtime state — the model's
+    decisions and the connectivity verdict — so a load, an eviction, a
+    reconnect mark or an autoload override is not a change to the tool set
+    and must not show up as one (a server coming up would otherwise report
+    every one of its tools as "modified").
+    """
+
+    added: int = 0
+    updated: int = 0
+    removed: int = 0
+
+
 class CatalogStore:
     """The shared catalog: SQLite file, WAL, FTS5 keyword + BLOB semantic.
 
@@ -401,11 +423,42 @@ class CatalogStore:
         self._path = Path(path)
         self._conn: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()
+        #: Armed by :meth:`begin_ops`, cleared by :meth:`end_ops` — None means
+        #: nobody is asking, so every write path's counting is a no-op call.
+        self._ops: CatalogOpDelta | None = None
 
     @property
     def _c(self) -> aiosqlite.Connection:
         assert self._conn is not None
         return self._conn
+
+    # ── Op accounting ──────────────────────────────────────────────
+
+    def begin_ops(self) -> CatalogOpDelta:
+        """Arm the op collector; returns the accumulator the caller keeps.
+
+        One window at a time: the tool-sync pass arms it, reads it in its
+        ``finally`` and disarms it.  A second ``begin_ops`` simply starts a
+        fresh window (the previous accumulator keeps whatever it collected).
+        """
+        self._ops = CatalogOpDelta()
+        return self._ops
+
+    def end_ops(self) -> CatalogOpDelta:
+        """Disarm the collector and return what it collected."""
+        delta, self._ops = self._ops, None
+        return delta or CatalogOpDelta()
+
+    def _count_ops(
+        self, *, added: int = 0, updated: int = 0, removed: int = 0,
+    ) -> None:
+        """Book row operations into the armed collector (a no-op when disarmed)."""
+        delta = self._ops
+        if delta is None:
+            return
+        delta.added += added
+        delta.updated += updated
+        delta.removed += removed
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
@@ -606,10 +659,13 @@ class CatalogStore:
         ``type`` is derived from ``category`` here — the one place it is
         written, so the two columns cannot drift.
 
-        Returns ``{inserted, updated, skipped, purged, schema_changed}``.  The
-        first four are name lists (``skipped`` is a count); ``schema_changed``
-        names the rows whose embedding was invalidated, for the caller to wake
-        the drainer.
+        Returns ``{inserted, updated, status_updated, skipped, purged,
+        schema_changed}``.  Every list but ``skipped`` (a count) holds names.
+        ``updated`` is the rows whose CONFIG-DERIVED columns moved;
+        ``status_updated`` is the ones only an ``override_status`` flip
+        touched — runtime state, a deliberately separate answer (the split
+        :class:`CatalogOpDelta` counts).  ``schema_changed`` names the rows
+        whose embedding was invalidated, for the caller to wake the drainer.
         """
         async with self._write_lock:
             where = " WHERE t.category = ?" if category else ""
@@ -621,6 +677,7 @@ class CatalogStore:
 
             inserted: list[str] = []
             updated: list[str] = []
+            status_updated: list[str] = []
             invalidated: list[str] = []
             incoming: set[str] = set()
             skipped = 0
@@ -707,6 +764,10 @@ class CatalogStore:
                 # overwrite what the model decided.  Owned here (not by the
                 # caller) for the same reason as every other column: one
                 # place compares, and only a value that MOVES is written.
+                # Settled before the status arm below: the question this
+                # answers is "did a CONFIG-DERIVED column move", and the
+                # autoload override is not one.
+                content_moved = bool(sets)
                 new_status = row.get("load_status")
                 if row.get("override_status") and new_status is not None and (
                     (prev["load_status"] or None) != new_status
@@ -727,7 +788,7 @@ class CatalogStore:
                 await self._c.execute(
                     f"UPDATE tool SET {', '.join(sets)} WHERE name = ?", vals,
                 )
-                updated.append(name)
+                (updated if content_moved else status_updated).append(name)
                 if embed_stale:
                     invalidated.append(name)
 
@@ -757,13 +818,19 @@ class CatalogStore:
 
             await self._c.commit()
 
+        self._count_ops(
+            added=len(inserted), updated=len(updated), removed=len(purged),
+        )
         logger.info(
-            "catalog_reconcile category=%s inserted=%d updated=%d skipped=%d purged=%d",
-            category or "(all)", len(inserted), len(updated), skipped, len(purged),
+            "catalog_reconcile category=%s inserted=%d updated=%d status=%d "
+            "skipped=%d purged=%d",
+            category or "(all)", len(inserted), len(updated),
+            len(status_updated), skipped, len(purged),
         )
         return {
             "inserted": inserted,
             "updated": updated,
+            "status_updated": status_updated,
             "skipped": skipped,
             "purged": purged,
             "schema_changed": invalidated,
@@ -815,6 +882,7 @@ class CatalogStore:
             # Embedding chunks go with the rows (tool_embeddings.name has
             # ON DELETE CASCADE and foreign_keys is ON).
             await self._c.commit()
+        self._count_ops(removed=count)
         logger.info("catalog_source_purged source=%s tools=%d", source_id, count)
         return count
 
@@ -851,6 +919,7 @@ class CatalogStore:
                 )
                 await self._c.commit()
         if gone:
+            self._count_ops(removed=len(gone))
             logger.info(
                 "catalog_source_purged_except source=%s tools=%d", source_id, len(gone),
             )
@@ -913,6 +982,10 @@ class CatalogStore:
                 (value, source_id, value),
             )
             await self._c.commit()
+        # ``enabled`` is a config-derived column: a server switched off in
+        # tools.yaml IS a change to those tools.  The WHERE clause keeps it
+        # honest — a steady-state pass writes no row and counts nothing.
+        self._count_ops(updated=cursor.rowcount)
         return cursor.rowcount
 
     async def mark_source_unavailable(self, source_id: str) -> int:
@@ -982,11 +1055,14 @@ class CatalogStore:
         that tool_search keeps returning.
         """
         async with self._write_lock:
-            await self._c.execute("DELETE FROM tool WHERE name = ?", (name,))
+            cursor = await self._c.execute(
+                "DELETE FROM tool WHERE name = ?", (name,),
+            )
             await self._c.execute(
                 "DELETE FROM tool_embeddings WHERE name = ?", (name,),
             )
             await self._c.commit()
+        self._count_ops(removed=cursor.rowcount or 0)
 
     async def names_by_category(self, category: str) -> set[str]:
         """Every row name of one category — the mirror's purge diff basis."""

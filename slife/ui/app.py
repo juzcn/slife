@@ -983,21 +983,28 @@ class SlifeApp(App):
 
         elif kind == "tools_synced":
             # The startup tool-set sync — the wait the user is actually in.
-            # Emitted on the first pass and whenever a later one changed the
-            # set, so this never becomes a heartbeat.  `total` is what is
-            # REGISTERED (callable); a turn injects the load_status snapshot,
-            # a narrower set, so the line promises availability only.
+            # Emitted once per process, on the pass that CONVERGED (every
+            # enabled server has answered), and on any failure, so silence
+            # keeps meaning "still syncing" and it never becomes a heartbeat.
+            # `total` is what is REGISTERED (callable); a turn injects the
+            # load_status snapshot, a narrower set, so the line promises
+            # availability only.  The three counts are what the pass wrote to
+            # the catalog (rows added / updated / removed) and are always
+            # shown, zeros included — one shape for every startup.
             err = kwargs.get("error", "")
             seconds = kwargs.get("seconds", 0)
             if err:
                 text = t("tools_synced_failed", seconds=seconds, err=err)
                 color = "#f85149"
             else:
-                text = t("tools_synced", seconds=seconds,
-                         total=kwargs.get("total", 0))
-                added, removed = kwargs.get("added", 0), kwargs.get("removed", 0)
-                if added or removed:
-                    text += t("tools_synced_delta", added=added, removed=removed)
+                text = t(
+                    "tools_synced",
+                    seconds=seconds,
+                    total=kwargs.get("total", 0),
+                    added=kwargs.get("added", 0),
+                    updated=kwargs.get("updated", 0),
+                    removed=kwargs.get("removed", 0),
+                )
                 color = "#3fb950"
             chat_view.add_system_message(text, color=color)
 
