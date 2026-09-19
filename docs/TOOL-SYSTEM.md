@@ -374,6 +374,8 @@ It reports on the **first** pass, on any pass that **changed** the registry, and
 
 The **add/remove delta rides only later passes**.  The first pass fills an empty registry, so its delta is the entire external tool set — `1465 added` on a restart, which reports a process artefact as a change to the tool set, and a restart is precisely what does not change it.  On later passes the registry is already populated, so a difference there means something really moved.
 
+**The other side of the window**: once the pass has run, a load takes effect **within the same turn** — no waiting for the next one.  For an enabled server the proxy already exists, so `func-tool-load` is a status flip over an execution instance that is already there; the call in that same turn reaches the real server (a *tool-level* error, e.g. a missing required parameter, is the proof — the harness gate is out of the way).  The materialize branch still runs, but registering an existing name is an idempotent overwrite, so it is no longer load-bearing — and its own failure modes (an unsynced `schema`, an unavailable MCP client) can no longer make a successful-looking load silently not take.
+
 Not gated on embeddings: the pass calls `wake_indexer`/`on_saved` (a wake, not a wait), so semantic search finishing is irrelevant to tool availability.
 
 ### Crash survival
