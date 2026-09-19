@@ -119,7 +119,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/uninstall.ps1 | iex"
 ```
 
-The uninstaller removes the `slife` and `credstore` tool commands (they share one venv) plus their `~/.local/bin` wrappers. User data (`~/.slife/`, `~/.credstore/`) is **not removed** — delete manually for a full reset.
+The uninstaller removes the `slife` and `credstore` tool commands (they share one venv), plus a standalone `local-embed` tool if one is installed — and their `~/.local/bin` wrappers. User data (`~/.slife/`, `~/.credstore/`, `~/.local-embed/` — config and model weights) is **not removed** — delete manually for a full reset.
 
 ### Related tools
 

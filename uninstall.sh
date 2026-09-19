@@ -28,9 +28,20 @@ else
     echo -e "${GRAY}slife is not installed.${NC}"
 fi
 
+# local-embed rides in slife's venv as a dependency (so the step above took it
+# with it), but its own installers also ship it as a standalone tool.
+if uv tool list 2>/dev/null | grep -qF "local-embed"; then
+    echo -e "${YELLOW}Uninstalling the standalone local-embed tool…${NC}"
+    if uv tool uninstall local-embed 2>&1; then
+        echo -e "  ${GREEN}✓${NC} local-embed removed"
+    else
+        echo -e "  ${RED}✗${NC} uninstall failed"
+    fi
+fi
+
 # 2. Clean up wrapper binaries
 LOCAL_BIN="$HOME/.local/bin"
-for bin in "$LOCAL_BIN/slife" "$LOCAL_BIN/credstore"; do
+for bin in "$LOCAL_BIN/slife" "$LOCAL_BIN/credstore" "$LOCAL_BIN/local-embed"; do
     if [ -f "$bin" ] || [ -L "$bin" ]; then
         rm -f "$bin"
         echo -e "  ${GRAY}Removed: $bin${NC}"
@@ -48,6 +59,10 @@ if [ -d "$DATA_DIR" ]; then
 fi
 if [ -d "$HOME/.credstore" ]; then
     REMAIN+=("  ~/.credstore/       — encrypted credential backup")
+fi
+if [ -d "$HOME/.local-embed" ]; then
+    SIZE=$(du -sh "$HOME/.local-embed" 2>/dev/null | cut -f1)
+    REMAIN+=("  ~/.local-embed/     (${SIZE:-?}) — config + model weights")
 fi
 
 if [ ${#REMAIN[@]} -gt 0 ]; then

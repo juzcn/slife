@@ -121,7 +121,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/uninstall.ps1 | iex"
 ```
 
-卸载器会移除 `slife` 与 `credstore` 两个工具命令（它们共享同一个 venv）以及它们在 `~/.local/bin` 的 wrapper。用户数据（`~/.slife/`、`~/.credstore/`）**不会被删除**——如需彻底重置请手动删除。
+卸载器会移除 `slife` 与 `credstore` 两个工具命令（它们共享同一个 venv），以及单独安装的 `local-embed` 工具（如果存在）——还有它们在 `~/.local/bin` 的 wrapper。用户数据（`~/.slife/`、`~/.credstore/`、`~/.local-embed/`——配置与模型权重）**不会被删除**——如需彻底重置请手动删除。
 
 ### 相关工具
 
