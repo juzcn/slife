@@ -313,9 +313,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "✗ 已达最大迭代次数 {n}",
     },
 
-    # ── A2A activity (app.py) ──
-    # The turn-end line for an inbound A2A message.  {type} is the wire type
-    # off the message's own [A2A:…] marker — task_request / task_response /
+    # ── Activity feed (app.py) ──
+    # The turn-end line for an inbound message.  {type} is the wire type off
+    # the message's own [A2A:…] marker — task_request / task_response /
     # message / broadcast — a protocol value, so it stays untranslated.
     "task_completed": {
         "en": "✓ A2A {type} from {source} handled",

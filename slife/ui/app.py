@@ -436,7 +436,7 @@ class SlifeApp(App):
             )
 
         # ── Step 3: A2A + Subagent + callbacks (unchanged) ────────────
-        self.service.on_a2a_activity(self._on_a2a_activity)
+        self.service.on_activity(self._on_activity)
         self.service.inbox._histories.set_default_handler_factory(
             lambda: TUIHandler(self, assistant_prefix=self._assistant_prefix)
         )
@@ -885,10 +885,14 @@ class SlifeApp(App):
             exclusive=False,
         )
 
-    # ── A2A activity (chat notifications) ───────────────────────────
+    # ── Activity feed (chat notifications) ──────────────────────────
+    #
+    # The TUI's single activity channel.  A2A is one contributor, not the
+    # subject: the inbox reports its own turn events here, and so does any
+    # service-side task the user should see.
 
-    async def _on_a2a_activity(self, kind: str, **kwargs) -> None:
-        """Handle A2A events by updating the chat view."""
+    async def _on_activity(self, kind: str, **kwargs) -> None:
+        """Handle activity events by updating the chat view."""
         chat_view = self.query_one("#chat-view", ChatView)
 
         if kind == "agent_change":
@@ -1048,7 +1052,7 @@ class SlifeApp(App):
         # NOTE: _process_message only enqueues and returns immediately — the
         # turn streams later, from the inbox.  Tool widgets must therefore be
         # cleared at a genuine turn-end hook (the inbox's "idle" event, see
-        # _on_a2a_activity), never here: clearing in this finally ran at
+        # _on_activity), never here: clearing in this finally ran at
         # enqueue time, so submitting message B while turn A was still
         # streaming wiped A's in-flight widgets — A's later on_tool_result
         # found none and A's rows stayed stuck on "◌ running" with the

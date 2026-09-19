@@ -464,7 +464,7 @@ class TestStatusBar:
         assert app._heartbeat_color != ""
 
     @pytest.mark.asyncio
-    async def test_on_a2a_activity_idle_clears_tool_widgets(self):
+    async def test_on_activity_idle_clears_tool_widgets(self):
         """A3 regression: the tool-widget map is cleared at the genuine
         turn-end ``"idle"`` event — not at enqueue time inside
         ``_process_message`` (which returns before the turn streams, so an
@@ -477,7 +477,7 @@ class TestStatusBar:
         app._update_status = MagicMock()
         app._tool_widgets = {"c1": MagicMock(), "c2": MagicMock()}
 
-        await app._on_a2a_activity("idle")
+        await app._on_activity("idle")
 
         app._update_status.assert_called_once()
         assert app._tool_widgets == {}
@@ -502,7 +502,7 @@ class TestStatusBar:
             chat_view = MagicMock()
             app.query_one = MagicMock(return_value=chat_view)
 
-            await app._on_a2a_activity(
+            await app._on_activity(
                 "task_completed", source="jack", content=content, result="ok",
             )
 
@@ -520,7 +520,7 @@ class TestStatusBar:
         chat_view = MagicMock()
         app.query_one = MagicMock(return_value=chat_view)
 
-        await app._on_a2a_activity(
+        await app._on_activity(
             "task_completed", source="jack", content="bare text", result="ok",
         )
 
@@ -542,7 +542,7 @@ class TestStatusBar:
         chat_view = MagicMock()
         app.query_one = MagicMock(return_value=chat_view)
 
-        await app._on_a2a_activity(
+        await app._on_activity(
             "task_completed", source="jack",
             content=a2a_marker("jack", "cid-1", type="task_request") + "do X",
             result="Error: boom", error=True,
@@ -561,7 +561,7 @@ class TestStatusBar:
         chat_view = MagicMock()
         app.query_one = MagicMock(return_value=chat_view)
 
-        await app._on_a2a_activity(
+        await app._on_activity(
             "loop_error", source="jack", error="Error code: 400 - boom",
             dropped=True,
         )
@@ -581,7 +581,7 @@ class TestStatusBar:
         chat_view = MagicMock()
         app.query_one = MagicMock(return_value=chat_view)
 
-        await app._on_a2a_activity(
+        await app._on_activity(
             "loop_error", source="jack", error="Request timed out", dropped=False,
         )
 

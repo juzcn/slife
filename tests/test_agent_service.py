@@ -1559,15 +1559,15 @@ class TestAgentServiceSubagent:
 
 
 class TestAgentServiceCallbacks:
-    """Tests for A2A activity callbacks."""
+    """Tests for the activity callback channel (the TUI's activity feed)."""
 
     @pytest.mark.asyncio
-    async def test_on_a2a_activity_register_and_fire(self, sample_config):
+    async def test_on_activity_register_and_fire(self, sample_config):
         service = AgentService(sample_config)
         cb = AsyncMock()
-        service.on_a2a_activity(cb)
+        service.on_activity(cb)
 
-        await service._notify_a2a_activity("test_event", data="hello")
+        await service._notify_activity("test_event", data="hello")
 
         cb.assert_called_once_with("test_event", data="hello")
 
@@ -1576,10 +1576,10 @@ class TestAgentServiceCallbacks:
         service = AgentService(sample_config)
         bad_cb = AsyncMock(side_effect=Exception("broken"))
         good_cb = AsyncMock()
-        service.on_a2a_activity(bad_cb)
-        service.on_a2a_activity(good_cb)
+        service.on_activity(bad_cb)
+        service.on_activity(good_cb)
 
-        await service._notify_a2a_activity("event")
+        await service._notify_activity("event")
 
         good_cb.assert_called_once()
 
@@ -1692,7 +1692,7 @@ class TestAgentServiceInbox:
 
         assert inbox._agent_loop is service.agent_loop
         # _on_activity is a bound method — use equality not identity
-        assert inbox._on_activity.__func__ is service._notify_a2a_activity.__func__  # type: ignore[union-attr]
+        assert inbox._on_activity.__func__ is service._notify_activity.__func__  # type: ignore[union-attr]
         assert inbox._on_turn_complete.__func__ is service.save_to_memory.__func__  # type: ignore[union-attr]
         # HUMAN history is pre-seeded from service.message_history
         assert inbox._histories._by_source.get(HUMAN) is service.message_history

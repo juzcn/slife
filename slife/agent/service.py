@@ -375,7 +375,7 @@ class AgentService:
         self.inbox = Inbox(
             agent_loop=self.agent_loop,
             histories=histories,
-            on_activity=self._notify_a2a_activity,  # always active for WeChat etc.
+            on_activity=self._notify_activity,  # always active for WeChat etc.
             on_turn_complete=self.save_to_memory,
             # Startup gate: no turn runs until every plugin spawn converged.
             # Main agent only — subagents share the main process's plugins
@@ -437,7 +437,7 @@ class AgentService:
 
         # A2A integration state
         self._subagent_manager = None
-        self._on_a2a_callbacks: list = []  # callbacks for TUI notification
+        self._on_activity_callbacks: list = []  # callbacks for TUI notification
 
         # Register for runtime model-switch notifications so the
         # LLM client and agent loop stay in sync with the active model.
@@ -2969,7 +2969,7 @@ class AgentService:
                     text = format_presence_line(card, pev.get("event", ""))
                     if text is not None:
                         self._presence_events.append((_time.time(), text))
-                    await self._notify_a2a_activity(
+                    await self._notify_activity(
                         "agent_change", event=pev.get("event", ""), card=card,
                     )
 
@@ -3159,22 +3159,31 @@ class AgentService:
     def _a2a_stale_provider(self) -> list[dict]:
         return self._a2a_stale
 
-    async def _notify_a2a_activity(self, kind: str, **kwargs) -> None:
-        """Fire all registered A2A activity callbacks."""
-        for cb in self._on_a2a_callbacks:
+    async def _notify_activity(self, kind: str, **kwargs) -> None:
+        """Fire all registered activity callbacks (TUI-only; never a turn)."""
+        for cb in self._on_activity_callbacks:
             try:
                 await cb(kind, **kwargs)
             except Exception:
                 pass
 
-    def on_a2a_activity(self, callback) -> None:
-        """Register a callback for A2A events (TUI notification).
+    def on_activity(self, callback) -> None:
+        """Register a callback for activity events (TUI notification).
 
-        Callback signature: ``async def cb(kind: str, **kwargs)``
-        where *kind* is ``"agent_change"``, ``"task_received"``, or
-        ``"task_completed"``.
+        The channel is the TUI's single activity feed — **not** an A2A one.
+        Whoever has something the user should see emits here; A2A is one
+        contributor among several, and only ``agent_change`` is its own.
+
+        Callback signature: ``async def cb(kind: str, **kwargs)``.  Kinds:
+        the inbox's own (``busy`` / ``idle`` / ``task_received`` /
+        ``peer_message`` / ``subagent_message`` / ``loop_error`` /
+        ``task_completed``), A2A presence (``agent_change``), and anything a
+        service-side task reports (e.g. a tool-set sync).
+
+        Nothing emitted here reaches the model: it is a chat-view line, never
+        an ``AgentMessage``, never a turn, never context.
         """
-        self._on_a2a_callbacks.append(callback)
+        self._on_activity_callbacks.append(callback)
 
     # ── Message processing ────────────────────────────────────────────
 
