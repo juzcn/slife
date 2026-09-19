@@ -55,6 +55,15 @@ providers:
     remote_port: 80
   cloudflare:
     # Binary name (resolved on PATH, then the usual Windows install
-    # locations) or an absolute path to cloudflared.  There is nothing else
-    # to configure — Quick Tunnels take no token and no domain.
+    # locations) or an absolute path to cloudflared.  Quick Tunnels take no
+    # token and no domain, so this and `protocol` are the whole config.
     binary: "${CLOUDFLARED_BINARY:-cloudflared}"
+    # Transport to the edge (cloudflared's --protocol): "http2", "quic" or
+    # "auto".  Defaults to http2, which rides TCP.  cloudflared's own default
+    # is quic, and QUIC is the one that fails behind a proxy or a TUN adapter
+    # — it registers a connection, then repeatedly loses it to "no recent
+    # network activity", and every window in between answers the published
+    # URL with HTTP 530.  A lost QUIC connection is logged as "Serve tunnel
+    # error" and retried WITHOUT an "Unregistered tunnel connection" line, so
+    # the flapping is invisible to anything reading cloudflared's output.
+    protocol: "${CLOUDFLARED_PROTOCOL:-http2}"

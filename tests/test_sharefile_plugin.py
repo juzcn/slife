@@ -37,9 +37,21 @@ def _reset_state():
 
 
 def _active_tunnel(url="https://slife.ngrok-free.dev"):
-    """Patch the plugin's tunnel instance so it reports active."""
+    """Patch the plugin's tunnel instance so it reports active and reachable."""
     tunnel = MagicMock()
     tunnel.is_active = True
+    tunnel.is_reachable.return_value = True
+    tunnel.share_url_for.side_effect = lambda fid: f"{url}/share/{fid}"
+    tunnel.status.return_value = {"state": "active", "url": url}
+    return patch.multiple(plugin, _tunnel=tunnel)
+
+
+def _unreachable_tunnel(url="https://slife.ngrok-free.dev"):
+    """A tunnel whose URL is published but which the edge cannot serve — the
+    state that answers every request with HTTP 530."""
+    tunnel = MagicMock()
+    tunnel.is_active = True          # the URL exists…
+    tunnel.is_reachable.return_value = False   # …and nothing is behind it
     tunnel.share_url_for.side_effect = lambda fid: f"{url}/share/{fid}"
     tunnel.status.return_value = {"state": "active", "url": url}
     return patch.multiple(plugin, _tunnel=tunnel)
@@ -54,6 +66,7 @@ def _offline_tunnel(state="failed"):
     """
     tunnel = MagicMock()
     tunnel.is_active = False
+    tunnel.is_reachable.return_value = False
     tunnel.share_url_for.return_value = None
     tunnel.status.return_value = {"state": state, "url": ""}
     return patch.multiple(plugin, _tunnel=tunnel, _PLUGIN_PORT=0)
@@ -132,11 +145,27 @@ class TestShareFile:
         f.write_bytes(b"pdf")
         tunnel = MagicMock()
         tunnel.is_active = True
+        tunnel.is_reachable.return_value = True
         tunnel.share_url_for.return_value = None
         with patch.multiple(plugin, _tunnel=tunnel):
             result = await plugin.share_file(path=str(f))
         assert result.startswith("Error:")
         assert "became unavailable" in result
+
+    @pytest.mark.asyncio
+    async def test_unreachable_tunnel_refuses_instead_of_handing_out_a_link(
+        self, tmp_path,
+    ):
+        """A published URL is not a working one: a transport that lost the edge
+        answers every request to it with HTTP 530, and the caller only finds
+        out later — from an LLM that could not fetch the file.  Refusing here
+        is the whole point of asking the edge rather than the URL."""
+        f = tmp_path / "photo.png"
+        f.write_bytes(b"pngdata")
+        with _unreachable_tunnel():
+            result = await plugin.share_file(path=str(f))
+        assert result.startswith("Error:")
+        assert "530" in result
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -151,8 +180,19 @@ class TestInternalTools:
             raw = await getattr(plugin, "__check")()
         data = json.loads(raw)
         assert data["active"] is True
+        assert data["reachable"] is True
         assert data["state"] == "active"
         assert data["url"] == "https://slife.ngrok-free.dev"
+
+    @pytest.mark.asyncio
+    async def test_tunnel_status_reachable_is_independent_of_active(self):
+        """'A URL exists' and 'that URL would be served' are different facts —
+        the harness reads them separately or it reads an outage as healthy."""
+        with _unreachable_tunnel():
+            raw = await getattr(plugin, "__check")()
+        data = json.loads(raw)
+        assert data["active"] is True       # the URL is published…
+        assert data["reachable"] is False   # …and the edge is not serving it
 
     @pytest.mark.asyncio
     async def test_tunnel_status_failed(self):
@@ -183,6 +223,19 @@ class TestInternalTools:
         assert len(data["file_id"]) == 30
         assert data["url"] == f"https://slife.ngrok-free.dev/share/{data['file_id']}"
         assert plugin._lookup_file(data["file_id"]) == str(f.resolve())
+
+    @pytest.mark.asyncio
+    async def test_register_file_refuses_an_unreachable_tunnel(self, tmp_path):
+        """The sibling of share_file carries the same guard — an unreachable
+        tunnel has no URL to hand out, and no token is minted for one."""
+        f = tmp_path / "a.png"
+        f.write_bytes(b"x")
+        with _unreachable_tunnel():
+            raw = await getattr(plugin, "__register_file")(str(f))
+        data = json.loads(raw)
+        assert data["url"] == ""
+        assert "530" in data["error"]
+        assert plugin._lookup_file(data["file_id"]) is None
 
 
 # ═══════════════════════════════════════════════════════════════════════

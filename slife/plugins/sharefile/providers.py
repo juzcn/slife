@@ -25,6 +25,10 @@ Contract the base guarantees, and which ``server.py`` and the harness rely on:
   loop — hence ``subprocess`` and not ``asyncio.create_subprocess_exec``.
 * ``start()`` is single-flight and idempotent, and ``stop()`` never raises —
   it is called at shutdown while a start may still be in flight.
+* ``is_reachable()`` splits "a URL exists" from "that URL would be served":
+  ``is_active`` reports the former, this the latter.  They come apart exactly
+  when the transport has lost the edge — the URL is still published while
+  every request to it answers HTTP 530.  Same contract as ``status()``.
 * ``status()`` is pure, synchronous, non-blocking and exception-free, and
   always carries a ``state`` key: ``active`` (a URL is live) / ``starting``
   (an attempt is in flight — the harness waits) / ``failed`` (terminal —
@@ -46,6 +50,9 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
+
+import httpx2
+
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
@@ -73,6 +80,9 @@ _HEALTH_INTERVAL = 30.0  # seconds between liveness probes (cadence, stays local
 #: How long to wait for a CLI child to print its public URL.  cloudflared in
 #: particular can take a while to negotiate and print its banner.
 #: (developer-owned — registry ready.tunnel_read_url).
+#: How long a published tunnel may stay unreachable before the monitor
+#: respawns it (developer-owned — registry ready.tunnel_heal; see
+#: :meth:`_TunnelProviderBase._run_monitor`).
 #: Retry pacing between start attempts (registry ready.sharefile_retry_delay).
 
 #: Output lines kept for the failure message when a CLI child dies early.
@@ -179,6 +189,8 @@ class TunnelProvider(Protocol):
     @property
     def is_active(self) -> bool: ...
 
+    def is_reachable(self) -> bool: ...
+
     def status(self) -> dict[str, str]: ...
 
     def share_url_for(self, file_id: str) -> str | None: ...
@@ -252,6 +264,36 @@ class _TunnelProviderBase:
     def is_active(self) -> bool:
         """True when the tunnel is running."""
         return self.public_url is not None
+
+    @property
+    def is_starting(self) -> bool:
+        """Whether a start attempt is in flight (the single-flight guard).
+
+        The monitor's first pass normally lands in the middle of the plugin's
+        own eager start, and waiting for that attempt to conclude is the whole
+        point: it is already running, so there is nothing to retry.
+        """
+        with self._start_lock:  # held only for guard mutation, never across _do_start
+            return self._starting
+
+    def is_reachable(self) -> bool:
+        """Whether the published URL can actually be served right now.
+
+        Narrower than :attr:`is_active`, which only reports that a URL
+        *exists*: a transport that lost the edge leaves the URL in place while
+        every request to it answers HTTP 530, so handing that URL out is
+        handing out a dead link.
+
+        Synchronous and exception-free, like :meth:`status`, and a probe that
+        cannot answer is not an outage — the caller is deciding whether to
+        refuse a share, and a broken probe must not be the thing that refuses.
+        """
+        if self._public_url is None:
+            return False
+        try:
+            return bool(self.is_alive())
+        except Exception:  # noqa: BLE001 — a failed probe must not refuse a share
+            return True
 
     def share_url_for(self, file_id: str) -> str | None:
         """Build a public share URL for *file_id*."""
@@ -417,18 +459,58 @@ class _TunnelProviderBase:
 
         await asyncio.sleep(_timeouts.timeouts.ready.sharefile_retry_delay)  # let the daemon-thread handshake finish
 
+        # When the current unreachable stretch began, so a transport that
+        # heals itself is not respawned out from under its own recovery.
+        down_since: float | None = None
+
         while True:
             if self._public_url is not None:
                 alive = await run_daemon(self.is_alive, name=f"{self.label}-health")
                 if alive:
+                    if down_since is not None:
+                        logger.info(
+                            "tunnel_recovered provider=%s url=%s after=%.0fs",
+                            self.label, self._public_url, time.monotonic() - down_since,
+                        )
+                        down_since = None
+                    await asyncio.sleep(_HEALTH_INTERVAL)
+                    continue
+
+                # Unreachable, but not necessarily lost — and the difference
+                # is worth a whole hostname.  A CLI child that loses its edge
+                # connection re-registers on its own and KEEPS the hostname it
+                # was given, while a respawn mints a new one: every link
+                # already handed to a person or an LLM points at the old name
+                # and dies for good.  So the child gets the grace window to
+                # heal, and only a transport still unreachable at the end of
+                # it is the kind a restart can fix.
+                if down_since is None:
+                    down_since = time.monotonic()
+                    logger.warning(
+                        "tunnel_unreachable provider=%s url=%s",
+                        self.label, self._public_url,
+                    )
+                elapsed = time.monotonic() - down_since
+                if elapsed < _timeouts.timeouts.ready.tunnel_heal:
                     await asyncio.sleep(_HEALTH_INTERVAL)
                     continue
                 logger.warning(
-                    "tunnel_lost provider=%s url=%s — restarting",
-                    self.label, self._public_url,
+                    "tunnel_lost provider=%s url=%s elapsed=%.0fs — restarting",
+                    self.label, self._public_url, elapsed,
                 )
                 self._teardown()
                 self._drop_url()
+                down_since = None
+
+            # No tunnel — but an attempt may already be on its way: the plugin
+            # eager-starts the tunnel on a task of its own, so this pass
+            # routinely lands mid-attempt.  Waiting for it is the point.
+            # Calling start() anyway is refused ("already in progress") and
+            # read as a failed restart — two warnings in the log for an
+            # attempt that was never broken.
+            if self.is_starting:
+                await asyncio.sleep(_timeouts.timeouts.ready.sharefile_retry_delay)
+                continue
 
             # No tunnel — (re)start.
             try:
@@ -530,6 +612,16 @@ _LHR_URL_RE = re.compile(r"https://[0-9A-Za-z.\-]+")
 #: "Registered tunnel connection connIndex=2" with its later "Unregistered…".
 _CONN_INDEX_RE = re.compile(r"connIndex=(\d+)")
 
+#: cloudflared announces the loopback port serving its own metrics API::
+#:
+#:     INF Starting metrics server on 127.0.0.1:20241/metrics
+#:
+#: ``GET /ready`` there answers from the connector's own view of the edge —
+#: ``{"status":200,"readyConnections":N}`` — which is the one liveness signal
+#: that does not depend on the child narrating its connection state.  See
+#: :meth:`CloudflareQuickTunnel._transport_alive`.
+_METRICS_RE = re.compile(r"Starting metrics server on (127\.0\.0\.1:\d+)/metrics")
+
 
 def _conn_index(line: str) -> str:
     """The connector index named in *line*, or ``""`` when it names none."""
@@ -581,6 +673,11 @@ class _CliTunnelProvider(_TunnelProviderBase):
         #: the transport's own answer to "is the tunnel actually reachable",
         #: which the process being alive does not give.
         self._registered: set[str] = set()
+        #: Base URL of the child's own metrics API once it announces one
+        #: (``http://127.0.0.1:20241``), or ``None`` for a child that serves
+        #: none.  Preferred over the scraped set above wherever it exists —
+        #: see :meth:`_metrics_ready`.
+        self._metrics_base: str | None = None
 
     # ── Subclass hooks ─────────────────────────────────────────────
 
@@ -665,6 +762,42 @@ class _CliTunnelProvider(_TunnelProviderBase):
         elif self.unregistration_marker and self.unregistration_marker in line:
             self._registered.discard(_conn_index(line))
 
+    def _note_metrics(self, line: str) -> None:
+        """Pick up the loopback address of the child's own metrics API.
+
+        The child names it once, early (before it registers), and it is what
+        lets :meth:`_metrics_ready` ask the transport about itself instead of
+        reading its prose.
+        """
+        match = _METRICS_RE.search(line)
+        if match:
+            self._metrics_base = f"http://{match.group(1)}"
+
+    def _metrics_ready(self) -> bool | None:
+        """Ask the child's own metrics API whether the edge can reach it.
+
+        ``GET /ready`` reports the connector's view — ``readyConnections`` is
+        the number of live edge connections — so it answers the question the
+        scraped ``_registered`` set only approximates.
+
+        ``None`` (never ``False``) when the child announced no metrics server
+        or the probe could not be answered: an unanswered probe says nothing
+        about the tunnel, so the caller falls back to what it scraped rather
+        than reading a probe failure as an outage.
+        """
+        base = self._metrics_base
+        if not base:
+            return None
+        try:
+            with httpx2.Client(
+                timeout=httpx2.Timeout(_timeouts.timeouts.ready.probe_endpoint),
+            ) as http:
+                payload = http.get(f"{base}/ready").json()
+            return int(payload.get("readyConnections") or 0) > 0
+        except Exception as e:  # noqa: BLE001 — a failed probe is not an outage
+            logger.debug("tunnel_ready_probe_failed provider=%s err=%s", self.label, e)
+            return None
+
     def _spawn(self, binary: str, port: int) -> str:
         """Spawn the CLI and block until its URL is publishable (or fails).
 
@@ -686,8 +819,10 @@ class _CliTunnelProvider(_TunnelProviderBase):
         self._pending_url = None
         # Per-attempt: a previous child's connectors say nothing about this
         # one, and leaving them behind would let a dead attempt pass the
-        # readiness gate.
+        # readiness gate.  Its metrics port is its own too — a probe aimed at
+        # the dead child would answer for a tunnel that no longer exists.
         self._registered.clear()
+        self._metrics_base = None
 
         logger.info("tunnel_spawn provider=%s port=%s", self.label, port)
         proc = subprocess.Popen(
@@ -780,6 +915,7 @@ class _CliTunnelProvider(_TunnelProviderBase):
                     "tunnel_output provider=%s line=%s", self.label, line.rstrip()[:300],
                 )
                 self._note_connections(line)
+                self._note_metrics(line)
                 url = self._parse_url(line)
                 if url is None:
                     continue
@@ -936,6 +1072,24 @@ class CloudflareQuickTunnel(_CliTunnelProvider):
     label = "cloudflare"
     default_binary = "cloudflared"
 
+    #: Transport the connector uses to the edge (``--protocol``).  QUIC is
+    #: cloudflared's own default and the faster of the two, and it is also the
+    #: one that fails behind a proxy / TUN adapter — an environment this tool
+    #: meets constantly, since the whole point of a tunnel is to cross a
+    #: network the machine does not control.  There the connection registers
+    #: and then dies, "timeout: no recent network activity", over and over;
+    #: every window in between answers the published hostname with HTTP 530,
+    #: and the flapping reads as a healthy tunnel to anything that trusts
+    #: stdout.  http2 rides TCP, which those paths carry reliably.  Set
+    #: ``protocol: "quic"`` (or ``"auto"``) in sharefile.yaml to switch back.
+    DEFAULT_PROTOCOL = "http2"
+
+    def __init__(self, options: dict | None = None) -> None:
+        super().__init__(options)
+        self._protocol: str = str(
+            (options or {}).get("protocol") or self.DEFAULT_PROTOCOL
+        )
+
     # The banner carrying the URL is printed BEFORE the edge connection is
     # negotiated, so the URL alone means nothing here: for the moment in
     # between, the hostname resolves and answers HTTP 530.  Readiness is the
@@ -949,10 +1103,20 @@ class CloudflareQuickTunnel(_CliTunnelProvider):
 
         The process keeps running through a lost edge connection, so process
         liveness alone would report a healthy tunnel while every published
-        link is dead — and the monitor, seeing "alive", would never restart
-        it.  Zero connectors is the honest answer, and the monitor's own
-        restart is what fixes it.
+        link is dead.  Zero connectors is the honest answer.
+
+        Sourced from the child's own metrics API, because its output cannot be
+        trusted to say so: a QUIC connection that times out is logged as
+        "Serve tunnel error" and retried, and NO "Unregistered tunnel
+        connection" line follows it — so a connector set scraped from stdout
+        stays non-empty straight through an outage that answers every
+        published link with HTTP 530, and the monitor watching it never sees
+        anything wrong.  The scraped set is still the fallback, for a build
+        that announces no metrics server.
         """
+        probed = self._metrics_ready()
+        if probed is not None:
+            return probed
         return bool(self._registered)
 
     def _find_binary(self) -> str | None:
@@ -964,6 +1128,7 @@ class CloudflareQuickTunnel(_CliTunnelProvider):
             "tunnel",
             # Don't let a background self-update swap the binary under us.
             "--no-autoupdate",
+            "--protocol", self._protocol,
             "--url", f"http://localhost:{port}",
         ]
 

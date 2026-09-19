@@ -1205,6 +1205,8 @@ class TestCheckSharefileFunction:
 
     @pytest.mark.asyncio
     async def test_active_tunnel_reports_its_url(self):
+        # No ``reachable`` key — a plugin that predates the field reads as
+        # reachable, so the harness never cries wolf over a word it added.
         client = _FakeSharefileClient({
             "active": True, "state": "active",
             "url": "https://x.lhr.life", "reason": "", "provider": "localhost.run",
@@ -1213,6 +1215,22 @@ class TestCheckSharefileFunction:
         assert entries[0]["level"] == "ok"
         assert entries[0]["value"] == "https://x.lhr.life"
         assert "hint" not in entries[0]
+
+    @pytest.mark.asyncio
+    async def test_published_but_unreachable_is_not_healthy(self):
+        """A published URL is not a working one: a transport that lost the edge
+        keeps its URL while answering every request with HTTP 530.  Reporting
+        "ok" off ``active`` alone is how an all-green system_health sat next to
+        a link nobody could fetch."""
+        client = _FakeSharefileClient({
+            "active": True, "reachable": False, "state": "active",
+            "url": "https://x.trycloudflare.com", "reason": "",
+            "provider": "cloudflare",
+        })
+        entries = await check_sharefile(client=client)
+        assert entries[0]["level"] == "warning"
+        assert entries[0]["value"] == "unreachable (cloudflare)"
+        assert "530" in entries[0]["hint"]
 
     @pytest.mark.asyncio
     async def test_down_tunnel_names_the_provider_and_carries_its_reason(self):

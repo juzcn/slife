@@ -134,6 +134,18 @@ CF_UNREGISTERED = (
     "2026-09-10T20:00:09Z INF Unregistered tunnel connection connIndex=0\n"
 )
 
+#: A QUIC connection that times out.  cloudflared retries — and logs NO
+#: "Unregistered tunnel connection" for it, which is the whole trap: a
+#: connector set scraped from the output still looks complete while the edge
+#: answers HTTP 530 to every request for the published hostname.
+CF_SERVE_ERROR = (
+    "2026-09-10T20:00:30Z ERR Serve tunnel error error=\"datagram manager "
+    "error: timeout: no recent network activity\" connIndex=0 event=0\n"
+)
+
+#: The loopback metrics API the child announces before it registers.
+CF_METRICS = "2026-09-10T20:00:00Z INF Starting metrics server on 127.0.0.1:20241/metrics\n"
+
 
 @pytest.fixture(autouse=True)
 def _clean_tunnel_env(monkeypatch):
@@ -285,6 +297,146 @@ class TestCloudflareReadiness:
             tunnel.stop()
 
 
+class TestCloudflareLiveness:
+    """Liveness comes from the transport, not from its prose.
+
+    A QUIC connection that times out is logged as "Serve tunnel error" and
+    retried, and cloudflared emits NO "Unregistered tunnel connection" for it.
+    A connector set scraped from that output therefore reads healthy straight
+    through an outage that answers the published hostname with HTTP 530 —
+    which is exactly how a flapping tunnel came to report itself active, with
+    the health monitor never firing once.
+    """
+
+    def test_a_lost_connection_that_is_never_unregistered(self, monkeypatch):
+        tunnel = providers.CloudflareQuickTunnel()
+        proc = _FakeProcess(_LinesStdout([CF_BANNER, CF_REGISTERED, CF_SERVE_ERROR]))
+        tunnel._proc = proc
+        monkeypatch.setattr(tunnel, "_metrics_ready", lambda: False)
+        tunnel._read_output(proc)
+
+        assert tunnel._registered == {"0"}  # the child's prose still claims it…
+        assert tunnel.is_alive() is False   # …the transport says it is gone
+
+    def test_a_healthy_transport_reads_as_alive(self, monkeypatch):
+        tunnel = providers.CloudflareQuickTunnel()
+        proc = _FakeProcess(_LinesStdout([CF_BANNER, CF_REGISTERED]))
+        tunnel._proc = proc
+        monkeypatch.setattr(tunnel, "_metrics_ready", lambda: True)
+        tunnel._read_output(proc)
+
+        assert tunnel.is_alive() is True
+
+    def test_an_unanswered_probe_falls_back_to_the_childs_output(self, monkeypatch):
+        """``None`` is "no answer", not "down" — refusing a share on a failed
+        probe would be its own outage."""
+        tunnel = providers.CloudflareQuickTunnel()
+        proc = _FakeProcess(_LinesStdout([CF_BANNER, CF_REGISTERED]))
+        tunnel._proc = proc
+        monkeypatch.setattr(tunnel, "_metrics_ready", lambda: None)
+        tunnel._read_output(proc)
+
+        assert tunnel.is_alive() is True
+
+    def test_picks_up_the_metrics_port_the_child_announces(self):
+        tunnel = providers.CloudflareQuickTunnel()
+        proc = _FakeProcess(_LinesStdout([CF_METRICS, CF_BANNER]))
+        tunnel._proc = proc
+        tunnel._read_output(proc)
+
+        assert tunnel._metrics_base == "http://127.0.0.1:20241"
+
+    def test_a_new_child_does_not_inherit_the_dead_ones_metrics_port(self, monkeypatch):
+        """A probe aimed at the previous child's port would answer for a tunnel
+        that no longer exists."""
+        _install_fake_popen(monkeypatch, _LinesStdout([]))
+        tunnel = providers.CloudflareQuickTunnel()
+        tunnel._metrics_base = "http://127.0.0.1:20241"
+
+        with pytest.raises(RuntimeError):
+            tunnel._spawn("cloudflared", 8080)  # child that never prints a URL
+
+        assert tunnel._metrics_base is None
+
+    @pytest.mark.parametrize("count, expected", [(1, True), (0, False)])
+    def test_the_probe_reads_ready_connections(self, monkeypatch, count, expected):
+        """cloudflared answers ``{"status":200,"readyConnections":N}``."""
+        tunnel = providers.CloudflareQuickTunnel()
+        tunnel._metrics_base = "http://127.0.0.1:20241"
+
+        class _Resp:
+            def json(self):
+                return {"status": 200 if count else 503, "readyConnections": count}
+
+        class _Client:
+            def __init__(self, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def get(self, url):
+                assert url == "http://127.0.0.1:20241/ready"
+                return _Resp()
+
+        monkeypatch.setattr(providers.httpx2, "Client", _Client)
+        assert tunnel._metrics_ready() is expected
+
+    def test_a_probe_that_cannot_connect_is_not_an_outage(self, monkeypatch):
+        tunnel = providers.CloudflareQuickTunnel()
+        tunnel._metrics_base = "http://127.0.0.1:20241"
+
+        class _Client:
+            def __init__(self, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def get(self, url):
+                raise OSError("connection refused")
+
+        monkeypatch.setattr(providers.httpx2, "Client", _Client)
+        assert tunnel._metrics_ready() is None
+
+    def test_no_metrics_server_means_nothing_to_ask(self):
+        assert providers.CloudflareQuickTunnel()._metrics_ready() is None
+
+
+class TestIsReachable:
+    """``is_active`` says a URL exists; ``is_reachable`` says it would be
+    served.  They come apart exactly when the transport lost the edge."""
+
+    def test_false_before_any_url_is_published(self):
+        assert providers.CloudflareQuickTunnel().is_reachable() is False
+
+    def test_follows_the_transport_not_the_url(self, monkeypatch):
+        tunnel = providers.CloudflareQuickTunnel()
+        tunnel._public_url = "https://x.trycloudflare.com"
+        monkeypatch.setattr(tunnel, "is_alive", lambda: False)
+
+        assert tunnel.is_active is True    # the URL is still published…
+        assert tunnel.is_reachable() is False   # …and nothing is behind it
+
+    def test_a_broken_probe_never_refuses_a_share(self, monkeypatch):
+        """Refusing on a probe that cannot answer would turn a broken probe
+        into an outage of its own."""
+        tunnel = providers.CloudflareQuickTunnel()
+        tunnel._public_url = "https://x.trycloudflare.com"
+
+        def _boom():
+            raise RuntimeError("probe exploded")
+
+        monkeypatch.setattr(tunnel, "is_alive", _boom)
+        assert tunnel.is_reachable() is True
+
+
 class TestCloudflareUrlParsing:
     def test_extracts_the_url_from_the_banner(self):
         for line in CF_BANNER.splitlines(keepends=True):
@@ -412,6 +564,27 @@ class TestCloudflareArgv:
         assert argv[1] == "tunnel"
         assert "--no-autoupdate" in argv  # no self-update under a live daemon
         assert "http://localhost:8080" in argv
+
+    def test_defaults_to_http2_over_the_edge(self, monkeypatch):
+        """QUIC is cloudflared's default and the one that fails behind a proxy
+        or TUN adapter — it registers, then loses the connection repeatedly,
+        and the published URL answers 530 in between.  http2 rides TCP."""
+        captured = _install_fake_popen(
+            monkeypatch, _LinesStdout([CF_BANNER, CF_REGISTERED]),
+        )
+        providers.CloudflareQuickTunnel().start(8080)
+
+        argv = captured[0][0]
+        assert argv[argv.index("--protocol") + 1] == "http2"
+
+    def test_protocol_option_is_honoured(self, monkeypatch):
+        captured = _install_fake_popen(
+            monkeypatch, _LinesStdout([CF_BANNER, CF_REGISTERED]),
+        )
+        providers.CloudflareQuickTunnel({"protocol": "quic"}).start(8080)
+
+        argv = captured[0][0]
+        assert argv[argv.index("--protocol") + 1] == "quic"
 
     def test_missing_binary_explains_how_to_install(self, monkeypatch):
         _install_missing_binary(monkeypatch)

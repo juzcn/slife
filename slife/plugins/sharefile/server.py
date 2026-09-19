@@ -328,7 +328,7 @@ async def handle_share(request: Request) -> Response:
 
 @mcp.tool(name="__check", description="File-sharing tunnel live state as JSON facts. Internal — probed by the harness's system_health.")
 async def __check() -> str:
-    """Return ``{active, state, url, reason, provider}`` live tunnel facts.
+    """Return ``{active, reachable, state, url, reason, provider}`` live facts.
 
     ``state`` distinguishes the harness-relevant cases: ``active`` (a public
     URL is live), ``starting`` (an eager start attempt is still in flight —
@@ -336,11 +336,17 @@ async def __check() -> str:
     report the tunnel down; ``reason`` carries the last failure message),
     ``idle`` (no attempt made, e.g. subagent reusing the main agent's
     tunnel).  Facts only — the harness composes levels/hints.
+
+    ``reachable`` is the separate question of whether that URL would be
+    *served*: a transport that lost the edge keeps its URL while answering
+    every request with HTTP 530, so ``active`` alone reads as healthy through
+    an outage.  It is the edge's answer, probed from the transport itself.
     """
     st = _tunnel.status()
     return json.dumps(
         {
             "active": st["state"] == "active",
+            "reachable": _tunnel.is_reachable(),
             "state": st["state"],
             "url": st.get("url", ""),
             "reason": st.get("reason", ""),
@@ -371,6 +377,19 @@ async def __register_file(path: str) -> str:
     if err:
         return json.dumps({"file_id": "", "url": "", "error": err}, ensure_ascii=False)
     await _ensure_tunnel()
+    # Same guard as share_file, for the same reason: a URL the edge answers
+    # with HTTP 530 is not a share.  An empty url is the caller's signal.
+    if not _tunnel.is_reachable():
+        return json.dumps(
+            {
+                "file_id": "", "url": "",
+                "error": (
+                    "the tunnel is published but not reachable from the public "
+                    "internet right now — the URL would answer HTTP 530"
+                ),
+            },
+            ensure_ascii=False,
+        )
     file_id = _register_file(str(p))
     url = _tunnel.share_url_for(file_id) or ""
     return json.dumps({"file_id": file_id, "url": url}, ensure_ascii=False)
@@ -407,6 +426,18 @@ async def share_file(path: str) -> str:
         return (
             "Error: file sharing service is not available. "
             "Run system_health to check service status."
+        )
+
+    # A published URL is not a working one.  A transport that lost the edge
+    # keeps its URL and answers every request to it with HTTP 530, so handing
+    # that URL out is handing out a dead link — and the caller only discovers
+    # it later, from an LLM that could not fetch the file.  Refusing is the
+    # honest answer; the tunnel keeps retrying in the background.
+    if not _tunnel.is_reachable():
+        return (
+            "Error: the file-sharing tunnel is published but not reachable "
+            "from the public internet right now — the share URL would answer "
+            "HTTP 530. Run system_health for details, then retry."
         )
 
     file_id = _register_file(str(p.resolve()))

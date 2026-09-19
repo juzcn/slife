@@ -374,10 +374,14 @@ class TestNgrokTunnelStartMonitor:
     async def test_restarts_when_tunnel_dropped(self):
         """Regression: a tunnel dropped server-side (ngrok recycles free-tier
         sessions) must be detected by the health probe and restarted — not
-        reported 'active' forever."""
+        reported 'active' forever.
+
+        The transport is dead for good here, so the grace window runs out and
+        the monitor does what only a restart can do.  The window itself is
+        what the test below is about.
+        """
         tunnel = NgrokTunnel()
         tunnel._public_url = "https://dropped.ngrok.io"
-        alive_results = iter([False, True])  # dead on first probe, alive after restart
 
         real_sleep = asyncio.sleep
 
@@ -388,9 +392,14 @@ class TestNgrokTunnelStartMonitor:
             tunnel._public_url = "https://restarted.ngrok.io"
             return tunnel._public_url
 
+        # Dead on the first probe, healthy once restarted — the monitor must
+        # come to rest, not restart a tunnel that is up.
+        alive_results = iter([False, True])
+
         with patch("asyncio.sleep", side_effect=fast_sleep), \
+             patch("slife.timeouts.timeouts.ready.tunnel_heal", 0.0), \
              patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive",
-                   side_effect=lambda _u: next(alive_results)), \
+                   side_effect=lambda _u: next(alive_results, True)), \
              patch.object(tunnel, "start", side_effect=fake_start) as mock_start:
             task = asyncio.create_task(tunnel._run_monitor(8080))
             try:
@@ -400,6 +409,73 @@ class TestNgrokTunnelStartMonitor:
                         break
                 assert tunnel._public_url == "https://restarted.ngrok.io"
                 mock_start.assert_called_once()
+            finally:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_waits_for_a_start_that_is_already_in_flight(self):
+        """The plugin eager-starts the tunnel on a task of its own, so the
+        monitor's first pass lands mid-attempt.  A start that is already
+        running is not a failed restart: calling start() would be refused
+        ("already in progress"), putting two warnings in the log and spending
+        the restart budget on nothing."""
+        tunnel = NgrokTunnel()
+        tunnel._starting = True  # the eager start owns the guard
+
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(_d):
+            await real_sleep(0.01)
+
+        with patch("asyncio.sleep", side_effect=fast_sleep), \
+             patch.object(tunnel, "start") as mock_start:
+            task = asyncio.create_task(tunnel._run_monitor(8080))
+            try:
+                for _ in range(30):
+                    await real_sleep(0.01)
+                mock_start.assert_not_called()
+                assert tunnel._monitor_retries == 0
+            finally:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_tunnel_that_heals_is_not_restarted(self):
+        """A transport that comes back on its own keeps the hostname it was
+        given; a respawn mints a NEW one, and every link already handed to a
+        person or an LLM dies with the old name.  So an unreachable tunnel is
+        given the grace window before anything is torn down."""
+        tunnel = NgrokTunnel()
+        tunnel._public_url = "https://flapping.ngrok.io"
+        # Two dead probes, then healthy — the shape a lost edge connection
+        # takes when the transport re-registers by itself.
+        alive_results = iter([False, False, True])
+        probes = MagicMock(side_effect=lambda _u: next(alive_results, True))
+
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(_d):
+            await real_sleep(0.01)
+
+        with patch("asyncio.sleep", side_effect=fast_sleep), \
+             patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive", probes), \
+             patch.object(tunnel, "start") as mock_start:
+            task = asyncio.create_task(tunnel._run_monitor(8080))
+            try:
+                for _ in range(200):
+                    await real_sleep(0.02)
+                    if probes.call_count >= 3:
+                        break
+                assert probes.call_count >= 3  # it really did go unreachable
+                assert tunnel._public_url == "https://flapping.ngrok.io"
+                mock_start.assert_not_called()
             finally:
                 task.cancel()
                 try:

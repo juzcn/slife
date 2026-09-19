@@ -56,6 +56,12 @@ class Ready:
     tunnel_start: float = 45.0
     tunnel_read_url: float = 30.0
     tunnel_settle: float = 20.0
+    tunnel_heal: float = 180.0    # how long a published tunnel may stay unreachable
+                                  # from the edge before the monitor respawns it —
+                                  # a CLI child that loses its edge connection
+                                  # re-registers on its own and KEEPS its hostname,
+                                  # while a respawn mints a new one and strands
+                                  # every link already handed out
     connect_retry_delay: float = 0.5
     sharefile_retry_delay: float = 2.0
     list_tools: float = 20.0
@@ -161,6 +167,10 @@ def validate(ts: Timeouts) -> list[str]:
         errs.append("invariant: ready.relisten_max >= ready.relisten")
     if ts.ready.connect_startup < ts.ready.spawn:
         errs.append("invariant: ready.connect_startup >= ready.spawn")
+    if ts.ready.tunnel_heal < ts.ready.tunnel_read_url:
+        # A running child gets at least the patience a fresh start gets, or
+        # the monitor would respawn one that was never given time to heal.
+        errs.append("invariant: ready.tunnel_heal >= ready.tunnel_read_url")
     if ts.work.stall <= 0:
         errs.append("invariant: work.stall must be > 0")
     return errs

@@ -321,8 +321,6 @@ async def check_sharefile(client=None) -> list[dict]:
     if entries:
         return entries
     assert data is not None
-    if data.get("active"):
-        return [_entry("sharefile", "ok", "tunnel", data.get("url", "?"))]
     # Which provider is live is a FACT (it is chosen by sharefile.yaml), so it
     # rides in the value; the reason it is down is the plugin's own diagnosis
     # for ITS provider (a missing NGROK_AUTHTOKEN, an absent ssh/cloudflared
@@ -330,6 +328,22 @@ async def check_sharefile(client=None) -> list[dict]:
     # another's failure.
     provider = (data.get("provider") or "").strip()
     reason = (data.get("reason") or "").strip()
+    if data.get("active"):
+        # A published URL is not a working one.  A transport that lost the
+        # edge keeps its URL and answers every request to it with HTTP 530,
+        # so "active" alone reports a dead tunnel as healthy — an all-green
+        # system_health next to a link that cannot be fetched.  The plugin
+        # asks the edge (``reachable``); the harness reports what it says.
+        # Absent (an older plugin) reads as reachable: never cry wolf.
+        if data.get("reachable", True):
+            return [_entry("sharefile", "ok", "tunnel", data.get("url", "?"))]
+        value = f"unreachable ({provider})" if provider else "unreachable"
+        return [{"component": "sharefile", "level": "warning", "key": "tunnel",
+                 "value": value,
+                 "hint": "The tunnel is published but the public edge cannot "
+                         "route to it, so every request to that URL answers "
+                         "HTTP 530; share_file refuses until it recovers. It "
+                         "keeps retrying in the background."}]
     value = f"offline ({provider})" if provider else "offline"
     hint = f"{reason} " if reason else ""
     return [{"component": "sharefile", "level": "warning", "key": "tunnel",
