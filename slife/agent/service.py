@@ -430,6 +430,14 @@ class AgentService:
         # On-demand reconcile guard: prevents concurrent mcp_tool_load /
         # tools/list_changed reconciliation from racing.
         self._mcp_reconciling: bool = False
+        #: Whether the TUI has been told the tool set is ready yet.  The first
+        #: reconcile is the slow one the user waits through; later passes are
+        #: reported only when they actually changed the set.
+        self._tool_sync_reported: bool = False
+        #: Last WeChat login state seen by the poll loop — ``None`` until the
+        #: first drain.  Only TRANSITIONS are announced (the first count as
+        #: one), so a steady session is not re-reported every poll.
+        self._wechat_logged_in: bool | None = None
         # Last-seen mtimes of the registry-less families' sources (tools.yaml,
         # the skills dir) — the reconcile re-mirrors them when one moves, so a
         # hand-edit lands without a restart.
@@ -1295,6 +1303,12 @@ class AgentService:
         if self._mcp_reconciling:
             return
         self._mcp_reconciling = True
+        # Timing + a before/after of the registry: this pass is what decides
+        # when the agent can actually call things, and on a cold start it is
+        # the long wait.  Reported on the way out (see _report_tool_sync).
+        started = _time.monotonic()
+        before = {t.name for t in self.tool_registry.list_tools()}
+        failure = ""
         try:
             try:
                 # __mcp_list, not mcp_list: the model's listing is scoped to
@@ -1412,8 +1426,43 @@ class AgentService:
                 # SKILL.md lands here, not at the next restart.  mtime-gated,
                 # so an unchanged file costs two stats.
                 await self._refresh_local_rows_if_changed(self._catalog)
+        except Exception as e:
+            failure = str(e)
+            raise
         finally:
             self._mcp_reconciling = False
+            await self._report_tool_sync(started, before, failure=failure)
+
+    async def _report_tool_sync(
+        self, started: float, before: set[str], *, failure: str = "",
+    ) -> None:
+        """Tell the TUI the tool set is ready — and how long the pass took.
+
+        Emitted on the FIRST pass and on any pass that changed the registry,
+        never on a no-op re-run: the gateway pushes ``tools/list_changed`` on
+        its own cadence, so reporting every pass would be a heartbeat rather
+        than news.  A failure always reports — silence has to keep meaning
+        "still syncing", or a dead sync reads exactly like a slow one.
+
+        ``total`` is what is REGISTERED, i.e. callable.  What the model SEES
+        in a turn is the ``load_status`` snapshot, a narrower set — so the
+        line promises availability, never injection.
+        """
+        after = {t.name for t in self.tool_registry.list_tools()}
+        added = len(after - before)
+        removed = len(before - after)
+        if not failure and self._tool_sync_reported and not (added or removed):
+            return
+        self._tool_sync_reported = True
+        try:
+            await self._notify_activity(
+                "tools_synced",
+                seconds=round(_time.monotonic() - started, 1),
+                total=len(after), added=added, removed=removed,
+                error=failure,
+            )
+        except Exception:
+            pass  # a notification must never break the reconcile
 
     async def on_plugin_child_exit(self, name: str) -> None:
         """A plugin child exited (its watchdog is about to restart it).
@@ -1933,6 +1982,20 @@ class AgentService:
                 )
                 data = _json.loads(result)
                 msgs = data.get("messages", [])
+
+                # The drain reports the session alongside the messages
+                # ("ok" / "not_logged_in"), so login state costs no extra
+                # call: diff it against what the TUI was last told.  A poll
+                # that RAISED never gets here, so a transient error cannot
+                # masquerade as a logout.
+                status = data.get("status", "")
+                if status in ("ok", "not_logged_in"):
+                    logged_in = status == "ok"
+                    if logged_in != self._wechat_logged_in:
+                        self._wechat_logged_in = logged_in
+                        await self._notify_activity(
+                            "wechat_status", logged_in=logged_in,
+                        )
 
                 for m in msgs:
                     peer_id = m.get("to_user_id", "")

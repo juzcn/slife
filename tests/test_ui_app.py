@@ -590,6 +590,84 @@ class TestStatusBar:
         assert "dropped" not in call.args[0]
 
     @pytest.mark.asyncio
+    async def test_tools_synced_reports_the_wait_and_what_is_usable(self):
+        """The startup tool-set sync — the user is waiting to know when the
+        agent can actually call things, so the line carries both."""
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_activity(
+            "tools_synced", seconds=12.4, total=64, added=64, removed=0,
+            error="",
+        )
+
+        call = chat_view.add_system_message.call_args
+        assert call.args[0] == (
+            "⚙ Tool set synced in 12.4s — 64 tools usable (64 added, 0 removed)"
+        )
+        assert call.kwargs["color"] == "#3fb950"
+
+    @pytest.mark.asyncio
+    async def test_tools_synced_omits_the_delta_when_nothing_moved(self):
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_activity(
+            "tools_synced", seconds=0.3, total=64, added=0, removed=0, error="",
+        )
+
+        assert chat_view.add_system_message.call_args.args[0] == (
+            "⚙ Tool set synced in 0.3s — 64 tools usable"
+        )
+
+    @pytest.mark.asyncio
+    async def test_tools_synced_reports_a_failure(self):
+        """Silence must keep meaning 'still syncing' — a failed pass says so."""
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_activity(
+            "tools_synced", seconds=3.1, total=0, added=0, removed=0,
+            error="boom",
+        )
+
+        call = chat_view.add_system_message.call_args
+        assert call.args[0] == "✗ Tool set sync failed after 3.1s: boom"
+        assert call.kwargs["color"] == "#f85149"
+
+    @pytest.mark.asyncio
+    async def test_wechat_status_renders_both_states(self):
+        """Login is green; logout is amber, not red — it may be deliberate,
+        but it does stop messages arriving."""
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_activity("wechat_status", logged_in=True)
+        call = chat_view.add_system_message.call_args
+        assert call.args[0] == "✓ WeChat logged in"
+        assert call.kwargs["color"] == "#3fb950"
+
+        chat_view.add_system_message.reset_mock()
+        await app._on_activity("wechat_status", logged_in=False)
+        call = chat_view.add_system_message.call_args
+        assert call.args[0] == (
+            "⚠ WeChat logged out — no WeChat messages until it is restored"
+        )
+        assert call.kwargs["color"] == "#d29922"
+
+    @pytest.mark.asyncio
     async def test_process_message_enqueue_does_not_clear_tool_widgets(self):
         """A3 regression: submitting a message must never clear the widget
         map while a previous turn is still streaming.  _process_message only

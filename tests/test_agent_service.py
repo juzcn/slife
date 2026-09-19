@@ -211,8 +211,12 @@ class TestAgentServiceMCPEnrichment:
         return client
 
     async def _sync_with_catalog(self, sample_config, tmp_path, server: str, *,
-                                 enabled: bool = True):
-        """Run one reconcile against a real catalog; return (service, store)."""
+                                 enabled: bool = True, activity=None):
+        """Run one reconcile against a real catalog; return (service, store).
+
+        *activity* is registered BEFORE that pass, so a test can observe the
+        genuinely-first reconcile rather than a later one.
+        """
         from slife.tools.catalog import CatalogStore
         from slife.tools.catalog_service import ToolCatalogService
 
@@ -224,6 +228,8 @@ class TestAgentServiceMCPEnrichment:
         service._plugins["mcp-gateway"].client = self._fake_gateway(
             server, enabled=enabled,
         )
+        if activity is not None:
+            service.on_activity(activity)
         # The reconcile also purges catalog servers that left tools.yaml — pin
         # the gateway config view to the mocked pool so this test's server
         # counts as configured (no TOOLS_FILE isolation here, so the real repo
@@ -280,6 +286,96 @@ class TestAgentServiceMCPEnrichment:
         finally:
             # An unclosed aiosqlite connection keeps its thread alive and
             # hangs pytest at exit — close on the failure path too.
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_sync_reports_the_tool_set_once_then_only_on_change(
+        self, sample_config, tmp_path,
+    ):
+        """The user is waiting to know when tools are callable, so the first
+        reconcile reports with its duration.  Later passes are silent unless
+        the set actually moved — the gateway pushes tools/list_changed on its
+        own cadence, and an unchanged re-list is not news."""
+        # AsyncMock, not a lambda: _notify_activity AWAITS the callback, and a
+        # sync callable's None return is swallowed as a failure.  Registered
+        # before the helper's pass so this observes the FIRST reconcile.
+        events = AsyncMock()
+        service, store = await self._sync_with_catalog(
+            sample_config, tmp_path, "svc", activity=events,
+        )
+        try:
+            assert events.await_count == 1
+            assert events.await_args.args[0] == "tools_synced"
+            kw = events.await_args.kwargs
+            # ``total`` is the WHOLE registry — the builtins are callable too,
+            # so it reports what the user can actually reach, not just what
+            # this pass added.
+            assert kw["total"] == len(service.tool_registry.list_tools())
+            assert kw["added"] == 1             # ...of which svc__search is new
+            assert kw["error"] == ""
+            assert isinstance(kw["seconds"], float)
+
+            await service._sync_mcp_proxies()   # unchanged re-run
+            assert events.await_count == 1      # ...and stays quiet
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_sync_reports_again_when_the_tool_set_changes(
+        self, sample_config, tmp_path,
+    ):
+        service, store = await self._sync_with_catalog(
+            sample_config, tmp_path, "svc",
+        )
+        try:
+            events = AsyncMock()
+            service.on_activity(events)
+            await service._sync_mcp_proxies()
+            events.reset_mock()
+
+            # The server leaves the config (its listing drops it), so the
+            # reconcile unregisters its proxies — a real change, and the pass
+            # must say so.  (A server that merely reports no tools is read as
+            # "not ready yet" and changes nothing.)
+            client = service._plugins["mcp-gateway"].client
+            original = client.call_tool
+
+            async def shrunk(name, arguments=None):
+                if name == "__mcp_list":
+                    return _json.dumps([])
+                return await original(name, arguments)
+
+            client.call_tool = shrunk
+            await service._sync_mcp_proxies()
+
+            assert events.await_count == 1
+            kw = events.await_args.kwargs
+            assert kw["removed"] == 1 and kw["added"] == 0
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_sync_reports_a_failure_rather_than_going_silent(
+        self, sample_config, tmp_path,
+    ):
+        """Silence has to keep meaning 'still syncing' — a pass that blew up
+        must say so, or a dead sync reads exactly like a slow one."""
+        service, store = await self._sync_with_catalog(
+            sample_config, tmp_path, "svc",
+        )
+        try:
+            events = []
+            service.on_activity(lambda kind, **kw: events.append(kw))
+            with patch.object(
+                service, "_mark_server_connectivity",
+                AsyncMock(side_effect=RuntimeError("boom")),
+            ):
+                with pytest.raises(RuntimeError):
+                    await service._sync_mcp_proxies()
+
+            assert len(events) == 1
+            assert events[0]["error"] == "boom"
+        finally:
             await store.close()
 
     @pytest.mark.asyncio
@@ -1891,6 +1987,78 @@ class TestAgentServiceWeChat:
         )
         assert msg.metadata["channel"] == "wechat"
         assert msg.on_reply is None
+
+    @pytest.mark.asyncio
+    async def test_wechat_poll_announces_login_transitions_only(self, sample_config):
+        """The drain reports the session alongside the messages, so login
+        state is diffed for free.  Announced on transition — including the
+        first drain — and silent while the state holds."""
+        service = AgentService(sample_config)
+
+        mock_wc = MagicMock()
+        mock_wc.is_connected = True
+
+        # ok → ok (no repeat) → not_logged_in → stop
+        states = ["ok", "ok", "not_logged_in"]
+        calls = [0]
+
+        async def mock_call_tool(tool_name, _):
+            if tool_name == "__wechat_drain_incoming":
+                i = calls[0]
+                calls[0] += 1
+                if i >= len(states):
+                    # Stop the loop.  No status here: reporting "ok" would be
+                    # a real transition back to logged-in, and the poll would
+                    # rightly announce it.
+                    mock_wc.is_connected = False
+                    return _json.dumps({"messages": []})
+                return _json.dumps({"messages": [], "status": states[i]})
+            return "{}"
+
+        mock_wc.call_tool = mock_call_tool
+        service._plugins["wechat"].client = mock_wc
+
+        events = AsyncMock()
+        service.on_activity(events)
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock()
+        service.inbox = mock_inbox
+
+        await service._wechat_poll_loop(interval=0.001)
+
+        seen = [c.kwargs["logged_in"] for c in events.await_args_list
+                if c.args[0] == "wechat_status"]
+        assert seen == [True, False]   # the repeat "ok" is not re-announced
+
+    @pytest.mark.asyncio
+    async def test_wechat_poll_error_is_not_a_logout(self, sample_config):
+        """A drain that RAISES must not read as a logged-out session."""
+        service = AgentService(sample_config)
+
+        mock_wc = MagicMock()
+        mock_wc.is_connected = True
+        calls = [0]
+
+        async def mock_call_tool(tool_name, _):
+            calls[0] += 1
+            if calls[0] >= 2:
+                mock_wc.is_connected = False
+            raise RuntimeError("drain blew up")
+
+        mock_wc.call_tool = mock_call_tool
+        service._plugins["wechat"].client = mock_wc
+
+        events = AsyncMock()
+        service.on_activity(events)
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock()
+        service.inbox = mock_inbox
+
+        await service._wechat_poll_loop(interval=0.001)
+
+        assert service._wechat_logged_in is None
+        assert [c for c in events.await_args_list
+                if c.args[0] == "wechat_status"] == []
 
     @pytest.mark.asyncio
     async def test_wechat_poll_skips_empty_text(self, sample_config):

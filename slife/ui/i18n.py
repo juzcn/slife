@@ -321,6 +321,31 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "✓ A2A {type} from {source} handled",
         "zh": "✓ 来自 {source} 的 A2A {type} 已处理",
     },
+    # The startup tool-set sync.  `total` counts what is REGISTERED (callable);
+    # the load_status snapshot decides what a turn actually injects, so this
+    # says "usable", never "all loaded".
+    "tools_synced": {
+        "en": "⚙ Tool set synced in {seconds}s — {total} tools usable",
+        "zh": "⚙ 工具集同步完成，耗时 {seconds}s — {total} 个工具可用",
+    },
+    "tools_synced_delta": {
+        "en": " ({added} added, {removed} removed)",
+        "zh": "（新增 {added}，移除 {removed}）",
+    },
+    "tools_synced_failed": {
+        "en": "✗ Tool set sync failed after {seconds}s: {err}",
+        "zh": "✗ 工具集同步失败，耗时 {seconds}s：{err}",
+    },
+    # WeChat session state, announced on transition (a logged-out session
+    # means no WeChat message arrives until it is restored).
+    "wechat_logged_in": {
+        "en": "✓ WeChat logged in",
+        "zh": "✓ 微信已登录",
+    },
+    "wechat_logged_out": {
+        "en": "⚠ WeChat logged out — no WeChat messages until it is restored",
+        "zh": "⚠ 微信已登出 — 恢复登录前收不到微信消息",
+    },
     "loop_error": {
         "en": "✗ {err}",
         "zh": "✗ {err}",

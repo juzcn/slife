@@ -981,6 +981,36 @@ class SlifeApp(App):
                 color="#3fb950",
             )
 
+        elif kind == "tools_synced":
+            # The startup tool-set sync — the wait the user is actually in.
+            # Emitted on the first pass and whenever a later one changed the
+            # set, so this never becomes a heartbeat.  `total` is what is
+            # REGISTERED (callable); a turn injects the load_status snapshot,
+            # a narrower set, so the line promises availability only.
+            err = kwargs.get("error", "")
+            seconds = kwargs.get("seconds", 0)
+            if err:
+                text = t("tools_synced_failed", seconds=seconds, err=err)
+                color = "#f85149"
+            else:
+                text = t("tools_synced", seconds=seconds,
+                         total=kwargs.get("total", 0))
+                added, removed = kwargs.get("added", 0), kwargs.get("removed", 0)
+                if added or removed:
+                    text += t("tools_synced_delta", added=added, removed=removed)
+                color = "#3fb950"
+            chat_view.add_system_message(text, color=color)
+
+        elif kind == "wechat_status":
+            # Announced on transition only, so a steady session stays quiet.
+            # Logged out is amber, not red: it may well be deliberate (a
+            # wechat_logout), but it does stop messages arriving.
+            logged_in = bool(kwargs.get("logged_in"))
+            chat_view.add_system_message(
+                t("wechat_logged_in" if logged_in else "wechat_logged_out"),
+                color="#3fb950" if logged_in else "#d29922",
+            )
+
         elif kind == "busy":
             # A turn started processing (incl. autonomous heartbeat) —
             # refresh the status bar to show "⏳ processing".
