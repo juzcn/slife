@@ -703,6 +703,33 @@ if [ -s "$PRESERVED_REQS" ]; then
             sed -i 's/^llama-cpp-python.*/llama-cpp-python==0.3.34/' "$EXTRA_REQS"
         fi
 
+        # torch drifts by BUILD FLAVOUR, which the name-only diff cannot see:
+        # a preserved "torch==2.14.0+cpu" is a different artifact, from a
+        # different index, than the "torch" PyPI resolves by default — and on
+        # Linux that default is the CUDA build, which drags in triton plus a
+        # dozen nvidia-* wheels (~2.5 GB that enable nothing without a GPU).
+        # The README tells users to install CPU torch FIRST so
+        # sentence-transformers finds it satisfied and pulls none of that —
+        # an ordering a single `-r` pass cannot express.  So restore it here
+        # and drop it from the batch.  Only the +cpu tag is special-cased: a
+        # preserved +cuXXX means a GPU is in play and the default is fine.
+        TORCH_PRESERVED=$(grep -i '^torch==' "$PRESERVED_FULL" 2>/dev/null | head -1 || true)
+        case "$TORCH_PRESERVED" in
+            *+cpu*)
+                if grep -qx 'torch' "$EXTRA_REQS" 2>/dev/null; then
+                    echo -e "  ${YELLOW}torch: restoring the CPU build ($TORCH_PRESERVED) from PyTorch's index${NC}"
+                    if uv pip install --python "$NEW_PYTHON" \
+                        --index-url https://download.pytorch.org/whl/cpu \
+                        "$TORCH_PRESERVED" >> "$TOOL_INSTALL_LOG" 2>&1; then
+                        grep -vx 'torch' "$EXTRA_REQS" > "$EXTRA_REQS.tmp" || true
+                        mv "$EXTRA_REQS.tmp" "$EXTRA_REQS"
+                    else
+                        echo -e "  ${YELLOW}  ⚠ CPU torch restore failed — it stays in the batch below${NC}"
+                    fi
+                fi
+                ;;
+        esac
+
         _extra_count=$(wc -l < "$EXTRA_REQS" 2>/dev/null || echo 0)
 
         if [ "$_extra_count" -eq 0 ]; then
@@ -715,8 +742,14 @@ if [ -s "$PRESERVED_REQS" ]; then
                 _ver=$(grep "^$_pkg[ @=]" "$PRESERVED_FULL" 2>/dev/null | head -1 || echo "$_pkg")
                 echo -e "    ${GRAY}$_ver${NC}"
             done < "$EXTRA_REQS"
+            # A generous HTTP timeout: these are the big optional wheels
+            # (scipy, transformers, tokenizers), and uv's 30 s default fails
+            # a slow link mid-extraction with a bare "network timeout" that
+            # reads like a broken install.  Overridable from the environment.
+            #
             # shellcheck disable=SC2086
-            if uv pip install --python "$NEW_PYTHON" $EXTRA_INDEX_ARGS -r "$EXTRA_REQS" >> "$TOOL_INSTALL_LOG" 2>&1; then
+            if UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-300}" \
+                uv pip install --python "$NEW_PYTHON" $EXTRA_INDEX_ARGS -r "$EXTRA_REQS" >> "$TOOL_INSTALL_LOG" 2>&1; then
                 PRESERVE_OK=1
                 echo -e "  ${GREEN}  ✓${NC} $_extra_count packages restored"
             else
