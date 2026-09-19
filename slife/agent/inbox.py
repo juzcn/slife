@@ -443,6 +443,11 @@ class Inbox:
                         source=msg.source,
                         content=msg.content,
                         result=f"Error: {e}",
+                        # The turn FAILED — the TUI's turn-end line must not
+                        # read as a success.  Explicit, never re-derived from
+                        # ``result``: a normal reply may legitimately start
+                        # with "Error:".
+                        error=True,
                     )
                 except Exception:
                     pass

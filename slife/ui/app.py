@@ -13,6 +13,7 @@ from textual.widgets import Static, TextArea
 
 from slife.config import Config
 from slife.a2a.card import _safe_name, format_presence_line
+from slife.agent.message_history import a2a_message_type
 from slife.agent.service import AgentService, MemoryDatabaseError
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.agent.plugins import PluginStartStatus
@@ -942,9 +943,25 @@ class SlifeApp(App):
             chat_view.add_system_message(t("loop_error", err=error), color="#f85149")
 
         elif kind == "task_completed":
+            # The turn-end line names the sender AND what arrived —
+            # ``task_request`` / ``task_response`` / ``message`` /
+            # ``broadcast``.  A type-blind "task from X completed" labelled
+            # every kind a task: a bare conversation, an auto-pushed result
+            # and a broadcast all read as tasks.  The type is read off the
+            # message's own ``[A2A:…]`` marker (the one envelope that
+            # classifies an inbound A2A message — the same text the LLM
+            # sees), so no parallel field rides the activity event.
+            #
+            # ``error`` marks the turn that FAILED to process the message
+            # (the inbox's except path emits the same kind) — without it a
+            # failed remote turn painted a green ✓ over the red loop_error.
             source = _safe_name(kwargs.get("source", "unknown"))
+            mtype = a2a_message_type(kwargs.get("content", "")) or "message"
+            failed = bool(kwargs.get("error"))
+            key = "task_failed" if failed else "task_completed"
             chat_view.add_system_message(
-                t("task_completed", source=source), color="#3fb950",
+                t(key, source=source, type=mtype),
+                color="#f85149" if failed else "#3fb950",
             )
 
         elif kind == "busy":

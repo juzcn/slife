@@ -483,6 +483,75 @@ class TestStatusBar:
         assert app._tool_widgets == {}
 
     @pytest.mark.asyncio
+    async def test_task_completed_line_names_sender_and_type(self):
+        """The inbound-A2A turn-end line names the sender AND the message
+        type, read off the message's own [A2A:…] marker — the four kinds
+        (task_request / task_response / message / broadcast) each read as
+        themselves instead of every one of them reading as a "task"."""
+        from slife.agent.message_history import a2a_marker
+        from slife.ui.app import SlifeApp
+
+        cases = [
+            (a2a_marker("jack", "cid-1", type="task_request"), "task_request"),
+            (a2a_marker("jack", "cid-1", type="task_response"), "task_response"),
+            (a2a_marker("jack", type="message"), "message"),
+            (a2a_marker("jack", type="broadcast"), "broadcast"),
+        ]
+        for content, mtype in cases:
+            app = object.__new__(SlifeApp)
+            chat_view = MagicMock()
+            app.query_one = MagicMock(return_value=chat_view)
+
+            await app._on_a2a_activity(
+                "task_completed", source="jack", content=content, result="ok",
+            )
+
+            text = chat_view.add_system_message.call_args.args[0]
+            assert text == f"✓ A2A {mtype} from jack handled"
+            assert chat_view.add_system_message.call_args.kwargs["color"] == "#3fb950"
+
+    @pytest.mark.asyncio
+    async def test_task_completed_line_without_marker_falls_back(self):
+        """No readable A2A marker → the generic "message" label, never wire
+        junk or a crash."""
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_a2a_activity(
+            "task_completed", source="jack", content="bare text", result="ok",
+        )
+
+        assert chat_view.add_system_message.call_args.args[0] == (
+            "✓ A2A message from jack handled"
+        )
+
+    @pytest.mark.asyncio
+    async def test_task_completed_line_reports_failure(self):
+        """The same kind is emitted by the inbox's except path — a turn that
+        FAILED to process the message must not paint a green ✓ over the red
+        loop_error line.  The verdict rides the explicit ``error`` flag; the
+        emitter passes it, so nothing is re-derived from ``result`` text."""
+        from slife.agent.message_history import a2a_marker
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_a2a_activity(
+            "task_completed", source="jack",
+            content=a2a_marker("jack", "cid-1", type="task_request") + "do X",
+            result="Error: boom", error=True,
+        )
+
+        call = chat_view.add_system_message.call_args
+        assert call.args[0] == "✗ A2A task_request from jack failed"
+        assert call.kwargs["color"] == "#f85149"
+
+    @pytest.mark.asyncio
     async def test_process_message_enqueue_does_not_clear_tool_widgets(self):
         """A3 regression: submitting a message must never clear the widget
         map while a previous turn is still streaming.  _process_message only

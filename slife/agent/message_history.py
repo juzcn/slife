@@ -222,6 +222,36 @@ def a2a_marker(
     return f"{A2A_PREFIX}{json.dumps(payload, ensure_ascii=False)}] "
 
 
+#: The A2A ``type`` values :func:`a2a_message_type` may return — the four
+#: inbound message kinds, each a distinct display label.
+A2A_TYPES = ("task_request", "task_response", "message", "broadcast")
+
+
+def a2a_message_type(text: str) -> str | None:
+    """The wire ``type`` of an inbound A2A message, read from its marker.
+
+    The marker is the one envelope that classifies every inbound A2A message
+    (:func:`a2a_marker`), and it is what the receiver's stored turn carries —
+    so the TUI's turn-end line reads the type from here instead of threading
+    a parallel field through the inbox.  Returns one of :data:`A2A_TYPES`, or
+    ``None`` when *text* carries no (or a malformed) A2A marker, or a type
+    outside the four — the caller then falls back to a type-less label.
+    """
+    if not text.startswith(A2A_PREFIX):
+        return None
+    end = text.find("]", len(A2A_PREFIX))
+    if end == -1:
+        return None
+    try:
+        payload = json.loads(text[len(A2A_PREFIX):end])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    mtype = payload.get("type")
+    return mtype if mtype in A2A_TYPES else None
+
+
 def subagent_marker(subagent_name: str, task_id: str | None = None) -> str:
     """Content prefix for an auto-pushed subagent completion.
 

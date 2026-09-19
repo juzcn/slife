@@ -610,6 +610,54 @@ class TestInboxProcessOne:
         assert "Error" in on_reply.call_args.args[0]  # error surfaced to the channel
 
     @pytest.mark.asyncio
+    async def test_process_error_marks_activity_failed(self, mock_loop, mock_store):
+        """The error path's turn-end activity carries ``error=True`` — the
+        TUI renders it as a failure, not a green "handled" over the red
+        loop_error line.  The verdict is emitted explicitly, never left for
+        the TUI to re-derive from the result text."""
+        from slife.agent.inbox import Inbox
+        on_activity = AsyncMock()
+        inbox = Inbox(mock_loop, mock_store, on_activity=on_activity)
+
+        mock_loop.run = AsyncMock(side_effect=ValueError("broken"))
+        mock_store.get_or_create.return_value = MagicMock()
+
+        msg = self._make_msg(source=AgentName("remote"), content="do it",
+                             reply_to="Slife/human/tasks", corr_id="err-1")
+        await inbox._process_one(msg)
+
+        done = next(
+            c for c in on_activity.call_args_list
+            if c.args[0] == "task_completed"
+        )
+        assert done.kwargs["error"] is True
+        assert done.kwargs["source"] == "remote"
+
+    @pytest.mark.asyncio
+    async def test_process_success_has_no_error_flag(self, mock_loop, mock_store):
+        """The clean path emits the same kind WITHOUT the flag — the TUI's
+        default is success, so only failures opt in."""
+        from slife.agent.inbox import Inbox
+        on_activity = AsyncMock()
+        inbox = Inbox(mock_loop, mock_store, on_activity=on_activity)
+
+        mock_result = MagicMock()
+        mock_result.text = "ok"
+        mock_result.usage.total_tokens = 1
+        mock_loop.run = AsyncMock(return_value=mock_result)
+        mock_store.get_or_create.return_value = MagicMock()
+
+        msg = self._make_msg(source=AgentName("remote"), content="do it",
+                             reply_to="Slife/human/tasks", corr_id="ok-1")
+        await inbox._process_one(msg)
+
+        done = next(
+            c for c in on_activity.call_args_list
+            if c.args[0] == "task_completed"
+        )
+        assert not done.kwargs.get("error")
+
+    @pytest.mark.asyncio
     async def test_process_on_activity_error_swallowed(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
         on_activity = AsyncMock(side_effect=RuntimeError("activity failed"))

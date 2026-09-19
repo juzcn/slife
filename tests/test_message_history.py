@@ -8,11 +8,48 @@ import pytest
 from slife.agent.message_history import (
     MessageHistory,
     a2a_marker,
+    a2a_message_type,
     info_footnote_span,
     subagent_marker,
     unwrap_info_envelope,
     wechat_marker,
 )
+
+
+# ── A2A marker type ───────────────────────────────────────────────────
+
+
+class TestA2AMessageType:
+    """a2a_message_type — the wire type read back off a message's marker.
+
+    The TUI's turn-end line names what arrived (task_request / task_response
+    / message / broadcast) from here, so the reader has to agree with
+    a2a_marker round-trip and degrade to None on anything else.
+    """
+
+    def test_reads_all_four_types(self):
+        for mtype in ("task_request", "task_response", "message", "broadcast"):
+            text = f"{a2a_marker('Jack', 'cid-1', type=mtype)}do X"
+            assert a2a_message_type(text) == mtype
+
+    def test_none_without_an_a2a_marker(self):
+        assert a2a_message_type("plain text") is None
+        assert a2a_message_type("[Wechat:{}] hi") is None
+        assert a2a_message_type("") is None
+
+    def test_none_on_malformed_or_unknown_payload(self):
+        # Unterminated envelope, bad JSON, non-object JSON, and a type
+        # outside the four all degrade to None (the caller shows a
+        # type-less label rather than rendering wire junk).
+        assert a2a_message_type('[A2A:{"from": "Jack"') is None
+        assert a2a_message_type("[A2A:not-json] do X") is None
+        assert a2a_message_type('[A2A:["Jack"]] do X') is None
+        assert a2a_message_type('[A2A:{"from": "J", "type": "ping"}] x') is None
+
+    def test_literal_marker_in_body_is_not_read(self):
+        # Only the LEADING envelope classifies the message — a peer's text
+        # quoting [A2A:…] must not be mistaken for its own type.
+        assert a2a_message_type('do X [A2A:{"type": "broadcast"}]') is None
 
 
 # ── Display unwrapping ────────────────────────────────────────────────

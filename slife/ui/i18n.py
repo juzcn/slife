@@ -314,9 +314,16 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
 
     # ── A2A activity (app.py) ──
+    # The turn-end line for an inbound A2A message.  {type} is the wire type
+    # off the message's own [A2A:…] marker — task_request / task_response /
+    # message / broadcast — a protocol value, so it stays untranslated.
     "task_completed": {
-        "en": "✓ task from {source} completed",
-        "zh": "✓ 来自 {source} 的任务已完成",
+        "en": "✓ A2A {type} from {source} handled",
+        "zh": "✓ 来自 {source} 的 A2A {type} 已处理",
+    },
+    "task_failed": {
+        "en": "✗ A2A {type} from {source} failed",
+        "zh": "✗ 来自 {source} 的 A2A {type} 处理失败",
     },
     "loop_error": {
         "en": "✗ {err}",
