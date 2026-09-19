@@ -314,7 +314,7 @@ wheels = [
 
 [[package]]
 name = "cc-switch"
-version = "0.9.10"
+version = "0.9.11"
 source = { editable = "cc-switch" }
 dependencies = [
     { name = "credstore" },
@@ -494,7 +494,7 @@ wheels = [
 
 [[package]]
 name = "credstore"
-version = "0.10.5"
+version = "0.10.6"
 source = { editable = "credstore" }
 dependencies = [
     { name = "jaraco-classes" },
@@ -1272,7 +1272,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/c1/2f/46487e949da42b318
 
 [[package]]
 name = "local-embed"
-version = "0.2.4"
+version = "0.3.0"
 source = { editable = "local-embed" }
 dependencies = [
     { name = "fastmcp" },
@@ -2638,7 +2638,7 @@ wheels = [
 
 [[package]]
 name = "slife"
-version = "0.9.8"
+version = "0.10.0"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-over-mqtt" },
