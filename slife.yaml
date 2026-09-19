@@ -316,6 +316,6 @@ embeddings:
       api_key: ${SILICONFLOW_API_KEY}
   # A provider ID only — no "provider/model" ref.  A missing or stale value
   # falls back to the first provider.
-  active_model: siliconflow
+  active_model: local_embed
   # false disables semantic search; keyword (FTS5) search keeps working.
   enabled: true
