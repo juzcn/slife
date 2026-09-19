@@ -435,8 +435,9 @@ class AgentService:
         #: reported only when they actually changed the set.
         self._tool_sync_reported: bool = False
         #: Last WeChat login state seen by the poll loop — ``None`` until the
-        #: first drain.  Only TRANSITIONS are announced (the first count as
-        #: one), so a steady session is not re-reported every poll.
+        #: first drain.  Only TRANSITIONS are announced, so a steady session is
+        #: not re-reported every poll, and a session that was never logged in
+        #: seeds silently rather than announcing the startup default.
         self._wechat_logged_in: bool | None = None
         # Last-seen mtimes of the registry-less families' sources (tools.yaml,
         # the skills dir) — the reconcile re-mirrors them when one moves, so a
@@ -1988,10 +1989,20 @@ class AgentService:
                 # call: diff it against what the TUI was last told.  A poll
                 # that RAISED never gets here, so a transient error cannot
                 # masquerade as a logout.
+                #
+                # Announced on a real transition only, by the same rule A2A
+                # presence uses (``mesh.py``'s cold-card check): a first
+                # "logged in" IS news, but a session that was never logged in
+                # is the startup default — announcing it would print a fake
+                # ⚠ every start, which is exactly the fake ✗ offline the
+                # presence feed already refuses to emit.
                 status = data.get("status", "")
                 if status in ("ok", "not_logged_in"):
                     logged_in = status == "ok"
-                    if logged_in != self._wechat_logged_in:
+                    prev = self._wechat_logged_in
+                    if prev is None and not logged_in:
+                        self._wechat_logged_in = False   # cold: seed silently
+                    elif prev != logged_in:
                         self._wechat_logged_in = logged_in
                         await self._notify_activity(
                             "wechat_status", logged_in=logged_in,

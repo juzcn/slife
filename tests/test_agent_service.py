@@ -2031,6 +2031,44 @@ class TestAgentServiceWeChat:
         assert seen == [True, False]   # the repeat "ok" is not re-announced
 
     @pytest.mark.asyncio
+    async def test_wechat_poll_never_logged_in_stays_silent(self, sample_config):
+        """A session that was never logged in is the startup default, not a
+        transition — announcing it would print a fake ⚠ on every start.  The
+        same rule A2A presence uses for a cold retained offline card."""
+        service = AgentService(sample_config)
+
+        mock_wc = MagicMock()
+        mock_wc.is_connected = True
+        states = ["not_logged_in", "not_logged_in", "ok"]
+        calls = [0]
+
+        async def mock_call_tool(tool_name, _):
+            if tool_name == "__wechat_drain_incoming":
+                i = calls[0]
+                calls[0] += 1
+                if i >= len(states):
+                    mock_wc.is_connected = False
+                    return _json.dumps({"messages": []})
+                return _json.dumps({"messages": [], "status": states[i]})
+            return "{}"
+
+        mock_wc.call_tool = mock_call_tool
+        service._plugins["wechat"].client = mock_wc
+
+        events = AsyncMock()
+        service.on_activity(events)
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock()
+        service.inbox = mock_inbox
+
+        await service._wechat_poll_loop(interval=0.001)
+
+        # The two "not_logged_in" drains are silent; only the login is news.
+        seen = [c.kwargs["logged_in"] for c in events.await_args_list
+                if c.args[0] == "wechat_status"]
+        assert seen == [True]
+
+    @pytest.mark.asyncio
     async def test_wechat_poll_error_is_not_a_logout(self, sample_config):
         """A drain that RAISES must not read as a logged-out session."""
         service = AgentService(sample_config)
