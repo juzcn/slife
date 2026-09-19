@@ -234,7 +234,16 @@ class TestConfigEnvGetTool:
 
     @pytest.mark.asyncio
     async def test_lookup_finds_mcp_env(self, monkeypatch):
-        """Single-key lookup finds value in MCP server env."""
+        """Single-key lookup falls through to an MCP server's env section.
+
+        It only reaches it when nothing ahead of it answers: the shell is the
+        first source (``test_get_from_shell_takes_priority``), so an ambient
+        GITHUB_TOKEN — a developer's own PAT, which is exactly what a machine
+        with the github REST API configured has — resolves there and the mcp
+        section is never consulted.  The ambient variable is therefore removed
+        rather than assumed absent.
+        """
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         raw, _ = _mock_config({
             "env": {},
             "mcp": {"servers": {
