@@ -39,6 +39,67 @@ def _taskkill_tree_sync(pid: int, label: str = "") -> None:
         logger.debug("taskkill_failed pid=%s label=%s err=%s", pid, label, e)
 
 
+def _descendant_pids(pid: int) -> list[int]:
+    """Every live descendant of *pid* (POSIX), parents before children.
+
+    Read from ``ps`` rather than reached with a process-group kill: a
+    plugin's own child — the sharefile tunnel's cloudflared — is spawned in
+    its OWN session on purpose, so a stuck tunnel can be killed as a group,
+    which puts it outside the plugin's group where ``killpg`` cannot find
+    it.  The walk must happen while the tree is INTACT: once the parent dies
+    its children are reparented to init and the link is gone, so the caller
+    reads the tree before signalling anything.
+
+    Never raises — a missing ``ps`` costs the sweep, not the stop.
+    """
+    if IS_WINDOWS:
+        return []
+    try:
+        out = _subprocess.run(
+            ["ps", "-eo", "pid=,ppid="],
+            capture_output=True, text=True,
+            timeout=_timeouts.timeouts.grace.force,
+        ).stdout
+    except Exception as e:  # noqa: BLE001 — best-effort cleanup
+        logger.debug("ps_tree_failed pid=%s err=%s", pid, e)
+        return []
+    children: dict[int, list[int]] = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            child, parent = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        children.setdefault(parent, []).append(child)
+    found: list[int] = []
+    queue = list(children.get(pid, ()))
+    while queue:
+        current = queue.pop(0)
+        found.append(current)
+        queue.extend(children.get(current, ()))
+    return found
+
+
+def _signal_pids_sync(
+    pids: list[int], sig: int = signal.SIGTERM, label: str = "",
+) -> None:
+    """Signal each pid, ignoring the ones already gone (POSIX).  Never raises.
+
+    SIGTERM by default — a leaked tunnel child is an ordinary process that
+    should still be allowed to deregister itself, the same signal its own
+    provider would have sent it.
+    """
+    for target in pids:
+        try:
+            os.kill(target, sig)
+        except OSError:
+            pass
+    if pids:
+        logger.debug("tree_signalled sig=%s pids=%s label=%s", sig, pids, label)
+
+
 async def kill_process_tree(process: asyncio.subprocess.Process) -> None:
     """Terminate a subprocess and its whole process tree.
 
@@ -381,11 +442,13 @@ async def terminate_process(
     grace.gentle / grace.force (call-time lookup).
 
     1. Close stdin to signal EOF.
-    2. Send SIGTERM / ``terminate()``.
+    2. Read the child's descendants (POSIX — done here, while the tree is
+       still intact), then send SIGTERM / ``taskkill /T`` on Windows.
     3. Wait *graceful_timeout* seconds for graceful exit.
     4. Force-kill if still running.
     5. Wait *force_timeout* seconds for kill to take effect.
-    6. Close remaining pipe transports (prevents ``ResourceWarning``
+    6. Sweep any descendant the child left behind (POSIX).
+    7. Close remaining pipe transports (prevents ``ResourceWarning``
        on Windows ProactorEventLoop where the pipe handle is already
        invalid by the time ``__del__`` runs).
 
@@ -410,6 +473,11 @@ async def terminate_process(
             # terminate() IS TerminateProcess — and killing the direct child
             # alone leaves whatever it spawned running, so the whole tree goes
             # in one taskkill (the same fix the sync ladder below carries).
+            # POSIX: the tree is read BEFORE anything is signalled — a dead
+            # parent's children are reparented to init and unfindable.
+            descendants = [] if IS_WINDOWS else await run_daemon(
+                _descendant_pids, process.pid, name="ps-tree",
+            )
             if IS_WINDOWS:
                 await run_daemon(
                     _taskkill_tree_sync, process.pid, label, name="taskkill-tree",
@@ -428,6 +496,15 @@ async def terminate_process(
                     await asyncio.wait_for(process.wait(), timeout=force_timeout)
                 except asyncio.TimeoutError:
                     pass  # Best effort
+            if descendants:
+                # Whatever the child left behind: a plugin killed before its
+                # own teardown ran still owns a live cloudflared, which the
+                # process-group kill cannot reach (it leads its own session).
+                # It also holds the stdout/stderr pipe it inherited, and
+                # asyncio does not finish wait() while a pipe is open — so
+                # without this sweep the wait above runs out its timeout and
+                # reports a force-kill for a child that died immediately.
+                await run_daemon(_signal_pids_sync, descendants, name="tree-sweep")
     except ProcessLookupError:
         pass  # Already exited
     except Exception as e:
@@ -457,9 +534,12 @@ def terminate_process_sync(
     exist (that signature belongs to ``subprocess.Popen.wait``).
 
     Windows: ``terminate()`` is ``TerminateProcess`` (immediate hard kill),
-    so waiting is pointless and skipped entirely.
-    POSIX: send SIGTERM, poll ``os.waitpid(pid, os.WNOHANG)`` for up to
-    *timeout* seconds, then escalate to SIGKILL.
+    so waiting is pointless and skipped entirely — one ``taskkill /T`` takes
+    the tree instead.
+    POSIX: read the tree first (before anything dies and its children are
+    reparented away), send SIGTERM, poll ``os.waitpid(pid, os.WNOHANG)`` for
+    up to *timeout* seconds, escalate to SIGKILL, then sweep whatever the
+    child left behind.
 
     Best-effort: never raises; terminate/kill errors are logged at debug.
     """
@@ -481,28 +561,38 @@ def terminate_process_sync(
             logger.debug("terminate_process_sync_kill_error %spid=%s err=%s",
                          tag, process.pid, e)
         return
+    # POSIX: read the tree BEFORE the signal — once this child dies its own
+    # children are reparented to init and can no longer be found.  The sweep
+    # runs from a `finally` so the early exits below (already exited, reaped)
+    # still take it: a plugin that died without cleaning up still has a live
+    # cloudflared underneath it.
+    descendants = _descendant_pids(process.pid)
     try:
-        process.terminate()
-    except Exception:
-        logger.debug("terminate_process_sync_terminate_error %spid=%s", tag, process.pid, exc_info=True)
-        return
-    pid = process.pid
-    deadline = time.monotonic() + timeout
-    while True:
         try:
-            _, status = os.waitpid(pid, os.WNOHANG)  # type: ignore[attr-defined]
+            process.terminate()
+        except Exception:
+            logger.debug("terminate_process_sync_terminate_error %spid=%s", tag, process.pid, exc_info=True)
+            return
+        pid = process.pid
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                _, status = os.waitpid(pid, os.WNOHANG)  # type: ignore[attr-defined]
+            except OSError:
+                return  # Already reaped / exited — nothing more to do.
+            if status != 0:
+                return  # Exited.
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        logger.warning("terminate_process_sync_force_kill %spid=%s", tag, pid)
+        try:
+            os.kill(pid, signal.SIGKILL)  # type: ignore[attr-defined]
         except OSError:
-            return  # Already reaped / exited — nothing more to do.
-        if status != 0:
-            return  # Exited.
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(0.05)
-    logger.warning("terminate_process_sync_force_kill %spid=%s", tag, pid)
-    try:
-        os.kill(pid, signal.SIGKILL)  # type: ignore[attr-defined]
-    except OSError:
-        pass
+            pass
+    finally:
+        if descendants:
+            _signal_pids_sync(descendants, label=label)
 
 
 def _ps_quote(value: str) -> str:

@@ -216,8 +216,12 @@ The registry owns one process per plugin, but a plugin may spawn children of
 its own — the sharefile tunnel's `cloudflared`, every external MCP server the
 gateway runs — and those are reachable only through it.  Both stop ladders
 therefore kill the tree rather than the child (`taskkill /F /T` on Windows,
-where `terminate()` is a single-process TerminateProcess; the signal ladder
-plus process-group kill on POSIX).  The stop path, however, only runs while
+where `terminate()` is a single-process TerminateProcess; on POSIX the
+descendants are read from `ps` *before* anything is signalled — a dead
+parent's children are reparented to init — and swept after the child is
+reaped, because a process-group kill cannot reach them: a plugin's own child
+is deliberately spawned in its own session, which is what puts it outside the
+group).  The stop path, however, only runs while
 slife is alive to run it: a hard-killed parent (Ctrl+C, Task Manager, a
 crash) unwinds no Python at all, so each spawned child is additionally
 assigned to a **kill-on-close job object** at spawn — before it can spawn

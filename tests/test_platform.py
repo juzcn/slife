@@ -3,9 +3,10 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
+import signal
 import sys
 import pytest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from slife.platform import (
     build_python_command,
@@ -18,6 +19,8 @@ from slife.platform import (
     terminate_process,
     terminate_process_sync,
     _windows_job,
+    _descendant_pids,
+    _signal_pids_sync,
 )
 
 
@@ -339,6 +342,66 @@ class TestTreeKill:
             await terminate_process(proc, label="mcp_wrapper")
         tk.assert_called_once_with(4242, "mcp_wrapper")
         proc.terminate.assert_not_called()
+
+
+class TestPosixTreeSweep:
+    """POSIX has no ``taskkill /T``, and no group kill can cover this tree.
+
+    A plugin's child (the sharefile tunnel's cloudflared) leads its OWN
+    session on purpose, so it sits outside the plugin's process group.  The
+    tree is therefore walked with ``ps`` — before anything is signalled,
+    because a dead parent's children are reparented to init.
+    """
+
+    #: `ps -eo pid=,ppid=` output shaped like the real thing: our child 100
+    #: owns grandchildren 200 and 201, and 200 owns 300.
+    _PS = "  100       1\n  200     100\n  201     100\n  300     200\n  999       1\n"
+
+    def test_walks_the_whole_subtree_not_just_the_children(self):
+        with patch("slife.platform.IS_WINDOWS", False), \
+             patch("slife.platform._subprocess.run") as run:
+            run.return_value = MagicMock(stdout=self._PS)
+            assert sorted(_descendant_pids(100)) == [200, 201, 300]
+
+    def test_ignores_unrelated_processes(self):
+        with patch("slife.platform.IS_WINDOWS", False), \
+             patch("slife.platform._subprocess.run") as run:
+            run.return_value = MagicMock(stdout=self._PS)
+            assert 999 not in _descendant_pids(100)
+            assert _descendant_pids(999) == []
+
+    def test_a_missing_ps_costs_the_sweep_not_the_stop(self):
+        with patch("slife.platform.IS_WINDOWS", False), \
+             patch("slife.platform._subprocess.run", side_effect=OSError("no ps")):
+            assert _descendant_pids(100) == []  # must not raise
+
+    def test_malformed_ps_output_is_skipped(self):
+        with patch("slife.platform.IS_WINDOWS", False), \
+             patch("slife.platform._subprocess.run") as run:
+            run.return_value = MagicMock(stdout="garbage\n  200     100\n  x  y\n")
+            assert _descendant_pids(100) == [200]
+
+    def test_windows_never_shells_out_to_ps(self):
+        with patch("slife.platform._subprocess.run") as run:
+            assert _descendant_pids(100) == []  # IS_WINDOWS is the real value
+        if IS_WINDOWS:
+            run.assert_not_called()
+
+    def test_signal_sweeps_every_pid_and_swallows_the_dead(self):
+        with patch("slife.platform.os.kill") as kill:
+            kill.side_effect = [None, ProcessLookupError, None]
+            _signal_pids_sync([1, 2, 3], label="test")  # must not raise
+        assert kill.call_count == 3
+        assert all(c[0][1] == signal.SIGTERM for c in kill.call_args_list)
+
+    def test_sweep_sends_sigterm_by_default(self):
+        """A leaked tunnel child is still an ordinary process — it gets the
+        signal its own provider would have sent, not SIGKILL."""
+        import signal as _signal
+
+        with patch("slife.platform.os.kill") as kill:
+            _signal_pids_sync([7])
+        kill.assert_called_once_with(7, _signal.SIGTERM)
 
 
 class TestKillOnCloseJob:
