@@ -145,6 +145,17 @@ def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, s
     index is a fact (it needs no action, it is catching up), a missing or
     broken endpoint is the case that carries a remedy.
     """
+    if sem.get("local_drainer") is False:
+        # This process holds the shared db but not the drainer, so it cannot
+        # observe "ready" OR "broken" — only how much is pending, which is a
+        # real shared fact.  Reporting the endpoint as unconfigured here was
+        # a false alarm: the same db, read by the process that owns the
+        # drainer, is fine.  A fact, not a problem — so no hint.
+        pending = sem.get("unembedded", 0)
+        value = "maintained by the main process"
+        if pending:
+            value += f" ({pending} {pending_noun} pending)"
+        return ("info", value, "")
     if sem.get("configured") is False:
         return ("warning", "unavailable (no embeddings endpoint configured)",
                 _EMBEDDING_FIX_HINT)
@@ -696,6 +707,10 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
 
     try:
         if client is None:
+            # A worker reaches this only if its connect failed — it shares the
+            # parent's gateway and re-points ``mcp_client`` like every other
+            # plugin.  So this stays a WARNING in both processes: tolerating it
+            # for workers masked a real wiring gap behind a plausible story.
             return [_entry(
                 "mcp_servers", "warning", "status", "unavailable (client not connected)",
                 "Restart slife to respawn the plugin. Its log has the reason "
@@ -853,11 +868,21 @@ async def check_tool_catalog(ctx=None) -> list[dict]:
     probe the host-as-plugin ``__check`` serves — and are interpreted here.
 
     Unlike the plugin checks this one needs the whole ``ToolContext`` (the
-    catalog service is a context field), and a subagent that shares no catalog
-    reports nothing rather than a false alarm.
+    catalog service is a context field).  A subagent opens the SAME ``tools.db``
+    (``_init_catalog`` runs for both processes), so the db half of this report
+    is identical either way — and a missing catalog is a fault in both, not a
+    worker's normal state.
+
+    The SEMANTIC half is the one genuinely process-local piece: the drainer is
+    main-agent-only (``service.py``), so a worker holds the index but not the
+    thing that fills it.  That is reported as a fact about where it is
+    maintained, never as an unconfigured endpoint.
     """
     catalog = getattr(ctx, "catalog", None) if ctx is not None else None
     if ctx is not None and catalog is None:
+        # A worker opens the SAME tools.db (``_init_catalog`` runs for both),
+        # so a missing catalog is a real fault in either process — not the
+        # "shares no catalog" the docstring imagined.  Reported for both.
         return [{
             "component": "tool_catalog", "level": "warning", "key": "db",
             "value": "unavailable",

@@ -1722,7 +1722,13 @@ class AgentService:
             # agent's _wire_mcp_glue uses, mirrored for a worker sharing the
             # gateway.
             await self._sync_mcp_proxies()
-        elif spec.ctx_field is not None:
+        # NOT an ``elif``.  The gateway declares a ctx_field like every other
+        # plugin, and a worker that skipped this kept ``mcp_client`` None while
+        # holding a perfectly good connection — so ``system_health`` reported
+        # "client not connected" for a gateway the worker had just connected,
+        # and the parent disagreed from its own report of the same live state.
+        # The docstring always said "also"; the branch said otherwise.
+        if spec.ctx_field is not None:
             setattr(self._tool_ctx, spec.ctx_field, self._plugins[name].client)
         logger.info("%s_http_connect_done tools=%d", name, len(self.tool_registry.list_tools()))
 

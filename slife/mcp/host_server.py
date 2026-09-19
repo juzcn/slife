@@ -179,7 +179,15 @@ async def _host_catalog_facts(catalog: "ToolCatalogService") -> dict:
 
         sem = getattr(catalog, "semantic_manager", None)
         emb = sem.embedder if sem is not None else None
+        # ``local_drainer`` is the key that matters when this block is read by
+        # a process that holds no manager (a subagent worker): the index is
+        # SHARED and maintained by whichever process owns the drainer, so
+        # configured/available/ready below are THAT process's question, and
+        # "disabled" here means "not this process's", not "broken".  The key is
+        # additive on purpose — this block's shape is a contract for __check
+        # consumers, so nothing here may be dropped.
         facts["semantic"] = {
+            "local_drainer": sem is not None,
             "configured": bool(emb is not None and emb.available),
             "available": bool(emb is not None and emb.available),
             "semantic_ready": bool(sem is not None and sem.semantic_ready),
@@ -187,7 +195,13 @@ async def _host_catalog_facts(catalog: "ToolCatalogService") -> dict:
             "reason": getattr(sem, "reason", None) or "",
             "model": emb.model if emb is not None else "",
             "dimension": emb.dimension if emb is not None else 0,
-            "unembedded": await sem.unembedded() if sem is not None else 0,
+            # The pending count is a DB fact, so it is answerable without a
+            # drainer — and it is the one part of the block a worker reports
+            # truthfully about the shared index.
+            "unembedded": (
+                await sem.unembedded() if sem is not None
+                else await store.count_unembedded()
+            ),
         }
     except Exception as e:
         # "Never raises" — a broken catalog OR a broken semantic surface both

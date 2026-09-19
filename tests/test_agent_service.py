@@ -743,6 +743,26 @@ class TestAgentServiceConnectPluginHttp:
         mock_sync.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_gateway_connect_also_repoints_the_ctx_client(self, sample_config):
+        """The gateway declares a ctx_field like every other plugin, so the
+        worker must get ``mcp_client`` too — not only the proxy reconcile.
+
+        The branch was an ``elif``, so the gateway skipped the re-point and a
+        worker kept ``mcp_client`` None while holding a perfectly good
+        connection.  system_health then reported "client not connected" for a
+        gateway the worker had just connected, while the parent — reading the
+        same live state through its own client — reported OK.  The docstring
+        always said "also"; the branch said otherwise.
+        """
+        service, client = self._service_with(sample_config, "mcp-gateway")
+        with patch.object(
+            service._plugins["mcp-gateway"].__class__, "connect_http", AsyncMock(),
+        ), patch.object(service, "_sync_mcp_proxies", AsyncMock()):
+            await service.connect_plugin_http("mcp-gateway", 12345)
+
+        assert service._tool_ctx.mcp_client is client
+
+    @pytest.mark.asyncio
     async def test_generic_connect_wires_list_changed_handler(self, sample_config):
         """Non-mcp plugins wire the generic rescan handler (job-coding's
         dynamic tools stay live under a subagent)."""
