@@ -352,7 +352,8 @@ Install the backend **into the slife tool venv** — the same interpreter `local
 
 | Backend | Command |
 |---------|---------|
-| **Transformer** — `sentence-transformers`, simplest, works everywhere | `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
+| **Transformer · no NVIDIA GPU** (Linux / WSL / Windows) | `uv pip install --python "$(uv tool dir)/slife" --index-url https://download.pytorch.org/whl/cpu torch`, then `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
+| **Transformer · NVIDIA GPU, or macOS** | `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
 | **GGUF · CPU (Linux / WSL / macOS)** | `uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
 | **GGUF · NVIDIA CUDA (Linux)** | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` (needs the toolkit **and** an NVIDIA device) |
 | **GGUF · macOS Metal** | `CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
@@ -361,7 +362,7 @@ Install the backend **into the slife tool venv** — the same interpreter `local
 
 - llama-cpp-python ships **no PyPI wheel** (only the sdist), so the Linux / WSL / macOS rows **compile from source** — the standard build — and need a **C compiler + CMake ≥ 3.21** (macOS: Xcode CLT clang; Linux: `build-essential` + `cmake`). The GPU rows pass `CMAKE_ARGS` to select the backend. **Windows has no default C toolchain**, so it uses the upstream prebuilt wheels instead — CPU or CUDA, neither needing MSVC.
 - The two backends can coexist — install both in **one** `uv pip install` (e.g. `sentence-transformers` plus the `llama-cpp-python` CPU row in a single command). Installing twice replaces the first install.
-- `sentence-transformers` pulls `torch`, and on Linux PyPI's `torch` is the **CUDA build**: its metadata requires a dozen-odd `nvidia-*` runtime wheels (~2.5 GB) whether or not a GPU exists, and nothing in that set is `nvcc` — on a GPU-less machine they enable nothing. Install the CPU wheel first (`uv pip install --python "$(uv tool dir)/slife" --index-url https://download.pytorch.org/whl/cpu torch`), then `sentence-transformers` finds `torch` already satisfied and pulls none of them. `llama-cpp-python` has no torch dependency at all.
+- `sentence-transformers` pulls `torch`, and on Linux PyPI's `torch` is the **CUDA build**: a dozen-odd `nvidia-*` runtime wheels (~2.5 GB) whether or not a GPU exists — none of them `nvcc`, so on a GPU-less machine they enable nothing. That is why the CPU row installs `torch` from PyTorch's own index first: the second command then finds it satisfied and pulls none of them. Swapping to the CPU build afterwards orphans the wheels — drop them with `uv pip freeze --python "$(uv tool dir)/slife" | grep ^nvidia | cut -d= -f1 | xargs uv pip uninstall --python "$(uv tool dir)/slife"`. `llama-cpp-python` has no torch dependency at all.
 - If the backend is missing, `local-embed` logs the exact install command for your platform instead of failing silently.
 
 ### 2. Download the model weights

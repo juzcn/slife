@@ -358,7 +358,8 @@ A2A 协议运行在可插拔的传输 **binding**（当前为 MQTT）上，让�
 
 | 后端 | 命令 |
 |---------|---------|
-| **Transformer** — `sentence-transformers`，最简单，全平台可用 | `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
+| **Transformer · 无 NVIDIA GPU**（Linux / WSL / Windows） | 先 `uv pip install --python "$(uv tool dir)/slife" --index-url https://download.pytorch.org/whl/cpu torch`，再 `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
+| **Transformer · 有 NVIDIA GPU，或 macOS** | `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
 | **GGUF · CPU（Linux / WSL / macOS）** | `uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
 | **GGUF · NVIDIA CUDA（Linux）** | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34`（需要工具包**和** NVIDIA 设备） |
 | **GGUF · macOS Metal** | `CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
@@ -367,7 +368,7 @@ A2A 协议运行在可插拔的传输 **binding**（当前为 MQTT）上，让�
 
 - llama-cpp-python **没有 PyPI wheel**（只有 sdist），所以 Linux / WSL / macOS 三行会**源码编译**——这是标准构建——需要 **C 编译器 + CMake ≥ 3.21**（macOS：Xcode CLT clang；Linux：`build-essential` + `cmake`）。GPU 两行传 `CMAKE_ARGS` 选择后端。**Windows 没有默认 C 工具链**，所以它改用上游预编译的 wheel——CPU 或 CUDA，都不需要 MSVC。
 - 两个后端可以共存——在**一次** `uv pip install` 里都装上（例如 `sentence-transformers` 加上 `llama-cpp-python` 的 CPU 行写进一条命令）。装两次会替换掉第一个安装。
-- `sentence-transformers` 会带上 `torch`，而 Linux 上 PyPI 的 `torch` 是 **CUDA 构建**：它的元数据要求十几个 `nvidia-*` 运行时 wheel（约 2.5 GB），无论有没有 GPU；那个集合里没有 `nvcc`，所以在无 GPU 的机器上它们什么都启用不了。先装 CPU wheel（`uv pip install --python "$(uv tool dir)/slife" --index-url https://download.pytorch.org/whl/cpu torch`），再装 `sentence-transformers` 就会发现 torch 已满足，不会再拉这些 wheel。`llama-cpp-python` 完全不依赖 torch。
+- `sentence-transformers` 会带上 `torch`，而 Linux 上 PyPI 的 `torch` 是 **CUDA 构建**：十几个 `nvidia-*` 运行时 wheel（约 2.5 GB），无论有没有 GPU——里面没有 `nvcc`，所以在无 GPU 的机器上它们什么都启用不了。这正是上面 CPU 行先装 PyTorch 官方索引的 `torch` 的原因：第二条命令随后发现 torch 已满足，不会再拉这些 wheel。事后再换成 CPU 构建会让这些 wheel 变成孤儿，清理：`uv pip freeze --python "$(uv tool dir)/slife" | grep ^nvidia | cut -d= -f1 | xargs uv pip uninstall --python "$(uv tool dir)/slife"`。`llama-cpp-python` 完全不依赖 torch。
 - 若后端缺失，`local-embed` 会记录一条针对你平台的精确安装命令，而不是静默失败。
 
 ### 2. 下载模型权重
