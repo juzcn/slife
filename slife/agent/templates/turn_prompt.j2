@@ -23,6 +23,13 @@ Per-turn context (harness-injected):
 {%- endfor %}
    Backfill with run_schedule_now (passing its due_at), or mark skipped with scheduled_run_skip.
 {%- endif %}
+{%- if a2a_stale_tasks %}
+▸ Inbound A2A tasks that died with the previous process
+{%- for t in a2a_stale_tasks %}
+   - {{ t.task_id }} from {{ t.peer }} (arrived {{ t.since }})
+{%- endfor %}
+   These arrived before this process started, so their reply path is gone and a task_response for them is refused. Answer the peer with message_type='message' (the task_id can be dropped).
+{%- endif %}
 {%- if presence_events %}
 ▸ Recent peer online/offline
 {%- for ev in presence_events %}

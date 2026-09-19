@@ -24,6 +24,10 @@ logs/
 # User-saved files (memfiles plugin storage — per-agent runtime data)
 *.files/
 
+# A2A inbound-task state (which inbound tasks a restart orphaned).  Written by
+# the a2a plugin; in dev mode the data dir IS the repo root, so it lands here.
+a2a_inbound.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

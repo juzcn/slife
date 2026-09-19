@@ -309,6 +309,7 @@ class AgentLoop:
         input_modalities: str = "",
         presence_provider: Callable[[], list[tuple[float, str]]] | None = None,
         schedule_provider: Callable[[], list[dict]] | None = None,
+        a2a_stale_provider: Callable[[], list[dict]] | None = None,
         cutin_enabled: bool = True,
         pending_input_has: "Callable[[], bool] | None" = None,
         advance_context_start: Callable[[int], Awaitable[bool]] | None = None,
@@ -382,6 +383,10 @@ class AgentLoop:
         #: Returns render-ready ``{name, due_at, status}`` items; the loop
         #: injects them into ``_turn_prompt`` each turn.
         self._schedule_provider = schedule_provider
+        #: Provider for inbound A2A tasks orphaned by a restart.  Returns
+        #: ``{task_id, peer, since}`` items — never completable, so the prompt
+        #: tells the model to answer the peer with a plain message instead.
+        self._a2a_stale_provider = a2a_stale_provider
         #: Mid-turn input preemption (cut-in mode): when True the loop injects
         #: a pending queued message at each iteration boundary; when False,
         #: messages wait in the queue until the turn ends (the original
@@ -752,6 +757,9 @@ class AgentLoop:
         if name == "_turn_prompt" and self._schedule_provider is not None:
             args = dict(args)
             args["schedule_status"] = self._schedule_provider()
+        if name == "_turn_prompt" and self._a2a_stale_provider is not None:
+            args = dict(args)
+            args["a2a_stale_tasks"] = self._a2a_stale_provider()
         tool = self.tool_registry.get(name)
         if tool is None:
             logger.warning("auto_invoke_tool_missing name=%s", name)

@@ -59,6 +59,21 @@ def _make_mesh():
     return A2AMesh(_config())
 
 
+def _spawn_inbound(mesh, task_id, sender="peer-1", text="do it", variables=None):
+    """Run one inbound request through the responder, returning its task.
+
+    The task stays pending until something resolves it — that is the whole
+    point of the completion bridge, and what a restart takes away.
+    """
+    return asyncio.create_task(
+        mesh._responder.on_request(
+            A2ARequest(text=text, request_id=task_id, task_id=task_id,
+                       sender=sender, variables=variables or {}),
+            stream=AsyncMock(),
+        ),
+    )
+
+
 class TestSendMessage:
     @pytest.mark.asyncio
     async def test_publishes_standard_sendmessage(self):
@@ -371,17 +386,6 @@ class TestResponseBackoff:
 
 
 class TestCompleteTaskBridge:
-    def _spawn(self, mesh, task_id, sender="peer-1", text="do it",
-               variables=None):
-        task = asyncio.create_task(
-            mesh._responder.on_request(
-                A2ARequest(text=text, request_id=task_id, task_id=task_id,
-                           sender=sender, variables=variables or {}),
-                stream=AsyncMock(),
-            ),
-        )
-        return task
-
     @pytest.mark.asyncio
     async def test_resolves_with_result(self):
         mesh = _make_mesh()
@@ -389,7 +393,7 @@ class TestCompleteTaskBridge:
         mesh.on_inbound_task = lambda s, c, t, kind="task": inbound.append(
             (s, c, t, kind),
         )
-        task = self._spawn(mesh, "t1")
+        task = _spawn_inbound(mesh, "t1")
         await asyncio.sleep(0)
         assert inbound == [("peer-1", "do it", "t1", "task")]
         assert mesh.complete_task("t1", "the answer") == "ok"
@@ -404,7 +408,7 @@ class TestCompleteTaskBridge:
         mesh.on_inbound_task = lambda s, c, t, kind="task": inbound.append(
             (s, c, t, kind),
         )
-        task = self._spawn(mesh, "m1", variables={"message_type": "message"})
+        task = _spawn_inbound(mesh, "m1", variables={"message_type": "message"})
         assert await asyncio.wait_for(task, 1) is None
         assert inbound == [("peer-1", "do it", "", "message")]
 
@@ -414,7 +418,7 @@ class TestCompleteTaskBridge:
         mesh = _make_mesh()
         inbound = []
         mesh.on_inbound_task = lambda s, c, t, kind="task": inbound.append(t)
-        task = self._spawn(
+        task = _spawn_inbound(
             mesh, "tr1", variables={"message_type": "task_response"},
         )
         assert await asyncio.wait_for(task, 1) is None
@@ -423,7 +427,7 @@ class TestCompleteTaskBridge:
     @pytest.mark.asyncio
     async def test_cancel_raises_cancelled_error(self):
         mesh = _make_mesh()
-        task = self._spawn(mesh, "t2")
+        task = _spawn_inbound(mesh, "t2")
         await asyncio.sleep(0)
         assert mesh.complete_task("t2", "", cancelled=True) == "ok"
         with pytest.raises(asyncio.CancelledError):
@@ -433,11 +437,98 @@ class TestCompleteTaskBridge:
     async def test_unknown_and_duplicate_refused(self):
         mesh = _make_mesh()
         assert mesh.complete_task("nope", "x").startswith("Error")
-        task = self._spawn(mesh, "t3")
+        task = _spawn_inbound(mesh, "t3")
         await asyncio.sleep(0)
         assert mesh.complete_task("t3", "once") == "ok"
         assert mesh.complete_task("t3", "twice").startswith("Error")
         await asyncio.wait_for(task, 1)
+
+    @pytest.mark.asyncio
+    async def test_an_answered_task_is_not_orphaned(self):
+        """Completing a task clears it from the store, so the next process
+        does not report it as work it died holding."""
+        mesh = _make_mesh()
+        task = _spawn_inbound(mesh, "t-done")
+        await asyncio.sleep(0)
+        assert mesh.complete_task("t-done", "the answer") == "ok"
+        await asyncio.wait_for(task, 1)
+        assert _make_mesh().stale_inbound() == []
+
+
+class TestOrphanedTaskReporting:
+    """A restart orphans every inbound task in flight — the bridge and the
+    peer's reply topic both die with the process.  The replacement process
+    must say so, not answer with the generic 'unknown id'."""
+
+    def _orphan(self, task_id="ec604319", peer="jack"):
+        """Leave a task in flight, then start a fresh process over the same
+        state file (``_make_mesh`` reads the file conftest points at)."""
+        mesh = _make_mesh()
+        mesh._note_inbound(task_id, peer)
+        return _make_mesh()
+
+    @pytest.mark.asyncio
+    async def test_orphan_is_reported_after_a_restart(self):
+        restarted = self._orphan()
+        assert [t["task_id"] for t in restarted.stale_inbound()] == ["ec604319"]
+        assert restarted.stale_inbound()[0]["peer"] == "jack"
+
+    @pytest.mark.asyncio
+    async def test_completing_an_orphan_names_the_peer_and_the_way_out(self):
+        restarted = self._orphan()
+        msg = restarted.complete_task("ec604319", "too late")
+        assert msg.startswith("Error")
+        assert "jack" in msg
+        assert "message_type='message'" in msg
+
+    @pytest.mark.asyncio
+    async def test_a_never_seen_id_gets_the_generic_error(self):
+        """A typo must not be excused as a restart casualty."""
+        mesh = _make_mesh()
+        msg = mesh.complete_task("never-seen", "x")
+        assert msg.startswith("Error")
+        assert "message_type='message'" not in msg
+        assert "marker" in msg
+
+    @pytest.mark.asyncio
+    async def test_answering_the_peer_with_a_message_clears_it(self):
+        restarted = self._orphan()
+        assert len(restarted.stale_inbound()) == 1
+        with patch.object(restarted, "_publish_props", new=AsyncMock()), \
+                patch.object(restarted, "_deliver", new=AsyncMock()):
+            await restarted.send_message("jack", "here it is",
+                                         message_type="message")
+        assert restarted.stale_inbound() == []
+
+    @pytest.mark.asyncio
+    async def test_a_new_task_to_the_peer_does_not_clear_it(self):
+        """Sending a *new* task is not answering the orphaned one."""
+        restarted = self._orphan()
+        with patch.object(restarted, "_publish_props", new=AsyncMock()), \
+                patch.object(restarted, "_deliver", new=AsyncMock()):
+            await restarted.send_message("jack", "unrelated work")
+        assert len(restarted.stale_inbound()) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_retried_task_is_no_longer_orphaned(self):
+        """The peer re-sending the same Task.id genuinely re-registers the
+        bridge, so it becomes completable again."""
+        restarted = self._orphan()
+        mesh = restarted
+        task = _spawn_inbound(mesh, "ec604319")
+        await asyncio.sleep(0)
+        assert mesh.stale_inbound() == []
+        assert mesh.complete_task("ec604319", "late but fine") == "ok"
+        await asyncio.wait_for(task, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_message_conversation_is_never_tracked(self):
+        """A MESSAGE (and a stray TASK_RESPONSE) is not a task — nothing will
+        ever complete it, so tracking it would report it stale forever."""
+        mesh = _make_mesh()
+        task = _spawn_inbound(mesh, "m1", variables={"message_type": "message"})
+        await asyncio.wait_for(task, 1)
+        assert _make_mesh().stale_inbound() == []
 
 
 class TestWorkingKeepalive:

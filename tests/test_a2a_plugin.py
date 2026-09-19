@@ -185,6 +185,36 @@ class TestDrain:
         ))
 
     @pytest.mark.asyncio
+    async def test_drain_reports_orphaned_tasks(self, monkeypatch, tmp_path):
+        """``stale_tasks`` rides the drain — read off the live mesh when there
+        is one, and off disk otherwise, so a restart still reports its orphans
+        when the broker never came back up."""
+        monkeypatch.setenv("A2A_INBOUND_FILE", str(tmp_path / "inbound.json"))
+        from slife.a2a.inbound_store import InboundStore
+        InboundStore().add("ec604319", "jack")  # left in flight, then "restart"
+
+        data = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
+        assert [t["task_id"] for t in data["stale_tasks"]] == ["ec604319"]
+        assert data["stale_tasks"][0]["peer"] == "jack"
+
+        # It is state, not a queue: a second drain still reports it.
+        again = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
+        assert [t["task_id"] for t in again["stale_tasks"]] == ["ec604319"]
+
+    @pytest.mark.asyncio
+    async def test_drain_orphans_come_from_the_live_mesh(self, monkeypatch):
+        """With a mesh connected, the drain reads ITS store — the plugin and
+        the mesh must never disagree about what is still answerable."""
+        mesh = MagicMock()
+        mesh.stale_inbound.return_value = [
+            {"task_id": "t-1", "peer": "jack", "since": "2026-01-01T00:00:00Z"},
+        ]
+        monkeypatch.setattr(plugin, "_client", mesh)
+
+        data = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
+        assert data["stale_tasks"] == mesh.stale_inbound.return_value
+
+    @pytest.mark.asyncio
     async def test_drain_task_always_carries_task_id(self):
         """Every inbound A2A exchange is a task with a task_id (no message
         kind, no reply_to stamping)."""

@@ -129,6 +129,7 @@ def build_turn_prompt(
     context_time_start: str = "",
     presence_events: list[tuple[float, str]] | None = None,
     schedule_status: list[dict] | None = None,
+    a2a_stale_tasks: list[dict] | None = None,
     restarted: bool = False,
     tools_evicted: list[str] | None = None,
 ) -> str:
@@ -153,6 +154,13 @@ def build_turn_prompt(
     usage line until the user backfills with ``run_schedule_now`` or
     closes them with ``scheduled_run_skip``.
 
+    *a2a_stale_tasks* is a list of ``{task_id, peer, since}`` inbound A2A
+    tasks orphaned by a restart.  Their completion bridge and the peer's
+    reply topic both died with the process that received them, so a
+    ``task_response`` for those ids is refused — the prompt says so, and
+    points the model at the one reply the peer can still get (a plain
+    message).  Rendered until the peer is answered.
+
     *restarted* is the "system restarted" flag — set once by the loop on
     the first turn after a session restore.
 
@@ -176,6 +184,11 @@ def build_turn_prompt(
          "status": r.get("status", "")}
         for r in (schedule_status or [])
     ]
+    rendered_a2a_stale: list[dict] = [
+        {"task_id": t.get("task_id", ""), "peer": t.get("peer", ""),
+         "since": t.get("since", "")}
+        for t in (a2a_stale_tasks or [])
+    ]
     return _env.get_template("turn_prompt.j2").render(
         current_datetime=format_turn_ts(now),
         utc_offset=now.strftime("%z"),
@@ -189,6 +202,7 @@ def build_turn_prompt(
         context_time_start=context_time_start,
         presence_events=rendered_presence,
         schedule_status=rendered_schedule,
+        a2a_stale_tasks=rendered_a2a_stale,
         restarted=restarted,
         tools_evicted=tools_evicted or [],
     ).strip()

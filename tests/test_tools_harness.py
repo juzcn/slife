@@ -430,6 +430,42 @@ class TestConsecutiveUserFix:
         assert "Scheduled runs not settled" in conv.messages[-1]["content"]
         assert "daily @ 2026-08-25T09:00:00 (missed)" in conv.messages[-1]["content"]
 
+    @pytest.mark.asyncio
+    async def test_auto_invoked_prompt_injects_orphaned_a2a_tasks(self):
+        """The loop injects the a2a_stale_provider's orphaned tasks into
+        _turn_prompt each turn — a restart's casualties must reach the model
+        before it tries to complete one."""
+        reg = _registry()
+        loop = _loop(reg)
+        loop._a2a_stale_provider = lambda: [
+            {"task_id": "ec604319", "peer": "jack",
+             "since": "2026-09-19T06:39:07Z"},
+        ]
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("hi")
+
+        await loop._auto_invoke(
+            "_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv,
+        )
+
+        content = conv.messages[-1]["content"]
+        assert "died with the previous process" in content
+        assert "ec604319 from jack" in content
+        assert "message_type='message'" in content
+
+    @pytest.mark.asyncio
+    async def test_no_orphan_section_without_orphans(self):
+        """No provider (or an empty set) leaves the turn prompt unchanged."""
+        reg = _registry()
+        loop = _loop(reg)
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("hi")
+
+        await loop._auto_invoke(
+            "_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv,
+        )
+        assert "died with the previous process" not in conv.messages[-1]["content"]
+
     def test_context_time_start_change_detected(self):
         """'Context covers' is reported on the first prompt, then only when
         the start time changes (restore sets it, trim advances it)."""

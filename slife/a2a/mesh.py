@@ -49,6 +49,7 @@ from a2a_over_mqtt.protocol import REPLY_ARTIFACT, REPLY_SUBMITTED, REPLY_TEXT
 from slife.a2a.card import AgentCard
 from slife.a2a.config import A2AConfig
 from slife.a2a.identity import AgentName
+from slife.a2a.inbound_store import InboundStore
 from slife.a2a.task_store import get_store
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
@@ -222,6 +223,11 @@ class MeshResponder(Responder):
             self._mesh.on_inbound_task(
                 request.sender or "unknown", request.text, task_id,
             )
+            # Recorded only now — a MESSAGE / stray TASK_RESPONSE reaches the
+            # early returns above and must NOT be tracked as an inbound task
+            # (nothing will ever complete it, so it would be reported stale
+            # forever after the next restart).
+            self._mesh._note_inbound(task_id, request.sender or "unknown")
             try:
                 cancelled, result = await waiter.wait()
             except BaseException:
@@ -237,6 +243,7 @@ class MeshResponder(Responder):
         finally:
             pinger.cancel()
             self._completion.pop(task_id, None)
+            self._mesh._drop_inbound(task_id)
 
     def resolve(self, task_id: str, result: str, cancelled: bool) -> str:
         """Resolve an inbound task's completion bridge.
@@ -247,10 +254,7 @@ class MeshResponder(Responder):
         """
         waiter = self._completion.get(task_id)
         if waiter is None:
-            return (
-                f"Error: unknown task_id {task_id!r} — no inbound task with "
-                f"that id is awaiting a result."
-            )
+            return self._mesh._unresolvable(task_id)
         if not waiter.resolve(result or "", cancelled):
             return f"Error: task_id {task_id!r} already completed."
         return "ok"
@@ -330,6 +334,10 @@ class A2AMesh:
             # today's system — flagged, not solved.
             extensions=[{"instance": uuid.uuid4().hex}],
         )
+        #: Inbound tasks awaiting a result — persisted, so a restarted process
+        #: can tell the ones its predecessor died holding (which can never be
+        #: completed) from ids it has simply never seen.
+        self._inbound = InboundStore()
         self._responder = MeshResponder(
             agent_id=self.agent_name, mqtt=self._mqtt_cfg,
             topics=self._topics, card=self._card, mesh=self,
@@ -764,6 +772,12 @@ class A2AMesh:
             sender=self.agent_name,
             variables={"message_type": message_type},
         )
+        if message_type == "message":
+            # A plain message is the ONLY reply an orphaned task can still
+            # get (see :meth:`_unresolvable`) — answering the peer settles
+            # whatever inbound work this process' predecessor died holding,
+            # so the turn-prompt reminder drops it.
+            self._inbound.clear_stale_peer(agent)
         record = message_type == "task_request"
         if record:
             get_store().record_send(task_id, agent, message, "mqtt")
@@ -836,3 +850,44 @@ class A2AMesh:
     ) -> str:
         """Resolve an inbound task's bridge (backs the ``task_response`` send)."""
         return self._responder.resolve(task_id, result, cancelled)
+
+    # ── Inbound task bookkeeping ────────────────────────────────────────
+
+    def _note_inbound(self, task_id: str, peer: str) -> None:
+        """An inbound task is now in flight in this process."""
+        self._inbound.add(task_id, peer)
+
+    def _drop_inbound(self, task_id: str) -> None:
+        """The task left the responder (answered, cancelled, or the SDK
+        cancelled it) — it is no longer awaiting anything from us."""
+        self._inbound.drop(task_id)
+
+    def _unresolvable(self, task_id: str) -> str:
+        """Why a completion attempt found no bridge to resolve.
+
+        An id this process never registered is one of two very different
+        things, and they need different answers.  A *typo* means re-read the
+        marker.  A task **orphaned by a restart** can never be completed by
+        anyone: its bridge died with the process that held it, and so did the
+        peer's reply topic — which is read off the inbound request's MQTT
+        properties and is not reconstructible.  The only reply that peer can
+        still receive is a plain message, so say exactly that instead of
+        leaving the model to find the fallback by trial and error.
+        """
+        orphan = self._inbound.stale_entry(task_id)
+        if orphan is not None:
+            return (
+                f"Error: task_id {task_id!r} arrived before this process "
+                f"started — its reply path died with the previous one, so no "
+                f"result can complete it now. Answer {orphan.peer} with "
+                f"message_type='message' instead (drop this task_id)."
+            )
+        return (
+            f"Error: unknown task_id {task_id!r} — no inbound task with that "
+            f"id is awaiting a result. Check the [A2A:...] marker's task_id."
+        )
+
+    def stale_inbound(self) -> list[dict]:
+        """Inbound tasks orphaned by a restart, oldest first — the harness
+        reminds the model of these until their peers are answered."""
+        return [t.as_dict() for t in self._inbound.stale()]

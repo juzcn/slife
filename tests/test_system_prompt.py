@@ -507,6 +507,46 @@ class TestContextStatusSchedule:
             build_turn_prompt(schedule_status=[])
 
 
+class TestContextStatusStaleA2A:
+    """build_turn_prompt reports inbound A2A tasks orphaned by a restart.
+
+    They can never be completed (the bridge and the peer's reply topic both
+    died with the previous process), so the prompt has to say so and point
+    at the one reply the peer can still get — otherwise the model walks into
+    a refused ``task_response`` and has to find the fallback by trial and
+    error."""
+
+    def _tasks(self):
+        return [
+            {"task_id": "ec604319", "peer": "jack",
+             "since": "2026-09-19T06:39:07Z"},
+            {"task_id": "aa11bb22", "peer": "jill",
+             "since": "2026-09-19T06:41:02Z"},
+        ]
+
+    def test_renders_section_with_the_way_out(self):
+        from slife.agent.system_prompt import build_turn_prompt
+        result = build_turn_prompt(a2a_stale_tasks=self._tasks())
+        assert "▸ Inbound A2A tasks that died with the previous process" in result
+        assert "ec604319 from jack (arrived 2026-09-19T06:39:07Z)" in result
+        assert "aa11bb22 from jill" in result
+        assert "message_type='message'" in result
+
+    def test_no_section_when_nothing_is_orphaned(self):
+        from slife.agent.system_prompt import build_turn_prompt
+        assert "died with the previous process" not in \
+            build_turn_prompt(a2a_stale_tasks=None)
+        assert "died with the previous process" not in \
+            build_turn_prompt(a2a_stale_tasks=[])
+
+    def test_survives_a_malformed_entry(self):
+        """The list comes off the plugin's drain — a bad entry must not take
+        down every turn prompt."""
+        from slife.agent.system_prompt import build_turn_prompt
+        result = build_turn_prompt(a2a_stale_tasks=[{}])
+        assert "▸ Inbound A2A tasks" in result
+
+
 class TestContextStatusRestart:
     """build_turn_prompt reports a system restart once, on the first
     turn prompt after a session restore — nothing otherwise."""

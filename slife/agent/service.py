@@ -274,6 +274,11 @@ class AgentService:
         # until the user backfills or skips them.  Refreshed by the
         # schedule loop and the startup sweep (see schedules.py).
         self._schedule_pending: list[dict] = []
+        # Inbound A2A tasks orphaned by a restart, surfaced in the
+        # ``_turn_prompt`` until their peers are answered.  Replaced wholesale
+        # from each a2a drain (the plugin owns the set) — it is state, not a
+        # queue, so it is never cleared here.
+        self._a2a_stale: list[dict] = []
         # Subagents fail fast on LLM errors and cap a single stream call:
         # they have no user to wait on, so a raised provider error / timeout
         # must surface as a pushed-back result rather than retrying a flaky
@@ -298,6 +303,7 @@ class AgentService:
             input_modalities=", ".join(config.active_model.input_modalities),
             presence_provider=self._drain_presence_events,
             schedule_provider=self._schedule_pending_provider,
+            a2a_stale_provider=self._a2a_stale_provider,
             advance_context_start=self.advance_context_start,
             stream_timeout=subagent_stream_timeout,
             stream_max_retries=0 if is_subagent else None,
@@ -2874,6 +2880,11 @@ class AgentService:
                     if cid:
                         self.inbox.cancel_correlation(cid)
 
+                # Inbound tasks orphaned by a restart — state, not a queue:
+                # replaced wholesale so the turn prompt's reminder follows the
+                # mesh down to empty as peers are answered.
+                self.set_a2a_stale(data.get("stale_tasks", []))
+
                 for ev in data.get("tasks", []):
                     # Every inbound A2A exchange is a task and carries its
                     # task_id; surface the same id to the receiver so it can
@@ -3120,6 +3131,19 @@ class AgentService:
 
     def _schedule_pending_provider(self) -> list[dict]:
         return self._schedule_pending
+
+    def set_a2a_stale(self, tasks: list[dict]) -> None:
+        """Publish the A2A tasks orphaned by a restart (turn-prompt data).
+
+        Replaced wholesale on each a2a drain — the plugin owns this set and
+        drops an entry when its peer is answered, so the reminder clears
+        itself without the harness tracking anything.  Each item is
+        ``{task_id, peer, since}``.
+        """
+        self._a2a_stale = tasks
+
+    def _a2a_stale_provider(self) -> list[dict]:
+        return self._a2a_stale
 
     async def _notify_a2a_activity(self, kind: str, **kwargs) -> None:
         """Fire all registered A2A activity callbacks."""

@@ -35,6 +35,7 @@ from contextlib import asynccontextmanager
 
 from slife.a2a.card import AgentCard
 from slife.a2a.config import A2AConfig
+from slife.a2a.inbound_store import InboundStore
 from slife.a2a.mesh import A2AMesh
 from slife.server_utils import create_plugin_server, run_plugin_server
 
@@ -306,7 +307,15 @@ async def a2a_broadcast(event: str) -> str:
 )
 async def __a2a_drain_incoming() -> str:
     """Drain queued inbound tasks + events + presence + cancellations +
-    completions (harness only)."""
+    completions (harness only).
+
+    Unlike the queues above, ``stale_tasks`` is not drained — it is the
+    mesh's **current** set of inbound tasks orphaned by a restart, so the
+    harness replaces its copy wholesale and the list follows the mesh down
+    to empty as peers are answered.  Read from the live mesh when there is
+    one; otherwise straight off disk, so a restart reports its orphans even
+    if the broker never came back up.
+    """
     tasks = list(_inbound_tasks)
     _inbound_tasks.clear()
     events = list(_inbound_events)
@@ -317,6 +326,10 @@ async def __a2a_drain_incoming() -> str:
     _cancellations.clear()
     completions = list(_task_completions)
     _task_completions.clear()
+    stale = (
+        _client.stale_inbound() if _client is not None
+        else [t.as_dict() for t in InboundStore().stale()]
+    )
     return json.dumps(
         {
             "tasks": tasks,
@@ -324,6 +337,7 @@ async def __a2a_drain_incoming() -> str:
             "presence": presence,
             "cancellations": cancellations,
             "task_completions": completions,
+            "stale_tasks": stale,
         },
         ensure_ascii=False,
     )

@@ -618,6 +618,11 @@ _TURN_PROMPT_PARAMS = make_params(
                      "items": {"type": "object"},
                      "description": "Unsettled failed/missed runs, as "
                                     "{name, due_at, status} objects."},
+    a2a_stale_tasks={"type": "array", "default": [],
+                     "items": {"type": "object"},
+                     "description": "Inbound A2A tasks orphaned by a restart "
+                                    "(never completable), as "
+                                    "{task_id, peer, since} objects."},
     restarted={"type": "boolean", "default": False,
                "description": "Set on the one turn that follows a restart."},
 )
@@ -631,10 +636,12 @@ class TurnPromptTool(Tool):
     assistant(tool_calls) + tool pair, so the turn begins with the
     current system state already in context: the time, how full the
     context is, anything that changed since the last turn (model,
-    working directory, shell), peer presence events, and scheduled runs
-    still waiting to be backfilled or skipped.  Without it the model
-    would have to infer all of that from the previous turn, so every
-    turn would run on state that has drifted.
+    working directory, shell), peer presence events, scheduled runs
+    still waiting to be backfilled or skipped, and inbound A2A tasks
+    orphaned by a restart (unanswerable as tasks — they need a plain
+    message instead).  Without it the model would have to infer all of
+    that from the previous turn, so every turn would run on state that
+    has drifted.
     """
 
     name = "_turn_prompt"
@@ -642,8 +649,9 @@ class TurnPromptTool(Tool):
     description = ("Auto-invoked tool that builds the per-turn prompt, "
                    "injected at the start of every turn: current time, "
                    "context usage, what changed since the last turn, peer "
-                   "presence events, and unsettled scheduled runs — so the "
-                   "turn executes with up-to-date state.")
+                   "presence events, unsettled scheduled runs, and inbound "
+                   "A2A tasks orphaned by a restart — so the turn executes "
+                   "with up-to-date state.")
     parameters = _TURN_PROMPT_PARAMS
 
     async def execute(self, **kwargs) -> str:
