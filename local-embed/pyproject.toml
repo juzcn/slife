@@ -37,7 +37,7 @@ local-embed = "local_embed.cli:main"
 
 [build-system]
 # See root pyproject.toml: pin below hatchling 1.27 so the wheel stays at
-# Metadata-Version 2.3 (twine/pkginfo caps there; 2.4/2.5 fail to upload).
+# Metadata-Version 2.3 — twine rejects 2.5 before 7.0.
 requires = ["hatchling>=1.24,<1.27"]
 build-backend = "hatchling.build"
 
@@ -49,6 +49,9 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
+    # Required by starlette.testclient in tests/test_client.py and
+    # tests/test_server.py.  Test-only — the package never imports httpx.
+    "httpx>=0.28.0",
 ]
 
 [tool.pytest.ini_options]
@@ -58,6 +61,9 @@ asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "module"
 addopts = "-q --tb=short --strict-markers --strict-config --no-header --color=yes --durations=10"
 markers = [
+    "asyncio: mark a test as an async test",
+    "slow: mark a test as slow (excluded from quick runs with -m 'not slow')",
     "unit: fast, isolated unit test (no I/O, no subprocess)",
     "integration: test requiring I/O, network, or subprocess",
+    "e2e: end-to-end test requiring a full running system",
 ]

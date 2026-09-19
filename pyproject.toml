@@ -10,25 +10,26 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "textual>=1.0.0",
+    "rich>=14.2.0",
     "openai>=1.0.0",
     "anthropic>=0.39.0",
     "httpx2>=2.7.0",
     "ruamel.yaml>=0.19.0",
     "jinja2>=3.1.0",
     "fastmcp>=2.0.0",
+    "mcp>=2.0.0",
+    "mcp-types>=2.0.0",
     "aiosqlite>=0.22.1",
     "sqlite-vec>=0.1.9",
     "aiohttp>=3.14.1",
+    "starlette>=0.37.0",
     "qrcode>=8.0",
-    "Pillow>=11.0",
-    "keyring>=25.0.0",
-    "keyrings-cryptfile>=1.3.0",
-    "paho-mqtt>=2.0.0",
-    "requests>=2.31.0",
     "credstore",
+    # Out-of-process only — spawned as `python -m local_embed.server`, never imported.
     "local-embed",
     "ngrok",
     "croniter>=6.2.4",
+    # Not imported directly; stdlib zoneinfo loads it for IANA zones on Windows.
     "tzdata>=2026.3",
     "filelock>=3.12.0",
     "a2a-over-mqtt>=0.1.0",
@@ -58,7 +59,8 @@ embeddings = ["slife[gguf,transformer]"]
 
 [project.scripts]
 slife = "slife:main"
-credstore = "credstore.__main__:main"
+# `credstore` is deliberately NOT declared here — the credstore package ships
+# that script itself, and slife depends on it, so the command is always present.
 
 [tool.hatch.build.targets.wheel]
 packages = ["slife"]
@@ -86,10 +88,14 @@ include = [
 ]
 
 [build-system]
-# Pin below hatchling 1.27: >= 1.27 emits Metadata-Version 2.4/2.5, which
-# twine's pkginfo validator still caps at 2.3 (as of 2026-08) — PyPI uploads
-# fail with InvalidDistribution "metadata is missing required fields". 1.24-1.26
-# emit 2.3, which is always accepted.
+# Pin below hatchling 1.27: >= 1.27 emits Metadata-Version 2.5, which twine
+# rejects before 7.0.  Verified 2026-09: hatchling 1.32.3 emits 2.5 for both
+# wheel and sdist; `twine check` passes on twine 7.0.0 and fails on twine
+# 6.2.0 with InvalidDistribution "'2.5' is not a valid metadata version".
+# The cap is twine's own validator, NOT pkginfo — twine >= 6.2 no longer
+# depends on pkginfo at all.  1.24-1.26 emit 2.3, which every supported twine
+# accepts.  Lift this pin only alongside publish.yml's twine floor, which must
+# move to >= 7 in the same change.
 requires = ["hatchling>=1.24,<1.27"]
 build-backend = "hatchling.build"
 
@@ -124,7 +130,7 @@ filterwarnings = [
     "ignore:coroutine .* was never awaited:RuntimeWarning",
 ]
 markers = [
-    "asyncio: mark a test as an async test (auto-applied by asyncio_mode=strict)",
+    "asyncio: mark a test as an async test",
     "slow: mark a test as slow (excluded from quick test runs with -m 'not slow')",
     "unit: fast, isolated unit test (no I/O, no subprocess)",
     "integration: test requiring I/O, network, or subprocess",
@@ -149,7 +155,7 @@ skip_covered = false
 [tool.pyright]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
-include = ["slife", "credstore", "cc_switch", "local-embed"]
+include = ["slife", "credstore", "cc-switch", "local-embed"]
 exclude = ["**/__pycache__/**", "**/.venv/**", ".venv/**", "tests/**", "credstore/tests/**", "cc-switch/tests/**", "local-embed/tests/**", "**/node_modules", "**/.*"]
 extraPaths = ["credstore", "cc-switch", "local-embed"]
 reportMissingImports = true

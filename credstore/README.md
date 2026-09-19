@@ -2,7 +2,7 @@
 
 Cross-platform credential storage — OS keyring with AES-encrypted file backup.
 
-A standalone secret manager that ships with [Slife](https://github.com/juzcn/slife) but has **no dependency on it**. Declares three runtime dependencies: `keyring`, `keyring-wincred`, and `keyrings-cryptfile`.
+A standalone secret manager that ships with [Slife](https://github.com/juzcn/slife) but has **no dependency on it**. Declares four runtime dependencies: `keyring`, `keyrings-cryptfile`, `jaraco.classes`, and `pywin32-ctypes` (Windows only).
 
 Supports **Windows**, **macOS** (GUI + headless), **Linux** (desktop + headless), and **WSL** (Windows Credential Manager via a PowerShell bridge).
 

@@ -2,7 +2,7 @@
 
 跨平台凭证存储 — 操作系统密钥链 + AES 加密文件备份。
 
-一个独立的密钥管理器，随 [Slife](https://github.com/juzcn/slife) 一同发布，但**不依赖** Slife。声明三个运行时依赖：`keyring`、`keyring-wincred` 和 `keyrings-cryptfile`。
+一个独立的密钥管理器，随 [Slife](https://github.com/juzcn/slife) 一同发布，但**不依赖** Slife。声明四个运行时依赖：`keyring`、`keyrings-cryptfile`、`jaraco.classes` 和 `pywin32-ctypes`（仅 Windows）。
 
 支持 **Windows**、**macOS**（桌面 + 无头）、**Linux**（桌面 + 无头）和 **WSL**（通过 PowerShell 桥接 Windows 凭据管理器）。
 

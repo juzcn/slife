@@ -85,9 +85,14 @@ jobs:
           python-version: '3.13'
 
       - name: Install build tools
-        # twine pinned to 6.x/7.x: trusted publishing (OIDC) needs twine>=6,
-        # and its pkginfo handles Metadata-Version 2.4/2.5.  Keep within this
-        # range so behavior is deterministic.
+        # twine>=6 is required for trusted publishing (OIDC); <8 keeps the
+        # range bounded.  The lower bound is what matters for metadata: twine
+        # < 7 rejects Metadata-Version 2.5 ("'2.5' is not a valid metadata
+        # version", verified 2026-09), so 6.x in this range only works because
+        # every pyproject.toml pins hatchling below 1.27 (-> metadata 2.3).
+        # Lifting that pin requires raising this floor to >=7 in the same
+        # change.  (Not a pkginfo cap — twine >= 6.2 no longer depends on
+        # pkginfo.)
         run: pip install 'build' 'twine>=6,<8'
 
       - name: Build package
