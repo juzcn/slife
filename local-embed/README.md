@@ -76,39 +76,112 @@ installs, re-running **updates** to the latest PyPI release.  A plain
 
 If you run local-embed inside an *existing* environment (alongside another
 tool), install the backend into **that** environment's interpreter instead of
-creating a separate one:
+creating a separate one.
+
+There is nothing to look up, and no `bin/`-vs-`Scripts/` question: uv takes the
+venv **root directory** and finds the interpreter inside it itself, and
+`uv tool dir` prints the root that holds every tool venv.  So set the target
+once and reuse it:
 
 ```bash
-uv pip install --python <venv-python> llama-cpp-python==0.3.34
+PY="$(uv tool dir)/local-embed"   # installed by the installers above
+PY="$(uv tool dir)/slife"         # running as slife's embedding backend
+PY=.venv                          # a project checkout (run from its root)
 ```
 
-where `<venv-python>` is the interpreter that runs `local-embed`.
+Pick the line that matches your install, then `uv pip install --python "$PY"
+llama-cpp-python==0.3.34` — the matrix below uses the same `$PY`.
+
+The install you ran decides which line:
+
+- **Tool install** — `uv tool install local-embed` and the installers above
+  land in uv's tool venv.  When local-embed runs as slife's embedding backend
+  the serving process is slife's, so the backend belongs in slife's tool venv
+  (`install.sh` / `install.ps1` install slife).  `uv tool install
+  "local-embed[gguf]"` is *not* that fix — it builds a separate standalone tool
+  rather than the environment that is serving.
+- **Project checkout** — that checkout's `.venv`.
+- **A running server** — a missing backend is reported at startup with the
+  exact command, its own interpreter included.
+
+`--python` is optional only when the target is unambiguous: uv resolves
+`--python` > `$VIRTUAL_ENV` > `.venv` in the current directory (walking up),
+and errors when it finds none — a venv is never created implicitly.  Give it
+explicitly whenever more than one venv is in play.
+
+A venv is **platform-bound**: a Windows-created `.venv` (`Scripts\`, `Lib\`)
+has no `bin/python` and cannot be used from WSL or a Linux container.  Keep the
+Linux venv on the Linux filesystem (`~/venvs/local-embed`) rather than creating
+one inside a checkout that lives on a Windows drive — the second `uv venv`
+rewrites `pyvenv.cfg` and breaks the Windows one.
 
 ### `gguf` backend — platform matrix
 
 `gguf` (llama-cpp-python) is platform-sensitive: PyPI ships **only the sdist**
 (no prebuilt wheels), so on Linux / WSL / macOS a plain install **compiles from
 source** (needs a C compiler + CMake ≥ 3.21). **Windows has no default C
-toolchain** (no MSVC), so it uses the upstream prebuilt CPU wheel — the one
-workaround. GPU variants pass `CMAKE_ARGS`:
+toolchain** (no MSVC), so it uses the upstream prebuilt wheels — CPU or CUDA —
+neither needing MSVC.  GPU variants pass `CMAKE_ARGS`.  Every command takes the
+target as `$PY`, the environment set under [Install](#install):
 
 | Platform | Command |
 |---|---|
-| Linux / WSL / macOS, CPU | `uv pip install --python <venv-python> llama-cpp-python==0.3.34` (compiles from source) |
-| macOS arm64 (Metal) | `CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python <venv-python> llama-cpp-python==0.3.34` |
-| NVIDIA CUDA (Linux) | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python <venv-python> llama-cpp-python==0.3.34` (needs the CUDA toolkit) |
-| **Windows, CPU** | `uv pip install --python <venv-python> --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34` (prebuilt wheel — no MSVC) |
+| Linux / WSL / macOS, CPU | `uv pip install --python "$PY" llama-cpp-python==0.3.34` (compiles from source) |
+| macOS arm64 (Metal) | `CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python "$PY" llama-cpp-python==0.3.34` |
+| NVIDIA CUDA (Linux) | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$PY" llama-cpp-python==0.3.34` (needs the CUDA toolkit **and** an NVIDIA device) |
+| **Windows, CPU** | `uv pip install --python "$PY" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34` (prebuilt wheel — no MSVC) |
+| **Windows, CUDA** | `uv pip install --python "$PY" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34` (prebuilt CUDA wheel — no MSVC, needs an NVIDIA driver) |
 
-The Windows CPU row is the only workaround — everywhere else uses the standard
-source build from PyPI. If the `gguf` backend is missing, the server errors at
-startup with the exact command for your platform.
+Swap the `cu124` suffix for the CUDA release your driver supports — `cu118`,
+`cu121` … `cu125`, `cu130`, `cu132`.  Upstream asks for compute capability
+≥ 6.0 on the CUDA 12 wheels and ≥ 7.5 on CUDA 13.
 
-**Both backends at once** — one `uv pip install`:
+The two Windows rows are the workarounds — everywhere else uses the standard
+source build from PyPI.  Take a CUDA row only with a GPU present: without a
+device it offloads nothing, so the Linux row buys a longer build and the
+Windows row a larger download, both for plain CPU speed.  If the `gguf` backend
+is missing, the server errors at startup with the exact command for your
+platform.
+
+### `transformer` backend — CPU-only machines
+
+`sentence-transformers` pulls `torch`, and on Linux PyPI's `torch` is the
+**CUDA build**: its metadata requires a dozen-odd `nvidia-*` runtime wheels
+(~2.5 GB) whether or not a GPU exists.  They are runtime libraries, not a
+toolkit — nothing in that set is `nvcc` — so on a GPU-less machine they enable
+nothing at all.
+
+Install the CPU wheel first, from PyTorch's own index; the second command then
+finds `torch` satisfied and pulls no `nvidia-*`:
 
 ```bash
-uv pip install --python <venv-python> sentence-transformers llama-cpp-python==0.3.34
+uv pip install --python "$PY" --index-url https://download.pytorch.org/whl/cpu torch
+uv pip install --python "$PY" sentence-transformers
+```
+
+Swapping the CUDA build out afterwards leaves those wheels orphaned — nothing
+depends on them any more — so drop them:
+
+```bash
+uv pip freeze --python "$PY" | grep ^nvidia | cut -d= -f1 | xargs uv pip uninstall --python "$PY"
+```
+
+macOS needs none of this (its `torch` is CPU/MPS), and on Windows the CUDA
+payload normally hides inside torch's own wheel instead of `nvidia-*`
+packages — the `+cpu` wheel avoids it there too.  The `gguf` backend touches
+none of it: llama-cpp-python has no torch dependency.
+
+### Both backends at once
+
+One `uv pip install`:
+
+```bash
+uv pip install --python "$PY" sentence-transformers llama-cpp-python==0.3.34
 # Windows CPU: add the upstream wheel index (see the matrix above)
 ```
+
+On a GPU-less Linux machine, install `torch` from the CPU index first (above) —
+this same command otherwise drags in the ~2.5 GB of `nvidia-*` wheels.
 
 Installing does **not** fetch a model — get the weights first.
 

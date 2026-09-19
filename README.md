@@ -354,12 +354,14 @@ Install the backend **into the slife tool venv** — the same interpreter `local
 |---------|---------|
 | **Transformer** — `sentence-transformers`, simplest, works everywhere | `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
 | **GGUF · CPU (Linux / WSL / macOS)** | `uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
-| **GGUF · NVIDIA CUDA** | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
+| **GGUF · NVIDIA CUDA (Linux)** | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` (needs the toolkit **and** an NVIDIA device) |
 | **GGUF · macOS Metal** | `CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
 | **GGUF · Windows CPU** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34` |
+| **GGUF · Windows CUDA** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34` (swap `cu124` for your driver's CUDA — `cu118`, `cu121`…`cu125`, `cu130`, `cu132`) |
 
-- llama-cpp-python ships **no PyPI wheel** (only the sdist), so the Linux / WSL / macOS rows **compile from source** — the standard build — and need a **C compiler + CMake ≥ 3.21** (macOS: Xcode CLT clang; Linux: `build-essential` + `cmake`). The GPU rows pass `CMAKE_ARGS` to select the backend. **Windows has no default C toolchain**, so it uses the upstream prebuilt CPU wheel — the one workaround.
+- llama-cpp-python ships **no PyPI wheel** (only the sdist), so the Linux / WSL / macOS rows **compile from source** — the standard build — and need a **C compiler + CMake ≥ 3.21** (macOS: Xcode CLT clang; Linux: `build-essential` + `cmake`). The GPU rows pass `CMAKE_ARGS` to select the backend. **Windows has no default C toolchain**, so it uses the upstream prebuilt wheels instead — CPU or CUDA, neither needing MSVC.
 - The two backends can coexist — install both in **one** `uv pip install` (e.g. `sentence-transformers` plus the `llama-cpp-python` CPU row in a single command). Installing twice replaces the first install.
+- `sentence-transformers` pulls `torch`, and on Linux PyPI's `torch` is the **CUDA build**: its metadata requires a dozen-odd `nvidia-*` runtime wheels (~2.5 GB) whether or not a GPU exists, and nothing in that set is `nvcc` — on a GPU-less machine they enable nothing. Install the CPU wheel first (`uv pip install --python "$(uv tool dir)/slife" --index-url https://download.pytorch.org/whl/cpu torch`), then `sentence-transformers` finds `torch` already satisfied and pulls none of them. `llama-cpp-python` has no torch dependency at all.
 - If the backend is missing, `local-embed` logs the exact install command for your platform instead of failing silently.
 
 ### 2. Download the model weights
@@ -452,10 +454,15 @@ The embedding backends above are that same "optional extra" — for direct manua
 | `slife[gguf]` / `slife[transformer]` / `slife[embeddings]` | Legacy in-process embeddings (not used by default) |
 
 ```bash
-uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34    # slife[gguf]  (Linux/macOS builds from source)
-uv pip install --python "$(uv tool dir)/slife" sentence-transformers        # slife[transformer]
-# Windows — pre-built wheels (no C++ compiler needed). See the step-1 table for wheel selection.
+# a tool install (the installers) — into slife's tool venv:
+uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34   # slife[gguf]
+uv pip install --python "$(uv tool dir)/slife" sentence-transformers      # slife[transformer]
+
+# uvx / git checkout — there is no tool venv; add the extra to the ephemeral env:
+uvx --with llama-cpp-python==0.3.34 --from git+https://github.com/juzcn/slife.git slife
 ```
+
+Wheel selection per platform is the step-1 table (`--extra-index-url …/whl/cpu` or `…/whl/cu124` on Windows, `CMAKE_ARGS` for the Linux/Metal GPU builds); on a GPU-less Linux machine install the CPU `torch` first — the step-1 bullets give both.
 
 ## Usage Reference
 
