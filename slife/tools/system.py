@@ -336,20 +336,48 @@ async def check_sharefile(client=None) -> list[dict]:
         # asks the edge (``reachable``); the harness reports what it says.
         # Absent (an older plugin) reads as reachable: never cry wolf.
         if data.get("reachable", True):
-            return [_entry("sharefile", "ok", "tunnel", data.get("url", "?"))]
-        value = f"unreachable ({provider})" if provider else "unreachable"
-        return [{"component": "sharefile", "level": "warning", "key": "tunnel",
-                 "value": value,
-                 "hint": "The tunnel is published but the public edge cannot "
-                         "route to it, so every request to that URL answers "
-                         "HTTP 530; share_file refuses until it recovers. It "
-                         "keeps retrying in the background."}]
-    value = f"offline ({provider})" if provider else "offline"
-    hint = f"{reason} " if reason else ""
-    return [{"component": "sharefile", "level": "warning", "key": "tunnel",
-             "value": value,
-             "hint": hint + "The active provider is set by sharefile.yaml "
-                            "(active_provider)."}]
+            entries = [_entry("sharefile", "ok", "tunnel", data.get("url", "?"))]
+        else:
+            value = f"unreachable ({provider})" if provider else "unreachable"
+            entries = [{
+                "component": "sharefile", "level": "warning", "key": "tunnel",
+                "value": value,
+                "hint": "The tunnel is published but the public edge cannot "
+                        "route to it, so every request to that URL answers "
+                        "HTTP 530; share_file refuses until it recovers. It "
+                        "keeps retrying in the background."}]
+    else:
+        value = f"offline ({provider})" if provider else "offline"
+        hint = f"{reason} " if reason else ""
+        entries = [{
+            "component": "sharefile", "level": "warning", "key": "tunnel",
+            "value": value,
+            "hint": hint + "The active provider is set by sharefile.yaml "
+                           "(active_provider)."}]
+
+    if data.get("edge_via_proxy"):
+        # The CAUSE of a flap that otherwise reads as Cloudflare's fault.  A
+        # proxy in fake-ip mode answers the edge hostname with a synthetic
+        # address, so cloudflared's control connection is carried — and cut —
+        # by that proxy: it registers, dies, repeats every 30-60s, and every
+        # window between answers the published link with HTTP 530.  Nothing
+        # about the transport or the protocol helps; the dial itself lands on
+        # a fake address.  Named here because it is invisible from inside
+        # slife — the tunnel simply looks flaky.
+        edge_ip = data.get("edge_ip") or "?"
+        entries.append({
+            "component": "sharefile", "level": "warning", "key": "edge",
+            "value": f"edge via fake-ip ({edge_ip})",
+            "hint": "A local proxy in fake-ip mode (Clash / Mihomo / sing-box) "
+                    "is resolving the tunnel's edge, so the control connection "
+                    "is carried and cut by that proxy — the tunnel registers "
+                    f"and dies repeatedly, whatever protocol it uses. Exclude "
+                    f"the edge from fake-ip and route it direct: for "
+                    f"cloudflared add '+.argotunnel.com' to fake-ip-filter and "
+                    f"'DOMAIN-SUFFIX,argotunnel.com,DIRECT' to the proxy rules "
+                    f"(other providers: their own edge hostname).",
+        })
+    return entries
 
 
 # ═══════════════════════════════════════════════════════════════════════

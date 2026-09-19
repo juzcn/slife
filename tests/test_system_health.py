@@ -1233,6 +1233,57 @@ class TestCheckSharefileFunction:
         assert "530" in entries[0]["hint"]
 
     @pytest.mark.asyncio
+    async def test_a_fake_ip_edge_names_the_cause_not_just_the_symptom(self):
+        """A flap that looks like Cloudflare's fault is usually a local proxy
+        in fake-ip mode carrying (and cutting) the control connection.  The
+        harness reports both the symptom and the cause — the cause is what
+        carries the remedy, and it is invisible from inside slife."""
+        client = _FakeSharefileClient({
+            "active": True, "reachable": False, "state": "active",
+            "url": "https://x.trycloudflare.com", "reason": "",
+            "provider": "cloudflare",
+            "edge_ip": "198.18.0.32", "edge_via_proxy": True,
+        })
+        entries = await check_sharefile(client=client)
+
+        assert [e["key"] for e in entries] == ["tunnel", "edge"]
+        assert entries[0]["value"] == "unreachable (cloudflare)"      # symptom
+        assert entries[1]["level"] == "warning"
+        assert entries[1]["value"] == "edge via fake-ip (198.18.0.32)"
+        # The remedy is on the user's proxy config, so it must be spelled out.
+        assert "argotunnel.com" in entries[1]["hint"]
+        assert "fake-ip-filter" in entries[1]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_a_healthy_tunnel_on_a_fake_ip_edge_still_warns(self):
+        """The interception is the fact to report, not the current blip state:
+        a tunnel inside a working window flaps again in 30-60s."""
+        client = _FakeSharefileClient({
+            "active": True, "reachable": True, "state": "active",
+            "url": "https://x.trycloudflare.com", "reason": "",
+            "provider": "cloudflare",
+            "edge_ip": "198.18.0.32", "edge_via_proxy": True,
+        })
+        entries = await check_sharefile(client=client)
+
+        assert entries[0]["level"] == "ok"
+        assert entries[1]["key"] == "edge"
+        assert entries[1]["level"] == "warning"
+
+    @pytest.mark.asyncio
+    async def test_a_real_edge_reports_only_the_tunnel(self):
+        """No proxy, no extra line — the check must not cry wolf."""
+        client = _FakeSharefileClient({
+            "active": True, "reachable": True, "state": "active",
+            "url": "https://x.trycloudflare.com", "reason": "",
+            "provider": "cloudflare",
+            "edge_ip": "104.16.0.1", "edge_via_proxy": False,
+        })
+        entries = await check_sharefile(client=client)
+
+        assert [e["key"] for e in entries] == ["tunnel"]
+
+    @pytest.mark.asyncio
     async def test_down_tunnel_names_the_provider_and_carries_its_reason(self):
         """The hint must not paste one provider's remediation onto another's
         failure: the provider is a fact (in the value) and the reason is

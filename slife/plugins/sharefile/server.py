@@ -341,8 +341,20 @@ async def __check() -> str:
     *served*: a transport that lost the edge keeps its URL while answering
     every request with HTTP 530, so ``active`` alone reads as healthy through
     an outage.  It is the edge's answer, probed from the transport itself.
+
+    ``edge_ip`` / ``edge_via_proxy`` name the address the child dials and
+    whether it is a fake-ip one.  A flap that looks like Cloudflare's fault is
+    usually a local proxy in fake-ip mode carrying (and cutting) the control
+    connection, and this is the only place that shows — the tunnel just
+    registers and dies.  Facts again: the remedy is on the user's proxy config.
     """
     st = _tunnel.status()
+    # A non-string never came from a provider (a stub in a test, a future
+    # transport): report "not observed" rather than serialising something
+    # that is not an address.
+    edge_ip = getattr(_tunnel, "edge_ip", "")
+    if not isinstance(edge_ip, str):
+        edge_ip = ""
     return json.dumps(
         {
             "active": st["state"] == "active",
@@ -353,6 +365,8 @@ async def __check() -> str:
             # Which tunnel provider is live — the harness never branches on it
             # (every consumer uses .get), it is diagnostics for system_health.
             "provider": _sharefile_config.active_provider,
+            "edge_ip": edge_ip,
+            "edge_via_proxy": bool(getattr(_tunnel, "edge_via_proxy", False)),
         },
         ensure_ascii=False,
     )

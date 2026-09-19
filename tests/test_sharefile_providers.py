@@ -297,6 +297,58 @@ class TestCloudflareReadiness:
             tunnel.stop()
 
 
+class TestEdgeViaProxy:
+    """The edge address a proxy in fake-ip mode answers with.
+
+    A tunnel that registers and dies every 30-60s while publishing a link that
+    answers HTTP 530 reads as Cloudflare's fault.  Measured, it was this: the
+    proxy resolves the edge hostname into its fake-ip pool, so cloudflared's
+    TCP dial lands on a synthetic address and times out — which no value of
+    ``--protocol`` can change.  Detected off the child's own output, because
+    it is otherwise invisible from inside slife.
+    """
+
+    #: The real line, from the machine that reported the flapping.
+    CF_EDGE_LINE = (
+        "2026-09-19T09:12:05Z INF Registered tunnel connection connIndex=0 "
+        "connection=06c5c5d6 event=0 ip=198.18.0.32 location=lax07 protocol=http2"
+    )
+
+    def test_fake_ip_edge_is_flagged(self):
+        tunnel = providers.CloudflareQuickTunnel()
+        tunnel._note_edge_ip(self.CF_EDGE_LINE)
+
+        assert tunnel.edge_ip == "198.18.0.32"
+        assert tunnel.edge_via_proxy is True
+
+    def test_ipv6_fake_edge_is_flagged(self):
+        tunnel = providers.CloudflareQuickTunnel()
+        tunnel._note_edge_ip("... ip=fdfe:dcba:9876::20 location=lax07")
+        assert tunnel.edge_via_proxy is True
+
+    def test_a_real_edge_address_is_not_flagged(self):
+        """Otherwise every healthy tunnel reports a proxy interception."""
+        tunnel = providers.CloudflareQuickTunnel()
+        tunnel._note_edge_ip("... ip=104.16.0.1 location=lax07 protocol=http2")
+
+        assert tunnel.edge_ip == "104.16.0.1"
+        assert tunnel.edge_via_proxy is False
+
+    def test_an_unobserved_edge_is_not_flagged(self):
+        """"" means "not observed", never "fine" — and must not read as a
+        proxy interception on a provider that publishes no such line."""
+        assert providers.CloudflareQuickTunnel().edge_via_proxy is False
+
+    def test_the_line_is_really_read_from_the_child(self):
+        """Not just the parser: the address rides the child's own stdout."""
+        tunnel = providers.CloudflareQuickTunnel()
+        proc = _FakeProcess(_LinesStdout([CF_BANNER, CF_REGISTERED, self.CF_EDGE_LINE]))
+        tunnel._proc = proc
+        tunnel._read_output(proc)
+
+        assert tunnel.edge_via_proxy is True
+
+
 class TestCloudflareLiveness:
     """Liveness comes from the transport, not from its prose.
 

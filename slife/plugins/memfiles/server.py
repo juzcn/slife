@@ -1160,20 +1160,17 @@ def _reject_non_public_url(url: str) -> str | None:
     import ipaddress
     import socket
 
+    from slife.net import is_fake_ip
+
     # Clash / Mihomo / sing-box fake-ip resolvers answer *public* hostnames
     # with synthetic addresses that Python's ipaddress classifies as private
-    # (198.18.0.0/15, RFC 2544 benchmark space) or ULA (sing-box's IPv6 pool
-    # under fc00::/7) — that's the proxy's front door for public hosts, not
-    # LAN/metadata infrastructure.  Exempt only the documented pools or
-    # url_save refuses every URL when a fake-ip resolver is the system DNS:
-    #   * 198.18.0.0/15        — Clash / sing-box IPv4 fake-ip (RFC 2544)
-    #   * fdfe:dcba:9876::/48  — sing-box default IPv6 fake-ip pool
+    # or ULA — that's the proxy's front door for public hosts, not
+    # LAN/metadata infrastructure.  EXEMPT exactly the documented pools
+    # (``slife.net``, shared with sharefile's tunnel health, which flags the
+    # same addresses for the opposite reason) or url_save refuses every URL
+    # when a fake-ip resolver is the system DNS.
     # ANY other non-globally-routable answer (loopback, private, link-local,
     # multicast, a real fc00::/7 ULA LAN host, ...) is still refused.
-    _FAKE_IP_NETS = (
-        ipaddress.ip_network("198.18.0.0/15"),
-        ipaddress.ip_network("fdfe:dcba:9876::/48"),
-    )
 
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -1190,7 +1187,7 @@ def _reject_non_public_url(url: str) -> str | None:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if any(ip in net for net in _FAKE_IP_NETS):
+        if is_fake_ip(ip):
             continue
         if (
             ip.is_loopback

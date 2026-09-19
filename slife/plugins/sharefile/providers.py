@@ -53,6 +53,7 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 import httpx2
 
+from slife.net import is_fake_ip
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
@@ -231,6 +232,10 @@ class _TunnelProviderBase:
         self._failed: bool = False
         # Factual message of the last terminal failure (empty when not failed).
         self._failure_reason: str = ""
+        #: The edge address the child last reported dialing.  Only the CLI
+        #: providers set it (see ``_note_edge_ip``); empty means "unknown", not
+        #: "fine", so :attr:`edge_via_proxy` stays False rather than guessing.
+        self._edge_ip: str = ""
 
     # ── Subclass hooks ─────────────────────────────────────────────
 
@@ -275,6 +280,28 @@ class _TunnelProviderBase:
         """
         with self._start_lock:  # held only for guard mutation, never across _do_start
             return self._starting
+
+    @property
+    def edge_ip(self) -> str:
+        """The edge address the child last reported dialing; ``""`` if unknown.
+
+        Only the CLI providers populate it — an SDK-driven transport has no
+        line to scrape — so an empty value means "not observed", never "fine".
+        """
+        return self._edge_ip
+
+    @property
+    def edge_via_proxy(self) -> bool:
+        """Whether the edge address is a fake-ip one — a local proxy's answer.
+
+        True means a proxy in fake-ip mode is resolving the tunnel's edge, so
+        the control connection is being carried (and cut) by that proxy rather
+        than by Cloudflare.  Nothing about the transport or the protocol helps
+        there: the dial itself lands on a synthetic address.  Reported as a
+        fact — the caller owns the remedy, which is on the user's proxy config,
+        not in slife.
+        """
+        return is_fake_ip(self._edge_ip)
 
     def is_reachable(self) -> bool:
         """Whether the published URL can actually be served right now.
@@ -622,6 +649,10 @@ _CONN_INDEX_RE = re.compile(r"connIndex=(\d+)")
 #: :meth:`CloudflareQuickTunnel._transport_alive`.
 _METRICS_RE = re.compile(r"Starting metrics server on (127\.0\.0\.1:\d+)/metrics")
 
+#: The edge address on cloudflared's connection lines —
+#: ``... connIndex=0 event=0 ip=198.18.0.32 location=lax07 protocol=http2``.
+_EDGE_IP_RE = re.compile(r"\bip=([0-9a-fA-F:.]+)")
+
 
 def _conn_index(line: str) -> str:
     """The connector index named in *line*, or ``""`` when it names none."""
@@ -761,6 +792,22 @@ class _CliTunnelProvider(_TunnelProviderBase):
                 self._url_event.set()
         elif self.unregistration_marker and self.unregistration_marker in line:
             self._registered.discard(_conn_index(line))
+
+    def _note_edge_ip(self, line: str) -> None:
+        """Remember the edge address this child is dialing, and whether it is
+        a synthetic one.
+
+        cloudflared names it on every connection line (``ip=198.18.0.32``).
+        When it falls in a fake-ip pool, a local proxy is answering for the
+        edge — and that is the whole explanation for a tunnel that registers
+        and then dies every 30-60 s: the control connection is being cut by
+        the proxy, not by the transport or the protocol.  Worth capturing
+        because it is otherwise invisible from here: the symptom is a flap
+        that looks like Cloudflare's problem.
+        """
+        match = _EDGE_IP_RE.search(line)
+        if match:
+            self._edge_ip = match.group(1)
 
     def _note_metrics(self, line: str) -> None:
         """Pick up the loopback address of the child's own metrics API.
@@ -916,6 +963,7 @@ class _CliTunnelProvider(_TunnelProviderBase):
                 )
                 self._note_connections(line)
                 self._note_metrics(line)
+                self._note_edge_ip(line)
                 url = self._parse_url(line)
                 if url is None:
                     continue
@@ -1074,14 +1122,25 @@ class CloudflareQuickTunnel(_CliTunnelProvider):
 
     #: Transport the connector uses to the edge (``--protocol``).  QUIC is
     #: cloudflared's own default and the faster of the two, and it is also the
-    #: one that fails behind a proxy / TUN adapter — an environment this tool
+    #: one that dies behind a proxy / TUN adapter — an environment this tool
     #: meets constantly, since the whole point of a tunnel is to cross a
     #: network the machine does not control.  There the connection registers
-    #: and then dies, "timeout: no recent network activity", over and over;
+    #: and then dies ("timeout: no recent network activity") over and over;
     #: every window in between answers the published hostname with HTTP 530,
     #: and the flapping reads as a healthy tunnel to anything that trusts
-    #: stdout.  http2 rides TCP, which those paths carry reliably.  Set
-    #: ``protocol: "quic"`` (or ``"auto"``) in sharefile.yaml to switch back.
+    #: stdout.  http2 rides TCP, which those paths carry more reliably than
+    #: UDP.  Set ``protocol: "quic"`` (or ``"auto"``) in sharefile.yaml to
+    #: switch back.
+    #:
+    #: **This does NOT rescue a fake-ip proxy**, and the earlier claim here
+    #: that it did was wrong — measured, not theorised: with a Clash/Mihomo
+    #: TUN in fake-ip mode the edge hostname resolves into 198.18.0.0/15, so
+    #: the TCP dial itself lands on a synthetic address and times out
+    #: (``dial tcp 198.18.0.32:7844: i/o timeout``).  The transport choice
+    #: never comes into play, and the flap continues unchanged on http2.  The
+    #: honest remedy is on the proxy config (make the edge resolve real and
+    #: route direct — see :attr:`_TunnelProviderBase.edge_via_proxy`, which
+    #: reports exactly this case).
     DEFAULT_PROTOCOL = "http2"
 
     def __init__(self, options: dict | None = None) -> None:
