@@ -372,6 +372,8 @@ The **`tools_synced` line marks the moment the set is usable**:
 
 It reports on the **first** pass, on any pass that **changed** the registry, and **always on failure** — never on a no-op re-run, because `tools/list_changed` fires on the gateway's own cadence (a server re-registered every 30 s in a live session) and reporting each pass would be a heartbeat rather than news.  Silence therefore keeps meaning *still syncing*.  `total` counts the whole registry — what is callable — not what the pass added; what a turn *injects* is the narrower `load_status` snapshot, so the line promises availability, never injection.
 
+The **add/remove delta rides only later passes**.  The first pass fills an empty registry, so its delta is the entire external tool set — `1465 added` on a restart, which reports a process artefact as a change to the tool set, and a restart is precisely what does not change it.  On later passes the registry is already populated, so a difference there means something really moved.
+
 Not gated on embeddings: the pass calls `wake_indexer`/`on_saved` (a wake, not a wait), so semantic search finishing is irrelevant to tool availability.
 
 ### Crash survival

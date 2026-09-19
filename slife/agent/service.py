@@ -1448,13 +1448,26 @@ class AgentService:
         ``total`` is what is REGISTERED, i.e. callable.  What the model SEES
         in a turn is the ``load_status`` snapshot, a narrower set — so the
         line promises availability, never injection.
+
+        The add/remove delta rides ONLY later passes: the first pass fills an
+        empty registry, so its delta is the whole external tool set and says
+        nothing about whether the set changed.
         """
         after = {t.name for t in self.tool_registry.list_tools()}
         added = len(after - before)
         removed = len(before - after)
-        if not failure and self._tool_sync_reported and not (added or removed):
+        first = not self._tool_sync_reported
+        if not failure and not first and not (added or removed):
             return
         self._tool_sync_reported = True
+        if first:
+            # The delta counts what is new to THIS process's registry, which on
+            # a cold start is every external tool there is — "1465 added" would
+            # report a restart artefact as a change to the tool set, and a
+            # restart is precisely what does not change it.  Deltas describe
+            # later passes, where the registry is already populated and a
+            # difference means something really moved.
+            added = removed = 0
         try:
             await self._notify_activity(
                 "tools_synced",

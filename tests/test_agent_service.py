@@ -308,10 +308,12 @@ class TestAgentServiceMCPEnrichment:
             assert events.await_args.args[0] == "tools_synced"
             kw = events.await_args.kwargs
             # ``total`` is the WHOLE registry — the builtins are callable too,
-            # so it reports what the user can actually reach, not just what
-            # this pass added.
+            # so it reports what the user can actually reach.
             assert kw["total"] == len(service.tool_registry.list_tools())
-            assert kw["added"] == 1             # ...of which svc__search is new
+            # ...and NO delta: the first pass fills an empty registry, so
+            # "1465 added" would report a restart artefact as a change to the
+            # tool set.  A restart is what does not change it.
+            assert kw["added"] == 0 and kw["removed"] == 0
             assert kw["error"] == ""
             assert isinstance(kw["seconds"], float)
 
@@ -334,9 +336,9 @@ class TestAgentServiceMCPEnrichment:
             events.reset_mock()
 
             # The server leaves the config (its listing drops it), so the
-            # reconcile unregisters its proxies — a real change, and the pass
-            # must say so.  (A server that merely reports no tools is read as
-            # "not ready yet" and changes nothing.)
+            # reconcile unregisters its proxies — a real change, and this is
+            # a LATER pass, where the delta does mean something.  (A server
+            # that merely reports no tools is read as "not ready yet".)
             client = service._plugins["mcp-gateway"].client
             original = client.call_tool
 
