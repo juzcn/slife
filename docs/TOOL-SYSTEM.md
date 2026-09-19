@@ -347,8 +347,8 @@ nowhere to carry one.
 Driven by connect events / `mcp_*` mutations / `tools/list_changed` / the gateway's ready glue (in the background):
 
 1. **Project the connectivity verdict**: read the wrapper's live `__check`; a server whose last `tools/list` succeeded has its verdict cleared, every other **switched-on** configured server (down, failed) has its tools marked `unavailable`.  A server switched off in the config gets **no** verdict — it is `disabled`, not down, and the two must stay tellable apart.  A failed probe is *not* a verdict either: the rows are left untouched rather than marking every server broken;
-2. **auto_load servers** — register their proxies (full diff) and mirror their tool rows (new rows `unloaded`, or `loaded` when the server entry is marked `autoload` — which also re-asserts `loaded` on an existing row, §5);
-3. **on-demand servers** (the default) — mirror their tool rows with **no proxies**: this is what makes `tool_search` find their tools and `func-tool-load` materialize them one at a time.  Only a server with a working tool list yields rows (`__mcp_list_tools` answers empty otherwise — and asking is what reads the list, so this step is also what makes a peer list at all); a down server's rows stay and its verdict keeps them out of injection;
+2. **enabled servers** — register their proxies (full diff) and mirror their tool rows (new rows `unloaded`, or `loaded` when the server entry is marked `autoload` — which also re-asserts `loaded` on an existing row, §5).  `auto_load` gates the **seed**, never registration: the registry is the execution pool, so a tool the catalog calls `loaded` must have an instance behind it.  Gating this on `auto_load` was the bug — `load_status` is durable across a restart while the registry is not, so a tool loaded in a previous session sat at `loaded` with no proxy and every call failed "known but not loaded" while the catalog insisted it was loaded;
+3. **disabled servers** — mirror their tool rows with **no proxies**: a switched-off server keeps its rows (so `tool_search` still finds them, and re-enabling needs no re-discovery) but its tools must not be executable.  Only a server with a working tool list yields rows (`__mcp_list_tools` answers empty otherwise — and asking is what reads the list, so this step is also what makes a peer list at all); a down server's rows stay and its verdict keeps them out of injection;
 4. **drop** registered proxies whose server left the config (`mcp_remove` is the only unregister path — a merely disabled server keeps its proxy, and its rows keep the `disabled` report);
 5. **purge the removed server's catalog rows.** Comparing against **tools.yaml** (the authority) rather than the pool keeps a transient empty pool — a gateway restart — from wiping a still-configured server's rows;
 6. **re-project the verdict** after the mirrors: steps 2–3 are what ask for the lists, so a peer that listed during this pass was still flagged when step 1 looked.  One more `__check` plus the guarded per-server write (which costs nothing where nothing moved) settles the pass.
@@ -356,6 +356,23 @@ Driven by connect events / `mcp_*` mutations / `tools/list_changed` / the gatewa
 Two cost rules the pass follows: the per-server mirrors run **concurrently** (each awaits a real `tools/list`, and for a peer the pool holds nothing for, the spawn that makes one possible — sequentially, every server waited on all the servers before it), and each server's rows go over in **one batched `reconcile` + one `purge_source_except`** (a per-tool upsert re-read the whole table per tool).
 
 Registering a tool never loads it: every new row lands `unloaded` and only `func-tool-load` puts it into the injection set — the `autoload` entries excepted, which are born `loaded` and stay that way.
+
+### The boot window
+
+The pass runs in the **background** (the gateway's ready glue — it never holds the plugin start open), so there is a window after startup where the registry holds the builtins but not yet the external tools.  A call in that window fails, and which failure it is depends on whether the tool's catalog row exists yet: `Unknown tool` before the row, the *"known but not loaded — use tool_search + func-tool-load"* hint after it.  Nothing is broken; the pass has not finished.
+
+This is the window that makes a durable `load_status` fragile: the catalog remembers `loaded` across a restart, the registry does not, and registering every enabled server's proxies (step 2) is what re-joins them.
+
+The **`tools_synced` line marks the moment the set is usable**:
+
+```
+⚙ 工具集同步完成，耗时 12.4s — 64 个工具可用
+⚙ Tool set synced in 12.4s — 64 tools usable
+```
+
+It reports on the **first** pass, on any pass that **changed** the registry, and **always on failure** — never on a no-op re-run, because `tools/list_changed` fires on the gateway's own cadence (a server re-registered every 30 s in a live session) and reporting each pass would be a heartbeat rather than news.  Silence therefore keeps meaning *still syncing*.  `total` counts the whole registry — what is callable — not what the pass added; what a turn *injects* is the narrower `load_status` snapshot, so the line promises availability, never injection.
+
+Not gated on embeddings: the pass calls `wake_indexer`/`on_saved` (a wake, not a wait), so semantic search finishing is irrelevant to tool availability.
 
 ### Crash survival
 
