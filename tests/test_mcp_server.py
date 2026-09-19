@@ -65,7 +65,7 @@ class TestAutoConnectConfigured:
                 },
             },
         }
-        # tools.json5 section view — the merged mcp.servers (+legacy) read
+        # tools.yaml section view — the merged mcp.servers (+legacy) read
         # the boot path must use; the test locks the section format so a
         # regression back to the pre-restructure top-level ``servers`` key
         # fails here.
@@ -542,7 +542,7 @@ class TestMCPListToolsSingleRead:
 
 
 class TestBootConnectsEveryEnabled:
-    """Startup is decided by tools.json5 alone: enabled ⇒ bring it up now.
+    """Startup is decided by tools.yaml alone: enabled ⇒ bring it up now.
 
     Nothing is remembered between sessions — no db, no snapshot — so a server
     that was down when the user quit is retried at the next boot like any
@@ -597,7 +597,7 @@ class TestNoCatalogAccess:
     """The wrapper must not touch tools.db at all.
 
     Connection state lives on the catalog's tool rows (written by the HOST),
-    and which servers to bring up comes from tools.json5 — so the child has no
+    and which servers to bring up comes from tools.yaml — so the child has no
     business reading (or writing) the shared catalog.
     """
 
@@ -652,7 +652,7 @@ class TestMcpFamilyGate:
     names the ``rest_api_*`` tool that does own the server.
 
     The family is patched rather than read so the tests don't depend on which
-    servers this repo's tools.json5 happens to configure.
+    servers this repo's tools.yaml happens to configure.
     """
 
     @staticmethod

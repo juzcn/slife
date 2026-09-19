@@ -139,7 +139,7 @@ class ToolCatalogService:
         #: a job in ``job`` (the user's tools), a plugin's own tool in
         #: ``plugin``.  A builtin's disable keeps it out of the REGISTRY (the
         #: factory skips it) but not out of the catalog — its row is mirrored
-        #: with ``enabled=0``, so json5 and the db agree on it.
+        #: with ``enabled=0``, so yaml and the db agree on it.
         self._disabled_builtins = frozenset(disabled_builtins)
         self._disabled_jobs = frozenset(disabled_jobs)
         self._disabled_plugin = frozenset(disabled_plugin)
@@ -161,7 +161,7 @@ class ToolCatalogService:
         """Re-read the per-entry ``enabled: false`` sets from a fresh config.
 
         The sets are captured when the service is built, so a hand-edit to
-        ``tools.json5`` mid-session would otherwise wait for the next boot.
+        ``tools.yaml`` mid-session would otherwise wait for the next boot.
         ``None`` keeps a set as it was (the caller re-read only some sections).
         """
         if builtins is not None:
@@ -217,7 +217,7 @@ class ToolCatalogService:
     def _row_enabled(
         self, tool: "Tool", disabled_servers: frozenset[str] = frozenset(),
     ) -> bool | None:
-        """The row's ``enabled`` — always tools.json5's answer.
+        """The row's ``enabled`` — always tools.yaml's answer.
 
         There is no per-tool enable anywhere in the system: a family's section
         decides, and for an external server that decision is the SERVER's
@@ -227,7 +227,7 @@ class ToolCatalogService:
 
         *disabled_servers* is passed in (not looked up per tool) because one
         pass can carry a four-figure number of an external server's tools, and
-        a per-tool config read would re-parse ``tools.json5`` per row.
+        a per-tool config read would re-parse ``tools.yaml`` per row.
         """
         if _is_external(tool):
             server = _source_id(tool)
@@ -245,7 +245,7 @@ class ToolCatalogService:
 
     @staticmethod
     def _disabled_servers() -> frozenset[str]:
-        """Servers switched OFF in ``tools.json5`` — one read per sync pass."""
+        """Servers switched OFF in ``tools.yaml`` — one read per sync pass."""
         try:
             from slife.plugins.mcp_gateway import config as _cfg
             return frozenset(
@@ -335,7 +335,7 @@ class ToolCatalogService:
 
         ``skill`` and ``cli`` are the two categories no registry feeds: their
         rows come from their own live sources (the skills dir; the ``cli``
-        section of ``tools.json5``).  They are rows all the same — that is how
+        section of ``tools.yaml``).  They are rows all the same — that is how
         ``tool_search`` reaches them — but they are not function tools, so
         they carry no load state (``status`` stays NULL).
 
@@ -663,7 +663,7 @@ class ToolCatalogService:
     async def purge_unconfigured_sources(self, configured: "set[str]") -> "set[str]":
         """Purge the rows of every server NOT in *configured* (main-owner only).
 
-        The mirror image of the removed ``sync_config_servers``: tools.json5
+        The mirror image of the removed ``sync_config_servers``: tools.yaml
         is still the authority, but it is now compared against the servers
         that actually OWN tool rows instead of against a server table.
         """

@@ -24,7 +24,7 @@ a design note in `DESIGN.md` ever disagree, this document and the code win.
   one plugin with a `fixed_port` (its config pins the port a static
   embeddings `base_url` points at).
 - The **MCP gateway** (`mcp-gateway`) is one of those child plugins.  It is the
-  *gateway to external MCP servers*: it self-hosts `tools.json5`,
+  *gateway to external MCP servers*: it self-hosts `tools.yaml`,
   connects third-party MCP servers, and re-exposes their tools as
   `{server}__{tool}` proxies.  It is the only plugin whose spec has
   `gateway=True`.
@@ -36,7 +36,7 @@ a design note in `DESIGN.md` ever disagree, this document and the code win.
     one host).  It runs **in** the main process and is deliberately placed
     outside `slife.plugins.*` so discovery can't spawn it;
 - Third-party capability enters *only* as a standard MCP server registered in
-  `tools.json5` through the `mcp-gateway`.  There is no
+  `tools.yaml` through the `mcp-gateway`.  There is no
   `plugins.external` mechanism.
 
 ---
@@ -147,7 +147,7 @@ external servers, sharefile's tunnel, wechat's login, media providers, a2a's
 broker, embedding backends) are **not** readiness conditions — they surface
 via their own status tools and never gate readiness.
 
-A *required* plugin (`plugins.required` in `slife.json5`; the shipped config
+A *required* plugin (`plugins.required` in `slife.yaml`; the shipped config
 sets `["memdb", "memfiles"]`) failing to become ready **aborts startup**
 instead of limping on.  The spawn hang-guard is bounded by the registry's
 `ready.plugin_start` = **60 s** (a 30 s cap previously misfired on slow

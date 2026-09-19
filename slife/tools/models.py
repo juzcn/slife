@@ -63,7 +63,7 @@ class _ModelConfigTool(_ConfigPathMixin, Tool):
     """Shared ``__init__``/``from_config`` for the model-mutation tools.
 
     All three (set/remove/switch) need the live :class:`Config` to keep the
-    in-memory model registry in sync with the on-disk JSON5.
+    in-memory model registry in sync with the on-disk YAML.
 
     Not a real tool — placeholder class attrs only to pass
     ``Tool.__init_subclass__`` validation; excluded from auto-discovery.
@@ -110,7 +110,7 @@ class ListModelsTool(_ConfigPathMixin, Tool):
         raw = read_config(self._config_path)
         providers = raw.get(_MODELS_KEY, {}).get("providers", {})
         if not isinstance(providers, dict) or not providers:
-            return "No models configured. Add a provider with models in slife.json5."
+            return "No models configured. Add a provider with models in slife.yaml."
 
         active = raw.get(_ACTIVE_KEY, "")
         lines = []

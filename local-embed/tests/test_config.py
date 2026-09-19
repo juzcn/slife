@@ -2,7 +2,7 @@
 
 ``apply_env`` reads the config's ``env:`` section and injects it into
 ``os.environ`` before any backend loads (shell env wins), mirroring
-slife.json5's env handling — keeps a transformer repo-name model
+slife.yaml's env handling — keeps a transformer repo-name model
 self-contained without external HF_* exports.
 """
 

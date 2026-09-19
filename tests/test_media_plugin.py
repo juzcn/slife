@@ -5,7 +5,6 @@ directly, following the a2a plugin test pattern.
 """
 
 import json
-import json5
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,6 +13,7 @@ pytestmark = pytest.mark.unit
 
 import slife.plugins.media.server as plugin
 from slife.plugins.media import config as config_mod
+from tests.conftest import dump_config
 from slife.plugins.media.adapters import dashscope_aigc
 from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError
 from slife.plugins.media.adapters.dashscope_aigc import DashScopeAIGCAdapter
@@ -61,8 +61,8 @@ def _full_config():
 
 
 def _write_config(tmp_path, section):
-    path = tmp_path / "slife.json5"
-    path.write_text(json5.dumps({"media": section}), encoding="utf-8")
+    path = tmp_path / "slife.yaml"
+    path.write_text(dump_config({"media": section}), encoding="utf-8")
     return path
 
 
@@ -96,7 +96,7 @@ def _fake_adapter(**results):
 
 class TestLoadMediaConfig:
     def test_missing_section_is_empty(self, tmp_path, monkeypatch):
-        path = tmp_path / "slife.json5"
+        path = tmp_path / "slife.yaml"
         path.write_text("{}", encoding="utf-8")
         monkeypatch.setattr(config_mod, "get_config_path", lambda: path)
         assert load_media_config().is_empty()

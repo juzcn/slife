@@ -24,7 +24,7 @@ def _simplify_path(path: str) -> str:
     return path.lstrip("/")
 
 
-def _scan_json5(node, key: str, path: str, refs: list[str]) -> None:
+def _scan_config(node, key: str, path: str, refs: list[str]) -> None:
     target = f"${{{key}}}"
     if isinstance(node, dict):
         for k, v in node.items():
@@ -32,18 +32,18 @@ def _scan_json5(node, key: str, path: str, refs: list[str]) -> None:
             if isinstance(v, str) and target in v:
                 refs.append(_simplify_path(path) if path else k)
             elif isinstance(v, (dict, list)):
-                _scan_json5(v, key, child_path, refs)
+                _scan_config(v, key, child_path, refs)
     elif isinstance(node, list):
         for i, item in enumerate(node):
             if isinstance(item, str) and target in item:
                 refs.append(_simplify_path(path) if path else f"[{i}]")
             elif isinstance(item, (dict, list)):
-                _scan_json5(item, key, f"{path}[{i}]", refs)
+                _scan_config(item, key, f"{path}[{i}]", refs)
 
 
-def _find_json5_refs(raw: dict, key: str) -> list[str]:
+def _find_config_refs(raw: dict, key: str) -> list[str]:
     refs: list[str] = []
-    _scan_json5(raw, key, "", refs)
+    _scan_config(raw, key, "", refs)
     return refs
 
 
@@ -52,7 +52,7 @@ def _find_json5_refs(raw: dict, key: str) -> list[str]:
 class CredentialCheckTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "credential_check"
     category: ClassVar[str] = "Credentials"
-    description = "Check credential in shell, slife.json5, and credstore. Values always masked."
+    description = "Check credential in shell, slife.yaml, and credstore. Values always masked."
     parameters = {
         "type": "object",
         "properties": {
@@ -68,8 +68,8 @@ class CredentialCheckTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportInco
         env_val = os.environ.get(key)
         lines.append(f"  [shell]      : {'✓ set (' + _mask_value(env_val) + ')' if env_val else '✗ not set'}")
         raw = read_config(self._config_path)
-        refs = _find_json5_refs(raw, key)
-        lines.append(f"  [slife.json5]: {'✓ referenced (' + ', '.join(refs) + ')' if refs else '✗ not referenced'}")
+        refs = _find_config_refs(raw, key)
+        lines.append(f"  [slife.yaml]: {'✓ referenced (' + ', '.join(refs) + ')' if refs else '✗ not referenced'}")
         cred_val = get_credential(key)
         lines.append(f"  [credstore]  : {'✓ stored (' + _mask_value(cred_val) + ')' if cred_val else '✗ not stored'}")
         return "\n".join(lines)

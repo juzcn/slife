@@ -461,7 +461,7 @@ class TestRenderReport:
         the save-side compaction (8000).  A baseline exam must not."""
         entries = [
             {"component": "config", "level": "ok", "key": "path",
-             "value": r"D:\Dev\Workspace\slife\slife.json5 (16 models, 20 MCP servers, embeddings=enabled)"},
+             "value": r"D:\Dev\Workspace\slife\slife.yaml (16 models, 20 MCP servers, embeddings=enabled)"},
             {"component": "model", "level": "ok", "key": "active",
              "value": "deepseek/deepseek-flash (thinking=on, vision=on, ctx 1000000)"},
         ]
@@ -629,9 +629,9 @@ class TestCheckWechatStatus:
 
     @pytest.mark.asyncio
     async def test_config_none_returns_unknown(self):
-        """When config is None and slife.json5 doesn't exist, returns unknown."""
+        """When config is None and slife.yaml doesn't exist, returns unknown."""
         with patch("slife.config.Config") as MockConfig:
-            MockConfig.from_json5.side_effect = Exception("no config")
+            MockConfig.from_yaml.side_effect = Exception("no config")
             with patch("pathlib.Path.exists", return_value=False):
                 result = await check_wechat(config=None)
                 assert len(result) == 1
@@ -727,7 +727,7 @@ class TestCheckWechatStatus:
         with patch(
             "slife.config.Config"
         ) as MockConfig:
-            MockConfig.from_json5.side_effect = Exception("parse error")
+            MockConfig.from_yaml.side_effect = Exception("parse error")
             with patch("pathlib.Path.exists", return_value=True):
                 result = await check_wechat(config=None)
                 # If loading throws, config stays None, so we get "unknown"
@@ -1239,7 +1239,7 @@ class TestCheckSharefileFunction:
         })
         entries = await check_sharefile(client=client)
         assert entries[0]["value"] == "offline (ngrok)"
-        assert "sharefile.json5" in entries[0]["hint"]
+        assert "sharefile.yaml" in entries[0]["hint"]
 
 
 class TestCheckEmbeddings:

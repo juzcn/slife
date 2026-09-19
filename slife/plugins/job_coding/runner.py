@@ -4,7 +4,7 @@ A job is a plain Python function in the jobs directory; running it is
 deterministic code execution with exactly the declared arguments.  The ONLY
 concessions to the LLM are the explicit ``llm.chat(...)`` calls a job author
 writes — each a single, narrow ``LLMClient`` batch chat on the job model
-(``job_coding_model`` in slife.json5, or the active model as a fallback).
+(``job_coding_model`` in slife.yaml, or the active model as a fallback).
 No system prompt, no conversation history, no agent loop ever reaches the
 job — messages are constructed solely by job code.
 
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 def resolve_job_model() -> Any:
     """Resolve the job LLM ``ModelConfig``.
 
-    1. ``job_coding_model`` top-level key of slife.json5: a ``provider/model``
+    1. ``job_coding_model`` top-level key of slife.yaml: a ``provider/model``
        ref reusing the main ``models.providers`` (independent of the
        conversation's active model — usually a cheap/fast model).
     2. Fallback: the main config's active model.
@@ -121,7 +121,7 @@ def _get_config() -> Any:
     global _config
     if _config is None:
         from slife.config import Config
-        _config = Config.from_json5(get_config_path())
+        _config = Config.from_yaml(get_config_path())
     return _config
 
 
@@ -146,7 +146,7 @@ class _LLMProxy:
     Every call performs exactly one batch chat.  ``model`` selects a model
     explicitly (``"provider/model"`` or a bare model id from the main
     config); when omitted the call uses the job's configured model
-    (``job_coding_model`` in slife.json5, or the active model).  Messages
+    (``job_coding_model`` in slife.yaml, or the active model).  Messages
     are built from the job author's arguments — structural guarantee that
     no conversation context ever reaches the model.
     """
@@ -240,7 +240,7 @@ class _GatewayProxy:
 
     Every call forwards ONE tool invocation to the mcp-gateway plugin's
     persistent connection pool (``__mcp_call_tool``), so a job can use any
-    tool on any connected server from ``tools.json5`` — including
+    tool on any connected server from ``tools.yaml`` — including
     tools never loaded into the main agent's registry.  Always returns a
     string (never raises); an unreachable gateway / disconnected or
     disabled server / unknown tool all surface as a clear error the job can

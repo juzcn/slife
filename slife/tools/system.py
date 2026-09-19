@@ -164,7 +164,7 @@ def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, s
     if sem.get("state") == "disabled":
         return ("warning", "disabled",
                 "Enable with embeddings_enable true, or edit the top-level "
-                "embeddings section in slife.json5.")
+                "embeddings section in slife.yaml.")
     if sem.get("semantic_ready"):
         # A width nobody has measured is NOT 0.  Each semantic index has its
         # own embedder, and only the one that has probed its endpoint knows
@@ -231,9 +231,9 @@ def _get_wechat_config():
     try:
         from slife.config import Config, parse_cli_agent
         agent_name = parse_cli_agent(sys.argv)
-        cfg_path = get_data_dir() / "slife.json5"
+        cfg_path = get_data_dir() / "slife.yaml"
         if cfg_path.exists():
-            return Config.from_json5(cfg_path, agent_name=agent_name)
+            return Config.from_yaml(cfg_path, agent_name=agent_name)
     except Exception:
         pass
     return None
@@ -242,7 +242,7 @@ def _get_wechat_config():
 async def check_wechat(client=None, config=None) -> list[dict]:
     """Return WeChat plugin status as health-check entries.
 
-    The enabled/disabled flag comes from slife.json5 (read in-process);
+    The enabled/disabled flag comes from slife.yaml (read in-process);
     login/session facts are asked of the wechat plugin's internal ``__check``
     tool through its MCP client (from ``ToolContext.wechat_client``) and
     interpreted into health entries.  When the plugin is not connected, a
@@ -323,7 +323,7 @@ async def check_sharefile(client=None) -> list[dict]:
     assert data is not None
     if data.get("active"):
         return [_entry("sharefile", "ok", "tunnel", data.get("url", "?"))]
-    # Which provider is live is a FACT (it is chosen by sharefile.json5), so it
+    # Which provider is live is a FACT (it is chosen by sharefile.yaml), so it
     # rides in the value; the reason it is down is the plugin's own diagnosis
     # for ITS provider (a missing NGROK_AUTHTOKEN, an absent ssh/cloudflared
     # binary) and the harness must not paste one provider's remediation onto
@@ -334,7 +334,7 @@ async def check_sharefile(client=None) -> list[dict]:
     hint = f"{reason} " if reason else ""
     return [{"component": "sharefile", "level": "warning", "key": "tunnel",
              "value": value,
-             "hint": hint + "The active provider is set by sharefile.json5 "
+             "hint": hint + "The active provider is set by sharefile.yaml "
                             "(active_provider)."}]
 
 
@@ -885,7 +885,7 @@ async def check_job_coding(client=None) -> list[dict]:
     if model in ("", "?", "unconfigured"):
         entries.append(_entry(
             "job-coding", "warning", "llm_model", "unconfigured",
-            "Set job_coding_model in slife.json5. Jobs that call llm.chat "
+            "Set job_coding_model in slife.yaml. Jobs that call llm.chat "
             "fail without it, while pure-computation jobs still work.",
         ))
     else:

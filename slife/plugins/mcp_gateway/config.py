@@ -1,11 +1,11 @@
-"""mcp-gateway config — load/save ``tools.json5``, path resolution, secrets.
+"""mcp-gateway config — load/save ``tools.yaml``, path resolution, secrets.
 
 Path precedence (one loader, every consumer):
   1. ``$TOOLS_FILE`` — explicit override (a test/dev escape hatch only)
-  2. slife data dir — ``<data_dir>/tools.json5`` via
-     :func:`slife.paths.get_data_dir` (production ``~/.slife/tools.json5``,
+  2. slife data dir — ``<data_dir>/tools.yaml`` via
+     :func:`slife.paths.get_data_dir` (production ``~/.slife/tools.yaml``,
      the checkout root in dev).  The mcp gateway is a built-in slife plugin —
-     its config lives next to ``slife.json5``, like memdb/memfiles/wechat.
+     its config lives next to ``slife.yaml``, like memdb/memfiles/wechat.
 
 One section per tool category: ``mcp.servers`` (external MCP servers),
 ``rest-api``, ``cli``, ``builtin``, ``job``, ``skill`` (the host reads
@@ -47,20 +47,20 @@ logger = logging.getLogger(__name__)
 
 
 def default_config_path() -> Path:
-    """Default config path: ``<slife data dir>/tools.json5``.
+    """Default config path: ``<slife data dir>/tools.yaml``.
 
     The mcp gateway is a built-in slife plugin — its config sits next to
-    ``slife.json5`` in the slife data dir (``~/.slife`` in production, the
+    ``slife.yaml`` in the slife data dir (``~/.slife`` in production, the
     checkout root in dev).  ``get_data_dir()`` honours ``$SLIFE_DATA_DIR``,
     which the host exports so plugin children resolve the same directory.
     """
     from slife.paths import get_data_dir
 
-    return get_data_dir() / "tools.json5"
+    return get_data_dir() / "tools.yaml"
 
 
 def resolve_config_path() -> Path:
-    """Return the tools.json5 path for this process.
+    """Return the tools.yaml path for this process.
 
     ``$TOOLS_FILE`` (test/dev override) > slife data dir default.
     """
@@ -149,7 +149,7 @@ def _servers_dict(raw: dict) -> dict:
     process.  That shared shape is why both sections live here at all, and
     **the section is what makes one** (see below): a REST API's identity is
     its placement.  A legacy top-level ``servers`` — the pre-section
-    tools.json5 shape — reads as the mcp section, so an old file keeps working
+    tools.yaml shape — reads as the mcp section, so an old file keeps working
     at the next start; a write normalizes it (see
     :func:`_normalize_legacy_servers`).
     """
@@ -248,7 +248,7 @@ def tool_list_limit() -> int:
 def _normalize_legacy_servers(raw: dict) -> None:
     """Lift a legacy top-level ``servers`` into ``mcp.servers`` (one-time).
 
-    The pre-restructure tools.json5 held servers at the top level; the
+    The pre-restructure tools.yaml held servers at the top level; the
     first write migrates the file so the sections are canonical from then
     on.  No-op when ``mcp`` already exists (a file with both sections is
     already current).
@@ -375,7 +375,7 @@ def _load_raw() -> dict:
     return read_config(current_path())
 
 
-# ── Raw json5 entry → ServerConfig ─────────────────────────────────────
+# ── Raw yaml entry → ServerConfig ─────────────────────────────────────
 
 
 def resolve_server_config(name: str, raw_entry: dict, *, rest_api: bool = False):
@@ -413,8 +413,8 @@ def resolve_server_config(name: str, raw_entry: dict, *, rest_api: bool = False)
         auth=auth,
         source=_dict_copy(raw_entry.get("source")),
         os_paths=bool(raw_entry.get("os_paths", False)),
-        # Config key is `autoload` — a valid json5 identifier, so it needs no
-        # quotes in tools.json5 (a dash would require quoting).
+        # Config key is `autoload` — a valid yaml identifier, so it needs no
+        # quotes in tools.yaml (a dash would require quoting).
         auto_load=raw_entry.get("autoload") is True,
         # NOT read from the entry: it is which SECTION the entry sits in, and
         # only the caller that read the file knows that.  Defaults to False

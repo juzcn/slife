@@ -4,10 +4,10 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import json
-import json5
 import pytest
 from pathlib import Path
 
+from tests.conftest import dump_config, load_config_text
 from slife.tools.cli import CliSetTool, CliRemoveTool, CliListToolsTool, get_cli_tools_summary
 from slife.tools._config_io import with_fetched_at
 
@@ -45,8 +45,8 @@ class TestCliSetToolExecute:
     @pytest.mark.asyncio
     async def test_add_with_source(self, tmp_path):
         """cli_set stores source dict with auto-generated fetched_at."""
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({}))
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({}))
 
         tool = CliSetTool(config_path=cfg_path)
         result = await tool.execute(
@@ -59,7 +59,7 @@ class TestCliSetToolExecute:
         assert "[OK]" in result
         assert "yt-dlp" in result
 
-        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        raw = load_config_text(cfg_path.read_text(encoding="utf-8"))
         entry = raw["cli"]["yt-dlp"]
         assert entry["command"] == "yt-dlp"
         src = entry["source"]
@@ -71,8 +71,8 @@ class TestCliSetToolExecute:
     @pytest.mark.asyncio
     async def test_add_without_source(self, tmp_path):
         """cli_set without source is backward compatible — no source key."""
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({}))
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({}))
 
         tool = CliSetTool(config_path=cfg_path)
         result = await tool.execute(
@@ -82,14 +82,14 @@ class TestCliSetToolExecute:
         )
 
         assert "[OK]" in result
-        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        raw = load_config_text(cfg_path.read_text(encoding="utf-8"))
         assert "source" not in raw["cli"]["npm"]
 
     @pytest.mark.asyncio
     async def test_add_with_partial_source(self, tmp_path):
         """Only provided source fields are stored (plus fetched_at)."""
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({}))
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({}))
 
         tool = CliSetTool(config_path=cfg_path)
         await tool.execute(
@@ -99,7 +99,7 @@ class TestCliSetToolExecute:
             source={"url": "https://cli.github.com/"},
         )
 
-        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        raw = load_config_text(cfg_path.read_text(encoding="utf-8"))
         src = raw["cli"]["gh"]["source"]
         assert src["url"] == "https://cli.github.com/"
         assert "type" not in src
@@ -109,8 +109,8 @@ class TestCliSetToolExecute:
     @pytest.mark.asyncio
     async def test_add_with_install_and_source(self, tmp_path):
         """Both install instructions and source can coexist."""
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({}))
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({}))
 
         tool = CliSetTool(config_path=cfg_path)
         await tool.execute(
@@ -121,7 +121,7 @@ class TestCliSetToolExecute:
             source={"type": "npm", "version": "1.2.3"},
         )
 
-        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        raw = load_config_text(cfg_path.read_text(encoding="utf-8"))
         entry = raw["cli"]["yldp"]
         assert entry["install"] == "npm install -g yldp"
         assert entry["source"]["type"] == "npm"
@@ -130,8 +130,8 @@ class TestCliSetToolExecute:
     @pytest.mark.asyncio
     async def test_update_preserves_source(self, tmp_path):
         """Updating a CLI entry preserves the source field if re-provided."""
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({}))
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({}))
 
         tool = CliSetTool(config_path=cfg_path)
         # First add
@@ -146,7 +146,7 @@ class TestCliSetToolExecute:
         )
 
         assert "Updated" in result
-        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        raw = load_config_text(cfg_path.read_text(encoding="utf-8"))
         entry = raw["cli"]["foo"]
         assert entry["description"] == "updated"
         assert entry["source"]["type"] == "github"
@@ -154,8 +154,8 @@ class TestCliSetToolExecute:
     @pytest.mark.asyncio
     async def test_source_none_not_stored(self, tmp_path):
         """Explicit None source should not write a source key."""
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({}))
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({}))
 
         tool = CliSetTool(config_path=cfg_path)
         await tool.execute(
@@ -163,7 +163,7 @@ class TestCliSetToolExecute:
             source=None,
         )
 
-        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        raw = load_config_text(cfg_path.read_text(encoding="utf-8"))
         assert "source" not in raw["cli"]["cmd"]
 
 
@@ -173,13 +173,13 @@ class TestCliSetToolWithExistingConfig:
     @pytest.mark.asyncio
     async def test_cli_tools_section_created(self, tmp_path):
         """cli_tools section is created if not already present."""
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({"models": {}, "env": {"KEY": "val"}}))
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({"models": {}, "env": {"KEY": "val"}}))
 
         tool = CliSetTool(config_path=cfg_path)
         await tool.execute(name="test", command="test", description="A test CLI")
 
-        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        raw = load_config_text(cfg_path.read_text(encoding="utf-8"))
         assert "cli" in raw
         assert raw["env"]["KEY"] == "val"  # existing sections preserved
 
@@ -192,21 +192,21 @@ class TestCliRemoveTool:
 
     @pytest.mark.asyncio
     async def test_remove_existing(self, tmp_path):
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({
             "cli": {"test": {"command": "test", "description": "desc"}},
         }))
 
         tool = CliRemoveTool(config_path=cfg_path)
         result = await tool.execute(name="test")
         assert "[OK]" in result
-        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        raw = load_config_text(cfg_path.read_text(encoding="utf-8"))
         assert "test" not in raw.get("cli", {})
 
     @pytest.mark.asyncio
     async def test_remove_nonexistent(self, tmp_path):
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({}))
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({}))
 
         tool = CliRemoveTool(config_path=cfg_path)
         result = await tool.execute(name="ghost")
@@ -221,8 +221,8 @@ class TestCliListToolsTool:
 
     @pytest.mark.asyncio
     async def test_list_empty(self, tmp_path):
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({}))
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({}))
 
         tool = CliListToolsTool(config_path=cfg_path)
         result = await tool.execute()
@@ -230,8 +230,8 @@ class TestCliListToolsTool:
 
     @pytest.mark.asyncio
     async def test_list_with_entries(self, tmp_path):
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({
             "cli": {
                 "a": {"command": "a", "description": "Tool A"},
                 "b": {"command": "b", "description": "Tool B", "install": "pip install b"},
@@ -252,8 +252,8 @@ class TestGetCliToolsSummary:
     """Tests for get_cli_tools_summary display output."""
 
     def test_displays_source_info(self, tmp_path):
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({
             "cli": {
                 "yt-dlp": {
                     "command": "yt-dlp",
@@ -269,8 +269,8 @@ class TestGetCliToolsSummary:
         assert "v2026.03.01" in summary
 
     def test_no_source_info_when_absent(self, tmp_path):
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({
             "cli": {
                 "cmd": {"command": "cmd", "description": "A tool"},
             },
@@ -280,8 +280,8 @@ class TestGetCliToolsSummary:
         assert "source:" not in summary
 
     def test_source_with_type_only(self, tmp_path):
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({
             "cli": {
                 "cmd": {
                     "command": "cmd",
@@ -304,8 +304,8 @@ class TestGetCliToolsSummaryEdgeCases:
     def test_skips_non_dict_entries(self, tmp_path):
         """Entries in cli_tools that are not dicts should be skipped."""
         from slife.tools.cli import get_cli_tools_summary
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({
             "cli": {
                 "good_tool": {
                     "command": "echo",
@@ -321,8 +321,8 @@ class TestGetCliToolsSummaryEdgeCases:
     def test_non_dict_cli_tools_section(self, tmp_path):
         """When cli_tools is a list, should show default message."""
         from slife.tools.cli import get_cli_tools_summary
-        cfg_path = tmp_path / "tools.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "tools.yaml"
+        cfg_path.write_text(dump_config({
             "cli": ["bad", "values"],
         }))
         result = get_cli_tools_summary(cfg_path)

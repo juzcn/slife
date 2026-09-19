@@ -9,10 +9,10 @@ import logging
 import os
 
 import pytest
-import json5
 from pathlib import Path
 
 from slife.config import Config, ModelConfig
+from tests.conftest import dump_config, load_config_text
 
 
 # ── ModelConfig.from_dict ─────────────────────────────────────────────
@@ -155,24 +155,24 @@ class TestModelConfigFromDict:
         assert mc.thinking_enabled is False
 
 
-# ── Config.from_json5 ─────────────────────────────────────────────────
+# ── Config.from_yaml ─────────────────────────────────────────────────
 
 
-class TestConfigFromJSON5:
-    """Tests for Config.from_json5 classmethod."""
+class TestConfigFromYAML:
+    """Tests for Config.from_yaml classmethod."""
 
     def test_file_not_found(self, tmp_path):
         """Raises FileNotFoundError for missing config."""
-        missing = tmp_path / "nonexistent" / "slife.json5"
+        missing = tmp_path / "nonexistent" / "slife.yaml"
         with pytest.raises(FileNotFoundError) as exc_info:
-            Config.from_json5(str(missing))
+            Config.from_yaml(str(missing))
         assert "not found" in str(exc_info.value)
 
     def test_minimal_config(self, tmp_path, monkeypatch):
-        """Minimal valid JSON5 config with providers."""
+        """Minimal valid YAML config with providers."""
         monkeypatch.setenv("DEEPSEEK_KEY", "env-key")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "deepseek": {
@@ -184,7 +184,7 @@ class TestConfigFromJSON5:
                 }
             },
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].api_key == "env-key"
         assert config.active_model_ref == "deepseek/deepseek-v4-flash"
@@ -207,14 +207,14 @@ class TestConfigFromJSON5:
 
     def test_list_style_models(self, tmp_path):
         """Config with models as a flat list."""
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": [
                 {"model": "gpt-4o", "api_key": "sk-key", "provider": "openai"},
                 {"model": "claude-3", "api_key": "sk-other", "provider": "anthropic"},
             ],
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 2
         assert config.models[0].ref == "openai/gpt-4o"
         assert config.models[1].ref == "anthropic/claude-3"
@@ -223,18 +223,18 @@ class TestConfigFromJSON5:
         """plugins.required names become the required-plugin contract set.
 
         The plugins.external mechanism was removed — only required is read
-        (externals enter via the internal mcp gateway's tools.json5).
+        (externals enter via the internal mcp gateway's tools.yaml).
         """
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
             "plugins": {
                 "required": ["memdb", "memfiles"],
                 "external": [{"name": "mcp", "module": "slife.plugins.mcp_gateway.server"}],
             },
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.plugins_required == frozenset({"memdb", "memfiles"})
         # external is no longer parsed onto the Config.
         assert not hasattr(config, "plugins_external")
@@ -242,29 +242,29 @@ class TestConfigFromJSON5:
     def test_plugins_required_default_empty(self, tmp_path, monkeypatch):
         """Absent plugins.required means every plugin is optional (default false)."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.plugins_required == frozenset()
 
     def test_plugins_required_sanitized(self, tmp_path, monkeypatch):
         """Non-list value and non-string entries degrade to an empty/safe set."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
             "plugins": {"required": "memdb"},
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.plugins_required == frozenset()
 
-        cfg_path.write_text(json5.dumps({
+        cfg_path.write_text(dump_config({
             "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
             "plugins": {"required": ["memdb", 42, None]},
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.plugins_required == frozenset({"memdb"})
 
     def test_plugins_required_roundtrip(self, tmp_path, monkeypatch):
@@ -280,8 +280,8 @@ class TestConfigFromJSON5:
 
     def test_active_model_selection(self, tmp_path):
         """active_model field selects which model is active."""
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "deepseek": {
@@ -301,13 +301,13 @@ class TestConfigFromJSON5:
             },
             "active_model": "openai/gpt-4o",
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.active_model.ref == "openai/gpt-4o"
 
     def test_stale_active_model_falls_back(self, tmp_path, caplog):
         """Stale active_model ref falls back to first model, no crash."""
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "deepseek": {
@@ -322,23 +322,23 @@ class TestConfigFromJSON5:
             "active_model": "removed-provider/gone-model",
         }))
         with caplog.at_level(logging.WARNING, logger="slife.config"):
-            config = Config.from_json5(str(cfg_path))
+            config = Config.from_yaml(str(cfg_path))
         assert config.active_model_ref == "deepseek/v4-flash"
         assert config.active_model.ref == "deepseek/v4-flash"
         assert "config_active_model_stale" in caplog.text
 
     def test_no_models_raises(self, tmp_path):
         """Empty models section raises ValueError."""
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({"models": {}}))
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({"models": {}}))
         with pytest.raises(ValueError, match="No models defined"):
-            Config.from_json5(str(cfg_path))
+            Config.from_yaml(str(cfg_path))
 
     def test_agent_config(self, tmp_path, monkeypatch):
         """Agent section configures max_iterations."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "d": {
@@ -351,14 +351,14 @@ class TestConfigFromJSON5:
                 "max_iterations": 5,
             },
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.max_iterations == 5
 
     def test_tools_config(self, tmp_path, monkeypatch):
-        """tools.json5 ``builtin`` section is loaded into Config.tools."""
+        """tools.yaml ``builtin`` section is loaded into Config.tools."""
         monkeypatch.setenv("MY_KEY", "my-key-value")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "d": {
@@ -368,13 +368,13 @@ class TestConfigFromJSON5:
                 }
             },
         }))
-        (tmp_path / "tools.json5").write_text(json5.dumps({
+        (tmp_path / "tools.yaml").write_text(dump_config({
             "builtin": [
                 {"name": "execute_shell", "timeout": 60},
                 {"name": "run_python_script"},
             ],
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert len(config.tools) == 2
         assert config.tools[0] == {"name": "execute_shell", "timeout": 60}
         assert config.tools[1] == {"name": "run_python_script"}
@@ -382,8 +382,8 @@ class TestConfigFromJSON5:
     def test_duplicate_model_in_provider_raises(self, tmp_path, monkeypatch):
         """Duplicate model names within a provider raise ValueError."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "deepseek": {
@@ -397,13 +397,13 @@ class TestConfigFromJSON5:
             },
         }))
         with pytest.raises(ValueError, match="Duplicate model"):
-            Config.from_json5(str(cfg_path))
+            Config.from_yaml(str(cfg_path))
 
     def test_provider_defaults_inherited(self, tmp_path, monkeypatch):
         """Models inherit base_url and api_key from provider."""
         monkeypatch.setenv("KEY", "parent-key")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "deepseek": {
@@ -417,7 +417,7 @@ class TestConfigFromJSON5:
                 }
             },
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         m = config.models[0]
         assert m.base_url == "https://custom.deepseek.com"
         assert m.api_key == "parent-key"
@@ -503,7 +503,7 @@ class TestParseCLI:
         assert parse_cli_lang(["slife", "--lang", "zh"]) == "zh"
         assert parse_cli_lang(["slife", "--lang", "en"]) == "en"
         # flag after a positional is still found
-        assert parse_cli_lang(["slife", "myconf.json5", "--lang", "zh"]) == "zh"
+        assert parse_cli_lang(["slife", "myconf.yaml", "--lang", "zh"]) == "zh"
 
     def test_parse_cli_lang_default(self):
         from slife.config import parse_cli_lang
@@ -522,14 +522,14 @@ class TestParseCLI:
 
     def test_parse_cli_config_path_skips_lang(self):
         from slife.config import parse_cli_config_path
-        assert parse_cli_config_path(["slife", "--lang", "zh", "myconf.json5"]) == "myconf.json5"
+        assert parse_cli_config_path(["slife", "--lang", "zh", "myconf.yaml"]) == "myconf.yaml"
         assert parse_cli_config_path(
-            ["slife", "--agent", "bob", "--lang", "zh", "myconf.json5"]
-        ) == "myconf.json5"
+            ["slife", "--agent", "bob", "--lang", "zh", "myconf.yaml"]
+        ) == "myconf.yaml"
         assert parse_cli_config_path(["slife", "--lang", "zh"]) is None
 
 
-# ── Config.from_json5 — subagent / A2A ────────────────────────────────
+# ── Config.from_yaml — subagent / A2A ────────────────────────────────
 
 
 class TestConfigSubagentDefault:
@@ -537,21 +537,21 @@ class TestConfigSubagentDefault:
 
     def test_defaults_when_missing(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
                 },
             },
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.subagent_config == {"max_subagents": 5}
 
     def test_custom_values(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
@@ -561,13 +561,13 @@ class TestConfigSubagentDefault:
         }))
         # task_timeout is developer-owned (registry work.task_budget) — the
         # user key is ignored, only max_subagents stays user-configurable.
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.subagent_config == {"max_subagents": 3}
 
     def test_non_dict_uses_defaults(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
@@ -575,7 +575,7 @@ class TestConfigSubagentDefault:
             },
             "subagent": "not-a-dict",
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.subagent_config == {"max_subagents": 5}
 
     def test_user_timeout_keys_ignored_registry_wins(self, tmp_path, monkeypatch):
@@ -585,8 +585,8 @@ class TestConfigSubagentDefault:
         values (work.tool_budget / work.task_budget).
         """
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
@@ -595,7 +595,7 @@ class TestConfigSubagentDefault:
             "agent": {"tool_timeout": 777},
             "subagent": {"max_subagents": 7, "task_timeout": 999},
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.tool_timeout == 120.0
         assert "task_timeout" not in config.subagent_config  # stale subagent key is ignored
         assert config.subagent_config == {"max_subagents": 7}  # still user-configurable
@@ -611,8 +611,8 @@ class TestConfigA2A:
 
     def test_agent_name_from_user(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
@@ -622,7 +622,7 @@ class TestConfigA2A:
                 "broker": {"host": "mqtt.example.com", "port": 1883},
             },
         }))
-        config = Config.from_json5(str(cfg_path), agent_name="bob")
+        config = Config.from_yaml(str(cfg_path), agent_name="bob")
         assert config.a2a_config is not None
         assert config.a2a_config.agent_name == "bob"
         assert config.a2a_config.enabled is True  # auto-enabled when a2a config present
@@ -630,8 +630,8 @@ class TestConfigA2A:
     def test_mqtt_key_is_ignored(self, tmp_path, monkeypatch):
         """The old ``mqtt`` section key is not read — the section is ``a2a``."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
@@ -641,13 +641,13 @@ class TestConfigA2A:
                 "broker": {"host": "mqtt.example.com", "port": 1883},
             },
         }))
-        config = Config.from_json5(str(cfg_path), agent_name="bob")
+        config = Config.from_yaml(str(cfg_path), agent_name="bob")
         assert config.a2a_config is not None
         assert config.a2a_config.broker_host == "localhost"
         assert config.a2a_config.broker_port == 1883
 
 
-# ── Config.from_json5 edge cases ────────────────────────────────────────
+# ── Config.from_yaml edge cases ────────────────────────────────────────
 
 
 class TestConfigEnvInjection:
@@ -659,8 +659,8 @@ class TestConfigEnvInjection:
         # Remove test var if exists
         monkeypatch.delenv("MY_TOOL_KEY", raising=False)
 
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p": {
@@ -673,7 +673,7 @@ class TestConfigEnvInjection:
                 "MY_TOOL_KEY": "tool-secret-123",
             },
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.env == {"MY_TOOL_KEY": "tool-secret-123"}
 
     def test_env_section_applies_literal_default(self, tmp_path, monkeypatch):
@@ -681,8 +681,8 @@ class TestConfigEnvInjection:
         unset in BOTH shell and credstore — the documented lenient chain.
         (It was previously dropped entirely, leaving the key absent.)"""
         monkeypatch.delenv("MY_FALLBACK_KEY", raising=False)
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p": {
@@ -695,30 +695,30 @@ class TestConfigEnvInjection:
                 "MY_FALLBACK_KEY": "${MY_FALLBACK_KEY:-fallback-value}",
             },
         }))
-        Config.from_json5(str(cfg_path))
+        Config.from_yaml(str(cfg_path))
         assert os.environ.get("MY_FALLBACK_KEY") == "fallback-value"
 
 
-class TestConfigFromJSON5EdgeCases:
-    """Tests for Config.from_json5 edge cases not covered elsewhere."""
+class TestConfigFromYAMLEdgeCases:
+    """Tests for Config.from_yaml edge cases not covered elsewhere."""
 
     def test_providers_not_dict(self, tmp_path, monkeypatch):
         """Non-dict providers field is treated as empty."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": ["not", "a", "dict"],
             },
         }))
         with pytest.raises(ValueError, match="No models defined"):
-            Config.from_json5(str(cfg_path))
+            Config.from_yaml(str(cfg_path))
 
     def test_provider_cfg_not_dict(self, tmp_path, monkeypatch):
         """Non-dict provider entry is skipped."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "bad_provider": "not a dict",
@@ -729,15 +729,15 @@ class TestConfigFromJSON5EdgeCases:
                 },
             },
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].ref == "good_provider/valid_model"
 
     def test_models_not_list(self, tmp_path, monkeypatch):
         """Non-list models field in provider is skipped."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p1": {
@@ -751,15 +751,15 @@ class TestConfigFromJSON5EdgeCases:
                 },
             },
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].ref == "p2/real_model"
 
     def test_model_entry_not_dict(self, tmp_path, monkeypatch):
         """Non-dict model entry in list is skipped."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p1": {
@@ -772,28 +772,28 @@ class TestConfigFromJSON5EdgeCases:
                 },
             },
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].ref == "p1/good_model"
 
     def test_list_style_non_dict_entry(self, tmp_path):
         """Non-dict entry in list-style models section is skipped."""
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": [
                 "not-a-dict",
                 {"model": "gpt-4o", "api_key": "sk-key"},
             ],
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].ref == "unknown/gpt-4o"
 
     def test_agent_not_dict(self, tmp_path, monkeypatch):
         """Non-dict agent section uses defaults."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p": {
@@ -804,14 +804,14 @@ class TestConfigFromJSON5EdgeCases:
             },
             "agent": "not-a-dict",
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.max_iterations == 30
 
     def test_env_not_dict(self, tmp_path, monkeypatch):
         """Non-dict env section uses empty dict."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p": {
@@ -822,14 +822,14 @@ class TestConfigFromJSON5EdgeCases:
             },
             "env": "not-a-dict",
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert config.env == {}
 
     def test_tools_not_list(self, tmp_path, monkeypatch):
         """Non-list builtin section uses empty list."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p": {
@@ -839,16 +839,16 @@ class TestConfigFromJSON5EdgeCases:
                 },
             },
         }))
-        (tmp_path / "tools.json5").write_text('{ builtin: "not-a-list" }')
-        config = Config.from_json5(str(cfg_path))
+        (tmp_path / "tools.yaml").write_text('{ builtin: "not-a-list" }')
+        config = Config.from_yaml(str(cfg_path))
         assert config.tools == []
 
     def test_provider_models_empty_list(self, tmp_path, monkeypatch):
         """Provider with empty models list contributes no models."""
         monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
+        cfg_path = tmp_path / "slife.yaml"
         # Only provider with real model so it's collected
-        cfg_path.write_text(json5.dumps({
+        cfg_path.write_text(dump_config({
             "models": {
                 "providers": {
                     "p1": {
@@ -862,7 +862,7 @@ class TestConfigFromJSON5EdgeCases:
                 },
             },
         }))
-        config = Config.from_json5(str(cfg_path))
+        config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].ref == "p2/solo"
 
@@ -933,7 +933,7 @@ class TestSeedFirstRunConfig:
     def _pkg_dir(tmp_path):
         pkg = tmp_path / "pkg"
         pkg.mkdir()
-        (pkg / "slife.json5").write_text(json5.dumps({
+        (pkg / "slife.yaml").write_text(dump_config({
             "active_model": "d/m",  # so the fresh-seed key check can pass
             "models": {"providers": {"d": {
                 "api_key": "${KEY}",
@@ -941,8 +941,8 @@ class TestSeedFirstRunConfig:
                 "models": [{"model": "m", "name": "M"}],
             }}},
         }))
-        (pkg / "local_embed.json5").write_text('{ active_model: "x" }')
-        (pkg / "tools.json5").write_text('{ mcp: { servers: {} }, cli: {} }')
+        (pkg / "local_embed.yaml").write_text('{ active_model: "x" }')
+        (pkg / "tools.yaml").write_text('{ mcp: { servers: {} }, cli: {} }')
         return pkg
 
     @staticmethod
@@ -957,12 +957,12 @@ class TestSeedFirstRunConfig:
         monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
         home = self._home(tmp_path, monkeypatch)
         data = tmp_path / "data"
-        Config.from_json5(str(data / "slife.json5"))
-        # slife.json5 + tools.json5 seed into the data dir; local_embed
+        Config.from_yaml(str(data / "slife.yaml"))
+        # slife.yaml + tools.yaml seed into the data dir; local_embed
         # keeps its own ~/.local-embed (separate standalone app).
-        assert (data / "slife.json5").exists()
-        assert (data / "tools.json5").exists()
-        assert (home / ".local-embed" / "local_embed.json5").exists()
+        assert (data / "slife.yaml").exists()
+        assert (data / "tools.yaml").exists()
+        assert (home / ".local-embed" / "local_embed.yaml").exists()
 
     def test_existing_slife_config_not_overwritten_siblings_seeded(
             self, tmp_path, monkeypatch):
@@ -970,42 +970,42 @@ class TestSeedFirstRunConfig:
         monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
         home = self._home(tmp_path, monkeypatch)
         data = tmp_path / "data"
-        cfg_path = data / "slife.json5"
+        cfg_path = data / "slife.yaml"
         cfg_path.parent.mkdir()
-        cfg_path.write_text(json5.dumps({"models": {"providers": {"d": {
+        cfg_path.write_text(dump_config({"models": {"providers": {"d": {
             "api_key": "${KEY}", "base_url": "https://example.com",
             "models": [{"model": "keepme", "name": "Keep"}],
         }}}}))
-        Config.from_json5(str(cfg_path))
-        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        Config.from_yaml(str(cfg_path))
+        raw = load_config_text(cfg_path.read_text(encoding="utf-8"))
         assert raw["models"]["providers"]["d"]["models"][0]["model"] == "keepme"
-        assert (home / ".local-embed" / "local_embed.json5").exists()
-        assert (data / "tools.json5").exists()
+        assert (home / ".local-embed" / "local_embed.yaml").exists()
+        assert (data / "tools.yaml").exists()
 
     def test_existing_data_dir_config_not_overwritten(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
         home = self._home(tmp_path, monkeypatch)
         data = tmp_path / "data"
-        cfg_path = data / "slife.json5"
+        cfg_path = data / "slife.yaml"
         cfg_path.parent.mkdir()
-        cfg_path.write_text(json5.dumps({"models": {"providers": {"d": {
+        cfg_path.write_text(dump_config({"models": {"providers": {"d": {
             "api_key": "${KEY}", "base_url": "https://example.com",
             "models": [{"model": "m", "name": "M"}],
         }}}}))
-        mcp = data / "tools.json5"
+        mcp = data / "tools.yaml"
         mcp.write_text('{ servers: {"mine": {}} }')
-        Config.from_json5(str(cfg_path))
-        assert json5.loads(mcp.read_text()) == {"servers": {"mine": {}}}
+        Config.from_yaml(str(cfg_path))
+        assert load_config_text(mcp.read_text()) == {"servers": {"mine": {}}}
 
     def test_missing_data_dir_config_in_package_skipped(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         pkg = self._pkg_dir(tmp_path)
-        (pkg / "tools.json5").unlink()
+        (pkg / "tools.yaml").unlink()
         monkeypatch.setattr("slife.config._PKG_DIR", pkg)
         home = self._home(tmp_path, monkeypatch)
         data = tmp_path / "data"
-        Config.from_json5(str(data / "slife.json5"))
-        assert (data / "slife.json5").exists()
-        assert not (data / "tools.json5").exists()
-        assert (home / ".local-embed" / "local_embed.json5").exists()
+        Config.from_yaml(str(data / "slife.yaml"))
+        assert (data / "slife.yaml").exists()
+        assert not (data / "tools.yaml").exists()
+        assert (home / ".local-embed" / "local_embed.yaml").exists()

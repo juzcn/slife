@@ -173,7 +173,7 @@ async def test_wrap_captures_errors_as_result():
 
 
 def _config_with_ref(ref: str) -> str:
-    """A minimal but parseable slife.json5 with one provider/model."""
+    """A minimal but parseable slife.yaml with one provider/model."""
     return json.dumps({
         "job_coding_model": ref,
         "models": {"providers": {
@@ -187,7 +187,7 @@ def _config_with_ref(ref: str) -> str:
 
 
 def test_resolve_job_model_uses_job_coding_model(monkeypatch, tmp_path):
-    cfg = tmp_path / "slife.json5"
+    cfg = tmp_path / "slife.yaml"
     _write(cfg, _config_with_ref("dp/dp-flash"))
     monkeypatch.setattr(runner, "get_config_path", lambda: cfg)
     monkeypatch.setattr(runner, "_config", None)
@@ -197,7 +197,7 @@ def test_resolve_job_model_uses_job_coding_model(monkeypatch, tmp_path):
 
 
 def test_resolve_job_model_falls_back_to_active_model(monkeypatch, tmp_path):
-    cfg = tmp_path / "slife.json5"
+    cfg = tmp_path / "slife.yaml"
     _write(cfg, "{}")
     monkeypatch.setattr(runner, "get_config_path", lambda: cfg)
     monkeypatch.setattr(runner, "_config", None)
@@ -205,7 +205,7 @@ def test_resolve_job_model_falls_back_to_active_model(monkeypatch, tmp_path):
     import slife.config as sc
     stub = SimpleNamespace(active_model=SimpleNamespace(ref="x/y"))
     monkeypatch.setattr(
-        sc.Config, "from_json5",
+        sc.Config, "from_yaml",
         classmethod(lambda cls, *a, **k: stub),
     )
     model = runner.resolve_job_model()
@@ -233,7 +233,7 @@ async def test_llm_chat_model_param_resolves(monkeypatch):
 
 
 def test_resolve_model_ref_unknown(monkeypatch, tmp_path):
-    cfg = tmp_path / "slife.json5"
+    cfg = tmp_path / "slife.yaml"
     _write(cfg, json.dumps({
         "models": {"providers": {
             "dp": {"base_url": "https://x", "api_key": "sk", "api": "openai-completions",
@@ -247,7 +247,7 @@ def test_resolve_model_ref_unknown(monkeypatch, tmp_path):
 
 
 def test_resolve_model_ref_accepts_bare_id(monkeypatch, tmp_path):
-    cfg = tmp_path / "slife.json5"
+    cfg = tmp_path / "slife.yaml"
     _write(cfg, json.dumps({
         "models": {"providers": {
             "dp": {"base_url": "https://x", "api_key": "sk", "api": "openai-completions",

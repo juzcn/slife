@@ -1,7 +1,7 @@
 """Tunnel providers — "expose this local port as a public HTTPS URL".
 
 The sharefile plugin owns exactly ONE provider instance, chosen by
-``sharefile.json5``'s ``active_provider`` (see
+``sharefile.yaml``'s ``active_provider`` (see
 :mod:`slife.plugins.sharefile.config`).  Providers are the only thing that
 differs between tunnels: ``server.py`` talks to the :class:`TunnelProvider`
 surface and never to a concrete implementation, so switching tunnels is a
@@ -976,7 +976,7 @@ class CloudflareQuickTunnel(_CliTunnelProvider):
             f"cloudflared not found ({self._binary!r}). A Cloudflare Quick "
             "Tunnel needs the cloudflared binary — install it from "
             "https://developers.cloudflare.com/cloudflare-one/connections/"
-            "connect-networks/downloads/ (or set 'binary' in sharefile.json5)."
+            "connect-networks/downloads/ (or set 'binary' in sharefile.yaml)."
         )
 
 
@@ -986,7 +986,7 @@ class CloudflareQuickTunnel(_CliTunnelProvider):
 
 
 def create_provider(name: str, options: dict | None = None) -> TunnelProvider:
-    """Build the tunnel provider named by ``sharefile.json5``.
+    """Build the tunnel provider named by ``sharefile.yaml``.
 
     An unknown name falls back to ngrok with a warning — a bad config value
     must never keep the plugin from loading.

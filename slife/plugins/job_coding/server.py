@@ -15,7 +15,7 @@ Job tools are registered **dynamically** by the management tools:
 Execution is deterministic: the tool calls the job function with exactly
 its declared arguments; the only LLM access is the job's own explicit
 ``llm.chat(...)`` calls (single narrow one-shot chats on the
-``job_coding.llm`` model from slife.json5).  No system prompt, no
+``job_coding.llm`` model from slife.yaml).  No system prompt, no
 conversation history, no agent loop.
 
 After any tool-set mutation the plugin pushes the standard MCP

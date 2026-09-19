@@ -1,6 +1,6 @@
 """Tests for slife.tools.rest_api — RestApiSetTool et al.
 
-REST API definitions now live in tools.json5 (owned by the mcp gateway) as
+REST API definitions now live in tools.yaml (owned by the mcp gateway) as
 ordinary ``uvx mcp-openapi-proxy`` server entries tagged
 ``source.type == "rest_api"``.  These tests exercise the tools against a
 throwaway config file located via ``$TOOLS_FILE``.
@@ -9,14 +9,14 @@ throwaway config file located via ``$TOOLS_FILE``.
 import pytest; pytestmark = pytest.mark.unit
 
 import json
-import json5
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from slife.plugins.mcp_gateway import config as mcp_gateway_config
-from slife.tools._json5_doc import render
+from slife.tools._yaml_doc import render
+from tests.conftest import dump_config, load_config_text
 from slife.tools.rest_api import (
     RestApiListTool,
     RestApiListToolsTool,
@@ -32,8 +32,8 @@ from slife.tools.rest_api import (
 
 @pytest.fixture(autouse=True)
 def mcp_config_path(tmp_path, monkeypatch):
-    """Point mcp_gateway.config at a throwaway tools.json5 per test."""
-    path = tmp_path / "tools.json5"
+    """Point mcp_gateway.config at a throwaway tools.yaml per test."""
+    path = tmp_path / "tools.yaml"
     monkeypatch.setenv("TOOLS_FILE", str(path))
     # Pin the resolver BEFORE the test runs — a stale _CURRENT_PATH from a
     # previous test would otherwise make reads/writes land in the wrong file.
@@ -71,7 +71,7 @@ def _write_config(path: Path, servers: dict) -> None:
 
 
 def _entries_from_file(path: Path) -> dict:
-    raw = json5.loads(path.read_text(encoding="utf-8"))
+    raw = load_config_text(path.read_text(encoding="utf-8"))
     return raw.get("rest-api", {})
 
 
@@ -187,7 +187,7 @@ class TestRestApiSetTool:
 
         servers = _entries_from_file(mcp_config_path)
         assert servers["protected"]["env"]["API_KEY"] == "${MY_TOKEN}"
-        assert "MY_TOKEN" not in json5.dumps(servers["protected"]).replace("MY_TOKEN}", "")
+        assert "MY_TOKEN" not in dump_config(servers["protected"]).replace("MY_TOKEN}", "")
 
     @pytest.mark.asyncio
     async def test_add_duplicate(self, mcp_config_path):

@@ -86,7 +86,7 @@ async def run_headless(argv: list[str] | None = None) -> None:
     )
 
     # Inherit config from the main agent via SLIFE_CONFIG_FILE (a 0600 temp
-    # file) or the older SLIFE_CONFIG env var.  Subagents never read the json5
+    # file) or the older SLIFE_CONFIG env var.  Subagents never read the yaml
     # file — they get the main agent's in-memory config directly.  The file
     # path is preferred because the config carries resolved plaintext api_keys
     # that must not ride the process env (visible via /proc/<pid>/environ).
@@ -108,9 +108,9 @@ async def run_headless(argv: list[str] | None = None) -> None:
         # CLI scanner skips flag values (--agent <id>, --lang <en|zh>), so
         # those can never be misread as a config path.
         from slife.config import parse_cli_config_path
-        _config_path = parse_cli_config_path(argv) or "slife.json5"
+        _config_path = parse_cli_config_path(argv) or "slife.yaml"
         with elapsed("config_load", logger, level=logging.INFO, path=_config_path):
-            config = Config.from_json5(_config_path)
+            config = Config.from_yaml(_config_path)
 
     logger.info(
         "config_loaded model=%s tools=%d memory=%s a2a=%s",

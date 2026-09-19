@@ -1,4 +1,4 @@
-"""Per-user WeChat session I/O — one ``wechat_<user>.json5`` file per login.
+"""Per-user WeChat session I/O — one ``wechat_<user>.yaml`` file per login.
 
 The file is one short-lived (~24h) session unit: login credentials plus the
 ``get_updates_buf`` ack cursor (D6).  The token expires in ~24h and does not
@@ -13,25 +13,24 @@ It is written only when it changes, and always atomically.
 
 Config format::
 
-    {
-      bot_token: "u7mK...",
-      base_url: "https://ilinkai.weixin.qq.com",
-      saved_at: 1718400000.0,
-      ilink_user_id: "",
-      get_updates_buf: "ChAIARC...",
-    }
+    bot_token: "u7mK..."
+    base_url: "https://ilinkai.weixin.qq.com"
+    saved_at: 1718400000.0
+    ilink_user_id: ""
+    get_updates_buf: "ChAIARC..."
 """
 
-import json5
 import logging
 from pathlib import Path
+
+from slife.tools._yaml_doc import new_yaml
 
 logger = logging.getLogger("slife_wechat")
 
 DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
 
 
-def _atomic_write_json5(path: Path, data: dict) -> None:
+def _atomic_write_config(path: Path, data: dict) -> None:
     """Write *data* to *path* atomically.
 
     A cursor write must never be able to leave the session file half-written
@@ -48,7 +47,7 @@ def _atomic_write_json5(path: Path, data: dict) -> None:
 def _config_path(user: str, work_dir: Path | None = None) -> Path:
     """Return the path to the per-user WeChat config file."""
     wd = work_dir or Path(".")
-    return wd / f"wechat_{user}.json5"
+    return wd / f"wechat_{user}.yaml"
 
 
 def load_wechat_config(
@@ -65,7 +64,7 @@ def load_wechat_config(
         return {}
 
     try:
-        raw = json5.loads(path.read_text(encoding="utf-8"))
+        raw = new_yaml().load(path.read_text(encoding="utf-8"))
     except Exception:
         logger.warning("wechat_config_parse_failed path=%s", path)
         return {}
@@ -108,7 +107,7 @@ def save_wechat_config(
     if get_updates_buf:
         data["get_updates_buf"] = get_updates_buf
 
-    _atomic_write_json5(path, data)
+    _atomic_write_config(path, data)
     logger.info("wechat_config_saved user=%s path=%s", user, path)
     return path
 
@@ -129,7 +128,7 @@ def update_wechat_updates_buf(
     if not path.exists():
         return None
     try:
-        raw = json5.loads(path.read_text(encoding="utf-8"))
+        raw = new_yaml().load(path.read_text(encoding="utf-8"))
     except Exception:
         logger.warning("wechat_cursor_merge_parse_failed path=%s", path)
         return None
@@ -138,7 +137,7 @@ def update_wechat_updates_buf(
 
     raw = dict(raw)
     raw["get_updates_buf"] = get_updates_buf
-    _atomic_write_json5(path, raw)
+    _atomic_write_config(path, raw)
     logger.debug("wechat_cursor_saved user=%s path=%s", user, path)
     return path
 

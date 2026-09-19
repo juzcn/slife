@@ -68,11 +68,11 @@ The installer is best-effort: it uses standard paths, tries several install rout
 | `ssh` | ships with the OS (Windows: the optional *OpenSSH Client* capability) | `sharefile`'s `localhost.run` tunnel provider — **detection only**; enabling the Windows capability needs administrator |
 | `unzip` (Linux) | package manager | bun installer dependency |
 
-**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto and `cloudflared` (always attempted), the **four configs** (`slife.json5`, `tools.json5` and `sharefile.json5` → `~/.slife/`, `local_embed.json5` → `~/.local-embed/`) seeded from bundled defaults, and the bundled skills (`~/.slife/skills/`) plus sample jobs (`~/.slife/jobs/`).
+**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto and `cloudflared` (always attempted), the **four configs** (`slife.yaml`, `tools.yaml` and `sharefile.yaml` → `~/.slife/`, `local_embed.yaml` → `~/.local-embed/`) seeded from bundled defaults, and the bundled skills (`~/.slife/skills/`) plus sample jobs (`~/.slife/jobs/`).
 
 If a runtime can't be installed, the installer **warns and continues** — slife itself still installs; only the features needing that runtime are unavailable. For example, on a Linux box older than **glibc 2.28 / libstdc++ 3.4.29**, the Node rootless tarball fallback won't run (the installer reports the missing `GLIBC_2.28` / `GLIBCXX_3.4.xx` symbols). The supported route is **not** an older Node — it's a Node built for your distro (e.g. `module load nodejs` on HPC clusters, or your distro's package). Install that, then re-run this installer — it detects an existing `npx` and skips its own Node install.
 
-If you edit `tools.json5` by hand, the changes apply at the next wrapper start — the tool catalog is rebuilt live from connections, so no offline rebuild step exists (`local-embed` is on PATH after install). Every optional step is **fail-open**: an error warns and continues, leaving a working core.
+If you edit `tools.yaml` by hand, the changes apply at the next wrapper start — the tool catalog is rebuilt live from connections, so no offline rebuild step exists (`local-embed` is on PATH after install). Every optional step is **fail-open**: an error warns and continues, leaving a working core.
 
 ### macOS / Linux / WSL
 
@@ -103,7 +103,7 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 Re-run the install script to upgrade slife — it rebuilds from the latest `main` and preserves what you've customized:
 
 - **Optional packages** (e.g. `sentence-transformers`, `llama-cpp-python`) are captured from the previous tool venv and re-added after the fresh install, diffed against the new base so nothing is duplicated.
-- **Configs, skills, and sample jobs** already present are never touched, and the installer **never prompts**. Missing ones are seeded in place; identical ones pass silently; when a bundled default has changed, the new default is seeded into `~/.slife/` as a **versioned reference copy** — `<name>.<version>.<ext>` for configs and jobs (`slife.0.9.8.json5`, `total_tokens.0.9.8.py`), `<name>.<version>/` for skills — each written copy announced as `seeded <file> → <folder>` (apply one with a single `cp` / `Copy-Item`). Reinstalls refresh the same-version copy; older versions remain for reference. A skill counts as different when **any** file inside the folder differs.
+- **Configs, skills, and sample jobs** already present are never touched, and the installer **never prompts**. Missing ones are seeded in place; identical ones pass silently; when a bundled default has changed, the new default is seeded into `~/.slife/` as a **versioned reference copy** — `<name>.<version>.<ext>` for configs and jobs (`slife.0.9.8.yaml`, `total_tokens.0.9.8.py`), `<name>.<version>/` for skills — each written copy announced as `seeded <file> → <folder>` (apply one with a single `cp` / `Copy-Item`). Reinstalls refresh the same-version copy; older versions remain for reference. A skill counts as different when **any** file inside the folder differs.
 
 ### Uninstall
 
@@ -136,49 +136,48 @@ Installing slife depends on [credstore](credstore/README.md) — it does **not**
 
 ## Configuration
 
-**Secrets in the credential store, config in JSON5:**
+**Secrets in the credential store, config in YAML:**
 
 | Layer | Storage | Contents |
 |-------|---------|----------|
 | **Secrets** | credential store (credstore) | API keys — encrypted at OS level, plus an encrypted cryptfile backup |
-| **Config** | `~/.slife/slife.json5` | `${VAR}` references + non-secret values |
-| **Tool config** | `~/.slife/tools.json5` | Tool definitions by category — `builtin` / `mcp` / `rest-api` / `job` / `cli` / `skill` (see the gateway section below) |
+| **Config** | `~/.slife/slife.yaml` | `${VAR}` references + non-secret values |
+| **Tool config** | `~/.slife/tools.yaml` | Tool definitions by category — `builtin` / `mcp` / `rest-api` / `job` / `cli` / `skill` (see the gateway section below) |
 
 ### Secrets & API keys
 
 Secrets never live in the config file. Store them with `credstore set <KEY>`; the config references them as `${VAR}` and Slife resolves them at runtime — resolution order is **shell env → credstore → literal default** (`${VAR:-default}` fallbacks supported; secrets can also be referenced as `keyring:service/key` URIs).
 
-```json5
-env: {
-  DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}",   // → resolved from credstore at runtime
-}
+```yaml
+env:
+  DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"   # → resolved from credstore at runtime
 ```
 
 **Slife never prompts and does not read credstore's cryptfile backup.** It reads the system keyring only, then falls back to `os.environ`. If no system keyring is available (e.g. Linux where the kernel keyring is blocked by seccomp/policy on an HPC login node), use one of three methods:
 
 1. **Environment variables only** — export the secrets in your shell (`export DEEPSEEK_API_KEY="sk-…"`); `os.environ` is checked before credstore, so exported keys work normally.
 2. **Keep managing in credstore cryptfile mode, but inject to env** — store credentials as usual, then push them into the environment so Slife sees them: `credstore inject DEEPSEEK_API_KEY BAILIAN_API_KEY` (prompts for the master password in cryptfile-only mode), then restart the shell or `eval "$(credstore inject DEEPSEEK_API_KEY)"`.
-3. **Plaintext in the config file** (tolerated, not recommended) — a literal `api_key` in `slife.json5` works, but the secret sits in plaintext on disk (`~/.slife/slife.json5`, chmod 0600).
+3. **Plaintext in the config file** (tolerated, not recommended) — a literal `api_key` in `slife.yaml` works, but the secret sits in plaintext on disk (`~/.slife/slife.yaml`, chmod 0600).
 
 `credstore` itself works fully in cryptfile-only mode (`set-password`, `set`, `get -p`, `inject`, `status` — see [credstore/README.md](credstore/README.md)).
 
 ### Model providers
 
-Models are configured once in `slife.json5`, then switched at runtime from the chat (no file editing):
+Models are configured once in `slife.yaml`, then switched at runtime from the chat (no file editing):
 
-```json5
-models: {
-  providers: {
-    deepseek: {
-      base_url: "https://api.deepseek.com",
-      api_key: "${DEEPSEEK_API_KEY}",
-      api: "openai-completions",
-      models: [{ model: "deepseek-flash", name: "DeepSeek Flash", reasoning: true }],
-    },
-  },
-},
-active_model: "deepseek/deepseek-flash",
-job_coding_model: "bailian_personal/qwen3.6-flash",
+```yaml
+models:
+  providers:
+    deepseek:
+      base_url: "https://api.deepseek.com"
+      api_key: "${DEEPSEEK_API_KEY}"
+      api: "openai-completions"
+      models:
+        - model: "deepseek-flash"
+          name: "DeepSeek Flash"
+          reasoning: true
+active_model: "deepseek/deepseek-flash"
+job_coding_model: "bailian_personal/qwen3.6-flash"
 ```
 
 The `active_model` is a `"provider/model"` ref — the model Slife chats with. `job_coding_model` is the LLM used by deterministic **jobs** — name a different (usually smaller/faster) model than `active_model`, so a nested one-shot job call never churns the agent loop's prompt cache (absent → the active model; per-call override: `llm.chat(model=...)`).
@@ -193,27 +192,25 @@ The `active_model` is a `"provider/model"` ref — the model Slife chats with. `
 
 **Per-model `compat` overrides** (in the model entry, or via `model_set`), for gateways that don't follow the standard thinking shape:
 
-```json5
-models: {
-  providers: {
-    bailian: {
-      api: "anthropic-messages",
-      models: [{
-        model: "qwen3.8-max", name: "Qwen3.8 Max",
-        reasoning: true,
-        compat: { thinkingFormat: "openai" },  // anthropic backend: model always thinks, no thinking param
-      }],
-    },
-    scnet: {
-      api: "openai-completions",
-      models: [{
-        model: "MiniMax-M3", name: "MiniMax M3",
-        reasoning: true,
-        compat: { thinking: "omit" },         // openai backend: send NO thinking field (gateway 400s on enabled)
-      }],
-    },
-  },
-},
+```yaml
+models:
+  providers:
+    bailian:
+      api: "anthropic-messages"
+      models:
+        - model: "qwen3.8-max"
+          name: "Qwen3.8 Max"
+          reasoning: true
+          compat:
+            thinkingFormat: "openai"   # anthropic backend: model always thinks, no thinking param
+    scnet:
+      api: "openai-completions"
+      models:
+        - model: "MiniMax-M3"
+          name: "MiniMax M3"
+          reasoning: true
+          compat:
+            thinking: "omit"           # openai backend: send NO thinking field (gateway 400s on enabled)
 ```
 
 `compat.thinking` on the OpenAI backend: `"omit"` sends no thinking field (for gateways that reject the `{"type": "enabled"}` shape but reason natively), `"disabled"` forces explicit off, `"enabled"` matches the default.
@@ -262,7 +259,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + one tool per registered job (e.g. `translate`) |
 
-**One catalog for every tool, managed by a threshold.** Third-party capability enters only as a standard MCP server in `tools.json5` (`mcp` + `rest-api` sections — any stdio / SSE / Streamable HTTP server works, no Slife SDK required). Every category — builtin, job, plugin, mcp, rest-api, skill, cli — lives in one shared `tools.db`; the model discovers across all of them with `tool_search` (grep / keyword / semantic hybrid, filtering on the catalog's columns), then loads a specific tool with `func-tool-load(full_name)` — per-tool, not per-server, so one large server injects only the tools actually used. Nothing is injected just because it exists: a tool is born `unloaded` and only `func-tool-load` puts it in the tool list (the whitelist — harness pair, meta tools, and the pinned `skill_use` / `system_health` — and anything marked `autoload: true` in `tools.json5` excepted, and an `autoload` entry stays loaded: it is the one config decision that wins over the model's own unload). The injected list is capped by a threshold (default 100, tunable in `tools.json5`) and the harness evicts least-recently-used tools at turn boundaries, never an `autoload` one. A server's lifecycle is one switch per family (`mcp_set_enabled` / `rest_api_set_enabled`) — the modern MCP protocol has no session to open or close, so enabling connects and a tool call reconnects lazily — and **every enabled server is brought up at boot**; a server that is down has its tools marked `unavailable`, so they never inject a dead transport. The catalog is synced live from the connections on every (re)connect — no offline rebuild step. Full design: **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
+**One catalog for every tool, managed by a threshold.** Third-party capability enters only as a standard MCP server in `tools.yaml` (`mcp` + `rest-api` sections — any stdio / SSE / Streamable HTTP server works, no Slife SDK required). Every category — builtin, job, plugin, mcp, rest-api, skill, cli — lives in one shared `tools.db`; the model discovers across all of them with `tool_search` (grep / keyword / semantic hybrid, filtering on the catalog's columns), then loads a specific tool with `func-tool-load(full_name)` — per-tool, not per-server, so one large server injects only the tools actually used. Nothing is injected just because it exists: a tool is born `unloaded` and only `func-tool-load` puts it in the tool list (the whitelist — harness pair, meta tools, and the pinned `skill_use` / `system_health` — and anything marked `autoload: true` in `tools.yaml` excepted, and an `autoload` entry stays loaded: it is the one config decision that wins over the model's own unload). The injected list is capped by a threshold (default 100, tunable in `tools.yaml`) and the harness evicts least-recently-used tools at turn boundaries, never an `autoload` one. A server's lifecycle is one switch per family (`mcp_set_enabled` / `rest_api_set_enabled`) — the modern MCP protocol has no session to open or close, so enabling connects and a tool call reconnects lazily — and **every enabled server is brought up at boot**; a server that is down has its tools marked `unavailable`, so they never inject a dead transport. The catalog is synced live from the connections on every (re)connect — no offline rebuild step. Full design: **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
 
 **Windows execution.** `execute_shell` runs in the detected shell — PowerShell or cmd (the same value the system prompt reports, so the LLM's syntax actually executes) — and its output is decoded with the system code page (GBK/cp936 on Chinese Windows). `run_python_script` forces the child Python to UTF-8 (`-X utf8`) so non-ASCII output can't crash the child.
 
@@ -279,7 +276,7 @@ Every turn is permanently recorded in SQLite (`~/.slife/<agent>.db`) and searche
 | `hybrid` | Semantic recall (FTS5 + vector → RRF merge) |
 | `time` | Browse by date |
 
-Embeddings are a **first-class top-level `embeddings` section** in `slife.json5` (shared by `memdb` + `memfiles`), managed by the builtin `embeddings_*` tools; runtime index status is surfaced by `system_health`. Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); `active_model` ("provider" — e.g. `"local_embed"` or `"siliconflow"`) is configuration-authoritative. The **`local-embed` daemon** (started manually, like Mosquitto — not a slife plugin) serves local GGUF/transformer models at `http://127.0.0.1:17347/v1`, each loaded **once** and shared by `memdb` and `memfiles` — no double load — with no "active model" of its own (the client requests the model it wants, so a model is never loaded twice). **Keyword search works without any embedding backend.** Semantic (hybrid) results are only served once the index is fully built for the current model — while a reindex runs, hybrid degrades to keyword-only and resumes automatically when indexing finishes.
+Embeddings are a **first-class top-level `embeddings` section** in `slife.yaml` (shared by `memdb` + `memfiles`), managed by the builtin `embeddings_*` tools; runtime index status is surfaced by `system_health`. Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); `active_model` ("provider" — e.g. `"local_embed"` or `"siliconflow"`) is configuration-authoritative. The **`local-embed` daemon** (started manually, like Mosquitto — not a slife plugin) serves local GGUF/transformer models at `http://127.0.0.1:17347/v1`, each loaded **once** and shared by `memdb` and `memfiles` — no double load — with no "active model" of its own (the client requests the model it wants, so a model is never loaded twice). **Keyword search works without any embedding backend.** Semantic (hybrid) results are only served once the index is fully built for the current model — while a reindex runs, hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
 Each turn records two timestamps — your input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers. User messages carry a compact **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** footnote (the turn id plus when it happened) so the agent can reference turns by id (`turn_read` / `turn_summarize`) — and you read the same line in the TUI.
 
@@ -305,7 +302,7 @@ For work that is well-specified and repeatable — translate, summarize, extract
 
 A job that needs the LLM calls it **once** via the `llm` handle it imports itself (`from slife.plugins.job_coding import llm` — nothing is auto-injected): a narrow, explicit `llm.chat` on `job_coding_model`, a model configured independently of the conversation's active model so jobs stay cheap and never disturb the agent's prompt cache. No conversation history, system prompt, or agent loop ever reaches a job.
 
-A job can also drive **any external MCP server** configured in `tools.json5` through the `mcp` handle (`from slife.plugins.job_coding import mcp`) — bare MCP, one tool call per statement: `await mcp.call(server, tool, args)`. The call rides the mcp-gateway's persistent connections, so no external server is ever spawned a second time, and it reaches **tools the main agent hasn't loaded**. `mcp.call` never raises: an unreachable gateway, a disconnected or disabled server, or an unknown tool returns a clear `Error: ...` string the job can branch on.
+A job can also drive **any external MCP server** configured in `tools.yaml` through the `mcp` handle (`from slife.plugins.job_coding import mcp`) — bare MCP, one tool call per statement: `await mcp.call(server, tool, args)`. The call rides the mcp-gateway's persistent connections, so no external server is ever spawned a second time, and it reaches **tools the main agent hasn't loaded**. `mcp.call` never raises: an unreachable gateway, a disconnected or disabled server, or an unknown tool returns a clear `Error: ...` string the job can branch on.
 
 ### Images & vision
 
@@ -315,11 +312,11 @@ Attach images with `@path` / `@url` syntax (quotes supported for paths with spac
 Check this screenshot @D:\Downloads\error.png
 ```
 
-Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `attach_image` tool lets the agent attach images mid-turn (local sources are capped at 20 MB so a stray path never base64s a huge file into the context). Nothing is ever rendered in the terminal — files open with the OS default app, and `share_file` publishes any local file as a public HTTPS link via a pluggable tunnel provider (ngrok / localhost.run / Cloudflare Quick Tunnel, chosen by `sharefile.json5`; `share_file` returns a graceful error while the tunnel is offline).
+Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `attach_image` tool lets the agent attach images mid-turn (local sources are capped at 20 MB so a stray path never base64s a huge file into the context). Nothing is ever rendered in the terminal — files open with the OS default app, and `share_file` publishes any local file as a public HTTPS link via a pluggable tunnel provider (ngrok / localhost.run / Cloudflare Quick Tunnel, chosen by `sharefile.yaml`; `share_file` returns a graceful error while the tunnel is offline).
 
 ### Plugins
 
-Nine internal plugins run as independent child processes, each declared by one row in the central plugin spec and driven by the same uniform lifecycle (spawn → MCP-handshake readiness → watchdog → health). One of them — **mcp-gateway** — is the gateway to external MCP servers: third-party capability enters only as a standard MCP server in `tools.json5`, never as a Python plugin.
+Nine internal plugins run as independent child processes, each declared by one row in the central plugin spec and driven by the same uniform lifecycle (spawn → MCP-handshake readiness → watchdog → health). One of them — **mcp-gateway** — is the gateway to external MCP servers: third-party capability enters only as a standard MCP server in `tools.yaml`, never as a Python plugin.
 
 | Plugin | Role |
 |--------|------|
@@ -327,7 +324,7 @@ Nine internal plugins run as independent child processes, each declared by one r
 | **memdb** | Turns database with hybrid search |
 | **wechat** | Bidirectional WeChat messaging |
 | **memfiles** | Notes / diary / files / reports cabinet (private). Notes, diary & reports dual-written to markdown + a SQLite hybrid index. All save tools return local paths — never auto-publish |
-| **sharefile** | Public file sharing — `share_file` publishes a local file as a public HTTPS URL (`/share` route on the same port; pluggable tunnel from `sharefile.json5`) |
+| **sharefile** | Public file sharing — `share_file` publishes a local file as a public HTTPS URL (`/share` route on the same port; pluggable tunnel from `sharefile.yaml`) |
 | **a2a** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
 | **media** | Non-chat AI generation (image, video, TTS, ASR) from any provider — owns the `media:` config section and a provider-agnostic adapter layer. Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | **job-coding** | Deterministic jobs as MCP tools — code-defined functions in `~/.slife/jobs/` run with exactly their declared args; one-shot LLM calls via `llm.chat` on `job_coding_model`. Tools: `job-list`, `job-write`, `job-remove`, `job-run` + one per job |
@@ -376,31 +373,31 @@ hf download BAAI/bge-m3                                    # → ~/.cache/huggin
 HF_ENDPOINT=https://hf-mirror.com hf download BAAI/bge-m3  # mainland-China mirror
 ```
 
-**GGUF route (small offline file, ~100 MB).** Use any quantized BGE-M3 GGUF you trust — these are community conversions with no single authoritative source (prefer a high-fidelity `Q8_0`). Get it from any source (HF single-file pull, browser, `wget`/`curl`), then place it at the default path and point the client at the `bge-m3` model:
+**GGUF route (offline single file).** Use any quantized BGE-M3 GGUF you trust — these are community conversions with no single authoritative source (prefer a high-fidelity `Q8_0`, ~635 MB; heavier quants are smaller). Get it from any source (HF single-file pull, browser, `wget`/`curl`), then place it at the default path and point the client at the `bge-m3` model:
 
 ```bash
 hf download <owner>/<repo> <model>.gguf --local-dir ~/.local-embed/models   # HF single-file pull
-mv ~/.local-embed/models/<model>.gguf ~/.local-embed/models/bge-m3-q4_k_m.gguf     # the expected default path
+mv ~/.local-embed/models/<model>.gguf ~/.local-embed/models/bge-m3-Q8_0.gguf     # the expected default path
 ```
 
 Every model in the `models` map is served as a **peer** — there is no `active_model`; the client names the model on every request (a stale `active_model` key in an existing config is ignored).
 
 ### 3. Configure the HF cache & GGUF path
 
-Everything — host, port, models, backend — lives in **`local_embed.json5`**, seeded by the installer (path resolution: `$LOCAL_EMBED_FILE` > slife project root (dev) > `~/.local-embed/local_embed.json5`). Values support `${VAR}` / `${VAR:-default}` expansion, and **a shell env var wins over the config**. The seeded file already carries portable placeholders — usually you only set env vars or edit two lines:
+Everything — host, port, models, backend — lives in **`local_embed.yaml`**, seeded by the installer (path resolution: `$LOCAL_EMBED_FILE` > slife project root (dev) > `~/.local-embed/local_embed.yaml`). Values support `${VAR}` / `${VAR:-default}` expansion, and **a shell env var wins over the config**. The seeded file already carries portable placeholders — usually you only set env vars or edit two lines:
 
-```json5
-{
-  env: {
-    HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}",   // where transformer repos resolve
-    HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}",          // 1 = never auto-download; 0 = allow on-demand
-  },
-  models: {
-    "BAAI/bge-m3": { backend: "transformer", model: "BAAI/bge-m3" },
-    "bge-m3": { backend: "gguf", gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/bge-m3-q4_k_m.gguf}" },
-  },
-  port: 17347,
-}
+```yaml
+env:
+  HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}"   # where transformer repos resolve
+  HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}"          # 1 = never auto-download; 0 = allow on-demand
+models:
+  "BAAI/bge-m3":
+    backend: "transformer"
+    model: "BAAI/bge-m3"
+  "bge-m3":
+    backend: "gguf"
+    gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/bge-m3-Q8_0.gguf}"
+port: 17347
 ```
 
 | Setting | Meaning |
@@ -415,7 +412,7 @@ Requests name the model they want (slife's provider `model` id — `"BAAI/bge-m3
 
 ```bash
 local-embed set BAAI/bge-m3 --HF_HUB_CACHE ~/.cache/huggingface/hub
-local-embed set-gguf bge-m3 --path ~/.local-embed/models/bge-m3-q4_k_m.gguf
+local-embed set-gguf bge-m3 --path ~/.local-embed/models/bge-m3-Q8_0.gguf
 ```
 
 ### 4. Make the service ready — verify
@@ -498,7 +495,7 @@ Slife is one codebase, a few docs, split by audience:
 * **[A2A-MQTT.md](docs/A2A-MQTT.md)** — the adopted A2A-over-MQTT design: the official SDK, topics/wire/QoS/retry, the mesh driver, the standard tool surface, markers, drain schema.
 * **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)** — the authoritative spec of the plugin system (central `PluginSpec` table, the registry, the uniform lifecycle) for anyone writing a plugin.
 * **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)** — how Slife curates the model context each turn: channels, markers, the `_turn_prompt` harness tool-pair.
-* **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** — the unified tool catalog: the six `tools.json5` category sections, `tools.db`, the load/unload threshold, `tool_search`/`func-tool-load`, per-turn injection, and the MCP reconcile.
+* **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** — the unified tool catalog: the six `tools.yaml` category sections, `tools.db`, the load/unload threshold, `tool_search`/`func-tool-load`, per-turn injection, and the MCP reconcile.
 
 ```bash
 git clone https://github.com/juzcn/slife.git

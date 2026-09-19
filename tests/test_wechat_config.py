@@ -3,13 +3,13 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
-import json5
 import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.conftest import dump_config
 from slife.plugins.wechat.config import (
     _config_path,
     load_wechat_config,
@@ -68,19 +68,19 @@ class TestConfigPath:
 
     def test_default_work_dir_is_cwd(self):
         path = _config_path("testuser")
-        assert path.name == "wechat_testuser.json5"
+        assert path.name == "wechat_testuser.yaml"
 
     def test_custom_work_dir(self):
         path = _config_path("alice", work_dir=Path("/tmp/custom"))
-        assert path == Path("/tmp/custom/wechat_alice.json5")
+        assert path == Path("/tmp/custom/wechat_alice.yaml")
 
     def test_path_is_absolute(self):
         path = _config_path("bob", work_dir=Path("/abs/path"))
-        assert path == Path("/abs/path/wechat_bob.json5")
+        assert path == Path("/abs/path/wechat_bob.yaml")
 
     def test_user_name_with_special_chars(self):
         path = _config_path("user@domain")
-        assert path.name == "wechat_user@domain.json5"
+        assert path.name == "wechat_user@domain.yaml"
 
 
 class TestLoadWechatConfig:
@@ -91,8 +91,8 @@ class TestLoadWechatConfig:
         assert result == {}
 
     def test_loads_valid_config(self, tmp_path):
-        path = tmp_path / "wechat_test.json5"
-        path.write_text(json5.dumps({
+        path = tmp_path / "wechat_test.yaml"
+        path.write_text(dump_config({
             "bot_token": "abc123",
             "base_url": "https://custom.example.com",
             "saved_at": 1718400000.0,
@@ -103,8 +103,8 @@ class TestLoadWechatConfig:
         assert result["saved_at"] == 1718400000.0
 
     def test_missing_keys_get_defaults(self, tmp_path):
-        path = tmp_path / "wechat_test.json5"
-        path.write_text(json5.dumps({"bot_token": "token"}), encoding="utf-8")
+        path = tmp_path / "wechat_test.yaml"
+        path.write_text(dump_config({"bot_token": "token"}), encoding="utf-8")
         result = load_wechat_config("test", work_dir=tmp_path)
         assert result["bot_token"] == "token"
         assert result["base_url"] == DEFAULT_BASE_URL
@@ -112,20 +112,20 @@ class TestLoadWechatConfig:
         assert result["ilink_user_id"] == ""
         assert result["get_updates_buf"] == ""
 
-    def test_malformed_json_returns_empty(self, tmp_path):
-        path = tmp_path / "wechat_test.json5"
-        path.write_text("{not valid json5}", encoding="utf-8")
+    def test_malformed_config_returns_empty(self, tmp_path):
+        path = tmp_path / "wechat_test.yaml"
+        path.write_text("bot_token: [unclosed", encoding="utf-8")
         result = load_wechat_config("test", work_dir=tmp_path)
         assert result == {}
 
-    def test_non_dict_json_returns_empty(self, tmp_path):
-        path = tmp_path / "wechat_test.json5"
+    def test_non_dict_config_returns_empty(self, tmp_path):
+        path = tmp_path / "wechat_test.yaml"
         path.write_text('"just a string"', encoding="utf-8")
         result = load_wechat_config("test", work_dir=tmp_path)
         assert result == {}
 
     def test_empty_dict_works(self, tmp_path):
-        path = tmp_path / "wechat_test.json5"
+        path = tmp_path / "wechat_test.yaml"
         path.write_text("{}", encoding="utf-8")
         result = load_wechat_config("test", work_dir=tmp_path)
         assert result["bot_token"] == ""
@@ -133,8 +133,8 @@ class TestLoadWechatConfig:
         assert result["saved_at"] == 0
 
     def test_with_ilink_user_id(self, tmp_path):
-        path = tmp_path / "wechat_test.json5"
-        path.write_text(json5.dumps({
+        path = tmp_path / "wechat_test.yaml"
+        path.write_text(dump_config({
             "bot_token": "tok",
             "ilink_user_id": "wxid_abc123",
         }), encoding="utf-8")
@@ -149,7 +149,7 @@ class TestSaveWechatConfig:
         session = {"bot_token": "new_token", "saved_at": 1234567890.0}
         result_path = save_wechat_config("testuser", session, work_dir=tmp_path)
         assert result_path.exists()
-        assert result_path.name == "wechat_testuser.json5"
+        assert result_path.name == "wechat_testuser.yaml"
 
     def test_saved_content_roundtrips(self, tmp_path):
         session = {
@@ -290,10 +290,10 @@ class TestUpdatesBufRoundtrip:
     def test_no_session_skipped(self, tmp_path):
         # No session file — a cursor without credentials is meaningless.
         assert update_wechat_updates_buf("ghost", "buf", work_dir=tmp_path) is None
-        assert not (tmp_path / "wechat_ghost.json5").exists()
+        assert not (tmp_path / "wechat_ghost.yaml").exists()
 
     def test_tokenless_session_skipped(self, tmp_path):
-        (tmp_path / "wechat_alice.json5").write_text("{}", encoding="utf-8")
+        (tmp_path / "wechat_alice.yaml").write_text("{}", encoding="utf-8")
         assert update_wechat_updates_buf("alice", "buf", work_dir=tmp_path) is None
 
     def test_empty_buf_skipped(self, tmp_path):

@@ -1,7 +1,7 @@
-# Runtime config — personal per-user settings.  The three initial configs
-# (slife.json5 / local_embed.json5 / tools.json5) are git-tracked so the
-# one-click installers can seed them as out-of-the-box defaults.  Copies in a
-# user's data dir (~/.slife/) remain personal and are NOT tracked.
+# Runtime config — personal per-user settings.  The initial configs
+# (slife.yaml / local_embed.yaml / tools.yaml / sharefile.yaml) are git-tracked
+# so the one-click installers can seed them as out-of-the-box defaults.  Copies
+# in a user's data dir (~/.slife/) remain personal and are NOT tracked.
 
 # Playwright MCP browser traces (test artifacts)
 .playwright-mcp/
@@ -10,7 +10,13 @@
 credentials.crypt
 
 # WeChat session files (contain auth tokens)
-wechat_*.json5
+wechat_*.yaml
+
+# Config read-modify-write locks (<name>.yaml.lock).  In dev mode the data dir
+# IS the repo root, so slife.yaml.lock / tools.yaml.lock / sharefile.yaml.lock
+# / local_embed.yaml.lock appear here as slife writes a config.  The `*.yaml.`
+# prefix (rather than `*.lock`) keeps uv.lock tracked.
+*.yaml.lock
 
 # Runtime logs
 logs/

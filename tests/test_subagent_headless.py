@@ -161,6 +161,6 @@ class TestMain:
         argv would double-strip a positional config path."""
         with patch("slife.subagent.headless.asyncio.run") as mock_run:
             with patch("slife.subagent.headless.run_headless") as mock_rh:
-                main(["prog", "somefile.json5", "--debug"])
+                main(["prog", "somefile.yaml", "--debug"])
                 mock_run.assert_called_once()
-                mock_rh.assert_called_once_with(["prog", "somefile.json5", "--debug"])
+                mock_rh.assert_called_once_with(["prog", "somefile.yaml", "--debug"])

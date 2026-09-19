@@ -3,7 +3,7 @@
 rest_api_set / rest_api_remove / rest_api_list / rest_api_list_tools /
 rest_api_set_enabled.
 
-Server definitions live in ``tools.json5`` (owned by the mcp gateway,
+Server definitions live in ``tools.yaml`` (owned by the mcp gateway,
 resolved via ``$TOOLS_FILE``); a REST API is an entry in the ``rest-api``
 section — the section is what makes one, and no entry needs to say so itself.
 It is registered and reached through an ``mcp-openapi-proxy`` process, which
@@ -72,7 +72,7 @@ def _format_rest_apis(rest_apis: dict) -> str:
 
 
 def get_rest_apis_summary(config_path) -> str:
-    """Read rest-api entries from tools.json5 (fallback for offline use).
+    """Read rest-api entries from tools.yaml (fallback for offline use).
 
     The config path is resolved by the gateway ($TOOLS_FILE), so
     *config_path* is accepted for signature compatibility and ignored.

@@ -1,4 +1,4 @@
-"""Configuration for Slife agent -- JSON5 format.
+"""Configuration for Slife agent -- YAML format.
 
 Two-level model hierarchy:
   providers:
@@ -12,7 +12,6 @@ Two-level model hierarchy:
 Model refs: "provider-id/model-name"
 """
 
-import json5
 import logging
 import os
 from dataclasses import dataclass, field
@@ -25,8 +24,8 @@ import slife.timeouts as _timeouts  # module ref (not the instance) — reload-s
 
 logger = logging.getLogger(__name__)
 
-# Package directory — carries the git-tracked seed configs (slife.json5,
-# local_embed.json5, tools.json5) force-included into the wheel, plus the
+# Package directory — carries the git-tracked seed configs (slife.yaml,
+# local_embed.yaml, tools.yaml) force-included into the wheel, plus the
 # bundled skills tree.
 _PKG_DIR = Path(__file__).resolve().parent
 
@@ -102,7 +101,7 @@ def parse_cli_agent(argv: list[str]) -> str:
 def parse_cli_config_path(argv: list[str]) -> str | None:
     """Extract the first positional CLI arg as an explicit config path.
 
-    ``python -m slife myconf.json5`` must use ``myconf.json5`` (the docstring
+    ``python -m slife myconf.yaml`` must use ``myconf.yaml`` (the docstring
     promises it); flags (``--headless``, ``--agent <id>``, ``--lang <en|zh>``)
     are skipped along with their values.  Returns ``None`` when no positional
     path is given.
@@ -144,7 +143,7 @@ def parse_cli_lang(argv: list[str]) -> str | None:
 
 
 def _parse_section(raw: dict, key: str, expected_type, default):
-    """Safely extract a typed section from parsed JSON5, returning
+    """Safely extract a typed section from parsed YAML, returning
     *default* if the value is missing or of the wrong type."""
     value = raw.get(key, default)
     return value if isinstance(value, expected_type) else default
@@ -165,7 +164,7 @@ def _as_name_set(value) -> frozenset[str]:
 def _flagged_names(section: list, key: str, flag: object) -> frozenset[str]:
     """Extract entry names whose *key* is exactly *flag*.
 
-    Every tools.json5 category section carries the same ``[{name, key}]``
+    Every tools.yaml category section carries the same ``[{name, key}]``
     policy shape; this is the one implementation (never raises on a malformed
     entry).  The identity comparison matches the exact boolean — ``enabled:
     false`` and ``autoload: true`` — never e.g. a truthy ``1``.
@@ -340,7 +339,7 @@ class EmbeddingsConfig:
 
     @classmethod
     def from_dict(cls, data: Any) -> "EmbeddingsConfig":
-        """Parse the top-level ``embeddings`` section from JSON5 config."""
+        """Parse the top-level ``embeddings`` section from YAML config."""
         if not isinstance(data, dict):
             return cls()
         providers = data.get("providers", {})
@@ -363,14 +362,14 @@ class WechatConfig:
     """Configuration for the slife-wechat plugin.
 
     Optional -- only loaded when ``wechat.enabled`` is true.
-    Session tokens are stored per-agent in ``wechat_<agent_name>.json5``.
+    Session tokens are stored per-agent in ``wechat_<agent_name>.yaml``.
     """
 
     enabled: bool = True
 
     @classmethod
     def from_dict(cls, data: Any) -> "WechatConfig":
-        """Parse wechat config section from JSON5 config.
+        """Parse wechat config section from YAML config.
 
         Defaults to enabled when the wechat section is absent -- the plugin
         is lightweight and only activates when wechat_login is called.
@@ -417,12 +416,12 @@ class Config:
     a2a_config: A2AConfig | None = None
     subagent_config: dict | None = None
     # Plugins declared REQUIRED (core) via ``plugins.required`` in
-    # slife.json5 — a required plugin that fails to become ready aborts
+    # slife.yaml — a required plugin that fails to become ready aborts
     # startup instead of limping on.  Defaults to empty = every plugin is
     # optional (failure warns and the session continues).
     plugins_required: frozenset[str] = field(default_factory=frozenset)
     cli_tools: dict = field(default_factory=dict)
-    #: The loaded-function-tool threshold — tools.json5's ``tool_load``
+    #: The loaded-function-tool threshold — tools.yaml's ``tool_load``
     #: section, the one remaining tool-system knob (default 100).
     tool_load_threshold: int = 100
     #: Tools marked ``autoload: true`` in a per-tool section entry (builtin /
@@ -431,7 +430,7 @@ class Config:
     #: Servers marked ``autoload: true`` in their mcp / rest-api entry — every
     #: tool row that server mirrors is seeded ``loaded`` and never evicted.
     autoload_servers: frozenset[str] = field(default_factory=frozenset)
-    #: Per-entry ``enabled: false`` names from the tools.json5 ``job`` /
+    #: Per-entry ``enabled: false`` names from the tools.yaml ``job`` /
     #: ``skill`` sections (hidden from the catalog seed).
     disabled_jobs: frozenset[str] = field(default_factory=frozenset)
     disabled_skills: frozenset[str] = field(default_factory=frozenset)
@@ -442,12 +441,12 @@ class Config:
     disabled_plugin: frozenset[str] = field(default_factory=frozenset)
     #: Per-entry ``enabled: false`` names from the ``builtin`` section.  A
     #: disabled builtin is never REGISTERED (the factory skips it), but it still
-    #: gets a catalog row, marked ``disabled`` — json5 declaring a tool the db
+    #: gets a catalog row, marked ``disabled`` — yaml declaring a tool the db
     #: had never heard of is a disagreement between the two, and ``tool_search``
     #: could not even report it as off.
     disabled_builtins: frozenset[str] = field(default_factory=frozenset)
     _path: Path | None = None
-    _tools_path: Path | None = None  # tools.json5 sibling — set by from_json5
+    _tools_path: Path | None = None  # tools.yaml sibling — set by from_yaml
 
     def __post_init__(self):
         # Resolve the tool budget at construction — call-time registry lookup,
@@ -471,7 +470,7 @@ class Config:
         """Serialize to a JSON-compatible dict for subagent inheritance.
 
         Subagents receive this over ``SLIFE_CONFIG`` instead of reading
-        the json5 file — they inherit the main agent's in-memory config.
+        the yaml file — they inherit the main agent's in-memory config.
         """
         from dataclasses import asdict
 
@@ -542,7 +541,7 @@ class Config:
     # ── Config file I/O helpers ─────────────────────────────────────
 
     def _read_config(self, action: str, server: str) -> dict | None:
-        """Read and parse the JSON5 config file. Returns None if no path."""
+        """Read and parse the YAML config file. Returns None if no path."""
         if not self._path:
             logger.warning("config_no_path action=%s server=%s", action, server)
             return None
@@ -550,15 +549,15 @@ class Config:
         return read_config(self._path)
 
     def _write_config(self, raw: dict) -> None:
-        """Write the JSON5 config back to disk."""
+        """Write the YAML config back to disk."""
         assert self._path is not None
         from slife.tools._config_io import write_config
         write_config(self._path, raw)
 
     def _tools_config_path(self) -> Path:
-        """The tools.json5 path this config owns.
+        """The tools.yaml path this config owns.
 
-        Set by :meth:`from_json5` to the data-dir sibling of slife.json5;
+        Set by :meth:`from_yaml` to the data-dir sibling of slife.yaml;
         falls back to the canonical data-dir default when unknown.
         """
         if self._tools_path is not None:
@@ -567,7 +566,7 @@ class Config:
         return get_tools_config_path()
 
     def _read_tools_config(self, action: str, name: str) -> dict | None:
-        """Read and parse tools.json5. Returns None if no slife path set."""
+        """Read and parse tools.yaml. Returns None if no slife path set."""
         if not self._path:
             logger.warning("config_no_path action=%s name=%s", action, name)
             return None
@@ -575,7 +574,7 @@ class Config:
         return read_config(self._tools_config_path())
 
     def _write_tools_config(self, raw: dict) -> None:
-        """Write tools.json5 back to disk (own atomic temp+replace)."""
+        """Write tools.yaml back to disk (own atomic temp+replace)."""
         from slife.tools._config_io import write_config
         write_config(self._tools_config_path(), raw)
 
@@ -685,10 +684,10 @@ class Config:
 
     @staticmethod
     def _load_subagent_config(raw: dict) -> dict:
-        """Extract subagent config with defaults from parsed JSON5.
+        """Extract subagent config with defaults from parsed YAML.
 
         The task bound is owned by the timeout registry (work.task_budget) —
-        any ``task_timeout`` in JSON5 is ignored.  Only ``max_subagents``
+        any ``task_timeout`` in YAML is ignored.  Only ``max_subagents``
         remains user-configurable.
         """
         sub_raw = raw.get("subagent")
@@ -816,15 +815,15 @@ class Config:
     def _seed_first_run_config(path: Path) -> None:
         """Seed the git-tracked default configs from the package.
 
-        Copies any *missing* config among ``slife.json5`` /
-        ``tools.json5`` from the package directory into ``path.parent``
+        Copies any *missing* config among ``slife.yaml`` /
+        ``tools.yaml`` from the package directory into ``path.parent``
         (the slife data dir) — the out-of-the-box defaults for a fresh
         install, and a supplement for existing installs that lack a newly
-        added config.  ``local_embed.json5`` seeds to ``~/.local-embed/``
+        added config.  ``local_embed.yaml`` seeds to ``~/.local-embed/``
         (local-embed is a separate standalone app).  Existing files are
         never overwritten.
 
-        A freshly seeded ``slife.json5`` is followed by an active-model
+        A freshly seeded ``slife.yaml`` is followed by an active-model
         API-key check: when the key is missing, prints setup
         instructions and exits gracefully (SystemExit).
         """
@@ -836,22 +835,22 @@ class Config:
         pkg_dir = _PKG_DIR
 
         fresh = not path.exists()
-        # Data-dir configs — slife.json5, tools.json5 and sharefile.json5
+        # Data-dir configs — slife.yaml, tools.yaml and sharefile.yaml
         # (the last two belong to built-in slife plugins) all live in the slife
         # data dir (path.parent), resolved via slife.paths.get_data_dir().
         # Seed each *missing* one from the bundled default; never overwrite.
-        for name in ("slife.json5", "tools.json5", "sharefile.json5"):
+        for name in ("slife.yaml", "tools.yaml", "sharefile.yaml"):
             target = path.parent / name
             if target.exists():
                 continue
             pkg = pkg_dir / name
             if not pkg.exists():
-                # slife.json5 must be present to configure anything; wheels
-                # predating the git-tracked configs may lack tools.json5.
-                if name == "slife.json5":
+                # slife.yaml must be present to configure anything; wheels
+                # predating the git-tracked configs may lack tools.yaml.
+                if name == "slife.yaml":
                     raise FileNotFoundError(
                         f"Config file not found: {path}\n"
-                        f"Run: cp slife.json5 ~/.slife/slife.json5"
+                        f"Run: cp slife.yaml ~/.slife/slife.yaml"
                     )
                 continue
             shutil.copy(pkg, target)
@@ -868,7 +867,7 @@ class Config:
         # local-embed is a separate standalone app — it hosts its own config in
         # its own data dir (~/.local-embed, matching its standalone resolver).
         # Seed the same way: missing → copy, never overwrite.
-        name = "local_embed.json5"
+        name = "local_embed.yaml"
         target = Path.home() / ".local-embed" / name
         if not target.exists():
             pkg = pkg_dir / name
@@ -885,7 +884,9 @@ class Config:
         if not fresh:
             return  # existing user config — the fresh-install key check is moot
 
-        raw = json5.loads(path.read_text(encoding="utf-8"))
+        from slife.tools._config_io import read_config
+
+        raw = read_config(path)
         key_ok, key_hint = Config._check_active_provider_key(raw)
         if key_ok:
             print("  API key found — starting up.\n")
@@ -956,33 +957,34 @@ class Config:
     # ── Main loader ─────────────────────────────────────────────────
 
     @classmethod
-    def from_json5(
-        cls, path: str | Path = "slife.json5",
+    def from_yaml(
+        cls, path: str | Path = "slife.yaml",
         agent_name: str = "slife",
     ) -> "Config":
-        """Load from JSON5 file with provider->model hierarchy.
+        """Load from YAML file with provider->model hierarchy.
 
         Args:
-            path: Path to the JSON5 config file.
-                  Defaults to ``~/.slife/slife.json5``.
+            path: Path to the YAML config file.
+                  Defaults to ``~/.slife/slife.yaml``.
             agent_name: Agent identity key (``--agent`` on the CLI).
                       Defaults to ``"slife"``.  Used for memory isolation
                       and as the MQTT agent identity when Mosquitto is available.
         """
         path = Path(path).expanduser()
         logger.debug("config_load path=%s", path)
-        # Seeds missing configs from the package defaults (slife.json5 +
-        # tools.json5 into the data dir, local_embed.json5 into
+        # Seeds missing configs from the package defaults (slife.yaml +
+        # tools.yaml into the data dir, local_embed.yaml into
         # ~/.local-embed); no-op for files the user already has.
         cls._seed_first_run_config(path)
 
-        raw = json5.loads(path.read_text(encoding="utf-8"))
-
-        # Tool configs live in tools.json5 (one section per tool category:
-        # builtin / mcp / rest-api / job / cli / skill).  The seed above
-        # guarantees the file sits next to slife.json5 in the data dir.
-        tools_path = path.parent / "tools.json5"
         from slife.tools._config_io import read_config
+
+        raw = read_config(path)
+
+        # Tool configs live in tools.yaml (one section per tool category:
+        # builtin / mcp / rest-api / job / cli / skill).  The seed above
+        # guarantees the file sits next to slife.yaml in the data dir.
+        tools_path = path.parent / "tools.yaml"
         tools_raw = read_config(tools_path)
 
         # Models
@@ -1020,7 +1022,7 @@ class Config:
         env_section = _parse_section(raw, "env", dict, {})
         cls._inject_env_vars(env_section)
 
-        # Tools — the tools.json5 ``builtin`` section (optional; auto-discovery
+        # Tools — the tools.yaml ``builtin`` section (optional; auto-discovery
         # handles defaults).  Lenient: a ${OPTIONAL_KEY} that isn't set must
         # not abort the whole app startup — it's left as-is for a downstream
         # resolver, like every other section.
@@ -1066,10 +1068,10 @@ class Config:
             subagent_config["max_subagents"],
         )
 
-        # CLI tools — the tools.json5 ``cli`` section (managed, no config class)
+        # CLI tools — the tools.yaml ``cli`` section (managed, no config class)
         cli_tools = _parse_section(tools_raw, "cli", dict, {})
         # ``job`` / ``skill`` sections — a per-entry ``enabled`` list so every
-        # json5 category section carries the same enable/disable policy
+        # yaml category section carries the same enable/disable policy
         # (functional consumption lives in the catalog seed/catalog-service;
         # here they are parsed + overlay names so a disabled entry is hidden).
         job_overrides = _parse_section(tools_raw, "job", list, [])
@@ -1160,10 +1162,10 @@ class Config:
         )
         config._path = path
         config._tools_path = tools_path
-        # mcp-gateway is a built-in slife plugin — it resolves tools.json5 in
-        # the same data dir as slife.json5 (via slife.paths.get_data_dir).
+        # mcp-gateway is a built-in slife plugin — it resolves tools.yaml in
+        # the same data dir as slife.yaml (via slife.paths.get_data_dir).
         # local-embed is a separate standalone app that resolves its own
-        # ~/.local-embed/local_embed.json5.  We do NOT set $TOOLS_FILE /
+        # ~/.local-embed/local_embed.yaml.  We do NOT set $TOOLS_FILE /
         # $LOCAL_EMBED_FILE — both plugins find the files the installer and
         # _seed_first_run_config (above) write.
         return config

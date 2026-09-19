@@ -3,11 +3,11 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
-import json5
 from pathlib import Path
 from unittest.mock import patch
 
 from slife.paths import get_config_path
+from tests.conftest import load_config_text
 from slife.tools._config_io import (
     now_iso,
     with_fetched_at,
@@ -82,42 +82,50 @@ class TestWithFetchedAt:
 class TestReadConfig:
     """Tests for read_config."""
 
-    def test_reads_valid_json5(self, tmp_path):
-        path = tmp_path / "config.json5"
-        path.write_text('{"key": "value", "num": 42}', encoding="utf-8")
+    def test_reads_valid_yaml(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text("key: value\nnum: 42\n", encoding="utf-8")
         result = read_config(path)
         assert result == {"key": "value", "num": 42}
 
     def test_file_not_found_returns_empty(self, tmp_path):
-        path = tmp_path / "nonexistent.json5"
+        path = tmp_path / "nonexistent.yaml"
         result = read_config(path)
         assert result == {}
 
     def test_parse_error_raises(self, tmp_path):
         """A parse error must raise — a mutating caller that went on to write
         would wipe the whole config as an empty dict."""
-        path = tmp_path / "broken.json5"
-        path.write_text("{invalid json5!!!", encoding="utf-8")
+        path = tmp_path / "broken.yaml"
+        path.write_text("key: [unclosed", encoding="utf-8")
+        with pytest.raises(ConfigParseError):
+            read_config(path)
+
+    def test_non_mapping_raises(self, tmp_path):
+        """A file that parses but is not a mapping (a bare list, or nothing at
+        all) is as unusable as a parse error — same wipe hazard."""
+        path = tmp_path / "list.yaml"
+        path.write_text("- a\n- b\n", encoding="utf-8")
         with pytest.raises(ConfigParseError):
             read_config(path)
 
     def test_os_error_raises(self, tmp_path):
         """An OSError (e.g. permission denied) must raise — same wipe hazard."""
-        path = tmp_path / "unreadable.json5"
-        path.write_text('{"key": "value"}', encoding="utf-8")
+        path = tmp_path / "unreadable.yaml"
+        path.write_text("key: value\n", encoding="utf-8")
         with patch("pathlib.Path.read_text", side_effect=OSError("Permission denied")):
             with pytest.raises(ConfigParseError):
                 read_config(path)
 
     @pytest.mark.asyncio
     async def test_mutating_tool_does_not_wipe_broken_config(self, tmp_path):
-        """Regression: a broken slife.json5 + a mutating tool used to rewrite
+        """Regression: a broken slife.yaml + a mutating tool used to rewrite
         the whole file as {} (config_env_set reported [OK] while destroying
         every provider/model).  The write must be aborted instead."""
         from slife.tools.config import ConfigEnvSetTool
 
-        path = tmp_path / "slife.json5"
-        original = '{"providers": {"deepseek": {"base_url": "x"}}'  # unclosed brace
+        path = tmp_path / "slife.yaml"
+        original = "providers:\n  deepseek:\n    base_url: x\n  list: [unclosed\n"
         path.write_text(original, encoding="utf-8")
 
         tool = ConfigEnvSetTool(config_path=path)
@@ -182,11 +190,11 @@ class TestFormatSourceInfo:
 class TestWriteConfig:
     """Tests for write_config."""
 
-    def test_writes_json5_with_indent(self, tmp_path):
-        path = tmp_path / "output.json5"
+    def test_writes_yaml_with_indent(self, tmp_path):
+        path = tmp_path / "output.yaml"
         data = {"key": "value", "list": [1, 2, 3]}
         write_config(path, data)
-        result = json5.loads(path.read_text(encoding="utf-8"))
+        result = load_config_text(path.read_text(encoding="utf-8"))
         assert result == data
 
 
@@ -196,19 +204,19 @@ class TestWriteConfig:
 class TestConfigPathMixin:
     """Tests for _ConfigPathMixin."""
 
-    def test_default_path_is_slife_json5(self):
+    def test_default_path_is_slife_yaml(self):
         mixin = _ConfigPathMixin()
         assert mixin._config_path == get_config_path()
 
     def test_custom_path(self):
-        mixin = _ConfigPathMixin(config_path=Path("/custom/path.json5"))
-        assert mixin._config_path == Path("/custom/path.json5")
+        mixin = _ConfigPathMixin(config_path=Path("/custom/path.yaml"))
+        assert mixin._config_path == Path("/custom/path.yaml")
 
     def test_from_config_with_config(self, sample_config):
         """from_config extracts path from Config._path."""
-        sample_config._path = Path("/my/config.json5")
+        sample_config._path = Path("/my/config.yaml")
         instance = _ConfigPathMixin.from_config({}, sample_config)
-        assert instance._config_path == Path("/my/config.json5")
+        assert instance._config_path == Path("/my/config.yaml")
 
     def test_from_config_without_config(self):
         """from_config falls back to default when config is None."""

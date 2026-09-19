@@ -4,7 +4,7 @@ This is the entry point for the mcp-gateway child process. It:
   1. Starts a FastMCP server on Streamable HTTP transport (auto-assigned port)
   2. Exposes management tools (bare names) to manage external MCP connections
   3. Maintains persistent connections to external MCP servers
-  4. Self-hosts its config: loads ``tools.json5`` on startup and
+  4. Self-hosts its config: loads ``tools.yaml`` on startup and
      persists ``mcp_set`` / ``mcp_remove`` / ``mcp_set_enabled`` through
      ``mcp_gateway.config`` — no host involvement.
 
@@ -55,7 +55,7 @@ async def _mcp_lifespan(_app):
 async def _auto_connect_configured() -> None:
     """Register every configured server, CONNECTING the enabled ones.
 
-    ``tools.json5`` is the whole decision: enabled ⇒ bring it up now, disabled
+    ``tools.yaml`` is the whole decision: enabled ⇒ bring it up now, disabled
     ⇒ register it (so ``mcp_list`` lists the same set as the config) and leave
     it down.  Nothing is remembered between sessions — no db, no snapshot: a
     server that was down when you quit is retried at the next boot like any
@@ -69,7 +69,7 @@ async def _auto_connect_configured() -> None:
     except Exception as e:
         logger.warning("mcp_config_load_failed err=%s", e)
         return
-    # servers live in the mcp.servers / rest-api sections (tools.json5) —
+    # servers live in the mcp.servers / rest-api sections (tools.yaml) —
     # use the merged view with the legacy top-level fallback, never the
     # raw ``servers`` key (gone since the section restructure).
     servers = plugin_config._servers_dict(raw)
@@ -216,7 +216,7 @@ def _persist_entry(
     auth: dict | None,
     enabled: bool = True,
 ) -> None:
-    """Persist a server entry to tools.json5 (merge semantics).
+    """Persist a server entry to tools.yaml (merge semantics).
 
     ``enabled=True`` (the default) leaves the flag untouched — only
     ``mcp_set_enabled`` flips enable/disable; ``enabled=False`` is written
@@ -433,7 +433,7 @@ async def mcp_set(
     The MCP family's own tool.  Identical config → ``already_connected``, no
     restart.  Changed config → restart.  ``enabled`` sets the initial state;
     use ``mcp_set_enabled`` to toggle enable/disable at runtime.  Persisted to
-    tools.json5.
+    tools.yaml.
 
     Args:
         name: Unique server name (not a reserved plugin name).

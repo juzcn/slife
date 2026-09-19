@@ -55,7 +55,7 @@ Readiness (protocol negotiation)
 Required plugins (core components)
   Whether a plugin is *required* is a **host-side contract decision,
   configured per instance** — named in the ``plugins.required`` list of
-  ``slife.json5`` (default: empty = every plugin optional).  A required
+  ``slife.yaml`` (default: empty = every plugin optional).  A required
   plugin that fails to become ready — lifespan failure (FAILED), a raised
   spawn, or the harness's bounded 30 s spawn hang-guard — **aborts
   startup**: red message, all plugins stopped, non-zero exit.  The app

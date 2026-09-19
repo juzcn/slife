@@ -2,7 +2,7 @@
 --  slife 统一工具目录库（tools.db）— host 主进程持有的单一事实源
 --
 --  一行 = 一个 tool：function tool（builtin | job | plugin | mcp | rest-api）、
---  skill（skills 目录里的一个 SKILL.md）、cli（tools.json5 里的一条 cli 配置）；
+--  skill（skills 目录里的一个 SKILL.md）、cli（tools.yaml 里的一条 cli 配置）；
 --  mcp/rest-api 用 ``{server}__{tool}`` 全名标识（source_id 指 server）；
 --  skill/cli 加家族前缀（``skill:browser-harness`` / ``cli:browser-harness``）——
 --  name 是行的身份（主键、embeddings 的外键、搜索结果的合并键），两个家族不能共用一个，
@@ -11,7 +11,7 @@
 --  type 是 category 的粗粒度投影：func | skill | cli —— load/unload 只属于 func。
 --  落盘 + WAL（多进程：主 agent 写、subagent 只读/短写），busy_timeout
 --  兜底 SQLITE_BUSY。无运行时 DDL 迁移：schema 版本走 PRAGMA user_version；
---  这个库是派生数据（行来自 tool registry / tools.json5 / skills 目录 / 插件子进程），
+--  这个库是派生数据（行来自 tool registry / tools.yaml / skills 目录 / 插件子进程），
 --  所以**结构变了就删库重建，不原地升级** —— 改 CHECK、加列、改列名都算（v5 的
 --  status→load_status、v6/v7 的 NOT NULL 都没有迁移步骤）。旧文件由 _check_columns
 --  （列）与 _check_categories（CHECK）报出来，提示里写着删哪个文件。
@@ -27,7 +27,7 @@
 -- ═══════════════════════════════════════════════════════════════
 
 
--- 工具目录。enabled 一律来自 tools.json5（mcp/rest-api 也一样，就是该 server
+-- 工具目录。enabled 一律来自 tools.yaml（mcp/rest-api 也一样，就是该 server
 -- 的开关）；可用性由 unavailable 单独表达，两者都不动 load_status。
 -- **没有可空列**："本地"（source_id）、"无 schema"（schema）、"无 load 概念"
 -- （load_status）都是真实取值，用 'n/a' 表达。NULL 的代价是每个读点都要多写一个
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS tool (
                                              -- cli：合成的 {name, description} 描述符 ——
                                              -- 没有 tool def，但这一列同时是语义索引的**文档**，
                                              -- 空了就不可嵌入（见文件末尾），row 会对语义腿隐形
-    enabled     INTEGER NOT NULL DEFAULT 1,  -- 布尔，来自 tools.json5 的 enabled（1 = 开）
+    enabled     INTEGER NOT NULL DEFAULT 1,  -- 布尔，来自 tools.yaml 的 enabled（1 = 开）
     load_status TEXT NOT NULL DEFAULT 'n/a', -- 'loaded'|'unloaded'（type='func'）|'n/a'（skill/cli）
     unavailable INTEGER NOT NULL DEFAULT 0,  -- 布尔：1 = 拥有者此刻不可用（effective status 记 unavailable）
     last_loaded TEXT NOT NULL DEFAULT ''     -- 本地 ISO；'' = 从未 load（LRU 里排最旧）
@@ -65,7 +65,7 @@ CREATE INDEX IF NOT EXISTS idx_tool_category ON tool(category);
 CREATE INDEX IF NOT EXISTS idx_tool_type ON tool(type);
 
 
--- 没有 server 表：哪些 server 该连由 tools.json5 的 enabled 决定，此刻谁活着由
+-- 没有 server 表：哪些 server 该连由 tools.yaml 的 enabled 决定，此刻谁活着由
 -- 网关的 pool（mcp_list / __check）回答，这个库只把结果记在 tool 行上 ——
 -- 服务器不可用（未连上 / 掉线 / 连接失败 / 网关子进程死亡）时，它的 tool 行
 -- unavailable 置 1（effective status 记 'unavailable'，退出注入集）；连上后清掉

@@ -45,9 +45,8 @@ Requires Python ≥ 3.13.
 
 ## Install
 
-The core package is `fastmcp` + `starlette` + `json-five` (the JSON5 parser,
-imported as `json5`); the model backends are
-optional extras.
+The core package is `fastmcp` + `starlette` + `ruamel.yaml` (round-trip YAML —
+the comment-preserving config parser); the model backends are optional extras.
 
 One-click installers (install `uv` if needed, then `uv tool install --force
 local-embed` — the backend is **not** included, see below):
@@ -117,7 +116,7 @@ Installing does **not** fetch a model — get the weights first.
 
 1. **Install** the app and a backend (above).
 2. **Download weights** — see [Model weights](#model-weights).
-3. **Configure a model** — the CLI helper writes `local_embed.json5`:
+3. **Configure a model** — the CLI helper writes `local_embed.yaml`:
 
    ```bash
    local-embed set BAAI/bge-m3 --HF_HUB_CACHE <dir>     # transformer
@@ -133,25 +132,28 @@ Installing does **not** fetch a model — get the weights first.
 5. **Embed text** — point any OpenAI-compatible client at
    `http://127.0.0.1:17347/v1` (see [HTTP API](#http-api-openai-compatible)).
 
-## Configuration: `local_embed.json5`
+## Configuration: `local_embed.yaml`
 
 Everything — host, port, models, backend — comes from
-`local_embed.json5`, written by the CLI helpers or by hand. Path resolution:
-`$LOCAL_EMBED_FILE` > slife project root (dev) > `~/.local-embed/local_embed.json5`.
+`local_embed.yaml`, written by the CLI helpers or by hand. Path resolution:
+`$LOCAL_EMBED_FILE` > slife project root (dev) > `~/.local-embed/local_embed.yaml`.
 
-```json5
-{
-  models: {
-    "bge-m3": { backend: "gguf", gguf_path: "…", device: "", autoload: false },
-    "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3", device: "" }
-  },
-  env: {                            // injected into this process before any model loads
-    HF_HUB_CACHE: "C:\\…\\HuggingFace\\hub",   // where transformer repos resolve
-    HF_HUB_OFFLINE: "1"                        // force offline
-  },
-  host: "127.0.0.1",                // standalone only
-  port: 17347                        // standalone only
-}
+```yaml
+models:
+  "bge-m3":
+    backend: "gguf"
+    gguf_path: "…"
+    device: ""
+    autoload: false
+  "bge-m3-transformer":
+    backend: "transformer"
+    model: "BAAI/bge-m3"
+    device: ""
+env:                                       # injected into this process before any model loads
+  HF_HUB_CACHE: 'C:\…\HuggingFace\hub'     # where transformer repos resolve
+  HF_HUB_OFFLINE: "1"                      # force offline
+host: "127.0.0.1"                          # standalone only
+port: 17347                                # standalone only
 ```
 
 - `models` — map of name → `{backend, gguf_path | model, device, max_tokens, autoload}`.
@@ -199,10 +201,11 @@ fetchable from `https://huggingface.co/<owner>/<repo>/resolve/main/<model>.gguf`
 Prefer a high-fidelity quant such as **Q8_0** (~99 % of the original accuracy at
 roughly a third of the size). Point `gguf_path` at the file:
 
-```json5
-models: {
-  "bge-m3": { backend: "gguf", gguf_path: "D:\\models\\bge-m3\\bge-m3-q8_0.gguf" }
-}
+```yaml
+models:
+  "bge-m3":
+    backend: "gguf"
+    gguf_path: 'D:\models\bge-m3\bge-m3-q8_0.gguf'
 ```
 
 ### Transformer
@@ -213,10 +216,11 @@ models: {
 hf download BAAI/bge-m3     # -> ~/.cache/huggingface/hub/models--BAAI--bge-m3
 ```
 
-```json5
-models: {
-  "bge-m3": { backend: "transformer", model: "BAAI/bge-m3" }
-}
+```yaml
+models:
+  "bge-m3":
+    backend: "transformer"
+    model: "BAAI/bge-m3"
 ```
 
 ## HTTP API (OpenAI-compatible)
@@ -300,7 +304,7 @@ vecs = client.embeddings.create(model="bge-m3", input=["hello"])
 ## CLI (auxiliary tools)
 
 The `local-embed` CLI is a **helper**, not the product: it starts the service
-and writes the config file. The service is configured by `local_embed.json5`
+and writes the config file. The service is configured by `local_embed.yaml`
 and consumed over the HTTP API — the CLI only makes both steps convenient.
 
 ### `local-embed` — run the service
@@ -411,18 +415,15 @@ failed to load, with the reason, and the running instance keeps serving.
 
 Point slife's embedding config at the daemon's stable port:
 
-```json5
-embeddings: {
-  providers: {
-    local: {
-      base_url: "http://127.0.0.1:17347/v1",  // stable port from local_embed.json5
-      api_key: "local",
-      model: "bge-m3",                        // id POSTed on /v1/embeddings
-    }
-  },
-  active_model: "local",      // provider-id only, or "local/<model>"
+```yaml
+embeddings:
+  providers:
+    local:
+      base_url: "http://127.0.0.1:17347/v1"  # stable port from local_embed.yaml
+      api_key: "local"
+      model: "bge-m3"                        # id POSTed on /v1/embeddings
+  active_model: "local"      # provider-id only, or "local/<model>"
   enabled: true
-}
 ```
 
 slife treats every embedding model as a remote OpenAI-compatible endpoint —

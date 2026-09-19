@@ -32,7 +32,7 @@ $repo = "https://github.com/juzcn/slife"
 Write-Host "local-embed Installer" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Install method : uv tool install --force (isolated environment; re-run = update)"
-Write-Host "User data      : ~\.local-embed\local_embed.json5 (config)"
+Write-Host "User data      : ~\.local-embed\local_embed.yaml (config)"
 Write-Host "Model cache    : ~\.cache\huggingface (pre-downloaded weights)"
 Write-Host "Python         : managed by uv"
 Write-Host ""

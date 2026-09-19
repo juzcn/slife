@@ -186,7 +186,7 @@ class MCPProxyTool(Tool):
     async def _handle_set(self, result: str, source: dict | None, **kwargs) -> None:
         """Register tools for a server that mcp_set / mcp_set_enabled connected.
 
-        Config persistence happens inside the gateway (its own tools.json5);
+        Config persistence happens inside the gateway (its own tools.yaml);
         the slife-side callbacks only refresh the tool registry."""
         if self._tool_name not in (_MCP_SET, _MCP_SET_ENABLED) or not (self._on_server_added or self._on_server_updated):
             return

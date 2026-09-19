@@ -148,14 +148,14 @@ catch it). A pure-computation job must NOT import it.
 ## The `mcp` handle — bare MCP access
 
 `from slife.plugins.job_coding import mcp` gives a job **bare MCP access**:
-any tool on any external MCP server configured in `tools.json5`, via
+any tool on any external MCP server configured in `tools.yaml`, via
 the mcp-gateway's persistent connections. No server gets spawned a second
 time, and there is **no requirement that the tool be loaded into the main
 agent's toolset** — only `autoload: true` servers' tools are; a job can
 call an *unloaded* tool directly by name.
 
 - `await mcp.call(server, tool, args=None)` — ONE bare tool call per
-  statement. `server` is the server name from `tools.json5`
+  statement. `server` is the server name from `tools.yaml`
   (e.g. `github`), `tool` the tool name without the `{server}__` prefix
   (e.g. `search_code`), `args` an optional JSON-serialisable dict matched
   to that tool's `inputSchema`.
@@ -272,12 +272,12 @@ async def folder_to_md(folder: str, recursive: bool = False) -> str:
 
 ## Model configuration
 
-The job LLM is a top-level `job_coding_model` key of the main `slife.json5`
+The job LLM is a top-level `job_coding_model` key of the main `slife.yaml`
 — a `provider/model` ref that reuses the `models.providers` above:
 
-```json5
-active_model: "provider/model",
-job_coding_model: "provider/model",   // jobs' LLM — usually a cheap/fast model
+```yaml
+active_model: "provider/model"
+job_coding_model: "provider/model"   # jobs' LLM — usually a cheap/fast model
 ```
 
 **Configure it as a DIFFERENT model from `active_model`.** A job's

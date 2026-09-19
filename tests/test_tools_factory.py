@@ -78,7 +78,7 @@ class TestCreateToolsFromConfig:
     def test_disabled_tool_instance_is_still_buildable(self):
         """The disabled tool is handed over for the catalog, not registered.
 
-        json5 declares it, so the db carries a row for it (marked ``disabled``)
+        yaml declares it, so the db carries a row for it (marked ``disabled``)
         — that needs the tool's own description/schema, which only the instance
         has.
         """

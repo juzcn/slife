@@ -5,7 +5,7 @@ memdb / media): the harness spawns ``server.py``, connects via MCP, and
 registers the sharefile tools.  The plugin owns the in-process
 token registry, the tunnel, and serves file bytes on the same port
 via a custom HTTP route (``GET /share/{file_id}``).  The tunnel provider
-(ngrok, localhost.run) is chosen by ``sharefile.json5`` — see
+(ngrok, localhost.run) is chosen by ``sharefile.yaml`` — see
 :mod:`slife.plugins.sharefile.config` and
 :mod:`slife.plugins.sharefile.providers`.
 
@@ -50,7 +50,7 @@ from slife.server_utils import (
 _PLUGIN_PORT: int = 0
 
 # The plugin owns its tunnel instance.  The provider is chosen by
-# sharefile.json5's ``active_provider`` (ngrok by default, or "localhost.run").
+# sharefile.yaml's ``active_provider`` (ngrok by default, or "localhost.run").
 # A missing / unreadable / unknown-provider config degrades to ngrok instead of
 # failing: the tunnel is a subordinate dependency and never gates readiness
 # (docs/PLUGIN_CONTRACT.md).

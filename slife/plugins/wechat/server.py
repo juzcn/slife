@@ -1,7 +1,7 @@
 """slife-wechat server — FastMCP server for WeChat iLink ClawBot messaging.
 
 Bidirectional WeChat integration:
-  - Auto-restores session from ``wechat_<user>.json5`` on startup.
+  - Auto-restores session from ``wechat_<user>.yaml`` on startup.
   - Background poll loop fetches incoming messages continuously.
   - LLM tools: wechat_login, wechat_send_message, wechat_check_status, wechat_logout.
 

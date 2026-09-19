@@ -1,24 +1,27 @@
-"""local-embed config — load ``local_embed.json5``, path resolution.
+"""local-embed config — load ``local_embed.yaml``, path resolution.
 
 Path precedence (mirrors mcp-gateway / credstore):
   1. ``$LOCAL_EMBED_FILE`` — a host (slife) exports this =
-     ``<dir of slife.json5>/local_embed.json5`` before it launches the
+     ``<dir of slife.yaml>/local_embed.yaml`` before it launches the
      plugin child, so the config sits next to the host's config
   2. slife project root (dev): CWD is the slife source root
-     (``pyproject.toml`` ``project.name == "slife"``) — ``./local_embed.json5``
+     (``pyproject.toml`` ``project.name == "slife"``) — ``./local_embed.yaml``
      (credstore's ``is_slife_dev`` pattern)
-  3. ``~/.local-embed/local_embed.json5`` (standalone default, credstore-style)
+  3. ``~/.local-embed/local_embed.yaml`` (standalone default, credstore-style)
 
 Config shape::
 
-    {
-      models: {
-        "bge-m3": { backend: "gguf", gguf_path: "…", device: "", autoload: false },
-        "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3" },
-      },
-      host: "127.0.0.1",    // standalone only
-      port: 17347,          // standalone only
-    }
+    models:
+      "bge-m3":
+        backend: "gguf"
+        gguf_path: "…"
+        device: ""
+        autoload: false
+      "bge-m3-transformer":
+        backend: "transformer"
+        model: "BAAI/bge-m3"
+    host: "127.0.0.1"    # standalone only
+    port: 17347          # standalone only
 
 Every configured model is a peer — there is no ``active_model`` (a standard
 OpenAI embeddings backend has no such concept).  Each request names the
@@ -41,15 +44,21 @@ exporting anything.  Values support ``${VAR}`` / ``${VAR:-default}``
 expansion from ``os.environ`` (see :func:`expand_value`), so the shipped
 config can carry portable placeholders instead of machine-specific paths::
 
-    {
-      env: { HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}", HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}" },
-      models: { "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3" } },
-    }
+    env:
+      HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}"
+      HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
+    models:
+      "bge-m3-transformer":
+        backend: "transformer"
+        model: "BAAI/bge-m3"
 
 Single-model convenience (still supported) — ``backend`` / ``model`` /
 ``gguf_path`` / ``device`` at the top level, exactly one model::
 
-    { backend: "gguf", model: "bge-m3", gguf_path: "…", device: "" }
+    backend: "gguf"
+    model: "bge-m3"
+    gguf_path: "…"
+    device: ""
 
 Reads are read-only at runtime — local-embed has no config-mutating tools
 (mirrors mcp-gateway's self-hosted config, minus the persistence).
@@ -57,13 +66,15 @@ Reads are read-only at runtime — local-embed has no config-mutating tools
 
 from __future__ import annotations
 
-import json
-import json5
 import logging
 import os
 import re
 import tomllib
 from pathlib import Path
+
+from ruamel.yaml.error import YAMLError
+
+from local_embed._yaml_doc import new_yaml, render_document
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +94,7 @@ def expand_value(value: str) -> str:
     Lenient and env-only (no credstore — local-embed is a standalone
     package): a ``${VAR}`` with no default stays literal when VAR is
     unset, so a fresh install degrades gracefully instead of erroring.
-    Mirrors the syntax of slife.json5's ``${VAR:-default}`` fallback.
+    Mirrors the syntax of slife.yaml's ``${VAR:-default}`` fallback.
     """
     def _sub(m: re.Match) -> str:
         name, default = m.group(1), m.group(2)
@@ -98,12 +109,12 @@ def expand_value(value: str) -> str:
 
 
 def default_config_path() -> Path:
-    """Standalone default: ``~/.local-embed/local_embed.json5``."""
-    return Path.home() / ".local-embed" / "local_embed.json5"
+    """Standalone default: ``~/.local-embed/local_embed.yaml``."""
+    return Path.home() / ".local-embed" / "local_embed.yaml"
 
 
 def resolve_config_path() -> Path:
-    """Return the local_embed.json5 path for this process.
+    """Return the local_embed.yaml path for this process.
 
     Precedence (mirrors mcp-gateway's ``resolve_config_path``):
     ``$LOCAL_EMBED_FILE`` > slife project root (dev) > standalone default.
@@ -112,7 +123,7 @@ def resolve_config_path() -> Path:
     if env:
         return Path(env).expanduser()
     if is_slife_dev():
-        return Path("local_embed.json5")
+        return Path("local_embed.yaml")
     return default_config_path()
 
 
@@ -138,13 +149,18 @@ def load_config(path: "Path | None" = None) -> dict:
     if path is None:
         path = resolve_config_path()
     try:
-        return json5.loads(path.read_text(encoding="utf-8"))
+        raw = new_yaml().load(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         logger.info("config_not_found path=%s", path)
         return {}
-    except (ValueError, OSError) as e:
+    except (YAMLError, ValueError, OSError) as e:
         logger.error("config_parse_error path=%s err=%s", path, e)
         raise ValueError(f"Cannot parse config {path}: {e}") from e
+    # An empty file loads as None and a top-level list as a sequence; neither is
+    # a usable config, and both are surfaced rather than silently becoming {}.
+    if not isinstance(raw, dict):
+        raise ValueError(f"Cannot parse config {path}: not a mapping")
+    return raw
 
 
 def apply_env() -> dict:
@@ -157,7 +173,7 @@ def apply_env() -> dict:
     ``HF_HUB_OFFLINE`` (or anything else) into its *own* process before any
     backend loads, and no external ``HF_*`` export is needed from the host.
 
-    Precedence mirrors slife.json5's ``env:`` injection: an existing
+    Precedence mirrors slife.yaml's ``env:`` injection: an existing
     ``os.environ`` value wins, so a host can always override the config
     file.  Returns the effective env vars (for tests).
     """
@@ -175,7 +191,7 @@ def apply_env() -> dict:
 
 
 def _to_bool(value, default: bool = False) -> bool:
-    """Lenient boolean from json5/env: ``true``/``1``/``yes``/``on`` → True."""
+    """Lenient boolean from yaml/env: ``true``/``1``/``yes``/``on`` → True."""
     if value is None or value == "":
         return default
     if isinstance(value, bool):
@@ -260,82 +276,56 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
     }
 
 
-_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 _KNOWN_KEY_ORDER = ("env", "models", "host", "port")
 
-
-def _js_key(k: str) -> str:
-    """Quote a key only when it is not a plain identifier."""
-    return k if _IDENTIFIER.fullmatch(k) else json.dumps(k)
-
-
-def _js_value(v) -> str:
-    if v is None:
-        return "null"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, str):
-        return json.dumps(v)
-    return str(v)
+#: Written into a config this package creates from scratch.  An existing file
+#: keeps whatever header it has — the writer preserves the document — so this
+#: is only the blank-slate case (the first ``local-embed set`` on a machine
+#: with no config yet).
+_HEADER = """\
+# local-embed — one process, many local embedding models; the request names
+# the model (standard OpenAI semantics — no 'active' model).
+# Config path: $LOCAL_EMBED_FILE > slife project root (dev) > ~/.local-embed/
+"""
 
 
-def _ordered_items(cfg: dict) -> "list[tuple[str, object]]":
+def _ordered(cfg: dict) -> dict:
+    """*cfg* with known top-level keys first, in the seed's canonical order."""
     known = [(k, cfg[k]) for k in _KNOWN_KEY_ORDER if k in cfg]
     rest = [(k, v) for k, v in cfg.items() if k not in _KNOWN_KEY_ORDER]
-    return known + rest
+    return dict(known + rest)
 
 
-def _render_members(pairs: "list[tuple[str, object]]", indent: int) -> str:
-    pad = " " * indent
-    out: "list[str]" = []
-    for i, (k, v) in enumerate(pairs):
-        last = i == len(pairs) - 1
-        sep = "" if last else ","
-        if isinstance(v, dict):
-            out.append(f"{pad}{_js_key(k)}: {{")
-            out.append(_render_members(list(v.items()), indent + 2))
-            out.append(f"{pad}}}{sep}")
-        elif isinstance(v, list):
-            inner = ", ".join(_js_value(x) for x in v)
-            out.append(f"{pad}{_js_key(k)}: [{inner}]{sep}")
-        else:
-            out.append(f"{pad}{_js_key(k)}: {_js_value(v)}{sep}")
-    return "\n".join(out)
+def render_yaml(cfg: dict) -> str:
+    """Serialise *cfg* from scratch: canonical key order plus the header.
 
-
-def render_json5(cfg: dict) -> str:
-    """Serialise a config dict in the repo's hand-written JSON5 style.
-
-    2-space indent, unquoted keys when they are identifiers, double-quoted
-    strings, multiline objects, the file's header comment.  Known top-level
-    keys keep the canonical order from ``local_embed.json5`` (``env``,
-    ``models``, ``host``, ``port``); extra keys append in their existing
-    order.  Deterministic — the same dict always renders the same
-    text, so writing twice is idempotent.
+    The blank-slate renderer — :func:`write_config` uses it only when there is
+    no existing document to edit.
     """
-    header = (
-        "  // local-embed — one process, many local embedding models; the request names",
-        "  // the model (standard OpenAI semantics — no 'active' model).",
-        "  // Config path: $LOCAL_EMBED_FILE > slife project root (dev) > ~/.local-embed/",
-    )
-    body = "\n".join(header) + "\n" + _render_members(_ordered_items(cfg), indent=2)
-    return "{\n" + body + "\n}"
+    return _HEADER + render_document("", _ordered(cfg))
 
 
 def write_config(cfg: dict, path: "Path | None" = None) -> Path:
-    """Atomically write a full config dict to disk in the canonical JSON5 style.
+    """Atomically write a full config dict to disk.
 
-    Serialises with :func:`render_json5` and replaces the file via a temp
-    sibling, so a crashed write never truncates a good config.  A hand-edited
-    file is normalised on rewrite (comments beyond the header are dropped) —
-    configs are machine-read, and command-line writers canonicalise by design
-    (same trade-off slife's config writer makes).
+    An existing file is **edited in place**: its comments, key order and quote
+    style survive, because the write applies the difference to the loaded
+    document rather than re-serialising the dict (see
+    :mod:`local_embed._yaml_doc`).  A file that does not exist yet is rendered
+    fresh with the canonical key order and the header comment.  Either way the
+    replacement is a temp sibling, so a crashed write never truncates a good
+    config.
     """
     if path is None:
         path = resolve_config_path()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        current = path.read_text(encoding="utf-8")
+    except OSError:
+        current = ""
+    text = render_document(current, _ordered(cfg)) if current.strip() else render_yaml(cfg)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(render_json5(cfg), encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
     return path

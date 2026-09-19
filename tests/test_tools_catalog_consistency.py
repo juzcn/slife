@@ -1,9 +1,9 @@
-"""Tool-system self-consistency — a fresh install with its seeded tools.json5
+"""Tool-system self-consistency — a fresh install with its seeded tools.yaml
 must be coherent with an EMPTY database and with an EXISTING one.
 
 Covers the DESIGNER_NOTES §8.5 acceptance line under the post-``server``-table
 model: seeded config ⇄ empty db (first run) and ⇄ persisted db (restart), the
-category derivation from tools.json5, and the connectivity verdict projected
+category derivation from tools.yaml, and the connectivity verdict projected
 onto the tool rows (`error` when a server is unusable, cleared when it
 connects).  All deterministic — no network, no child processes.
 """
@@ -43,40 +43,42 @@ class _NativeToolList(Tool):
         return "ok"
 
 
-def _seeded_tools_json5(tmp: Path) -> Path:
+def _seeded_tools_yaml(tmp: Path) -> Path:
     """A representative seed: builtin + mcp servers + a rest-api entry."""
-    path = tmp / "tools.json5"
+    path = tmp / "tools.yaml"
     path.write_text(
         """
-        {
-          builtin: [{ name: "install_python_package", enabled: false }],
-          mcp: { servers: {
-            filesystem: {
-              command: "npx",
-              args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
-              description: "Local filesystem operations.",
+        builtin:
+          - name: install_python_package
+            enabled: false
+        mcp:
+          servers:
+            filesystem:
+              command: npx
+              args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+              description: Local filesystem operations.
               enabled: false
-            },
-            serper: {
-              command: "npx",
-              args: ["-y", "serper-search-scrape-mcp-server"],
-              env: { SERPER_API_KEY: "${SERPER_API_KEY}" },
-              description: "Google web search via Serper."
-            }
-          }},
-          "rest-api": {
-            weather: {
-              command: "uvx",
-              args: ["--from", "mcp-openapi-proxy", "--", "https://example/api.json"],
-              description: "Weather API.",
-              source: { type: "rest_api" }
-            }
-          },
-          cli: { mycmd: { command: "echo hi", description: "hi" } },
-          job: [],
-          skill: [],
-          tool_load: { threshold: 5 }
-        }
+            serper:
+              command: npx
+              args: ["-y", "serper-search-scrape-mcp-server"]
+              env:
+                SERPER_API_KEY: ${SERPER_API_KEY}
+              description: Google web search via Serper.
+        rest-api:
+          weather:
+            command: uvx
+            args: ["--from", "mcp-openapi-proxy", "--", "https://example/api.json"]
+            description: Weather API.
+            source:
+              type: rest_api
+        cli:
+          mycmd:
+            command: echo hi
+            description: hi
+        job: []
+        skill: []
+        tool_load:
+          threshold: 5
         """,
         encoding="utf-8",
     )
@@ -84,24 +86,24 @@ def _seeded_tools_json5(tmp: Path) -> Path:
 
 
 def _cfg_from(tmp: Path) -> Config:
-    tools = _seeded_tools_json5(tmp)
-    slife = tmp / "slife.json5"
+    tools = _seeded_tools_yaml(tmp)
+    slife = tmp / "slife.yaml"
     slife.write_text(
-        "{ models: [{ ref: 'm', provider: 'p', model: 'm' }], active_model: 'm' }",
+        "models:\n  - ref: m\n    provider: p\n    model: m\nactive_model: m\n",
         encoding="utf-8",
     )
-    return Config.from_json5(slife, agent_name="slife")
+    return Config.from_yaml(slife, agent_name="slife")
 
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
     """Per-test db + config files, wrapper helper isolated.
 
-    ``tools.json5`` is the AUTHORITATIVE config: every category the catalog
+    ``tools.yaml`` is the AUTHORITATIVE config: every category the catalog
     mirrors derives from it (via the gateway config), never from a separately
     carved value.
     """
-    tools_path = _seeded_tools_json5(tmp_path)
+    tools_path = _seeded_tools_yaml(tmp_path)
     monkeypatch.setenv("SLIFE_TOOLS_DB", str(tmp_path / "tools.db"))
     monkeypatch.setenv("TOOLS_FILE", str(tools_path))
     from slife.plugins.mcp_gateway import config as _cfg
@@ -119,7 +121,7 @@ def _descriptor(name: str, description: str) -> str:
 async def _mirror_server(catalog: ToolCatalogService, server: str, tools: list[str]) -> None:
     """What the reconcile does when a server connects: mirror its tool rows.
 
-    The category comes from tools.json5 (``_server_category``), never from a
+    The category comes from tools.yaml (``_server_category``), never from a
     mirrored provenance row — there is no server table.
     """
     from slife.agent.service import _server_category
@@ -161,7 +163,7 @@ async def test_empty_db_opens_and_seeds(_isolate):
 
 @pytest.mark.asyncio
 async def test_a_hand_edited_cli_entry_lands_without_a_restart(_isolate, sample_config):
-    """tools.json5 stays the authority mid-session.
+    """tools.yaml stays the authority mid-session.
 
     A cli entry added by hand (not through ``cli_set``, which re-mirrors by
     itself) reaches the db on the next reconcile pass — the mtimes are what
@@ -184,13 +186,15 @@ async def test_a_hand_edited_cli_entry_lands_without_a_restart(_isolate, sample_
         assert "cli:mycmd" in await store.names_by_category("cli")
 
         # A hand-edit: a new cli entry, written straight to the file.
-        tools_path = _isolate / "tools.json5"
+        tools_path = _isolate / "tools.yaml"
         text = tools_path.read_text(encoding="utf-8")
         tools_path.write_text(
             text.replace(
-                "cli: { mycmd: { command: \"echo hi\", description: \"hi\" } }",
-                "cli: { mycmd: { command: \"echo hi\", description: \"hi\" },"
-                " byhand: { command: \"echo byhand\", description: \"edited by hand\" } }",
+                "description: hi\n",
+                "description: hi\n"
+                "          byhand:\n"
+                "            command: echo byhand\n"
+                "            description: edited by hand\n",
             ),
             encoding="utf-8",
         )
@@ -217,7 +221,7 @@ async def test_a_hand_edited_cli_entry_lands_without_a_restart(_isolate, sample_
 
 @pytest.mark.asyncio
 async def test_a_config_disabled_builtin_gets_a_row_marked_disabled(_isolate):
-    """json5 declaring a tool the db had never heard of is a disagreement.
+    """config declaring a tool the db had never heard of is a disagreement.
 
     A disabled builtin is never REGISTERED, so the registry cannot seed it —
     the seed hands its instance over explicitly, and the row reports
@@ -243,7 +247,7 @@ async def test_a_config_disabled_builtin_gets_a_row_marked_disabled(_isolate):
         await svc.sync_system_tools([_NativeShell(), _DisabledNative()])
 
         row = await store.get_tool("native_off")
-        assert row is not None                    # json5 names it → the db has it
+        assert row is not None                    # yaml names it → the db has it
         assert row["enabled"] == 0
         assert await svc.effective_status("native_off") == "disabled"
         assert "native_off" not in await svc.snapshot_loaded()
@@ -340,12 +344,12 @@ async def test_gateway_death_marks_every_external_tool_error(_isolate):
     await store.close()
 
 
-# ── C: tools.json5 is the authority — removal purges ────────────────────
+# ── C: tools.yaml is the authority — removal purges ────────────────────
 
 
 @pytest.mark.asyncio
 async def test_purge_unconfigured_sources(_isolate):
-    """A server that left tools.json5 loses its rows; configured ones stay."""
+    """A server that left tools.yaml loses its rows; configured ones stay."""
     store = CatalogStore(_isolate / "tools.db")
     await store.open()
     svc = ToolCatalogService(store, write_owner=True)
@@ -529,7 +533,7 @@ async def test_switching_a_server_off_keeps_its_rows_and_the_load_state(
 ):
     """The reconcile's two columns move independently.
 
-    ``enabled`` mirrors tools.json5's switch; ``unavailable`` carries the
+    ``enabled`` mirrors tools.yaml's switch; ``unavailable`` carries the
     liveness verdict.  A switched-off server is NOT a down one — calling it
     ``error`` would be a lie the model could not tell from the real thing — and
     its rows stay put, so re-enabling restores a tool set that remembers what

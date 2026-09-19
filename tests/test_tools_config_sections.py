@@ -1,21 +1,22 @@
-"""tools.json5 category-section parsing — every section carries the per-entry
+"""tools.yaml category-section parsing — every section carries the per-entry
 ``enabled`` / ``autoload`` flags, plus the ``tool_load`` threshold knob."""
 
 from pathlib import Path
 
 from slife.config import Config
+from tests.conftest import load_config_text
 
 
 def _cfg(tmp_path, tools_raw: str) -> Config:
-    tools = tmp_path / "tools.json5"
+    tools = tmp_path / "tools.yaml"
     tools.write_text(tools_raw, encoding="utf-8")
-    slife = tmp_path / "slife.json5"
+    slife = tmp_path / "slife.yaml"
     slife.write_text(
         "{ models: [{ ref: 'm', provider: 'p', model: 'm' }], active_model: 'm' }",
         encoding="utf-8",
     )
-    cfg = Config.from_json5(slife, agent_name="slife")
-    # Point the test at the throwaway tools.json5 (from_json5 resolves the
+    cfg = Config.from_yaml(slife, agent_name="slife")
+    # Point the test at the throwaway tools.yaml (from_yaml resolves the
     # sibling in the SAME data dir, so this is already right).
     assert cfg._tools_path == tools
     return cfg
@@ -108,15 +109,13 @@ def test_cli_section_still_parsed(tmp_path):
     assert cfg.cli_tools["mycmd"]["command"] == "echo hi"
 
 
-def test_bundled_seed_tools_json5_is_coherent():
-    """The installers seed the REPO tools.json5 — it must be valid json5 and
+def test_bundled_seed_tools_yaml_is_coherent():
+    """The installers seed the REPO tools.yaml — it must be valid YAML and
     carry every §8.5 category section (builtin/mcp/rest-api/cli/job/skill)
     plus the tool_load knob, so a fresh install is self-consistent."""
-    import json5
-
-    seed = Path(__file__).resolve().parents[1] / "tools.json5"
+    seed = Path(__file__).resolve().parents[1] / "tools.yaml"
     assert seed.exists()
-    raw = json5.loads(seed.read_text(encoding="utf-8"))
+    raw = load_config_text(seed.read_text(encoding="utf-8"))
 
     assert isinstance(raw.get("builtin"), list)
     assert isinstance(raw.get("mcp", {}).get("servers", {}), dict)

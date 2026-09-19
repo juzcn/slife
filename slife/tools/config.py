@@ -1,14 +1,14 @@
 """Config management tools.
 
-config_env_set    — write env var to slife.json5
-config_env_get    — read env var (shell → slife.json5)
-config_env_remove — remove env var from slife.json5
+config_env_set    — write env var to slife.yaml
+config_env_get    — read env var (shell → slife.yaml)
+config_env_remove — remove env var from slife.yaml
 
 Enabling/disabling a tool is NOT here: the per-tool switch is the ``enabled``
-entry in `tools.json5`'s category section (what ``disabled_builtin`` /
+entry in `tools.yaml`'s category section (what ``disabled_builtin`` /
 ``disabled_jobs`` mirror onto the catalog rows), and the runtime side is
 ``func-tool-load`` / ``_unload_func_tool``.  The retired ``native_tool_set``
-wrote a ``tools:`` array into slife.json5 that nothing read — it reported
+wrote a ``tools:`` array into slife.yaml that nothing read — it reported
 success and changed nothing.
 """
 
@@ -82,7 +82,7 @@ def _lookup_one(key: str, env: dict, mcp_envs: dict[str, dict]) -> str:
     sources = []
     config_val = env.get(key)
     if config_val and config_val not in (None, ""):
-        sources.append(("slife.json5", str(config_val)))
+        sources.append(("slife.yaml", str(config_val)))
     for server_name, server_env in sorted(mcp_envs.items()):
         val = server_env.get(key)
         if val and val not in (None, ""):
@@ -111,7 +111,7 @@ def _format_one(key: str, value: str) -> str:
 class ConfigEnvSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_set"
     category: ClassVar[str] = "Config"
-    description = "Write an env var to slife.json5. Use ${VAR} refs for secrets — never plaintext."
+    description = "Write an env var to slife.yaml. Use ${VAR} refs for secrets — never plaintext."
     parameters = {
         "type": "object",
         "properties": {
@@ -140,7 +140,7 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
                 env[key] = placeholder
                 write_config(self._config_path, raw)
                 logger.info("env_set_placeholder key=%s", key)
-                return f"[OK] {key} placeholder written.\nEdit slife.json5 → env: → {key} with the real value."
+                return f"[OK] {key} placeholder written.\nEdit slife.yaml → env: → {key} with the real value."
 
 
 # ── Config Env Get ───────────────────────────────────────────────────
@@ -149,7 +149,7 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
 class ConfigEnvGetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_get"
     category: ClassVar[str] = "Config"
-    description = "Read an env var (shell → slife.json5 → mcp env). Omit key to list all."
+    description = "Read an env var (shell → slife.yaml → mcp env). Omit key to list all."
     parameters = {
         "type": "object",
         "properties": {
@@ -185,7 +185,7 @@ class ConfigEnvGetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
 class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_remove"
     category: ClassVar[str] = "Config"
-    description = "Remove an env var from slife.json5. Does NOT touch credstore."
+    description = "Remove an env var from slife.yaml. Does NOT touch credstore."
     parameters = {
         "type": "object",
         "properties": {
@@ -200,8 +200,8 @@ class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportInco
             raw = read_config(self._config_path)
             env = _env_section(raw)
             if key not in env:
-                return f"'{key}' is not in slife.json5 — nothing to remove."
+                return f"'{key}' is not in slife.yaml — nothing to remove."
             del env[key]
             write_config(self._config_path, raw)
         logger.info("env_removed key=%s", key)
-        return f"[OK] Removed '{key}' from slife.json5."
+        return f"[OK] Removed '{key}' from slife.yaml."

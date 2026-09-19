@@ -210,7 +210,7 @@ class TestAgentServiceMCPEnrichment:
             client.call_tool = fake_call_tool
             service._plugins["mcp-gateway"].client = client
 
-            # The reconcile also purges catalog servers that left tools.json5 —
+            # The reconcile also purges catalog servers that left tools.yaml —
             # pin the gateway config view to the mocked pool so this test's
             # "ondemand" server counts as configured (no TOOLS_FILE isolation
             # here, so the real repo config would otherwise read as the truth).
@@ -2022,7 +2022,7 @@ class TestSwitchModel:
         from slife.tools._config_io import read_config, write_config
 
         config = _two_model_config()
-        path = tmp_path / "slife.json5"
+        path = tmp_path / "slife.yaml"
         config._path = path
         write_config(path, {"models": {"providers": {}}, "active_model": "deepseek/dsf"})
         service = AgentService(config)

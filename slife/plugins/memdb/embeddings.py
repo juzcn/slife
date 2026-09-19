@@ -5,7 +5,7 @@ Supports three backends:
   2. Local transformer model (sentence-transformers) — offline, HF hub
   3. OpenAI-compatible API — remote, requires API key
 
-Configured via slife.json5 → top-level ``embeddings`` section (shared by
+Configured via slife.yaml → top-level ``embeddings`` section (shared by
 memdb + memfiles; OpenAI-compatible endpoints).
 
 Falls back gracefully when embeddings are unavailable — keyword
@@ -17,6 +17,7 @@ import logging
 import threading
 from pathlib import Path
 from typing import Any
+from ruamel.yaml.error import YAMLError
 from slife.env import is_env_ref
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
@@ -214,7 +215,7 @@ class EmbeddingClient:
 
     @classmethod
     def from_config(cls, config_path: str | None = None, quiet: bool = False) -> "EmbeddingClient":
-        """Create an EmbeddingClient from slife.json5 config.
+        """Create an EmbeddingClient from slife.yaml config.
 
         Reads the first-class top-level ``embeddings`` section — the shared
         memdb + memfiles config.  Each provider is one OpenAI-compatible
@@ -239,11 +240,7 @@ class EmbeddingClient:
 
         _log_warn = logger.debug if quiet else logger.warning
 
-        try:
-            import json5
-        except ImportError:
-            _log_warn("json5_not_installed reason=json5_missing")
-            return cls(api_key="", quiet=quiet)
+        from slife.tools._yaml_doc import new_yaml
 
         if config_path is None:
             config_path = str(get_config_path())
@@ -253,8 +250,8 @@ class EmbeddingClient:
             return cls(api_key="", quiet=quiet)
 
         try:
-            raw = json5.loads(config_path_obj.read_text(encoding="utf-8"))
-        except (ValueError, OSError) as e:
+            raw = new_yaml().load(config_path_obj.read_text(encoding="utf-8"))
+        except (YAMLError, ValueError, OSError) as e:
             _log_warn("config_parse_error err=%s", e)
             return cls(api_key="", quiet=quiet)
 

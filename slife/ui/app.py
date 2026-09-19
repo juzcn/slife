@@ -776,7 +776,7 @@ class SlifeApp(App):
         stays neutral.
 
         A non-STARTED outcome is split on the plugin contract's ``required``
-        marker (``plugins.required`` in slife.json5): a required (core)
+        marker (``plugins.required`` in slife.yaml): a required (core)
         plugin that fails — ``FAILED``, a raised spawn, or the spawn
         hang-guard in ``AgentService.start_plugin_server`` — aborts startup
         via :meth:`_abort_required_plugin` (red message, stop all plugins,

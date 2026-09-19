@@ -415,7 +415,7 @@ class TestServerOwnedTunnel:
     """The sharefile plugin server owns its own tunnel provider instance."""
 
     def test_server_holds_tunnel_instance(self):
-        """server.py owns the provider named by sharefile.json5's active_provider.
+        """server.py owns the provider named by sharefile.yaml's active_provider.
 
         Asserting the *interface* rather than a concrete class is what makes
         swapping providers a config change; asserting the concrete class

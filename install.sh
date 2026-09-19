@@ -259,7 +259,7 @@ _slife_install_mosquitto_rootless() {
 # Cloudflare publishes a plain static binary per platform, so the rootless route
 # is a direct download → ~/.local/bin: no apt source to add, no root, no
 # package manager.  As with Mosquitto we WARN and move on if it fails — nothing
-# here gates the install, and the provider is only used when sharefile.json5
+# here gates the install, and the provider is only used when sharefile.yaml
 # selects it.
 _slife_install_cloudflared_rootless() {
     local _bin="$HOME/.local/bin"
@@ -458,7 +458,7 @@ fi
 # dependency that comes with slife — but ngrok's FREE tier answers browser
 # requests with an interstitial splash page, so these two alternatives are how
 # a share link becomes reachable from a browser.  Neither gates anything: a
-# missing tool disables only that provider, and only when sharefile.json5
+# missing tool disables only that provider, and only when sharefile.yaml
 # selects it.
 echo -e "${YELLOW}[optional] Checking sharefile tunnel providers (ssh, cloudflared)…${NC}"
 HAVE_SSH=false
@@ -763,10 +763,10 @@ else
 fi
 
 # ── Configs: seed the git-tracked defaults out-of-the-box ───────────────
-# slife.json5 / local_embed.json5 / tools.json5 / sharefile.json5 come
-# from the downloaded source tree (now git-tracked).  slife.json5,
-# tools.json5 and sharefile.json5 (the last two belong to built-in
-# plugins) live in ~/.slife; local_embed.json5 is local-embed's own
+# slife.yaml / local_embed.yaml / tools.yaml / sharefile.yaml come
+# from the downloaded source tree (now git-tracked).  slife.yaml,
+# tools.yaml and sharefile.yaml (the last two belong to built-in
+# plugins) live in ~/.slife; local_embed.yaml is local-embed's own
 # (~/.local-embed).  Missing ones are copied silently; when an existing one
 # differs from the bundled default, the NEW default is seeded into ~/.slife/
 # as a versioned copy (<name>.<version>.<ext>) — never prompted, never
@@ -774,16 +774,16 @@ fi
 # version simply refreshes the copy.
 echo -e "${YELLOW}[4c] Setting up configs (out-of-the-box defaults)…${NC}"
 SEED_DIR="$TMP_DIR/slife-main"
-for _name in slife.json5 local_embed.json5 tools.json5 sharefile.json5; do
+for _name in slife.yaml local_embed.yaml tools.yaml sharefile.yaml; do
     _src="$SEED_DIR/$_name"
     [ -f "$_src" ] || continue   # older main snapshots may lack the seeds
-    # slife.json5, tools.json5 and sharefile.json5 sit in ~/.slife;
-    # local_embed.json5 in local-embed's own folder.
+    # slife.yaml, tools.yaml and sharefile.yaml sit in ~/.slife;
+    # local_embed.yaml in local-embed's own folder.
     case "$_name" in
-        local_embed.json5) _target="$HOME/.local-embed/local_embed.json5" ;;
-        tools.json5)       _target="$HOME/.slife/tools.json5" ;;
-        sharefile.json5)   _target="$HOME/.slife/sharefile.json5" ;;
-        *)                 _target="$HOME/.slife/slife.json5" ;;
+        local_embed.yaml) _target="$HOME/.local-embed/local_embed.yaml" ;;
+        tools.yaml)       _target="$HOME/.slife/tools.yaml" ;;
+        sharefile.yaml)   _target="$HOME/.slife/sharefile.yaml" ;;
+        *)                 _target="$HOME/.slife/slife.yaml" ;;
     esac
     mkdir -p "$(dirname "$_target")" 2>/dev/null || true
     if [ -e "$_target" ]; then
@@ -810,16 +810,15 @@ for _name in slife.json5 local_embed.json5 tools.json5 sharefile.json5; do
     fi
 done
 
-# tools.json5 upgrade merge (DESIGNER_NOTES §8.5): a live config that predates
+# tools.yaml upgrade merge (DESIGNER_NOTES §8.5): a live config that predates
 # the unified tool system may lack the new top-level sections (tool_load).  The
 # generic seed above only copies/versioned-copies the file — it never touches a
-# live server list.  Here we INSERT the missing default section in place
-# (before the closing brace) so the seeded config stays self-consistent with
-# the tool-load threshold manager.
-_TOOLS="$HOME/.slife/tools.json5"
+# live server list.  Here we APPEND the missing default section so the seeded
+# config stays self-consistent with the tool-load threshold manager.
+_TOOLS="$HOME/.slife/tools.yaml"
 if [ -f "$_TOOLS" ] && ! grep -qE '^[[:space:]]{0,3}["'"'"']?tool_load["'"'"']?[[:space:]]*:' "$_TOOLS"; then
-    perl -0pi -e 's/(\n\})\s*$/,\n  tool_load: { threshold: 100, preload: [] },\n\1/' "$_TOOLS" \
-        && echo -e "  ${YELLOW}upgraded tools.json5 — added the tool_load section (threshold 100)${NC}"
+    printf '\ntool_load:\n  threshold: 100\n  preload: []\n' >> "$_TOOLS" \
+        && echo -e "  ${YELLOW}upgraded tools.yaml — added the tool_load section (threshold 100)${NC}"
 fi
 
 # Skills: copy the bundled skills into ~/.slife/skills/.  A skill that
@@ -979,7 +978,7 @@ fi
 echo -e "${CYAN}Get started:${NC}"
 echo "  1. Semantic search (optional) — set up per README → Semantic Memory Search"
 echo "  2. Configure secrets with credstore — credstore set-password, then credstore set <API_KEY> <value>"
-echo "  3. Configure external MCP servers — edit ~/.slife/tools.json5 (they apply at the next slife start)"
+echo "  3. Configure external MCP servers — edit ~/.slife/tools.yaml (they apply at the next slife start)"
 echo ""
 if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
     if [ "${PRESERVE_OK:-0}" = "1" ]; then

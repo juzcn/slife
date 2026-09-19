@@ -1,9 +1,9 @@
 """slife-wechat — optional WeChat iLink ClawBot plugin.
 
 Provides WeChat messaging integration via the iLink ClawBot protocol.
-Session tokens are stored per-user in ``wechat_<user>.json5``.
+Session tokens are stored per-user in ``wechat_<user>.yaml``.
 
-Enabled via ``slife.json5``::
+Enabled via ``slife.yaml``::
 
     wechat: { enabled: true }
 

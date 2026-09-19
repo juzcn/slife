@@ -1,4 +1,4 @@
-"""A2A configuration — parsed from the ``a2a`` section of slife.json5.
+"""A2A configuration — parsed from the ``a2a`` section of slife.yaml.
 
 Follows the same pattern as slife.plugins.mcp_gateway.config (the tools
 config that now owns the ``mcp`` section).
@@ -29,7 +29,7 @@ class A2AConfig:
     """Master switch — A2A is off by default."""
 
     agent_name: str = field(default_factory=_default_agent_name)
-    """Unique id in the mesh.  Auto-generated when not set in json5.
+    """Unique id in the mesh.  Auto-generated when not set in yaml.
 
     This is also the agent's only identity — there is no separate display
     name (a duplicate was pure context pollution).
@@ -54,15 +54,15 @@ class A2AConfig:
     def from_dict(
         cls, data: dict | None, agent_name: str = "slife",
     ) -> "A2AConfig":
-        """Parse the ``a2a`` section from slife.json5.
+        """Parse the ``a2a`` section from slife.yaml.
 
         A2A over MQTT is enabled **at runtime** when Mosquitto is detected
-        on ``broker_host:broker_port``.  The json5 ``a2a`` section always
+        on ``broker_host:broker_port``.  The yaml ``a2a`` section always
         provides connection details — ``enabled`` is set to ``True`` only
         after a successful TCP probe.
 
         Args:
-            data: The ``a2a`` dict from the JSON5 config, or ``None``.
+            data: The ``a2a`` dict from the YAML config, or ``None``.
             agent_name: The ``--agent`` value (defaults to ``"slife"``).
                       Used as the MQTT client id / agent identity.
 
@@ -77,7 +77,7 @@ class A2AConfig:
 
         # The a2a section provides connection details only.
         # A2A enablement is decided at runtime by the Mosquitto TCP probe —
-        # the json5 a2a section never carries an "enabled" field.
+        # the yaml a2a section never carries an "enabled" field.
         # When data is None (no a2a section), enabled stays False —
         # start_a2a() won't even attempt a probe.
         default_enabled = isinstance(data, dict)

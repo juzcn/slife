@@ -1,11 +1,10 @@
 """Shared config file read/write helpers.
 
 Used by config_env.py and cli.py to avoid duplicating the same
-json5 read/write logic across tool modules.
+YAML read/write logic across tool modules.
 """
 
 import functools
-import json5
 import logging
 import os
 import tempfile
@@ -15,9 +14,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import filelock
+from ruamel.yaml.error import YAMLError
 
 from slife.paths import get_config_path
-from slife.tools._json5_doc import render_document
+from slife.tools._yaml_doc import new_yaml, render_document
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from typing import TYPE_CHECKING
 
@@ -46,7 +46,7 @@ def with_fetched_at(source: dict | None) -> dict | None:
 
 
 class ConfigParseError(ValueError):
-    """Raised when slife.json5 exists but cannot be parsed.
+    """Raised when slife.yaml exists but cannot be parsed.
 
     Distinct from ``FileNotFoundError`` (which :func:`read_config` treats as a
     normal first-run state).  A mutating caller that proceeded past a parse
@@ -65,27 +65,34 @@ class ConfigLockTimeout(TimeoutError):
 
 
 def read_config(path: Path) -> dict:
-    """Read and parse a JSON5 config file.
+    """Read and parse a YAML config file.
 
     Returns ``{}`` only when the file does not exist (first run).  A file that
     exists but cannot be parsed raises :class:`ConfigParseError` so mutating
     callers abort instead of rewriting the config as an empty dict.
     """
     try:
-        return json5.loads(path.read_text(encoding="utf-8"))
+        raw = new_yaml().load(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         logger.warning("config_not_found path=%s", path)
         return {}
-    except (ValueError, OSError) as e:
+    except (YAMLError, ValueError, OSError) as e:
         logger.error("config_parse_error path=%s err=%s", path, e)
         raise ConfigParseError(f"Cannot parse config {path}: {e}") from e
+    # An empty file loads as None and a top-level list as a sequence; neither is
+    # usable by any caller.  Both are surfaced like a parse error rather than
+    # returned, so a mutating caller aborts instead of rewriting the file.
+    if not isinstance(raw, dict):
+        logger.error("config_not_mapping path=%s type=%s", path, type(raw).__name__)
+        raise ConfigParseError(f"Cannot parse config {path}: not a mapping")
+    return raw
 
 
 _write_lock = threading.Lock()
 
 
 def write_config(path: Path, raw: dict) -> None:
-    """Atomically write a dict to a JSON5 config file.
+    """Atomically write a dict to a YAML config file.
 
     Writes to a temp file in the same directory then ``os.replace()`` — a
     reader never sees a truncated/interleaved file and a crash mid-write
@@ -95,8 +102,8 @@ def write_config(path: Path, raw: dict) -> None:
     both config paths sit in a data dir that may not exist yet).
 
     Atomic, and the file's **comments survive**: the write edits the existing
-    document rather than re-serializing the dict, so ``//`` annotations,
-    indentation and key order stay put (see ``slife/tools/_json5_doc.py``).
+    document rather than re-serializing the dict, so ``#`` annotations,
+    indentation and key order stay put (see ``slife/tools/_yaml_doc.py``).
     A file that does not exist yet — or one that cannot be read as a document
     — is rendered fresh.
     """
@@ -134,7 +141,7 @@ def config_write_locked(fn):
     cross-process read→mutate→write lock.
 
     Tools execute in PARALLEL (the agent loop gathers concurrent tool calls),
-    so two mutators editing the same slife.json5 — e.g. two ``model_set``
+    so two mutators editing the same slife.yaml — e.g. two ``model_set``
     calls in one turn, or ``model_set`` + ``config_env_set`` — must not both
     read, both mutate their own copy, then both ``os.replace``.  The
     decorated method must take the config path from ``self._config_path``
@@ -197,7 +204,7 @@ def format_source_info(source: object) -> str:
     return " — ".join(parts) if parts else ""
 
 
-# ── Mixin for tools that read/write slife.json5 ──────────────────────
+# ── Mixin for tools that read/write slife.yaml ──────────────────────
 
 
 class _ConfigPathMixin:

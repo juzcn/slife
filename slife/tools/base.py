@@ -60,7 +60,7 @@ Discovery
   ``slife.tools.*`` module and collects ``Tool.__subclasses__()``.
   No registry decorator or manual import is needed — just place the
   file in the package.  Use the optional ``tools:`` array in
-  ``slife.json5`` only to override defaults or disable a tool.
+  ``slife.yaml`` only to override defaults or disable a tool.
 
 ═══════════════════════════════════════════════════════════════════════
 Shared helpers

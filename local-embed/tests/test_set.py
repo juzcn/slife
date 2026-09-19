@@ -1,7 +1,7 @@
 """Tests for local_embed.cmd_set — the ``local-embed set`` subcommand.
 
 Covers cache resolution (flag > env > error), the missing-model hard error,
-the idempotent config mutation, the canonical JSON5 write, and the
+the idempotent config mutation, the canonical YAML write, and the
 end-to-end CLI wiring against a temp config path.
 """
 
@@ -112,7 +112,7 @@ class TestModelInCache:
 
 @pytest.fixture
 def config_path(tmp_path, monkeypatch):
-    path = tmp_path / "local_embed.json5"
+    path = tmp_path / "local_embed.yaml"
     monkeypatch.setenv("LOCAL_EMBED_FILE", str(path))
     return path
 

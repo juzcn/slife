@@ -70,11 +70,11 @@ credstore copy DEEPSEEK_API_KEY BAILIAN_API_KEY
 | `ssh` | 随系统提供（Windows：可选的 *OpenSSH 客户端* 功能） | `sharefile` 的 `localhost.run` 隧道 provider——**仅检测**；启用 Windows 功能需要管理员权限 |
 | `unzip`（Linux） | 包管理器 | bun 安装器依赖 |
 
-**默认安装以下内容：**`yt-dlp` 与 `browser-harness`（两者都被 `--core` 跳过）、Mosquitto 与 `cloudflared`（总是尝试）、从随包默认值铺设的**四份配置**（`slife.json5`、`tools.json5` 和 `sharefile.json5` → `~/.slife/`，`local_embed.json5` → `~/.local-embed/`），以及随附 skills（`~/.slife/skills/`）和示例 jobs（`~/.slife/jobs/`）。
+**默认安装以下内容：**`yt-dlp` 与 `browser-harness`（两者都被 `--core` 跳过）、Mosquitto 与 `cloudflared`（总是尝试）、从随包默认值铺设的**四份配置**（`slife.yaml`、`tools.yaml` 和 `sharefile.yaml` → `~/.slife/`，`local_embed.yaml` → `~/.local-embed/`），以及随附 skills（`~/.slife/skills/`）和示例 jobs（`~/.slife/jobs/`）。
 
 如果某个运行时装不上，安装器**警告并继续**——slife 本身仍会安装，只是需要该运行时的功能不可用。举例来说，在一台比 **glibc 2.28 / libstdc++ 3.4.29** 更老的 Linux 机器上，Node 的 no-root tarball 回退方案跑不起来（安装器会报告缺失的 `GLIBC_2.28` / `GLIBCXX_3.4.xx` 符号）。受支持的路线**不是**装旧版 Node——而是装一个为你的发行版构建的 Node（例如 HPC 集群上的 `module load nodejs`，或发行版自带的包）。装好后再重跑这个安装器——它会检测到已有的 `npx` 并跳过自己的 Node 安装。
 
-如果你手工编辑 `tools.json5`，改动会在下一次启动 wrapper 时生效——工具目录由连接实时重建，所以不存在离线重建步骤（安装后 `local-embed` 已在 PATH 上）。每个可选步骤都 **fail-open**：出错只会警告并继续，留下一个可用的核心。
+如果你手工编辑 `tools.yaml`，改动会在下一次启动 wrapper 时生效——工具目录由连接实时重建，所以不存在离线重建步骤（安装后 `local-embed` 已在 PATH 上）。每个可选步骤都 **fail-open**：出错只会警告并继续，留下一个可用的核心。
 
 ### macOS / Linux / WSL
 
@@ -105,7 +105,7 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 重跑安装脚本即可升级 slife——它从最新的 `main` 重建，并保留你自定义过的东西：
 
 - **可选包**（如 `sentence-transformers`、`llama-cpp-python`）会从旧的工具 venv 中捕获，在全新安装后重新加入，并与新的基础版本做 diff，避免任何重复。
-- **已存在的配置、skills、示例 jobs** 一律保持原样，安装器**不再询问、绝不覆盖**。缺失的默认文件直接铺设；内容完全相同的静默跳过；当随包默认值发生变化时，新默认会被铺设到 `~/.slife/` 下作为**带版本号的参考副本**——配置与 jobs 形如 `<文件名>.<版本号>.<后缀>`（如 `slife.0.9.8.json5`、`total_tokens.0.9.8.py`），skills 形如 `<名称>.<版本号>/`——每次写入都以 `seeded <文件> → <文件夹>` 的形式提示（如需应用，一条 `cp` / `Copy-Item` 即可）。重复安装会刷新同版本副本，旧版本副本保留作参考。skill 目录内**任意一个文件**不同，即视为该 skill 不同。
+- **已存在的配置、skills、示例 jobs** 一律保持原样，安装器**不再询问、绝不覆盖**。缺失的默认文件直接铺设；内容完全相同的静默跳过；当随包默认值发生变化时，新默认会被铺设到 `~/.slife/` 下作为**带版本号的参考副本**——配置与 jobs 形如 `<文件名>.<版本号>.<后缀>`（如 `slife.0.9.8.yaml`、`total_tokens.0.9.8.py`），skills 形如 `<名称>.<版本号>/`——每次写入都以 `seeded <文件> → <文件夹>` 的形式提示（如需应用，一条 `cp` / `Copy-Item` 即可）。重复安装会刷新同版本副本，旧版本副本保留作参考。skill 目录内**任意一个文件**不同，即视为该 skill 不同。
 
 ### 卸载
 
@@ -140,48 +140,47 @@ powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/r
 
 ## 配置
 
-**密钥存凭据库，配置存 JSON5：**
+**密钥存凭据库，配置存 YAML：**
 
 | 层 | 存储位置 | 内容 |
 |-------|---------|----------|
 | **密钥** | 凭据库（credstore） | API Key——OS 级加密，另有加密的 cryptfile 备份 |
-| **配置** | `~/.slife/slife.json5` | `${VAR}` 引用 + 非敏感值 |
+| **配置** | `~/.slife/slife.yaml` | `${VAR}` 引用 + 非敏感值 |
 
 ### 密钥与 API Key
 
 密钥绝不会出现在配置文件里。用 `credstore set <KEY>` 存储它们；配置中以 `${VAR}` 引用，Slife 在运行时解析——解析顺序为 **shell 环境变量 → credstore → 字面量默认值**（支持 `${VAR:-default}` 回退；密钥也可以用 `keyring:service/key` URI 引用）。
 
-```json5
-env: {
-  DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}",   // → 运行时从 credstore 解析
-}
+```yaml
+env:
+  DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"   # → 运行时从 credstore 解析
 ```
 
 **Slife 从不弹窗，也不读 credstore 的 cryptfile 备份。** 它只读系统 keyring，然后回退到 `os.environ`。如果没有可用的系统 keyring（例如 Linux 上 HPC 登录节点的内核 keyring 被 seccomp/策略屏蔽），可以用三种方法之一：
 
 1. **只用环境变量**——在 shell 中导出密钥（`export DEEPSEEK_API_KEY="sk-…"`）；`os.environ` 在 credstore 之前被检查，所以导出的密钥正常工作。
 2. **继续用 credstore 的 cryptfile 模式管理，但注入到环境变量**——照常存储凭据，然后把它们推入环境让 Slife 能看到：`credstore inject DEEPSEEK_API_KEY BAILIAN_API_KEY`（cryptfile-only 模式下会询问主密码），然后重启 shell 或 `eval "$(credstore inject DEEPSEEK_API_KEY)"`。
-3. **明文写在配置文件里**（容忍，但不推荐）——`slife.json5` 中的字面量 `api_key` 能工作，但密钥会明文落在磁盘上（`~/.slife/slife.json5`，chmod 0600）。
+3. **明文写在配置文件里**（容忍，但不推荐）——`slife.yaml` 中的字面量 `api_key` 能工作，但密钥会明文落在磁盘上（`~/.slife/slife.yaml`，chmod 0600）。
 
 `credstore` 本身在 cryptfile-only 模式下功能完整（`set-password`、`set`、`get -p`、`inject`、`status`——见 [credstore/README.md](credstore/README.md)）。
 
 ### 模型供应商
 
-模型一次性在 `slife.json5` 里配置好，之后在聊天中运行时切换（无需改文件）：
+模型一次性在 `slife.yaml` 里配置好，之后在聊天中运行时切换（无需改文件）：
 
-```json5
-models: {
-  providers: {
-    deepseek: {
-      base_url: "https://api.deepseek.com",
-      api_key: "${DEEPSEEK_API_KEY}",
-      api: "openai-completions",
-      models: [{ model: "deepseek-flash", name: "DeepSeek Flash", reasoning: true }],
-    },
-  },
-},
-active_model: "deepseek/deepseek-flash",
-job_coding_model: "bailian_personal/qwen3.6-flash",
+```yaml
+models:
+  providers:
+    deepseek:
+      base_url: "https://api.deepseek.com"
+      api_key: "${DEEPSEEK_API_KEY}"
+      api: "openai-completions"
+      models:
+        - model: "deepseek-flash"
+          name: "DeepSeek Flash"
+          reasoning: true
+active_model: "deepseek/deepseek-flash"
+job_coding_model: "bailian_personal/qwen3.6-flash"
 ```
 
 `active_model` 是一个 `"provider/model"` 引用——Slife 聊天所用的模型。`job_coding_model` 是确定性 **jobs** 使用的 LLM——给它配一个与 `active_model` 不同的（通常更小/更快）模型，这样嵌套的一次性 job 调用永远不扰动 agent loop 的 prompt 缓存（缺省 → active model；每次调用可覆盖：`llm.chat(model=...)`）。
@@ -196,27 +195,25 @@ job_coding_model: "bailian_personal/qwen3.6-flash",
 
 **每模型 `compat` 覆盖**（在模型条目中配置，或通过 `model_set`），用于不遵循标准思考形状的网关：
 
-```json5
-models: {
-  providers: {
-    bailian: {
-      api: "anthropic-messages",
-      models: [{
-        model: "qwen3.8-max", name: "Qwen3.8 Max",
-        reasoning: true,
-        compat: { thinkingFormat: "openai" },  // anthropic 后端：模型总是思考，不发送 thinking 参数
-      }],
-    },
-    scnet: {
-      api: "openai-completions",
-      models: [{
-        model: "MiniMax-M3", name: "MiniMax M3",
-        reasoning: true,
-        compat: { thinking: "omit" },         // openai 后端：不发送 thinking 字段（网关对 enabled 形状报 400）
-      }],
-    },
-  },
-},
+```yaml
+models:
+  providers:
+    bailian:
+      api: "anthropic-messages"
+      models:
+        - model: "qwen3.8-max"
+          name: "Qwen3.8 Max"
+          reasoning: true
+          compat:
+            thinkingFormat: "openai"   # anthropic 后端：模型总是思考，不发送 thinking 参数
+    scnet:
+      api: "openai-completions"
+      models:
+        - model: "MiniMax-M3"
+          name: "MiniMax M3"
+          reasoning: true
+          compat:
+            thinking: "omit"           # openai 后端：不发送 thinking 字段（网关对 enabled 形状报 400）
 ```
 
 OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给拒绝 `{"type": "enabled"}` 形状但原生思考的网关），`"disabled"` 显式关闭，`"enabled"` 与默认行为一致。
@@ -266,7 +263,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `job-translate`） |
 
-**所有工具共用一个目录，由阈值管理。** 第三方能力只能作为 `tools.json5` 里的标准 MCP 服务器接入（`mcp` + `rest-api` 两个 section——任何 stdio / SSE / Streamable HTTP 服务器都可以，无需 Slife SDK；REST API 就是放在 `rest-api` section 里的普通 MCP 服务器，条目格式完全相同）。所有类别——builtin、job、plugin、mcp、rest-api、skill、cli——共用同一个 `tools.db`；LLM 用 `tool_search` 跨全部类别检索（grep / 关键词 / 语义混合，按目录的列过滤），再用 `func-tool-load(full_name)` 载入具体工具——按工具而非按服务器，所以一个上千工具的大服务器只会注入真正用到的那几个。不是"存在就被注入"：新工具生来是 `unloaded`，只有 `func-tool-load` 能把它放进工具列表（例外是白名单——harness 对、系统元工具、固定注入的 `skill_use` / `system_health`——以及 `tools.json5` 里标了 `autoload: true` 的条目；而 `autoload` 的条目会**一直**是 loaded：它是唯一能赢过模型自己 unload 的配置决定）。注入列表由阈值封顶（默认 100，可在 `tools.json5` 调整），harness 在轮次边界淘汰最久未用的工具，从不淘汰 `autoload` 的。服务器生命周期每个家族一个开关（`mcp_set_enabled` / `rest_api_set_enabled`）——现代 MCP 协议没有要开关的 session，所以 enable 即连接、之后调用时若掉线会懒重连——并且**启动时所有 enabled 服务器都会被拉起**（只 spawn、不读工具列表；列表留给第一个真正需要它的调用方）；服务器连不上时它的工具被标记 `unavailable`，因此死连接永远不会被注入。目录在每次（重）连接时实时同步——不存在离线重建步骤。完整设计见 **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**。
+**所有工具共用一个目录，由阈值管理。** 第三方能力只能作为 `tools.yaml` 里的标准 MCP 服务器接入（`mcp` + `rest-api` 两个 section——任何 stdio / SSE / Streamable HTTP 服务器都可以，无需 Slife SDK；REST API 就是放在 `rest-api` section 里的普通 MCP 服务器，条目格式完全相同）。所有类别——builtin、job、plugin、mcp、rest-api、skill、cli——共用同一个 `tools.db`；LLM 用 `tool_search` 跨全部类别检索（grep / 关键词 / 语义混合，按目录的列过滤），再用 `func-tool-load(full_name)` 载入具体工具——按工具而非按服务器，所以一个上千工具的大服务器只会注入真正用到的那几个。不是"存在就被注入"：新工具生来是 `unloaded`，只有 `func-tool-load` 能把它放进工具列表（例外是白名单——harness 对、系统元工具、固定注入的 `skill_use` / `system_health`——以及 `tools.yaml` 里标了 `autoload: true` 的条目；而 `autoload` 的条目会**一直**是 loaded：它是唯一能赢过模型自己 unload 的配置决定）。注入列表由阈值封顶（默认 100，可在 `tools.yaml` 调整），harness 在轮次边界淘汰最久未用的工具，从不淘汰 `autoload` 的。服务器生命周期每个家族一个开关（`mcp_set_enabled` / `rest_api_set_enabled`）——现代 MCP 协议没有要开关的 session，所以 enable 即连接、之后调用时若掉线会懒重连——并且**启动时所有 enabled 服务器都会被拉起**（只 spawn、不读工具列表；列表留给第一个真正需要它的调用方）；服务器连不上时它的工具被标记 `unavailable`，因此死连接永远不会被注入。目录在每次（重）连接时实时同步——不存在离线重建步骤。完整设计见 **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**。
 
 **Windows 下的命令执行。** `execute_shell` 在检测到的 shell 中运行——PowerShell 或 cmd（与系统提示报告的值一致，保证 LLM 写的语法真的能执行）——并用系统代码页解码输出（中文 Windows 为 GBK/cp936）。`run_python_script` 强制子 Python 以 UTF-8 运行（`-X utf8`），这样非 ASCII 输出不会让子进程崩溃。
 
@@ -283,7 +280,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | `hybrid` | 语义召回（FTS5 + 向量 → RRF 融合） |
 | `time` | 按日期浏览 |
 
-Embeddings 是 `slife.json5` 中**一级顶层的 `embeddings` 配置段**（由 `memdb` + `memfiles` 共享），由内置 `embeddings_*` 工具管理；运行时索引状态由 `system_health` 上报。每个 provider 都是 **OpenAI 兼容端点**（`base_url` + `api_key`）；`active_model`（"provider"——例如 `"local_embed"` 或 `"siliconflow"`）以配置为准。**`local-embed` 守护进程**（手动启动，类似 Mosquitto——不是 slife 插件）在 `http://127.0.0.1:17347/v1` 提供本地 GGUF/transformer 模型，每个模型**加载一次**、由 `memdb` 与 `memfiles` 共享——不重复加载——它自己没有 "active model"（客户端请求它想要的模型，因此一个模型绝不会被加载两次）。**没有嵌入后端时关键词搜索照样工作。** 语义（hybrid）结果只在当前模型的索引完整构建后才返回——重建运行期间 hybrid 退回关键词搜索，索引进度完成时自动恢复。
+Embeddings 是 `slife.yaml` 中**一级顶层的 `embeddings` 配置段**（由 `memdb` + `memfiles` 共享），由内置 `embeddings_*` 工具管理；运行时索引状态由 `system_health` 上报。每个 provider 都是 **OpenAI 兼容端点**（`base_url` + `api_key`）；`active_model`（"provider"——例如 `"local_embed"` 或 `"siliconflow"`）以配置为准。**`local-embed` 守护进程**（手动启动，类似 Mosquitto——不是 slife 插件）在 `http://127.0.0.1:17347/v1` 提供本地 GGUF/transformer 模型，每个模型**加载一次**、由 `memdb` 与 `memfiles` 共享——不重复加载——它自己没有 "active model"（客户端请求它想要的模型，因此一个模型绝不会被加载两次）。**没有嵌入后端时关键词搜索照样工作。** 语义（hybrid）结果只在当前模型的索引完整构建后才返回——重建运行期间 hybrid 退回关键词搜索，索引进度完成时自动恢复。
 
 每轮对话还记录两个时间戳——你的输入时间（`created_at`，敲下回车的那一刻）和 assistant 的完成时间（`completed_at`）——以灰色 `[HH:MM]` 标记显示。用户消息带一条紧凑的 **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** 脚注（turn id 加发生时间），让 agent 能用 turn id 引用轮次（`turn_read` / `turn_summarize`）——你在 TUI 里也读到同一行。
 
@@ -309,7 +306,7 @@ Embeddings 是 `slife.json5` 中**一级顶层的 `embeddings` 配置段**（由
 
 需要大模型的 job 通过它自己导入的 `llm` 句柄**一次性**调用（`from slife.plugins.job_coding import llm`——没有任何东西被自动注入）：一次狭窄、显式的 `llm.chat`，走 `job_coding_model`——一个独立于会话 active model 配置的模型，让 job 保持便宜、永不扰动 agent 的 prompt 缓存。任何对话历史、系统提示词、agent loop 都到不了 job。
 
-job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱动 `tools.json5` 里配置的**任意外部 MCP server**——裸 MCP，一句一次工具调用：`await mcp.call(server, tool, args)`。调用走 mcp-gateway 的持久连接，因此任何外部 server 都绝不会被二次启动，而且能触达**主 agent 尚未加载的工具**。`mcp.call` 永不抛异常：网关不可达、server 掉线/被禁用、工具不存在，都返回一个清晰的 `Error: ...` 字符串供 job 分支判断。
+job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱动 `tools.yaml` 里配置的**任意外部 MCP server**——裸 MCP，一句一次工具调用：`await mcp.call(server, tool, args)`。调用走 mcp-gateway 的持久连接，因此任何外部 server 都绝不会被二次启动，而且能触达**主 agent 尚未加载的工具**。`mcp.call` 永不抛异常：网关不可达、server 掉线/被禁用、工具不存在，都返回一个清晰的 `Error: ...` 字符串供 job 分支判断。
 
 ### 图片与视觉
 
@@ -319,11 +316,11 @@ job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱
 看看这张截图 @D:\Downloads\error.png
 ```
 
-支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 原样透传；`attach_image` 工具让 agent 能在对话中途附加图片（本地来源上限 20 MB，防止误把超大文件 base64 进上下文）。终端里从不渲染任何内容——文件用系统默认程序打开，`share_file` 通过可插拔隧道 provider（ngrok / localhost.run / Cloudflare Quick Tunnel，由 `sharefile.json5` 选择）把任意本地文件发布为公开 HTTPS 链接（隧道离线时 `share_file` 返回优雅错误）。
+支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 原样透传；`attach_image` 工具让 agent 能在对话中途附加图片（本地来源上限 20 MB，防止误把超大文件 base64 进上下文）。终端里从不渲染任何内容——文件用系统默认程序打开，`share_file` 通过可插拔隧道 provider（ngrok / localhost.run / Cloudflare Quick Tunnel，由 `sharefile.yaml` 选择）把任意本地文件发布为公开 HTTPS 链接（隧道离线时 `share_file` 返回优雅错误）。
 
 ### 插件
 
-八个内部插件各自作为独立子进程运行，每个都在中央插件 spec 中声明一行、由同一套统一生命周期驱动（spawn → MCP 握手就绪 → watchdog → health）。其中之一——**mcp-gateway**——是外部 MCP 服务器的网关：第三方能力只能作为 `tools.json5` 里的标准 MCP 服务器接入，绝不再作为 Python 插件。
+八个内部插件各自作为独立子进程运行，每个都在中央插件 spec 中声明一行、由同一套统一生命周期驱动（spawn → MCP 握手就绪 → watchdog → health）。其中之一——**mcp-gateway**——是外部 MCP 服务器的网关：第三方能力只能作为 `tools.yaml` 里的标准 MCP 服务器接入，绝不再作为 Python 插件。
 
 | 插件 | 角色 |
 |--------|------|
@@ -331,7 +328,7 @@ job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱
 | **memdb** | 对话记录数据库 + 混合搜索 |
 | **wechat** | 双向微信消息 |
 | **memfiles** | 笔记 / 日记 / 文件 / 报告文件柜（私有）。笔记、日记与报告双写为 markdown + SQLite 混合索引。所有保存工具都返回本地路径——绝不自动发布 |
-| **sharefile** | 公开文件分享——`share_file` 把本地文件发布为公开 HTTPS URL（同端口的 `/share` 路由；隧道从 `sharefile.json5` 配置，可插拔） |
+| **sharefile** | 公开文件分享——`share_file` 把本地文件发布为公开 HTTPS URL（同端口的 `/share` 路由；隧道从 `sharefile.yaml` 配置，可插拔） |
 | **a2a** | 基于 MQTT 的 A2A 网格通道（仅在 broker 可达时启动） |
 | **media** | 来自任意 provider 的非聊天式 AI 生成（图片、视频、TTS、ASR）——自持 `media:` 配置段与跟 provider 无关的适配层。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio` |
 | **job-coding** | 确定性 jobs 作为 MCP 工具——`~/.slife/jobs/` 里的代码定义函数按声明的参数精确执行；一次性 LLM 调用走 `llm.chat`、用 `job_coding_model`。工具：`job-list`、`job-write`、`job-remove`、`job-run` + 每个 job 一个 `job-<函数名>` |
@@ -382,31 +379,31 @@ hf download BAAI/bge-m3                                    # → ~/.cache/huggin
 HF_ENDPOINT=https://hf-mirror.com hf download BAAI/bge-m3  # 国内镜像
 ```
 
-**GGUF 路线（离线小文件，约 100 MB）。** 用你信得过的任何量化版 BGE-M3 GGUF——这些是社区转换，没有唯一权威来源（优先高保真的 `Q8_0`）。从任何来源获取（HF 单文件拉取、浏览器、`wget`/`curl`），然后放到默认路径并让客户端指向 `bge-m3` 模型：
+**GGUF 路线（离线单文件）。** 用你信得过的任何量化版 BGE-M3 GGUF——这些是社区转换，没有唯一权威来源（优先高保真的 `Q8_0`，约 635 MB；更重的量化更小）。从任何来源获取（HF 单文件拉取、浏览器、`wget`/`curl`），然后放到默认路径并让客户端指向 `bge-m3` 模型：
 
 ```bash
 hf download <owner>/<repo> <model>.gguf --local-dir ~/.local-embed/models   # HF 单文件拉取
-mv ~/.local-embed/models/<model>.gguf ~/.local-embed/models/bge-m3-q4_k_m.gguf     # 期望的默认路径
+mv ~/.local-embed/models/<model>.gguf ~/.local-embed/models/bge-m3-Q8_0.gguf     # 期望的默认路径
 ```
 
 `models` 映射里的每个模型都作为**对等（peer）**被提供——没有 `active_model`；客户端在每个请求上指名模型（现有配置里过时的 `active_model` 键会被忽略）。
 
 ### 3. 配置 HF 缓存与 GGUF 路径
 
-一切——host、port、models、backend——都住在 **`local_embed.json5`** 里，由安装器铺设（路径解析：`$LOCAL_EMBED_FILE` > slife 项目根目录（开发）> `~/.local-embed/local_embed.json5`）。值支持 `${VAR}` / `${VAR:-default}` 展开，**shell 环境变量优先于配置**。随附文件已经带有可移植的占位符——通常你只需设置环境变量或改两行：
+一切——host、port、models、backend——都住在 **`local_embed.yaml`** 里，由安装器铺设（路径解析：`$LOCAL_EMBED_FILE` > slife 项目根目录（开发）> `~/.local-embed/local_embed.yaml`）。值支持 `${VAR}` / `${VAR:-default}` 展开，**shell 环境变量优先于配置**。随附文件已经带有可移植的占位符——通常你只需设置环境变量或改两行：
 
-```json5
-{
-  env: {
-    HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}",   // transformer 仓库解析到哪
-    HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}",          // 1 = 永不自动下载；0 = 允许按需下载
-  },
-  models: {
-    "BAAI/bge-m3": { backend: "transformer", model: "BAAI/bge-m3" },
-    "bge-m3": { backend: "gguf", gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/bge-m3-q4_k_m.gguf}" },
-  },
-  port: 17347,
-}
+```yaml
+env:
+  HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}"   # transformer 仓库解析到哪
+  HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}"          # 1 = 永不自动下载；0 = 允许按需下载
+models:
+  "BAAI/bge-m3":
+    backend: "transformer"
+    model: "BAAI/bge-m3"
+  "bge-m3":
+    backend: "gguf"
+    gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/bge-m3-Q8_0.gguf}"
+port: 17347
 ```
 
 | 设置 | 含义 |
@@ -421,7 +418,7 @@ mv ~/.local-embed/models/<model>.gguf ~/.local-embed/models/bge-m3-q4_k_m.gguf  
 
 ```bash
 local-embed set BAAI/bge-m3 --HF_HUB_CACHE ~/.cache/huggingface/hub
-local-embed set-gguf bge-m3 --path ~/.local-embed/models/bge-m3-q4_k_m.gguf
+local-embed set-gguf bge-m3 --path ~/.local-embed/models/bge-m3-Q8_0.gguf
 ```
 
 ### 4. 让服务就绪 — 验证

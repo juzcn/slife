@@ -1,7 +1,7 @@
 """Central registry for every timeout value in slife.
 
 All timeout values live HERE as typed dataclass defaults — this module is the
-single source of truth.  There is no external JSON5/config file and no second
+single source of truth.  There is no external YAML/config file and no second
 seat for the same value: a developer tunes a value by editing the dataclass
 default and its comment, and a structurally invalid edit fails loudly at
 import (:func:`validate`).

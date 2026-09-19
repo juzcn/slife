@@ -1,11 +1,11 @@
 """Slife — Silicon-based life based on LLM.
 
 A terminal-based AI agent with extensible tool system and multi-model support.
-Config: ~/.slife/slife.json5 (JSON with comments).
+Config: ~/.slife/slife.yaml (JSON with comments).
 
 Usage:
     uv run python -m slife                # dev: CWD, prod: ~/.slife/
-    uv run python -m slife myconf.json5   # uses a specific config
+    uv run python -m slife myconf.yaml   # uses a specific config
 
 This package ``__init__`` is deliberately **import-light**: nothing beyond
 the stdlib is imported here, so ``import slife.config`` (or any
@@ -88,7 +88,7 @@ def main(config_path: str | None = None):
         data_dir = str(_cp.parent.resolve())
     else:
         data_dir = str(get_data_dir())
-        _cp = get_config_path()  # resolve to ~/.slife/slife.json5 or CWD/slife.json5
+        _cp = get_config_path()  # resolve to ~/.slife/slife.yaml or CWD/slife.yaml
     _os.environ["SLIFE_DATA_DIR"] = data_dir
     _os.environ["SLIFE_CONFIG_DIR"] = data_dir
     # Log directory — inherited by plugin children so their per-session logs
@@ -120,7 +120,7 @@ def main(config_path: str | None = None):
     logger.debug("config loading…")
     with _elapsed("config_load", logger, level=logging.DEBUG, path=str(_cp)):
         try:
-            config = Config.from_json5(str(_cp), agent_name=agent_name)
+            config = Config.from_yaml(str(_cp), agent_name=agent_name)
         except Exception as exc:
             # Terminal belongs to the user — one actionable line, never a
             # traceback.  Full exception details stay in the session log.
@@ -157,7 +157,7 @@ def main(config_path: str | None = None):
         target=check_external_deps, name="ext-deps-check", daemon=True,
     ).start()
 
-    # Log env vars from config (already applied to os.environ by Config.from_json5).
+    # Log env vars from config (already applied to os.environ by Config.from_yaml).
     # Every value goes through the shared sanitizer first — this catches
     # connection strings (DATABASE_URL=postgres://user:pass@host/db) whose
     # password is embedded in the value, and known key shapes.  The key-name

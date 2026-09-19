@@ -42,7 +42,7 @@ never a local invention again.
 ## The registry — `slife/timeouts.py` (the module IS the registry)
 
 All values ARE CODE: the typed dataclass defaults in **`slife/timeouts.py`**
-are the single source of truth — there is no external JSON5/config file and
+are the single source of truth — there is no external YAML/config file and
 no second seat for the same value.  Developers own the values by editing the
 module (default + `// why` comment).  The registry has **no configuration
 consumers** (no runtime tool, user seed or installer reads it), so a data

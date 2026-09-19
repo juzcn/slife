@@ -65,7 +65,7 @@ Details worth keeping:
 
 - **Pure UTF-8 on stdout.** `sys.stdout` on Windows defaults to the system code page (GBK) and cannot encode emoji — the worker writes raw UTF-8 bytes to `stdout.buffer` directly (`headless.py:_write`).
 - **Piped stdin on Windows.** `connect_read_pipe` fails with `OSError [WinError 6]` for a parent-owned pipe (IOCP registration in the Proactor loop rejects the handle), so a dedicated thread reads with `os.read()` and feeds the event loop (`headless.py:_feed_stdin`). The reader stays live while a task runs so `worker/cancel` can preempt a running loop.
-- **Config never rides the process env.** The resolved config (which carries plaintext `api_key`s) is passed via a `0600` temp file (`SLIFE_CONFIG_FILE`, preferred) or the `SLIFE_CONFIG` env fallback — never visible via `/proc/<pid>/environ`. The worker inherits the main agent's in-memory config, not the `slife.json5` file; only a standalone run (no `SLIFE_SUBAGENT_NAME`) falls back to reading it.
+- **Config never rides the process env.** The resolved config (which carries plaintext `api_key`s) is passed via a `0600` temp file (`SLIFE_CONFIG_FILE`, preferred) or the `SLIFE_CONFIG` env fallback — never visible via `/proc/<pid>/environ`. The worker inherits the main agent's in-memory config, not the `slife.yaml` file; only a standalone run (no `SLIFE_SUBAGENT_NAME`) falls back to reading it.
 - **Over-long protocol lines are discarded, never fatal.** One line may legitimately be the whole cloned history or a many-MB result; a line beyond even the raised cap is dropped (tail and all) so a pathological line cannot kill the reader or wedge the worker (`PROTOCOL_LINE_LIMIT` / `discard_overlong_line`).
 
 ## Spawn & context — one turn per task
@@ -194,7 +194,7 @@ A scheduled task is a **named worker per task name** dispatched by `run_schedule
 
 ## Config & timeouts
 
-- `subagent.max_subagents` in `slife.json5` (default **5**) — no `enabled` toggle; subagents are always available.
+- `subagent.max_subagents` in `slife.yaml` (default **5**) — no `enabled` toggle; subagents are always available.
 - Timeout values are **developer-owned, in `slife/timeouts.py`**, never user-read from config: the worker task bound and stream total are `work.task_budget`; the spawn-ready wait is bounded by `ready.spawn`. Per-call `timeout` on `subagent_send_task` is the one LLM-facing override. (See [TIMEOUT.md](TIMEOUT.md) — *timers at the owner, no total*.)
 - Environment handoff: `SLIFE_SUBAGENT_NAME`, `SLIFE_SUBAGENT_CREATED_AT`, `SLIFE_SUBAGENT_CONTEXT`, `SLIFE_CONFIG_FILE` (or `SLIFE_CONFIG`), plus the inherited per-plugin `SLIFE_{NAME}_PORT` set.
 

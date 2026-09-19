@@ -4,7 +4,6 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import json
-import json5
 import pytest
 from pathlib import Path
 from unittest.mock import patch

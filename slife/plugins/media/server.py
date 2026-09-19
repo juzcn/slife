@@ -2,7 +2,7 @@
 
 Exposes generation capabilities (image, video, TTS, ASR) from any
 configured provider as MCP tools.  The plugin owns everything: its own
-``media:`` config section from slife.json5, the provider adapters, and
+``media:`` config section from slife.yaml, the provider adapters, and
 the HTTP calls.  Artifacts are saved to the working directory — generated
 media are work products, never memfiles cabinet files.  The main slife
 process is a thin MCP client and never touches provider APIs directly.
@@ -213,7 +213,7 @@ async def generate_image(
         if cfg.is_empty():
             return (
                 "Error: No media provider configured. Add a media: "
-                "section to slife.json5."
+                "section to slife.yaml."
             )
         size_err = _validate_image_size(size)
         if size_err:
@@ -268,7 +268,7 @@ async def generate_video(
         if cfg.is_empty():
             return (
                 "Error: No media provider configured. Add a media: "
-                "section to slife.json5."
+                "section to slife.yaml."
             )
         pid, pcfg, entry = cfg.resolve_model("video", model or None)
         adapter = _get_adapter(pid, pcfg)
@@ -321,7 +321,7 @@ async def text_to_speech(
         if cfg.is_empty():
             return (
                 "Error: No media provider configured. Add a media: "
-                "section to slife.json5."
+                "section to slife.yaml."
             )
         pid, pcfg, entry = cfg.resolve_model("tts", model or None)
         adapter = _get_adapter(pid, pcfg)
@@ -361,7 +361,7 @@ async def transcribe_audio(path: str, model: str = "") -> str:
         if cfg.is_empty():
             return (
                 "Error: No media provider configured. Add a media: "
-                "section to slife.json5."
+                "section to slife.yaml."
             )
         pid, pcfg, entry = cfg.resolve_model("asr", model or None)
         adapter = _get_adapter(pid, pcfg)

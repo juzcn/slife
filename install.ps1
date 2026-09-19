@@ -335,7 +335,7 @@ try {
     # browser requests with an interstitial splash page, so these two
     # alternatives are how a share link becomes reachable from a browser.
     # Neither gates anything: a missing tool disables only that provider, and
-    # only when sharefile.json5 selects it.
+    # only when sharefile.yaml selects it.
     Write-Step "[optional] Checking sharefile tunnel providers (ssh, cloudflared)..."
 
     function Find-CloudflaredDir {
@@ -784,20 +784,20 @@ try {
         return $true
     }
 
-    # 4c. Configs: seed the git-tracked defaults out-of-the-box.  slife.json5 /
-    # local_embed.json5 / tools.json5 / sharefile.json5 come from the
-    # downloaded source tree (now git-tracked).  slife.json5, tools.json5 and
-    # sharefile.json5 (the last two belong to built-in plugins) live in
-    # ~/.slife; local_embed.json5 is local-embed's own (~/.local-embed).
+    # 4c. Configs: seed the git-tracked defaults out-of-the-box.  slife.yaml /
+    # local_embed.yaml / tools.yaml / sharefile.yaml come from the
+    # downloaded source tree (now git-tracked).  slife.yaml, tools.yaml and
+    # sharefile.yaml (the last two belong to built-in plugins) live in
+    # ~/.slife; local_embed.yaml is local-embed's own (~/.local-embed).
     # Missing ones are copied silently; when an existing one differs, the NEW
     # default is seeded into ~/.slife/ as <name>.<version>.<ext> — never
     # overwritten, never prompted; the user applies or discards it.
     Write-Step "[4c] Setting up configs (out-of-the-box defaults)..."
         $seedPairs = @(
-        @("slife.json5", "$env:USERPROFILE\.slife\slife.json5"),
-        @("local_embed.json5", "$env:USERPROFILE\.local-embed\local_embed.json5"),
-        @("tools.json5", "$env:USERPROFILE\.slife\tools.json5"),
-        @("sharefile.json5", "$env:USERPROFILE\.slife\sharefile.json5")
+        @("slife.yaml", "$env:USERPROFILE\.slife\slife.yaml"),
+        @("local_embed.yaml", "$env:USERPROFILE\.local-embed\local_embed.yaml"),
+        @("tools.yaml", "$env:USERPROFILE\.slife\tools.yaml"),
+        @("sharefile.yaml", "$env:USERPROFILE\.slife\sharefile.yaml")
     )
     foreach ($pair in $seedPairs) {
         $src = Join-Path $extractedDir.FullName $pair[0]
@@ -819,21 +819,21 @@ try {
         }
     }
 
-    # tools.json5 upgrade merge (DESIGNER_NOTES §8.5): a live config that
+    # tools.yaml upgrade merge (DESIGNER_NOTES §8.5): a live config that
     # predates the unified tool system may lack the new top-level sections
     # (tool_load).  The generic seed above only copies/versioned-copies the
-    # file — never touch a live server list.  Here we INSERT the missing
-    # default section in place (before the closing brace) so the seeded
-    # config stays self-consistent with the tool-load threshold manager.
-    $newTools = "$env:USERPROFILE\.slife\tools.json5"
+    # file — never touch a live server list.  Here we APPEND the missing
+    # default section so the seeded config stays self-consistent with the
+    # tool-load threshold manager.
+    $newTools = "$env:USERPROFILE\.slife\tools.yaml"
     if (Test-Path $newTools) {
         $toolsRaw = [IO.File]::ReadAllText($newTools)
         # top-level key = line starts with ≤3 spaces then "tool_load":
         if ($toolsRaw -notmatch '(?m)^\s{0,3}"?tool_load"?\s*:') {
-            $patched = $toolsRaw -replace '(\n\})\s*$', ",`n  tool_load: { threshold: 100, preload: [] },`n`$1"
+            $patched = $toolsRaw.TrimEnd() + "`n`ntool_load:`n  threshold: 100`n  preload: []`n"
             $noBom = New-Object System.Text.UTF8Encoding($false)
             [IO.File]::WriteAllText($newTools, $patched, $noBom)
-            Write-Warn "  upgraded tools.json5 — added the tool_load section (threshold 100)"
+            Write-Warn "  upgraded tools.yaml — added the tool_load section (threshold 100)"
         }
     }
 
@@ -917,7 +917,7 @@ try {
     # removed: a first-run connect spawns every configured npx/uvx server and
     # the servers need API keys first (credstore).  The tool catalog is built
     # live from connections at slife start, so no build step exists.
-    # See "Get started" below: credstore → edit ~/.slife/tools.json5 → slife.
+    # See "Get started" below: credstore → edit ~/.slife/tools.yaml → slife.
 
     # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."
@@ -977,7 +977,7 @@ try {
     Write-Host "Get started:" -ForegroundColor Cyan
     Write-Host "  1. Semantic search (optional) — set up per README -> Semantic Memory Search"
     Write-Host "  2. Configure secrets with credstore — credstore set-password, then credstore set <API_KEY> <value>"
-    Write-Host "  3. Configure external MCP servers — edit ~/.slife/tools.json5 (they apply at the next slife start)"
+    Write-Host "  3. Configure external MCP servers — edit ~/.slife/tools.yaml (they apply at the next slife start)"
     Write-Host ""
     if ($coreMode) {
         Write-Host "Core install done — external MCP servers, Mosquitto" -ForegroundColor Cyan

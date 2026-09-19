@@ -16,7 +16,7 @@ picked up by a source scan and started through the same generic lifecycle
 harness changes.
 
 There is no config-driven "external plugin" registration — third-party
-capability enters only as a standard MCP server in ``tools.json5``,
+capability enters only as a standard MCP server in ``tools.yaml``,
 connected by the internal ``mcp`` gateway.
 
 This module must stay import-light: ``slife.plugins.spec`` (stdlib only) and
@@ -98,7 +98,7 @@ def discover_plugins() -> list[tuple[str, str]]:
 
     Pure source scan of internal packages — there is no external
     registration (third-party capability enters via standard MCP servers in
-    ``tools.json5`` through the internal ``mcp`` gateway).
+    ``tools.yaml`` through the internal ``mcp`` gateway).
     """
     plugins: list[tuple[str, str]] = []
     seen: set[str] = set()

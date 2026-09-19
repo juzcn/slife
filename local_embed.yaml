@@ -1,0 +1,49 @@
+# local-embed — one process, many local embedding models; the request names
+# the model (standard OpenAI semantics — no 'active' model).
+# Config path: $LOCAL_EMBED_FILE > slife project root (dev) > ~/.local-embed/
+# Values support ${VAR} / ${VAR:-default} expansion from the shell (see
+# local_embed.config.expand_value); shell env wins over the config.
+#
+# Every model configured below is served as a peer — POST /v1/embeddings
+# must name one in its "model" field.  The embedding model is REQUIRED
+# for slife's full functionality — semantic / hybrid memory search.  Two
+# routes:
+#   1) TRANSFORMER: "BAAI/bge-m3" (~2 GB) must be pre-downloaded into
+#      $HF_HUB_CACHE (default ~/.cache/huggingface/hub).  Pre-download it
+#      with:
+#        hf download BAAI/bge-m3                                # huggingface.co
+#        HF_ENDPOINT=https://hf-mirror.com hf download BAAI/bge-m3  # mirror fallback
+#      (No on-demand download — the model must already be in the cache.)
+#   2) GGUF (offline single file): drop a quantized BGE-M3 GGUF at
+#      ~/.local-embed/models/bge-m3-Q8_0.gguf (the default path below — Q8_0 is
+#      ~635 MB; a heavier quant is smaller), or set BGE_M3_GGUF_PATH in the
+#      shell / edit gguf_path.
+#
+# autoload (per model, default false): eager loading is OFF — model weights
+# are large and memory-hungry, so each model is loaded only when a request
+# names it.  Set "autoload": true on one model to eager-load just that model
+# in the background at startup (memory paid up front for a warm first embed);
+# every unflagged model stays lazy.
+env:
+  HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}"
+  # Offline by default — the model is NOT auto-downloaded (too slow).
+  # The transformer route needs the model already in the HF cache; the
+  # GGUF route needs the file at the default path below.  Set
+  # HF_HUB_OFFLINE=0 to allow an on-demand download.
+  HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}"
+models:
+  # autoload (per model, default false) — false = lazy: the model loads only
+  # when a request names it.  Set "autoload": true to preload a model in
+  # the background at startup (the GGUF below) while a large one like this
+  # ~2 GB transformer stays lazy.
+  "BAAI/bge-m3":
+    backend: "transformer"
+    model: "BAAI/bge-m3"
+    autoload: false
+  # GGUF route (local file) — inert until a file exists at the default
+  # path; override with BGE_M3_GGUF_PATH ("~" is expanded).
+  "bge-m3":
+    backend: "gguf"
+    gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/bge-m3-Q8_0.gguf}"
+    autoload: true
+port: 17347  # uncommon fixed port — see local_embed.config.DEFAULT_PORT

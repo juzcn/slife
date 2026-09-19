@@ -6,7 +6,7 @@ embeddings_model_switch   — switch the active embedding provider
 embeddings_model_remove   — remove a provider from the config
 embeddings_enable         — global on/off for semantic (hybrid) search
 
-The managed section is the top-level ``embeddings`` of slife.json5 — the
+The managed section is the top-level ``embeddings`` of slife.yaml — the
 first-class, shared config for memdb + memfiles.  Each provider is **one
 OpenAI-compatible endpoint**: ``base_url`` + ``api_key`` and a single
 ``model`` (the id sent on ``/v1/embeddings``); ``active_model`` names the

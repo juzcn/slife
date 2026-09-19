@@ -234,7 +234,7 @@ class ShellTool(Tool):
 
     @classmethod
     def from_config(cls, cfg, config, ctx=None):
-        # ``cfg.get("timeout")`` is the per-tool USER override (slife.json5
+        # ``cfg.get("timeout")`` is the per-tool USER override (slife.yaml
         # tools section); absent → registry default via the ctor.
         raw = cfg.get("timeout")
         tool = cls(timeout=int(raw) if raw is not None else None)

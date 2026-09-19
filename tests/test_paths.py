@@ -120,9 +120,9 @@ class TestGetDataDir:
 class TestGetConfigPath:
     """Tests for get_config_path."""
 
-    def test_returns_slife_json5_in_data_dir(self, monkeypatch):
+    def test_returns_slife_yaml_in_data_dir(self, monkeypatch):
         monkeypatch.setenv("SLIFE_DATA_DIR", "/data")
-        assert paths.get_config_path() == Path("/data/slife.json5")
+        assert paths.get_config_path() == Path("/data/slife.yaml")
 
 
 # ── get_logs_dir ─────────────────────────────────────────────────────────

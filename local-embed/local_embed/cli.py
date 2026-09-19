@@ -4,14 +4,14 @@ Entry paths share this module:
 
 - ``local-embed …`` (console script / ``python -m local_embed``): run the
   server as a standalone service — host, port and model config are read from
-  ``local_embed.json5`` (the CLI takes no model/endpoint flags).
+  ``local_embed.yaml`` (the CLI takes no model/endpoint flags).
 
 - ``local-embed set <model_name> [--HF_HUB_CACHE <dir>] [--port <n>]``:
-  configure a transformer model in ``local_embed.json5`` (idempotent; the
+  configure a transformer model in ``local_embed.yaml`` (idempotent; the
   model must already be downloaded into the cache).
 
 - ``local-embed set-gguf <model_name> --path <PATH> [--port <n>]``:
-  configure a gguf model in ``local_embed.json5`` (idempotent; ``--path``
+  configure a gguf model in ``local_embed.yaml`` (idempotent; ``--path``
   must point at an existing ``.gguf`` file).
 
 - ``python -m local_embed.server``: the **plugin spawn target** used by a
@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Standalone local embedding server — expose a GGUF (llama-cpp) or "
             "HF transformer model as an OpenAI-compatible /v1/embeddings service. "
-            "Host, port and model config come from local_embed.json5."
+            "Host, port and model config come from local_embed.yaml."
         ),
     )
     p.add_argument("--log-level", default="INFO", help="logging level (default INFO)")
@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
         "set",
         help="configure a transformer model",
         description=(
-            "Add (or update) a transformer model in local_embed.json5 and pin "
+            "Add (or update) a transformer model in local_embed.yaml and pin "
             "the HF cache + port.  Idempotent; the model must already be "
             "downloaded into the cache."
         ),
@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
         "set-gguf",
         help="configure a gguf model",
         description=(
-            "Add (or update) a gguf model in local_embed.json5 and pin the "
+            "Add (or update) a gguf model in local_embed.yaml and pin the "
             "port.  Idempotent; --path must point at an existing .gguf file."
         ),
     )
@@ -105,14 +105,14 @@ def main(argv: "list[str] | None" = None) -> int:
     setup_logging(getattr(logging, args.log_level.upper(), logging.INFO))
 
     # Everything (host/port/backend/model/gguf_path/device) comes from
-    # local_embed.json5 — the CLI deliberately takes no model/endpoint flags.
+    # local_embed.yaml — the CLI deliberately takes no model/endpoint flags.
     # A missing file is fine (defaults); a file that exists but won't parse
     # must fail cleanly, not traceback.
     try:
         settings = resolve_engine_settings()
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
-        print("Fix local_embed.json5, or run `local-embed set` to rewrite it.",
+        print("Fix local_embed.yaml, or run `local-embed set` to rewrite it.",
               file=sys.stderr)
         return 2
     except OSError as e:
@@ -133,7 +133,7 @@ def main(argv: "list[str] | None" = None) -> int:
     for spec in settings["specs"]:
         problems: list[str] = []
         if spec.backend == "gguf" and not spec.gguf_path:
-            problems.append("no gguf_path (set gguf_path in local_embed.json5)")
+            problems.append("no gguf_path (set gguf_path in local_embed.yaml)")
         if problems:
             print(
                 f"Warning: model '{spec.name}': {'; '.join(problems)} "

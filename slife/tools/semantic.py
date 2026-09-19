@@ -5,7 +5,7 @@ the one implementation used by every semantic index in slife; this module
 adapts it to the host catalog's store (``CatalogStore``'s drainer
 contract + ``meta`` table) and builds its embedder from the HOST's active
 embedding endpoint (``get_active_endpoint`` — the top-level ``embeddings``
-section of slife.json5), the way memdb/memfiles do in their own processes.
+section of slife.yaml), the way memdb/memfiles do in their own processes.
 
 Only the main process starts this manager: it is the single embedding
 maintainer (the retired mcp-gateway wrapper no longer drains its own
@@ -37,7 +37,7 @@ class EmbeddingClient:
     """OpenAI-compatible embeddings client (api backend only).
 
     Config comes from the host's active endpoint (``get_active_endpoint()``
-    — the top-level ``embeddings`` section of slife.json5).  A usable
+    — the top-level ``embeddings`` section of slife.yaml).  A usable
     ``base_url`` (non-empty, not a placeholder) ⇒ available; absent /
     placeholder ⇒ disabled (keyword/grep fallback).  An ``api_key`` that is a
     ``${VAR}`` placeholder is resolved through shell env → credstore;
@@ -358,11 +358,11 @@ class SemanticManager(_BaseSemanticManager):
         if not embedder.base_url:
             return (
                 "no embedding endpoint configured — add an 'embeddings' "
-                "section to slife.json5 to enable semantic tool search"
+                "section to slife.yaml to enable semantic tool search"
             )
         return (
             "api backend unavailable — base_url is a placeholder or unreachable. "
-            "Check the 'embeddings' section in slife.json5."
+            "Check the 'embeddings' section in slife.yaml."
         )
 
 

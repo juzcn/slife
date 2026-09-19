@@ -100,7 +100,7 @@ class ToolSearchTool(Tool):
         },
         enabled={
             "type": "boolean",
-            "description": "Filter by the config switch: false = switched off in tools.json5; omitted = all.",
+            "description": "Filter by the config switch: false = switched off in tools.yaml; omitted = all.",
             "default": None,
         },
         unavailable={

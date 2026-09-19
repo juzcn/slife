@@ -61,7 +61,7 @@ def bind_port(host: str, port: int) -> "tuple[socket.socket, int]":
         raise RuntimeError(
             f"cannot bind {host}:{port} — already in use by another "
             "local-embed instance (or service). Stop it, or change the port "
-            "in local_embed.json5, before starting slife; the running "
+            "in local_embed.yaml, before starting slife; the running "
             "instance continues to serve embeddings."
         ) from e
     return sock, port
@@ -80,7 +80,7 @@ def _ensure_port_free(host: str, port: int) -> None:
             raise RuntimeError(
                 f"port {host}:{port} is already being served — another "
                 "local-embed instance is running there. Stop it, or change "
-                "the port in local_embed.json5, before starting slife; the "
+                "the port in local_embed.yaml, before starting slife; the "
                 "running instance continues to serve embeddings."
             )
     except OSError:

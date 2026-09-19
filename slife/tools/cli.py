@@ -4,7 +4,7 @@ cli_set:               register/update a CLI so the LLM can discover it next tur
 cli_remove:            remove a registered CLI
 cli_list:              list all registered CLI tools
 
-Registered CLIs are persisted to tools.json5 → cli: section (one category
+Registered CLIs are persisted to tools.yaml → cli: section (one category
 section of the unified tools config — the host reads it at startup into
 ``Config.cli_tools``).
 These tools only manage the registry — they don't execute commands.
@@ -37,10 +37,10 @@ _CLI_TOOLS_KEY = "cli"
 
 
 class _CliConfigMixin(_ConfigPathMixin):
-    """The cli tools' config mixin — targets tools.json5, not slife.json5.
+    """The cli tools' config mixin — targets tools.yaml, not slife.yaml.
 
-    The ``cli`` section lives in tools.json5 (the ``_ConfigPathMixin``
-    default stays with slife.json5 for ``config_env.py``).
+    The ``cli`` section lives in tools.yaml (the ``_ConfigPathMixin``
+    default stays with slife.yaml for ``config_env.py``).
     """
 
     def __init__(self, config_path: Path | None = None):
@@ -148,7 +148,7 @@ def _live_cli_config(self) -> "Config | None":
 
     Every cli mutation tool shares the same dual-write shape: mutate the live
     ``Config`` snapshot (its own writer persists it), or fall back to the raw
-    tools.json5 file.  This selects the target.
+    tools.yaml file.  This selects the target.
     """
     ctx = getattr(self, "_ctx", None)
     config = ctx.config if ctx is not None else None
@@ -158,7 +158,7 @@ def _live_cli_config(self) -> "Config | None":
 
 
 def _open_raw_cli(self) -> tuple[dict, "Callable[[], None]"]:
-    """The raw tools.json5 ``cli`` section plus a writer that commits it.
+    """The raw tools.yaml ``cli`` section plus a writer that commits it.
 
     Fallback write target when no live Config is bound.  Mutate the returned
     section in place, then call the writer to persist the whole file back.
@@ -180,7 +180,7 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
 
     name = "cli_set"
     category = "CLI"
-    description = "Register/update an external CLI in tools.json5 for later discovery (does not execute it)."
+    description = "Register/update an external CLI in tools.yaml for later discovery (does not execute it)."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
@@ -252,11 +252,11 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
 
 
 class CliRemoveTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
-    """Remove a registered CLI tool from tools.json5."""
+    """Remove a registered CLI tool from tools.yaml."""
 
     name = "cli_remove"
     category = "CLI"
-    description = "Remove a CLI registration from tools.json5. Does not uninstall the command."
+    description = "Remove a CLI registration from tools.yaml. Does not uninstall the command."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {

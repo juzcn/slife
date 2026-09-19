@@ -9,16 +9,16 @@ treats a missing file as first run (empty dict), so tests are self-contained.
 
 from __future__ import annotations
 
-import json5
 from pathlib import Path
 
 import slife.plugins.mcp_gateway
 import slife.plugins.mcp_gateway.config as cfg
+from tests.conftest import load_config_text
 
 
 def _raw_config() -> dict:
-    """Re-read the isolated config file as parsed JSON5."""
-    return json5.loads(cfg.current_path().read_text(encoding="utf-8"))
+    """Re-read the isolated config file as parsed YAML."""
+    return load_config_text(cfg.current_path().read_text(encoding="utf-8"))
 
 
 def test_import_config():
@@ -142,9 +142,9 @@ class TestSetServerEnabled:
 
 
 class TestLegacyServersMigration:
-    """Pre-section tools.json5 (top-level ``servers``) reads and migrates.
+    """Pre-section tools.yaml (top-level ``servers``) reads and migrates.
 
-    The rename lift created tools.json5 files with servers at the top level;
+    The rename lift created tools.yaml files with servers at the top level;
     they keep working, and the first write normalizes them into the sections.
     """
 
@@ -152,7 +152,7 @@ class TestLegacyServersMigration:
         path = cfg.current_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            '{ "servers": {"old": {"command": "echo"}} }', encoding="utf-8"
+            "servers:\n  old:\n    command: echo\n", encoding="utf-8"
         )
 
     def test_legacy_servers_read(self):
@@ -249,7 +249,7 @@ class TestResolveConfigPath:
     """resolve_config_path — $TOOLS_FILE > slife data-dir default.
 
     The mcp gateway is a built-in slife plugin: the default config path is
-    ``<slife data dir>/tools.json5`` (``slife.paths.get_data_dir``), not a
+    ``<slife data dir>/tools.yaml`` (``slife.paths.get_data_dir``), not a
     ``~/.mcp-gateway/`` standalone location.
     """
 
@@ -257,7 +257,7 @@ class TestResolveConfigPath:
         monkeypatch.delenv("TOOLS_FILE", raising=False)
         monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path / "data"))
         assert cfg.resolve_config_path() == (
-            tmp_path / "data" / "tools.json5"
+            tmp_path / "data" / "tools.yaml"
         )
 
     def test_production_default_under_home(self, tmp_path, monkeypatch):
@@ -265,13 +265,13 @@ class TestResolveConfigPath:
         monkeypatch.delenv("SLIFE_DATA_DIR", raising=False)
         monkeypatch.chdir(tmp_path)  # not the slife checkout → ~/.slife
         assert cfg.resolve_config_path() == (
-            Path.home() / ".slife" / "tools.json5"
+            Path.home() / ".slife" / "tools.yaml"
         )
 
     def test_env_wins_over_data_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TOOLS_FILE", str(tmp_path / "tools.json5"))
+        monkeypatch.setenv("TOOLS_FILE", str(tmp_path / "tools.yaml"))
         monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path / "other"))
-        assert cfg.resolve_config_path() == tmp_path / "tools.json5"
+        assert cfg.resolve_config_path() == tmp_path / "tools.yaml"
 
 
 class TestServersReading:
@@ -285,6 +285,6 @@ class TestServersReading:
         # Write a config whose servers section is malformed (a list).
         path = cfg.current_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('{"servers": ["a", "b"]}', encoding="utf-8")
+        path.write_text("servers: [a, b]\n", encoding="utf-8")
         assert cfg.servers() == {}
         assert cfg.count_servers() == 0

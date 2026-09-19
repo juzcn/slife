@@ -10,6 +10,7 @@ from slife.agent.llm_client import TokenUsage
 from slife.agent.message_history import MessageHistory
 from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
+from slife.tools._yaml_doc import new_yaml, render
 
 
 # ── pytest configuration ────────────────────────────────────────────────
@@ -68,7 +69,7 @@ def _isolate_tools_db(tmp_path):
 
 #: Test modules that exercise ``slife.plugins.mcp_gateway`` config persistence
 #: (they lived under ``tests/mcp/`` before the folders were flattened).
-#: They must never read/write a real ``tools.json5`` — the dev data
+#: They must never read/write a real ``tools.yaml`` — the dev data
 #: dir (repo root) holds the git-tracked file — so every access is pointed
 #: at a throwaway file.
 _MCP_ISOLATED_MODULES = frozenset({
@@ -95,7 +96,7 @@ def _isolate_mcp_config_path(request, tmp_path, monkeypatch):
     if request.node.fspath.purebasename not in _MCP_ISOLATED_MODULES:
         return
 
-    monkeypatch.setenv("TOOLS_FILE", str(tmp_path / "tools.json5"))
+    monkeypatch.setenv("TOOLS_FILE", str(tmp_path / "tools.yaml"))
 
     def _reset():
         # Import lazily so it never runs against a half-built package.
@@ -354,11 +355,24 @@ def make_async_iter(items):
     return _gen()
 
 
-# ── JSON5 config builders ─────────────────────────────────────────────
+# ── Config text helpers ───────────────────────────────────────────────
 
 
-def build_json5_config(models=None, active_model=None, tools=None, agent=None):
-    """Build a minimal JSON5-serializable config dict for testing."""
+def dump_config(data) -> str:
+    """Serialize a config dict to YAML text — the write side of a fixture."""
+    return render(data)
+
+
+def load_config_text(text: str) -> dict:
+    """Parse config YAML text back to a dict — the read side of a fixture."""
+    return new_yaml().load(text)
+
+
+# ── Config builders ───────────────────────────────────────────────────
+
+
+def build_yaml_config(models=None, active_model=None, tools=None, agent=None):
+    """Build a minimal YAML-serializable config dict for testing."""
     cfg = {
         "models": models or {
             "providers": {

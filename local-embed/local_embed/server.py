@@ -449,7 +449,7 @@ def serve_standalone(engine: Engine, *, host: str = "127.0.0.1", port: int = DEF
 def main() -> int:
     """Plugin spawn target — ``python -m local_embed.server``.
 
-    Reads ``local_embed.json5`` (env var ``$LOCAL_EMBED_FILE``, else the
+    Reads ``local_embed.yaml`` (env var ``$LOCAL_EMBED_FILE``, else the
     usual precedence) plus ``LOCAL_EMBED_*`` env overrides, builds the
     multi-model engine, binds the configured port (default {DEFAULT_PORT} — a
     STABLE port so a host can point its OpenAI-compatible client's

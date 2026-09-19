@@ -5,6 +5,7 @@ import asyncio
 import pytest; pytestmark = pytest.mark.unit
 
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +14,16 @@ from slife.plugins.memdb.embeddings import (
     EmbeddingClient,
     _guess_dim,
 )
+
+
+def _yaml_stub(config: dict) -> SimpleNamespace:
+    """A stand-in for ``_yaml_doc.new_yaml()`` that loads *config* as-is.
+
+    ``from_config`` parses the file with ``new_yaml().load(text)`` imported
+    inside the method, so the loader is patched at its source — the file's
+    text is never parsed.
+    """
+    return SimpleNamespace(load=lambda _text: config)
 
 
 def _embeddings_cfg(**provider_kw) -> dict:
@@ -150,8 +161,8 @@ class TestEmbeddingClientFromConfig:
             },
         }
 
-        with patch("json5.loads", return_value=mock_config):
-            client = EmbeddingClient.from_config("/fake/config.json5")
+        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)):
+            client = EmbeddingClient.from_config("/fake/config.yaml")
             assert client.backend == "api"
             assert client.available is True
             assert client._base_url == "http://127.0.0.1:8000/v1"
@@ -178,8 +189,8 @@ class TestEmbeddingClientFromConfig:
             },
         }
 
-        with patch("json5.loads", return_value=mock_config):
-            client = EmbeddingClient.from_config("/fake/config.json5")
+        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)):
+            client = EmbeddingClient.from_config("/fake/config.yaml")
             assert client.backend == "api"
             assert client._model == "bge-m3"
             assert client.dimension == 1024
@@ -199,15 +210,15 @@ class TestEmbeddingClientFromConfig:
             },
         }
 
-        with patch("json5.loads", return_value=mock_config):
-            client = EmbeddingClient.from_config("/fake/config.json5")
+        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)):
+            client = EmbeddingClient.from_config("/fake/config.yaml")
             assert client.available is False
 
     @patch("slife.plugins.memdb.embeddings.Path.exists")
     def test_missing_config_returns_disabled(self, mock_exists):
         mock_exists.return_value = False
 
-        client = EmbeddingClient.from_config("/nonexistent.json5")
+        client = EmbeddingClient.from_config("/nonexistent.yaml")
         assert client.available is False
 
     @patch("pathlib.Path.read_text")
@@ -232,8 +243,8 @@ class TestEmbeddingClientFromConfig:
             },
         }
 
-        with patch("json5.loads", return_value=mock_config):
-            client = EmbeddingClient.from_config("/fake/config.json5")
+        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)):
+            client = EmbeddingClient.from_config("/fake/config.yaml")
             assert client.backend == "api"
             assert client.available is True
             assert client.dimension == 1024
@@ -260,8 +271,8 @@ class TestEmbeddingClientFromConfig:
             },
         }
 
-        with patch("json5.loads", return_value=mock_config):
-            client = EmbeddingClient.from_config("/fake/config.json5")
+        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)):
+            client = EmbeddingClient.from_config("/fake/config.yaml")
             assert client.backend == "api"
             assert client.dimension == 1536
             assert client.dimension_known is True
@@ -281,10 +292,10 @@ class TestEmbeddingClientFromConfig:
             "slife.config._try_credstore_lookup", lambda key: None,
         )
 
-        with patch("json5.loads", return_value=_embeddings_cfg(
+        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(_embeddings_cfg(
             api_key="${SILICONFLOW_API_KEY}",
-        )):
-            client = EmbeddingClient.from_config("/fake/config.json5")
+        ))):
+            client = EmbeddingClient.from_config("/fake/config.yaml")
         assert client.backend == "api"
         assert client.available is True
         assert client._api_key == "sk-sf-test"
@@ -304,10 +315,10 @@ class TestEmbeddingClientFromConfig:
             lambda key: "sk-cred" if key == "SILICONFLOW_CRED_KEY" else None,
         )
 
-        with patch("json5.loads", return_value=_embeddings_cfg(
+        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(_embeddings_cfg(
             api_key="${SILICONFLOW_CRED_KEY}",
-        )):
-            client = EmbeddingClient.from_config("/fake/config.json5")
+        ))):
+            client = EmbeddingClient.from_config("/fake/config.yaml")
         assert client.backend == "api"
         assert client._api_key == "sk-cred"
 
@@ -326,26 +337,13 @@ class TestEmbeddingClientFromConfig:
             "slife.config._try_credstore_lookup", lambda key: None,
         )
 
-        with patch("json5.loads", return_value=_embeddings_cfg(
+        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(_embeddings_cfg(
             api_key="${NO_SUCH_SF_KEY_EVER}",
-        )):
-            client = EmbeddingClient.from_config("/fake/config.json5")
+        ))):
+            client = EmbeddingClient.from_config("/fake/config.yaml")
         assert client._api_key == ""
         assert client.backend == ""
         assert client.available is False
-
-    def test_json5_not_installed(self, monkeypatch):
-        """from_config degrades to an unavailable client when json5 is
-        missing — the ``import json5`` inside the loader raises ImportError
-        (simulated via sys.modules; a patched module attribute would NOT
-        intercept the function-level import)."""
-        import sys
-
-        monkeypatch.setitem(sys.modules, "json5", None)
-        client = EmbeddingClient.from_config("/fake/config.json5")
-        assert client.available is False
-        assert client._api_key == ""
-        assert client.backend == ""
 
 
 class TestEmbeddingClientEmbed:

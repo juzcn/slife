@@ -6,11 +6,11 @@ model); tools manage providers, not a per-provider model registry.
 
 import pytest; pytestmark = pytest.mark.unit
 
-import json5
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+from tests.conftest import dump_config, load_config_text
 from slife.tools.embeddings import (
     ListEmbeddingsTool,
     SetEmbeddingsTool, SwitchEmbeddingsTool, RemoveEmbeddingsTool,
@@ -22,15 +22,15 @@ from slife.tools.embeddings import (
 
 
 def _write_config(path: Path, data: dict) -> None:
-    path.write_text(json5.dumps(data, indent=2), encoding="utf-8")
+    path.write_text(dump_config(data), encoding="utf-8")
 
 
 def _read_config(path: Path) -> dict:
-    return json5.loads(path.read_text(encoding="utf-8"))
+    return load_config_text(path.read_text(encoding="utf-8"))
 
 
 def _make_path(tmp_path: Path) -> Path:
-    p = tmp_path / "slife.json5"
+    p = tmp_path / "slife.yaml"
     _write_config(p, {
         "embeddings": {
             "providers": {
@@ -77,7 +77,7 @@ class TestListEmbeddingsTool:
 
     @pytest.mark.asyncio
     async def test_no_embeddings(self, tmp_path):
-        p = tmp_path / "empty.json5"
+        p = tmp_path / "empty.yaml"
         _write_config(p, {"embeddings": {"providers": {}}})
         tool = ListEmbeddingsTool(config_path=p)
         result = await tool.execute()
@@ -127,7 +127,7 @@ class TestSetEmbeddingsTool:
 
     @pytest.mark.asyncio
     async def test_first_set_becomes_active(self, tmp_path):
-        p = tmp_path / "slife.json5"
+        p = tmp_path / "slife.yaml"
         _write_config(p, {"embeddings": {"providers": {}}})
         tool = SetEmbeddingsTool(config_path=p)
         _no_reload(tool)
@@ -209,7 +209,7 @@ class TestRemoveEmbeddingsTool:
 
     @pytest.mark.asyncio
     async def test_removing_last_provider_drops_section(self, tmp_path):
-        p = tmp_path / "slife.json5"
+        p = tmp_path / "slife.yaml"
         _write_config(p, {
             "embeddings": {
                 "providers": {"p1": {"base_url": "http://x/v1"}},

@@ -16,7 +16,7 @@ connectivity verdict: whenever an external server is unusable — at startup
 before it connects, on a disconnect, on a failed connect, when its gateway
 child dies — the host marks that server's tools ``error``, and a successful
 (re)connect resets them to their class default.  There is deliberately no
-``server`` table: which servers to bring up lives in ``tools.json5``, what is
+``server`` table: which servers to bring up lives in ``tools.yaml``, what is
 live right now lives in the gateway's pool, and this db only records the
 result on the tool rows.  Writes: load-status flips (load/unload) and those
 connectivity marks; eviction is the main agent's job.
@@ -280,7 +280,7 @@ def _flatten_schema(schema_text: str) -> str:
 #:
 #: - ``type = 'func'`` — skills and cli entries are never injected (their
 #:   ``status`` is NULL, so this only makes the rule explicit).
-#: - ``enabled`` — tools.json5's answer.  NULL is treated as enabled: the column
+#: - ``enabled`` — tools.yaml's answer.  NULL is treated as enabled: the column
 #:   is "not known to be off", and a row whose flag was never written must not
 #:   silently vanish from the model's tool list.
 #: - ``status = 'loaded'`` — the model's decision, the db's whole reason to exist.
@@ -303,7 +303,7 @@ def _effective_status(trow: dict) -> str:
 
     Everything it needs is ON THE ROW, and in a deliberate order:
 
-    1. ``enabled == 0`` → ``disabled`` — the json5 switch, for every category
+    1. ``enabled == 0`` → ``disabled`` — the yaml switch, for every category
        (a server switched off is distinguishable from one that is merely
        down).
     2. ``unavailable`` → ``error`` — the runtime verdict that the owner (a
@@ -432,7 +432,7 @@ class CatalogStore:
         An older file keeps the ``CHECK`` it was created with — ``CREATE TABLE
         IF NOT EXISTS`` never touches it, and there is no migration (a stale
         catalog is DELETED and rebuilt, not upgraded: every row is derived
-        from the registry, ``tools.json5``, the skills dir and the plugin
+        from the registry, ``tools.yaml``, the skills dir and the plugin
         children).  The file's ``user_version`` reads current either way, so
         the DDL itself is the only honest signal.
 
@@ -464,7 +464,7 @@ class CatalogStore:
             "tool_catalog", "warning", key="schema",
             value=f"stale (no {'/'.join(missing)} category)",
             hint=f"Delete {self._path} and restart slife. The catalog is "
-                 f"rebuilt from the tool registry, tools.json5 and the plugins, "
+                 f"rebuilt from the tool registry, tools.yaml and the plugins, "
                  f"so nothing is lost but the loaded/unloaded state.",
         )
 
@@ -498,7 +498,7 @@ class CatalogStore:
             "tool_catalog", "warning", key="schema",
             value=f"stale (no {'/'.join(missing)} column)",
             hint=f"Delete {self._path} and restart slife. The catalog is "
-                 f"rebuilt from the tool registry, tools.json5 and the plugins, "
+                 f"rebuilt from the tool registry, tools.yaml and the plugins, "
                  f"so nothing is lost but the loaded/unloaded state.",
         )
 
@@ -702,7 +702,7 @@ class CatalogStore:
                     sets.append("enabled = ?")
                     vals.append(1 if new_enabled else 0)
                 # ``override_status`` is the config's autoload statement: the
-                # row is loaded because tools.json5 says so, so the incoming
+                # row is loaded because tools.yaml says so, so the incoming
                 # status is an AUTHORITY rather than an insert default and may
                 # overwrite what the model decided.  Owned here (not by the
                 # caller) for the same reason as every other column: one
@@ -799,7 +799,7 @@ class CatalogStore:
         """Delete every tool row owned by one external server.
 
         The removal path (config removal, or a server disabled in
-        ``tools.json5``): a server that is off owns no rows — its tools are
+        ``tools.yaml``): a server that is off owns no rows — its tools are
         re-mirrored when it connects again.  Returns the number of rows
         removed; embeddings follow via the FK cascade.
         """
@@ -887,7 +887,7 @@ class CatalogStore:
         """Set one source's ``enabled`` flag on all of its rows.
 
         The whole of the sync's business with this column: a server switched
-        off in ``tools.json5`` is a row that reports ``disabled``.  Deliberately
+        off in ``tools.yaml`` is a row that reports ``disabled``.  Deliberately
         narrow — it writes ``enabled`` and nothing else:
 
         - ``status`` is NOT touched, so the model's loaded/unloaded decision

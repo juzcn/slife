@@ -81,7 +81,7 @@ _TUNNEL_PROBE_INTERVAL = 1.0  # seconds — cadence between __check probes (not 
 def _server_category(name: str) -> str:
     """An external server's catalog category (``mcp`` vs ``rest-api``).
 
-    tools.json5 is the only source, and inside it the ``rest-api`` SECTION is
+    tools.yaml is the only source, and inside it the ``rest-api`` SECTION is
     the whole answer — an entry there is a REST API, wherever its file may
     have been hand-moved since.  Nothing is tagged for it: ``source`` records
     where a definition was DOWNLOADED from (github / registry / hand), which
@@ -424,7 +424,7 @@ class AgentService:
         # On-demand reconcile guard: prevents concurrent mcp_tool_load /
         # tools/list_changed reconciliation from racing.
         self._mcp_reconciling: bool = False
-        # Last-seen mtimes of the registry-less families' sources (tools.json5,
+        # Last-seen mtimes of the registry-less families' sources (tools.yaml,
         # the skills dir) — the reconcile re-mirrors them when one moves, so a
         # hand-edit lands without a restart.
         self._local_rows_mtimes: tuple[float, float] | None = None
@@ -526,7 +526,7 @@ class AgentService:
                 f"Available: {[m.ref for m in self.config.models]}"
             )
         # Cross-process read→mutate→write lock: the memdb child RMWs the same
-        # slife.json5 under config_read_modify_write — without the same lock a
+        # slife.yaml under config_read_modify_write — without the same lock a
         # concurrent embeddings-config write clobbers this change (and vice
         # versa).  The in-process _write_lock is not enough across processes.
         if self.config._path is not None:
@@ -1174,7 +1174,7 @@ class AgentService:
             raise
 
     # ── MCP enrichment adapter ─────────────────────────────────────────
-    # The mcp gateway self-hosts its config (tools.json5) and self-connects
+    # The mcp gateway self-hosts its config (tools.yaml) and self-connects
     # servers on startup.  This is the ONE bounded, mcp-aware integration
     # left in the harness: expose
     # the wrapper client to slife tools and register the external servers'
@@ -1256,7 +1256,7 @@ class AgentService:
 
         Reads the configured server list LIVE from the wrapper
         (``__mcp_list`` — both families; the model's ``mcp_list`` is scoped to
-        one), so neither slife nor a subagent needs tools.json5:
+        one), so neither slife nor a subagent needs tools.yaml:
 
         1. **Connectivity verdict** (main agent): ``__check`` says which servers
            are up; each one's tools are marked ``error`` or cleared —
@@ -1270,7 +1270,7 @@ class AgentService:
         3. A proxy whose server left the CONFIG is unregistered; a merely
            disconnected/disabled server keeps its proxies — its rows carry the
            ``error`` mark, which is what keeps them out of injection.
-        3b. **Rows of a server that left tools.json5 are purged** (the §8.5
+        3b. **Rows of a server that left tools.yaml are purged** (the §8.5
            "remove 清理干净" contract), compared against the config rather than
            the pool so a gateway restart never wipes a configured server.
 
@@ -1376,10 +1376,10 @@ class AgentService:
                 if self.tool_registry.unregister(tool.name):
                     logger.debug("mcp_proxy_server_removed full_name=%s", tool.name)
 
-            # 3b — live catalog cleanup: a server that left tools.json5 loses
+            # 3b — live catalog cleanup: a server that left tools.yaml loses
             # its rows NOW (the §8.5 "remove 清理干净" contract — otherwise
             # rest_api_remove / mcp_remove leave stale rows until the next
-            # startup purge).  Comparing against tools.json5 (the authority)
+            # startup purge).  Comparing against tools.yaml (the authority)
             # rather than the pool keeps a transient empty pool or a gateway
             # restart from wiping configured servers' rows.
             if not self.is_subagent and self._catalog is not None:
@@ -1390,7 +1390,7 @@ class AgentService:
                     )
                 except Exception as e:
                     logger.debug("catalog_live_purge_failed err=%s", e)
-                # 3c — the same "tools.json5 is the authority" rule for the
+                # 3c — the same "tools.yaml is the authority" rule for the
                 # families the registry cannot see: a hand-edited cli entry or
                 # SKILL.md lands here, not at the next restart.  mtime-gated,
                 # so an unchanged file costs two stats.
@@ -1426,7 +1426,7 @@ class AgentService:
         Two independent facts land here, and they are deliberately different
         columns:
 
-        - **``enabled``** — the server's own on/off switch in tools.json5.  A
+        - **``enabled``** — the server's own on/off switch in tools.yaml.  A
           server switched off keeps its rows and reports ``disabled``; the
           write touches only that flag, so the model's loaded/unloaded
           decision survives the round trip (see ``set_source_enabled``).
@@ -1476,13 +1476,13 @@ class AgentService:
         """Upsert a server's tool rows into the shared catalog.
 
         ``category`` (``mcp`` vs ``rest-api``) is decided by the CALLER from
-        the server's ``tools.json5`` entry — the provenance used to live in
+        the server's ``tools.yaml`` entry — the provenance used to live in
         the server row, which no longer exists.  A schema text change drops
         the stale embedding (the drainer re-embeds); ``on_saved`` is the
         caller's job so a batch wakes the drainer once.  New rows land
         ``unloaded``: registering a tool never loads it.
 
-        Each row also carries its server's on/off switch — tools.json5 is the
+        Each row also carries its server's on/off switch — tools.yaml is the
         authority for that column, and a mirrored row that omitted it would
         read as merely ``down`` when its server is in fact switched off.
 
@@ -2552,7 +2552,7 @@ class AgentService:
                 store,
                 threshold=self._tool_load_threshold,
                 write_owner=not self.is_subagent,
-                # tools.json5's per-entry `autoload: true` — the explicit "load
+                # tools.yaml's per-entry `autoload: true` — the explicit "load
                 # these at startup" escape hatch around the default (only the
                 # whitelist is born loaded).  A server entry's flag covers its
                 # whole tool set, whose names are unknown until it connects.
@@ -2567,8 +2567,8 @@ class AgentService:
             # Session seed from everything currently registered (the system
             # tools: builtin + built-in plugin tools), PLUS the builtins an
             # override switched off: they are not registered (the factory skips
-            # them) but tools.json5 still declares them, so the db carries their
-            # row marked `disabled` rather than omitting a tool json5 names.
+            # them) but tools.yaml still declares them, so the db carries their
+            # row marked `disabled` rather than omitting a tool yaml names.
             # External mcp/rest-api rows are seeded by the reconcile as their
             # servers connect.
             await svc.sync_system_tools([
@@ -2581,7 +2581,7 @@ class AgentService:
             self._tool_ctx.catalog = svc
             self.tool_registry.set_catalog(svc)
             # Skill and cli rows come from their own live sources (the skills
-            # dir, the cli section of tools.json5), not from the registry —
+            # dir, the cli section of tools.yaml), not from the registry —
             # sync_system_tools cannot see them, so they are mirrored here.  Same
             # rows as any other tool: that is how tool_search reaches a skill,
             # with no load state (type skill/cli instead of func).
@@ -2591,7 +2591,7 @@ class AgentService:
             # (rather than offering tools from servers that may never come up);
             # each server clears its own mark as the reconcile sees it connect.
             await svc.mark_all_external_error()
-            # tools.json5 IS the authoritative config — anything that left its
+            # tools.yaml IS the authoritative config — anything that left its
             # mcp/rest-api sections loses its rows here (hand-edits and
             # agent-tool edits alike).  Startup does NOT wait on the servers
             # themselves: the wrapper connects them in the background and each
@@ -2622,7 +2622,7 @@ class AgentService:
         """Mirror the two registry-less categories into the catalog.
 
         ``skill`` and ``cli`` have no registered tool instance to seed from —
-        their sources are the skills dir and tools.json5's ``cli`` section — so
+        their sources are the skills dir and tools.yaml's ``cli`` section — so
         they are pushed here at boot, and again by each skill_*/cli_* tool right
         after it writes its source.  Best-effort: a failure leaves the previous
         rows in place rather than blocking startup.
@@ -2647,7 +2647,7 @@ class AgentService:
 
         The mutation TOOLS re-mirror right after they write, so the agent's own
         edits are never stale — this exists for the other editor, a person with
-        ``tools.json5`` or a ``SKILL.md`` open.  mtimes are the cheap, precise
+        ``tools.yaml`` or a ``SKILL.md`` open.  mtimes are the cheap, precise
         signal: a pass that finds them unchanged costs two stats.
 
         **The cli section is re-read from DISK**, not from ``self.config`` —
@@ -2698,7 +2698,7 @@ class AgentService:
             logger.debug("catalog_local_refresh_failed err=%s", e)
 
     async def _sync_catalog_from_config(self) -> None:
-        """Startup db ← tools.json5 sync — tools.json5 IS the authority.
+        """Startup db ← tools.yaml sync — tools.yaml IS the authority.
 
         Covers BOTH hand-edits and agent-tool edits to the mcp/rest-api
         sections: mirror server rows (enabled + category from the config) and

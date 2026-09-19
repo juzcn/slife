@@ -127,13 +127,13 @@ def _extract_zip_safely(zf: zipfile.ZipFile, dest: Path) -> None:
 
 
 def _disabled_skill_names(config) -> set[str]:
-    """Skill names disabled by config — ``tools.json5``'s ``skill`` section.
+    """Skill names disabled by config — ``tools.yaml``'s ``skill`` section.
 
     One section per category: a skill is disabled by its own entry there
     (``{name, enabled: false}`` — the same per-entry shape as ``builtin`` /
     ``plugin`` / ``job`` / ``cli``), which ``Config.disabled_skills`` already
     carries.  An install predating the section kept the same toggle as a
-    ``skills: {name: {enabled: false}}`` dict in slife.json5; that form is
+    ``skills: {name: {enabled: false}}`` dict in slife.yaml; that form is
     still honoured so an existing disable never silently stops working.
 
     Takes the live ``Config``; a missing one means nothing is disabled.
@@ -148,7 +148,7 @@ def _disabled_skill_names(config) -> set[str]:
 
 
 def _legacy_disabled_skills(config_path: Path | None) -> set[str]:
-    """The retired ``skills: {name: {enabled: false}}`` dict in slife.json5."""
+    """The retired ``skills: {name: {enabled: false}}`` dict in slife.yaml."""
     if config_path is None:
         return set()
     try:

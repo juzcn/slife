@@ -1,6 +1,6 @@
 """Tool whitelist — the "always loaded, never touched" carve-outs.
 
-This is the SYSTEM-level autoload layer: `tools.json5` marks a tool or server
+This is the SYSTEM-level autoload layer: `tools.yaml` marks a tool or server
 ``autoload: true`` when the user wants it injected from session start, and the
 names here are injected the same way without being configurable at all — no
 entry can turn them off, and nothing can evict them.  Both sources seed a row

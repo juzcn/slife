@@ -2,10 +2,10 @@
 
 import pytest; pytestmark = pytest.mark.unit
 
-import json5
 import pytest
 from pathlib import Path
 
+from tests.conftest import dump_config, load_config_text
 from slife.tools.models import (
     ListModelsTool, SetModelTool, RemoveModelTool, SwitchModelTool,
 )
@@ -15,16 +15,16 @@ from slife.tools.models import (
 
 
 def _write_config(path: Path, data: dict) -> None:
-    path.write_text(json5.dumps(data, indent=2), encoding="utf-8")
+    path.write_text(dump_config(data), encoding="utf-8")
 
 
 def _read_config(path: Path) -> dict:
-    return json5.loads(path.read_text(encoding="utf-8"))
+    return load_config_text(path.read_text(encoding="utf-8"))
 
 
 def _make_path(tmp_path: Path) -> Path:
     """Create a minimal config file and return its path."""
-    p = tmp_path / "slife.json5"
+    p = tmp_path / "slife.yaml"
     _write_config(p, {
         "models": {
             "mode": "merge",
@@ -61,7 +61,7 @@ class TestListModelsTool:
 
     @pytest.mark.asyncio
     async def test_no_models(self, tmp_path):
-        p = tmp_path / "empty.json5"
+        p = tmp_path / "empty.yaml"
         _write_config(p, {"models": {"providers": {}}})
         tool = ListModelsTool(config_path=p)
         result = await tool.execute()
@@ -241,7 +241,7 @@ class TestRemoveModelTool:
     @pytest.mark.asyncio
     async def test_cannot_remove_only_model(self, tmp_path):
         """The only model is also the active one → refused."""
-        p = tmp_path / "single.json5"
+        p = tmp_path / "single.yaml"
         _write_config(p, {
             "models": {"providers": {"only": {"api_key": "k", "models": [{"model": "one", "name": "One"}]}}},
             "active_model": "only/one",
@@ -324,7 +324,7 @@ class TestModelRegistrySync:
     @staticmethod
     def _live_config(path: Path):
         from slife.config import Config
-        return Config.from_json5(path)
+        return Config.from_yaml(path)
 
     @pytest.mark.asyncio
     async def test_model_set_adds_to_live_registry(self, tmp_path):

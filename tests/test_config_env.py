@@ -88,7 +88,7 @@ class TestConfigEnvSetTool:
         """Non-secret keys still write directly."""
         raw, written = _mock_config({}, monkeypatch)
         _mock_credstore(monkeypatch)
-        tool = ConfigEnvSetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvSetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="EDITOR", value="vim")
 
@@ -100,7 +100,7 @@ class TestConfigEnvSetTool:
     async def test_non_secret_placeholder(self, monkeypatch):
         raw, written = _mock_config({}, monkeypatch)
         _mock_credstore(monkeypatch)
-        tool = ConfigEnvSetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvSetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="MY_SETTING")
 
@@ -111,7 +111,7 @@ class TestConfigEnvSetTool:
     async def test_overwrite_existing(self, monkeypatch):
         raw, written = _mock_config({"env": {"EDITOR": "nano"}}, monkeypatch)
         _mock_credstore(monkeypatch)
-        tool = ConfigEnvSetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvSetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="EDITOR", value="vim")
         assert raw["env"]["EDITOR"] == "vim"
@@ -126,12 +126,12 @@ class TestConfigEnvGetTool:
         """When not in environ or credstore, falls back to config value."""
         raw, _ = _mock_config({"env": {"MY_SETTING": "config_val"}}, monkeypatch)
         _mock_credstore(monkeypatch)
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="MY_SETTING")
         assert "MY_SETTING" in result
         assert "config_val" in result
-        assert "[slife.json5]" in result
+        assert "[slife.yaml]" in result
 
     @pytest.mark.asyncio
     async def test_get_from_credstore(self, monkeypatch):
@@ -147,7 +147,7 @@ class TestConfigEnvGetTool:
             lambda path: {},
         )
 
-        tool = CredentialCheckTool(config_path=Path("test.json5"))
+        tool = CredentialCheckTool(config_path=Path("test.yaml"))
         result = await tool.execute(key="DEEPSEEK_API_KEY")
 
         assert "DEEPSEEK_API_KEY" in result
@@ -163,7 +163,7 @@ class TestConfigEnvGetTool:
         os.environ["MY_VAR"] = "from_shell"
 
         try:
-            tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+            tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
             result = await tool.execute(key="MY_VAR")
             assert "[shell" in result
             assert "from_shell" in result
@@ -174,7 +174,7 @@ class TestConfigEnvGetTool:
     async def test_get_missing_key(self, monkeypatch):
         raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="NOT_THERE")
         assert "not set" in result
@@ -183,7 +183,7 @@ class TestConfigEnvGetTool:
     async def test_list_all_vars(self, monkeypatch):
         raw, _ = _mock_config({"env": {"A": "val_a", "B": "val_b"}}, monkeypatch)
         _mock_credstore(monkeypatch)
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute()
         assert "A" in result
@@ -204,7 +204,7 @@ class TestConfigEnvGetTool:
             lambda path: {},
         )
 
-        tool = CredentialCheckTool(config_path=Path("test.json5"))
+        tool = CredentialCheckTool(config_path=Path("test.yaml"))
         result = await tool.execute(key="DEEPSEEK_API_KEY")
 
         assert "[credstore" in result
@@ -222,7 +222,7 @@ class TestConfigEnvGetTool:
             }},
         }, monkeypatch)
         _mock_credstore(monkeypatch)
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute()
         assert "env:" in result
@@ -242,7 +242,7 @@ class TestConfigEnvGetTool:
             }},
         }, monkeypatch)
         _mock_credstore(monkeypatch)
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="GITHUB_TOKEN")
         assert "GITHUB_TOKEN" in result
@@ -253,7 +253,7 @@ class TestConfigEnvGetTool:
     async def test_list_empty(self, monkeypatch):
         raw, _ = _mock_config({}, monkeypatch)
         _mock_credstore(monkeypatch)
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
         result = await tool.execute()
         assert "env:" in result
 
@@ -266,7 +266,7 @@ class TestConfigEnvRemoveTool:
     async def test_remove_existing_var(self, monkeypatch):
         raw, written = _mock_config({"env": {"TO_REMOVE": "bye"}}, monkeypatch)
         os.environ["TO_REMOVE"] = "bye"
-        tool = ConfigEnvRemoveTool(config_path=Path("test.json5"))
+        tool = ConfigEnvRemoveTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="TO_REMOVE")
         assert "TO_REMOVE" not in raw["env"]
@@ -277,7 +277,7 @@ class TestConfigEnvRemoveTool:
     @pytest.mark.asyncio
     async def test_remove_missing_var(self, monkeypatch):
         raw, written = _mock_config({"env": {}}, monkeypatch)
-        tool = ConfigEnvRemoveTool(config_path=Path("test.json5"))
+        tool = ConfigEnvRemoveTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="NOT_THERE")
         assert "nothing to remove" in result
@@ -287,7 +287,7 @@ class TestConfigEnvRemoveTool:
         raw, _ = _mock_config({"env": {"SECRET_KEY": "${SECRET_KEY}"}}, monkeypatch)
         cred = _mock_credstore(monkeypatch)
         cred["SECRET_KEY"] = "some-secret"
-        tool = ConfigEnvRemoveTool(config_path=Path("test.json5"))
+        tool = ConfigEnvRemoveTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="SECRET_KEY")
         assert "[OK]" in result
@@ -298,7 +298,7 @@ class TestConfigEnvRemoveTool:
     async def test_remove_not_in_config_is_noop(self, monkeypatch):
         raw, _ = _mock_config({"env": {}}, monkeypatch)
         os.environ["ONLY_IN_ENV"] = "temp"
-        tool = ConfigEnvRemoveTool(config_path=Path("test.json5"))
+        tool = ConfigEnvRemoveTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="ONLY_IN_ENV")
         assert "nothing to remove" in result
@@ -317,7 +317,7 @@ class TestConfigEnvGetMasking:
         raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-longsecret12345678")
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="DEEPSEEK_API_KEY")
         assert "[shell]" in result
@@ -329,7 +329,7 @@ class TestConfigEnvGetMasking:
         raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("EDITOR", "vim")
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="EDITOR")
         assert "[shell]" in result
@@ -346,7 +346,7 @@ class TestConfigEnvGetMasking:
         }, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-very-secret-key-here-98765")
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute()
         assert "EDITOR" in result
@@ -360,7 +360,7 @@ class TestConfigEnvGetMasking:
         }, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("LOG_LEVEL", "debug")
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute()
         assert "debug" in result
@@ -371,7 +371,7 @@ class TestConfigEnvGetMasking:
         raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_notarealtokenatall12345678")
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="GITHUB_TOKEN")
         assert "ghp_notarealtokenatall12345678" in result
@@ -382,7 +382,7 @@ class TestConfigEnvGetMasking:
         raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("DB_PASSWORD", "super-secret-db-password-longstr")
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="DB_PASSWORD")
         assert "super-secret-db-password-longstr" in result
@@ -393,7 +393,7 @@ class TestConfigEnvGetMasking:
         raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("AUTH_TOKEN", "abcdef1234567890abcdef1234567890ab")
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="AUTH_TOKEN")
         assert "abcdef1234567890abcdef1234567890ab" in result

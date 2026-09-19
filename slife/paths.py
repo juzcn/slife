@@ -64,19 +64,19 @@ def get_data_dir() -> Path:
 
 
 def get_config_path() -> Path:
-    """Path to ``slife.json5``."""
-    return get_data_dir() / "slife.json5"
+    """Path to ``slife.yaml``."""
+    return get_data_dir() / "slife.yaml"
 
 
 def get_tools_config_path() -> Path:
-    """Path to ``tools.json5`` — the unified tool config (builtin / mcp /
+    """Path to ``tools.yaml`` — the unified tool config (builtin / mcp /
     rest-api / job / cli / skill sections).
 
-    Same data dir as ``slife.json5``.  The mcp gateway is the file owner
+    Same data dir as ``slife.yaml``.  The mcp gateway is the file owner
     (its resolver additionally honours ``$TOOLS_FILE`` as a test/dev
     override); the host reads it too, for ``builtin`` and ``cli``.
     """
-    return get_data_dir() / "tools.json5"
+    return get_data_dir() / "tools.yaml"
 
 
 def get_tools_db_path() -> Path:

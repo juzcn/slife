@@ -1,6 +1,6 @@
 # The Unified Tool System
 
-> Authoritative design of Slife's tool catalog (the "Tool System" — DESIGNER_NOTES §8.5). Covers the six-category `tools.json5` model, the shared `tools.db` catalog, the load/unload threshold, the search surface, the per-turn injection chain, and MCP/REST-API integration. Reader: a developer working on tool discovery, loading, eviction, or the mcp-gateway reconcile. The everyday tool inventory lives in the [README](../README.md#tools); the plugin-side server contract in [PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md).
+> Authoritative design of Slife's tool catalog (the "Tool System" — DESIGNER_NOTES §8.5). Covers the six-category `tools.yaml` model, the shared `tools.db` catalog, the load/unload threshold, the search surface, the per-turn injection chain, and MCP/REST-API integration. Reader: a developer working on tool discovery, loading, eviction, or the mcp-gateway reconcile. The everyday tool inventory lives in the [README](../README.md#tools); the plugin-side server contract in [PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md).
 
 ---
 
@@ -16,8 +16,8 @@ The goal is one unified model: **every function tool** (builtin, job, plugin, mc
 
 Key properties:
 
-- **Unified search + load.** `tool_search` spans every category in the catalog (the six `tools.json5` sections plus the plugin tools); `func-tool-load` loads any function tool by name.
-- **Threshold-managed.** A configurable cap (`tool_load.threshold`, default 100) bounds how many function tools are injected; the harness evicts the oldest-by-usage at turn boundaries. Never evicted — and the only things injected before the model asks: the whitelist (harness pair + 5 meta tools + 2 pinned) and anything marked `autoload` in `tools.json5`.
+- **Unified search + load.** `tool_search` spans every category in the catalog (the six `tools.yaml` sections plus the plugin tools); `func-tool-load` loads any function tool by name.
+- **Threshold-managed.** A configurable cap (`tool_load.threshold`, default 100) bounds how many function tools are injected; the harness evicts the oldest-by-usage at turn boundaries. Never evicted — and the only things injected before the model asks: the whitelist (harness pair + 5 meta tools + 2 pinned) and anything marked `autoload` in `tools.yaml`.
 - **Granular.** Load/unload is per-tool, not per-server. A connected MCP server with 50 tools injects only the ones the model loaded.
 - **DB-driven injection.** The schema injected into the LLM comes from the catalog's `schema` column — never re-fetched from the live MCP server or parsed from tool code.
 
@@ -31,15 +31,15 @@ Three families, by **who owns the tool** — the category column is the *provena
 | **job** | the user | `job` | code the user wrote themselves: a public function in `jobs/`, exposed by the job-coding plugin as `job-<function>` |
 | **external** | a third party | `mcp`, `rest-api` | someone else's server, reached through the mcp-gateway (`{server}__{tool}`) |
 
-`skill` and `cli` are rows with **no runtime component** — a playbook file and a `tools.json5` entry, not tools anything can call — so they belong to none of the three families: they are user-authored *content* the system reads, not tools it runs.
+`skill` and `cli` are rows with **no runtime component** — a playbook file and a `tools.yaml` entry, not tools anything can call — so they belong to none of the three families: they are user-authored *content* the system reads, not tools it runs.
 
 The split is what `SERVER_CATEGORIES` encodes on the code side (`mcp`/`rest-api` are the external ones — the only rows a gateway death marks `unavailable`, the only sources the config purge owns), and it is why `system_tools_list` lists the system family only: a job is inventoried by `job-list`, and an external tool's schema already rides every request.
 
 ---
 
-## 2 · Configuration — `tools.json5`
+## 2 · Configuration — `tools.yaml`
 
-The tool system is configured entirely in `tools.json5` (sibling of `slife.json5` in the data dir). It carries **one section per category** plus the **`tool_load`** policy section:
+The tool system is configured entirely in `tools.yaml` (sibling of `slife.yaml` in the data dir). It carries **one section per category** plus the **`tool_load`** policy section:
 
 ```
 builtin:   [{name, enabled, autoload, ...overrides}]
@@ -53,7 +53,7 @@ tool_load: {threshold: 100}
 ```
 
 - A `rest-api` entry has **exactly the same shape as an `mcp.servers` entry** — it *is* a standard MCP server (a `uvx mcp-openapi-proxy` instance) that lives in the other section. **The section is the whole fact**: an entry in `rest-api` is a REST API, one under `mcp.servers` is not, and nothing is tagged for it (`config.is_rest_api`). The OpenAPI settings ride the proxy's env, not config keys — `OPENAPI_SPEC_URL` / `SERVER_URL_OVERRIDE` / `API_KEY` (a `${VAR}` ref, resolved env → credstore). `rest_api_set` is the convenience wrapper that builds that entry; it is not a different format.
-- Sections are the *only* knobs; the `tools:` array of `slife.json5` is retired. `tools.json5` is **the authority** — the host mirrors the external sections into the catalog db on every reconcile (each server's rows in ONE batched pass, plus a purge of the servers that left the file), and every `cli_set` / `rest_api_set` / `job-write` / etc. persists there and re-syncs.
+- Sections are the *only* knobs; the `tools:` array of `slife.yaml` is retired. `tools.yaml` is **the authority** — the host mirrors the external sections into the catalog db on every reconcile (each server's rows in ONE batched pass, plus a purge of the servers that left the file), and every `cli_set` / `rest_api_set` / `job-write` / etc. persists there and re-syncs.
 - Every entry carries the same two policy flags, siblings of each other: **`enabled`** (false = off, mirrored onto the row's `enabled` column and reported by search as `disabled`) and **`autoload`** (true = injected from session start, never evicted). `autoload` is per *tool* wherever a tool has a name of its own (`builtin` / `job`), and per *server* in `mcp` / `rest-api` — an external tool's name is not knowable before its server connects, so the flag covers the server's whole tool set (there is no per-tool `autoload` for the external families). In `skill` / `cli` it is accepted and inert: those rows have no load state to seed. Unlike every other mirror decision, `autoload` also **overrides** an existing row's state — see §5.
 - The gateway reads the **merged server view**: `mcp.servers` ∪ `rest-api`, with a legacy top-level `servers` fallback so a pre-section file keeps working (`_servers_dict`).
 
@@ -65,7 +65,7 @@ tool_load: {threshold: 100}
 
 ### There is no `server` table
 
-Which servers to bring up is decided by `tools.json5` (`enabled`), what is live
+Which servers to bring up is decided by `tools.yaml` (`enabled`), what is live
 right now is answered by the gateway's pool (`mcp_list` / `__check`), and this
 db records the RESULT on the tool rows.  A server table would be a third copy
 of facts that already have owners — and one that goes stale the moment the
@@ -85,14 +85,14 @@ unavailable = 1     -- its owner (a server, or a plugin) is unusable right now:
                        state it landed on, so a blip (or the boot sweep) reset
                        every tool the model had loaded.
 
-enabled = 0 / 1     -- tools.json5's switch: per SERVER for mcp/rest-api (all
+enabled = 0 / 1     -- tools.yaml's switch: per SERVER for mcp/rest-api (all
                        of its tools move together — there is no per-tool
                        enable), per entry for the other families.
 ```
 
-The load state is the db's whole reason to exist (json5 is the authority for
-everything else, including `enabled`); the verdict is runtime, and the two are
-never written into each other.  Every transition is written by the HOST as it
+The load state is the db's whole reason to exist (`tools.yaml` is the authority
+for everything else, including `enabled`); the verdict is runtime, and the two
+are never written into each other.  Every transition is written by the HOST as it
 reconciles:
 
 | event | action |
@@ -100,9 +100,9 @@ reconciles:
 | catalog init (before any server is up) | every external row flagged `unavailable` — the persisted load state stands |
 | a server connects (or reconnects) | mirror its tool rows — new rows `unloaded` (or `loaded` for an `autoload` entry); the `unavailable` flags clear |
 | a server is down / failed | that server's rows flagged `unavailable` |
-| a server is switched off in `tools.json5` | its rows keep everything they had; `enabled = 0` → effective `disabled`, and it gets **no** `unavailable` verdict (off is not down) |
+| a server is switched off in `tools.yaml` | its rows keep everything they had; `enabled = 0` → effective `disabled`, and it gets **no** `unavailable` verdict (off is not down) |
 | the gateway child dies | every `mcp`/`rest-api` row flagged `unavailable` |
-| a server leaves `tools.json5` | its rows are purged |
+| a server leaves `tools.yaml` | its rows are purged |
 
 ### `tool` — one row per tool
 
@@ -141,13 +141,13 @@ last_loaded -- ISO timestamp, bumped on func-tool-load, on an autoload
                override, and on every successful execute (LRU key)
 ```
 
-The three running state columns are deliberately separate questions: `enabled` is what `tools.json5` says, `load_status` is what the model decided, `unavailable` is what the owner is doing right now. **No column is nullable** — "not applicable" is a value (`'n/a'`, or `''` for a never-loaded `last_loaded`), never NULL, so every read is a plain comparison instead of an `IS NULL` branch that a caller can forget. The effective status (§5) is the ordered join of them — `disabled` outranks `unavailable` outranks `loaded`/`unloaded` — and that join is why a one-second disconnect no longer costs the session its loaded set.
+The three running state columns are deliberately separate questions: `enabled` is what `tools.yaml` says, `load_status` is what the model decided, `unavailable` is what the owner is doing right now. **No column is nullable** — "not applicable" is a value (`'n/a'`, or `''` for a never-loaded `last_loaded`), never NULL, so every read is a plain comparison instead of an `IS NULL` branch that a caller can forget. The effective status (§5) is the ordered join of them — `disabled` outranks `unavailable` outranks `loaded`/`unloaded` — and that join is why a one-second disconnect no longer costs the session its loaded set.
 
-`category` and `type` answer different questions: the category is the tool's *provenance* (a builtin module, a job file, a built-in plugin's own tool, an external server, the skills dir, a `tools.json5` cli entry), the type is its *kind*. Only `func` has a load state, so `type` is what the load/unload rules read; it is **derived from `category` at write time** in one place (`type_for_category`, applied by `CatalogStore.reconcile` — the single delta writer), so the two columns cannot drift.
+`category` and `type` answer different questions: the category is the tool's *provenance* (a builtin module, a job file, a built-in plugin's own tool, an external server, the skills dir, a `tools.yaml` cli entry), the type is its *kind*. Only `func` has a load state, so `type` is what the load/unload rules read; it is **derived from `category` at write time** in one place (`type_for_category`, applied by `CatalogStore.reconcile` — the single delta writer), so the two columns cannot drift.
 
 `plugin` and `job` are the two categories the built-in **job-coding** plugin feeds, split by name: a `job-<function>` tool is a job file's function (`job`), everything else the plugin exposes — `job-write` / `job-list` / `job-run` / `job-remove` — is the plugin's own (`plugin`), as is every other built-in plugin's tool (`catalog_service.plugin_category`).
 
-Schema revisions: a v2/v3 file is ALTERed and backfilled at boot (`_migrate`). **v4 (the `plugin` category) is deliberately not migrated** — widening a `CHECK` needs the table rebuilt, and this db is derived data (every row comes from the registry, `tools.json5`, the skills dir or the plugin children), so the file is DELETED and rebuilt instead. `_check_categories` reads the live DDL at every open and reports a stale file through `system_health` rather than letting its writes fail silently.
+Schema revisions: a v2/v3 file is ALTERed and backfilled at boot (`_migrate`). **v4 (the `plugin` category) is deliberately not migrated** — widening a `CHECK` needs the table rebuilt, and this db is derived data (every row comes from the registry, `tools.yaml`, the skills dir or the plugin children), so the file is DELETED and rebuilt instead. `_check_categories` reads the live DDL at every open and reports a stale file through `system_health` rather than letting its writes fail silently.
 
 **The `schema` column is the row's documentation — what the model reads and what search indexes.** For a func row it is exactly the tool def, and it is exactly what gets injected; its shape is fixed to `{name, description, inputSchema}`:
 
@@ -160,7 +160,7 @@ Schema revisions: a v2/v3 file is ALTERed and backfilled at boot (`_migrate`). *
 Only `type='func'` (builtin | job | plugin | mcp | rest-api) participates in the load state (the §8.5 rule: loaded/unloaded applies to function tools only; skill and cli carry `'n/a'`). The other two types are rows all the same — being in the catalog is what makes them findable by `tool_search`, which is the whole point of one catalog:
 
 - **skill** — one row per skill directory, `load_status` `'n/a'`. The `schema` is the SKILL.md verbatim: a playbook *is* its documentation, so that text is what search indexes (keyword via FTS, semantic via the drainer) and `skill_use` returns it to the model. Rows are mirrored from the skills dir at boot and after every `skill_set` / `skill_remove` / `skill_set_enabled` (`skill_catalog_rows` → `ToolCatalogService.sync_category`); `enabled` mirrors the `skills:` config disable.
-- **cli** — one row per `tools.json5` `cli` entry, `load_status` `'n/a'`, `schema` `'n/a'` (a CLI has no tool def — the description is what identifies it, and `cli_list` carries the command/install detail). Mirrored from the `cli` section at boot and after every `cli_set` / `cli_remove` / `cli_set_enabled`.
+- **cli** — one row per `tools.yaml` `cli` entry, `load_status` `'n/a'`, `schema` `'n/a'` (a CLI has no tool def — the description is what identifies it, and `cli_list` carries the command/install detail). Mirrored from the `cli` section at boot and after every `cli_set` / `cli_remove` / `cli_set_enabled`.
 
 Both mirrors are **upsert + purge**: a skill removed from disk or a CLI removed from the config loses its row in the same pass, so `tool_search` never returns a hit whose source is gone.
 
@@ -219,7 +219,7 @@ category     -- builtin|job|plugin|mcp|rest-api|skill|cli
 type         -- func|skill|cli
 source_id    -- owning server / plugin name ('n/a' = local)
 load_status  -- loaded|unloaded|n/a
-enabled      -- boolean (false = switched off in tools.json5)
+enabled      -- boolean (false = switched off in tools.yaml)
 unavailable  -- boolean (true = its owner is not reachable right now)
 mode         -- hybrid (default) | keyword (FTS5) | grep (regex)
 limit        -- max results
@@ -268,10 +268,10 @@ Self-service unload (the spare-ticket the model can use to free a slot); refused
 
 ### Boot ordering
 
-1. Host `_init_catalog` opens `tools.db` and runs the session seed (`sync_system_tools` over everything registered): every registered tool gets a row, and **a NEW row is `loaded` only from the two autoload sources** — the whitelist (`ALWAYS_LOADED`: the loop's own tools, a system-level protection that is not configurable) and the entries marked `autoload: true` in `tools.json5` (user intent) — everything else is born `unloaded`. An EXISTING row keeps whatever the model decided (the sync mirrors *which* tools are registered, never *what is loaded*) — **with the one exception of `autoload`**, which is a standing config statement and re-asserts `loaded` on every pass (§5's writer list). The two registry-less categories are mirrored in the same pass (`_mirror_local_rows`: the skills dir → `skill` rows, the `cli` section → `cli` rows). Every external row is then marked `unavailable`, because no server is up yet.
-2. The wrapper spawns; `_auto_connect_configured` brings up **every server enabled in `tools.json5`** — spawn only, no `tools/list` (that read belongs to the first caller that needs it, and boot has none). Disabled ones are registered but never started, so `mcp_list` still matches the config's `mcp.servers` section (the `rest-api` section is `rest_api_list`'s); a server that was down at boot has the background repair armed. Nothing is remembered from a previous session — a server that was down when you quit is retried here like any other.
+1. Host `_init_catalog` opens `tools.db` and runs the session seed (`sync_system_tools` over everything registered): every registered tool gets a row, and **a NEW row is `loaded` only from the two autoload sources** — the whitelist (`ALWAYS_LOADED`: the loop's own tools, a system-level protection that is not configurable) and the entries marked `autoload: true` in `tools.yaml` (user intent) — everything else is born `unloaded`. An EXISTING row keeps whatever the model decided (the sync mirrors *which* tools are registered, never *what is loaded*) — **with the one exception of `autoload`**, which is a standing config statement and re-asserts `loaded` on every pass (§5's writer list). The two registry-less categories are mirrored in the same pass (`_mirror_local_rows`: the skills dir → `skill` rows, the `cli` section → `cli` rows). Every external row is then marked `unavailable`, because no server is up yet.
+2. The wrapper spawns; `_auto_connect_configured` brings up **every server enabled in `tools.yaml`** — spawn only, no `tools/list` (that read belongs to the first caller that needs it, and boot has none). Disabled ones are registered but never started, so `mcp_list` still matches the config's `mcp.servers` section (the `rest-api` section is `rest_api_list`'s); a server that was down at boot has the background repair armed. Nothing is remembered from a previous session — a server that was down when you quit is retried here like any other.
 3. Each successful connect publishes `tools/list_changed`; the host's listen stream wakes the reconcile below, which mirrors that server's tool rows (new rows `unloaded`) and clears the `unavailable` mark. `_wire_mcp_glue` also runs one reconcile the moment the gateway is ready — **as a background task**, so the plugin start never waits on external servers (a `_sync_mcp_proxies` pass asks every configured server for its list, which for a peer the pool holds nothing for is itself the spawn). Startup converges as servers come up; one that never comes up simply stays `unavailable`.
-4. `tools.json5` removals are purged in the same pass (config is the authority).
+4. `tools.yaml` removals are purged in the same pass (config is the authority).
 
 ### Per-turn injection
 
@@ -309,7 +309,7 @@ The mirror is **upsert + purge**: a source-scoped `sync_system_tools(source=<plu
 
 ## 6 · External MCP / REST-API integration
 
-Third-party capability enters only as a standard MCP server in `tools.json5`'s `mcp`/`rest-api` sections, connected by the internal **mcp-gateway** plugin (one `MCPServerConnection` per server, in its pool). A REST API is one `mcp-openapi-proxy`-backed server, so it is a completely ordinary gateway server that happens to sit in the other section — **the section is what makes it one** (`config.is_rest_api` / `rest_api_names`), and the fact crosses to the host as `rest_api` on the `__check` row (`ServerConfig.rest_api`, derived at load). It is deliberately *not* read out of `source`: that field records where a definition was **downloaded** from (`github` / registry / hand), which is a different question.
+Third-party capability enters only as a standard MCP server in `tools.yaml`'s `mcp`/`rest-api` sections, connected by the internal **mcp-gateway** plugin (one `MCPServerConnection` per server, in its pool). A REST API is one `mcp-openapi-proxy`-backed server, so it is a completely ordinary gateway server that happens to sit in the other section — **the section is what makes it one** (`config.is_rest_api` / `rest_api_names`), and the fact crosses to the host as `rest_api` on the `__check` row (`ServerConfig.rest_api`, derived at load). It is deliberately *not* read out of `source`: that field records where a definition was **downloaded** from (`github` / registry / hand), which is a different question.
 
 ### Protocol era (2026-07-28) and change notifications
 
@@ -318,7 +318,7 @@ configures it (`slife/mcp/era.py`, driving the SDK's `mode="auto"` policy): a
 peer that answers `server/discover` is adopted **modern** (no session, no
 handshake, per-request `_meta`), one that answers as legacy keeps the
 `initialize` handshake.  So a mixed fleet works unchanged — including the
-external servers in `tools.json5`, which drift to the modern protocol on
+external servers in `tools.yaml`, which drift to the modern protocol on
 their own schedule.
 
 The era decides how a change reaches us.  The modern revision removed the
@@ -350,7 +350,7 @@ Driven by connect events / `mcp_*` mutations / `tools/list_changed` / the gatewa
 2. **auto_load servers** — register their proxies (full diff) and mirror their tool rows (new rows `unloaded`, or `loaded` when the server entry is marked `autoload` — which also re-asserts `loaded` on an existing row, §5);
 3. **on-demand servers** (the default) — mirror their tool rows with **no proxies**: this is what makes `tool_search` find their tools and `func-tool-load` materialize them one at a time.  Only a server with a working tool list yields rows (`__mcp_list_tools` answers empty otherwise — and asking is what reads the list, so this step is also what makes a peer list at all); a down server's rows stay and its verdict keeps them out of injection;
 4. **drop** registered proxies whose server left the config (`mcp_remove` is the only unregister path — a merely disabled server keeps its proxy, and its rows keep the `disabled` report);
-5. **purge the removed server's catalog rows.** Comparing against **tools.json5** (the authority) rather than the pool keeps a transient empty pool — a gateway restart — from wiping a still-configured server's rows;
+5. **purge the removed server's catalog rows.** Comparing against **tools.yaml** (the authority) rather than the pool keeps a transient empty pool — a gateway restart — from wiping a still-configured server's rows;
 6. **re-project the verdict** after the mirrors: steps 2–3 are what ask for the lists, so a peer that listed during this pass was still flagged when step 1 looked.  One more `__check` plus the guarded per-server write (which costs nothing where nothing moved) settles the pass.
 
 Two cost rules the pass follows: the per-server mirrors run **concurrently** (each awaits a real `tools/list`, and for a peer the pool holds nothing for, the spawn that makes one possible — sequentially, every server waited on all the servers before it), and each server's rows go over in **one batched `reconcile` + one `purge_source_except`** (a per-tool upsert re-read the whole table per tool).
@@ -365,7 +365,7 @@ When the wrapper child dies, `on_plugin_child_exit` marks **every `mcp`/`rest-ap
 
 ## 7 · Consistency & concurrency
 
-- **One source of truth.** The catalog db is the single registry; the agent and every subagent maintain no second in-memory copy (subagents read the same file, write-owner gates apply to mutations). `tools.json5` is the authority for *configuration*; the catalog is the authority for *state*.
+- **One source of truth.** The catalog db is the single registry; the agent and every subagent maintain no second in-memory copy (subagents read the same file, write-owner gates apply to mutations). `tools.yaml` is the authority for *configuration*; the catalog is the authority for *state*.
 - **Config writes are atomic + cross-process locked.** `write_config` writes a temp file + `os.replace`; the read→mutate→write window around it (model switches, embeddings-config edits, cli/rest-api persistence) is wrapped in a cross-process `filelock` (`config_read_modify_write`) so two processes (host + memdb child) can never clobber each other's change. The lock wait is bounded (`storage.filelock`).
 - **Rebuilds are live, not offline.** The catalog is synced from the live wrapper on every (re)connect; a schema change drops the stale embedding row and the drainer re-embeds. There is no offline rebuild step.
 
@@ -384,7 +384,7 @@ When the wrapper child dies, `on_plugin_child_exit` marks **every `mcp`/`rest-ap
 | `slife/tools/whitelist.py` | harness pair + 5 meta tools + 2 pinned (`ALWAYS_LOADED` — never evicted / not unloadable) |
 | `slife/tools/skill.py` | the Skills family + `skill_catalog_rows` / `sync_skill_catalog` (skills dir → `skill` rows) |
 | `slife/tools/cli.py` | the CLI family + `cli_catalog_rows` / `sync_cli_catalog` (config section → `cli` rows) |
-| `slife/tools/_config_io.py` | json5 read/write, atomic replace, cross-process `config_read_modify_write` lock |
+| `slife/tools/_config_io.py` | YAML read/write, atomic replace, cross-process `config_read_modify_write` lock |
 | `slife/plugins/mcp_gateway/*` | the server pool, the boot pass that **spawns** every enabled server (no tool read — that belongs to the first caller), `mcp_list`/`__check`/`mcp_list_tools`/`__mcp_list_tools`, the family-gated `mcp_set`/`mcp_set_enabled`/`mcp_remove` over their family-blind `__mcp_set`/`__mcp_set_enabled`/`__mcp_remove` twins (what `rest_api_*` drives its servers through), the merged config view + `is_rest_api`/`rest_api_names` (it never touches `tools.db`) |
 | `slife/agent/loop.py` | per-turn snapshot + injection from the catalog; boundary eviction (`_maybe_evict`) |
 | `slife/agent/service.py` | `_init_catalog` (the seed), `_mirror_local_rows` (skill/cli rows at boot), `_sync_mcp_proxies` reconcile (the verdict projection, the batched per-server mirrors, the live removal purge), `_wire_mcp_glue` (the gateway's background ready-glue), `_server_category` |
@@ -400,7 +400,7 @@ Folded down from the DESIGNER_NOTES §8.5 checkout list; implemented/deferred as
 - **`cli_set` / `skill_set` / `rest_api_set` / `job-write/remove` mutate tools.db + clean up** — done:
   - **mcp / rest-api**: `*_set` persists + connects, `*_set_enabled` reconnects/disconnects immediately, `*_remove` tears the connection down (`_pool.remove_server`) **and** the next reconcile purges the server's catalog rows live (step 5) — no stale rows until restart;
   - **job / plugin tools**: registered/unregistered by the plugin, mirrored into the catalog on connect/rescan, and a vanished tool's row is purged (`remove_tool`) — a removed job does not linger in `tool_search`;
-  - **cli**: `cli_set` / `cli_remove` / `cli_set_enabled` rewrite `tools.json5` (+ the live `Config.cli_tools` snapshot) and re-mirror the `cli` rows right after (`sync_cli_catalog`) — a new CLI is findable by `tool_search` before the next restart, and a removed one loses its row. No load state (per the §8.5 rule); `cli_list` shows the command/install detail;
+  - **cli**: `cli_set` / `cli_remove` / `cli_set_enabled` rewrite `tools.yaml` (+ the live `Config.cli_tools` snapshot) and re-mirror the `cli` rows right after (`sync_cli_catalog`) — a new CLI is findable by `tool_search` before the next restart, and a removed one loses its row. No load state (per the §8.5 rule); `cli_list` shows the command/install detail;
   - **skill**: `skill_set` / `skill_remove` / `skill_set_enabled` change the skills dir (or its config disable mirror) and re-mirror the `skill` rows right after (`sync_skill_catalog`). The row's `schema` is the SKILL.md — the skill is searchable by its own text; `skill_use` returns it, `skill_list` enumerates.
 - **"Whitelist means?"** — resolved: the always-loaded carve-outs of `whitelist.py` (harness pair + meta surface + pinned `skill_use`/`system_health`), a design constant, not configurable.
 - **Server auto-disconnect when its last loaded tool is evicted** — *deferred*: eviction today keeps the server connected (its tools are still searchable/loadable for free). Could reconnect by a simple `func-tool-load`; re-arming on `func-tool-load` would make server eviction safe.

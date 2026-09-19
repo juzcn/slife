@@ -11,7 +11,7 @@ import pytest
 
 from slife.tools.credentials import (
     _mask_value,
-    _find_json5_refs,
+    _find_config_refs,
     _simplify_path,
     CredentialCheckTool,
 )
@@ -39,11 +39,11 @@ class TestMaskValue:
 
 
 class TestFindJson5Refs:
-    """Tests for _find_json5_refs."""
+    """Tests for _find_config_refs."""
 
     def test_finds_in_env_section(self):
         raw = {"env": {"MY_KEY": "${MY_KEY}"}}
-        refs = _find_json5_refs(raw, "MY_KEY")
+        refs = _find_config_refs(raw, "MY_KEY")
         assert "env" in refs
 
     def test_finds_in_provider_api_key(self):
@@ -54,7 +54,7 @@ class TestFindJson5Refs:
                 },
             },
         }
-        refs = _find_json5_refs(raw, "DEEPSEEK_API_KEY")
+        refs = _find_config_refs(raw, "DEEPSEEK_API_KEY")
         assert "models/providers/deepseek" in refs
 
     def test_finds_in_mcp_server_env(self):
@@ -67,7 +67,7 @@ class TestFindJson5Refs:
                 },
             },
         }
-        refs = _find_json5_refs(raw, "GITHUB_TOKEN")
+        refs = _find_config_refs(raw, "GITHUB_TOKEN")
         assert "mcp/servers/github" in refs
 
     def test_finds_in_mcp_args(self):
@@ -80,7 +80,7 @@ class TestFindJson5Refs:
                 },
             },
         }
-        refs = _find_json5_refs(raw, "GITHUB_TOKEN")
+        refs = _find_config_refs(raw, "GITHUB_TOKEN")
         assert any("mcp/servers/github" in r for r in refs)
 
     def test_multiple_locations(self):
@@ -94,16 +94,16 @@ class TestFindJson5Refs:
                 },
             },
         }
-        refs = _find_json5_refs(raw, "GITHUB_TOKEN")
+        refs = _find_config_refs(raw, "GITHUB_TOKEN")
         assert len(refs) >= 2
 
     def test_not_found(self):
         raw = {"env": {"OTHER_KEY": "${OTHER_KEY}"}}
-        refs = _find_json5_refs(raw, "MISSING_KEY")
+        refs = _find_config_refs(raw, "MISSING_KEY")
         assert refs == []
 
     def test_empty_config(self):
-        refs = _find_json5_refs({}, "ANY_KEY")
+        refs = _find_config_refs({}, "ANY_KEY")
         assert refs == []
 
 
@@ -124,7 +124,7 @@ class TestCredentialCheckTool:
     """Tests for CredentialCheckTool."""
 
     def test_tool_definition(self):
-        tool = CredentialCheckTool(config_path=Path("test.json5"))
+        tool = CredentialCheckTool(config_path=Path("test.yaml"))
         assert tool.name == "credential_check"
         assert "key" in tool.parameters["properties"]
 
@@ -134,7 +134,7 @@ class TestCredentialCheckTool:
         monkeypatch.setenv("TEST_API_KEY", "sk-shell-value-12345")
         with patch("slife.tools.credentials.read_config", return_value={}):
             with patch("credstore.get_credential", return_value=None) as mock_get:
-                tool = CredentialCheckTool(config_path=Path("test.json5"))
+                tool = CredentialCheckTool(config_path=Path("test.yaml"))
                 result = await tool.execute(key="TEST_API_KEY")
                 assert "[shell]" in result
                 assert "✓ set" in result
@@ -148,7 +148,7 @@ class TestCredentialCheckTool:
         monkeypatch.delenv("MY_KEY", raising=False)
         with patch("slife.tools.credentials.read_config", return_value={}):
             with patch("credstore.get_credential", return_value="my-secret-key-value") as mock_get:
-                tool = CredentialCheckTool(config_path=Path("test.json5"))
+                tool = CredentialCheckTool(config_path=Path("test.yaml"))
                 result = await tool.execute(key="MY_KEY")
                 assert "[credstore]" in result
                 assert "✓ stored" in result
@@ -156,8 +156,8 @@ class TestCredentialCheckTool:
                 mock_get.assert_called_once_with("MY_KEY")
 
     @pytest.mark.asyncio
-    async def test_execute_found_in_json5(self, monkeypatch):
-        """slife.json5 reference is reported."""
+    async def test_execute_found_in_yaml(self, monkeypatch):
+        """slife.yaml reference is reported."""
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         config = {
             "mcp": {
@@ -170,9 +170,9 @@ class TestCredentialCheckTool:
         }
         with patch("slife.tools.credentials.read_config", return_value=config):
             with patch("credstore.get_credential", return_value=None):
-                tool = CredentialCheckTool(config_path=Path("test.json5"))
+                tool = CredentialCheckTool(config_path=Path("test.yaml"))
                 result = await tool.execute(key="GITHUB_TOKEN")
-                assert "[slife.json5]" in result
+                assert "[slife.yaml]" in result
                 assert "✓ referenced" in result
                 assert "mcp/servers/github" in result
 
@@ -182,7 +182,7 @@ class TestCredentialCheckTool:
         monkeypatch.delenv("MISSING_KEY", raising=False)
         with patch("slife.tools.credentials.read_config", return_value={}):
             with patch("credstore.get_credential", return_value=None):
-                tool = CredentialCheckTool(config_path=Path("test.json5"))
+                tool = CredentialCheckTool(config_path=Path("test.yaml"))
                 result = await tool.execute(key="MISSING_KEY")
                 assert "✗ not set" in result
                 assert "✗ not referenced" in result
@@ -202,18 +202,18 @@ class TestCredentialCheckTool:
         }
         with patch("slife.tools.credentials.read_config", return_value=config):
             with patch("credstore.get_credential", return_value="sk-deepseek-5678"):
-                tool = CredentialCheckTool(config_path=Path("test.json5"))
+                tool = CredentialCheckTool(config_path=Path("test.yaml"))
                 result = await tool.execute(key="DEEPSEEK_API_KEY")
                 assert "[shell]" in result and "✓ set" in result
-                assert "[slife.json5]" in result and "✓ referenced" in result
+                assert "[slife.yaml]" in result and "✓ referenced" in result
                 assert "[credstore]" in result and "✓ stored" in result
                 # Shell and credstore may have different values
                 assert "sk-d…1234" in result
                 assert "sk-d…5678" in result
 
     @pytest.mark.asyncio
-    async def test_execute_shell_not_set_but_json5_and_keyring_ok(self, monkeypatch):
-        """Shell missing, but json5 + keyring are configured."""
+    async def test_execute_shell_not_set_but_yaml_and_keyring_ok(self, monkeypatch):
+        """Shell missing, but yaml + keyring are configured."""
         monkeypatch.delenv("SERPER_API_KEY", raising=False)
         config = {
             "mcp": {
@@ -226,10 +226,10 @@ class TestCredentialCheckTool:
         }
         with patch("slife.tools.credentials.read_config", return_value=config):
             with patch("credstore.get_credential", return_value="sk-serper-key-abc"):
-                tool = CredentialCheckTool(config_path=Path("test.json5"))
+                tool = CredentialCheckTool(config_path=Path("test.yaml"))
                 result = await tool.execute(key="SERPER_API_KEY")
                 assert "[shell]" in result and "✗ not set" in result
-                assert "[slife.json5]" in result and "✓ referenced" in result
+                assert "[slife.yaml]" in result and "✓ referenced" in result
                 assert "[credstore]" in result and "✓ stored" in result
 
     @pytest.mark.asyncio
@@ -238,10 +238,10 @@ class TestCredentialCheckTool:
         monkeypatch.delenv("ANY_KEY", raising=False)
         with patch("slife.tools.credentials.read_config", return_value={}):
             with patch("credstore.get_credential", return_value=None):
-                tool = CredentialCheckTool(config_path=Path("test.json5"))
+                tool = CredentialCheckTool(config_path=Path("test.yaml"))
                 result = await tool.execute(key="ANY_KEY")
                 lines = result.split("\n")
                 assert lines[0] == "ANY_KEY status:"
                 assert any("[shell]" in l for l in lines)
-                assert any("[slife.json5]" in l for l in lines)
+                assert any("[slife.yaml]" in l for l in lines)
                 assert any("[credstore]" in l for l in lines)

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: Default idle heartbeat interval (seconds) — overridable via
-#: ``agent.heartbeat_interval`` in slife.json5.
+#: ``agent.heartbeat_interval`` in slife.yaml.
 HEARTBEAT_INTERVAL = 1800
 
 # The "[Heartbeat]" prefix is the TUI filter mark — restore / live both

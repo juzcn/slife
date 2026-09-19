@@ -83,12 +83,6 @@ _NOISY_LOGGER_NAMES = (
     "keyring.backend",        # probes 8 backends at startup (KWallet, SecretService, …)
     "win32ctypes.core.cffi",  # "Loaded cffi backend" — one-shot, not diagnostic
     "credstore",              # "backend already initialized" — noise on every import
-    # Every node it evaluates or emits, at DEBUG, with the node's full repr.
-    # json-five is now on the config path (every write loads the file as a
-    # model), so an unsilenced parse of tools.json5 buries the log: one
-    # session wrote 76 MB in three minutes, 97% of it these lines — enough
-    # I/O to make startup look hung.  Same hazard as openai._base_client.
-    "json5",
 )
 
 

@@ -1,11 +1,11 @@
-"""sharefile config — load ``sharefile.json5``, pick the active tunnel provider.
+"""sharefile config — load ``sharefile.yaml``, pick the active tunnel provider.
 
 Path precedence (mirrors the gateway's tools-config resolver):
   1. ``$SHAREFILE_FILE`` — explicit override (a test/dev escape hatch only)
-  2. slife data dir — ``<data_dir>/sharefile.json5`` via
-     :func:`slife.paths.get_data_dir` (production ``~/.slife/sharefile.json5``,
+  2. slife data dir — ``<data_dir>/sharefile.yaml`` via
+     :func:`slife.paths.get_data_dir` (production ``~/.slife/sharefile.yaml``,
      the checkout root in dev).  sharefile is a built-in slife plugin, so its
-     config sits next to ``slife.json5``; the harness exports **no** per-file
+     config sits next to ``slife.yaml``; the harness exports **no** per-file
      env var — the plugin child inherits ``$SLIFE_DATA_DIR`` and resolves the
      same directory itself (see ``slife/config.py`` on why TOOLS_FILE /
      LOCAL_EMBED_FILE are deliberately not set either).
@@ -63,18 +63,18 @@ class SharefileConfig:
 
 
 def default_config_path() -> Path:
-    """Default config path: ``<slife data dir>/sharefile.json5``.
+    """Default config path: ``<slife data dir>/sharefile.yaml``.
 
     ``get_data_dir()`` honours ``$SLIFE_DATA_DIR``, which the host exports so
     plugin children resolve the same directory as the main process.
     """
     from slife.paths import get_data_dir
 
-    return get_data_dir() / "sharefile.json5"
+    return get_data_dir() / "sharefile.yaml"
 
 
 def resolve_config_path() -> Path:
-    """Return the sharefile.json5 path for this process.
+    """Return the sharefile.yaml path for this process.
 
     ``$SHAREFILE_FILE`` (test/dev override) > slife data dir default.
     """
@@ -85,7 +85,7 @@ def resolve_config_path() -> Path:
 
 
 def load_sharefile_config(path: Path | None = None) -> SharefileConfig:
-    """Read ``sharefile.json5`` and resolve the active provider.
+    """Read ``sharefile.yaml`` and resolve the active provider.
 
     Degrades to :data:`DEFAULT_PROVIDER` — never raises — when the file is
     absent, cannot be parsed, or names a provider this build does not have.

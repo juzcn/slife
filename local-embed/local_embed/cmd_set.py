@@ -10,7 +10,7 @@ Pure, testable core + CLI orchestration for the two config subcommands:
 
 Both share the same logic: the model entry is upserted (existing models /
 ``env:`` keys are preserved, never deleted), ``port`` is pinned, and the
-config is written atomically in the repo's canonical JSON5 style
+config is written atomically in the repo's canonical YAML style
 (:func:`local_embed.config.write_config`).  There is no ``active_model`` —
 all configured models are peers (standard OpenAI semantics).  Idempotent —
 applying the same args twice yields the same config.

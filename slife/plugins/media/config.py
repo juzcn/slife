@@ -1,4 +1,4 @@
-"""Media plugin config — parses the ``media:`` section of slife.json5.
+"""Media plugin config — parses the ``media:`` section of slife.yaml.
 
 The media plugin owns its config section entirely (the main ``Config``
 parser ignores unknown top-level sections).  Shape::
@@ -117,7 +117,7 @@ class MediaConfig:
 
         raise MediaConfigError(
             f"No {kind} model configured. Add a model with kind: "
-            f"\"{kind}\" to the media: section of slife.json5."
+            f"\"{kind}\" to the media: section of slife.yaml."
         )
 
     def _find_ref(self, ref: str) -> tuple[str, ModelEntry]:
@@ -172,7 +172,7 @@ def _parse_models(raw_models: object) -> list[ModelEntry]:
 
 
 def load_media_config() -> MediaConfig:
-    """Read the ``media:`` section from slife.json5.
+    """Read the ``media:`` section from slife.yaml.
 
     Missing section / parse failure / unresolved env vars all degrade to
     an empty config (logged) — the tools then report a config error to

@@ -1,7 +1,7 @@
 """Auto-discovery tool loading.
 
 Scans slife.tools.* for Tool subclasses and registers them automatically.
-The slife.json5 ``tools`` array is optional — use it only to override
+The slife.yaml ``tools`` array is optional — use it only to override
 defaults (e.g. shell timeout) or disable a tool (``enabled: false``).
 """
 
@@ -78,9 +78,9 @@ def disabled_tool_instances(
     """Instances of the tools an override switched OFF — never registered.
 
     A disabled builtin is skipped by :func:`create_tools_from_config`, so it
-    never reaches the registry.  It still exists as far as ``tools.json5`` is
+    never reaches the registry.  It still exists as far as ``tools.yaml`` is
     concerned, and the catalog carries a row for every entry (marked
-    ``disabled``, unloadable) — otherwise json5 would declare a tool the db had
+    ``disabled``, unloadable) — otherwise yaml would declare a tool the db had
     never heard of, and ``tool_search`` could not report it as switched off.
 
     Built for the same reason the registry is built (``from_config``), so the

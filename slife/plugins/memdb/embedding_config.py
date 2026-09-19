@@ -1,6 +1,6 @@
 """Embedding configuration helpers — read, write, report.
 
-Manages the top-level ``embeddings`` section of ``slife.json5`` — the
+Manages the top-level ``embeddings`` section of ``slife.yaml`` — the
 first-class, shared config for memdb + memfiles semantic search.  Each
 provider is **one OpenAI-compatible endpoint**: ``base_url`` + ``api_key``
 and a single ``model`` (the id sent on ``/v1/embeddings``).
@@ -26,7 +26,7 @@ _CONFIG_PATH = get_config_path()
 
 
 def _read_raw() -> dict:
-    """Read the full slife.json5 dict, returning {} on failure.
+    """Read the full slife.yaml dict, returning {} on failure.
 
     This is a read-only helper for the embeddings section; an unparseable
     config must not crash the caller, it just means "no usable section".
@@ -41,7 +41,7 @@ def _read_raw() -> dict:
 
 
 def _write_raw(raw: dict) -> None:
-    """Write the full slife.json5 dict."""
+    """Write the full slife.yaml dict."""
     write_config(_CONFIG_PATH, raw)
 
 
@@ -61,7 +61,7 @@ def write_embedding_config(cfg: dict) -> None:
     """Write (overwrite) the top-level *embeddings* section with *cfg*.
 
     Runs in the memdb CHILD process while host-side config tools RMW the same
-    slife.json5 — the read→mutate→write window is cross-process locked so a
+    slife.yaml — the read→mutate→write window is cross-process locked so a
     concurrent host write can't be clobbered (F8).
     """
     with config_read_modify_write(_CONFIG_PATH):

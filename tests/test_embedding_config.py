@@ -3,12 +3,12 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
-import json5
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from tests.conftest import dump_config, load_config_text
 from slife.plugins.memdb.embedding_config import (
     read_embedding_config,
     write_embedding_config,
@@ -43,7 +43,7 @@ def mock_config_file(tmp_path):
     """Redirect embedding_config to a throwaway config file."""
     import slife.plugins.memdb.embedding_config as embedding_config
 
-    cfg_file = tmp_path / "slife.json5"
+    cfg_file = tmp_path / "slife.yaml"
     cfg_file.write_text("{}", encoding="utf-8")
     with patch.object(embedding_config, "_CONFIG_PATH", cfg_file):
         yield _ConfigFile(cfg_file)
@@ -73,13 +73,13 @@ class TestReadEmbeddingConfig:
 
     def test_valid_embeddings(self, mock_config_file):
         cfg = _emb_config(providers={"p1": {"base_url": "x"}}, active="p1")
-        mock_config_file["content"] = json5.dumps({"embeddings": cfg})
+        mock_config_file["content"] = dump_config({"embeddings": cfg})
         result = read_embedding_config()
         assert result == cfg
 
     def test_returns_copy_not_reference(self, mock_config_file):
         cfg = _emb_config(providers={"p1": {"base_url": "x"}}, active="p1")
-        mock_config_file["content"] = json5.dumps({"embeddings": cfg})
+        mock_config_file["content"] = dump_config({"embeddings": cfg})
         result = read_embedding_config()
         assert result is not None
         result["enabled"] = False
@@ -92,7 +92,7 @@ class TestReadEmbeddingConfig:
             assert read_embedding_config() is None
 
     def test_parse_error(self, mock_config_file):
-        with patch.object(Path, "read_text", return_value="not valid json5 {{{"):
+        with patch.object(Path, "read_text", return_value="key: [unclosed"):
             assert read_embedding_config() is None
 
 
@@ -105,18 +105,18 @@ class TestWriteEmbeddingConfig:
         cfg = _emb_config(providers={"p1": {"base_url": "x"}}, active="p1")
         write_embedding_config(cfg)
 
-        raw = json5.loads(mock_config_file["content"])
+        raw = load_config_text(mock_config_file["content"])
         assert "embeddings" in raw
         assert raw["embeddings"] == cfg
 
     def test_overwrites_existing_embeddings(self, mock_config_file):
-        mock_config_file["content"] = json5.dumps({
+        mock_config_file["content"] = dump_config({
             "embeddings": {"providers": {"old": {}}, "active_model": "old"},
         })
         cfg = _emb_config(providers={"new": {"base_url": "y"}}, active="new")
         write_embedding_config(cfg)
 
-        raw = json5.loads(mock_config_file["content"])
+        raw = load_config_text(mock_config_file["content"])
         assert raw["embeddings"] == cfg
 
 
@@ -136,7 +136,7 @@ class TestActiveEndpoint:
             providers={"p1": {"base_url": "http://x/v1", "api_key": "k"}},
             active="p1",
         )
-        mock_config_file["content"] = json5.dumps({"embeddings": cfg})
+        mock_config_file["content"] = dump_config({"embeddings": cfg})
         ep = get_active_endpoint()
         assert ep["provider"] == "p1"
         assert ep["base_url"] == "http://x/v1"
@@ -149,7 +149,7 @@ class TestActiveEndpoint:
                               "model": "m1"}},
             active="p1",
         )
-        mock_config_file["content"] = json5.dumps({"embeddings": cfg})
+        mock_config_file["content"] = dump_config({"embeddings": cfg})
         ep = get_active_endpoint()
         assert ep["provider"] == "p1"
         assert ep["model"] == "m1"
@@ -159,7 +159,7 @@ class TestActiveEndpoint:
             providers={"p1": {"base_url": "http://x/v1"}, "p2": {"base_url": "http://y/v1"}},
             active="nonexistent",
         )
-        mock_config_file["content"] = json5.dumps({"embeddings": cfg})
+        mock_config_file["content"] = dump_config({"embeddings": cfg})
         ep = get_active_endpoint()
         assert ep["provider"] == "p1"
 
@@ -167,7 +167,7 @@ class TestActiveEndpoint:
         cfg = _emb_config(
             providers={"p1": {"base_url": "http://x/v1"}, "p2": {"base_url": "http://y/v1"}},
         )
-        mock_config_file["content"] = json5.dumps({"embeddings": cfg})
+        mock_config_file["content"] = dump_config({"embeddings": cfg})
         ep = get_active_endpoint()
         assert ep["provider"] == "p1"
 
@@ -185,7 +185,7 @@ class TestMakeCheckReport:
 
     def test_provider_no_base_url(self, mock_config_file):
         cfg = _emb_config(providers={"p1": {}}, active="p1")
-        mock_config_file["content"] = json5.dumps({"embeddings": cfg})
+        mock_config_file["content"] = dump_config({"embeddings": cfg})
         report = make_check_report()
         assert report["configured"] is True
         assert report["available"] is False
@@ -196,7 +196,7 @@ class TestMakeCheckReport:
             providers={"p1": {"base_url": "http://127.0.0.1:8000/v1", "api_key": "local"}},
             active="p1",
         )
-        mock_config_file["content"] = json5.dumps({"embeddings": cfg})
+        mock_config_file["content"] = dump_config({"embeddings": cfg})
         with patch(
             "slife.plugins.memdb.embeddings.EmbeddingClient"
         ) as MockClient:
