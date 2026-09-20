@@ -1,6 +1,9 @@
 """Shared test fixtures and mocks for the Slife test suite."""
 
 import os
+import sys
+import threading
+import traceback
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,6 +25,112 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "integration: test requiring I/O, network, or subprocess")
     config.addinivalue_line("markers", "e2e: end-to-end test requiring a full running system")
     config.addinivalue_line("markers", "slow: mark a test as slow (excluded from quick runs)")
+    _track_aiosqlite_creations()
+
+
+# ── Exit guard: a leaked worker thread must never wedge the suite ────────
+#
+# aiosqlite's connection thread is NOT a daemon — 0.22.1 builds it with a bare
+# ``Thread(target=...)``.  So ONE connection a test forgot to close keeps the
+# interpreter alive forever at exit: the suite finishes, prints its results,
+# and then blocks with nothing left to say.  It reads as a wedged test, costs
+# minutes every time, and the only clue is a process that will not die.
+#
+# The harness therefore reaps what the session left behind — and NAMES it,
+# with the stack that created it, because silently reaping would hide the bug
+# rather than fix it.  Every other live non-daemon thread is reported too, so
+# a future cause of this symptom arrives with a name attached instead of as
+# another silent hang.
+
+#: id(Connection) → the frames that created it.  Populated by the tracking
+#: hook below; read only when a leak has to be explained.
+_CREATED_AT: dict[int, list[str]] = {}
+
+
+def _track_aiosqlite_creations() -> None:
+    """Record where each aiosqlite connection was opened (leak forensics).
+
+    A leaked connection cannot say who leaked it — the object outlives the
+    test that made it, and the thread it left behind has no creator.  One
+    frame snapshot per connection (a few hundred per session) buys the exact
+    test and line the next time this fires.
+    """
+    import aiosqlite
+
+    if getattr(aiosqlite.Connection, "_slife_tracked", False):
+        return
+    original = aiosqlite.Connection.__init__
+
+    def __init__(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        _CREATED_AT[id(self)] = [
+            f"{f.filename}:{f.lineno} in {f.name}"
+            for f in traceback.extract_stack()[:-1]
+            if "_pytest" not in f.filename and "conftest.py" not in f.filename
+        ][-3:]
+
+    aiosqlite.Connection.__init__ = __init__
+    aiosqlite.Connection._slife_tracked = True
+
+
+def _reap_leaked_connections() -> list[str]:
+    """Stop every still-running aiosqlite worker; return one line per leak."""
+    import gc
+
+    import aiosqlite
+
+    leaks: list[str] = []
+    for obj in gc.get_objects():
+        if not isinstance(obj, aiosqlite.Connection):
+            continue
+        if not getattr(obj, "_running", False):
+            continue
+        origin = _CREATED_AT.get(id(obj), [])
+        leaks.append(
+            f"  leaked aiosqlite connection — opened at "
+            f"{origin[-1] if origin else '<unknown>'}"
+            + (f"\n    via {' <- '.join(reversed(origin[:-1]))}" if len(origin) > 1 else "")
+        )
+        try:
+            obj.stop()                      # closes it and breaks the worker loop
+            obj._thread.join(timeout=5)     # the part that unblocks interpreter exit
+        except Exception as e:  # never let cleanup mask the real failure
+            leaks.append(f"    (reap failed: {e})")
+    return leaks
+
+
+def _live_non_daemon_threads() -> list[str]:
+    """Non-daemon threads other than MainThread — each one blocks exit."""
+    return [
+        f"  {t.name} ({'alive' if t.is_alive() else 'dead'})"
+        for t in threading.enumerate()
+        if t is not threading.main_thread() and not t.daemon
+    ]
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Reap leaked resources and report them — the run must always exit."""
+    leaks = _reap_leaked_connections()
+    stragglers = _live_non_daemon_threads()
+    if not leaks and not stragglers:
+        return
+    report = []
+    if leaks:
+        report.append(
+            f"{len(leaks)} aiosqlite connection(s) left open by the session "
+            "— closed now, but they would have blocked exit forever:"
+        )
+        report.extend(leaks)
+    if stragglers:
+        report.append(
+            "non-daemon thread(s) still alive at session end (these block "
+            "interpreter exit):"
+        )
+        report.extend(stragglers)
+    print("\n\n" + "=" * 70 + "\nTEST SESSION LEAK REPORT\n" + "=" * 70,
+          file=sys.stderr, flush=True)
+    print("\n".join(report), file=sys.stderr, flush=True)
 
 
 # ── UI language pinning ────────────────────────────────────────────────
