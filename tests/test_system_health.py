@@ -340,6 +340,24 @@ class TestRenderReport:
         assert "[WARN]  a2a" in report
         assert "— Start mosquitto." in report
 
+    def test_a_report_without_the_host_facts_names_the_gap(self):
+        """The host facts are probed at startup on a daemon thread, so a
+        report read early says which facts are not in yet instead of letting a
+        smaller component count read as a smaller system."""
+        report = _render([
+            {"component": "memdb", "level": "ok", "key": "db", "value": "1.2 MB"},
+        ])
+        assert ("Scope: config/model/subagent/node/npm/bun/uv are host facts"
+                in report)
+
+    def test_a_report_holding_them_carries_no_scope_line(self):
+        report = _render([
+            {"component": c, "level": "ok", "key": "k", "value": "v"}
+            for c in ("memdb", "config", "model", "subagent",
+                      "node", "npm", "bun", "uv")
+        ])
+        assert "Scope:" not in report
+
     def test_error_ranks_above_warning(self):
         report = _render([
             {"component": "a2a", "level": "warning", "key": "status", "value": "w"},

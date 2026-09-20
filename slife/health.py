@@ -100,6 +100,53 @@ def record_active_model(model: ModelConfig) -> None:
     )
 
 
+def record_host_facts(config, *, source: str) -> None:
+    """Record the facts that are about the HOST, not about this process.
+
+    The config's provenance and counts, the active model, and the external
+    tools' versions: any process that loads the same config on the same
+    machine sees the same values, so they belong in every process's report.  A
+    subagent worker recorded none of them, and reported 14 components against
+    its parent's 20 for no reason a reader of either report could see.
+
+    One recorder for both entry points (``slife/__init__.py:main`` and
+    ``slife/subagent/headless.py``): the two reports are meant to be
+    comparable, and a second copy of this block is what drifts.
+
+    *source* is where THIS process got its config — the yaml path for the main
+    agent, and for a worker the inherited transfer, which is a fact about
+    provenance rather than a path anyone can open.
+
+    The toolchain probe is the expensive part — four subprocesses, each
+    bounded at 5s — so it runs on a daemon thread: nothing waits on it, and
+    ``system_health`` reads the entries lazily.  On a host with broken shims
+    that is ~20s no startup ever pays.
+    """
+    import threading
+
+    mcp_servers = 0
+    try:
+        from slife.plugins.mcp_gateway import config as _mcp_cfg
+        mcp_servers = _mcp_cfg.count_servers()
+    except Exception:
+        pass
+    embeddings = config.embeddings_config
+    # The fact lives in ``value`` (a healthy report prints values only) — the
+    # counts tell the reader which config is actually live.
+    record(
+        "config", "ok",
+        key="path", value=(
+            f"{source} ({len(config.models)} models, {mcp_servers} MCP "
+            f"servers, embeddings="
+            f"{'enabled' if (embeddings and embeddings.enabled and embeddings.active_model) else 'disabled'})"
+        ),
+    )
+    record_active_model(config.active_model)
+    threading.Thread(
+        target=check_external_deps, name="ext-deps-check", daemon=True,
+    ).start()
+
+
 def get_report() -> list[dict]:
     """Return all recorded status entries, newest last."""
     with _lock:

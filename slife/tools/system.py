@@ -1318,14 +1318,14 @@ def _section_width(names: list[str]) -> int:
 def _scope_line(groups: dict[str, list[dict]]) -> str:
     """What this report does NOT cover, when a class of facts is absent.
 
-    The host facts (``_ENV_COMPONENTS``) are *recorded* by the interactive
-    startup — the config path, the active model and the external tool versions
-    are written there as a side effect of probing them.  A headless worker
-    never runs that startup, so it reports fewer components than the main
-    agent for the same healthy system: the counts differ by which process
-    asked, not by what is running.  Naming the gap keeps "14 components" from
-    reading as a smaller system than the parent's 20 — the objection a reader
-    raises five rounds running otherwise.
+    The host facts (``_ENV_COMPONENTS``) are recorded at startup — the config
+    provenance, the active model, and the external tool versions — and the
+    toolchain half is probed **on a daemon thread**.  A report read in the
+    seconds before those probes land says which facts are not in yet, instead
+    of letting a smaller component count read as a smaller system.  Both entry
+    points (the TUI and a headless worker) call the same recorder, so this is
+    a window, not a role difference: the worker/parent asymmetry it was
+    written for is gone.
 
     Derived from the known component set rather than from a role flag: the
     report states which facts are missing, and does not need to know why.

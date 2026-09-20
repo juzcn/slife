@@ -5,7 +5,15 @@ import pytest; pytestmark = pytest.mark.unit
 
 import pytest
 
-from slife.health import record, record_active_model, get_report, clear
+from unittest.mock import patch
+
+from slife.health import (
+    clear,
+    get_report,
+    record,
+    record_active_model,
+    record_host_facts,
+)
 
 
 class TestRecord:
@@ -152,6 +160,53 @@ class TestRecordActiveModel:
         entries = get_report()
         assert len(entries) == 1
         assert entries[0]["value"].startswith("deepseek/deepseek-v4-pro ")
+
+
+class TestRecordHostFacts:
+    """The facts that are about the HOST, not this process — one recorder for
+    both entry points (the TUI and a headless subagent worker)."""
+
+    def setup_method(self):
+        clear()
+
+    def teardown_method(self):
+        clear()
+
+    @staticmethod
+    def _config():
+        from slife.config import Config, ModelConfig
+        return Config(
+            models=[ModelConfig(
+                ref="deepseek/deepseek-flash", provider="deepseek",
+                api_model="deepseek-flash", display_name="Flash",
+                api_key="sk-x", context_window=1000,
+            )],
+            active_model_ref="deepseek/deepseek-flash",
+            tools=[],
+        )
+
+    def test_records_the_component_set_every_process_reports(self):
+        """`config` and `model` here; the toolchain (node/npm/bun/uv) from the
+        probe this starts.  The whole set is what a worker used to be missing:
+        it reported 14 components against its parent's 20, and nothing in
+        either report said which facts were absent."""
+        with patch("slife.health.check_external_deps") as probe:
+            record_host_facts(self._config(), source="/tmp/slife.yaml")
+
+        components = {e["component"] for e in get_report()}
+        assert components == {"config", "model"}
+        assert probe.call_count == 1          # the toolchain half is started
+        cfg = next(e for e in get_report() if e["component"] == "config")
+        assert cfg["key"] == "path"
+        assert cfg["value"].startswith("/tmp/slife.yaml (")
+
+    def test_the_source_names_where_this_process_got_its_config(self):
+        """A worker's config is inherited, not a file it can point at — the
+        fact says so rather than printing a path nobody can open."""
+        with patch("slife.health.check_external_deps"):
+            record_host_facts(self._config(), source="inherited from the main agent")
+        cfg = next(e for e in get_report() if e["component"] == "config")
+        assert cfg["value"].startswith("inherited from the main agent (")
 
 
 class TestClear:

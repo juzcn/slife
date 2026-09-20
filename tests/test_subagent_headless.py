@@ -145,6 +145,62 @@ class TestNotify:
         assert "params" not in output
 
 
+class TestRunHeadlessHostFacts:
+    """The worker records the same host facts the main agent does.
+
+    Pinned here rather than only in health's own tests because the failure
+    mode is a missing CALL: without a recorder at this entry point a worker
+    reported 14 components against its parent's 20, and neither report said
+    which facts were absent or why.
+    """
+
+    class _Stop(Exception):
+        """Abort at the service construction — everything before it ran."""
+
+    def _run_to_service(self, monkeypatch, tmp_path, config_json):
+        import asyncio
+
+        from slife.config import Config, ModelConfig
+        from slife.subagent import headless
+
+        # The preferred channel: the parent writes its config to a temp file
+        # and passes the path (the env-var form is the older fallback).
+        cfg_file = tmp_path / "inherited.json"
+        cfg_file.write_text(json.dumps(config_json), encoding="utf-8")
+        monkeypatch.setenv("SLIFE_CONFIG_FILE", str(cfg_file))
+        monkeypatch.delenv("SLIFE_CONFIG", raising=False)
+        monkeypatch.setattr(
+            headless, "setup_server_logging", lambda *a, **k: tmp_path / "sub.log",
+        )
+        config = Config(
+            models=[ModelConfig(
+                ref="deepseek/deepseek-flash", provider="deepseek",
+                api_model="deepseek-flash", display_name="Flash",
+                api_key="sk-x", context_window=1000,
+            )],
+            active_model_ref="deepseek/deepseek-flash",
+            tools=[],
+        )
+        with patch("slife.config.Config.from_dict", return_value=config), \
+             patch(
+                 "slife.agent.service.AgentService", side_effect=self._Stop,
+             ):
+            with pytest.raises(self._Stop):
+                asyncio.run(headless.run_headless([]))
+
+    def test_the_worker_records_the_host_facts(self, monkeypatch, tmp_path):
+        recorded: list[str] = []
+        with patch(
+            "slife.health.record_host_facts",
+            side_effect=lambda *a, **k: recorded.append(k.get("source", "")),
+        ):
+            self._run_to_service(monkeypatch, tmp_path, {"agent_name": "slife"})
+
+        # The source says where THIS process got its config: a worker is
+        # handed the parent's, it never reads the yaml itself.
+        assert recorded == ["inherited from the main agent"]
+
+
 class TestMain:
     """Tests for main() entry point."""
 

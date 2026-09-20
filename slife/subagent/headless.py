@@ -103,6 +103,10 @@ async def run_headless(argv: list[str] | None = None) -> None:
         import json as _json
         with elapsed("config_load", logger, level=logging.INFO, source="SLIFE_CONFIG"):
             config = Config.from_dict(_json.loads(_config_json))
+        # Both channels are the parent handing its config over (the file is
+        # the preferred one, the env var the older).  The report states that
+        # provenance rather than a path: a worker has no yaml of its own.
+        _config_source = "inherited from the main agent"
     else:
         # Standalone mode: read config from file (fallback).  The shared
         # CLI scanner skips flag values (--agent <id>, --lang <en|zh>), so
@@ -111,6 +115,7 @@ async def run_headless(argv: list[str] | None = None) -> None:
         _config_path = parse_cli_config_path(argv) or "slife.yaml"
         with elapsed("config_load", logger, level=logging.INFO, path=_config_path):
             config = Config.from_yaml(_config_path)
+        _config_source = str(_config_path)
 
     logger.info(
         "config_loaded model=%s tools=%d memory=%s a2a=%s",
@@ -119,6 +124,14 @@ async def run_headless(argv: list[str] | None = None) -> None:
         "on" if config.memdb_config else "off",
         "on" if config.a2a_config else "off",
     )
+
+    # The host facts every process reports — the same call the TUI entry point
+    # makes, so a worker's `system_health` lists the same components as its
+    # parent's (config, model, and the external toolchain; without this the
+    # worker reported 14 against the parent's 20, and the difference was
+    # invisible to anyone reading either report).
+    from slife.health import record_host_facts
+    record_host_facts(config, source=_config_source)
 
     service = AgentService(config, is_subagent=True)
 

@@ -17,7 +17,6 @@ when actually invoked (F1).
 import logging
 import signal
 import sys
-import threading
 from importlib import import_module
 
 logger = logging.getLogger("slife")
@@ -128,34 +127,12 @@ def main(config_path: str | None = None):
             print(f"Config error: {exc}", file=sys.stderr)
             print(f"Config: {_cp}  Log: {log_path}", file=sys.stderr)
             raise SystemExit(1)
-    from slife.health import record
-    _mcp_servers = 0
-    try:
-        from slife.plugins.mcp_gateway import config as _mcp_cfg
-        _mcp_servers = _mcp_cfg.count_servers()
-    except Exception:
-        pass
-    # The fact lives in ``value`` (a healthy report prints values only) — the
-    # counts tell the reader which config is actually live.
-    record(
-        "config", "ok",
-        key="path", value=(
-            f"{_cp} ({len(config.models)} models, {_mcp_servers} MCP servers, "
-            f"embeddings="
-            f"{'enabled' if (config.embeddings_config and config.embeddings_config.enabled and config.embeddings_config.active_model) else 'disabled'})"
-        ),
-    )
-
-    # Check external tooling availability (best-effort, reports via health
-    # system) — NOT on the startup critical path.  Each probe runs a 5s
-    # subprocess; on a host with broken shims that's up to ~20s of blocking
-    # startup.  A daemon thread finishes the probes while the TUI starts; the
-    # report is read lazily by system_health.  The health `record()` list
-    # append is atomic; at worst a concurrent read misses an entry (benign).
-    from slife.health import check_external_deps
-    threading.Thread(
-        target=check_external_deps, name="ext-deps-check", daemon=True,
-    ).start()
+    from slife.health import record_host_facts
+    # The host facts every process reports — config provenance + counts, the
+    # active model, and the external toolchain (probed on a daemon thread).
+    # ONE recorder, shared with the subagent worker's startup, so the two
+    # reports list the same components.
+    record_host_facts(config, source=str(_cp))
 
     # Log env vars from config (already applied to os.environ by Config.from_yaml).
     # Every value goes through the shared sanitizer first — this catches
@@ -177,8 +154,6 @@ def main(config_path: str | None = None):
     logger.debug("model=%s provider=%s", active.ref, active.display_name)
     logger.debug("thinking=%s", "on" if active.thinking_enabled else "off")
     logger.debug("tools=%d", len(config.tools))
-    from slife.health import record_active_model
-    record_active_model(active)
 
     # Logs never reach the terminal: setup_logging() runs the console stderr
     # handler at CRITICAL+1 (a no-op), so all diagnostics go to the per-session
