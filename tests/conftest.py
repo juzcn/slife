@@ -1,9 +1,11 @@
 """Shared test fixtures and mocks for the Slife test suite."""
 
+import faulthandler
 import os
 import sys
 import threading
 import traceback
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -26,6 +28,75 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "e2e: end-to-end test requiring a full running system")
     config.addinivalue_line("markers", "slow: mark a test as slow (excluded from quick runs)")
     _track_aiosqlite_creations()
+    faulthandler.enable()
+
+
+# ── Hang guard: a wedged run must report WHERE, never just stop ──────────
+#
+# A suite that can hang silently costs the whole run — nothing printed, no way
+# to tell a wedged test from a slow one, and the only clue is a process that
+# never returns.  (This repo has had both shapes: a leaked aiosqlite thread
+# blocking exit, and a test waiting on something that never answers.)
+#
+# `faulthandler.dump_traceback_later` turns either one into a diagnosis: after
+# N seconds it prints EVERY thread's stack and exits, so the last frame is the
+# answer.  Armed per test — so the fuse measures the thing that is stuck rather
+# than the whole session — and re-armed for the session-end window, where the
+# teardown/reap hooks run and a wedge would otherwise print nothing at all.
+#
+# Both budgets are generous on purpose: this is a backstop for "it will never
+# finish", not a per-test timeout.  Override with SLIFE_TEST_STALL_AFTER (a
+# test) and SLIFE_TEST_EXIT_AFTER (session end) when a legitimate test needs
+# longer.
+
+def _stall_after() -> float:
+    return float(os.environ.get("SLIFE_TEST_STALL_AFTER", 300))
+
+
+def _exit_after() -> float:
+    return float(os.environ.get("SLIFE_TEST_EXIT_AFTER", 60))
+
+
+def _hang_log_path() -> Path:
+    """Where a wedge's stack dump goes.
+
+    NOT the default (``sys.stderr``): pytest captures fd 1/2 for the duration
+    of a test, so a dump written during one lands in the capture buffer and is
+    thrown away when the watchdog hard-exits — the run dies with a non-zero
+    status and *nothing* printed, which is the same silence this guard exists
+    to remove.  A file the watchdog owns cannot be captured away.
+    """
+    override = os.environ.get("SLIFE_TEST_HANG_LOG")
+    if override:
+        return Path(override)
+    import tempfile
+
+    return Path(tempfile.gettempdir()) / "slife-pytest-hang.log"
+
+
+#: The open dump target — held for the session (faulthandler writes to its fd).
+_HANG_LOG = None
+
+
+def _arm_fuse(seconds: float) -> None:
+    """Dump every thread's stack and exit if the next *seconds* don't finish."""
+    global _HANG_LOG
+    if _HANG_LOG is None:
+        try:
+            _HANG_LOG = open(_hang_log_path(), "w", buffering=1, encoding="utf-8")
+        except OSError:
+            _HANG_LOG = sys.stderr    # captured, but better than no dump at all
+    faulthandler.dump_traceback_later(seconds, exit=True, file=_HANG_LOG)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Fuse around one whole test: setup, call and teardown."""
+    _arm_fuse(_stall_after())
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 # ── Exit guard: a leaked worker thread must never wedge the suite ────────
@@ -73,13 +144,22 @@ def _track_aiosqlite_creations() -> None:
     aiosqlite.Connection._slife_tracked = True
 
 
-def _reap_leaked_connections() -> list[str]:
-    """Stop every still-running aiosqlite worker; return one line per leak."""
+def _reap_leaked_connections(deadline_s: float = 10.0) -> list[str]:
+    """Stop every still-running aiosqlite worker; return one line per leak.
+
+    Bounded in aggregate, not per connection: one wedged worker must not cost
+    its own 5s each (a session that leaks forty of them would sit here for
+    minutes and look exactly like the hang it is trying to prevent).  The
+    stop is enqueued for every connection first, then they are joined against a
+    single deadline.
+    """
     import gc
+    import time
 
     import aiosqlite
 
     leaks: list[str] = []
+    doomed = []
     for obj in gc.get_objects():
         if not isinstance(obj, aiosqlite.Connection):
             continue
@@ -93,9 +173,24 @@ def _reap_leaked_connections() -> list[str]:
         )
         try:
             obj.stop()                      # closes it and breaks the worker loop
-            obj._thread.join(timeout=5)     # the part that unblocks interpreter exit
+            doomed.append(obj)
         except Exception as e:  # never let cleanup mask the real failure
             leaks.append(f"    (reap failed: {e})")
+    deadline = time.monotonic() + deadline_s
+    for obj in doomed:
+        thread = getattr(obj, "_thread", None)
+        if thread is None or not thread.is_alive():
+            continue
+        try:
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        except Exception as e:
+            leaks.append(f"    (join failed: {e})")
+    stuck = [o for o in doomed if (t := getattr(o, "_thread", None)) and t.is_alive()]
+    if stuck:
+        leaks.append(
+            f"  {len(stuck)} worker thread(s) still alive after the "
+            f"{deadline_s:g}s reap budget — reported as stragglers below"
+        )
     return leaks
 
 
@@ -110,7 +205,13 @@ def _live_non_daemon_threads() -> list[str]:
 
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session, exitstatus):
-    """Reap leaked resources and report them — the run must always exit."""
+    """Reap leaked resources, report them, and fence the exit window.
+
+    The fence is armed FIRST: everything below runs after the run's own
+    summary has printed, so a wedge here shows nothing at all — exactly the
+    case where a stack dump is the only way to learn what was stuck.
+    """
+    _arm_fuse(_exit_after())
     leaks = _reap_leaked_connections()
     stragglers = _live_non_daemon_threads()
     if not leaks and not stragglers:

@@ -30,8 +30,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAMLError
 
-from slife.tools._config_io import write_config
-from slife.tools._yaml_doc import new_yaml
+from slife.tools._yaml_doc import new_yaml, render
 
 logger = logging.getLogger(__name__)
 
@@ -148,18 +147,24 @@ class InboundStore:
         would look like corruption (and the crash that caused it is exactly
         when the stale list matters most).
 
-        Delegates to the shared atomic YAML writer (temp file + ``os.replace``
-        + fsync, mode-preserved) — the same one the config files use, so this
-        file needs no weaker private copy of that guarantee.  It also edits the
-        existing document rather than re-serializing, so an annotation a human
-        added by hand survives the next task.
+        The light writer, deliberately, not ``_config_io.write_config``: this
+        file is rewritten on every inbound task's arrival and completion, and
+        the config writer's job is preserving a *human's* document — it parses,
+        diffs, dumps and re-verifies (about 20 ms a write and an fsync, against
+        ~1 ms here).  There is nothing here to preserve: the file is machine-
+        written, and losing it costs a reminder rather than protocol state (see
+        the module docstring), so the atomic replace alone is the guarantee it
+        needs — a reader sees all of the old file or all of the new one.
         """
         payload = {
             "pending": {k: v.as_dict() for k, v in self._pending.items()},
             "stale": {k: v.as_dict() for k, v in self._stale.items()},
         }
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
         try:
-            write_config(self._path, payload)
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(render(payload), encoding="utf-8")
+            os.replace(tmp, self._path)
         except OSError as e:
             logger.warning("a2a_inbound_state_write_failed err=%s", e)
 
