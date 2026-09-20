@@ -1,5 +1,6 @@
-"""Catalog wiring tests — seeded snapshot, loaded projection, A4 hints,
-and the worker (subagent) sharing semantics at the service level."""
+"""Catalog wiring tests — seeded snapshot, loaded projection, the registry's
+no-instance refusals, and the worker (subagent) sharing semantics at the
+service level."""
 
 import json
 
@@ -315,7 +316,7 @@ async def test_evict_to_threshold_respects_whitelist_and_owner(db):
     assert await svc_worker.evict_to_threshold() == []
 
 
-# ── registry A4 execution hints ────────────────────────────────────
+# ── registry call refusals (a name with no execution instance) ─────
 
 @pytest.mark.asyncio
 async def test_registry_execute_hints_with_catalog(db):
@@ -327,21 +328,27 @@ async def test_registry_execute_hints_with_catalog(db):
     await svc.sync_system_tools([_Native(), _TurnPromptStub()])
     registry.set_catalog(svc)
 
-    # 1. meta runs even when the gate would object (it stays loaded anyway)
+    # 1. meta runs (it is whitelisted and stays loaded anyway)
     assert await registry.execute("_turn_prompt") == "pong"
-    # 2. in-pool but unloaded → the state, named, and no remedy: the caller
-    # that hits this has usually just loaded the tool in this same round, and
-    # "use func-tool-load" would send it to repeat itself.
+    # 2. in-pool and unloaded → it RUNS.  Load state decides what a turn
+    # injects, never whether a call may go out, so a registered instance is
+    # all a call needs.
     await svc.unload_tool("native_a")
-    assert await registry.execute("native_a") == "Error: tool 'native_a' is not loaded."
-    # 3. catalog-known but not in the pool → the SAME sentence: whether an
-    # instance was ever materialized is internal, the caller's position is not
+    assert await registry.execute("native_a") == "ok-native_a"
+    # 3. catalog-known but not in the pool → NO instance, so the state is
+    # named: the row exists, the object to run does not.
     await db.upsert_tool("svcA__gh", category="mcp", source_id="svcA", load_status="unloaded")
     assert await registry.execute("svcA__gh") == "Error: tool 'svcA__gh' is not loaded."
     # 3b. its server is down → the row says `error`, and the gate names that
     # rather than pretending the tool is merely unloaded.
     await db.mark_source_error("svcA")
     assert "status is error" in await registry.execute("svcA__gh")
+    # 3c. switched off in the config → named as DISABLED, not as unloaded:
+    # "load it" is the wrong move for a tool the user turned off, and the row
+    # that says so is exactly what lets the model suggest enabling it.
+    await db.upsert_tool("off__x", category="builtin", load_status="unloaded",
+                         status="disabled")
+    assert "is disabled" in await registry.execute("off__x")
     # 4. unknown everywhere → historical string
     assert await registry.execute("nope") == "Error: Unknown tool 'nope'"
 

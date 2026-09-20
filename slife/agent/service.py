@@ -975,6 +975,42 @@ class AgentService:
                 )
         return _handler
 
+    def _register_plugin_proxies(self, proxy_tools: list) -> set[str]:
+        """Register a plugin's proxy tools, minus the ones the config switched off.
+
+        The switch is enforced HERE, at registration, for the reason the builtin
+        factory enforces it there (``factory.create_tools_from_config`` skips
+        them): a tool the config turned off must have no execution instance.
+        Execution is gated on having an instance, never on load state, so an
+        instance is the only thing that can make a switched-off tool
+        uncallable — without this, a row saying ``disabled`` would be a status
+        column lying about what the model can run.
+
+        The ROW is still written, because the caller hands the whole list to
+        ``sync_system_tools``: the tool stays searchable, and the model can
+        recommend switching it on.  (``tools.yaml``'s ``plugin:`` section names
+        bare tool names, which is what ``t.name`` is here.  Tool names are
+        unique across plugins — the registry is name-keyed — so a skip logged
+        by name needs no plugin to identify it.)
+
+        Returns the names actually registered — ``registered_tools``, the set
+        the watchdog unregisters from, so it holds what exists and nothing
+        else.  A name that flipped to ``disabled`` between two passes therefore
+        falls out of it, and the caller's stale diff takes its instance back.
+
+        Args:
+            proxy_tools: The plugin's full proxy list, switched-off included.
+        """
+        disabled = self.config.disabled_plugin
+        registered = {t.name for t in proxy_tools if t.name not in disabled}
+        skipped = {t.name for t in proxy_tools} - registered
+        if skipped:
+            logger.debug("plugin_tools_switched_off names=%s", sorted(skipped))
+        for tool in proxy_tools:
+            if tool.name in registered:
+                self.tool_registry.register(tool)
+        return registered
+
     async def _rescan_plugin_tools(self, name: str) -> None:
         """Re-list plugin *name*'s tools and diff the registry.
 
@@ -998,12 +1034,10 @@ class AgentService:
         proxy_tools = create_proxy_tools(client, tagged)
         old_names = set(lifecycle.registered_tools)
         new_names = {t.name for t in proxy_tools}
-        for tool in proxy_tools:
-            if tool.name not in old_names:
-                self.tool_registry.register(tool)
-        for stale in old_names - new_names:
+        registered = self._register_plugin_proxies(proxy_tools)
+        for stale in old_names - registered:
             self.tool_registry.unregister(stale)
-        lifecycle.registered_tools = new_names
+        lifecycle.registered_tools = registered
         if self.caps.catalog_owner and self._catalog is not None:
             # One sync for the plugin's whole tool set: rows go in, and a tool
             # it dropped loses its row (source-scoped, so only this plugin's).
@@ -1011,7 +1045,7 @@ class AgentService:
             await self._catalog.mark_plugin_connected(name)
         logger.debug(
             "plugin_tools_resync name=%s added=%d removed=%d total=%d",
-            name, len(new_names - old_names), len(old_names - new_names),
+            name, len(registered - old_names), len(old_names - registered),
             len(new_names),
         )
 
@@ -1160,9 +1194,9 @@ class AgentService:
             proxy_tools = create_proxy_tools(client, tagged)
             # Record exact registered names for dead-process cleanup / stop
             # (bare names — no {name}__ prefix to unregister by).
-            self._plugins[name].registered_tools = {t.name for t in proxy_tools}
-            for tool in proxy_tools:
-                self.tool_registry.register(tool)
+            self._plugins[name].registered_tools = self._register_plugin_proxies(
+                proxy_tools,
+            )
             # …and mirror them into the shared catalog.  Without this the
             # plugin's tools have no row, and a row is what makes a tool
             # SEARCHABLE and injectable (the per-turn set is the catalog's
@@ -1880,13 +1914,12 @@ class AgentService:
 
         proxy_tools = create_proxy_tools(self._plugins[name].client, tagged)
         new_names = {t.name for t in proxy_tools}
-        for stale in old_names - new_names:
+        registered = self._register_plugin_proxies(proxy_tools)
+        for stale in old_names - registered:
             self.tool_registry.unregister(stale)
         # Record the exact registered names so dead-process cleanup and stop
         # can unregister this plugin's bare-name tools without a prefix.
-        self._plugins[name].registered_tools = new_names
-        for tool in proxy_tools:
-            self.tool_registry.register(tool)
+        self._plugins[name].registered_tools = registered
         if self.caps.catalog_owner and self._catalog is not None:
             # One sync for the plugin's whole tool set: rows go in, and a tool
             # it dropped loses its row (source-scoped, so only this plugin's).

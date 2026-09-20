@@ -279,11 +279,11 @@ class TestAgentServiceMCPEnrichment:
         """An ENABLED on-demand server gets proxies at reconcile time, not just
         catalog rows.
 
-        The registry is the execution pool, so a row the catalog calls
-        ``loaded`` must have an instance behind it.  Otherwise a tool loaded in
-        a previous session — whose ``load_status`` survives the restart while
-        its proxy does not — fails with "is not loaded" while the
-        catalog insists it is loaded.
+        The registry is the execution pool: a call needs an instance, so a row
+        loaded in a previous session — whose ``load_status`` survives the
+        restart while its proxy does not — has no route until the reconcile
+        re-registers it.  (What fixes that is an instance, not a load state:
+        see ``test_tools_catalog_injection`` for how a call is refused.)
         """
         service, store = await self._sync_with_catalog(
             sample_config, tmp_path, "ondemand",

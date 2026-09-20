@@ -300,8 +300,10 @@ class UnloadFuncTool(Tool):
         ok, msg = await catalog.unload_tool(full_name)
         if not ok:
             return msg
-        # Drop the EXTERNAL proxy (it holds a live client); stateless builtin tools /
-        # plugin proxies stay in the execution pool — the A4 gate refuses calls.
+        # Drop the EXTERNAL proxy (it holds a live client), so unloading one of
+        # those also takes its route away; stateless builtin tools / plugin
+        # proxies stay in the execution pool and remain callable.  Unloading is
+        # an injection operation, not a capability switch.
         registry = getattr(ctx, "registry", None)
         if registry is not None:
             from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute

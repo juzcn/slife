@@ -319,9 +319,11 @@ Three retrieval routes, one row shape (the effective status is computed per row 
 
 Loads a function tool by **full name** (`{server}__{tool}` for external). Refusals come from the effective status: unknown → "see tool_search"; disabled → "enable it first"; error → "its server is not up right now — check it with mcp_list, then retry". On success the row's status flips `loaded` and the tool is in the **very next LLM request** — the loop re-reads the loaded set before every request (§5 · Per-request injection), so a load takes effect on the next call, not the next turn. For `mcp`/`rest-api` rows it also **materializes the execution proxy** from the row's schema descriptor (`create_proxy_tools` → registered in the registry) — loading and materialization are the same step, driven by the row.
 
+What a load does **not** do is unlock anything: it never gates a call. A tool with an execution instance is callable whether or not the model loaded it, so load-and-call in one message is legitimate — the load is what puts the tool's **schema** in front of the model, which is what makes the arguments read rather than guessed.
+
 ### `_unload_func_tool`
 
-Self-service unload (the spare-ticket the model can use to free a slot); refused for the whitelist — `skill_use` and `system_health` included. The harness's eviction is the same operation run automatically.
+Self-service unload (the spare-ticket the model can use to free a slot in its tool list — it does not make a tool uncallable, which load state never does); refused for the whitelist — `skill_use` and `system_health` included. The harness's eviction is the same operation run automatically. One family is the exception on the execution side: an **external** `mcp`/`rest-api` tool's proxy is unregistered along with it (that proxy holds a live client), so unloading one of those does take its route away — a resource decision, not a gate.
 
 ---
 
@@ -347,7 +349,7 @@ At the turn boundary, if loaded count exceeds `tool_load.threshold` (default 100
 - `seed_inventory` seeds without touching `last_loaded` (never-used tools sort oldest);
 - **every successful `registry.execute` bumps `last_loaded`** (`CatalogStore.touch`), so a tool used this turn is never the next victim. Eviction is main-owner only: subagents inherit the curator's budget and never squeeze it.
 
-Evicted tools stay registered but leave the injection snapshot, and an execution attempt gets the `Error: tool 'X' is not loaded.` refusal (the registry's A4 gate) — the state and nothing more, because the caller that most often hits it is the one that loaded the tool in this same round.
+Evicted tools stay registered and stay **callable** — eviction takes them out of the injection snapshot and nothing else. **Load state governs what a turn injects, never what a call may do**: an evicted tool the model still remembers, or reaches by name, executes like any other. What it loses is its schema, and the next `func-tool-load` restores that.
 
 ### Who writes `load_status` — exactly four places
 
@@ -448,7 +450,7 @@ The three counts are a **delta of what the startup WROTE to the catalog** — th
 
 The delta is deliberately **not** a registry before/after.  The registry begins empty in every process, so a set difference reports the entire external tool set as new — `1465 added` on a restart, which announces a process artefact as a change to the tool set, and a restart is precisely what does not change it.  **Runtime state is not a change either**: `load_status` / `last_loaded` moving, or the runtime lane of `status`, is the model's decision and the connectivity verdict, booked nowhere — otherwise a server coming up would report every one of its tools as *updated*.
 
-**The other side of the window**: once the pass has run, a load takes effect **within the same turn** — no waiting for the next one.  For an enabled server the proxy already exists, so `func-tool-load` is a status flip over an execution instance that is already there; the call in that same turn reaches the real server (a *tool-level* error, e.g. a missing required parameter, is the proof — the harness gate is out of the way).  The materialize branch still runs, but registering an existing name is an idempotent overwrite, so it is no longer load-bearing — and its own failure modes (an unsynced `schema`, an unavailable MCP client) can no longer make a successful-looking load silently not take.
+**The other side of the window**: once the pass has run, a load takes effect **within the same turn** — no waiting for the next one.  For an enabled server the proxy already exists, so `func-tool-load` is a status flip over an execution instance that is already there, and a call in that same turn reaches the real server (a *tool-level* error, e.g. a missing required parameter, is the proof).  What the load buys is the **schema** in the next request — never the right to call, which an instance alone grants.  The materialize branch still runs, but registering an existing name is an idempotent overwrite, so it is no longer load-bearing — and its own failure modes (an unsynced `schema`, an unavailable MCP client) can no longer make a successful-looking load silently not take.
 
 Not gated on embeddings: the pass calls `wake_indexer`/`on_saved` (a wake, not a wait), so semantic search finishing is irrelevant to tool availability.
 
@@ -473,7 +475,7 @@ When the wrapper child dies, `on_plugin_child_exit` marks **every `mcp`/`rest-ap
 | `slife/tools/catalog.py` | `CatalogStore`: SQL, schema (v9 — the three-state `status` and no derived `type`, no `server` table), FTS5 + semantic KNN, effective status, `reconcile` (the one delta writer), `evict_lru`, `touch`, `purge_source`/`purge_source_except`/`remove_tool`/`names_by_category`, `mark_source_error` / `mark_all_external_error` / `mark_source_connected` / `set_source_enabled` (the two lanes of `status`), `CatalogOpDelta` / `begin_ops`/`end_ops` (the row-operation counter a sync pass arms, per §6) |
 | `slife/tools/catalog_service.py` | `ToolCatalogService`: policy — the boot seed (`sync_system_tools`), `mirror_external_tools` (a server's whole set in one pass), `snapshot_loaded`, `sync_category` (the skill/cli mirror), `load_tool`/`unload_tool` refusal matrix, `evict_to_threshold`, `purge_unconfigured_sources`; `descriptor_json`/`tool_descriptor` (the one tool-def builder) |
 | `slife/tools/catalog_search.py` | hybrid RRF merge + score annotator (thin adapter over `memdb.search`) |
-| `slife/tools/registry.py` | the execution pool; consults the catalog for unloaded-refusal hints; bumps `last_loaded` on successful execute |
+| `slife/tools/registry.py` | the execution pool; names a row's state when a called name has no instance here; bumps `last_loaded` on successful execute |
 | `slife/tools/factory.py` | auto-discovery (gated to `slife.tools` modules) + `enabled`-override filtering |
 | `slife/tools/meta_tools.py` | `tool_search`, `func-tool-load`, `_unload_func_tool` |
 | `slife/tools/whitelist.py` | harness pair + 5 meta tools + 2 pinned (`ALWAYS_LOADED` — never evicted / not unloadable) |

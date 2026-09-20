@@ -20,9 +20,10 @@
 builtin:
   - name: install_python_package
     enabled: false
-# Built-in plugins' own tools.  A plugin decides its own tool set and registers
-# it whatever this says, so `enabled: false` here is carried on the catalog row
-# rather than preventing registration.
+# Built-in plugins' own tools.  A plugin decides its own tool set, so
+# `enabled: false` here still gets the tool a catalog row marked `disabled`
+# (tool_search reports it as switched off, and the model can suggest turning it
+# on) — but the tool is not registered, so it cannot be called.
 plugin: []
 # External MCP servers.  `command` + `args` (+ `env`) launch the server over
 # stdio; `url` / `headers` are the remote variants, and `auth` configures an

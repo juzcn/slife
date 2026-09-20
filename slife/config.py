@@ -538,9 +538,11 @@ class Config:
     disabled_jobs: frozenset[str] = field(default_factory=frozenset)
     disabled_skills: frozenset[str] = field(default_factory=frozenset)
     #: Per-entry ``enabled: false`` names from the ``plugin`` section — the
-    #: built-in plugins' own tools.  They are registered whatever the config
-    #: says (the plugin decides its tool set), so their disable is carried on
-    #: the catalog row.
+    #: built-in plugins' own tools.  A switched-off one is never REGISTERED
+    #: (the registration path skips it, exactly as the builtin factory skips a
+    #: disabled builtin), but it still gets a catalog row marked ``disabled``:
+    #: the plugin keeps declaring its tool set, so the row is there to be found
+    #: and to be recommended for switching on.
     disabled_plugin: frozenset[str] = field(default_factory=frozenset)
     #: Per-entry ``enabled: false`` names from the ``builtin`` section.  A
     #: disabled builtin is never REGISTERED (the factory skips it), but it still

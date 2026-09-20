@@ -166,7 +166,8 @@ def build_turn_prompt(
 
     *tools_evicted* lists tools the threshold eviction unloaded at this
     turn's boundary — the model needs to know they left its tool list (and
-    how to reload them).  Only passed when non-empty.
+    that reloading is how to get their schema back; they stay callable by
+    name).  Only passed when non-empty.
     """
     now = datetime.now().astimezone()
     last_usage_pct = (

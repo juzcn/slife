@@ -1497,11 +1497,15 @@ class TestSameMessageLoadAndCall:
     """One assistant message carrying ``func-tool-load(X)`` *and* ``X(...)``.
 
     The batch runs its calls concurrently (``asyncio.gather``), so the two are
-    siblings, not steps — and the call is refused, because injection happens
-    per request: the list the model is answering from was built before the
-    load flipped the row.  That is the accepted contract, not a defect to
-    engineer around (load-and-call belongs in two messages; the first call
-    could only ever run on guessed arguments anyway).
+    siblings, not steps — and that no longer decides anything: the call runs.
+    Load state governs what a turn INJECTS, never what a call may do, so a
+    tool with a registered instance executes whether or not the model loaded
+    it first.  Racing the load is therefore harmless; before, the outcome
+    depended on which write landed first.
+
+    Loading is still worth doing, and the prompt says so: it is what puts the
+    tool's SCHEMA in the next request, and the schema is how the arguments
+    stop being guesses.
 
     What the harness owes the model here is the TIMING, stated where the model
     can act on it — ``func-tool-load`` says the tool is in the list from the
@@ -1570,11 +1574,11 @@ class TestSameMessageLoadAndCall:
                 "[OK] Loaded 'target_tool' — it is in the tool list from the "
                 "next request."
             )
-            # The sibling call never ran: it is not in this request's list.
-            # The refusal names the state and stops — a remedy would send the
-            # model to repeat the load it just made.
-            assert results["c2"] == "Error: tool 'target_tool' is not loaded."
-            assert target_cls.ran == 0
+            # The sibling call RAN: its instance was already registered, and
+            # load state does not gate a call — the two writes no longer race
+            # for the outcome.
+            assert results["c2"] == "the tool ran"
+            assert target_cls.ran == 1
             # …and the load itself landed, so the NEXT request carries it
             # (the per-request injection TestToolListInjection pins).
             assert await store.get_effective("target_tool") == "loaded"

@@ -73,9 +73,10 @@ ALWAYS_LOADED: frozenset[str] = (
 def is_meta_tool(name: str) -> bool:
     """True if *name* is protected — harness pair, meta surface, or pinned.
 
-    The predicate every gate shares (injection, eviction, unload, the
-    registry's loaded-only call gate), so "is it whitelisted" is asked in
-    exactly one place.
+    The predicate every load-state gate shares (injection, eviction, unload),
+    so "is it whitelisted" is asked in exactly one place.  Execution is not one
+    of them: a call is gated on having an execution instance, never on load
+    state, so nothing here needs to exempt a whitelisted tool from a call.
     """
     return name in ALWAYS_LOADED
 

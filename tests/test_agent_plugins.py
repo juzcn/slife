@@ -13,6 +13,21 @@ from slife.platform import IS_WINDOWS
 from slife.plugins.spec import PLUGIN_SPECS, SPEC_ORDER
 
 
+def _real_proxy(name, description):
+    """A REAL proxy — the catalog sync reads the tool INSTANCE (name, stamped
+    description, parameters, owner), so fixtures that reach it use the
+    production class rather than a mock that would fake its way past the fields
+    the row is built from."""
+    from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
+
+    return MCPProxyTool(
+        None,
+        {"server": "memdb", "name": name, "description": description,
+         "inputSchema": {"type": "object", "properties": {}}},
+        route=ProxyRoute.DIRECT,
+    )
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
 
@@ -212,20 +227,6 @@ class TestPluginLifecycleSpawn:
         service = AgentService(sample_config)
         service._catalog = ToolCatalogService(store, write_owner=True)
 
-        def _proxy(name, description):
-            """A REAL proxy — the sync reads the tool INSTANCE (name, stamped
-            description, parameters, owner), so the fixture is the production
-            class rather than a mock that would fake its way past the fields
-            the row is built from."""
-            from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
-
-            return MCPProxyTool(
-                None,
-                {"server": "memdb", "name": name, "description": description,
-                 "inputSchema": {"type": "object", "properties": {}}},
-                route=ProxyRoute.DIRECT,
-            )
-
         mock_process = MagicMock()
         mock_process.port = 8888
         mock_process.start = AsyncMock()
@@ -237,7 +238,7 @@ class TestPluginLifecycleSpawn:
         with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
              patch("slife.agent.service.create_proxy_tools") as mock_create:
             MockProc.return_value = mock_process
-            mock_create.return_value = [_proxy("turn_search", "Search turns.")]
+            mock_create.return_value = [_real_proxy("turn_search", "Search turns.")]
             assert await service._spawn_plugin_generic(
                 "memdb", "slife.plugins.mcp_gateway.server",
             ) is True
@@ -262,6 +263,69 @@ class TestPluginLifecycleSpawn:
             ) is True
 
         assert await store.get_tool("turn_search") is None
+        await store.close()
+
+    @pytest.mark.asyncio
+    async def test_spawn_gives_a_switched_off_tool_a_row_but_no_instance(
+        self, sample_config, tmp_path,
+    ):
+        """A plugin tool switched off in ``tools.yaml`` keeps its ROW — the model
+        must be able to see it in ``tool_search`` and suggest switching it on —
+        while getting no execution INSTANCE, which is the only thing that makes
+        it uncallable now that load state governs injection rather than calls.
+
+        The switch is enforced at registration, where the builtin factory
+        already enforces it.  Without that a row saying ``disabled`` would be a
+        status column lying about what the model can run.
+        """
+        from dataclasses import replace
+
+        from slife.agent.service import AgentService
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+
+        store = CatalogStore(tmp_path / "tools.db")
+        await store.open()
+        config = replace(sample_config, disabled_plugin=frozenset({"turn_search"}))
+        service = AgentService(config)
+        # One config value reaches two places, and both are needed: the catalog
+        # writes the row's `status` from ITS copy of the switch (the service
+        # wires it the same way at startup), and the registration path below
+        # reads the config directly.
+        service._catalog = ToolCatalogService(
+            store, write_owner=True,
+            disabled_plugin=tuple(config.disabled_plugin),
+        )
+
+        mock_process = MagicMock()
+        mock_process.port = 8888
+        mock_process.start = AsyncMock()
+        mock_process.create_client = AsyncMock(return_value=self._client_with([
+            {"name": "turn_search", "description": "Search turns."},
+            {"name": "turn_count", "description": "Count turns."},
+        ]))
+
+        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
+             patch("slife.agent.service.create_proxy_tools") as mock_create:
+            MockProc.return_value = mock_process
+            mock_create.return_value = [
+                _real_proxy("turn_search", "Search turns."),
+                _real_proxy("turn_count", "Count turns."),
+            ]
+            assert await service._spawn_plugin_generic(
+                "memdb", "slife.plugins.mcp_gateway.server",
+            ) is True
+
+        # No route for the switched-off tool; its neighbour is untouched.
+        assert service.tool_registry.get("turn_search") is None
+        assert service.tool_registry.get("turn_count") is not None
+        assert service._plugins["memdb"].registered_tools == {"turn_count"}
+        # …and both keep a row: the tool set stays visible either way.
+        row = await store.get_tool("turn_search")
+        assert row is not None
+        assert row["status"] == "disabled"
+        assert await store.get_effective("turn_search") == "disabled"
+        assert await store.get_tool("turn_count") is not None
         await store.close()
 
     @pytest.mark.asyncio

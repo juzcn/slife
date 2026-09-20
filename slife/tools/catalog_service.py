@@ -135,6 +135,23 @@ def status_error_refusal(name: str, action: str) -> str:
     return f"Error: tool '{name}' cannot be {action} — its status is error."
 
 
+def disabled_refusal(name: str) -> str:
+    """``Error: tool 'X' is disabled — enable it first.``
+
+    The one wording for the config switch, wherever the switch is met:
+    :meth:`ToolCatalogService.load_tool` refuses to load a switched-off tool
+    with it, and the registry's call gate refuses to run one with it.  Two
+    readers, one sentence — a row the model was told is `disabled` must not
+    come back as "not loaded", which would send it looking for a loading
+    problem it does not have.
+
+    Unlike :func:`status_error_refusal`, the remedy belongs IN this sentence:
+    an ``error`` has many causes that share no fix, while ``disabled`` has
+    exactly one — the switch — and there is one honest way to say it.
+    """
+    return f"Error: tool '{name}' is disabled — enable it first."
+
+
 class ToolCatalogService:
     """Session-facing orchestration over the shared catalog store."""
 
@@ -448,14 +465,16 @@ class ToolCatalogService:
 
         Refusal matrix uses the derived effective status — DISABLED
         (config) and ERROR (the tool's server is not up) each get their own
-        hint.  The caller materializes an execution instance for
+        sentence.  The caller materializes an execution instance for
         server-backed tools (the proxy) after a successful flip.
 
-        The success message states WHEN the tool is callable, because that is
-        the one thing the caller cannot see: the injection list for the
-        request already in flight was built before this flip, so the tool is
-        in the list from the next request onward.  A model that planned to
-        load and call in one message reads the timing here and waits.
+        The success message states WHEN the tool is IN THE TOOL LIST, because
+        that is the one thing the caller cannot see: the injection list for
+        the request already in flight was built before this flip, so the tool
+        is in the list from the next request onward.  A model that planned to
+        load and call in one message reads the timing here: the load is what
+        puts the tool's SCHEMA in front of it, and the call itself needs an
+        execution route — which loading does not grant, and never did.
         """
         row = await self._store.get_tool(name)
         if row is None:
@@ -469,7 +488,7 @@ class ToolCatalogService:
 
         eff = await self._store.get_effective(name)
         if eff == STATUS_DISABLED:
-            return False, f"Error: tool '{name}' is disabled — enable it first."
+            return False, disabled_refusal(name)
         if eff == STATUS_ERROR:
             return False, status_error_refusal(name, "loaded")
         if eff == "loaded":

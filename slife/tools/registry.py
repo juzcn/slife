@@ -4,9 +4,14 @@ The registry is the EXECUTION-instance pool: every materialized ``Tool``
 (a builtin created via ``from_config``, a plugin/mcp proxy holding a live
 client) registers here.  The loaded/unloaded *state* lives in the shared
 catalog (``slife.tools.catalog``) — this registry deliberately keeps no
-second bookkeeping.  When a catalog is attached via :meth:`set_catalog`,
-``execute`` consults it for the "not loaded" refusal (and the ``error``
-refusal that states a row's state) instead of the bare ``Unknown tool`` string.
+second bookkeeping, and that state governs what a turn INJECTS, never what a
+call may do: a name with an instance here runs whatever its row says.
+
+When a catalog is attached via :meth:`set_catalog`, ``execute`` names a row's
+state for a name that has NO instance here (``not loaded`` / ``disabled`` /
+``error``) instead of the bare ``Unknown tool`` string.  That is the only
+refusal left, because every other one would be policy about a tool that could
+already run.
 """
 
 import logging
@@ -14,9 +19,8 @@ import time as _time
 from typing import TYPE_CHECKING, AbstractSet, Callable
 
 from slife.tools.base import Tool, validate_args
-from slife.tools.catalog import STATUS_ERROR
-from slife.tools.catalog_service import status_error_refusal
-from slife.tools.whitelist import is_meta_tool
+from slife.tools.catalog import STATUS_DISABLED, STATUS_ERROR
+from slife.tools.catalog_service import disabled_refusal, status_error_refusal
 
 if TYPE_CHECKING:
     from slife.tools.catalog_service import ToolCatalogService
@@ -25,23 +29,21 @@ logger = logging.getLogger(__name__)
 
 
 def not_loaded_refusal(tool_name: str) -> str:
-    """The ONE refusal for a call to a tool that is not loaded — the state, nothing more.
+    """The ONE refusal for a call to a name the catalog knows but the pool cannot run.
 
-    A remedy here misleads. The caller that hits this gate most often is the
-    one that just loaded the tool *in this round*: injection happens at the
-    request boundary, so the list it is calling from was built before the
-    load landed. Telling it to "use func-tool-load" sends it to repeat what it
-    has already done, and the failure it gets back reads as "your load did not
-    work".
+    It fires when there is no execution instance behind the name: a
+    server-backed tool whose proxy was never materialized, or a row that
+    remembers ``loaded`` from a previous session while this process — whose
+    registry starts empty — has not been rejoined yet.  The row exists; the
+    object to invoke does not.  Whether a load could create one is
+    ``func-tool-load``'s answer to give, and it gives it.
 
-    So it is the same rule as :func:`status_error_refusal` — name the state
-    and stop. The timing that would make a remedy useful belongs to the tool
-    that changes the state, and ``func-tool-load`` states it on success.
+    ``load_status`` is NOT this function's business.  A tool the model never
+    loaded executes normally as long as an instance is registered: the row
+    decides what a turn injects, never what a call may do.
 
-    One sentence for both gates that refuse this (a name with a catalog row
-    but no materialized instance, and an instance whose row says unloaded):
-    the difference between them is internal, and the caller's position is the
-    same either way.
+    So: name the state and stop.  A remedy would be a guess about a cause this
+    code has not checked — the same rule as :func:`status_error_refusal`.
     """
     return f"Error: tool '{tool_name}' is not loaded."
 
@@ -55,7 +57,7 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
-        #: Optional shared catalog — drives the "not loaded" / "error" refusals.
+        #: Optional shared catalog — names the state of a name this pool cannot run.
         self._catalog: "ToolCatalogService | None" = None
         #: Observers notified after any register/unregister mutation.  The
         #: slife-as-plugin host server subscribes here to push the standard
@@ -154,11 +156,12 @@ class ToolRegistry:
         The tool_name parameter is positional-only (/) to prevent
         collisions with tool arguments that happen to share the name.
 
-        When a catalog is attached, a tool whose row is not loadable right
-        now gets its state named (``not loaded`` / ``error`` / ``disabled``)
-        instead of the bare ``Unknown tool`` string — the meta whitelist
-        always executes.  With no catalog the historical exact behavior is
-        kept.
+        Nothing here gates on ``load_status``: that state decides what a turn
+        injects, not what a call may do, so an unloaded tool with a registered
+        instance runs like any other.  When a catalog is attached, a name with
+        NO instance behind it gets its row's state named (``not loaded`` /
+        ``disabled`` / ``error``) instead of the bare ``Unknown tool``
+        string.  With no catalog the historical exact behavior is kept.
 
         Returns:
             Tool result string, or error message string if tool not found
@@ -166,35 +169,26 @@ class ToolRegistry:
         """
         tool = self.get(tool_name)
         if not tool:
+            # No execution instance — the only thing left to refuse.  Refusal
+            # texts live in the catalog service, one wording per state, so the
+            # same situation reads the same here and at func-tool-load.
             if self._catalog is not None:
                 eff = await self._catalog.effective_status(tool_name)
                 if eff is not None:
                     if eff == STATUS_ERROR:
-                        # One wording for every gate that refuses an `error`
-                        # row, from the catalog service (refusal texts live
-                        # there) — this one and func-tool-load say the same
-                        # thing.
                         logger.info("tool_error_status name=%s", tool_name)
                         return status_error_refusal(tool_name, "called")
+                    if eff == STATUS_DISABLED:
+                        # Switched off in the config AND nothing registered for
+                        # it: "not loaded" would send the model to load a tool
+                        # the user has switched off.
+                        logger.info("tool_disabled_called name=%s", tool_name)
+                        return disabled_refusal(tool_name)
                     logger.info("tool_known_not_loaded name=%s eff=%s", tool_name, eff)
                     return not_loaded_refusal(tool_name)
             logger.warning("tool_not_found name=%s", tool_name)
             return f"Error: Unknown tool '{tool_name}'"
 
-        # Unloaded gate for materialized tools: config-disabled / server-down
-        # / evicted tools must not silently execute (the meta whitelist always
-        # runs).  The refusal names the state and stops — see
-        # :func:`not_loaded_refusal` for why a remedy is worse than none.
-        if self._catalog is not None and not is_meta_tool(tool_name):
-            eff = await self._catalog.effective_status(tool_name)
-            if eff == STATUS_ERROR:
-                # Its owner is unusable: saying "not loaded" would send the
-                # model to func-tool-load, which refuses for the same reason.
-                logger.info("tool_error_status name=%s", tool_name)
-                return status_error_refusal(tool_name, "called")
-            if eff is not None and eff != "loaded":
-                logger.info("tool_unloaded_called name=%s eff=%s", tool_name, eff)
-                return not_loaded_refusal(tool_name)
         # The tool's own schema is the contract for the call: a required
         # parameter that never arrived, or a name the tool does not declare
         # (a guessed `prompt` for `description`), is refused here rather than
