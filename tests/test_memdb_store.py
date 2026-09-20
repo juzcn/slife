@@ -1253,6 +1253,28 @@ class TestVecStoreMetric:
             await store.close()
 
     @pytest.mark.asyncio
+    async def test_an_extension_less_interpreter_is_recorded_as_such(self, tmp_path):
+        """The macOS case: sqlite3 built without loadable extensions has no
+        ``enable_load_extension`` at all.  The store must degrade to
+        keyword-only and say WHY — the wheel ships a binary for the OS
+        regardless, so "the platform has no sqlite-vec" would be the wrong
+        story, and the remedy (a different Python) is not findable from it."""
+        from unittest.mock import MagicMock
+
+        store = SessionStore(tmp_path / "t.db")
+        store._conn = None
+        conn = MagicMock(spec=[])          # no attributes at all, as on macOS
+        with patch.object(
+            SessionStore, "_c", new_callable=lambda: property(lambda self: conn),
+        ):
+            store._vec_available = True
+            await store._load_vec_extension()
+
+        assert store._vec_available is False
+        assert "cannot load extensions" in store._vec_reason
+        assert "enable_load_extension" in store._vec_reason
+
+    @pytest.mark.asyncio
     async def test_a_table_on_the_old_metric_is_rebuilt(self, tmp_path):
         """A pre-existing L2 table must not survive: the reading would be
         plausible and wrong rather than visibly broken."""

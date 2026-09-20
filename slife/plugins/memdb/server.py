@@ -644,6 +644,15 @@ async def __check() -> str:
         manager = _manager
         semantic = make_check_report()
         semantic.pop("hint", None)  # facts only — remediation lives in the harness
+        # The STORE's facts: whether the vector index can exist at all in this
+        # process, and why not when it cannot.  Independent of the embedding
+        # endpoint — a Python that cannot load SQLite extensions has no index
+        # whatever the endpoint says.
+        store_obj = _store
+        if store_obj is not None:
+            semantic["vec_available"] = store_obj._vec_available
+            if not store_obj._vec_available:
+                semantic["vec_reason"] = store_obj._vec_reason
         if manager is not None:
             semantic["semantic_ready"] = manager.semantic_ready
             semantic["state"] = manager.state

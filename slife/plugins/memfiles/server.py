@@ -630,6 +630,11 @@ async def __check() -> str:
     result = {
         "ok": store is not None,
         "connected": store is not None,
+        # Whether the vector index can exist in this process, and why not when
+        # it cannot — independent of the embedding endpoint.
+        "vec_available": bool(store is not None and store._vec_available),
+        "vec_reason": (store._vec_reason if store is not None
+                       and not store._vec_available else ""),
         "state": manager.state if manager is not None else "no_manager",
         "semantic_ready": bool(manager is not None and manager.semantic_ready),
         "unembedded": await manager.unembedded() if manager is not None else 0,

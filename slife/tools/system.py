@@ -156,6 +156,21 @@ def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, s
         # has ever run for this index.  A fact, not a degradation — and not
         # "disabled", which would be a claim about a drainer that isn't there.
         return ("info", "no drainer has published state", "")
+    if sem.get("vec_available") is False:
+        # No index can exist in this process, whatever the endpoint says: the
+        # vec0 tables could not be created.  The one cause worth naming here is
+        # the interpreter — CPython builds sqlite3 without loadable-extension
+        # support unless configured with ``--enable-loadable-sqlite-extensions``
+        # (Apple's system Python and the python.org installers are the common
+        # ones), and no sqlite extension can load under such a Python however
+        # complete the OS's own SQLite is.  That is a remedy, not a verdict, so
+        # the reason the store recorded comes first and the way out follows.
+        return ("warning",
+                f"unavailable ({sem.get('vec_reason') or 'sqlite-vec cannot load'})",
+                "Use a Python built with --enable-loadable-sqlite-extensions "
+                "(Homebrew's or uv's Python); the system Python on macOS and "
+                "the python.org installers are built without it. Keyword "
+                "search keeps working meanwhile.")
     if sem.get("configured") is False:
         return ("warning", "unavailable (no embeddings endpoint configured)",
                 _EMBEDDING_FIX_HINT)

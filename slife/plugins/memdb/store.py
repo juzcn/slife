@@ -97,6 +97,9 @@ class VecStoreLifecycleMixin:
     _embedding_dim: int
     _embedding_model: str
     _vec_available: bool
+    #: Why sqlite-vec could not load ("" when it did) — a fact ``__check``
+    #: reports, so the report can name the cause instead of "unavailable".
+    _vec_reason: str
 
     @property
     def _c(self) -> "aiosqlite.Connection":
@@ -168,14 +171,32 @@ class VecStoreLifecycleMixin:
         )
 
     async def _load_vec_extension(self) -> None:
-        """Load sqlite-vec best-effort.
+        """Load sqlite-vec best-effort, recording WHY when it cannot.
 
-        Embeddings are optional: when the extension can't load (e.g. no
-        bundled ``.dylib``/``.so`` for this platform), the store must still
-        work — the vec0 tables are skipped and semantic search stays gated
-        off.  A hard failure here would break keyword-only operation for no
-        gain.
+        Embeddings are optional: when the extension can't load, the store
+        must still work — the vec0 tables are skipped and semantic search
+        stays gated off.  A hard failure here would break keyword-only
+        operation for no gain.
+
+        The reason is kept as a fact because the two causes are not the same
+        thing: a wheel missing this OS's binary is a packaging accident, while
+        ``enable_load_extension`` being ABSENT is the interpreter — CPython
+        builds sqlite3 without loadable-extension support unless configured
+        with ``--enable-loadable-sqlite-extensions`` (Apple's system Python and
+        the python.org installers are the common ones).  No extension can load
+        under such a Python, sqlite-vec included, whatever the OS ships.
         """
+        if not hasattr(self._c, "enable_load_extension"):
+            self._vec_available = False
+            self._vec_reason = (
+                "this Python's sqlite3 cannot load extensions "
+                "(no enable_load_extension)"
+            )
+            logger.warning(
+                "%s_vec_unavailable err=no_enable_load_extension — semantic "
+                "search disabled (keyword only)", self._store_log_key,
+            )
+            return
         try:
             import sqlite_vec
             await self._c.enable_load_extension(True)
@@ -188,8 +209,10 @@ class VecStoreLifecycleMixin:
                 version[0] if version else "unknown",
             )
             self._vec_available = True
+            self._vec_reason = ""
         except Exception as e:
             self._vec_available = False
+            self._vec_reason = str(e)
             logger.warning(
                 "%s_vec_unavailable err=%s — semantic search disabled "
                 "(keyword only)", self._store_log_key, e,

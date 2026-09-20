@@ -2000,6 +2000,21 @@ class TestSemanticFacts:
         assert value.startswith("stalled (7 items pending")
         assert hint == ""
 
+    def test_an_extension_less_python_names_the_interpreter(self):
+        """No vec0 table can be created, whatever the endpoint says — and the
+        fix is the Python, not the config.  Reported with the reason the store
+        recorded plus the way out, because "unavailable" alone sends a reader
+        to the embeddings config, which is not the problem."""
+        level, value, hint = _semantic_facts({
+            "vec_available": False,
+            "vec_reason": "this Python's sqlite3 cannot load extensions "
+                          "(no enable_load_extension)",
+        })
+        assert level == "warning"
+        assert "no enable_load_extension" in value
+        assert "--enable-loadable-sqlite-extensions" in hint
+        assert "Homebrew" in hint and "uv" in hint
+
     def test_nothing_published_is_a_fact_not_a_state(self):
         """No drainer here AND none anywhere: the producer says "unknown" so
         the report never claims "disabled" about a drainer that isn't there."""
