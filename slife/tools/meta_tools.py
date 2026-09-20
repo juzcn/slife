@@ -204,9 +204,9 @@ class FuncToolLoadTool(Tool):
     name = "func-tool-load"
     category: ClassVar[str] = TOOL_META_CATEGORY
     description = (
-        "Load a function tool (builtin/job/plugin/mcp/rest-api) into the LLM's tool "
-        "list by name (find it with tool_search). Server-backed tools need "
-        "their server connected."
+        "Load a function tool (builtin/job/plugin/mcp/rest-api) into the LLM's "
+        "tool list by name (find it with tool_search). The tool is in the list "
+        "from the next request. Server-backed tools need their server connected."
     )
     parameters = make_params(
         full_name={

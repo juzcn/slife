@@ -6,7 +6,7 @@ import pytest; pytestmark = pytest.mark.unit
 import asyncio
 import json
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from slife.agent.loop import (
     AgentLoop,
@@ -1419,3 +1419,163 @@ class TestMidturnInjection:
             result = await loop.run("test", history)
 
         assert result.text == "The quick brown fox"
+
+
+# ── Tool-list injection (per LLM request, not per turn) ───────────────
+
+
+class TestToolListInjection:
+    """The tool list is rebuilt before EVERY LLM request out of the catalog's
+    loaded set, so a load landing mid-turn shows up in the next request of
+    the same turn (``func-tool-load`` is per-tool, not per-turn)."""
+
+    @pytest.mark.asyncio
+    async def test_load_mid_turn_lands_in_the_next_request(
+        self, sample_model_config, history, tmp_path,
+    ):
+        from slife.tools.base import Tool
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+        from slife.tools.registry import ToolRegistry
+
+        class _Native(Tool):
+            name = "native_x"
+            description = "a native tool"
+            parameters = {"type": "object", "properties": {}}
+
+            async def execute(self, **kwargs) -> str:
+                return "ok"
+
+        native_a = type("_NativeA", (_Native,), {"name": "native_a"})()
+        native_b = type("_NativeB", (_Native,), {"name": "native_b"})()
+
+        store = CatalogStore(tmp_path / "tools.db")
+        await store.open()
+        try:
+            svc = ToolCatalogService(store, write_owner=True)
+            reg = ToolRegistry()
+            reg.register(native_a)
+            reg.register(native_b)
+            reg.set_catalog(svc)
+            await svc.sync_system_tools([native_a, native_b])  # born unloaded
+            assert (await svc.load_tool("native_a"))[0]
+
+            llm = LLMClient(sample_model_config)
+            loop = AgentLoop(llm, reg, tool_catalog=svc)
+            seen: list[list[str]] = []
+
+            async def mock_stream(messages, tools, **kwargs):
+                seen.append([t["function"]["name"] for t in tools])
+                if len(seen) == 1:
+                    # What func-tool-load does mid-turn: flip the row loaded.
+                    assert (await svc.load_tool("native_b"))[0]
+                    yield StreamChunk(tool_deltas=[
+                        {"index": 0, "id": "c1",
+                         "function": {"name": "native_a", "arguments": "{}"}},
+                    ])
+                else:
+                    yield StreamChunk(content="done")
+                yield StreamChunk(usage=TokenUsage(1, 1, 2))
+
+            with patch.object(llm, "chat_stream", side_effect=mock_stream):
+                result = await loop.run("go", history)
+
+            assert result.text == "done"
+            assert len(seen) == 2
+            assert "native_a" in seen[0]
+            assert "native_b" not in seen[0]
+            # The mid-turn load is in the very next request's tool list.
+            assert "native_b" in seen[1]
+        finally:
+            await store.close()
+
+
+# ── A batch that loads a tool and calls it in the same message ────────
+
+
+class TestSameMessageLoadAndCall:
+    """One assistant message carrying ``func-tool-load(X)`` *and* ``X(...)``.
+
+    The batch runs its calls concurrently (``asyncio.gather``), so the two are
+    siblings, not steps — and the call is refused, because injection happens
+    per request: the list the model is answering from was built before the
+    load flipped the row.  That is the accepted contract, not a defect to
+    engineer around (load-and-call belongs in two messages; the first call
+    could only ever run on guessed arguments anyway).
+
+    What the harness owes the model here is the TIMING, stated where the model
+    can act on it — ``func-tool-load`` says the tool is in the list from the
+    next request.  This pins both halves so neither can silently regress.
+    """
+
+    def _setup(self, tmp_path):
+        from types import SimpleNamespace
+
+        from slife.agent.loop import AgentLoop
+        from slife.agent.message_history import MessageHistory
+        from slife.tools.base import Tool
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+        from slife.tools.meta_tools import FuncToolLoadTool
+        from slife.tools.registry import ToolRegistry
+
+        class _Target(Tool):
+            name = "target_tool"
+            description = "the tool that gets loaded"
+            parameters = {"type": "object", "properties": {}}
+            ran = 0
+
+            async def execute(self, **kwargs) -> str:
+                type(self).ran += 1
+                return "the tool ran"
+
+        store = CatalogStore(tmp_path / "tools.db")
+        svc = ToolCatalogService(store, write_owner=True)
+        target, loader = _Target(), FuncToolLoadTool()
+        reg = ToolRegistry()
+        reg.register(target)
+        reg.register(loader)
+        reg.set_catalog(svc)
+        loader._ctx = SimpleNamespace(
+            catalog=svc, registry=reg, mcp_client=None, message_history=None,
+        )
+        return store, svc, reg, loader, _Target, AgentLoop, MessageHistory
+
+    @pytest.mark.asyncio
+    async def test_the_call_is_refused_and_the_load_still_lands(self, tmp_path):
+        (store, svc, reg, loader, target_cls, AgentLoop,
+         MessageHistory) = self._setup(tmp_path)
+        await store.open()
+        try:
+            await svc.sync_system_tools([reg.get("target_tool"), loader])
+
+            loop = AgentLoop(llm_client=MagicMock(), tool_registry=reg)
+            history = MessageHistory(system_prompt="x")
+            await loop._execute_tools(
+                [
+                    ToolCallInfo(id="c1", name="func-tool-load",
+                                 arguments={"full_name": "target_tool"}),
+                    ToolCallInfo(id="c2", name="target_tool", arguments={}),
+                ],
+                history, None, iteration=1,
+            )
+
+            results = {
+                m["tool_call_id"]: m["content"]
+                for m in history.messages if m.get("role") == "tool"
+            }
+            # The load states its own timing — the one fact the model cannot
+            # observe about a tool it just loaded.
+            assert results["c1"] == (
+                "[OK] Loaded 'target_tool' — it is in the tool list from the "
+                "next request."
+            )
+            # The sibling call never ran: it is not in this request's list.
+            assert results["c2"].startswith("Error:")
+            assert "not loaded" in results["c2"]
+            assert target_cls.ran == 0
+            # …and the load itself landed, so the NEXT request carries it
+            # (the per-request injection TestToolListInjection pins).
+            assert await store.get_effective("target_tool") == "loaded"
+        finally:
+            await store.close()

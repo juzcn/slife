@@ -426,6 +426,12 @@ class ToolCatalogService:
         (config) and ERROR (the tool's server is not up) each get their own
         hint.  The caller materializes an execution instance for
         server-backed tools (the proxy) after a successful flip.
+
+        The success message states WHEN the tool is callable, because that is
+        the one thing the caller cannot see: the injection list for the
+        request already in flight was built before this flip, so the tool is
+        in the list from the next request onward.  A model that planned to
+        load and call in one message reads the timing here and waits.
         """
         row = await self._store.get_tool(name)
         if row is None:
@@ -447,7 +453,7 @@ class ToolCatalogService:
 
         await self._store.set_load_status(name, "loaded", bump=True)
         logger.info("catalog_tool_loaded name=%s", name)
-        return True, f"[OK] Loaded '{name}'."
+        return True, f"[OK] Loaded '{name}' — it is in the tool list from the next request."
 
     async def touch(self, name: str) -> None:
         """Record a tool use — the LRU recency the eviction policy orders by.

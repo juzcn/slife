@@ -321,14 +321,15 @@ class AgentLoop:
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
-        #: Shared tool catalog — the per-turn injection snapshot and the
-        #: turn-boundary eviction consult it.  None (no catalog) keeps the
-        #: historical all-registered injection with no eviction.
+        #: Shared tool catalog — the injection snapshot and the turn-boundary
+        #: eviction consult it.  None (no catalog) keeps the historical
+        #: all-registered injection with no eviction.
         self.tool_catalog = tool_catalog
         self.load_threshold = load_threshold if load_threshold and load_threshold > 0 else 100
-        #: Tool names injectable THIS turn (frozen; re-read at the next run).
+        #: Tool names injectable by the NEXT LLM request (re-read before every
+        #: request — see :meth:`_refresh_inject_snapshot`).
         #: None ⇒ fall back to the whole registry (no catalog).
-        self._turn_snapshot: AbstractSet[str] | None = None
+        self._inject_snapshot: AbstractSet[str] | None = None
         #: Tools evicted at this turn's boundary (footnote in _turn_prompt).
         self._evicted_this_turn: list[str] = []
         self.max_iterations = max_iterations
@@ -882,6 +883,10 @@ class AgentLoop:
     async def _tools_for_request(self) -> list[dict]:
         """The OpenAI function list for the NEXT LLM request.
 
+        Built from the loaded set :meth:`_refresh_inject_snapshot` just read —
+        which is why a tool loaded mid-turn (``func-tool-load``) is in the very
+        next request rather than the next turn.
+
         Schemas are read from the CATALOG DB (the ``schema`` column — the
         single source: builtin tools' descriptors are seeded from their defs at
         session start, mcp/rest-api rows from the reconcile), NOT from tool
@@ -891,37 +896,44 @@ class AgentLoop:
         (the historical behavior).
         """
         if self.tool_catalog is None:
-            return self.tool_registry.to_openai_functions(projection=self._turn_snapshot)
-        if self._turn_snapshot is None:
+            return self.tool_registry.to_openai_functions(projection=self._inject_snapshot)
+        if self._inject_snapshot is None:
             return self.tool_registry.to_openai_functions()
         try:
-            rows = await self.tool_catalog.store.rows_for_names(self._turn_snapshot)
+            rows = await self.tool_catalog.store.rows_for_names(self._inject_snapshot)
         except Exception:
             logger.exception("tools_schema_read_failed — falling back to instances")
-            return self.tool_registry.to_openai_functions(projection=self._turn_snapshot)
+            return self.tool_registry.to_openai_functions(projection=self._inject_snapshot)
         by_name = {r["name"]: r["schema"] for r in rows}
         result: list[dict] = []
         for tool in self.tool_registry.list_tools():
-            if tool.name not in self._turn_snapshot:
+            if tool.name not in self._inject_snapshot:
                 continue
             func = _function_from_schema(tool.name, by_name.get(tool.name))
             result.append(func if func is not None else tool.to_openai_function())
         return result
 
-    async def _refresh_turn_snapshot(self) -> None:
-        """Read the catalog's loaded set once per turn (freeze for the turn).
+    async def _refresh_inject_snapshot(self) -> None:
+        """Read the catalog's loaded set — called before EVERY LLM request.
 
-        Best-effort: a catalog hiccup degrades to the whole registry for the
-        sequence, so a transient db error never folds the tool list.
+        The tool list is per-REQUEST, not per-turn: ``func-tool-load`` (and
+        ``_unload_func_tool``) mid-turn must land in the next request, which is
+        the whole point of a per-tool load.  The order of the rebuilt list is
+        the registry's, so a tool registered mid-turn (an mcp/rest-api proxy is
+        materialized at load time) appends at the END — the request's prefix up
+        to that point is unchanged, and the prompt cache survives the load.
+
+        Best-effort: a catalog hiccup degrades to the whole registry for that
+        request, so a transient db error never folds the tool list.
         """
         if self.tool_catalog is None:
-            self._turn_snapshot = None
+            self._inject_snapshot = None
             return
         try:
-            self._turn_snapshot = await self.tool_catalog.snapshot_loaded()
+            self._inject_snapshot = await self.tool_catalog.snapshot_loaded()
         except Exception:
-            logger.exception("turn_snapshot_failed — injecting full registry")
-            self._turn_snapshot = None
+            logger.exception("inject_snapshot_failed — injecting full registry")
+            self._inject_snapshot = None
 
     async def _maybe_evict(self) -> list[str]:
         """Turn-boundary threshold eviction (harness-side LRU squeeze).
@@ -974,9 +986,11 @@ class AgentLoop:
         # One-element holder so `emitted_any` survives a mid-stream raise —
         # the retry path needs to know partial output was already shown.
         emitted: list[bool] = [False]
-        # The tool list is computed ONCE per stream — every retry attempt sends
-        # the identical list (a changing tools array would defeat the prompt
-        # cache prefix AND silently reorder tools the model may call mid-turn).
+        # The tool list is computed ONCE per REQUEST — every retry attempt of
+        # this request sends the identical list (a tools array changing between
+        # attempts would defeat the prompt-cache prefix AND reorder tools the
+        # model may be calling right now).  The next request recomputes it from
+        # a fresh snapshot, so a mid-turn load lands there.
         request_tools = await self._tools_for_request()
         while True:
             attempts += 1
@@ -995,10 +1009,10 @@ class AgentLoop:
                     # system-prompt contract (slife.j2), not per-tool schema
                     # fields — that saves ~3 params × 60 tools per request.
                     #
-                    # With a catalog, only this turn's loaded snapshot is
-                    # injected, and the schemas come FROM THE CATALOG DB
-                    # (stability within the turn keeps the tool-list prefix of
-                    # the prompt cache intact); without one the historical
+                    # With a catalog, only the loaded snapshot is injected, and
+                    # the schemas come FROM THE CATALOG DB — the snapshot is
+                    # re-read per request (before this call), so the list is
+                    # whatever is loaded NOW; without a catalog the historical
                     # all-registered list is sent.  Computed once OUTSIDE the
                     # retry loop so every attempt sends byte-identical tools.
                     tools=request_tools,
@@ -1484,18 +1498,12 @@ class AgentLoop:
                         # without bound.
                         del self._context_turn_dates[_MAX_CONTEXT_DATES:]
 
-                # Threshold eviction BEFORE the snapshot: the oldest-by-LRU loaded
-                # tools over the budget leave the tool list for this turn,
-                # and the footnote tells the model.  Never mid-turn — the
-                # injected list stays stable within a turn.
+                # Threshold eviction BEFORE the first request: the
+                # oldest-by-LRU loaded tools over the budget leave the tool
+                # list for this turn, and the footnote tells the model.
+                # Eviction stays a turn-boundary operation (the injected list
+                # itself is rebuilt per request, below).
                 self._evicted_this_turn = await self._maybe_evict()
-
-                # Tool-list snapshot for THIS turn: read the catalog's loaded
-                # set before the loop iterates (and before _turn_prompt, so
-                # eviction changes — if any — are visible to the injector and
-                # to both cache prefixes).  Frozen for the whole turn: retries
-                # and mid-turn loads never silently reorder the tool list.
-                await self._refresh_turn_snapshot()
 
                 # Context usage is computed ONCE and shared: _turn_prompt
                 # reports it as the usage %, and the TUI status bar.
@@ -1531,6 +1539,13 @@ class AgentLoop:
                         and self.pending_input_has()
                     ):
                         await self._auto_invoke("_check_new_input", {}, history)
+
+                    # The injected tool list is rebuilt for EVERY request from
+                    # the catalog's loaded set, so a load that landed during the
+                    # previous iteration (func-tool-load, _unload_func_tool, a
+                    # plugin's mirror) is in this request — the next LLM call,
+                    # not the next turn.
+                    await self._refresh_inject_snapshot()
 
                     with elapsed("iter", logger, iter=i + 1):
                         result = await self._process_stream(history, handler)

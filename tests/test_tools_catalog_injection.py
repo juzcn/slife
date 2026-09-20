@@ -242,7 +242,7 @@ async def test_injected_schema_comes_from_catalog_not_instance(db):
     loop = SimpleNamespace(
         tool_catalog=svc,
         tool_registry=registry,
-        _turn_snapshot=frozenset({"native_a"}),
+        _inject_snapshot=frozenset({"native_a"}),
     )
     tools = await AgentLoop._tools_for_request(loop)
     fn = next(f for f in tools if f["function"]["name"] == "native_a")
