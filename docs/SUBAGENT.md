@@ -200,6 +200,16 @@ The worker is the same loop wired to nothing else. Excluded from the *service la
 
 Every excluded feature is a *plugin of the loop*, not the loop itself — which is why the worker still runs the identical `AgentLoop` including the `_turn_prompt` harness tool-pair and the internal context trim. "Does not run the main agent's harness" is a statement about the service/orchestration layer, not the loop internals.
 
+### Coming up: a capability must be ready when work starts
+
+The parent agent loads its capabilities at boot, so nothing it does can race its own startup. A worker that initializes a capability *on first use* has no such guarantee, and the failure is quiet: the first turn fans out several tool calls, one of them triggers the initialization, and the others read a half-built state and report the capability as unavailable. If that state is a boolean (``available``), "not yet" arrives as "no".
+
+The rule this file's capabilities follow, and the one to apply to the next one:
+
+* **Never report "not yet" as "no".** An initialization in flight must be awaited — by every caller, not just the one that started it — so the only answer a caller can get is the finished one. (`EmbeddingClient.load` shares an in-flight future for exactly this; the reader's failure flag is set *after* the await, never before.)
+* **Warm what is cheap at boot.** The boot handshake already waits for the plugin clients (`connect_shared_plugins`) before it reports `ready`, because a worker's tools must work on its first turn. A capability that cannot be awaited at boot without coupling spawn to a remote endpoint (the semantic client probes the embedding endpoint) comes up on a background task instead — the window moves to spawn, where the handshake covers it, and the first query then waits rather than degrades.
+* **A degradation is a transition, and transitions are announced.** One line per change, not one per query: a silently degraded capability looks like an empty result set, which for a Chinese keyword query is indistinguishable (the CJK path requires each space-delimited run to appear verbatim, so a natural-language Chinese query matches nothing once the semantic leg is gone).
+
 ## Shared plugins & recursion
 
 - **Every plugin the parent started, shared by port.** The worker reads `SLIFE_<NAME>_PORT` for each discovered plugin and connects as an MCP client over Streamable HTTP — a manifest loop, not a hard-coded subset (`AgentService.connect_shared_plugins`). It never spawns its own plugin processes; a worker crash takes down only the worker, never shared infrastructure (the parent's watchdog is untouched).

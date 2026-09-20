@@ -11,6 +11,7 @@ case where guessing would have been worse than degrading.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx2
@@ -194,9 +195,9 @@ async def test_a_dead_endpoint_is_probed_once_not_once_per_search(
 ):
     """A worker is long-lived: a per-search retry would stall every task.
 
-    The load is attempted once and its failure is remembered with a reason
-    that names the endpoint, so ``tool_search`` degrades to keyword-only at the
-    cost of one bounded probe rather than a transport timeout per call.
+    The failure is remembered, with a reason naming the endpoint, so
+    ``tool_search`` degrades to keyword-only at the cost of one bounded probe
+    rather than a transport timeout per call.
     """
     store = await _store(tmp_path)
     try:
@@ -205,11 +206,79 @@ async def test_a_dead_endpoint_is_probed_once_not_once_per_search(
 
         assert await reader.query_ready() is False
         assert "did not answer" in reader.reason
-        assert reader._load_attempted is True
+        assert reader._load_failed is True
 
         # Second call: already known bad, no new attempt, same verdict.
         assert await reader.query_ready() is False
-        assert reader._load_attempted is True
+        assert reader._load_failed is True
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cold_batch_does_not_sacrifice_the_calls_that_lose_the_race(
+    tmp_path, config,
+):
+    """The reported bug: parallel first queries, only ONE of them semantic.
+
+    A worker's first turn fans out several ``tool_search`` calls, and the
+    semantic client comes up on the first of them.  When the loader published
+    "attempted, not loaded YET" instead, every other caller in that batch read
+    a half-built client as "unavailable" and degraded — no request made, 15 ms
+    instead of 373 ms, and a Chinese query (keyword search has no word
+    segmentation) matched nothing at all, so the degradation was invisible
+    beyond an empty result.
+
+    They now share one in-flight load: the same number of probes for the batch,
+    and every caller gets the same answer.
+    """
+    store = await _store(tmp_path)
+    try:
+        await _publish(store)
+        reader = SemanticReader(store, config, transport=_transport())
+
+        vectors = await asyncio.gather(
+            *(reader.embed_query(f"query {i}") for i in range(4)),
+        )
+        assert all(v for v in vectors), "no concurrent caller may be sacrificed"
+        assert reader.reason == ""
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_the_reader_can_be_warmed_before_the_first_task(tmp_path, config):
+    """The capability should be up when the worker starts work, not during it.
+
+    The parent has no cold-start window — its embedder is loaded at boot by the
+    drainer — so a worker warms the same way, on a background task the boot
+    path starts.
+    """
+    store = await _store(tmp_path)
+    try:
+        await _publish(store)
+        reader = SemanticReader(store, config, transport=_transport())
+
+        assert await reader.warmup() is True
+        # The first query then costs an embed, not a probe + an embed.
+        vec = await reader.embed_query("first")
+        assert vec and len(vec) == 3
+        assert reader.reason == ""
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_warmup_that_fails_is_reported_and_never_raises(tmp_path, config):
+    """A boot task must not surface as an error — it records the reason the
+    next query will report."""
+    store = await _store(tmp_path)
+    try:
+        await _publish(store)
+        reader = SemanticReader(store, config, transport=_transport(fail=True))
+
+        assert await reader.warmup() is False
+        assert "did not answer" in reader.reason
     finally:
         await store.close()
 

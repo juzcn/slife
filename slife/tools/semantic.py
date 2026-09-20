@@ -102,6 +102,11 @@ class EmbeddingClient:
         self._max_tokens = max_tokens or _guess_max_tokens(model)
         self._client: httpx2.AsyncClient | None = None
         self._client_init_lock = asyncio.Lock()
+        # In-flight load future — concurrent load() calls share one probe
+        # instead of each discovering the model, and (the part that matters) a
+        # caller never reads a half-built client as "unavailable".  Same shape
+        # as the memdb client's, which its gate calls from every search.
+        self._loading: asyncio.Future | None = None
         self._transport = transport  # test hook (httpx2.MockTransport)
 
     # ── Construction from the host's active endpoint ───────────────
@@ -244,22 +249,47 @@ class EmbeddingClient:
             return False
 
     async def load(self) -> bool:
-        """Pin the model + real dimension from the endpoint. Returns True when ready."""
+        """Pin the model + real dimension from the endpoint. Returns True when ready.
+
+        Concurrent calls share ONE materialisation: the second caller awaits the
+        first's in-flight load rather than starting a second probe, and — the
+        part that matters — rather than looking at a not-yet-loaded client and
+        concluding "unavailable".  A batch of parallel searches is the normal
+        case here (a worker's first turn fans out several ``tool_search``
+        calls), and every one of them must wait for the same answer instead of
+        the losers of the race silently degrading to keyword-only.  Same shape
+        as the memdb client's ``load``, which the semantic gate calls from every
+        search and check for the same reason.
+        """
         if not self.available:
             return False
+        if self._loaded:
+            return True
+        if self._loading is not None:
+            return await self._loading  # share the in-flight load
+        self._loading = asyncio.get_running_loop().create_future()
+        ok = False
         try:
             if not await self._discover_model():
                 if not self._dim_known:
                     await self._probe_api_dim()
             self._loaded = True
+            ok = True
             logger.info(
                 "embedding_loaded backend=api model=%s dim=%d base_url=%s",
                 self._model, self._dim, self._base_url,
             )
-            return True
         except Exception as e:
             logger.warning("embedding_load_failed err=%s", e)
-            return False
+        finally:
+            # Always resolve the shared future and clear the slot.  A
+            # CancelledError (a BaseException, not caught above) must not leave
+            # ``_loading`` pointing at a future that never resolves — every
+            # later load() would then hang forever.
+            if not self._loading.done():
+                self._loading.set_result(ok)
+            self._loading = None
+        return ok
 
     async def _discover_model(self) -> bool:
         """GET ``{base_url}/models`` to pin the model + dimension."""
@@ -504,13 +534,37 @@ class SemanticReader:
         )
         if transport is not None:
             self._embedder._transport = transport  # test hook, see EmbeddingClient
-        self._load_attempted = False
+        #: A load that finished and FAILED — remembered so a long-lived worker
+        #: never probes a dead endpoint once per search.
+        self._load_failed = False
         self._reason = ""
 
     @property
     def reason(self) -> str:
         """Why the last :meth:`query_ready` said no (empty when it said yes)."""
         return self._reason
+
+    async def warmup(self) -> bool:
+        """Bring the reader up before the first query needs it.
+
+        The capability a worker inherits should be READY when it starts work,
+        not initialized by the first task that needs it: a lazily-built
+        semantic client means the first turn runs while it is still coming up,
+        and anything sharing that turn is served by a half-built state.  The
+        parent has no such window — its embedder is loaded at boot by the
+        drainer — so a worker that warms at boot behaves like the process it
+        forked from.
+
+        Never raises, and never blocks the caller: the boot path starts it as a
+        background task, so a slow or dead endpoint costs the worker nothing at
+        spawn.  A failure here is simply recorded as the reason a later query
+        will report.
+        """
+        try:
+            return await self._ensure_embedder()
+        except Exception as exc:  # a boot task must not surface as an error
+            logger.warning("semantic_reader_warmup_failed err=%s", exc)
+            return False
 
     async def query_ready(self) -> bool:
         """Whether a query can be embedded and compared against this index.
@@ -523,14 +577,14 @@ class SemanticReader:
         state = await read_published_state(self._store)
         if not state.get("semantic_ready"):
             if state.get("state") == "unknown":
-                self._reason = (
+                self._degrade(
                     "the shared tool index has no published state — no drainer "
-                    "has run in this database; keyword only."
+                    "has run in this database; keyword only.",
                 )
             else:
-                self._reason = (
+                self._degrade(
                     state.get("reason")
-                    or "semantic search unavailable — keyword only."
+                    or "semantic search unavailable — keyword only.",
                 )
             return False
         # The index's owner embedded with ITS endpoint.  A reader whose config
@@ -539,11 +593,11 @@ class SemanticReader:
         # meaningless, so identity is the check, not the width.
         published_model = state.get("model", "")
         if published_model and published_model != self._embedder.model:
-            self._reason = (
+            self._degrade(
                 f"the shared tool index was built with a different embedding "
                 f"model ({published_model}, not {self._embedder.model}) — "
                 "keyword only until this process is restarted with the current "
-                "config."
+                "config.",
             )
             return False
         self._reason = ""
@@ -556,14 +610,25 @@ class SemanticReader:
         return await self._embedder.embed_one(text)
 
     async def _ensure_embedder(self) -> bool:
-        """Load the embedder once; False (with a reason) when it cannot be used.
+        """Load the embedder, sharing the work with anyone else asking now.
 
-        One attempt per process on purpose: a worker is long-lived and reused
-        across tasks, and retrying a dead endpoint on every ``tool_search``
-        would stall each one for the transport timeout.  A failed load leaves
-        ``reason`` naming the endpoint, which the caller reports.
+        Concurrent callers must not disagree.  A batch of parallel searches is
+        the ordinary case (a worker's first turn fans out several
+        ``tool_search`` calls), and only the caller that WINS the race may
+        report anything about the endpoint: the others await the same load.  A
+        loader that publishes "attempted, not loaded yet" instead lets every
+        loser of the race read a half-built client as "unavailable" and degrade
+        to keyword-only — silently, since nothing was even tried.  That was the
+        behaviour here, and it made the first turn of every worker return a mix
+        of semantic and keyword-only results for the SAME query.
 
-        The probe comes FIRST, and it is the one that decides.  ``load()``
+        A load that has FINISHED and failed is remembered (``_load_failed``):
+        a worker is long-lived, so retrying a dead endpoint on every search
+        would stall each one for the probe budget.  That is also why the flag
+        is set after the await rather than before it — "not yet" and "no" are
+        different answers, and only "no" is allowed to degrade.
+
+        The probe comes first, and it is the one that decides.  ``load()``
         alone is a shallow success for a model the built-in table knows: the
         width is taken from that table, so it returns True without having
         reached the endpoint at all.  The drainer tolerates that (an endpoint
@@ -573,39 +638,56 @@ class SemanticReader:
         this whole surface exists to avoid.
         """
         if not self._enabled:
-            self._reason = (
+            self._degrade(
                 "semantic search is switched off in the config "
-                "(embeddings.enabled=false) — keyword only."
+                "(embeddings.enabled=false) — keyword only.",
             )
             return False
         e = self._embedder
         if not e.available:
-            self._reason = (
+            self._degrade(
                 "no embedding endpoint configured — add an 'embeddings' "
-                "section to slife.yaml to enable semantic tool search"
+                "section to slife.yaml to enable semantic tool search",
             )
             return False
         if e.loaded:
             return True
-        if not self._load_attempted:
-            self._load_attempted = True
-            try:
-                # Bounded at the endpoint-readiness budget: this is a "is it
-                # there" question, not a bulk embed.
-                ok = await asyncio.wait_for(
-                    self._probe_then_load(),
-                    timeout=_timeouts.timeouts.ready.probe_endpoint,
-                )
-            except Exception as exc:  # timeout, transport, bad payload
-                logger.warning("semantic_reader_load_failed err=%s", exc)
-                ok = False
-            if not ok:
-                self._reason = (
-                    f"embedding endpoint did not answer ({e.base_url}) — "
-                    "keyword only."
-                )
-                return False
-        return bool(e.loaded)
+        if self._load_failed:
+            return False            # a finished failure — do not probe again
+        try:
+            # Bounded at the endpoint-readiness budget: this is a "is it
+            # there" question, not a bulk embed.
+            ok = await asyncio.wait_for(
+                self._probe_then_load(),
+                timeout=_timeouts.timeouts.ready.probe_endpoint,
+            )
+        except Exception as exc:  # timeout, transport, bad payload
+            logger.warning("semantic_reader_load_failed err=%s", exc)
+            ok = False
+        if not ok:
+            self._load_failed = True
+            self._degrade(
+                f"embedding endpoint did not answer ({e.base_url}) — "
+                "keyword only.",
+            )
+            return False
+        return True
+
+    def _degrade(self, reason: str) -> None:
+        """Record why this process cannot search — and say it ONCE.
+
+        The degradation was previously invisible: no warning, no log line, not
+        even the semantic leg's own debug record, so a worker answering "no
+        results" for a Chinese query (keyword search has no word segmentation,
+        so a degraded query can match nothing at all) looked like an empty
+        index rather than a capability that had not come up yet.  Announced on
+        the TRANSITION, the way the index's owner announces its own state — one
+        line per change, not one per query.
+        """
+        if reason == self._reason:
+            return
+        self._reason = reason
+        logger.warning("semantic_query_degraded reason=%s", reason)
 
     async def _probe_then_load(self) -> bool:
         """Ask whether the endpoint is there, then pin the model and width."""

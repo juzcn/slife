@@ -267,6 +267,9 @@ class AgentService:
         #: Host-side semantic drainer over the catalog (main agent only).
         self._catalog_semantic = None
         self._catalog_semantic_task: asyncio.Task | None = None
+        #: The reader's boot warmup (a worker owns no drainer, so its semantic
+        #: capability comes up on a background task instead of at enable()).
+        self._catalog_reader_warmup: asyncio.Task | None = None
         self._tool_load_threshold = getattr(config, "tool_load_threshold", 100) or 100
         self.llm_client = LLMClient(config.active_model)
         # Max tool result = tool_result_ceiling × context_window × 3 chars/token
@@ -2022,6 +2025,16 @@ class AgentService:
     async def close_catalog(self) -> None:
         """Teardown the shared tool catalog: drop the semantic drainer + close
         the db connection.  Idempotent; no-op when never opened."""
+        # The reader's boot warmup first: it holds the store, and cancelling it
+        # must not leave a task awaiting a closed db.
+        if (self._catalog_reader_warmup is not None
+                and not self._catalog_reader_warmup.done()):
+            self._catalog_reader_warmup.cancel()
+            try:
+                await self._catalog_reader_warmup
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._catalog_reader_warmup = None
         if self._catalog_semantic_task is not None and not self._catalog_semantic_task.done():
             self._catalog_semantic_task.cancel()
             try:
@@ -2864,6 +2877,15 @@ class AgentService:
                 )
             else:
                 svc.semantic_reader = SemanticReader(store, embeddings_config)
+                # …and warm it at boot, so the capability is up before the
+                # first task rather than during it.  Background, like the
+                # drainer's own start(): a slow endpoint costs the worker
+                # nothing at spawn, and the first query waits for the shared
+                # load instead of degrading while it runs.
+                self._catalog_reader_warmup = asyncio.create_task(
+                    svc.semantic_reader.warmup(),
+                    name="catalog-semantic-warmup",
+                )
             logger.info("catalog_initialized role=%s", self.role.value)
         except Exception:
             logger.exception("catalog_init_failed — continuing without catalog")
