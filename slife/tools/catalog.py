@@ -473,8 +473,15 @@ class CatalogOpDelta:
     """What a window of catalog writes did to the rows.
 
     Armed by :meth:`CatalogStore.begin_ops` and taken away by ``end_ops``, so
-    the tool-sync pass can report what a startup changed in the catalog:
-    insert → ``added``, update → ``updated``, delete → ``removed``.
+    the tool-sync line can report what a startup changed in the catalog:
+    insert → ``added``, update → ``updated``, delete → ``removed``.  The
+    window is the STARTUP's, not one pass's: it opens with the catalog and
+    closes with the line (see :meth:`CatalogStore.begin_ops`).
+
+    ``added`` counts the rows the user GAINED, so a row born switched off does
+    not book one: the line prints these beside a count of what is callable
+    (:meth:`CatalogStore.count_usable`), and both have to be asking the same
+    question of the same ``status`` column.
 
     Only a **config-derived** column moves the counters.  ``status`` is
     partly config and partly runtime, so it is booked by the arm that wrote it
@@ -505,8 +512,9 @@ class CatalogStore:
         self._path = Path(path)
         self._conn: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()
-        #: Armed by :meth:`begin_ops`, cleared by :meth:`end_ops` — None means
-        #: nobody is asking, so every write path's counting is a no-op call.
+        #: Armed by :meth:`begin_ops` (the process's startup window), cleared
+        #: by :meth:`end_ops` (the tool-set line) — None means nobody is
+        #: asking, so every write path's counting is a no-op call.
         self._ops: CatalogOpDelta | None = None
 
     @property
@@ -519,9 +527,15 @@ class CatalogStore:
     def begin_ops(self) -> CatalogOpDelta:
         """Arm the op collector; returns the accumulator the caller keeps.
 
-        One window at a time: the tool-sync pass arms it, reads it in its
-        ``finally`` and disarms it.  A second ``begin_ops`` simply starts a
-        fresh window (the previous accumulator keeps whatever it collected).
+        One window at a time, and the window is the process's STARTUP: armed
+        where the catalog is opened, closed by ``end_ops`` where the tool-set
+        line is reported.  It has to open that early — the boot seed, the
+        skill/cli mirror and the plugins' connects all write rows before the
+        first reconcile pass, and the pass that converges is not the pass that
+        did the work (arming per pass reported one source's rows out of a
+        whole catalog).  Reads accumulate until ``end_ops`` takes them; a
+        second ``begin_ops`` starts a fresh window and DISCARDS what the
+        previous one collected, so it is not a way to look without closing.
         """
         self._ops = CatalogOpDelta()
         return self._ops
@@ -770,6 +784,9 @@ class CatalogStore:
             existing = {r["name"]: dict(r) for r in await cursor.fetchall()}
 
             inserted: list[str] = []
+            #: Of ``inserted``, the ones the user GAINED — see the accounting
+            #: note in ``_count_ops`` below.
+            usable_added = 0
             updated: list[str] = []
             status_updated: list[str] = []
             invalidated: list[str] = []
@@ -802,6 +819,15 @@ class CatalogStore:
                         ),
                     )
                     inserted.append(name)
+                    # A row born SWITCHED OFF is not a tool the user gained:
+                    # the config declares it, so the db carries it (yaml and db
+                    # agree), but nothing became callable.  ``count_usable``
+                    # asks the same question of the same column, so booking
+                    # this as ``added`` would have the tool-set line report
+                    # more added than usable — the mismatch that made a cold
+                    # start read ``新增 1586 … 1575 个工具可用``.
+                    if (new_tool_status or STATUS_ENABLED) != STATUS_DISABLED:
+                        usable_added += 1
                     if _embeddable(new_schema):
                         invalidated.append(name)
                     continue
@@ -911,8 +937,13 @@ class CatalogStore:
 
             await self._c.commit()
 
+        # ``added`` is the usable rows gained, not the rows written: the
+        # tool-set line pairs it with a count of what is usable NOW
+        # (``count_usable``), so a row born switched off — written, but never
+        # callable — books nothing on either side.  The log line below still
+        # reports the raw write count, which is what a log is for.
         self._count_ops(
-            added=len(inserted), updated=len(updated), removed=len(purged),
+            added=usable_added, updated=len(updated), removed=len(purged),
         )
         logger.info(
             "catalog_reconcile category=%s inserted=%d updated=%d status=%d "
@@ -1172,6 +1203,26 @@ class CatalogStore:
             "SELECT name FROM tool WHERE category = ?", (category,),
         )
         return {row[0] for row in await cursor.fetchall()}
+
+    async def count_usable(self) -> int:
+        """How many rows are callable right now — every family, load state aside.
+
+        The tool-set line's ``total``, and deliberately not a registry count:
+        the registry holds registered tool INSTANCES, and ``skill`` / ``cli``
+        have none — they are rows, not instances (a skill IS its SKILL.md text,
+        a cli row its command), so no registry count can ever see them.  They
+        are usable all the same; they simply have no load state to flip, which
+        is the whole of what :data:`FUNCTION_CATEGORIES` splits on.
+
+        ``status`` is the entire test: ``enabled`` is "neither switched off nor
+        marked down", so a row the config disabled and a row whose server is in
+        ``error`` are both correctly absent from what the line promises.
+        """
+        cursor = await self._c.execute(
+            "SELECT COUNT(*) FROM tool WHERE status = ?", (STATUS_ENABLED,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
 
     async def has_error_rows(self, categories: "set[str] | frozenset[str]") -> bool:
         """Whether any row of these categories is marked ``error`` right now.

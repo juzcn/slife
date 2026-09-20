@@ -311,6 +311,51 @@ async def test_op_delta_counts_the_row_operations(store):
 
 
 @pytest.mark.asyncio
+async def test_op_delta_does_not_count_a_row_born_switched_off(store):
+    """A disabled row is WRITTEN, but it is not a tool the user gained.
+
+    The tool-set line prints ``added`` beside ``count_usable()``, and both ask
+    the same question of the same ``status`` column — so the row the config
+    declares switched off (written all the same: yaml names it, so the db
+    carries it) must book a gain on neither side.  Booking it on one is what
+    made a cold start read ``新增 1586 … 1575 个工具可用``.
+    """
+    delta = store.begin_ops()
+
+    await store.reconcile([
+        _row("native_a", description="A", schema="schema-a"),
+        _row("off_tool", description="Off", status=STATUS_DISABLED),
+    ])
+
+    assert delta.added == 1
+    assert await store.count_usable() == 1
+    assert (await store.get_tool("off_tool"))["status"] == STATUS_DISABLED
+
+
+@pytest.mark.asyncio
+async def test_count_usable_is_the_whole_catalog_not_the_function_families(store):
+    """``count_usable`` asks "is it callable", never "does it have a load state".
+
+    ``FUNCTION_CATEGORIES`` splits on load/unload, and a skill / cli row is a
+    usable tool that simply has none — so the count has to come off the rows,
+    where only a registry (which holds no instance for those families) would
+    miss them.  ``error`` is the other half: a tool whose server is down is not
+    usable, so an enabled count must not include it.
+    """
+    await store.reconcile([
+        _row("native_a", description="A", schema="schema-a"),
+        _row("browser-use", description="Skill", category="skill",
+             source_id="skill", schema="# browser-use"),
+        _row("gh", description="Cli", category="cli", source_id="cli"),
+        _row("off_tool", description="Off", status=STATUS_DISABLED),
+        _row("down__tool", description="Down", category="mcp",
+             source_id="down", status=STATUS_ERROR),
+    ])
+
+    assert await store.count_usable() == 3
+
+
+@pytest.mark.asyncio
 async def test_op_delta_counts_a_switched_off_server(store):
     """``status``'s config arm IS config-derived — a server switched off in
     tools.yaml changes those tools — while a switch that moves nothing is not

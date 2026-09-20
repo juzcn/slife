@@ -1376,18 +1376,15 @@ class AgentService:
         if self._mcp_reconciling:
             return
         self._mcp_reconciling = True
-        # Timing + the catalog-op collector: this pass is what decides when the
-        # agent can actually call things, and on a cold start it is the long
-        # wait.  Both are consumed on the way out (see _report_tool_sync) — and
-        # the delta is what this pass WROTE to the catalog, never a registry
-        # before/after: a cold start's registry begins empty, so every tool it
-        # ever holds would read as "added".
+        # Timing: this pass is what decides when the agent can actually call
+        # things, and on a cold start it is the long wait.  The op window is
+        # NOT armed here — it opened with the catalog (``_init_catalog``) so
+        # that it spans the startup rather than this pass's slice of it, and
+        # ``_report_tool_sync`` reads it out, whether or not this is the pass
+        # that converges.
         started = _time.monotonic()
         if self._tool_sync_started_at is None:
             self._tool_sync_started_at = started
-        delta: "CatalogOpDelta | None" = (
-            self._catalog.store.begin_ops() if self._catalog is not None else None
-        )
         #: Enabled servers that have not answered a ``tools/list`` yet —
         #: filled in by the post-mirror projection below, the first look that
         #: can tell a slow server from an absent one.
@@ -1516,15 +1513,10 @@ class AgentService:
             raise
         finally:
             self._mcp_reconciling = False
-            if self._catalog is not None:
-                self._catalog.store.end_ops()
-            await self._report_tool_sync(
-                started, delta, pending=pending, failure=failure,
-            )
+            await self._report_tool_sync(started, pending=pending, failure=failure)
 
     async def _report_tool_sync(
-        self, started: float, delta: "CatalogOpDelta | None", *,
-        pending: set[str], failure: str = "",
+        self, started: float, *, pending: set[str], failure: str = "",
     ) -> None:
         """Tell the TUI the tool set is ready — once, and only once it has converged.
 
@@ -1542,28 +1534,50 @@ class AgentService:
         The wait is bounded by ``ready.tool_sync_wait`` so that a server which
         never comes up cannot keep the line away forever.
 
-        ``total`` is what is REGISTERED, i.e. callable.  What the model SEES
-        in a turn is the ``load_status`` snapshot, a narrower set — so the
-        line promises availability, never injection.
+        ``total`` is every USABLE catalog row — not the registry, which cannot
+        see the two registry-less families: ``skill`` and ``cli`` are rows
+        rather than instances (a skill IS its SKILL.md text), so a registry
+        count under-reported what the user can reach.  What the model SEES in
+        a turn is the ``load_status`` snapshot, a narrower set — so the line
+        promises availability, never injection.
 
-        The delta is what this pass WROTE to the catalog (``CatalogOpDelta`` —
-        insert/update/delete), never a registry before/after: a cold start's
-        registry begins empty, so a registry diff reads every tool as "added"
-        and turns a restart into a change to the tool set.
+        The delta is what this process WROTE to the catalog since the catalog
+        opened (``CatalogOpDelta`` — insert/update/delete), never a registry
+        before/after: a cold start's registry begins empty, so a registry diff
+        reads every tool as "added" and turns a restart into a change to the
+        tool set.  The window belongs to the STARTUP, not to this pass — it is
+        armed by ``_init_catalog`` before the boot seed, and a pass that stays
+        quiet leaves it open so the counts keep accumulating.
         """
         if not failure and self._tool_sync_reported:
             return
         if not failure and pending and not self._tool_sync_wait_over():
             return
         self._tool_sync_reported = True
+        # Take the window: it closes with the line that reports it, so nothing
+        # a later pass writes can feed a line already sent.
+        delta: "CatalogOpDelta | None" = (
+            self._catalog.store.end_ops() if self._catalog is not None else None
+        )
         # The wait the user was actually in: measured from this process's first
         # pass, not from this pass's start — the late pass is the short one.
         anchor = self._tool_sync_started_at or started
+        # The catalog is the authority on what is usable, and the registry is
+        # not: skill / cli rows are usable tools with no load state and no
+        # instance to register, so counting instances under-reported them.  The
+        # registry count stays as the degraded answer for a process whose
+        # catalog failed to open (the line then says what it can).
+        total = len(self.tool_registry.list_tools())
+        if self._catalog is not None:
+            try:
+                total = await self._catalog.store.count_usable()
+            except Exception:
+                logger.debug("catalog_usable_count_failed", exc_info=True)
         try:
             await self._notify_activity(
                 "tools_synced",
                 seconds=round(_time.monotonic() - anchor, 1),
-                total=len(self.tool_registry.list_tools()),
+                total=total,
                 added=delta.added if delta else 0,
                 updated=delta.updated if delta else 0,
                 removed=delta.removed if delta else 0,
@@ -2817,6 +2831,16 @@ class AgentService:
         try:
             store = CatalogStore(get_tools_db_path())
             await store.open()
+            # The op window the tool-set line reports opens HERE, with the
+            # catalog — not at the first reconcile pass.  The boot seed below,
+            # the skill/cli mirror and every plugin's connect write rows before
+            # that pass runs, and one pass is also not the whole startup: the
+            # pass that converges is the one whose LAST server finally lists,
+            # so a window armed per-pass reported that pass's slice alone.  A
+            # cold boot of 1586 rows read 新增 1239 — the one source (github,
+            # the slowest listing) that converged it.  ``_report_tool_sync``
+            # closes the window, which is exactly the line it feeds.
+            store.begin_ops()
             svc = ToolCatalogService(
                 store,
                 threshold=self._tool_load_threshold,

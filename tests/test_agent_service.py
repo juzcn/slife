@@ -233,20 +233,30 @@ class TestAgentServiceMCPEnrichment:
     async def _sync_with_catalog(self, sample_config, tmp_path, server: str, *,
                                  enabled: bool = True, activity=None,
                                  listed: bool = True, reachable: bool = True,
-                                 spawn_settled: bool = True):
+                                 spawn_settled: bool = True, seed=None):
         """Run one reconcile against a real catalog; return (service, store).
 
         *activity* is registered BEFORE that pass, so a test can observe the
         genuinely-first reconcile rather than a later one.  *listed* says
         whether the fake server has answered a ``tools/list`` yet; *reachable*
         whether its transport ever came up; *spawn_settled* whether the boot
-        pass that brings servers up has finished.
+        pass that brings servers up has finished.  *seed* is an async callable
+        handed the store before the op window opens, for the rows the real
+        startup writes ahead of its first pass (the boot seed, the skill/cli
+        mirror) — written outside the window so they are not this pass's delta.
         """
         from slife.tools.catalog import CatalogStore
         from slife.tools.catalog_service import ToolCatalogService
 
         store = CatalogStore(tmp_path / "tools.db")
         await store.open()
+        if seed is not None:
+            await seed(store)
+        # The op window, armed where the process arms it: with the catalog,
+        # before its first write.  ``_init_catalog`` does this in the real
+        # startup; this helper builds the catalog by hand, so without it the
+        # pass would report against a window nobody opened.
+        store.begin_ops()
         service = AgentService(sample_config)
         service._catalog = ToolCatalogService(store, write_owner=True)
         service._catalog_semantic = None
@@ -339,13 +349,18 @@ class TestAgentServiceMCPEnrichment:
             assert events.await_count == 1
             assert events.await_args.args[0] == "tools_synced"
             kw = events.await_args.kwargs
-            # ``total`` is the WHOLE registry — the builtins are callable too,
-            # so it reports what the user can actually reach.
-            assert kw["total"] == len(service.tool_registry.list_tools())
-            # The delta is what the pass WROTE, not what the registry went
-            # from-to: on this cold catalog that is exactly the one row the
-            # server's mirror inserted — never the whole registry, which a
-            # name-set diff would report as "added" on every restart.
+            # ``total`` is what is USABLE, read off the catalog: in this
+            # helper's world that is the one row the server's mirror wrote.
+            # (Not the registry — the service was constructed with builtins
+            # this hand-built catalog never seeded, and the registry-less
+            # families could never appear in it at all: see
+            # test_total_counts_the_registry_less_families_too.)
+            assert kw["total"] == 1
+            # The delta is what the startup WROTE to the catalog, not what the
+            # registry went from-to: this helper's startup is one pass over a
+            # cold db, so that is exactly the one row the server's mirror
+            # inserted — never the whole registry, which a name-set diff would
+            # report as "added" on every restart.
             assert kw["added"] == 1
             assert kw["updated"] == 0 and kw["removed"] == 0
             assert kw["error"] == ""
@@ -353,6 +368,122 @@ class TestAgentServiceMCPEnrichment:
 
             await service._sync_mcp_proxies()   # unchanged re-run
             assert events.await_count == 1      # ...and stays quiet
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_the_op_delta_spans_every_pass_not_just_the_reporting_one(
+        self, sample_config, tmp_path,
+    ):
+        """The line reports the whole startup, so an earlier pass's rows count.
+
+        A cold start converges on a LATE pass: a server is "still starting"
+        until its ``tools/list`` lands, so the slowest one arrives last and the
+        pass that finally reports is the pass that mirrored it.  Arming the op
+        window per pass therefore reported one source out of a whole catalog —
+        a real cold boot read ``新增 1239`` against the 1586 rows it had just
+        written, 1239 being exactly the github REST source whose listing
+        happened to be the one that converged the pass.
+        """
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+
+        listed = {"a": True, "b": False}   # "b" answers only on the later pass
+
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def call_tool(name, arguments=None):
+            if name == "__mcp_list":
+                return _json.dumps([
+                    {"name": "a", "enabled": True, "auto_load": False},
+                    {"name": "b", "enabled": True, "auto_load": False},
+                ])
+            if name == "__check":
+                return _json.dumps({
+                    "servers": [
+                        {"name": "a", "tools_ok": True, "reachable": True},
+                        {"name": "b", "tools_ok": listed["b"],
+                         "reachable": True},
+                    ],
+                    "spawn_settled": True,
+                })
+            if name in ("mcp_list_tools", "__mcp_list_tools"):
+                server = (arguments or {}).get("server", "")
+                ok = listed.get(server, False)
+                return _json.dumps({
+                    "server": server, "connected": ok,
+                    "tools": [] if not ok else [
+                        {"server": server, "name": "search",
+                         "description": "Search stuff",
+                         "inputSchema": {"type": "object",
+                                         "properties": {"q": {"type": "string"}}}},
+                    ],
+                    "tool_count": 1 if ok else 0,
+                })
+            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+        client.call_tool = call_tool
+        store = CatalogStore(tmp_path / "tools.db")
+        await store.open()
+        store.begin_ops()          # where _init_catalog arms it
+        service = AgentService(sample_config)
+        service._catalog = ToolCatalogService(store, write_owner=True)
+        service._catalog_semantic = None
+        events = AsyncMock()
+        service.on_activity(events)
+        service._plugins["mcp-gateway"].client = client
+        try:
+            with patch(
+                "slife.plugins.mcp_gateway.config.servers",
+                return_value={"a": {}, "b": {}},
+            ), patch.object(
+                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            ):
+                # Pass 1: "a" mirrors, "b" is still starting — so silence.
+                await service._sync_mcp_proxies()
+                assert events.await_count == 0
+                # Pass 2: "b" arrives and converges the set, and THIS pass is
+                # the one that reports.  Both servers' rows are the startup's.
+                listed["b"] = True
+                await service._sync_mcp_proxies()
+        finally:
+            await store.close()
+        assert events.await_count == 1
+        assert events.await_args.kwargs["added"] == 2
+
+    @pytest.mark.asyncio
+    async def test_total_counts_the_registry_less_families_too(
+        self, sample_config, tmp_path,
+    ):
+        """``total`` is what is USABLE — and a skill row is usable.
+
+        ``FUNCTION_CATEGORIES`` splits on the LOAD STATE, not on callability: a
+        skill / cli row is searchable, switchable and usable, it simply has no
+        state to flip — and no instance either (a skill IS its SKILL.md text),
+        which is exactly why a registry count cannot see it.  Counting the
+        registry promised "N 个工具可用" while reporting instances, so the line
+        read 1575 against a catalog it had just been written 1586 rows into.
+        """
+        async def seed(store):
+            await store.reconcile([{
+                "name": "browser-use", "description": "Drive a browser",
+                "category": "skill", "source_id": "skill",
+                "schema": "# browser-use\n", "status": "enabled",
+            }])
+
+        events = AsyncMock()
+        service, store = await self._sync_with_catalog(
+            sample_config, tmp_path, "svc", activity=events, seed=seed,
+        )
+        try:
+            # Usable, and out of the registry by construction: there is no
+            # instance to register, so only a catalog count can see it.
+            assert "browser-use" not in {
+                t.name for t in service.tool_registry.list_tools()
+            }
+            # It and the server's one mirrored tool; the run above counted 1.
+            assert events.await_args.kwargs["total"] == 2
         finally:
             await store.close()
 
