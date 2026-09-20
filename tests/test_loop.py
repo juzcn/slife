@@ -1571,8 +1571,9 @@ class TestSameMessageLoadAndCall:
                 "next request."
             )
             # The sibling call never ran: it is not in this request's list.
-            assert results["c2"].startswith("Error:")
-            assert "not loaded" in results["c2"]
+            # The refusal names the state and stops — a remedy would send the
+            # model to repeat the load it just made.
+            assert results["c2"] == "Error: tool 'target_tool' is not loaded."
             assert target_cls.ran == 0
             # …and the load itself landed, so the NEXT request carries it
             # (the per-request injection TestToolListInjection pins).

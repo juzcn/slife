@@ -329,13 +329,15 @@ async def test_registry_execute_hints_with_catalog(db):
 
     # 1. meta runs even when the gate would object (it stays loaded anyway)
     assert await registry.execute("_turn_prompt") == "pong"
-    # 2. in-pool but unloaded → actionable hint, not a silent run
+    # 2. in-pool but unloaded → the state, named, and no remedy: the caller
+    # that hits this has usually just loaded the tool in this same round, and
+    # "use func-tool-load" would send it to repeat itself.
     await svc.unload_tool("native_a")
-    assert "not loaded" in await registry.execute("native_a")
-    assert "tool_search" in await registry.execute("native_a")
-    # 3. catalog-known but not in the pool → different hint
+    assert await registry.execute("native_a") == "Error: tool 'native_a' is not loaded."
+    # 3. catalog-known but not in the pool → the SAME sentence: whether an
+    # instance was ever materialized is internal, the caller's position is not
     await db.upsert_tool("svcA__gh", category="mcp", source_id="svcA", load_status="unloaded")
-    assert "known but not loaded" in await registry.execute("svcA__gh")
+    assert await registry.execute("svcA__gh") == "Error: tool 'svcA__gh' is not loaded."
     # 3b. its server is down → the row says `error`, and the gate names that
     # rather than pretending the tool is merely unloaded.
     await db.mark_source_error("svcA")

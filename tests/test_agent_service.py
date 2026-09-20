@@ -282,7 +282,7 @@ class TestAgentServiceMCPEnrichment:
         The registry is the execution pool, so a row the catalog calls
         ``loaded`` must have an instance behind it.  Otherwise a tool loaded in
         a previous session — whose ``load_status`` survives the restart while
-        its proxy does not — fails with "known but not loaded" while the
+        its proxy does not — fails with "is not loaded" while the
         catalog insists it is loaded.
         """
         service, store = await self._sync_with_catalog(
