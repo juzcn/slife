@@ -12,11 +12,11 @@ Before the rework: `tool_search` could only find MCP tools; every MCP server was
 - every configured server was connected eagerly AND all of its tools injected, so connect cost and context cost both scaled with the config rather than with use;
 - loading was not granular — one MCP server's dozens of tools all entered the context at once, blowing up the schema box the model must read every turn.
 
-The goal is one unified model: **every function tool** (builtin, job, plugin, mcp, rest-api) is a row in one shared catalog with a **loaded / unloaded** state; the LLM discovers with one `tool_search`, loads with one `func-tool-load`, and a **threshold** manages how many loaded tools fit in the context. The catalog (`tools.db`) is the single source of truth — with one schema per tool that the injection chain reads directly.
+The goal is one unified model: **every function tool** (builtin, job, plugin, mcp, rest-api) is a row in one shared catalog with a **loaded / unloaded** state; the LLM discovers with one `tool_search`, loads with one `func_tool_load`, and a **threshold** manages how many loaded tools fit in the context. The catalog (`tools.db`) is the single source of truth — with one schema per tool that the injection chain reads directly.
 
 Key properties:
 
-- **Unified search + load.** `tool_search` spans every category in the catalog (the six `tools.yaml` sections plus the plugin tools); `func-tool-load` loads any function tool by name.
+- **Unified search + load.** `tool_search` spans every category in the catalog (the six `tools.yaml` sections plus the plugin tools); `func_tool_load` loads any function tool by name.
 - **Threshold-managed.** A configurable cap (`tool_load.threshold`, default 100) bounds how many function tools are injected; the harness evicts the oldest-by-usage at turn boundaries. Never evicted — and the only things injected before the model asks: the whitelist (harness pair + 5 meta tools + 2 pinned) and anything marked `autoload` in `tools.yaml`.
 - **Granular.** Load/unload is per-tool, not per-server. A connected MCP server with 50 tools injects only the ones the model loaded.
 - **DB-driven injection.** The schema injected into the LLM comes from the catalog's `schema` column — never re-fetched from the live MCP server or parsed from tool code.
@@ -31,7 +31,7 @@ Three families, by **who owns the tool** — the category column is the *provena
 | **job** | the user | `job` | code the user wrote themselves: a public function in `jobs/`, exposed by the job-coding plugin as `job-<function>` |
 | **external** | a third party | `mcp`, `rest-api` | someone else's server, reached through the mcp-gateway (`{server}__{tool}`) |
 
-`skill` and `cli` belong to none of the three families: nothing owns them (no server, no plugin — `source_id` is `n/a`), there is nothing to spawn and nothing to register, and the row is the whole of the thing (a playbook file, a `tools.yaml` entry).  They are **tools** all the same — *tool* is the broad word here, and the agent reaches them the way it reaches any other, through search and then by using them (a skill IS its SKILL.md, a cli row the command it names); they carry the same `enabled` switch, and the sync line's `total` counts them.  What they do not have is a runtime *instance* or a load state — that, and nothing else, is what `FUNCTION_CATEGORIES` splits on, so `func-tool-load` refuses them and the registry never holds one (§6 reads `total` off the rows for exactly this reason).
+`skill` and `cli` belong to none of the three families: nothing owns them (no server, no plugin — `source_id` is `n/a`), there is nothing to spawn and nothing to register, and the row is the whole of the thing (a playbook file, a `tools.yaml` entry).  They are **tools** all the same — *tool* is the broad word here, and the agent reaches them the way it reaches any other, through search and then by using them (a skill IS its SKILL.md, a cli row the command it names); they carry the same `enabled` switch, and the sync line's `total` counts them.  What they do not have is a runtime *instance* or a load state — that, and nothing else, is what `FUNCTION_CATEGORIES` splits on, so `func_tool_load` refuses them and the registry never holds one (§6 reads `total` off the rows for exactly this reason).
 
 The split is what `SERVER_CATEGORIES` encodes on the code side (`mcp`/`rest-api` are the external ones — the only rows a gateway death marks `error`, the only sources the config purge owns), and it is why `system_tools_list` lists the system family only: a job is inventoried by `job-list`, and an external tool's schema already rides every request.
 
@@ -116,6 +116,11 @@ transition is written by the HOST as it reconciles:
 | the gateway child dies | every `mcp`/`rest-api` row marked `error` |
 | a skill's SKILL.md cannot be read | that row is mirrored `error`; reading it again after a fix puts it back to `enabled` |
 | a server leaves `tools.yaml` | its rows are purged |
+| a builtin leaves the code (deleted or renamed) | its row is purged by the boot seed — the family's membership is that seed's list (the registry + the `tools.yaml`-disabled builtins), so a tool the code dropped has no claimant left |
+
+**A row leaves only by DELETION.** Every removal path is a `DELETE` of the row — `remove_tool` (one name), `remove_tools` (a set, one statement), `purge_source` (every row of a server, `WHERE source_id = ?`), `purge_source_except` (the tools one server stopped publishing), the `purge` branch of `reconcile` (a category mirror), and the boot seed's builtin sweep. The row's `tool_embeddings` chunks go with it **explicitly** — no delete leans on the FK cascade being enabled. Nothing is ever "marked removed", and a set going is ONE statement: that is what makes a server's hundreds of rows, or a whole vanished family, cheap to drop, and every one of them books into the startup's op window as **移除**. A tool that is merely switched off keeps its row (`status = disabled` — a config fact, not a death), so the two answers never blur.
+
+The write side is the mirror image: `reconcile` reads the rows it needs **once**, then decides per name — a name the db does not hold INSERTs, a name it holds is compared in memory across the five config-derived columns and written only if one moved, everything else is `skipped`. **新增** and **更新** are therefore distinct at the db layer, not inferred afterwards (§6's counting).
 
 ### `tool` — one row per tool
 
@@ -149,7 +154,7 @@ status      -- enabled | disabled | error, every category (see above).  A
                caller with no opinion does not write the column at all
 load_status -- loaded | unloaded for a function category; 'n/a' for
                skill/cli.  NOT a status column — see `status`
-last_loaded -- ISO timestamp, bumped on func-tool-load, on an autoload
+last_loaded -- ISO timestamp, bumped on func_tool_load, on an autoload
                override, and on every successful execute (LRU key)
 ```
 
@@ -264,7 +269,7 @@ the whole predicate (`catalog._INJECTABLE_SQL`), and it is also
 The whitelist (`slife/tools/whitelist.py`) protects three always-injected families, never LRU-evictable and not unloadable:
 
 - **harness pair** — `_turn_prompt`, `_check_new_input`, `attach_image` (the loop's mechanism);
-- **the tool-system meta tools (5)** — `mcp_set_enabled`, `rest_api_set_enabled`, `tool_search`, `func-tool-load`, `_unload_func_tool`.  There is no connect/disconnect pair: the modern protocol has no session to open or close, so each external family has ONE lifecycle switch (`*_set_enabled`) — enabling (re)connects, and a tool call reconnects lazily if the server died in the meantime.  There is no server-level search either: with the registry gone, `tool_search` (tool-level, filtering on the catalog's columns) is the discovery surface.
+- **the tool-system meta tools (5)** — `mcp_set_enabled`, `rest_api_set_enabled`, `tool_search`, `func_tool_load`, `_func_tool_unload`.  There is no connect/disconnect pair: the modern protocol has no session to open or close, so each external family has ONE lifecycle switch (`*_set_enabled`) — enabling (re)connects, and a tool call reconnects lazily if the server died in the meantime.  There is no server-level search either: with the registry gone, `tool_search` (tool-level, filtering on the catalog's columns) is the discovery surface.
 - **pinned (2)** — `skill_use` and `system_health`: not tool-system machinery, but the two calls every session reaches for (read a skill's SKILL.md; one health report over every subsystem check).  Pinned so the squeeze can never cost a search+load round trip to re-learn them.
 
 Together: `ALWAYS_LOADED`. Everything else seeds loaded and can be reloaded, but the squeeze may evict it.
@@ -315,13 +320,13 @@ Three retrieval routes, one row shape (the effective status is computed per row 
 - `keyword` — FTS5 BM25, CJK-routed to a LIKE multi-word AND fallback;
 - `hybrid` — keyword + semantic KNN (sleepy `tool_embeddings`, closest-chunk per tool) merged by RRF.
 
-### `func-tool-load`
+### `func_tool_load`
 
 Loads a function tool by **full name** (`{server}__{tool}` for external). Refusals come from the effective status: unknown → "see tool_search"; disabled → "enable it first"; error → "its server is not up right now — check it with mcp_list, then retry". On success the row's status flips `loaded` and the tool is in the **very next LLM request** — the loop re-reads the loaded set before every request (§5 · Per-request injection), so a load takes effect on the next call, not the next turn. For `mcp`/`rest-api` rows it also **materializes the execution proxy** from the row's schema descriptor (`create_proxy_tools` → registered in the registry) — loading and materialization are the same step, driven by the row.
 
 What a load does **not** do is unlock anything: it never gates a call. A tool with an execution instance is callable whether or not the model loaded it, so load-and-call in one message is legitimate — the load is what puts the tool's **schema** in front of the model, which is what makes the arguments read rather than guessed.
 
-### `_unload_func_tool`
+### `_func_tool_unload`
 
 Self-service unload (the spare-ticket the model can use to free a slot in its tool list — it does not make a tool uncallable, which load state never does); refused for the whitelist — `skill_use` and `system_health` included. The harness's eviction is the same operation run automatically. One family is the exception on the execution side: an **external** `mcp`/`rest-api` tool's proxy is unregistered along with it (that proxy holds a live client), so unloading one of those does take its route away — a resource decision, not a gate.
 
@@ -334,13 +339,13 @@ Self-service unload (the spare-ticket the model can use to free a slot in its to
 1. Host `_init_catalog` opens `tools.db` and runs the session seed (`sync_system_tools` over everything registered): every registered tool gets a row, and **a NEW row is `loaded` only from the two autoload sources** — the whitelist (`ALWAYS_LOADED`: the loop's own tools, a system-level protection that is not configurable) and the entries marked `autoload: true` in `tools.yaml` (user intent) — everything else is born `unloaded`. An EXISTING row keeps whatever the model decided (the sync mirrors *which* tools are registered, never *what is loaded*) — **with the one exception of `autoload`**, which is a standing config statement and re-asserts `loaded` on every pass (§5's writer list). The two registry-less categories are mirrored in the same pass (`_mirror_local_rows`: the skills dir → `skill` rows, the `cli` section → `cli` rows). Every external row is then marked `error`, because no server is up yet.
 2. The wrapper spawns; `_auto_connect_configured` brings up **every server enabled in `tools.yaml`** — spawn only, no `tools/list` (that read belongs to the first caller that needs it, and boot has none). Disabled ones are registered but never started — and never read either, because reading IS connecting (`refresh_tools` refuses a switched-off server, the same rule `call_tool` enforces; see §6) — so `mcp_list` still matches the config's `mcp.servers` section (the `rest-api` section is `rest_api_list`'s); a server that was down at boot has the background repair armed. Nothing is remembered from a previous session — a server that was down when you quit is retried here like any other.
 3. Each successful connect publishes `tools/list_changed`; the host's listen stream wakes the reconcile below, which mirrors that server's tool rows (new rows `unloaded`) and clears the `error` mark. `_wire_mcp_glue` also runs one reconcile the moment the gateway is ready — **as a background task**, so the plugin start never waits on external servers (a `_sync_mcp_proxies` pass asks every configured server for its list, which for a peer the pool holds nothing for is itself the spawn). Startup converges as servers come up; one that never comes up simply stays `error`.
-4. `tools.yaml` removals are purged in the same pass (config is the authority).
+4. `tools.yaml` removals are purged in the same pass (config is the authority), and so are **builtins the code no longer has**: the seed is the builtin family's whole membership (`own_builtins`), so a class deleted or renamed in code loses its row there — no other pass could ever claim it. A builtin switched off in `tools.yaml` is in the seed's list (its instance comes from `disabled_tool_instances`), so it keeps its row marked `disabled`.
 
 ### Per-request injection
 
 Before **every** LLM request the loop refreshes a **snapshot**: `snapshot_loaded()` = the rows with `load_status='loaded'` (and not config-disabled) ∪ `ALWAYS_LOADED`, and builds the request's function list from `rows_for_names(snapshot)` — the catalog `schema` column — via `_function_from_schema`. The registry key (full `{server}__{tool}` name) **always wins** over the descriptor's bare name, so the injected name is exactly what `registry.execute` resolves. A row missing its schema falls back to the materialized instance; no catalog → the whole registry (historical behavior).
 
-Per-request is what makes `func-tool-load` mean anything: a tool loaded in iteration *n* is in iteration *n+1*'s request. The list's order is the registry's (insertion order), so a proxy materialized mid-turn **appends** — the request's prefix up to that point is untouched and the prompt cache survives the load. One request's own retries (a transient transport failure) reuse the list computed for it, so every attempt sends byte-identical tools. Eviction is the one thing still on a turn boundary (§ below).
+Per-request is what makes `func_tool_load` mean anything: a tool loaded in iteration *n* is in iteration *n+1*'s request. The list's order is the registry's (insertion order), so a proxy materialized mid-turn **appends** — the request's prefix up to that point is untouched and the prompt cache survives the load. One request's own retries (a transient transport failure) reuse the list computed for it, so every attempt sends byte-identical tools. Eviction is the one thing still on a turn boundary (§ below).
 
 ### Threshold eviction
 
@@ -349,7 +354,7 @@ At the turn boundary, if loaded count exceeds `tool_load.threshold` (default 100
 - `seed_inventory` seeds without touching `last_loaded` (never-used tools sort oldest);
 - **every successful `registry.execute` bumps `last_loaded`** (`CatalogStore.touch`), so a tool used this turn is never the next victim. Eviction is main-owner only: subagents inherit the curator's budget and never squeeze it.
 
-Evicted tools stay registered and stay **callable** — eviction takes them out of the injection snapshot and nothing else. **Load state governs what a turn injects, never what a call may do**: an evicted tool the model still remembers, or reaches by name, executes like any other. What it loses is its schema, and the next `func-tool-load` restores that.
+Evicted tools stay registered and stay **callable** — eviction takes them out of the injection snapshot and nothing else. **Load state governs what a turn injects, never what a call may do**: an evicted tool the model still remembers, or reaches by name, executes like any other. What it loses is its schema, and the next `func_tool_load` restores that.
 
 ### Who writes `load_status` — exactly four places
 
@@ -358,8 +363,8 @@ Evicted tools stay registered and stay **callable** — eviction takes them out 
 | writer | effect |
 |---|---|
 | **`autoload` config** | a sync re-asserts `loaded` for an `autoload: true` entry — per tool for `builtin`/`job`, per **server** for `mcp`/`rest-api` (no per-tool flag there, one decision over the whole set). This is the only place config wins over the model; skill/cli are ignored (no state to own). A row already `loaded` is not written. |
-| **`func-tool-load`** | `load_tool` → `loaded` (and, for `mcp`/`rest-api`, materializes the proxy). It rolls the flip back if materialization fails. |
-| **`_unload_func_tool`** | `unload_tool` → `unloaded`; refuses the whitelist and non-function rows. |
+| **`func_tool_load`** | `load_tool` → `loaded` (and, for `mcp`/`rest-api`, materializes the proxy). It rolls the flip back if materialization fails. |
+| **`_func_tool_unload`** | `unload_tool` → `unloaded`; refuses the whitelist and non-function rows. |
 | **eviction** | `evict_to_threshold` → `evict_lru` → batch `unloaded` for the oldest-by-`last_loaded` over-threshold rows (never the whitelist or an `autoload` entry). |
 
 The store enforces the rest of the rule mechanically: `reconcile` applies an incoming `load_status` on INSERT only — an existing row keeps its state — unless the row carries `override_status` (the `autoload` projection), in which case the value is written **only when it differs**.
@@ -420,7 +425,7 @@ Driven by connect events / `mcp_*` mutations / `tools/list_changed` / the gatewa
 
 Two cost rules the pass follows: the per-server mirrors run **concurrently** (each awaits a real `tools/list`, and for a peer the pool holds nothing for, the spawn that makes one possible — sequentially, every server waited on all the servers before it), and each server's rows go over in **one batched `reconcile` + one `purge_source_except`** (a per-tool upsert re-read the whole table per tool).
 
-Registering a tool never loads it: every new row lands `unloaded` and only `func-tool-load` puts it into the injection set — the `autoload` entries excepted, which are born `loaded` and stay that way.
+Registering a tool never loads it: every new row lands `unloaded` and only `func_tool_load` puts it into the injection set — the `autoload` entries excepted, which are born `loaded` and stay that way.
 
 ### The boot window
 
@@ -454,7 +459,7 @@ The **window is the startup's, not one pass's**.  Armed at the first pass it wou
 
 The delta is deliberately **not** a registry before/after.  The registry begins empty in every process, so a set difference reports the entire external tool set as new — `1465 added` on a restart, which announces a process artefact as a change to the tool set, and a restart is precisely what does not change it.  **Runtime state is not a change either**: `load_status` / `last_loaded` moving, or the runtime lane of `status`, is the model's decision and the connectivity verdict, booked nowhere — otherwise a server coming up would report every one of its tools as *updated*.
 
-**The other side of the window**: once the pass has run, a load takes effect **within the same turn** — no waiting for the next one.  For an enabled server the proxy already exists, so `func-tool-load` is a status flip over an execution instance that is already there, and a call in that same turn reaches the real server (a *tool-level* error, e.g. a missing required parameter, is the proof).  What the load buys is the **schema** in the next request — never the right to call, which an instance alone grants.  The materialize branch still runs, but registering an existing name is an idempotent overwrite, so it is no longer load-bearing — and its own failure modes (an unsynced `schema`, an unavailable MCP client) can no longer make a successful-looking load silently not take.
+**The other side of the window**: once the pass has run, a load takes effect **within the same turn** — no waiting for the next one.  For an enabled server the proxy already exists, so `func_tool_load` is a status flip over an execution instance that is already there, and a call in that same turn reaches the real server (a *tool-level* error, e.g. a missing required parameter, is the proof).  What the load buys is the **schema** in the next request — never the right to call, which an instance alone grants.  The materialize branch still runs, but registering an existing name is an idempotent overwrite, so it is no longer load-bearing — and its own failure modes (an unsynced `schema`, an unavailable MCP client) can no longer make a successful-looking load silently not take.
 
 Not gated on embeddings: the pass calls `wake_indexer`/`on_saved` (a wake, not a wait), so semantic search finishing is irrelevant to tool availability.
 
@@ -476,12 +481,12 @@ When the wrapper child dies, `on_plugin_child_exit` marks **every `mcp`/`rest-ap
 
 | Module | Responsibility |
 |---|---|
-| `slife/tools/catalog.py` | `CatalogStore`: SQL, schema (v9 — the three-state `status` and no derived `type`, no `server` table), FTS5 + semantic KNN, effective status, `reconcile` (the one delta writer), `evict_lru`, `touch`, `purge_source`/`purge_source_except`/`remove_tool`/`names_by_category`, `mark_source_error` / `mark_all_external_error` / `mark_source_connected` / `set_source_enabled` (the two lanes of `status`), `count_usable` (the line's `total`), `CatalogOpDelta` / `begin_ops`/`end_ops` (the startup's row-operation counter, armed with the catalog, per §6) |
-| `slife/tools/catalog_service.py` | `ToolCatalogService`: policy — the boot seed (`sync_system_tools`), `mirror_external_tools` (a server's whole set in one pass), `snapshot_loaded`, `sync_category` (the skill/cli mirror), `load_tool`/`unload_tool` refusal matrix, `evict_to_threshold`, `purge_unconfigured_sources`; `descriptor_json`/`tool_descriptor` (the one tool-def builder) |
+| `slife/tools/catalog.py` | `CatalogStore`: SQL, schema (v9 — the three-state `status` and no derived `type`, no `server` table), FTS5 + semantic KNN, effective status, `reconcile` (the one delta writer), `evict_lru`, `touch`, `purge_source`/`purge_source_except`/`remove_tool`/`remove_tools`/`names_by_category` (the batch pair shares one `_delete_rows` — the ONE removal shape), `mark_source_error` / `mark_all_external_error` / `mark_source_connected` / `set_source_enabled` (the two lanes of `status`), `count_usable` (the line's `total`), `CatalogOpDelta` / `begin_ops`/`end_ops` (the startup's row-operation counter, armed with the catalog, per §6) |
+| `slife/tools/catalog_service.py` | `ToolCatalogService`: policy — the boot seed (`sync_system_tools`, and its `own_builtins` sweep of the builtins the code dropped), `mirror_external_tools` (a server's whole set in one pass), `snapshot_loaded`, `sync_category` (the skill/cli mirror), `load_tool`/`unload_tool` refusal matrix, `evict_to_threshold`, `purge_unconfigured_sources`; `descriptor_json`/`tool_descriptor` (the one tool-def builder) |
 | `slife/tools/catalog_search.py` | hybrid RRF merge + score annotator (thin adapter over `memdb.search`) |
 | `slife/tools/registry.py` | the execution pool; names a row's state when a called name has no instance here; bumps `last_loaded` on successful execute |
 | `slife/tools/factory.py` | auto-discovery (gated to `slife.tools` modules) + `enabled`-override filtering |
-| `slife/tools/meta_tools.py` | `tool_search`, `func-tool-load`, `_unload_func_tool` |
+| `slife/tools/meta_tools.py` | `tool_search`, `func_tool_load`, `_func_tool_unload` |
 | `slife/tools/whitelist.py` | harness pair + 5 meta tools + 2 pinned (`ALWAYS_LOADED` — never evicted / not unloadable) |
 | `slife/tools/skill.py` | the Skills family + `skill_catalog_rows` / `sync_skill_catalog` (skills dir → `skill` rows) |
 | `slife/tools/cli.py` | the CLI family + `cli_catalog_rows` / `sync_cli_catalog` (config section → `cli` rows) |
@@ -501,8 +506,9 @@ Folded down from the DESIGNER_NOTES §8.5 checkout list; implemented/deferred as
 - **`cli_set` / `skill_set` / `rest_api_set` / `job-write/remove` mutate tools.db + clean up** — done:
   - **mcp / rest-api**: `*_set` persists + connects, `*_set_enabled` reconnects/disconnects immediately, `*_remove` tears the connection down (`_pool.remove_server`) **and** the next reconcile purges the server's catalog rows live (step 5) — no stale rows until restart;
   - **job / plugin tools**: registered/unregistered by the plugin, mirrored into the catalog on connect/rescan, and a vanished tool's row is purged (`remove_tool`) — a removed job does not linger in `tool_search`;
+  - **builtin**: there is **no set/remove tool** — a builtin's membership is the registry (code) plus the `enabled:` switches in `tools.yaml` (edited by hand, applied at the next start), so at runtime the family is stable: nothing adds or removes a builtin row. Its one purge path is the boot seed's sweep (`own_builtins`), which is why a builtin deleted or renamed in code loses its row at the next start, and a `tools.yaml`-disabled builtin — handed to the seed as an instance by `disabled_tool_instances` — keeps its row marked `disabled`;
   - **cli**: `cli_set` / `cli_remove` / `cli_set_enabled` rewrite `tools.yaml` (+ the live `Config.cli_tools` snapshot) and re-mirror the `cli` rows right after (`sync_cli_catalog`) — a new CLI is findable by `tool_search` before the next restart, and a removed one loses its row. No load state (per the §8.5 rule); `cli_list` shows the command/install detail;
   - **skill**: `skill_set` / `skill_remove` / `skill_set_enabled` change the skills dir (or its config disable mirror) and re-mirror the `skill` rows right after (`sync_skill_catalog`). The row's `schema` is the SKILL.md — the skill is searchable by its own text; `skill_use` returns it, `skill_list` enumerates.
 - **"Whitelist means?"** — resolved: the always-loaded carve-outs of `whitelist.py` (harness pair + meta surface + pinned `skill_use`/`system_health`), a design constant, not configurable.
-- **Server auto-disconnect when its last loaded tool is evicted** — *deferred*: eviction today keeps the server connected (its tools are still searchable/loadable for free). Could reconnect by a simple `func-tool-load`; re-arming on `func-tool-load` would make server eviction safe.
+- **Server auto-disconnect when its last loaded tool is evicted** — *deferred*: eviction today keeps the server connected (its tools are still searchable/loadable for free). Could reconnect by a simple `func_tool_load`; re-arming on `func_tool_load` would make server eviction safe.
 - **`watchdog` / plugin process contract** — lives in [PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md), not here.

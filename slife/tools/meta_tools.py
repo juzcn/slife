@@ -1,14 +1,14 @@
 """Tool-system meta tools — the unified surface built on the catalog.
 
 ``tool_search``     — cross-category hybrid search over the shared catalog
-``func-tool-load``  — load a function tool (flip status + materialize proxy)
-``_unload_func_tool`` — unload a function tool (self-service; the harness
+``func_tool_load``  — load a function tool (flip status + materialize proxy)
+``_func_tool_unload`` — unload a function tool (self-service; the harness
                         also evicts LRU at turn boundaries)
 
 These are in the meta whitelist (``slife.tools.whitelist``) — always
-injected, never evicted, not configurable.  The legacy ``mcp_tool_load``
-delegates here (its mcp/rest-api branch) so old callers and subagents keep
-working during the wrapper retirement.
+injected, never evicted, not configurable.  ``func_tool_load`` is the ONLY
+loader: the legacy ``mcp_tool_load`` alias is retired, its mcp/rest-api
+materialization being this tool's own branch.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ class ToolSearchTool(Tool):
         "Search the unified tool catalog across all six categories "
         "(builtin/job/plugin/mcp/rest-api/skill/cli). Returns name, category, source "
         "server, and effective status per tool — load a function tool with "
-        "func-tool-load."
+        "func_tool_load."
     )
     parameters = make_params(
         query={
@@ -210,7 +210,7 @@ class ToolSearchTool(Tool):
 class FuncToolLoadTool(Tool):
     """Load a function tool into the LLM tool list (status flip + materialize)."""
 
-    name = "func-tool-load"
+    name = "func_tool_load"
     category: ClassVar[str] = TOOL_META_CATEGORY
     description = (
         "Load a function tool (builtin/job/plugin/mcp/rest-api) into the LLM's "
@@ -273,10 +273,10 @@ class FuncToolLoadTool(Tool):
         return msg
 
 
-class UnloadFuncTool(Tool):
+class FuncToolUnloadTool(Tool):
     """Unload a function tool (self-service; eviction is the harness's LRU)."""
 
-    name = "_unload_func_tool"
+    name = "_func_tool_unload"
     category: ClassVar[str] = TOOL_META_CATEGORY
     description = (
         "Unload a function tool (builtin/job/plugin/mcp/rest-api) from the loaded set "

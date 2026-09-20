@@ -110,13 +110,13 @@ class TestBuild:
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "tool_search" in result
-        assert "func-tool-load" in result
+        assert "func_tool_load" in result
         assert "Loading is **per tool**" in result
         assert "capped by the `tool_load` threshold" in result
         assert "least-recently-used" in result
         assert "Always injected: the whitelist" in result
         assert "pinned `skill_use` / `system_health`" in result
-        assert "_unload_func_tool" in result
+        assert "_func_tool_unload" in result
         assert "mcp_set_enabled" in result
         assert "rest_api_set_enabled" in result
         assert "mcp_list" in result

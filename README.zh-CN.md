@@ -14,7 +14,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：**默认 59 个内置工具**、横跨 12 个类别（含保留的 harness 工具 `_turn_prompt` 与 `_check_new_input`——由循环自动调用），**九个内部插件服务**（memdb、wechat、memfiles、sharefile、a2a、media、job-coding、MCP 网关 `mcp-gateway`，以及 **`local-embed`** 嵌入服务）、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：**默认 61 个内置工具**、横跨 13 个类别（含保留的 harness 工具 `_turn_prompt` 与 `_check_new_input`——由循环自动调用），**九个内部插件服务**（memdb、wechat、memfiles、sharefile、a2a、media、job-coding、MCP 网关 `mcp-gateway`，以及 **`local-embed`** 嵌入服务）、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -230,7 +230,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 
 全部统一为 OpenAI 函数定义——LLM 看不出系统工具（内置 + 内置插件）与外部 MCP 工具的区别。每个工具还额外接受三个元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（内联批准提示——Y 批准 / N 拒绝，Esc 拒绝）。
 
-**12 个类别共 59 个内置工具**（从 `slife/tools/` 自动发现 60 个类；`install_python_package` 在随附配置中默认禁用）。保留的 harness 工具 `_turn_prompt`（每轮提示词）与 `_check_new_input`（插队模式下的轮中消息注入）由循环自动调用；`attach_image` 在 `@` 附件时自动调用——模型会读取它们的产出，但被嘱咐不要调用它们。`attach_image` 对无视觉模型会在调用时拒绝（它从不被隐藏）。
+**13 个类别共 61 个内置工具**（从 `slife/tools/` 自动发现 62 个类；`install_python_package` 在随附配置中默认禁用）。保留的 harness 工具 `_turn_prompt`（每轮提示词）与 `_check_new_input`（插队模式下的轮中消息注入）由循环自动调用；`attach_image` 在 `@` 附件时自动调用——模型会读取它们的产出，但被嘱咐不要调用它们。`attach_image` 对无视觉模型会在调用时拒绝（它从不被隐藏）。
 
 | 类别 | 工具 |
 |----------|-------|
@@ -246,7 +246,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image`（给视觉模型喂图片）, `_turn_prompt`（每轮提示词，自动调用）, `_check_new_input`（轮中消息注入，自动调用） |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | embeddings | `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_enable` |
-| mcp | `mcp_tool_load` |
+| ToolSystem | `tool_search`（跨全部类别的目录搜索）、`func_tool_load`（mcp/rest-api 工具也走它，载入时物化 proxy）、`_func_tool_unload`（自助卸载） |
 
 **托管类别**（Skills / CLI / REST API / Models / MCP）支持 `X_list` / `X_set` / `X_remove`（+ 有开关时 `X_set_enabled`）——所有 `X_set` 工具都是幂等 upsert；`model_set` **合并**进现有条目，因此聚焦某一字段的改动不会悄悄剥掉模型的 `reasoning`/`input`/`compat`。`rest_api_set` 把 OpenAPI 描述的外部 API 注册为一个由 `mcp-openapi-proxy`（Low-Level Mode，默认模式）支撑的 server——spec 里的每个端点成为一个带类型的 `{name}__{endpoint}` 工具。
 
@@ -263,7 +263,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `job-translate`） |
 
-**所有工具共用一个目录，由阈值管理。** 第三方能力只能作为 `tools.yaml` 里的标准 MCP 服务器接入（`mcp` + `rest-api` 两个 section——任何 stdio / SSE / Streamable HTTP 服务器都可以，无需 Slife SDK；REST API 就是放在 `rest-api` section 里的普通 MCP 服务器，条目格式完全相同）。所有类别——builtin、job、plugin、mcp、rest-api、skill、cli——共用同一个 `tools.db`；LLM 用 `tool_search` 跨全部类别检索（grep / 关键词 / 语义混合，按目录的列过滤），再用 `func-tool-load(full_name)` 载入具体工具——按工具而非按服务器，所以一个上千工具的大服务器只会注入真正用到的那几个。不是"存在就被注入"：新工具生来是 `unloaded`，只有 `func-tool-load` 能把它放进工具列表（例外是白名单——harness 对、系统元工具、固定注入的 `skill_use` / `system_health`——以及 `tools.yaml` 里标了 `autoload: true` 的条目；而 `autoload` 的条目会**一直**是 loaded：它是唯一能赢过模型自己 unload 的配置决定）。这份列表是上下文预算，不是许可：只要有执行实例，工具按名字就能调用（load 状态不拦截调用），载入的作用是把工具的 schema 放到模型面前。注入列表由阈值封顶（默认 100，可在 `tools.yaml` 调整），harness 在轮次边界淘汰最久未用的工具，从不淘汰 `autoload` 的。服务器生命周期每个家族一个开关（`mcp_set_enabled` / `rest_api_set_enabled`）——现代 MCP 协议没有要开关的 session，所以 enable 即连接、之后调用时若掉线会懒重连——并且**启动时所有 enabled 服务器都会被拉起**（只 spawn、不读工具列表；列表留给第一个真正需要它的调用方）；服务器连不上时它的工具被标记 `error`，因此死连接永远不会被注入。目录在每次（重）连接时实时同步——不存在离线重建步骤。完整设计见 **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**。
+**所有工具共用一个目录，由阈值管理。** 第三方能力只能作为 `tools.yaml` 里的标准 MCP 服务器接入（`mcp` + `rest-api` 两个 section——任何 stdio / SSE / Streamable HTTP 服务器都可以，无需 Slife SDK；REST API 就是放在 `rest-api` section 里的普通 MCP 服务器，条目格式完全相同）。所有类别——builtin、job、plugin、mcp、rest-api、skill、cli——共用同一个 `tools.db`；LLM 用 `tool_search` 跨全部类别检索（grep / 关键词 / 语义混合，按目录的列过滤），再用 `func_tool_load(full_name)` 载入具体工具——按工具而非按服务器，所以一个上千工具的大服务器只会注入真正用到的那几个。不是"存在就被注入"：新工具生来是 `unloaded`，只有 `func_tool_load` 能把它放进工具列表（例外是白名单——harness 对、系统元工具、固定注入的 `skill_use` / `system_health`——以及 `tools.yaml` 里标了 `autoload: true` 的条目；而 `autoload` 的条目会**一直**是 loaded：它是唯一能赢过模型自己 unload 的配置决定）。这份列表是上下文预算，不是许可：只要有执行实例，工具按名字就能调用（load 状态不拦截调用），载入的作用是把工具的 schema 放到模型面前。注入列表由阈值封顶（默认 100，可在 `tools.yaml` 调整），harness 在轮次边界淘汰最久未用的工具，从不淘汰 `autoload` 的。服务器生命周期每个家族一个开关（`mcp_set_enabled` / `rest_api_set_enabled`）——现代 MCP 协议没有要开关的 session，所以 enable 即连接、之后调用时若掉线会懒重连——并且**启动时所有 enabled 服务器都会被拉起**（只 spawn、不读工具列表；列表留给第一个真正需要它的调用方）；服务器连不上时它的工具被标记 `error`，因此死连接永远不会被注入。目录在每次（重）连接时实时同步——不存在离线重建步骤。完整设计见 **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**。
 
 **Windows 下的命令执行。** `execute_shell` 在检测到的 shell 中运行——PowerShell 或 cmd（与系统提示报告的值一致，保证 LLM 写的语法真的能执行）——并用系统代码页解码输出（中文 Windows 为 GBK/cp936）。`run_python_script` 强制子 Python 以 UTF-8 运行（`-X utf8`），这样非 ASCII 输出不会让子进程崩溃。
 
@@ -324,7 +324,7 @@ job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱
 
 | 插件 | 角色 |
 |--------|------|
-| **mcp-gateway** | MCP 网关——代理外部 MCP 服务器（stdio / SSE / Streamable HTTP）并持有这些连接。管理：`mcp_set`、`mcp_set_enabled`、`mcp_remove`、`mcp_list`、`mcp_list_tools`（有截断——其余用 `tool_search` 找）；工具经 `func-tool-load` 按需载入 |
+| **mcp-gateway** | MCP 网关——代理外部 MCP 服务器（stdio / SSE / Streamable HTTP）并持有这些连接。管理：`mcp_set`、`mcp_set_enabled`、`mcp_remove`、`mcp_list`、`mcp_list_tools`（有截断——其余用 `tool_search` 找）；工具经 `func_tool_load` 按需载入 |
 | **memdb** | 对话记录数据库 + 混合搜索 |
 | **wechat** | 双向微信消息 |
 | **memfiles** | 笔记 / 日记 / 文件 / 报告文件柜（私有）。笔记、日记与报告双写为 markdown + SQLite 混合索引。所有保存工具都返回本地路径——绝不自动发布 |

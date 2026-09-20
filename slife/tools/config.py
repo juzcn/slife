@@ -7,7 +7,7 @@ config_env_remove — remove env var from slife.yaml
 Enabling/disabling a tool is NOT here: the per-tool switch is the ``enabled``
 entry in `tools.yaml`'s category section (what ``disabled_builtin`` /
 ``disabled_jobs`` mirror onto the catalog rows), and the runtime side is
-``func-tool-load`` / ``_unload_func_tool``.  The retired ``native_tool_set``
+``func_tool_load`` / ``_func_tool_unload``.  The retired ``native_tool_set``
 wrote a ``tools:`` array into slife.yaml that nothing read — it reported
 success and changed nothing.
 """

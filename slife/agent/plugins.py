@@ -314,7 +314,7 @@ class PluginLifecycle:
                     )
 
                 # External MCP proxies registered by this lifecycle's gateway
-                # glue (``{server}__{tool}`` proxies, on-demand mcp_tool_load
+                # glue (``{server}__{tool}`` proxies, on-demand func_tool_load
                 # proxies) are NOT in ``registered_tools`` — that set tracks
                 # only the wrapper's own bare-name tools.  Unregister every
                 # registry tool still bound to this (about-to-be-disconnected)

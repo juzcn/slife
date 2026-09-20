@@ -915,15 +915,7 @@ class CatalogStore:
             if purge and category:
                 gone = sorted(n for n in existing if n not in incoming)
                 if gone:
-                    ph = in_placeholders(len(gone))
-                    await self._c.execute(
-                        f"DELETE FROM tool WHERE name IN ({ph})", gone,
-                    )
-                    # Same explicit cleanup as remove_tool — the purge must
-                    # not depend on the FK cascade being enabled.
-                    await self._c.execute(
-                        f"DELETE FROM tool_embeddings WHERE name IN ({ph})", gone,
-                    )
+                    await self._delete_rows(gone)
                     purged = gone
 
             # Stale vectors go with the rows that moved: the drainer re-embeds
@@ -1016,7 +1008,7 @@ class CatalogStore:
         The per-tool half of :meth:`purge_source`: the owner is still
         configured and still reachable, it simply stopped publishing one of
         its tools.  Without this the vanished tool keeps its row, so
-        ``tool_search`` goes on offering it and ``func-tool-load`` materializes
+        ``tool_search`` goes on offering it and ``func_tool_load`` materializes
         a proxy with nothing behind it.
 
         *keep* MUST be the complete set the owner publishes now — a partial
@@ -1032,15 +1024,7 @@ class CatalogStore:
             )
             gone = sorted(r[0] for r in await cursor.fetchall() if r[0] not in keep)
             if gone:
-                ph = in_placeholders(len(gone))
-                await self._c.execute(
-                    f"DELETE FROM tool WHERE name IN ({ph})", gone,
-                )
-                # Same explicit cleanup as purge_source / remove_tool — the
-                # delete must not depend on the FK cascade being enabled.
-                await self._c.execute(
-                    f"DELETE FROM tool_embeddings WHERE name IN ({ph})", gone,
-                )
+                await self._delete_rows(gone)
                 await self._c.commit()
         if gone:
             self._count_ops(removed=len(gone))
@@ -1179,6 +1163,45 @@ class CatalogStore:
             await self._c.commit()
         return cursor.rowcount
 
+    async def _delete_rows(self, names: "list[str]") -> int:
+        """DELETE *names* and their embedding chunks; returns the rows removed.
+
+        The ONE spelling of a tool-row removal, shared by every batch purge —
+        :meth:`remove_tools`, :meth:`purge_source_except`, ``reconcile``'s
+        purge.  The caller holds the write lock (each of those deletes as part
+        of a read-then-write under one lock, and taking it again here would
+        deadlock).  The embeddings' delete is explicit: it must not depend on
+        the FK cascade being enabled.
+        """
+        if not names:
+            return 0
+        ph = in_placeholders(len(names))
+        cursor = await self._c.execute(
+            f"DELETE FROM tool WHERE name IN ({ph})", names,
+        )
+        await self._c.execute(
+            f"DELETE FROM tool_embeddings WHERE name IN ({ph})", names,
+        )
+        return cursor.rowcount or 0
+
+    async def remove_tools(self, names: "list[str]") -> list[str]:
+        """Delete several tool rows at once — the batch face of ``remove_tool``.
+
+        What a whole family vanishing costs: ONE statement for the set rather
+        than one per row.  Returns the names asked for, sorted; ``removed``
+        books the rows actually deleted, so a name that was not there is
+        counted once and only here (the caller derived them from the db, so the
+        two agree unless someone else got there first).
+        """
+        gone = sorted(set(names))
+        async with self._write_lock:
+            removed = await self._delete_rows(gone)
+            await self._c.commit()
+        if gone:
+            self._count_ops(removed=removed)
+            logger.info("catalog_tools_removed tools=%d names=%r", removed, gone)
+        return gone
+
     async def remove_tool(self, name: str) -> None:
         """Delete a single tool row plus its embedding chunks.
 
@@ -1188,14 +1211,9 @@ class CatalogStore:
         that tool_search keeps returning.
         """
         async with self._write_lock:
-            cursor = await self._c.execute(
-                "DELETE FROM tool WHERE name = ?", (name,),
-            )
-            await self._c.execute(
-                "DELETE FROM tool_embeddings WHERE name = ?", (name,),
-            )
+            removed = await self._delete_rows([name])
             await self._c.commit()
-        self._count_ops(removed=cursor.rowcount or 0)
+        self._count_ops(removed=removed)
 
     async def names_by_category(self, category: str) -> set[str]:
         """Every row name of one category — the mirror's purge diff basis."""

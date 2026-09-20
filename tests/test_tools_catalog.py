@@ -571,8 +571,15 @@ async def test_reconcile_purge_is_scoped_to_its_category(store):
 
 @pytest.mark.asyncio
 async def test_reconcile_without_purge_keeps_vanished_rows(store):
-    """The boot seed runs without purge: a name missing from the registered
-    set may simply be an mcp row whose server has not connected yet."""
+    """The store-level default: a reconcile without ``purge`` keeps vanished rows.
+
+    The membership sweeps are the SERVICE's calls, one per authority — the
+    boot seed's builtin sweep (``own_builtins``) for the registry's own rows, a
+    source-scoped mirror for a plugin, a category-scoped mirror for skill/cli —
+    and each keys on a list that is authoritative for what it sweeps.  The
+    store itself never guesses, because a name missing from one caller's list
+    may simply be an mcp row whose server has not connected yet.
+    """
     await store.reconcile([_row("gone")])
     result = await store.reconcile([])
     assert result["purged"] == []

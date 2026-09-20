@@ -884,7 +884,7 @@ class AgentLoop:
         """The OpenAI function list for the NEXT LLM request.
 
         Built from the loaded set :meth:`_refresh_inject_snapshot` just read —
-        which is why a tool loaded mid-turn (``func-tool-load``) is in the very
+        which is why a tool loaded mid-turn (``func_tool_load``) is in the very
         next request rather than the next turn.
 
         Schemas are read from the CATALOG DB (the ``schema`` column — the
@@ -916,8 +916,8 @@ class AgentLoop:
     async def _refresh_inject_snapshot(self) -> None:
         """Read the catalog's loaded set — called before EVERY LLM request.
 
-        The tool list is per-REQUEST, not per-turn: ``func-tool-load`` (and
-        ``_unload_func_tool``) mid-turn must land in the next request, which is
+        The tool list is per-REQUEST, not per-turn: ``func_tool_load`` (and
+        ``_func_tool_unload``) mid-turn must land in the next request, which is
         the whole point of a per-tool load.  The order of the rebuilt list is
         the registry's, so a tool registered mid-turn (an mcp/rest-api proxy is
         materialized at load time) appends at the END — the request's prefix up
@@ -1542,7 +1542,7 @@ class AgentLoop:
 
                     # The injected tool list is rebuilt for EVERY request from
                     # the catalog's loaded set, so a load that landed during the
-                    # previous iteration (func-tool-load, _unload_func_tool, a
+                    # previous iteration (func_tool_load, _func_tool_unload, a
                     # plugin's mirror) is in this request — the next LLM call,
                     # not the next turn.
                     await self._refresh_inject_snapshot()

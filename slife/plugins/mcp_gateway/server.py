@@ -699,7 +699,7 @@ async def __mcp_list(ctx: Context | None = None) -> str:
     the model.  The host's reconcile is not a family: it mirrors every
     configured server's rows into the catalog, so pointing it at the filtered
     listing silently stopped it mirroring the REST APIs — their rows vanished
-    from the catalog and neither ``tool_search`` nor ``func-tool-load`` could
+    from the catalog and neither ``tool_search`` nor ``func_tool_load`` could
     reach them.
     """
     return json.dumps(_pool.list_configured(), ensure_ascii=False, indent=2)

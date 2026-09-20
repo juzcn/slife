@@ -442,7 +442,7 @@ class AgentService:
         # MCP enrichment guard: coalesces per-server tool discovery between
         # startup glue and mcp_set callbacks.
         self._mcp_syncing: set[str] = set()
-        # On-demand reconcile guard: prevents concurrent mcp_tool_load /
+        # On-demand reconcile guard: prevents concurrent func_tool_load /
         # tools/list_changed reconciliation from racing.
         self._mcp_reconciling: bool = False
         #: Whether the TUI has been told the tool set is ready yet.  The first
@@ -1395,7 +1395,7 @@ class AgentService:
                 # __mcp_list, not mcp_list: the model's listing is scoped to
                 # its own family, and the reconcile mirrors EVERY configured
                 # server.  Using the filtered one dropped the REST APIs from
-                # the pass — no catalog rows, so tool_search and func-tool-load
+                # the pass — no catalog rows, so tool_search and func_tool_load
                 # could not reach 1271 endpoints that were connected all along.
                 raw = await client.call_tool("__mcp_list")
                 servers = json.loads(raw)
@@ -1741,7 +1741,7 @@ class AgentService:
         every other family's mirror follows: a tool this server no longer
         publishes loses its row (it already lost its registry proxy), or
         ``tool_search`` keeps offering one that cannot run and
-        ``func-tool-load`` materializes a proxy with nothing behind it.  Both
+        ``func_tool_load`` materializes a proxy with nothing behind it.  Both
         callers return early on an empty listing, which means "not ready yet"
         — never "owns nothing" — so a transient empty list cannot wipe a
         server's rows.
@@ -1850,7 +1850,7 @@ class AgentService:
         if spec.gateway:
             # Reconcile external {server}__{tool} proxies — registers auto_load
             # tools and mirrors on-demand servers' catalog rows (the
-            # tool_search / func-tool-load surface).  Same network the main
+            # tool_search / func_tool_load surface).  Same network the main
             # agent's _wire_mcp_glue uses, mirrored for a worker sharing the
             # gateway.
             await self._sync_mcp_proxies()
@@ -2857,19 +2857,6 @@ class AgentService:
                 disabled_plugin=tuple(self.config.disabled_plugin),
                 disabled_builtins=tuple(self.config.disabled_builtins),
             )
-            # Session seed from everything currently registered (the system
-            # tools: builtin + built-in plugin tools), PLUS the builtins an
-            # override switched off: they are not registered (the factory skips
-            # them) but tools.yaml still declares them, so the db carries their
-            # row marked `disabled` rather than omitting a tool yaml names.
-            # External mcp/rest-api rows are seeded by the reconcile as their
-            # servers connect.
-            await svc.sync_system_tools([
-                *self.tool_registry.list_tools(),
-                *disabled_tool_instances(
-                    self.config.tools, config=self.config, ctx=self._tool_ctx,
-                ),
-            ])
             self._catalog = svc
             self._tool_ctx.catalog = svc
             self.tool_registry.set_catalog(svc)
@@ -2880,12 +2867,23 @@ class AgentService:
             # the rows it would write are already there, and two processes
             # racing upsert-then-purge on one db is what the grant prevents.
             if self.caps.catalog_owner:
+                # The session seed, over everything currently registered (the
+                # system tools: builtin + built-in plugin tools), PLUS the
+                # builtins an override switched off: they are not registered
+                # (the factory skips them) but tools.yaml still declares them, so
+                # the db carries their row marked `disabled` rather than omitting
+                # a tool yaml names.  External mcp/rest-api rows are seeded by the
+                # reconcile as their servers connect.
+                # ``own_builtins``: this list IS the builtin family, so a class
+                # that left the code loses its row in this pass — every other
+                # family purges from its own source (a plugin's rescan, the
+                # skill/cli mirror, the `tools.yaml` comparison for servers).
                 await svc.sync_system_tools([
                     *self.tool_registry.list_tools(),
                     *disabled_tool_instances(
                         self.config.tools, config=self.config, ctx=self._tool_ctx,
                     ),
-                ])
+                ], own_builtins=True)
                 # Skill and cli rows come from their own live sources (the
                 # skills dir, the cli section of tools.yaml), not from the
                 # registry — sync_system_tools cannot see them, so they are

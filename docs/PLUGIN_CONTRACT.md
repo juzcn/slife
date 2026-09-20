@@ -311,7 +311,7 @@ A plugin's `server.py` must:
 4. expose `@mcp.tool`s — bare names = public, `__`-prefixed = internal.
    A public tool becomes a catalog row the moment the child is ready,
    so it is findable by `tool_search` (born `unloaded`: searchable, not
-   injected, until `func-tool-load`).
+   injected, until `func_tool_load`).
    (called programmatically via `call_tool("__…")`, never exposed to the LLM);
    heavy post-readiness work goes through `warm_after_ready`;
 5. be importable: `python -m <module>`.

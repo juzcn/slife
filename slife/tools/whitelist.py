@@ -8,7 +8,7 @@ entry can turn them off, and nothing can evict them.  Both sources seed a row
 keeps its own tools whatever the config says.
 
 Three classes, all always injected into the LLM tool list, none LRU-evictable,
-none unloadable via ``_unload_func_tool``:
+none unloadable via ``_func_tool_unload``:
 
 - :data:`HARNESS_WHITELIST` — the loop's own auto-invoked tool pairs
   (``_turn_prompt`` / ``_check_new_input`` / ``attach_image``).  These are
@@ -18,13 +18,13 @@ none unloadable via ``_unload_func_tool``:
   §8.5 "系统元工具"): server management as TWO separate families — ``mcp_*``
   and ``rest_api_*`` (a rest-api is semantically distinct today even though
   it rides the mcp-openapi-proxy gateway, and may drop it later) — plus the
-  search/load surface and the self-service ``_unload_func_tool``.
+  search/load surface and the self-service ``_func_tool_unload``.
 - :data:`PINNED_WHITELIST` — tools outside the tool system that are pinned
   always-loaded because the agent's own workflow keeps needing them.
 
 Everything else — the other diagnostics (``system_tools_list``, async
 poll…), config management (``cli_*``, ``skill_set``…) — is NOT whitelisted:
-it seeds loaded and the agent can reload it via ``func-tool-load``, but the
+it seeds loaded and the agent can reload it via ``func_tool_load``, but the
 LRU squeeze may evict it.  The whitelist is a design constant, not
 configurable.
 """
@@ -49,8 +49,8 @@ META_WHITELIST: frozenset[str] = frozenset({
     "mcp_set_enabled",
     "rest_api_set_enabled",
     "tool_search",
-    "func-tool-load",
-    "_unload_func_tool",
+    "func_tool_load",
+    "_func_tool_unload",
 })
 
 #: Pinned always-loaded — not tool-system machinery, but one call each for two

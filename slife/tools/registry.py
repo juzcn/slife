@@ -36,7 +36,7 @@ def not_loaded_refusal(tool_name: str) -> str:
     remembers ``loaded`` from a previous session while this process — whose
     registry starts empty — has not been rejoined yet.  The row exists; the
     object to invoke does not.  Whether a load could create one is
-    ``func-tool-load``'s answer to give, and it gives it.
+    ``func_tool_load``'s answer to give, and it gives it.
 
     ``load_status`` is NOT this function's business.  A tool the model never
     loaded executes normally as long as an instance is registered: the row
@@ -171,7 +171,7 @@ class ToolRegistry:
         if not tool:
             # No execution instance — the only thing left to refuse.  Refusal
             # texts live in the catalog service, one wording per state, so the
-            # same situation reads the same here and at func-tool-load.
+            # same situation reads the same here and at func_tool_load.
             if self._catalog is not None:
                 eff = await self._catalog.effective_status(tool_name)
                 if eff is not None:

@@ -2,7 +2,7 @@
 
 The store is a dumb data layer; this service owns the semantics from
 DESIGNER_NOTES §8.5: seed/reseed on session start, the effective-status
-refusals for ``func-tool-load`` / ``_unload_func_tool``, the per-turn
+refusals for ``func_tool_load`` / ``_func_tool_unload``, the per-turn
 injection snapshot (loaded ∧ whitelist), and main-agent-only curatorship.
 Instances are per-process (main agent + subagent workers open the same
 file); ``write_owner`` marks the single process allowed to run session
@@ -326,7 +326,7 @@ class ToolCatalogService:
             return frozenset()
 
     async def sync_system_tools(
-        self, tools: Sequence["Tool"], *, source: str = "",
+        self, tools: Sequence["Tool"], *, source: str = "", own_builtins: bool = False,
     ) -> list[str]:
         """Mirror registered system tools into the catalog. Returns schema movers.
 
@@ -342,9 +342,21 @@ class ToolCatalogService:
         ``source`` scopes the call, and that scoping is the only difference: a
         row of that source whose tool is gone is REMOVED (the plugin dropped a
         job), so ``tool_search`` cannot return a tool that no longer exists.
-        The unscoped call purges nothing — a name missing from the registry may
-        be a builtin disabled in the config, or an external row whose server has
-        not connected yet.
+        The unscoped call purges nothing by default — a name missing from the
+        registry may be a builtin disabled in the config, or an external row
+        whose server has not connected yet.
+
+        ``own_builtins`` is the other half of that ownership, and only the
+        whole-registry boot seed sets it: the builtin family has no source to be
+        scoped by (its rows are the registry's own), so a builtin deleted or
+        renamed in CODE would otherwise keep its row forever, and ``tool_search``
+        would go on offering a tool that cannot run.  With it, a ``builtin`` row
+        whose name is not in this call's list is REMOVED — the same
+        upsert-then-purge contract, keyed on the rows this call brought.  A tool
+        switched off in ``tools.yaml`` is in that list (the caller passes
+        ``disabled_tool_instances`` alongside the registry), so it keeps its row
+        marked ``disabled``.  A caller passing a PARTIAL list must not set it, or
+        it would purge the builtins it left out.
 
         Main-owner only (a subagent worker never syncs).
         """
@@ -370,6 +382,24 @@ class ToolCatalogService:
                 logger.info(
                     "catalog_system_tools_purged source=%s tools=%d",
                     source, len(vanished),
+                )
+            changed += vanished
+        elif own_builtins:
+            # The builtin family's own upsert-then-purge.  Only the names THIS
+            # call brought count as alive: a builtin whose class left the code is
+            # in neither the registry nor the disabled set, so its row has no
+            # claimant left and goes.
+            vanished = sorted(
+                await self._store.names_by_category("builtin")
+                - {r["name"] for r in rows if r["category"] == "builtin"}
+            )
+            if vanished:
+                # One statement for the whole set — the same batch shape every
+                # other family's purge takes: a family going is one delete.
+                await self._store.remove_tools(vanished)
+                logger.info(
+                    "catalog_builtin_tools_purged tools=%d names=%r",
+                    len(vanished), vanished,
                 )
             changed += vanished
         self.wake_indexer(changed)
@@ -579,7 +609,7 @@ class ToolCatalogService:
         A newly seen tool lands ``unloaded`` — unless its server entry is
         marked ``autoload: true``, which seeds the whole set loaded — while an
         existing row keeps whatever the model decided.  For everything else
-        ``func-tool-load`` is the only way into the injection set.
+        ``func_tool_load`` is the only way into the injection set.
 
         An ``autoload`` server owns its tools' status (there is no per-tool
         autoload for mcp/rest-api — the flag is on the server, so it is one

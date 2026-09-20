@@ -1,5 +1,4 @@
-"""Meta tool tests — tool_search / func-tool-load / _unload_func_tool /
-mcp_tool_load delegation."""
+"""Meta tool tests — tool_search / func_tool_load / _func_tool_unload."""
 
 import json
 from types import SimpleNamespace
@@ -11,11 +10,10 @@ import pytest_asyncio
 from slife.tools.base import Tool
 from slife.tools.catalog import CatalogStore
 from slife.tools.catalog_service import ToolCatalogService
-from slife.tools.mcp import McpToolLoadTool
 from slife.tools.meta_tools import (
     FuncToolLoadTool,
+    FuncToolUnloadTool,
     ToolSearchTool,
-    UnloadFuncTool,
 )
 from slife.tools.registry import ToolRegistry
 
@@ -117,7 +115,7 @@ async def test_tool_search_grep_mode_and_effective_status(db, ctx):
     assert payload["results"][0]["status"] == "disabled"
 
 
-# ── func-tool-load / _unload_func_tool ─────────────────────────────
+# ── func_tool_load / _func_tool_unload ─────────────────────────────
 
 @pytest.mark.asyncio
 async def test_tool_load_and_unload_roundtrip_opts(ctx):
@@ -127,7 +125,7 @@ async def test_tool_load_and_unload_roundtrip_opts(ctx):
     msg = await t_load.execute(full_name="native_a")
     assert "Loaded" in msg or "already loaded" in msg
     # unload it, then reload
-    t_unload = UnloadFuncTool()
+    t_unload = FuncToolUnloadTool()
     object.__setattr__(t_unload, "_ctx", ctx)
     msg = await t_unload.execute(full_name="native_a")
     assert "Unloaded" in msg
@@ -152,9 +150,9 @@ async def test_tool_load_refuses_meta_and_error(db, ctx):
     assert msg == "Error: tool 'svcA__x' cannot be loaded — its status is error."
     msg = await t_load.execute(full_name="_turn_prompt")
     assert msg  # meta unknown? actually _turn_prompt is not in catalog → unknown
-    # _unload_func_tool refuses a whitelisted tool
+    # _func_tool_unload refuses a whitelisted tool
     await ctx.catalog.sync_system_tools([_NativeA(), _turn_prompt_stub()])
-    t_unload = UnloadFuncTool()
+    t_unload = FuncToolUnloadTool()
     object.__setattr__(t_unload, "_ctx", ctx)
     msg = await t_unload.execute(full_name="_turn_prompt")
     assert "whitelisted" in msg
@@ -171,20 +169,6 @@ def _turn_prompt_stub():
             return "pong"
     return _Stub()
 
-
-# ── mcp_tool_load delegation ───────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_mcp_tool_load_delegates_to_func_tool_load(ctx):
-    t = McpToolLoadTool()
-    object.__setattr__(t, "_ctx", ctx)
-    # native path through the delegation flips status like func-tool-load
-    t2 = UnloadFuncTool()
-    object.__setattr__(t2, "_ctx", ctx)
-    await t2.execute(full_name="native_a")
-    msg = await t.execute(full_name="native_a")
-    assert "Loaded" in msg or "already loaded" in msg
-    assert await ctx.catalog.effective_status("native_a") == "loaded"
 
 @pytest.mark.asyncio
 async def test_a_column_filter_is_not_truncated_by_the_candidate_cutoff(db, ctx):

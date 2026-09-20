@@ -702,7 +702,7 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
 
     The status report is authoritative: an enabled server whose state is
     ``running`` reports ok.  External tools load on demand via the shared
-    catalog (``tool_search`` / ``func-tool-load`` — the unified tool system);
+    catalog (``tool_search`` / ``func_tool_load`` — the unified tool system);
     the catalog's own health (db + semantic index) is reported by
     :func:`check_tool_catalog`, not here.
 
@@ -938,7 +938,7 @@ async def check_tool_catalog(ctx=None) -> list[dict]:
         return [{
             "component": "tool_catalog", "level": "warning", "key": "db",
             "value": "unavailable",
-            "hint": ("Restart slife. tool_search and func-tool-load fall back to "
+            "hint": ("Restart slife. tool_search and func_tool_load fall back to "
                      "name matching meanwhile, and the session log has the reason."),
         }]
     if catalog is None:

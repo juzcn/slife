@@ -34,8 +34,8 @@ class ToolContext:
 
     catalog: "ToolCatalogService | None" = None
     """The unified tool catalog service (shared tools.db) — used by the
-    tool-system meta tools (``tool_search`` / ``func-tool-load`` /
-    ``_unload_func_tool``) and the loop's loaded-snapshot inspection.
+    tool-system meta tools (``tool_search`` / ``func_tool_load`` /
+    ``_func_tool_unload``) and the loop's loaded-snapshot inspection.
     None when the catalog failed to open (best-effort)."""
 
     config: Config | None = None

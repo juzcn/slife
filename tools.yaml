@@ -31,7 +31,7 @@ plugin: []
 #   enabled: false   stays configured but is not connected
 #   autoload: true   every tool this server mirrors starts loaded and is never
 #                    evicted; otherwise its tools are on-demand — the model
-#                    runs tool_search, then func-tool-load
+#                    runs tool_search, then func_tool_load
 #   os_paths: true   inject --allow-path for the OS-accessible path set
 #   source           provenance recorded by the registry search, not a setting
 mcp:

@@ -20,8 +20,8 @@ def test_meta_whitelist_is_exactly_the_5_tools():
         "mcp_set_enabled",
         "rest_api_set_enabled",
         "tool_search",
-        "func-tool-load",
-        "_unload_func_tool",
+        "func_tool_load",
+        "_func_tool_unload",
     })
 
 
@@ -48,7 +48,7 @@ def test_disjoint_and_covered():
 
 
 def test_is_meta_tool_covers_every_class():
-    assert is_meta_tool("func-tool-load")
+    assert is_meta_tool("func_tool_load")
     assert is_meta_tool("mcp_set_enabled")
     assert is_meta_tool("rest_api_set_enabled")
     assert is_meta_tool("_turn_prompt")

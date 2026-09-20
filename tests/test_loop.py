@@ -1427,7 +1427,7 @@ class TestMidturnInjection:
 class TestToolListInjection:
     """The tool list is rebuilt before EVERY LLM request out of the catalog's
     loaded set, so a load landing mid-turn shows up in the next request of
-    the same turn (``func-tool-load`` is per-tool, not per-turn)."""
+    the same turn (``func_tool_load`` is per-tool, not per-turn)."""
 
     @pytest.mark.asyncio
     async def test_load_mid_turn_lands_in_the_next_request(
@@ -1467,7 +1467,7 @@ class TestToolListInjection:
             async def mock_stream(messages, tools, **kwargs):
                 seen.append([t["function"]["name"] for t in tools])
                 if len(seen) == 1:
-                    # What func-tool-load does mid-turn: flip the row loaded.
+                    # What func_tool_load does mid-turn: flip the row loaded.
                     assert (await svc.load_tool("native_b"))[0]
                     yield StreamChunk(tool_deltas=[
                         {"index": 0, "id": "c1",
@@ -1494,7 +1494,7 @@ class TestToolListInjection:
 
 
 class TestSameMessageLoadAndCall:
-    """One assistant message carrying ``func-tool-load(X)`` *and* ``X(...)``.
+    """One assistant message carrying ``func_tool_load(X)`` *and* ``X(...)``.
 
     The batch runs its calls concurrently (``asyncio.gather``), so the two are
     siblings, not steps — and that no longer decides anything: the call runs.
@@ -1508,7 +1508,7 @@ class TestSameMessageLoadAndCall:
     stop being guesses.
 
     What the harness owes the model here is the TIMING, stated where the model
-    can act on it — ``func-tool-load`` says the tool is in the list from the
+    can act on it — ``func_tool_load`` says the tool is in the list from the
     next request.  This pins both halves so neither can silently regress.
     """
 
@@ -1557,7 +1557,7 @@ class TestSameMessageLoadAndCall:
             history = MessageHistory(system_prompt="x")
             await loop._execute_tools(
                 [
-                    ToolCallInfo(id="c1", name="func-tool-load",
+                    ToolCallInfo(id="c1", name="func_tool_load",
                                  arguments={"full_name": "target_tool"}),
                     ToolCallInfo(id="c2", name="target_tool", arguments={}),
                 ],

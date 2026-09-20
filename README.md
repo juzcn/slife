@@ -16,7 +16,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: **63 builtin tools by default** across 14 categories (including the reserved harness tool `_turn_prompt`, auto-invoked each turn), **nine internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, the MCP gateway `mcp-gateway`, and the **`local-embed`** embedding service), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: **61 builtin tools by default** across 13 categories (including the reserved harness tool `_turn_prompt`, auto-invoked each turn), **nine internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, the MCP gateway `mcp-gateway`, and the **`local-embed`** embedding service), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -225,7 +225,7 @@ models:
 
 All unified as OpenAI function definitions — the LLM sees no difference between system tools (builtin + built-in plugin) and external MCP tools. Every tool additionally accepts three meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt — Y approve / N, Esc deny).
 
-**62 builtin tools in 14 categories** (63 classes auto-discovered from `slife/tools/`; `install_python_package` ships disabled in the bundled config). The reserved harness tools `_turn_prompt` (per-turn prompt, once per turn) and `_check_new_input` (mid-turn message injection, at iteration boundaries in cut-in mode) are auto-invoked by the loop — the model reads their results but is told not to call them. `attach_image` is auto-invoked on `@`-attachments and refuses at call time on a vision-less model.
+**61 builtin tools in 13 categories** (62 classes auto-discovered from `slife/tools/`; `install_python_package` ships disabled in the bundled config). The reserved harness tools `_turn_prompt` (per-turn prompt, once per turn) and `_check_new_input` (mid-turn message injection, at iteration boundaries in cut-in mode) are auto-invoked by the loop — the model reads their results but is told not to call them. `attach_image` is auto-invoked on `@`-attachments and refuses at call time on a vision-less model.
 
 | Category | Tools |
 |----------|-------|
@@ -241,8 +241,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image` (feed images to a vision model), `_turn_prompt` (per-turn prompt, auto-invoked), `_check_new_input` (mid-turn input, auto-invoked) |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | embeddings | `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_enable` |
-| mcp | `mcp_tool_load` (legacy alias) |
-| ToolSystem | `tool_search` (catalog search across every category), `func-tool-load`, `_unload_func_tool` (self-service unload) |
+| ToolSystem | `tool_search` (catalog search across every category), `func_tool_load` (loads an mcp/rest-api tool too, materializing its proxy), `_func_tool_unload` (self-service unload) |
 
 **Managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts; `model_set` **merges** into the existing entry, so a field-focused change can't silently strip a model's `reasoning`/`input`/`compat`. `rest_api_set` registers an OpenAPI-described external API as one server backed by `mcp-openapi-proxy` (Low-Level Mode, the default) — every spec endpoint becomes a typed `{name}__{endpoint}` tool.
 
@@ -259,7 +258,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + one tool per registered job (e.g. `translate`) |
 
-**One catalog for every tool, managed by a threshold.** Third-party capability enters only as a standard MCP server in `tools.yaml` (`mcp` + `rest-api` sections — any stdio / SSE / Streamable HTTP server works, no Slife SDK required). Every category — builtin, job, plugin, mcp, rest-api, skill, cli — lives in one shared `tools.db`; the model discovers across all of them with `tool_search` (grep / keyword / semantic hybrid, filtering on the catalog's columns), then loads a specific tool with `func-tool-load(full_name)` — per-tool, not per-server, so one large server injects only the tools actually used. Nothing is injected just because it exists: a tool is born `unloaded` and only `func-tool-load` puts it in the tool list (the whitelist — harness pair, meta tools, and the pinned `skill_use` / `system_health` — and anything marked `autoload: true` in `tools.yaml` excepted, and an `autoload` entry stays loaded: it is the one config decision that wins over the model's own unload). That list is a context budget, not a permission: a tool with an execution route is callable by name whether or not the model has loaded it, and loading is what puts the tool's schema in front of it. The injected list is capped by a threshold (default 100, tunable in `tools.yaml`) and the harness evicts least-recently-used tools at turn boundaries, never an `autoload` one. A server's lifecycle is one switch per family (`mcp_set_enabled` / `rest_api_set_enabled`) — the modern MCP protocol has no session to open or close, so enabling connects and a tool call reconnects lazily — and **every enabled server is brought up at boot**; a server that is down has its tools marked `error`, so they never inject a dead transport. The catalog is synced live from the connections on every (re)connect — no offline rebuild step. Full design: **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
+**One catalog for every tool, managed by a threshold.** Third-party capability enters only as a standard MCP server in `tools.yaml` (`mcp` + `rest-api` sections — any stdio / SSE / Streamable HTTP server works, no Slife SDK required). Every category — builtin, job, plugin, mcp, rest-api, skill, cli — lives in one shared `tools.db`; the model discovers across all of them with `tool_search` (grep / keyword / semantic hybrid, filtering on the catalog's columns), then loads a specific tool with `func_tool_load(full_name)` — per-tool, not per-server, so one large server injects only the tools actually used. Nothing is injected just because it exists: a tool is born `unloaded` and only `func_tool_load` puts it in the tool list (the whitelist — harness pair, meta tools, and the pinned `skill_use` / `system_health` — and anything marked `autoload: true` in `tools.yaml` excepted, and an `autoload` entry stays loaded: it is the one config decision that wins over the model's own unload). That list is a context budget, not a permission: a tool with an execution route is callable by name whether or not the model has loaded it, and loading is what puts the tool's schema in front of it. The injected list is capped by a threshold (default 100, tunable in `tools.yaml`) and the harness evicts least-recently-used tools at turn boundaries, never an `autoload` one. A server's lifecycle is one switch per family (`mcp_set_enabled` / `rest_api_set_enabled`) — the modern MCP protocol has no session to open or close, so enabling connects and a tool call reconnects lazily — and **every enabled server is brought up at boot**; a server that is down has its tools marked `error`, so they never inject a dead transport. The catalog is synced live from the connections on every (re)connect — no offline rebuild step. Full design: **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
 
 **Windows execution.** `execute_shell` runs in the detected shell — PowerShell or cmd (the same value the system prompt reports, so the LLM's syntax actually executes) — and its output is decoded with the system code page (GBK/cp936 on Chinese Windows). `run_python_script` forces the child Python to UTF-8 (`-X utf8`) so non-ASCII output can't crash the child.
 
@@ -320,7 +319,7 @@ Nine internal plugins run as independent child processes, each declared by one r
 
 | Plugin | Role |
 |--------|------|
-| **mcp-gateway** | The MCP gateway — proxies external MCP servers (stdio / SSE / Streamable HTTP) and holds the live connections. Management: `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` (capped — `tool_search` finds the rest); a tool loads on demand with `func-tool-load` |
+| **mcp-gateway** | The MCP gateway — proxies external MCP servers (stdio / SSE / Streamable HTTP) and holds the live connections. Management: `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` (capped — `tool_search` finds the rest); a tool loads on demand with `func_tool_load` |
 | **memdb** | Turns database with hybrid search |
 | **wechat** | Bidirectional WeChat messaging |
 | **memfiles** | Notes / diary / files / reports cabinet (private). Notes, diary & reports dual-written to markdown + a SQLite hybrid index. All save tools return local paths — never auto-publish |
@@ -505,7 +504,7 @@ Slife is one codebase, a few docs, split by audience:
 * **[A2A-MQTT.md](docs/A2A-MQTT.md)** — the adopted A2A-over-MQTT design: the official SDK, topics/wire/QoS/retry, the mesh driver, the standard tool surface, markers, drain schema.
 * **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)** — the authoritative spec of the plugin system (central `PluginSpec` table, the registry, the uniform lifecycle) for anyone writing a plugin.
 * **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)** — how Slife curates the model context each turn: channels, markers, the `_turn_prompt` harness tool-pair.
-* **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** — the unified tool catalog: the six `tools.yaml` category sections, `tools.db`, the load/unload threshold, `tool_search`/`func-tool-load`, per-request injection, and the MCP reconcile.
+* **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** — the unified tool catalog: the six `tools.yaml` category sections, `tools.db`, the load/unload threshold, `tool_search`/`func_tool_load`, per-request injection, and the MCP reconcile.
 
 ```bash
 git clone https://github.com/juzcn/slife.git

@@ -312,6 +312,94 @@ async def test_a_config_disabled_builtin_gets_a_row_marked_disabled(_isolate):
 
 
 @pytest.mark.asyncio
+async def test_the_boot_seed_sweeps_the_builtins_the_code_dropped(_isolate):
+    """The builtin family has no source to be scoped by — the seed IS its claim.
+
+    A builtin deleted (or renamed) in code is in neither the registry nor the
+    disabled set, so without this nothing would ever take its row away and
+    ``tool_search`` would keep offering a tool that cannot run.  The sweep keys
+    on the list the seed was handed: a ``tools.yaml``-disabled builtin is in
+    that list (its instance comes from ``disabled_tool_instances``) and keeps
+    its row, and no other family is touched.
+    """
+
+    class _RetiredNative(Tool):
+        name = "native_retired"
+        description = "a builtin since deleted from the code"
+        parameters = {"type": "object", "properties": {}, "required": []}
+        category = "System"
+
+        async def execute(self, **kwargs) -> str:
+            return "ok"
+
+    class _OffNative(Tool):
+        name = "native_off"
+        description = "a builtin the config switched off"
+        parameters = {"type": "object", "properties": {}, "required": []}
+        category = "System"
+
+        async def execute(self, **kwargs) -> str:
+            return "never called"
+
+    store = CatalogStore(_isolate / "tools.db")
+    await store.open()
+    try:
+        svc = ToolCatalogService(
+            store, write_owner=True, disabled_builtins=("native_off",),
+        )
+        # the version of the code that still had the class
+        await svc.sync_system_tools(
+            [_NativeShell(), _OffNative(), _RetiredNative()], own_builtins=True,
+        )
+        assert await store.get_tool("native_retired") is not None
+        await _mirror_server(svc, "svcA", ["x"])
+
+        # the next boot: the class is gone, the disabled one is still declared
+        store.begin_ops()
+        await svc.sync_system_tools([_NativeShell(), _OffNative()], own_builtins=True)
+        delta = store.end_ops()
+
+        assert await store.get_tool("native_retired") is None   # no claimant left
+        assert delta.removed == 1                  # what the sync line prints
+        # `enabled: false` is not death — the seed handed its instance over
+        row = await store.get_tool("native_off")
+        assert row is not None and row["status"] == "disabled"
+        # …and the sweep is the builtin family's alone
+        assert await store.get_tool("svcA__x") is not None
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_an_unscoped_sync_without_the_flag_keeps_vanished_builtins(_isolate):
+    """The unflagged call stays purge-free — a partial list must never sweep.
+
+    A plugin's rescan and any other partial writer come through the same
+    method; only the whole-registry seed may treat its list as the family's
+    membership.
+    """
+
+    class _PartialNative(Tool):
+        name = "native_partial"
+        description = "a builtin one caller's list happens not to carry"
+        parameters = {"type": "object", "properties": {}, "required": []}
+        category = "System"
+
+        async def execute(self, **kwargs) -> str:
+            return "ok"
+
+    store = CatalogStore(_isolate / "tools.db")
+    await store.open()
+    try:
+        svc = ToolCatalogService(store, write_owner=True)
+        await svc.sync_system_tools([_NativeShell(), _PartialNative()])
+        await svc.sync_system_tools([_NativeShell()])      # no flag
+        assert await store.get_tool("native_partial") is not None
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_nothing_external_is_usable_before_a_connect(_isolate):
     """Startup flags every external row error — no server is up yet.
 
@@ -424,7 +512,7 @@ async def test_a_tool_a_server_stopped_publishing_loses_its_row(_isolate):
     ``sync_category``).
 
     A tool the registry already dropped (its proxy went with it) must not keep a
-    catalog row, or ``tool_search`` goes on offering it and ``func-tool-load``
+    catalog row, or ``tool_search`` goes on offering it and ``func_tool_load``
     materializes a proxy with nothing behind it."""
     from types import SimpleNamespace
     from slife.agent.roles import Role, caps_for
