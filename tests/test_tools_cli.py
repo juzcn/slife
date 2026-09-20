@@ -335,7 +335,7 @@ class TestGetCliToolsSummaryEdgeCases:
 class TestCliCatalogRows:
     """`cli` entries are catalog rows: that is how tool_search finds them."""
 
-    def test_rows_carry_description_and_enabled(self):
+    def test_rows_carry_description_and_status(self):
         from slife.tools.cli import cli_catalog_rows
         from slife.tools.catalog import _flatten_schema
 
@@ -346,8 +346,8 @@ class TestCliCatalogRows:
         })
 
         assert rows["gh"]["description"] == "GitHub CLI"
-        assert rows["gh"]["enabled"] is True
-        assert rows["off"]["enabled"] is False
+        assert rows["gh"]["status"] == "enabled"
+        assert rows["off"]["status"] == "disabled"
         assert "malformed" not in rows
         # The schema is NOT NULL and not a bare sentinel: it is the semantic
         # index's document for this row, so a cli entry is embedded like every

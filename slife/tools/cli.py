@@ -26,6 +26,7 @@ from slife.tools._config_io import (
 )
 from slife.paths import get_tools_config_path
 from slife.tools.base import Tool
+from slife.tools.catalog import config_status
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -100,7 +101,7 @@ def get_cli_tools_summary(config_path: Path) -> str:
 
 
 def cli_catalog_rows(cli_tools: dict) -> dict[str, dict]:
-    """The catalog rows the ``cli`` section implies — name → {description, schema, enabled}.
+    """The catalog rows the ``cli`` section implies — name → {description, schema, status}.
 
     A cli entry has no tool def, but the ``schema`` column is not only the
     injected definition — it is also the semantic index's DOCUMENT (the
@@ -112,8 +113,10 @@ def cli_catalog_rows(cli_tools: dict) -> dict[str, dict]:
     MEANING ("download a video") reaches it, not just one that repeats its
     words.
 
-    ``cli_list`` still carries the command / install detail; ``enabled``
-    mirrors the entry's own flag.
+    ``cli_list`` still carries the command / install detail; ``status``
+    mirrors the entry's own ``enabled`` flag — config is the only thing this
+    family can report, since a cli entry is a line in ``tools.yaml`` and
+    nothing is spawned until it runs.
     """
     rows: dict[str, dict] = {}
     for name, cfg in cli_tools.items():
@@ -127,7 +130,7 @@ def cli_catalog_rows(cli_tools: dict) -> dict[str, dict]:
             "schema": json.dumps(
                 {"name": name, "description": description}, ensure_ascii=False,
             ),
-            "enabled": cfg.get("enabled", True) is not False,
+            "status": config_status(cfg.get("enabled", True) is not False),
         }
     return rows
 
@@ -319,7 +322,7 @@ class CliListToolsTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompat
 class CliSetEnabledTool(_CliConfigMixin, Tool):
     name = "cli_set_enabled"
     category = "CLI"
-    description = "Enable or disable a registered CLI tool. Takes effect after restart."
+    description = "Enable or disable a registered CLI tool."
 
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -367,4 +370,4 @@ class CliSetEnabledTool(_CliConfigMixin, Tool):
         await sync_cli_catalog(ctx, current)
         state = "enabled" if enabled else "disabled"
         logger.info("cli_set_enabled name=%s enabled=%s", name, enabled)
-        return f"[OK] CLI tool '{name}' {state}. Restart for the change to take effect."
+        return f"[OK] CLI tool '{name}' {state}."

@@ -1340,8 +1340,9 @@ class AgentService:
                 servers = []
 
             configured: set[str] = set()
-            #: The config's on/off switch per server — the ``enabled`` column,
-            #: which moves independently of the liveness verdict.
+            #: The config's on/off switch per server — the config arm of the
+            #: ``status`` column, which moves independently of the liveness
+            #: verdict (the same column's runtime arm).
             enabled_servers: dict[str, bool] = {}
             if isinstance(servers, list):
                 for s in servers:
@@ -1351,9 +1352,10 @@ class AgentService:
                     enabled_servers[s["name"]] = s.get("enabled") is not False
 
             # 1 — the state of every configured server, projected onto its tool
-            # rows: the on/off switch onto ``enabled``, the liveness verdict
-            # onto ``status``.  There is no server table to carry either — the
-            # row itself is where "switched off" and "not up" live now.
+            # rows: the on/off switch and the liveness verdict, each into its
+            # own lane of the ``status`` column.  There is no server table to
+            # carry either — the row itself is where "switched off" and "not
+            # up" live now.
             if not self.is_subagent and self._catalog is not None:
                 await self._mark_server_connectivity(
                     client, configured, enabled_servers,
@@ -1545,14 +1547,14 @@ class AgentService:
     ) -> set[str]:
         """Project each configured server's state onto its tool rows.
 
-        Two independent facts land here, and they are deliberately different
-        columns:
+        Two independent facts land here, each in its own lane of one column
+        (``status``) — which is why neither can erase the other:
 
-        - **``enabled``** — the server's own on/off switch in tools.yaml.  A
+        - **the config switch** — the server's own on/off in tools.yaml.  A
           server switched off keeps its rows and reports ``disabled``; the
-          write touches only that flag, so the model's loaded/unloaded
+          write only crosses the switch line, so the model's loaded/unloaded
           decision survives the round trip (see ``set_source_enabled``).
-        - **``status``** — the liveness verdict from the wrapper's ``__check``:
+        - **the liveness verdict** — from the wrapper's ``__check``:
           ``tools_ok`` means the server answered a ``tools/list`` and its
           result is still held.  A server that is not — down, never listed —
           has its tools marked ``error``; a working one has that mark cleared.
@@ -1571,8 +1573,8 @@ class AgentService:
 
         Two shapes are NOT pending, because they are settled rather than
         undecided: a server whose transport never came up after the boot pass
-        finished is ``unavailable`` (a failed spawn is the verdict — waiting on
-        it would hold the line for a server that is simply down, and the
+        finished is ``error`` (a failed spawn is the verdict — waiting on it
+        would hold the line for a server that is simply down, and the
         gateway's own retry re-syncs it if it ever does come up), and a server
         waiting on USER AUTH cannot come up without a human.  The first needs
         ``spawn_settled``: until the boot pass reports it, a row with no
@@ -1611,7 +1613,7 @@ class AgentService:
                 awaiting_auth.add(s["name"])
             elif not s.get("reachable"):
                 # No transport: the spawn failed or timed out.  Settled, not
-                # pending — its tools are marked ``unavailable`` below, and the
+                # pending — its tools are marked ``error`` below, and the
                 # gateway's armed retry re-syncs it if it comes up later.
                 unreachable.add(s["name"])
         switches = enabled or {}
@@ -1689,8 +1691,8 @@ class AgentService:
 
         Rows only — no proxies.  A switched-off server keeps its rows (the
         "disable keeps rows" contract: ``tool_search`` still finds them and
-        flipping it back on needs no re-discovery), and its ``enabled=false``
-        column is what holds them out of the injection set.  No proxy is
+        flipping it back on needs no re-discovery), and its ``status =
+        disabled`` is what holds them out of the injection set.  No proxy is
         registered because a disabled server's tools must not be executable —
         the catalog's ``disabled`` verdict would refuse the call anyway, and an
         instance that can never run is not worth holding.
@@ -2872,7 +2874,15 @@ class AgentService:
                 return 0.0
 
         mtimes = (_mtime(_gw_cfg.current_path()), _mtime(get_skills_dir()))
-        if mtimes == self._local_rows_mtimes:
+        # A row currently marked ``error`` is re-checked on EVERY pass, mtime or
+        # not: its status comes from the source itself (a SKILL.md that could
+        # not be read), so nothing else would ever ask again — and the fix for
+        # one (a permission restored, a drive remounted) moves no mtime, which
+        # would leave the row ``error`` until the next boot.  The mirror is a
+        # delta writer, so an unchanged re-read writes nothing.
+        if mtimes == self._local_rows_mtimes and not await svc.store.has_error_rows(
+            {"skill", "cli"},
+        ):
             return
         self._local_rows_mtimes = mtimes
 

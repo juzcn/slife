@@ -88,7 +88,7 @@ async def test_tool_search_filters_by_columns(db, ctx):
 
 @pytest.mark.asyncio
 async def test_tool_search_grep_mode_and_effective_status(db, ctx):
-    await db.upsert_tool("grepme", category="builtin", enabled=False, description="zzz")
+    await db.upsert_tool("grepme", category="builtin", status="disabled", description="zzz")
     tool = ToolSearchTool()
     object.__setattr__(tool, "_ctx", ctx)
     payload = json.loads(await tool.execute(query="grepme", mode="grep"))
@@ -117,17 +117,18 @@ async def test_tool_load_and_unload_roundtrip_opts(ctx):
 
 
 @pytest.mark.asyncio
-async def test_tool_load_refuses_meta_and_unavailable(db, ctx):
-    # The server is down: the verdict is its own column, not a load status.
+async def test_tool_load_refuses_meta_and_error(db, ctx):
+    # The server is down: the verdict is the status column's runtime lane,
+    # not a load status.
     await db.upsert_tool("svcA__x", category="mcp", source_id="svcA",
                          load_status="unloaded")
-    await db.mark_source_unavailable("svcA")
+    await db.mark_source_error("svcA")
     t_load = FuncToolLoadTool()
     object.__setattr__(t_load, "_ctx", ctx)
     msg = await t_load.execute(full_name="svcA__x")
-    # The server's row is marked unavailable — the refusal says so and names the
-    # diagnostic (mcp_list) rather than a retired connect tool.
-    assert "not up" in msg and "mcp_list" in msg
+    # The server's row is in `error` — the refusal says exactly that, and
+    # offers no switch (there is none to offer).
+    assert msg == "Error: tool 'svcA__x' cannot be loaded — its status is error."
     msg = await t_load.execute(full_name="_turn_prompt")
     assert msg  # meta unknown? actually _turn_prompt is not in catalog → unknown
     # _unload_func_tool refuses a whitelisted tool
@@ -168,10 +169,10 @@ async def test_mcp_tool_load_delegates_to_func_tool_load(ctx):
 async def test_a_column_filter_is_not_truncated_by_the_candidate_cutoff(db, ctx):
     """The regression the column filters exist for.
 
-    ``status`` used to be filtered in Python AFTER the ``limit * 2`` candidate
-    fetch, so a filtered search silently under-reported: with 14 unavailable
-    rows out of 40, ``limit=10`` returned 7.  A filter that is a real SQL
-    predicate runs before the LIMIT, so the count is the count.
+    A column filter used to run in Python AFTER the ``limit * 2`` candidate
+    fetch, so a filtered search silently under-reported: with 14 error rows out
+    of 40, ``limit=10`` returned 7.  A filter that is a real SQL predicate runs
+    before the LIMIT, so the count is the count.
     """
     for i in range(40):
         await db.upsert_tool(
@@ -179,30 +180,34 @@ async def test_a_column_filter_is_not_truncated_by_the_candidate_cutoff(db, ctx)
             source_id="down" if i % 3 == 0 else "up",
             description="report generator", load_status="unloaded",
         )
-    await db.mark_source_unavailable("down")
+    await db.mark_source_error("down")
     tool = ToolSearchTool()
     object.__setattr__(tool, "_ctx", ctx)
 
-    payload = json.loads(await tool.execute(query="report", unavailable=True, limit=10))
+    payload = json.loads(await tool.execute(query="report", status="error", limit=10))
     assert payload["count"] == 10          # a full page of qualifying rows
-    assert all(r["status"] == "unavailable" for r in payload["results"])
+    assert all(r["status"] == "error" for r in payload["results"])
 
 
 @pytest.mark.asyncio
-async def test_the_flag_filters_read_booleans_both_ways(db, ctx):
-    """``enabled`` / ``unavailable`` are booleans — and ``false`` must match
-    the rows that were never flagged, which a naive ``= 0`` would miss."""
-    await db.upsert_tool("flag-on", category="builtin", enabled=True, description="flagtest")
-    await db.upsert_tool("flag-off", category="builtin", enabled=False, description="flagtest")
+async def test_the_status_filter_selects_each_state(db, ctx):
+    """``status`` is one string filter over the three states the column has —
+    which is why the old ``enabled`` / ``unavailable`` boolean pair is gone:
+    it asked the same question in two halves."""
+    await db.upsert_tool("flag-on", category="builtin", status="enabled", description="flagtest")
+    await db.upsert_tool("flag-off", category="builtin", status="disabled", description="flagtest")
+    await db.upsert_tool("flag-bad", category="mcp", source_id="down",
+                         description="flagtest", load_status="unloaded")
+    await db.mark_source_error("down")
     tool = ToolSearchTool()
     object.__setattr__(tool, "_ctx", ctx)
 
     names = lambda p: {r["name"] for r in json.loads(p)["results"]}
-    assert names(await tool.execute(query="flagtest", enabled=True)) == {"flag-on"}
-    assert names(await tool.execute(query="flagtest", enabled=False)) == {"flag-off"}
-    # Nothing is flagged yet, so every row answers unavailable=false.
-    assert names(await tool.execute(query="flagtest", unavailable=False)) == {"flag-on", "flag-off"}
-    assert names(await tool.execute(query="flagtest", unavailable=True)) == set()
+    assert names(await tool.execute(query="flagtest", status="enabled")) == {"flag-on"}
+    assert names(await tool.execute(query="flagtest", status="disabled")) == {"flag-off"}
+    assert names(await tool.execute(query="flagtest", status="error")) == {"flag-bad"}
+    # No filter at all sees every state.
+    assert names(await tool.execute(query="flagtest")) == {"flag-on", "flag-off", "flag-bad"}
 
 
 class TestScoreBands:
@@ -222,7 +227,7 @@ class TestScoreBands:
         store.search_semantic.return_value = [{
             "name": "playwright__browser_close", "description": "close the browser",
             "category": "mcp", "source_id": "playwright", "schema": "{}",
-            "status": "unloaded", "enabled": 1, "unavailable": 0, "distance": 0.99,
+            "status": "enabled", "load_status": "unloaded", "distance": 0.99,
         }]
         catalog = MagicMock(store=store)
         tool = ToolSearchTool()

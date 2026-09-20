@@ -629,9 +629,9 @@ class TestSkillCatalogRows:
         assert rows["deploy"]["description"] == "Ship it"
         assert "# Deploy" in rows["deploy"]["schema"]
         assert "run scripts/deploy.py" in rows["deploy"]["schema"]
-        assert rows["deploy"]["enabled"] is True
+        assert rows["deploy"]["status"] == "enabled"
 
-    def test_disabled_names_mirror_into_enabled(self, tmp_path):
+    def test_disabled_names_mirror_into_status(self, tmp_path):
         from slife.tools.skill import skill_catalog_rows
 
         skill_dir = tmp_path / "skills" / "quiet"
@@ -642,4 +642,48 @@ class TestSkillCatalogRows:
 
         rows = skill_catalog_rows(tmp_path / "skills", disabled={"quiet"})
 
-        assert rows["quiet"]["enabled"] is False
+        assert rows["quiet"]["status"] == "disabled"
+
+    def test_an_unreadable_skill_md_is_an_error_row(self, tmp_path):
+        """The one runtime failure this family has: a SKILL.md that cannot be
+        read.  The row stays with ``status = error`` — the skill exists, and a
+        reader must be able to see that it is broken rather than find it
+        silently gone — and one bad file never hides its siblings (nor aborts
+        the mirror, which would leave the whole family unmapped)."""
+        from slife.tools.skill import skill_catalog_rows
+
+        root = tmp_path / "skills"
+        good = root / "deploy"
+        good.mkdir(parents=True)
+        (good / "SKILL.md").write_text(
+            "---\nname: deploy\ndescription: Ship it\n---\n# Deploy\n",
+            encoding="utf-8",
+        )
+        # A directory where the file should be: every read of it raises OSError.
+        (root / "broken" / "SKILL.md").mkdir(parents=True)
+
+        rows = skill_catalog_rows(root)
+
+        assert set(rows) == {"deploy", "broken"}
+        assert rows["broken"]["status"] == "error"
+        assert rows["broken"]["schema"] is None       # nothing to index
+        assert rows["deploy"]["status"] == "enabled"  # untouched by its neighbour
+
+        # Making the file readable again is what puts the row back.
+        (root / "broken" / "SKILL.md").rmdir()
+        (root / "broken" / "SKILL.md").write_text(
+            "---\nname: broken\n---\nfixed\n", encoding="utf-8",
+        )
+
+        assert skill_catalog_rows(root)["broken"]["status"] == "enabled"
+
+    def test_an_unreadable_skill_md_is_still_listed_and_reported(self, tmp_path):
+        """``skill_list`` shows it and ``skill_use`` reports the failure —
+        neither crashes on one bad file."""
+        from slife.tools.skill import _read_skill
+
+        root = tmp_path / "skills"
+        (root / "broken" / "SKILL.md").mkdir(parents=True)
+
+        assert "broken" in get_skills_summary(str(root))
+        assert _read_skill(root, "broken").startswith("Error: cannot read")

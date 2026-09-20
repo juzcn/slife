@@ -220,6 +220,57 @@ async def test_a_hand_edited_cli_entry_lands_without_a_restart(_isolate, sample_
 
 
 @pytest.mark.asyncio
+async def test_a_broken_skill_is_re_checked_without_an_mtime_move(
+    _isolate, sample_config, monkeypatch,
+):
+    """A skill's ``error`` comes from the source, so the source has to be
+    re-read — the mtime gate alone would leave the row ``error`` until the
+    next boot when the fix (a permission restored, a drive remounted) moves no
+    mtime.  And once it reads, the row goes back to ``enabled``.
+    """
+    from slife.agent.service import AgentService
+
+    # The skills dir is the data dir's, so point the data dir at the test's.
+    monkeypatch.setenv("SLIFE_DATA_DIR", str(_isolate))
+    skills_dir = _isolate / "skills"
+
+    store = CatalogStore(_isolate / "tools.db")
+    await store.open()
+    try:
+        svc = ToolCatalogService(store, write_owner=True)
+        service = AgentService(sample_config)
+        service._catalog = svc
+        service._tool_ctx.catalog = svc
+
+        # A directory where a SKILL.md should be: every read of it raises.
+        (skills_dir / "broken" / "SKILL.md").mkdir(parents=True)
+
+        await service._refresh_local_rows_if_changed(svc)
+        row = await store.get_tool("skill:broken")
+        assert row is not None and row["status"] == "error"
+        assert row["schema"] == "n/a"          # no text to index
+
+        # The fix: it becomes a file.  Only the FILE moved, so the directory's
+        # mtime is pinned back — the error-recheck is the only thing that can
+        # notice.
+        import os
+        (skills_dir / "broken" / "SKILL.md").rmdir()
+        (skills_dir / "broken" / "SKILL.md").write_text(
+            "---\nname: broken\ndescription: fixed\n---\nbody\n", encoding="utf-8",
+        )
+        stamp = skills_dir.stat().st_mtime - 10
+        os.utime(skills_dir, (stamp, stamp))
+
+        await service._refresh_local_rows_if_changed(svc)
+
+        row = await store.get_tool("skill:broken")
+        assert row["status"] == "enabled"
+        assert "body" in row["schema"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_a_config_disabled_builtin_gets_a_row_marked_disabled(_isolate):
     """config declaring a tool the db had never heard of is a disagreement.
 
@@ -248,7 +299,7 @@ async def test_a_config_disabled_builtin_gets_a_row_marked_disabled(_isolate):
 
         row = await store.get_tool("native_off")
         assert row is not None                    # yaml names it → the db has it
-        assert row["enabled"] == 0
+        assert row["status"] == "disabled"
         assert await svc.effective_status("native_off") == "disabled"
         assert "native_off" not in await svc.snapshot_loaded()
         # …and it is not loadable: the row is a fact, not an offer.
@@ -262,7 +313,7 @@ async def test_a_config_disabled_builtin_gets_a_row_marked_disabled(_isolate):
 
 @pytest.mark.asyncio
 async def test_nothing_external_is_usable_before_a_connect(_isolate):
-    """Startup flags every external row unavailable — no server is up yet.
+    """Startup flags every external row error — no server is up yet.
 
     Rows from a previous session must not keep injecting until the server
     they belong to actually connects — and the flag is what stops them, so the
@@ -276,7 +327,7 @@ async def test_nothing_external_is_usable_before_a_connect(_isolate):
 
     await svc.mark_all_external_error()
 
-    assert (await store.get_tool("serper__search"))["unavailable"] == 1
+    assert (await store.get_tool("serper__search"))["status"] == "error"
     assert (await store.get_tool("serper__search"))["load_status"] == "loaded"
     assert await svc.snapshot_loaded() >= ALWAYS_LOADED
     assert "serper__search" not in await svc.snapshot_loaded()
@@ -309,7 +360,7 @@ async def test_connect_mirrors_unloaded_and_disconnect_marks_error(_isolate):
     await svc.mark_source_error("serper")
     snap = await svc.snapshot_loaded()
     assert "serper__search" not in snap            # gone from the tool list
-    assert await svc.effective_status("serper__search") == "unavailable"
+    assert await svc.effective_status("serper__search") == "error"
     assert (await store.get_tool("serper__search"))["load_status"] == "loaded"
     # the OTHER server is untouched by its neighbour's outage
     assert await svc.effective_status("weather__temp") == "unloaded"
@@ -335,8 +386,8 @@ async def test_gateway_death_marks_every_external_tool_error(_isolate):
     marked = await svc.mark_all_external_error()
 
     assert marked == 2
-    assert await svc.effective_status("serper__search") == "unavailable"
-    assert await svc.effective_status("weather__temp") == "unavailable"
+    assert await svc.effective_status("serper__search") == "error"
+    assert await svc.effective_status("weather__temp") == "error"
     # only the verdict moved — the load state the model set is still there
     assert (await store.get_tool("serper__search"))["load_status"] == "loaded"
     # and only external rows were flagged
@@ -516,8 +567,8 @@ async def test_connectivity_projection_follows_check(_isolate, sample_config):
         await service._mark_server_connectivity(client, {"serper", "weather"})
 
         assert await svc.effective_status("serper__search") == "unloaded"
-        assert await svc.effective_status("weather__temp") == "unavailable"
-        assert (await store.get_tool("weather__temp"))["unavailable"] == 1
+        assert await svc.effective_status("weather__temp") == "error"
+        assert (await store.get_tool("weather__temp"))["status"] == "error"
 
         # weather comes up on the next pass → its mark clears
         states["weather"] = True
@@ -531,10 +582,10 @@ async def test_connectivity_projection_follows_check(_isolate, sample_config):
 async def test_switching_a_server_off_keeps_its_rows_and_the_load_state(
     _isolate, sample_config,
 ):
-    """The reconcile's two columns move independently.
+    """One column, two lanes: the config switch and the liveness verdict.
 
-    ``enabled`` mirrors tools.yaml's switch; ``unavailable`` carries the
-    liveness verdict.  A switched-off server is NOT a down one — calling it
+    ``set_source_enabled`` crosses the switch line; the connectivity mark owns
+    the liveness one.  A switched-off server is NOT a down one — calling it
     ``error`` would be a lie the model could not tell from the real thing — and
     its rows stay put, so re-enabling restores a tool set that remembers what
     was loaded.
@@ -562,7 +613,7 @@ async def test_switching_a_server_off_keeps_its_rows_and_the_load_state(
         await service._mark_server_connectivity(client, {"serper"}, {"serper": False})
 
         row = await store.get_tool("serper__search")
-        assert row["enabled"] == 0            # the switch
+        assert row["status"] == "disabled"    # the switch
         assert row["load_status"] == "loaded"      # the model's decision, untouched
         assert effective_from_row(row) == "disabled"
 
@@ -570,9 +621,8 @@ async def test_switching_a_server_off_keeps_its_rows_and_the_load_state(
         # — and the row still remembers that the model had loaded it.
         await service._mark_server_connectivity(client, {"serper"}, {"serper": True})
         row = await store.get_tool("serper__search")
-        assert row["enabled"] == 1
-        assert row["unavailable"] == 1
-        assert effective_from_row(row) == "unavailable"
+        assert row["status"] == "error"       # back on, and now the liveness verdict
+        assert effective_from_row(row) == "error"
         assert row["load_status"] == "loaded"
     finally:
         await store.close()
@@ -626,7 +676,7 @@ async def test_gateway_child_exit_marks_external_tools_error(_isolate):
         assert await svc.effective_status("serper__search") == "loaded"
 
         await AgentService.on_plugin_child_exit(stub, "mcp-gateway")
-        assert await svc.effective_status("serper__search") == "unavailable"
+        assert await svc.effective_status("serper__search") == "error"
         assert "serper__search" not in await svc.snapshot_loaded()
         # the crash flags the row; what the model loaded is still on it, so the
         # gateway's restart brings it back rather than resetting it

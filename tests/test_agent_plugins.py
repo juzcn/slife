@@ -245,7 +245,6 @@ class TestPluginLifecycleSpawn:
         row = await store.get_tool("turn_search")
         assert row["category"] == "plugin"
         assert row["source_id"] == "memdb"
-        assert row["type"] == "func"
         assert row["load_status"] == "unloaded"      # searchable, not injected
         # The row carries the tool's OWN description: the `[memdb] ` prefix the
         # proxy stamps is provenance, and provenance is source_id's job.

@@ -83,30 +83,20 @@ class ToolSearchTool(Tool):
             "description": "Filter by category (builtin|job|plugin|mcp|rest-api|skill|cli); empty = all.",
             "default": "",
         },
-        type={
-            "type": "string",
-            "description": "Filter by kind (func|skill|cli); empty = all.",
-            "default": "",
-        },
         source_id={
             "type": "string",
             "description": "Filter by owner: an mcp/rest-api server name, or a plugin name; empty = all.",
+            "default": "",
+        },
+        status={
+            "type": "string",
+            "description": "Filter by status (enabled|disabled|error); empty = all.",
             "default": "",
         },
         load_status={
             "type": "string",
             "description": "Filter by load state (loaded|unloaded|n/a); empty = all.",
             "default": "",
-        },
-        enabled={
-            "type": "boolean",
-            "description": "Filter by the config switch: false = switched off in tools.yaml; omitted = all.",
-            "default": None,
-        },
-        unavailable={
-            "type": "boolean",
-            "description": "Filter by whether the owner is reachable: true = its server/plugin is down; omitted = all.",
-            "default": None,
         },
         mode={
             "type": "string",
@@ -120,12 +110,11 @@ class ToolSearchTool(Tool):
         query: str = kwargs.get("query", "") or ""
         mode: str = kwargs.get("mode", "hybrid") or "hybrid"
         # One dict, straight from the parameters to the columns: absent and
-        # empty mean "no filter", and False is a real value (enabled=false is
-        # how you ask for what is switched off).
+        # empty mean "no filter" for every one of them (each column's values
+        # are non-empty strings, so emptiness is unambiguous).
         filters = {
             key: kwargs.get(key)
-            for key in ("category", "type", "source_id", "load_status",
-                        "enabled", "unavailable")
+            for key in ("category", "source_id", "status", "load_status")
             if kwargs.get(key) not in (None, "")
         }
         try:

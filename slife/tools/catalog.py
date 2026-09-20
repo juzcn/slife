@@ -1,25 +1,51 @@
 """Unified tool catalog store — the single shared ``tools.db``.
 
 The authoritative catalog for all six tool categories
-(builtin/job/mcp/rest-api/skill/cli), in three kinds of row — ``type`` is
-``func`` / ``skill`` / ``cli``.  Lives on disk (data dir, WAL) and is opened
-by every agent process (main agent + subagent workers) at the same path;
-SQLite gives concurrent readers + one writer, ``busy_timeout`` backs off the
-short load/unload writes.  Ops are deliberately store-shaped (upserts,
+(builtin/job/mcp/rest-api/skill/cli).  Lives on disk (data dir, WAL) and is
+opened by every agent process (main agent + subagent workers) at the same
+path; SQLite gives concurrent readers + one writer, ``busy_timeout`` backs off
+the short load/unload writes.  Ops are deliberately store-shaped (upserts,
 search, LRU, embed drainer contract) — policy lives in
 :mod:`slife.tools.catalog_service`.
 
-State model (see DESIGNER_NOTES §8.5): ``tool.load_status`` holds
-``loaded | unloaded | n/a`` (``n/a`` for skill/cli — no load concept), and
-everything the injection gate needs is ON THE ROW.  ``error`` is the
-connectivity verdict: whenever an external server is unusable — at startup
-before it connects, on a disconnect, on a failed connect, when its gateway
-child dies — the host marks that server's tools ``error``, and a successful
-(re)connect resets them to their class default.  There is deliberately no
-``server`` table: which servers to bring up lives in ``tools.yaml``, what is
-live right now lives in the gateway's pool, and this db only records the
-result on the tool rows.  Writes: load-status flips (load/unload) and those
-connectivity marks; eviction is the main agent's job.
+Which row IS what is ``category``, and nothing else: there is no ``type``
+column projecting it.  A derived column is a second thing to write and keep in
+sync on every insert, update and migration, and every question it answered
+("does this row have a load state?") is a membership test over
+:data:`FUNCTION_CATEGORIES`.
+
+State model: two columns, two questions, and everything the injection gate
+needs is ON THE ROW.
+
+``tool.status`` is the row's state — ``enabled | disabled | error``, three
+EXCLUSIVE values: a row is in exactly one of them, so an ``error`` row is not
+also an enabled one and there is nothing for the config switch to do about it.
+``disabled`` is CONFIG (the ``tools.yaml`` switch), ``error`` is the RUNTIME
+verdict (the owner is unusable right now — many causes: a server that never
+came up, a disconnect, a failed connect, a dead gateway child, a skill file
+that cannot be read, …), and ``enabled`` is everything else.  The code that
+reports an ``error`` states the state and never the cause: nothing here has
+checked one.
+
+Two writers move the value, each owning its own transition — never a
+coexistence, just one value being replaced by another: config writes
+``disabled ↔ enabled`` and the runtime writes ``enabled → error`` /
+``error → enabled``, and every writer's ``WHERE`` is the guard that keeps it
+in its lane (see ``mark_source_error`` / ``set_source_enabled`` /
+``mark_source_connected``).  So a server switched off while it was down is
+``disabled`` (off is not down — and it can no longer be seen as ``error``,
+because the column holds one value), and a fixed owner returns to
+``enabled``.
+
+``tool.load_status`` is what the MODEL decided — ``loaded | unloaded | n/a``
+(``n/a`` for skill/cli, which have no load concept).  It is the one thing the
+db exists to persist, and no connectivity verdict is ever written into it: a
+blip must not cost the session its loaded set.
+
+There is deliberately no ``server`` table: which servers to bring up lives in
+``tools.yaml``, what is live right now lives in the gateway's pool, and this
+db only records the result on the tool rows.  Writes: load-status flips
+(load/unload) and the status marks; eviction is the main agent's job.
 """
 
 from __future__ import annotations
@@ -51,79 +77,83 @@ import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/pa
 logger = logging.getLogger(__name__)
 
 #: Server-backed categories — a tool whose ``source_id`` names an external
-#: server.  There is no ``server`` row to join: the tool's OWN ``unavailable``
+#: server.  There is no ``server`` row to join: the tool's OWN ``status``
 #: column carries the connectivity verdict (``error`` when its server is down).
 #:
 #: ``plugin`` is deliberately NOT here even though those rows also carry a
 #: ``source_id`` (the plugin that owns them): a plugin is not an *external*
 #: server, so the gateway's death must not mark its tools unusable
-#: (``mark_all_external_error``), its rows keep a config-mirrored ``enabled``,
+#: (``mark_all_external_error``), its rows keep a config-mirrored ``status``,
 #: and it stays out of the "servers" count and the unconfigured-source purge.
 SERVER_CATEGORIES = frozenset({"mcp", "rest-api"})
 
-#: Function-tool categories — the only ones with a load state.
-#: ``plugin`` = a built-in plugin's own tool; ``job`` = one function from the
-#: jobs directory (exposed by the job-coding plugin, whose OWN tools are
-#: ``plugin`` — see ``catalog_service.plugin_category``).
+#: Function-tool categories — the only ones with a load state: a builtin
+#: module tool, a job file's function, a built-in plugin's own tool, and an
+#: external server's tool.  ``skill`` / ``cli`` are the other two categories
+#: and have none.
+#:
+#: This set IS the derivation that replaced the ``type`` column: the load/unload
+#: rules, the injection predicate and every "can this row be loaded?" refusal
+#: ask it, so there is no second column for a writer to keep in sync.
 FUNCTION_CATEGORIES = frozenset({"builtin", "job", "plugin", "mcp", "rest-api"})
 
-#: The row's ``type`` — the coarse kind behind ``category``: a function tool
-#: (loadable: builtin / job / mcp / rest-api), a skill, or a cli entry.
-TYPE_FUNC = "func"
-TYPE_SKILL = "skill"
-TYPE_CLI = "cli"
-
-_TYPE_BY_CATEGORY = {
-    **{c: TYPE_FUNC for c in FUNCTION_CATEGORIES},
-    "skill": TYPE_SKILL,
-    "cli": TYPE_CLI,
-}
+#: SQL ``IN`` list of :data:`FUNCTION_CATEGORIES` — built once from the
+#: constant (sorted, so the string is stable) rather than spelled out again in
+#: each statement, which is how the SQL could drift from the set.
+_FUNC_CATEGORY_SQL = "category IN ({})".format(
+    ",".join(f"'{c}'" for c in sorted(FUNCTION_CATEGORIES)),
+)
 
 
-def type_for_category(category: str) -> str:
-    """The ``type`` a category implies — the one derivation both writers use.
-
-    ``category`` says where a tool came from (a builtin module, a job file, an
-    external server, a skill dir, a cli config entry); ``type`` says what kind
-    of thing it is, which is what decides whether ``load_status`` applies.
-    """
-    return _TYPE_BY_CATEGORY[category]
+def is_function_category(category: str) -> bool:
+    """Whether a ``category`` names a function tool — the load-state question."""
+    return category in FUNCTION_CATEGORIES
 
 
-# The stored load-status values — the column's whole closed domain.  ONLY
-# the load state lives here — the model's decision, and the one thing the db
-# exists to persist (``loaded`` / ``unloaded``).  The connectivity verdict is
-# a SEPARATE column (``unavailable``): writing it into ``load_status``
-# destroyed the load state it landed on, so a server blip — or the startup
-# sweep — reset every external tool the model had loaded.
+# ``tool.status`` — the row's whole closed domain, and the three states a tool
+# can actually be in.  They are MUTUALLY EXCLUSIVE: one value per row, so
+# ``error`` never sits beside ``enabled`` (a row in ``error`` is not an enabled
+# row) and a ``disabled`` row is never ``error``.
+#
+# ``disabled`` is the CONFIG's answer (``tools.yaml`` switched this tool, or
+# its server, off); ``error`` is the RUNTIME verdict (its owner is not usable
+# right now); ``enabled`` is everything else.
+#
+# Two writers, each owning one transition of that value:
+# ``set_source_enabled`` moves ``disabled ↔ enabled``, ``mark_source_error``
+# moves ``enabled → error``, ``mark_source_connected`` moves ``error →
+# enabled``.  The WHERE clause of each is that ownership, which is why a server
+# switched off while it was down stays ``disabled`` (off is not down) and a
+# server that comes back does not resurrect a tool the config switched off.
+STATUS_ENABLED = "enabled"
+STATUS_DISABLED = "disabled"
+STATUS_ERROR = "error"
+#: The stored load-status values — the OTHER column's closed domain.  ONLY
+#: the load state lives here — the model's decision, and the one thing the db
+#: exists to persist (``loaded`` / ``unloaded``).  The connectivity verdict is
+#: a separate column (``status``): writing it into ``load_status`` destroyed
+#: the load state it landed on, so a server blip — or the startup sweep —
+#: reset every external tool the model had loaded.
 STATUS_LOADED = "loaded"
 STATUS_UNLOADED = "unloaded"
-#: skill / cli have no load concept — a VALUE, not NULL, so the column's
-#: domain matches the vocabulary the model sees and a filter is a plain
-#: equality.  The same literal as the effective label: one spelling.
-# Effective status labels (derived, never stored).
-EFF_DISABLED = "disabled"
-#: The effective label for ``unavailable`` — the column is the fact, this is
-#: its name.  Not "error": the state IS unavailability, and one concept must
-#: not have two names (the same rule ``STATUS_NA`` follows).
-EFF_UNAVAILABLE = "unavailable"
-EFF_NA = "n/a"
 
 #: The stored spelling of "no load state applies" — the SAME literal the model
-#: sees in an effective status, because one concept must not have two names.
-#: The column-spelled "not applicable" — one literal for every column that
-#: would otherwise be NULL: no load state, no owner, no schema text.  The same
-#: string the model sees in an effective status, so one concept keeps one name.
+#: sees nowhere else, because the effective status of a skill/cli row is its
+#: own ``status`` (``enabled``), not a 'n/a' the reader can do nothing with.
+#: One literal for every column that would otherwise be NULL: no load state,
+#: no owner, no schema text.
 NA = "n/a"
 STATUS_NA = NA
 
 #: Schema revision this store expects (``catalog_schema.sql`` sets it; the
 #: migration in :meth:`CatalogStore._migrate` moves an older file up to it).
-#: Deliberately NOT bumped for the ``unavailable`` column, and v5
-#: (``status`` → ``load_status``), and v6 (the two flag columns become
-#: ``NOT NULL``) have no step either: the file is derived data, so a stale one
-#: is reported and rebuilt (``_check_columns``), never upgraded in place.
-SCHEMA_VERSION = 7
+#: Deliberately NOT bumped for the ``status`` column (v8 — the ``enabled`` /
+#: ``unavailable`` pair collapsed into one three-state column) or for dropping
+#: the derived ``type`` column (v9), and v5 (``status`` → ``load_status``) and
+#: v6 (the two flag columns become ``NOT NULL``) have no step either: the file
+#: is derived data, so a stale one is reported and rebuilt
+#: (``_check_columns``), never upgraded in place.
+SCHEMA_VERSION = 9
 
 #: The category values the code can write — the set the live table's ``CHECK``
 #: must accept (checked at open, see :meth:`CatalogStore._check_categories`).
@@ -134,10 +164,13 @@ _now = now_local_seconds
 
 
 #: The columns the code reads or writes on ``tool`` — checked at open against
-#: the live table (:meth:`CatalogStore._check_columns`).
+#: the live table (:meth:`CatalogStore._check_columns`), in BOTH directions:
+#: a missing column cannot answer a query, and an unknown one is a leftover
+#: from a schema this code no longer writes (the derived ``type`` column, for
+#: one), which would otherwise sit there unmaintained forever.
 _REQUIRED_COLUMNS = frozenset({
-    "name", "description", "category", "type", "source_id", "schema",
-    "enabled", "load_status", "unavailable", "last_loaded",
+    "name", "description", "category", "source_id", "schema",
+    "status", "load_status", "last_loaded",
 })
 
 #: The ``tool`` table's category constraint, parsed rather than substring-matched.
@@ -149,15 +182,68 @@ _CATEGORY_CHECK_RE = re.compile(
 def _category_check_values(ddl: str) -> "set[str] | None":
     """The category values a ``tool`` DDL accepts; ``None`` when it has no CHECK.
 
-    Scoped to the ``category`` clause on purpose: the ``type`` CHECK lists
-    ``'skill'`` and ``'cli'`` too, so a substring test over the whole statement
-    would report those two as present even in a table whose category list has
-    never heard of them.
+    Scoped to the ``category`` clause rather than the whole statement on
+    purpose: ``'skill'`` and ``'cli'`` are ordinary words that another clause
+    could carry (the retired ``type`` CHECK did exactly that), so a substring
+    test would report a category list missing them as complete.
     """
     m = _CATEGORY_CHECK_RE.search(ddl or "")
     if m is None:
         return None
     return {v.strip().strip("'\"") for v in m.group(1).split(",") if v.strip()}
+
+
+def _config_status_move(incoming: str) -> tuple[str, tuple[str, ...]]:
+    """``(the value config writes, the current values it may overwrite)``.
+
+    The ONE statement of what the config's arm may do to ``status`` — both
+    writers (:meth:`CatalogStore.set_source_enabled` and ``reconcile``'s
+    in-memory comparison) build their write from it, so the rule cannot drift
+    between the bulk path and the per-row one.
+
+    Config speaks two of the three states, and only one of them is an
+    assertion about liveness:
+
+    - ``disabled`` is a DECISION — the user took this tool off — so it lands
+      on whatever the row said, ``error`` included: off is not down, and the
+      model must be able to tell the two apart.
+    - ``enabled`` only un-switches.  It clears ``disabled`` and leaves an
+      ``error`` row where it is, because "the owner is up" is the runtime's
+      verdict to give (``mark_source_connected``), never a config projection's
+      to assert.
+    """
+    if incoming == STATUS_DISABLED:
+        return STATUS_DISABLED, (STATUS_ENABLED, STATUS_ERROR)
+    return STATUS_ENABLED, (STATUS_DISABLED,)
+
+
+def config_status(enabled: "bool | None") -> "str | None":
+    """The ``status`` a config switch value stands for.
+
+    Config speaks booleans (``enabled: false`` in ``tools.yaml``) and the
+    column speaks states; this is the ONE conversion, so the two vocabularies
+    meet in exactly one place.  ``None`` = no opinion — the caller has nothing
+    to say about this row, which is not the same as saying "enabled".
+    """
+    if enabled is None:
+        return None
+    return STATUS_ENABLED if enabled else STATUS_DISABLED
+
+
+def _embeddable(schema: str | None) -> bool:
+    """Whether a row's ``schema`` carries text the drainer can embed.
+
+    The Python face of ``CatalogStore._EMBEDDABLE_SCHEMA``, and it MUST agree
+    with it: the reconcile wakes the drainer for exactly the rows this says yes
+    to, and the drainer embeds exactly the rows the SQL says yes to.  Two
+    predicates that disagreed (the old insert arm asked whether the FLATTENED
+    text was non-empty, the SQL asks whether the column is off its sentinel)
+    leave a row counted as unembedded that no pass ever hands over — the
+    drainer burns its no-progress bound and gives up with the semantic gate
+    shut.  "No schema text" is the sentinel, never a schema that merely
+    flattens to nothing.
+    """
+    return (schema or NA).strip() not in ("", NA)
 
 
 def _deserialize_f32(blob: bytes) -> list[float]:
@@ -277,49 +363,53 @@ def _flatten_schema(schema_text: str) -> str:
 
 
 #: What makes a row injectable — the ONE predicate the injection set is built
-#: from, in SQL: **a func tool that is enabled and loaded**.
+#: from, in SQL: **a function tool that is enabled and loaded**.
 #:
-#: - ``type = 'func'`` — skills and cli entries are never injected (their
-#:   ``status`` is NULL, so this only makes the rule explicit).
-#: - ``enabled`` — tools.yaml's answer.  NULL is treated as enabled: the column
-#:   is "not known to be off", and a row whose flag was never written must not
-#:   silently vanish from the model's tool list.
-#: - ``status = 'loaded'`` — the model's decision, the db's whole reason to exist.
-#: - ``unavailable`` — the runtime verdict, its own column (never a status):
-#:   a tool whose server is down leaves the injected set while the flag is up
-#:   and comes back with the load state it had.
+#: - ``category IN`` the function set — skills and cli entries are never
+#:   injected (their ``load_status`` is 'n/a', so this only makes the rule
+#:   explicit).
+#: - ``status = 'enabled'`` — the config switch AND the runtime verdict at
+#:   once: a tool switched off in ``tools.yaml``, or one whose server is not
+#:   up right now, leaves the injected set while the row keeps the load state
+#:   the model chose.
+#: - ``load_status = 'loaded'`` — the model's decision, the db's whole reason
+#:   to exist.
 #:
 #: It is ``_effective_status``'s rule and MUST move with it.
 _INJECTABLE_SQL = (
-    "type = 'func'"
+    f"{_FUNC_CATEGORY_SQL}"
     " AND load_status = 'loaded'"
-    " AND enabled = 1"
-    " AND unavailable = 0"
+    " AND status = 'enabled'"
 )
 
 
 def _effective_status(trow: dict) -> str:
     """Derived effective status (never stored): disabled / error / loaded /
-    unloaded / n/a.
+    unloaded / enabled.
 
     Everything it needs is ON THE ROW, and in a deliberate order:
 
-    1. ``enabled == 0`` → ``disabled`` — the yaml switch, for every category
-       (a server switched off is distinguishable from one that is merely
-       down).
-    2. ``unavailable`` → ``error`` — the runtime verdict that the owner (a
-       server, a plugin) is not usable right now.
-    3. the row's own ``status`` — what the model decided.
+    1. ``status`` ≠ ``enabled`` → that value: ``disabled`` (the yaml switch)
+       or ``error`` (the runtime verdict).  Either way the row's own state is
+       the answer, and reporting it is what lets a reader tell "switched off"
+       from "down".
+    2. otherwise the row's own ``load_status`` — what the model decided.
+    3. and for a row with no load state at all (skill / cli), ``enabled``:
+       the status column IS its state, so echoing the sentinel ``'n/a'``
+       would report "no information" about a row whose state is perfectly
+       well known.
 
-    Neither fact above overwrites the one below it, which is what lets a
-    ``loaded`` tool survive a blip and come back ``loaded``.
+    The rule for step 2 is what keeps a ``loaded`` tool alive across a blip:
+    the verdict lives in its own column, so it never overwrites the load
+    state and the tool comes back ``loaded``.
     """
-    if trow.get("enabled") == 0:
-        return EFF_DISABLED
-    if trow.get("unavailable"):
-        return EFF_UNAVAILABLE
-    status = trow.get("load_status")
-    return status if status else EFF_NA
+    status = trow.get("status") or STATUS_ENABLED
+    if status != STATUS_ENABLED:
+        return status
+    load_status = trow.get("load_status")
+    if not load_status or load_status == NA:
+        return STATUS_ENABLED
+    return load_status
 
 
 def effective_from_row(row: dict) -> str:
@@ -332,22 +422,18 @@ def effective_from_row(row: dict) -> str:
 #: filter is a real predicate the SQL sees.  That is the fix for a filter
 #: applied POST-hoc in Python: one ran after the ``limit * 2`` candidate
 #: cutoff and returned 7 of the 14 qualifying rows, silently.
-FILTER_COLUMNS = ("category", "type", "source_id", "load_status")
+FILTER_COLUMNS = ("category", "source_id", "status", "load_status")
 
 
 def column_filters(filters: "dict | None") -> tuple[list[str], list]:
     """``(clauses, params)`` for a column filter dict — AND-ed by the caller.
 
     A filter the caller did not supply contributes NO clause at all — not
-    ``= NULL``, not a default value.  The string columns read that as emptiness;
-    the two flag columns must read it as ``is not None``, because ``False`` is
-    a value and a truthiness test would silently drop ``enabled=false``.
-
-    Every column is NOT NULL, so every clause is a plain equality — the flag
-    columns included.  That is what removing NULL bought: the old form had to
-    spell ``unavailable`` as ``(unavailable IS NULL OR unavailable = 0)``,
-    because NULL was how "available" was stored, and a caller who wrote the
-    obvious ``= 0`` got an empty result set instead of an error.
+    ``= NULL``, not a default value: a string column reads "not supplied" as
+    emptiness.  Every column is NOT NULL and every value of interest is a
+    non-empty string (``false`` / ``0`` / ``''`` are not in any of these
+    domains), so every clause is a plain equality — no ``IS NULL`` branch for
+    a caller to forget, which is what removing NULL bought.
     """
     f = filters or {}
     clauses: list[str] = []
@@ -357,19 +443,13 @@ def column_filters(filters: "dict | None") -> tuple[list[str], list]:
         if value:
             clauses.append(f"t.{column} = ?")
             params.append(value)
-    if f.get("enabled") is not None:
-        clauses.append("t.enabled = ?")
-        params.append(1 if f["enabled"] else 0)
-    if f.get("unavailable") is not None:
-        clauses.append("t.unavailable = ?")
-        params.append(1 if f["unavailable"] else 0)
     return clauses, params
 
 
 # Row prefix used by the scan/search queries.
 _SCAN_COLS = (
-    "t.name, t.description, t.category, t.type, t.source_id, t.schema, "
-    "t.enabled, t.load_status, t.last_loaded, t.unavailable"
+    "t.name, t.description, t.category, t.source_id, t.schema, "
+    "t.status, t.load_status, t.last_loaded"
 )
 # The four-column substring predicate shared by _search_like / search_grep
 # (4 ``?`` placeholders per column ANDed into name/description/category/schema).
@@ -396,12 +476,14 @@ class CatalogOpDelta:
     the tool-sync pass can report what a startup changed in the catalog:
     insert → ``added``, update → ``updated``, delete → ``removed``.
 
-    Only a **config-derived** column moves the counters.  ``load_status`` /
-    ``last_loaded`` / ``unavailable`` are runtime state — the model's
-    decisions and the connectivity verdict — so a load, an eviction, a
-    reconnect mark or an autoload override is not a change to the tool set
-    and must not show up as one (a server coming up would otherwise report
-    every one of its tools as "modified").
+    Only a **config-derived** column moves the counters.  ``status`` is
+    partly config and partly runtime, so it is booked by the arm that wrote it
+    (the config arm moves ``updated``; an ``override_status`` flip is counted
+    separately) — ``load_status`` / ``last_loaded`` are the model's decisions
+    and are runtime state, so a load, an eviction, an autoload override or a
+    connectivity mark is not a change to the tool set and must not show up as
+    one (a server coming up would otherwise report every one of its tools as
+    "modified").
     """
 
     added: int = 0
@@ -522,14 +604,20 @@ class CatalogStore:
         )
 
     async def _check_columns(self) -> None:
-        """Verify the live ``tool`` table has every column this code uses.
+        """Verify the live ``tool`` table's columns are exactly this code's.
 
         Same doctrine as :meth:`_check_categories`, same reason to verify the
         DDL rather than ``user_version``: ``CREATE TABLE IF NOT EXISTS`` never
         touches an existing file, and these revisions have no migration step —
         a stale catalog is DELETED and rebuilt.  Without this check an older
-        file fails every scan with ``no such column: unavailable``, which reads
+        file fails every scan with ``no such column: status``, which reads
         as a code bug instead of "delete the derived file".
+
+        Checked in BOTH directions.  A MISSING column cannot answer a query; an
+        UNEXPECTED one is a leftover from a schema this code no longer writes
+        (the dropped ``type`` projection, say) — nothing maintains it, and
+        leaving it in place forever is exactly the maintenance burden the
+        column was dropped to remove.
         """
         try:
             cursor = await self._c.execute("PRAGMA table_info(tool)")
@@ -540,16 +628,22 @@ class CatalogStore:
         if not columns:  # no table yet → the schema creates it complete
             return
         missing = sorted(_REQUIRED_COLUMNS - columns)
-        if not missing:
+        unexpected = sorted(columns - _REQUIRED_COLUMNS)
+        if not missing and not unexpected:
             return
+        detail = "/".join(
+            [*(f"no {c} column" for c in missing),
+             *(f"unknown {c} column" for c in unexpected)]
+        )
         logger.error(
-            "catalog_schema_stale path=%s missing_columns=%s action=delete_the_file",
-            self._path, ",".join(missing),
+            "catalog_schema_stale path=%s missing_columns=%s unexpected_columns=%s "
+            "action=delete_the_file",
+            self._path, ",".join(missing), ",".join(unexpected),
         )
         from slife.health import record
         record(
             "tool_catalog", "warning", key="schema",
-            value=f"stale (no {'/'.join(missing)} column)",
+            value=f"stale ({detail})",
             hint=f"Delete {self._path} and restart slife. The catalog is "
                  f"rebuilt from the tool registry, tools.yaml and the plugins, "
                  f"so nothing is lost but the loaded/unloaded state.",
@@ -559,29 +653,27 @@ class CatalogStore:
         """Bring an older db up to ``SCHEMA_VERSION`` before the schema runs.
 
         v2 dropped the ``server`` table: connection state lives on the tool
-        rows now (``unavailable`` when a server is unusable), so the
-        table is dead weight AND a stale source of truth.  ``CREATE TABLE IF
-        NOT EXISTS`` would leave it in place forever — the only place a
-        retired table can be removed is a migration step like this one.
+        rows now (the ``status`` column's ``error``, when a server is
+        unusable), so the table is dead weight AND a stale source of truth.
+        ``CREATE TABLE IF NOT EXISTS`` would leave it in place forever — the
+        only place a retired table can be removed is a migration step like
+        this one.
 
-        v3 added ``tool.type`` (func | skill | cli).  A fresh file gets it
-        from the schema; an existing one is ALTERed and backfilled from
-        ``category`` here, since the schema's ``IF NOT EXISTS`` never touches
-        a table that is already there.
-
-        v4 added the ``plugin`` value to the ``category`` CHECK and has NO
-        step here on purpose: a wider CHECK needs the table rebuilt, and a
-        stale catalog is deleted and rebuilt from its sources instead of
-        upgraded in place.  :meth:`_check_categories` reports such a file
-        rather than letting its writes fail silently.
-
-        v5 renamed ``status`` → ``load_status`` and gave the column a closed
-        domain — ``loaded | unloaded | n/a`` — so "no load state applies"
-        (skill / cli) is a value rather than NULL.  Like v4 it has NO step
-        here: the column is simply a different one, so an older file fails
-        :meth:`_check_columns` and is reported for deletion, which is the
-        catalog's standing trade — it is derived data, and the rebuild costs
-        only the load decisions the model made this session.
+        Everything since has NO step here on purpose.  v3 added ``tool.type``
+        (later dropped again in v9 — a projection of ``category`` is a second
+        thing to keep in sync, and every question it answered is a membership
+        test over the category); v4 added the ``plugin`` value to the
+        ``category`` CHECK; v5 renamed ``status`` → ``load_status`` and gave
+        the column a closed domain (``loaded | unloaded | n/a``); v8 collapsed
+        the ``enabled`` / ``unavailable`` pair into one three-state ``status``.
+        Each one needs the table rebuilt or a column added-and-backfilled —
+        and this file is DERIVED data (every row comes from the registry,
+        ``tools.yaml``, the skills dir or the plugin children), so a stale
+        catalog is deleted and rebuilt from its sources instead of being
+        upgraded in place.  :meth:`_check_categories` and
+        :meth:`_check_columns` report such a file rather than letting its
+        writes fail silently; the cost of the rebuild is only the load
+        decisions the model made this session.
         """
         cursor = await self._c.execute("PRAGMA user_version")
         row = await cursor.fetchone()
@@ -591,23 +683,6 @@ class CatalogStore:
         if version < 2:
             await self._c.execute("DROP TABLE IF EXISTS server")
             logger.info("catalog_migrated from=%s to=2 dropped=server", version)
-        if version < 3:
-            cursor = await self._c.execute("PRAGMA table_info(tool)")
-            columns = {r[1] for r in await cursor.fetchall()}
-            # No `tool` table yet (a brand-new file) → the schema creates it
-            # with the column already in place.
-            if columns and "type" not in columns:
-                await self._c.execute(
-                    "ALTER TABLE tool ADD COLUMN type TEXT NOT NULL DEFAULT 'func' "
-                    "CHECK (type IN ('func','skill','cli'))",
-                )
-                for category, type_name in _TYPE_BY_CATEGORY.items():
-                    await self._c.execute(
-                        "UPDATE tool SET type = ? WHERE category = ?",
-                        (type_name, category),
-                    )
-                await self._c.commit()
-                logger.info("catalog_migrated from=%s to=3 added=type", version)
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -648,16 +723,33 @@ class CatalogStore:
         every UPDATE, so the previous unconditional upsert re-indexed all ~1500
         rows into ``tool_fts`` on every start, however little had changed.)
 
+        **The comparison is these five columns**: ``description``,
+        ``category``, ``source_id``, ``schema``, ``status`` — the config-derived
+        set, and the whole of what a boot-seed pass can know.  ``load_status``
+        and ``last_loaded`` are NOT in it: they are the model's decisions and
+        the runtime's state, so a re-register must never look like a change to
+        them (they move only through ``override_status``, and are counted
+        separately when they do).  ``name`` is the key being compared.
+
         Each entry carries ``name`` plus the written columns (``description``,
-        ``category``, ``source_id``, ``schema``, ``enabled``).  ``enabled`` is
-        tri-state: ``None`` means *no opinion* and leaves the column alone —
-        the contract mcp/rest-api rows rely on to keep it NULL.  ``status``
-        applies to a NEW row only: an existing row keeps its loaded/unloaded
-        state, so a plugin re-register can never clobber a user unload.  The
-        one exception is ``override_status`` (see below): the config's autoload
-        statement, which owns the row's state and rewrites it when it differs.
-        ``type`` is derived from ``category`` here — the one place it is
-        written, so the two columns cannot drift.
+        ``category``, ``source_id``, ``schema``, ``status``).  ``status`` is
+        ``None`` for *no opinion*, which leaves the column alone.  A non-None
+        value is written as the CONFIG mirror by default — ``enabled`` /
+        ``disabled``, crossing the switch line and nothing else
+        (``_config_status_move``), so the runtime's ``error`` is
+        :meth:`mark_source_error`'s to write and :meth:`mark_source_connected`'s
+        to clear, and a mirror that ran while an owner happened to be down
+        cannot erase that verdict.  ``status_verdict`` marks the rows where the
+        SOURCE is the verdict's author instead (the skill / cli mirror: a
+        SKILL.md that cannot be read is ``error``, and reading it again after a
+        fix is what puts it back to ``enabled``).
+
+        ``load_status`` applies to a NEW row only: an existing row keeps its
+        loaded/unloaded state, so a plugin re-register can never clobber a
+        user unload.  The one exception is ``override_status`` (see below):
+        the config's autoload statement, which owns the row's state and
+        rewrites it when it differs.  ``category`` is written as given —
+        nothing is derived from it into a second column.
 
         Returns ``{inserted, updated, status_updated, skipped, purged,
         schema_changed}``.  Every list but ``skipped`` (a count) holds names.
@@ -665,7 +757,9 @@ class CatalogStore:
         ``status_updated`` is the ones only an ``override_status`` flip
         touched — runtime state, a deliberately separate answer (the split
         :class:`CatalogOpDelta` counts).  ``schema_changed`` names the rows
-        whose embedding was invalidated, for the caller to wake the drainer.
+        whose embedding was invalidated — a new row with an embeddable schema,
+        or one whose ``schema`` text moved — for the caller to wake the
+        drainer.
         """
         async with self._write_lock:
             where = " WHERE t.category = ?" if category else ""
@@ -688,52 +782,36 @@ class CatalogStore:
                     continue
                 incoming.add(name)
                 prev = existing.get(name)
-                new_type = type_for_category(row.get("category", "") or "")
                 new_schema = row.get("schema")
-                new_enabled = row.get("enabled")
+                # Config's opinion about the row's status — NOT the load
+                # state's, which is ``row["load_status"]`` below.
+                new_tool_status = row.get("status")
 
                 if prev is None:
                     await self._c.execute(
-                        """INSERT INTO tool(name, description, category, type,
-                                            source_id, schema, enabled, load_status,
+                        """INSERT INTO tool(name, description, category,
+                                            source_id, schema, status, load_status,
                                             last_loaded)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             name, row.get("description") or "",
-                            row.get("category", "") or "", new_type,
+                            row.get("category", "") or "",
                             row.get("source_id") or NA, new_schema or NA,
-                            1 if new_enabled is None else (1 if new_enabled else 0),
+                            new_tool_status or STATUS_ENABLED,
                             row.get("load_status") or STATUS_NA, "",
                         ),
                     )
                     inserted.append(name)
-                    if _flatten_schema(new_schema or ""):
+                    if _embeddable(new_schema):
                         invalidated.append(name)
                     continue
 
                 # Build the SET list from the columns that actually moved, so
                 # an enabled-only flip does not rewrite a multi-KB schema blob.
-                #
-                # Two different questions, two different comparators:
-                # ``row_dirty`` — the raw text moved, so the row (and the FTS
-                # index the update trigger feeds) must be rewritten.
-                # ``embed_stale`` — the text that actually gets EMBEDDED moved.
-                # The drainer embeds ``_flatten_schema(schema)``, which drops
-                # enum/default/pattern/format and nesting past one level, so a
-                # change only in a dropped field would otherwise delete the
-                # vectors and re-embed to a byte-identical vector.
                 # ``or NA`` on BOTH sides: "the caller said nothing" and "the
                 # column holds 'n/a'" are the same fact, so a steady-state
                 # reconcile still writes nothing (the no-op contract).
                 schema_moved = (prev["schema"] or NA) != (new_schema or NA)
-                # ``embed_stale`` implies ``schema_moved`` (the flattener is a
-                # pure function of the text), so short-circuit: an unchanged
-                # row — every row on a steady-state boot — costs one string
-                # compare and never parses a schema.
-                embed_stale = schema_moved and (
-                    _flatten_schema(prev["schema"] or "")
-                    != _flatten_schema(new_schema or "")
-                )
                 sets: list[str] = []
                 vals: list = []
                 if (prev["description"] or "") != (row.get("description") or ""):
@@ -742,29 +820,40 @@ class CatalogStore:
                 if prev["category"] != (row.get("category", "") or ""):
                     sets.append("category = ?")
                     vals.append(row.get("category", "") or "")
-                if prev["type"] != new_type:
-                    sets.append("type = ?")
-                    vals.append(new_type)
                 if (prev["source_id"] or NA) != (row.get("source_id") or NA):
                     sets.append("source_id = ?")
                     vals.append(row.get("source_id") or NA)
                 if schema_moved:
                     sets.append("schema = ?")
                     vals.append(new_schema or NA)
-                # An explicit value differs from NULL too — the old COALESCE
-                # wrote 0/1 over a NULL column, and that must keep happening.
-                if new_enabled is not None and (
-                    prev["enabled"] is None or bool(prev["enabled"]) != bool(new_enabled)
-                ):
-                    sets.append("enabled = ?")
-                    vals.append(1 if new_enabled else 0)
+                # The status arm has two writers, and a row's value comes from
+                # exactly one of them:
+                # - the CONFIG mirror (every family): it may only cross the
+                #   switch line, so it never clears an ``error`` the runtime
+                #   wrote — a config projection may not claim an owner is up;
+                # - the SOURCE itself (``status_verdict`` — the skill / cli
+                #   mirror): that row's status IS the verdict (a SKILL.md that
+                #   cannot be read), so it writes whatever it found, which is
+                #   also what puts a fixed file back to ``enabled``.
+                if new_tool_status is not None:
+                    prev_status = prev["status"] or STATUS_ENABLED
+                    target = prev_status
+                    if row.get("status_verdict"):
+                        target = new_tool_status
+                    else:
+                        value, from_values = _config_status_move(new_tool_status)
+                        if prev_status in from_values:
+                            target = value
+                    if target != prev_status:
+                        sets.append("status = ?")
+                        vals.append(target)
                 # ``override_status`` is the config's autoload statement: the
                 # row is loaded because tools.yaml says so, so the incoming
                 # status is an AUTHORITY rather than an insert default and may
                 # overwrite what the model decided.  Owned here (not by the
                 # caller) for the same reason as every other column: one
                 # place compares, and only a value that MOVES is written.
-                # Settled before the status arm below: the question this
+                # Settled before the load-status arm below: the question this
                 # answers is "did a CONFIG-DERIVED column move", and the
                 # autoload override is not one.
                 content_moved = bool(sets)
@@ -789,7 +878,11 @@ class CatalogStore:
                     f"UPDATE tool SET {', '.join(sets)} WHERE name = ?", vals,
                 )
                 (updated if content_moved else status_updated).append(name)
-                if embed_stale:
+                # The schema moved, so the vectors were built from text that is
+                # no longer there: drop them and let the drainer re-embed.  This
+                # is the ONE embedding trigger — nothing else deletes a vector,
+                # so "has no vectors" means "new, or its schema moved".
+                if schema_moved:
                     invalidated.append(name)
 
             purged: list[str] = []
@@ -844,7 +937,7 @@ class CatalogStore:
         category: str,
         source_id: str | None = None,
         schema: str | None = None,
-        enabled: bool | None = None,
+        status: str | None = None,
         load_status: str | None = None,
         override_status: bool = False,
     ) -> bool:
@@ -852,12 +945,12 @@ class CatalogStore:
 
         The single-row face of :meth:`reconcile`, so the comparison that
         decides "re-embed or not" has exactly one implementation.  See that
-        method for the column contracts (``enabled=None`` = no opinion,
-        ``status`` on a NEW row only — unless ``override_status``).
+        method for the column contracts (``status=None`` = no opinion,
+        ``load_status`` on a NEW row only — unless ``override_status``).
         """
         result = await self.reconcile([{
             "name": name, "description": description, "category": category,
-            "source_id": source_id, "schema": schema, "enabled": enabled,
+            "source_id": source_id, "schema": schema, "status": status,
             "load_status": load_status, "override_status": override_status,
         }])
         return name in result["schema_changed"]
@@ -953,64 +1046,71 @@ class CatalogStore:
         return {row[0] for row in await cursor.fetchall()}
 
     async def set_source_enabled(self, source_id: str, enabled: bool) -> int:
-        """Set one source's ``enabled`` flag on all of its rows.
+        """Move one source's rows across the config's switch line.
 
         The whole of the sync's business with this column: a server switched
         off in ``tools.yaml`` is a row that reports ``disabled``.  Deliberately
-        narrow — it writes ``enabled`` and nothing else:
+        narrow:
 
-        - ``status`` is NOT touched, so the model's loaded/unloaded decision
-          survives a disable/enable round trip untouched.
+        - ``load_status`` is NOT touched, so the model's loaded/unloaded
+          decision survives a disable/enable round trip untouched.
         - the rows are NOT deleted, so re-enabling restores a tool set that
           still remembers what was loaded.
-        - only a row whose value actually MOVES is written: config overrides
-          the db value, but an override that overrides nothing is not a write.
-          Every pass projects the whole server list, and ``tool_au`` fires on
-          any UPDATE, so the unconditioned form re-indexed every external row
-          into ``tool_fts`` once per reconcile — the FTS churn ``reconcile``
-          exists to avoid.  A NULL counts as a difference: the column's NULL
-          means "no opinion" (read as enabled), so pinning it to the switch's
-          explicit value IS the config-wins rule.
+        - which rows move is ``_config_status_move``'s rule, the same one the
+          mirror uses — switching off lands on an ``error`` row (off is not
+          down), switching on only un-switches and leaves the runtime's
+          ``error`` alone.
+        - only a row that actually MOVES is written: config overrides the db
+          value, but an override that overrides nothing is not a write.  Every
+          pass projects the whole server list, and ``tool_au`` fires on any
+          UPDATE, so the unconditioned form re-indexed every external row into
+          ``tool_fts`` once per reconcile — the FTS churn ``reconcile`` exists
+          to avoid.
 
         Returns the number of rows whose value moved (0 on a steady-state pass).
         """
-        value = 1 if enabled else 0
+        value, from_values = _config_status_move(
+            STATUS_ENABLED if enabled else STATUS_DISABLED,
+        )
         async with self._write_lock:
             cursor = await self._c.execute(
-                "UPDATE tool SET enabled = ? "
-                "WHERE source_id = ? AND enabled != ?",
-                (value, source_id, value),
+                f"UPDATE tool SET status = ? "
+                f"WHERE source_id = ? AND status IN ({in_placeholders(len(from_values))})",
+                (value, source_id, *from_values),
             )
             await self._c.commit()
-        # ``enabled`` is a config-derived column: a server switched off in
-        # tools.yaml IS a change to those tools.  The WHERE clause keeps it
-        # honest — a steady-state pass writes no row and counts nothing.
+        # ``status``'s config arm is a config-derived column: a server switched
+        # off in tools.yaml IS a change to those tools.  The WHERE clause keeps
+        # it honest — a steady-state pass writes no row and counts nothing.
         self._count_ops(updated=cursor.rowcount)
         return cursor.rowcount
 
-    async def mark_source_unavailable(self, source_id: str) -> int:
-        """Flag one owner's tools ``unavailable`` — its server/plugin is down.
+    async def mark_source_error(self, source_id: str) -> int:
+        """Flag one owner's tools ``error`` — its server/plugin is unusable.
 
-        The verdict is its own column, NOT a status: the rows keep saying what
-        the model decided (``loaded`` / ``unloaded``), and they simply leave
-        the injection set while the flag is up — so the decision is still there
-        when the owner comes back.  Only rows that can have a load state are
-        flagged (the same set the old status write covered) and only rows not
-        already flagged are written: every reconcile pass re-projects every
-        unreachable server, so the unconditioned form rewrote — and, through
-        ``tool_au``, re-indexed — the same rows on each pass.
+        The runtime arm, and its own lane: ``load_status`` is untouched, so the
+        rows keep saying what the model decided (``loaded`` / ``unloaded``) and
+        they simply leave the injection set while the mark is up — the decision
+        is still there when the owner comes back.  Only rows that can have a
+        load state are flagged (the same set the old status write covered) and
+        only rows not already flagged are written: every reconcile pass
+        re-projects every unreachable server, so the unconditioned form
+        rewrote — and, through ``tool_au``, re-indexed — the same rows on each
+        pass.  A row the config switched off is NOT flagged: it is off, and
+        the model must be able to tell that from down.
         """
         async with self._write_lock:
             cursor = await self._c.execute(
-                "UPDATE tool SET unavailable = 1 "
-                "WHERE source_id = ? AND type = 'func' AND unavailable = 0",
+                f"UPDATE tool SET status = 'error' "
+                f"WHERE source_id = ? AND {_FUNC_CATEGORY_SQL} "
+                f"AND status = 'enabled'",
                 (source_id,),
             )
             await self._c.commit()
         return cursor.rowcount
 
-    async def mark_all_external_unavailable(self) -> int:
-        """Flag EVERY external tool ``unavailable`` — the gateway child died.
+    async def mark_all_external_error(self) -> int:
+        """Flag EVERY external tool ``error`` — the gateway child died.
 
         All of its servers are unreachable at once, so their tools must leave
         the injection set immediately rather than at the next reconcile.
@@ -1022,25 +1122,27 @@ class CatalogStore:
         async with self._write_lock:
             placeholders = ",".join("?" * len(SERVER_CATEGORIES))
             cursor = await self._c.execute(
-                f"UPDATE tool SET unavailable = 1 "
-                f"WHERE category IN ({placeholders}) AND type = 'func' "
-                f"AND unavailable = 0",
+                f"UPDATE tool SET status = 'error' "
+                f"WHERE category IN ({placeholders}) "
+                f"AND status = 'enabled'",
                 (*sorted(SERVER_CATEGORIES),),
             )
             await self._c.commit()
         return cursor.rowcount
 
-    async def clear_source_unavailable(self, source_id: str) -> int:
+    async def mark_source_connected(self, source_id: str) -> int:
         """Clear one owner's verdict — it is usable again.
 
         The only thing a reconnect does to the rows: every tool keeps the
         ``loaded`` / ``unloaded`` it had, which is what makes the load state
-        survive a blip, a restart, and a plugin restart alike.
+        survive a blip, a restart, and a plugin restart alike.  Scoped to rows
+        currently marked ``error``, so the config's own ``disabled`` is never
+        undone by a reconnect.
         """
         async with self._write_lock:
             cursor = await self._c.execute(
-                "UPDATE tool SET unavailable = 0 "
-                "WHERE source_id = ? AND unavailable = 1",
+                "UPDATE tool SET status = 'enabled' "
+                "WHERE source_id = ? AND status = 'error'",
                 (source_id,),
             )
             await self._c.commit()
@@ -1071,6 +1173,28 @@ class CatalogStore:
         )
         return {row[0] for row in await cursor.fetchall()}
 
+    async def has_error_rows(self, categories: "set[str] | frozenset[str]") -> bool:
+        """Whether any row of these categories is marked ``error`` right now.
+
+        The re-check trigger for the source-fed families (skill / cli): their
+        status comes from the SOURCE — a SKILL.md that cannot be read — not
+        from a probe the host runs anyway, so nothing else would ever ask
+        again.  A server's mark is re-projected by every connectivity pass; a
+        file's has to be re-read, and the caller's mtime gate only fires when
+        an entry in the directory changes.  A skill that merely became readable
+        again (a permission fixed, a dropped drive remounted) moves no mtime,
+        so without this the row would stay ``error`` until the next boot.
+        """
+        if not categories:
+            return False
+        params = sorted(categories)
+        cursor = await self._c.execute(
+            f"SELECT 1 FROM tool WHERE status = ? "
+            f"AND category IN ({in_placeholders(len(params))}) LIMIT 1",
+            (STATUS_ERROR, *params),
+        )
+        return await cursor.fetchone() is not None
+
     async def names_for_sources(self, sources) -> set[str]:
         """Every row name owned by the given servers — the autoload-protect set."""
         wanted = {s for s in sources if s}
@@ -1086,10 +1210,10 @@ class CatalogStore:
     # ── Status flips ───────────────────────────────────────────────
 
     async def set_load_status(self, name: str, load_status: str, *, bump: bool = False) -> int:
-        """Set a tool's ``status`` (loaded/unloaded/NULL); bump → LRU refresh.
+        """Set a tool's ``load_status`` (loaded/unloaded/n/a); bump → LRU refresh.
 
-        Only meaningful for ``type='func'`` rows (skill/cli stay NULL); the
-        store is lenient — callers guard with the type.
+        Only meaningful for a function tool's row (skill/cli stay 'n/a'); the
+        store is lenient — callers guard with the category.
         """
         last_loaded = _now() if (bump and load_status == STATUS_LOADED) else None
         async with self._write_lock:
@@ -1175,10 +1299,11 @@ class CatalogStore:
         return rows
 
     async def loaded_names(self) -> list[str]:
-        """Injectable tool names: ``status == 'loaded'`` (and not disabled).
+        """Injectable tool names: ``load_status == 'loaded'`` and ``status ==
+        'enabled'``.
 
         Everything is on the row now.  An external tool whose server is down
-        is not ``loaded`` — the reconcile marked it ``error`` — so it drops
+        is not injectable — the reconcile marked it ``error`` — so it drops
         out of the injection set without a join, exactly as the retired
         server-row join used to arrange.  See :data:`_INJECTABLE_SQL`.
         """
@@ -1200,7 +1325,7 @@ class CatalogStore:
         Evicts up to *limit* rows (the caller bounds it to the over-threshold
         excess).  ``protected`` (the meta whitelist) is never evicted.  Rows
         with a NULL ``last_loaded`` sort oldest (evict first).  Returns the
-        evicted names (they now have ``status='unloaded'``).
+        evicted names (they now have ``load_status='unloaded'``).
         """
         limit = max(0, limit)
         if limit == 0:
@@ -1410,7 +1535,8 @@ class CatalogStore:
     # ``count_unembedded()`` still said 1, and the drainer burnt its
     # no-progress bound and gave up — leaving the semantic gate closed with
     # every other tool embedded.  (memdb/memfiles carry the same predicate for
-    # the same reason.)
+    # the same reason.)  ``_embeddable`` is its Python face, for the one caller
+    # that has a row in hand rather than a query.
     _EMBEDDABLE_SCHEMA = f"trim(schema) NOT IN ('', '{NA}')"
 
     async def count_unembedded(self) -> int:

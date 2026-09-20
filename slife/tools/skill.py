@@ -21,6 +21,7 @@ from slife.tools._config_io import (
     with_fetched_at,
 )
 from slife.tools.base import Tool
+from slife.tools.catalog import STATUS_ERROR, config_status
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,15 @@ def _iter_skills(skills_dir: Path) -> list[tuple[Path, dict, str]]:
 
     Only directories containing a SKILL.md are considered valid skills.
     Returns empty list if skills_dir does not exist.
+
+    A SKILL.md that cannot be READ (permissions, a directory where a file
+    should be, a transient lock) still yields its skill, with empty
+    frontmatter: the skill exists and its directory names it, so one broken
+    file must not hide every other skill from ``skill_list`` — nor abort the
+    catalog mirror, which would leave the whole family unmapped.  The
+    catalog row reports the failure as ``status = error`` (see
+    :func:`skill_catalog_rows`); the readers that need the text report it
+    themselves.
     """
     if not skills_dir.exists():
         return []
@@ -79,7 +89,12 @@ def _iter_skills(skills_dir: Path) -> list[tuple[Path, dict, str]]:
         md = d / "SKILL.md"
         if not md.exists():
             continue
-        content = md.read_text(encoding="utf-8")
+        try:
+            content = md.read_text(encoding="utf-8")
+        except OSError as e:
+            logger.warning("skill_md_unreadable dir=%s err=%s", d, e)
+            result.append((d, {}, ""))
+            continue
         fm, body = _parse_frontmatter(content)
         result.append((d, fm, body))
     return result
@@ -212,7 +227,11 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
 
     for d, fm, _body in skills:
         if fm.get("name") == skill_name or d.name == skill_name:
-            content = (d / "SKILL.md").read_text(encoding="utf-8")
+            try:
+                content = (d / "SKILL.md").read_text(encoding="utf-8")
+            except OSError as e:
+                logger.warning("skill_md_unreadable name=%s err=%s", skill_name, e)
+                return f"Error: cannot read '{skill_name}'s SKILL.md ({e})."
             logger.info("skill_loaded name=%s", skill_name)
             # Prepend the absolute skills directory so the agent can
             # construct correct paths to scripts (e.g. "python
@@ -233,20 +252,36 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
 def skill_catalog_rows(
     skills_dir: str | Path, disabled: set[str] | None = None,
 ) -> dict[str, dict]:
-    """The catalog rows the skills dir implies — name → {description, schema, enabled}.
+    """The catalog rows the skills dir implies — name → {description, schema, status}.
 
     ``schema`` carries the SKILL.md text verbatim: a skill IS its playbook, so
     that is the text ``tool_search`` indexes (keyword through FTS, semantic
-    through the drainer).  ``enabled`` mirrors ``skill_set_enabled``.
+    through the drainer).  ``status`` is ``enabled`` / ``disabled`` — the same
+    switch ``skill_set_enabled`` writes — or ``error`` when the SKILL.md cannot
+    be read, which is the one runtime failure this family has (a skill is a
+    file, so its "owner" is the disk).  The row survives that failure with no
+    ``schema``: the skill still exists, and a reader must be able to see that
+    it is broken rather than find it silently gone.  Reading it again after a
+    fix puts the row back to ``enabled``.
     """
     disabled = disabled or set()
     rows: dict[str, dict] = {}
     for d, fm, _body in _iter_skills(Path(skills_dir)):
         name = fm.get("name", d.name)
+        try:
+            content: str | None = (d / "SKILL.md").read_text(encoding="utf-8")
+        except OSError as e:
+            # ``_iter_skills`` already reported this read (it read the file
+            # first) — one warning per file per pass is the scan's job.
+            logger.debug("skill_md_unreadable name=%s dir=%s err=%s", name, d, e)
+            content = None
         rows[name] = {
             "description": fm.get("description", ""),
-            "schema": (d / "SKILL.md").read_text(encoding="utf-8"),
-            "enabled": name not in disabled,
+            "schema": content,
+            "status": (
+                STATUS_ERROR if content is None
+                else config_status(name not in disabled)
+            ),
         }
     return rows
 

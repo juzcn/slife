@@ -39,7 +39,7 @@ async def svc(db):
     return ToolCatalogService(db, write_owner=True)
 
 
-def _plugin_rows(plugin, tools, *, load_status="unloaded", enabled=True):
+def _plugin_rows(plugin, tools, *, load_status="unloaded", status="enabled"):
     """The rows ``_mirror_plugin_tools_catalog`` builds for one plugin."""
     return [{
         "name": name,
@@ -48,7 +48,7 @@ def _plugin_rows(plugin, tools, *, load_status="unloaded", enabled=True):
         "source_id": plugin,
         "schema": json.dumps({"name": name, "description": "",
                               "inputSchema": {"type": "object", "properties": {}}}),
-        "enabled": enabled,
+        "status": status,
         "load_status": load_status,
     } for name in tools]
 
@@ -126,10 +126,10 @@ async def test_plugin_rows_are_searchable_born_unloaded(db, svc):
 
 @pytest.mark.asyncio
 async def test_plugin_tool_disabled_in_its_section_reports_disabled(db, svc):
-    """``enabled`` mirrors the section a plugin tool is configured in, so a
+    """``status`` mirrors the section a plugin tool is configured in, so a
     disabled one refuses to load instead of silently injecting."""
     rows = _plugin_rows("memdb", ["turn_search"])
-    rows[0]["enabled"] = False
+    rows[0]["status"] = "disabled"
     await db.reconcile(rows)
 
     assert await svc.effective_status("turn_search") == "disabled"
@@ -150,9 +150,12 @@ async def test_plugin_down_marks_its_rows_and_ready_clears_them(db, svc):
 
     marked = await svc.mark_source_error("memdb")
     assert marked == 2
-    assert await svc.effective_status("turn_search") == "unavailable"
+    assert await svc.effective_status("turn_search") == "error"
+    # The refusal is one line and offers no remedy: a row in `error` is not a
+    # row any switch can fix, and every family gets the same true statement.
     ok, reason = await svc.load_tool("turn_search")
-    assert ok is False and "is not up right now" in reason
+    assert ok is False
+    assert reason == "Error: tool 'turn_search' cannot be loaded — its status is error."
 
     reset = await svc.mark_plugin_connected("memdb")
     assert reset == 2
@@ -192,10 +195,10 @@ async def test_plugin_rows_are_spared_by_the_unconfigured_source_purge(db, svc):
     await db.reconcile(_plugin_rows("memdb", ["turn_search"]))
     await db.reconcile([
         {"name": "gh__search", "description": "", "category": "mcp",
-         "source_id": "gh", "schema": "", "enabled": None,
+         "source_id": "gh", "schema": "", "status": None,
          "load_status": "unloaded"},
         {"name": "gone__tool", "description": "", "category": "mcp",
-         "source_id": "gone", "schema": "", "enabled": None,
+         "source_id": "gone", "schema": "", "status": None,
          "load_status": "unloaded"},
     ])
 
@@ -215,14 +218,14 @@ async def test_gateway_death_does_not_touch_plugin_rows(db, svc):
     await db.reconcile(_plugin_rows("memdb", ["turn_search"]))
     await db.reconcile([
         {"name": "gh__search", "description": "", "category": "mcp",
-         "source_id": "gh", "schema": "", "enabled": None,
+         "source_id": "gh", "schema": "", "status": None,
          "load_status": "unloaded"},
     ])
 
     marked = await svc.mark_all_external_error()
 
     assert marked == 1
-    assert await svc.effective_status("gh__search") == "unavailable"
+    assert await svc.effective_status("gh__search") == "error"
     assert await svc.effective_status("turn_search") == "unloaded"
 
 

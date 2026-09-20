@@ -156,7 +156,7 @@ async def test_skill_and_cli_rows_have_no_status_to_override(db):
     await svc.sync_category("skill", {"a-skill": {"description": "d", "schema": "S"}})
     # The row name is namespaced — a skill and a cli may share a bare name.
     row = await db.get_tool("skill:a-skill")
-    assert row["load_status"] == "n/a" and row["type"] == "skill"
+    assert row["load_status"] == "n/a" and row["category"] == "skill"
 
 
 # ── Load / unload matrix ───────────────────────────────────────────
@@ -193,20 +193,20 @@ async def test_load_unload_refusal_matrix(db):
 
 
 @pytest.mark.asyncio
-async def test_load_refuses_disabled_and_unavailable(db):
+async def test_load_refuses_disabled_and_error(db):
     svc = ToolCatalogService(db, write_owner=True)
-    await db.upsert_tool("native_dis", category="builtin", enabled=False, load_status="unloaded")
+    await db.upsert_tool("native_dis", category="builtin", status="disabled",
+                        load_status="unloaded")
     ok, msg = await svc.load_tool("native_dis")
     assert not ok and "disabled" in msg
 
-    # An external tool whose server is down reads `error` — the verdict is its
-    # own column, so the row keeps whatever the model decided.
+    # An external tool whose server is down reads `error` — the runtime's own
+    # lane of the status column, so the row keeps what the model decided.
     await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", load_status="loaded")
-    await db.mark_source_unavailable("svcA")
+    await db.mark_source_error("svcA")
     ok, msg = await svc.load_tool("svcA__x")
-    # The refusal points at the ONE lifecycle knob that exists now (there is
-    # no mcp_connect to suggest — the modern protocol has no session to open).
-    assert not ok and "not up" in msg and "mcp_list" in msg
+    # One line, and no switch offered: `error` is not a state enable can fix.
+    assert not ok and msg.endswith("its status is error.")
 
     await db.upsert_tool("svcB__x", category="mcp", source_id="svcB", load_status="unloaded")
     ok, msg = await svc.load_tool("svcB__x")
@@ -233,7 +233,7 @@ async def test_injected_schema_comes_from_catalog_not_instance(db):
 
     # Overwrite the DB row's schema with a DIFFERENT descriptor.
     await db.upsert_tool(
-        "native_a", category="builtin", enabled=True, load_status="loaded",
+        "native_a", category="builtin", status="enabled", load_status="loaded",
         schema=json.dumps({"name": "native_a", "description": "a native tool",
                             "inputSchema": {"type": "object",
                                             "properties": {"q": {"type": "string"}}}}),
@@ -338,8 +338,8 @@ async def test_registry_execute_hints_with_catalog(db):
     assert "known but not loaded" in await registry.execute("svcA__gh")
     # 3b. its server is down → the row says `error`, and the gate names that
     # rather than pretending the tool is merely unloaded.
-    await db.mark_source_unavailable("svcA")
-    assert "not up" in await registry.execute("svcA__gh")
+    await db.mark_source_error("svcA")
+    assert "status is error" in await registry.execute("svcA__gh")
     # 4. unknown everywhere → historical string
     assert await registry.execute("nope") == "Error: Unknown tool 'nope'"
 
@@ -391,17 +391,16 @@ async def test_sync_category_mirrors_and_purges(db):
     svc = ToolCatalogService(db, write_owner=True)
 
     purged = await svc.sync_category("skill", {
-        "deploy": {"description": "Ship it", "schema": "# Deploy\nrun x", "enabled": True},
-        "quiet": {"description": "hush", "schema": "# Quiet", "enabled": False},
+        "deploy": {"description": "Ship it", "schema": "# Deploy\nrun x", "status": "enabled"},
+        "quiet": {"description": "hush", "schema": "# Quiet", "status": "disabled"},
     })
     assert purged == []
 
     row = await db.get_tool("skill:deploy")
-    assert row["category"] == "skill"
-    assert row["type"] == "skill"
+    assert row["category"] == "skill"                     # the category IS the kind
     assert row["load_status"] == "n/a"                    # skills have no load state
     assert "# Deploy" in row["schema"]              # SKILL.md, as stored
-    assert (await db.get_tool("skill:quiet"))["enabled"] == 0
+    assert (await db.get_tool("skill:quiet"))["status"] == "disabled"
     # discoverable exactly like a function tool, and never injected
     # Searchable by its bare words, stored under its namespaced name.
     assert [r["name"] for r in await db.search_keyword("deploy")] == ["skill:deploy"]
@@ -409,7 +408,7 @@ async def test_sync_category_mirrors_and_purges(db):
 
     # a skill that left the dir loses its row (the §8.5 "清理干净" contract)
     purged = await svc.sync_category("skill", {
-        "deploy": {"description": "Ship it", "schema": "# Deploy\nrun x", "enabled": True},
+        "deploy": {"description": "Ship it", "schema": "# Deploy\nrun x", "status": "enabled"},
     })
     assert purged == ["skill:quiet"]      # row names are namespaced
     assert await db.get_tool("skill:quiet") is None
@@ -422,7 +421,7 @@ async def test_sync_category_cli_rows_have_no_schema(db):
     await svc.sync_category("cli", {"gh": {"description": "GitHub CLI", "schema": None}})
 
     row = await db.get_tool("cli:gh")
-    assert row["type"] == "cli"
+    assert row["category"] == "cli"
     assert row["load_status"] == "n/a"
     # "No schema text" is a VALUE in a NOT NULL column, not an absence — the
     # drainer and the search both read it as the sentinel rather than NULL.

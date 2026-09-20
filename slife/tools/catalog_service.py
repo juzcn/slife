@@ -17,13 +17,14 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from slife.tools.catalog import (
+    STATUS_DISABLED,
+    STATUS_ERROR,
     STATUS_LOADED,
     STATUS_NA,
     STATUS_UNLOADED,
-    TYPE_FUNC,
     CatalogStore,
-    EFF_DISABLED,
-    EFF_UNAVAILABLE,
+    config_status,
+    is_function_category,
 )
 from slife.tools.whitelist import ALWAYS_LOADED, is_meta_tool
 
@@ -54,7 +55,7 @@ def plugin_category(plugin: str, tool_name: str) -> str:
     ``job`` = one function from the jobs directory (exposed by job-coding
     under the ``job-`` prefix); ``plugin`` = a built-in plugin's own tool,
     job-coding's four management tools included.  Both are function tools
-    (``type='func'``) owned by the plugin named in ``source_id``.
+    (they carry a load state) owned by the plugin named in ``source_id``.
     """
     if (plugin == JOB_PLUGIN_NAME
             and tool_name.startswith(JOB_TOOL_PREFIX)
@@ -111,6 +112,29 @@ def catalog_category(tool: "Tool") -> str:
     return "builtin"
 
 
+def status_error_refusal(name: str, action: str) -> str:
+    """``Error: tool 'X' cannot be <action> — its status is error.``
+
+    One line, stating the state and nothing beyond it.
+
+    **An ``error`` has many causes** — a server that never spawned, a tool
+    listing that timed out, a plugin whose child died, a skill file that cannot
+    be read, something else entirely — and they do not share a remedy.  So the
+    refusal must not guess at one: "its owner reconnects on its own", "the
+    watchdog restarts it", "nothing to enable, just wait" are all claims about a
+    cause this code has not checked, and a wrong one is worse than none — it
+    tells the model (or the user reading over its shoulder) that nothing needs
+    fixing while the real cause sits there.  Naming a family's diagnostic has
+    the same problem from the other side: ``mcp_list`` and ``system_health`` are
+    each right for one family and wrong for the next.
+
+    What is true of every one of them is the state, the fact that the row cannot
+    be used while it holds, and that ``*_set_enabled`` is not the remedy (it is
+    the ``disabled`` remedy — the values are mutually exclusive).
+    """
+    return f"Error: tool '{name}' cannot be {action} — its status is error."
+
+
 class ToolCatalogService:
     """Session-facing orchestration over the shared catalog store."""
 
@@ -139,7 +163,7 @@ class ToolCatalogService:
         #: a job in ``job`` (the user's tools), a plugin's own tool in
         #: ``plugin``.  A builtin's disable keeps it out of the REGISTRY (the
         #: factory skips it) but not out of the catalog — its row is mirrored
-        #: with ``enabled=0``, so yaml and the db agree on it.
+        #: ``disabled``, so yaml and the db agree on it.
         self._disabled_builtins = frozenset(disabled_builtins)
         self._disabled_jobs = frozenset(disabled_jobs)
         self._disabled_plugin = frozenset(disabled_plugin)
@@ -193,7 +217,7 @@ class ToolCatalogService:
 
         The boot seed and a plugin's (re)connect both come through here, so a
         row's provenance (``category`` + ``source_id``), its schema and its
-        ``enabled`` mirror cannot drift between the two paths.
+        ``status`` mirror cannot drift between the two paths.
         """
         name = _tool_name(tool)
         return {
@@ -202,7 +226,7 @@ class ToolCatalogService:
             "category": catalog_category(tool),
             "source_id": _source_id(tool),
             "schema": tool_descriptor(tool),
-            "enabled": self._row_enabled(tool, disabled_servers),
+            "status": self._row_status(tool, disabled_servers),
             # Only a brand-new row sees this — reconcile applies status on
             # INSERT alone, which is exactly the keep-existing rule…
             "load_status": self.default_status(name),
@@ -214,16 +238,20 @@ class ToolCatalogService:
             "override_status": name in self.autoload,
         }
 
-    def _row_enabled(
+    def _row_status(
         self, tool: "Tool", disabled_servers: frozenset[str] = frozenset(),
-    ) -> bool | None:
-        """The row's ``enabled`` — always tools.yaml's answer.
+    ) -> str | None:
+        """The row's ``status`` — always tools.yaml's answer, never a verdict.
 
         There is no per-tool enable anywhere in the system: a family's section
         decides, and for an external server that decision is the SERVER's
         switch (all of its tools move together).  A builtin / job / plugin tool
         mirrors its own section's disable.  ``None`` only for a tool whose owner
         the config does not name — "not known to be off" is not "off".
+
+        The runtime's ``error`` is not this method's business: a mirror of a
+        live source says what the config says about the switch, and the
+        connectivity marks are what say whether the owner is up.
 
         *disabled_servers* is passed in (not looked up per tool) because one
         pass can carry a four-figure number of an external server's tools, and
@@ -233,15 +261,15 @@ class ToolCatalogService:
             server = _source_id(tool)
             if not server:
                 return None
-            return server not in disabled_servers
+            return config_status(server not in disabled_servers)
         category = catalog_category(tool)
         if category == "builtin" and _tool_name(tool) in self._disabled_builtins:
-            return False
+            return STATUS_DISABLED
         if category == "job":
-            return _tool_name(tool) not in self._disabled_jobs
+            return config_status(_tool_name(tool) not in self._disabled_jobs)
         if category == "plugin":
-            return _tool_name(tool) not in self._disabled_plugin
-        return True
+            return config_status(_tool_name(tool) not in self._disabled_plugin)
+        return config_status(True)
 
     @staticmethod
     def _disabled_servers() -> frozenset[str]:
@@ -337,7 +365,7 @@ class ToolCatalogService:
         rows come from their own live sources (the skills dir; the ``cli``
         section of ``tools.yaml``).  They are rows all the same — that is how
         ``tool_search`` reaches them — but they are not function tools, so
-        they carry no load state (``status`` stays NULL).
+        they carry no load state (``load_status`` stays 'n/a').
 
         Upsert + purge, the same contract the plugin mirror follows: every
         entry is (re)written, and a name that vanished from the source loses
@@ -348,6 +376,14 @@ class ToolCatalogService:
         load state, and "no load state applies" is a value in the column's
         domain, not a NULL.  ``override_status`` is left off for the same
         reason: an ``autoload`` flag on a skill/cli entry has nothing to own.
+
+        ``status`` comes from the source itself: a skill whose SKILL.md cannot
+        be read is mirrored ``error`` (the mirror computes that, it is not a
+        config switch), a cli entry mirrors its ``enabled`` flag.  That is why
+        these rows carry ``status_verdict`` — the mirror IS the verdict's
+        author for this family, so it writes what it found and a fixed file
+        goes back to ``enabled``.  A server-backed row has no such authority:
+        its config mirror may not claim an owner is up.
 
         **The row name is namespaced** (``skill:browser-harness``).  A name is
         the row's identity — the primary key, the embeddings' foreign key, the
@@ -364,7 +400,8 @@ class ToolCatalogService:
                     "description": spec.get("description", ""),
                     "category": category,
                     "schema": spec.get("schema"),
-                    "enabled": spec.get("enabled"),
+                    "status": spec.get("status"),
+                    "status_verdict": True,
                     "load_status": STATUS_NA,
                 }
                 for name, spec in rows.items()
@@ -394,23 +431,17 @@ class ToolCatalogService:
         if row is None:
             return False, (f"Error: tool '{name}' is unknown — see tool_search.")
 
-        if row.get("type") != TYPE_FUNC:
+        if not is_function_category(row.get("category", "")):
             return False, (
                 f"Error: tool '{name}' has no load/unload state "
-                f"(type '{row.get('type')}')."
+                f"(category '{row.get('category')}')."
             )
 
         eff = await self._store.get_effective(name)
-        if eff == EFF_DISABLED:
+        if eff == STATUS_DISABLED:
             return False, f"Error: tool '{name}' is disabled — enable it first."
-        if eff == EFF_UNAVAILABLE:
-            server = row.get("source_id") or "?"
-            return False, (
-                f"Error: tool '{name}' is unavailable — server '{server}' is "
-                f"not up right now (its tools are marked error). Check it with "
-                f"mcp_list (or rest_api_list): it reconnects on its own, or "
-                f"re-enable it with the matching *_set_enabled."
-            )
+        if eff == STATUS_ERROR:
+            return False, status_error_refusal(name, "loaded")
         if eff == "loaded":
             return True, f"tool '{name}' is already loaded."
 
@@ -440,10 +471,10 @@ class ToolCatalogService:
         row = await self._store.get_tool(name)
         if row is None:
             return False, f"Error: tool '{name}' is unknown."
-        if row.get("type") != TYPE_FUNC:
+        if not is_function_category(row.get("category", "")):
             return False, (
                 f"Error: tool '{name}' has no load/unload state "
-                f"(type '{row.get('type')}')."
+                f"(category '{row.get('category')}')."
             )
         if row.get("load_status") != STATUS_LOADED:
             return True, f"tool '{name}' is already unloaded."
@@ -507,7 +538,7 @@ class ToolCatalogService:
         status be rewritten when it differs.
 
         ``enabled`` is the server's own on/off switch (``None`` = no opinion);
-        it moves independently of ``status`` — see
+        it moves independently of the load state — see
         :meth:`set_source_enabled`.
         """
         return await self._store.upsert_tool(
@@ -516,7 +547,7 @@ class ToolCatalogService:
             category=category,
             source_id=server,
             schema=schema,
-            enabled=enabled,
+            status=config_status(enabled),
             load_status=self.default_status(name, server=server),
             override_status=server in self.autoload_servers,
         )
@@ -542,7 +573,7 @@ class ToolCatalogService:
         ``inputSchema``, optional ``full_name``) — the row's ``schema`` column
         is built here, so no caller assembles a descriptor by hand.  Rows land
         with :meth:`default_status`; an existing row keeps the load state the
-        model chose (``reconcile`` applies ``status`` on INSERT alone).
+        model chose (``reconcile`` applies ``load_status`` on INSERT alone).
 
         Returns the names purged — tools this server no longer publishes.  An
         EMPTY *tools* is "not ready yet", never "owns nothing": it mirrors
@@ -565,7 +596,7 @@ class ToolCatalogService:
                     tname, description,
                     t.get("inputSchema", {"type": "object", "properties": {}}),
                 ),
-                "enabled": enabled,
+                "status": config_status(enabled),
                 "load_status": self.default_status(full_name, server=server),
                 # The autoload flag lives on the SERVER entry (mcp/rest-api
                 # have no per-tool one), so it is one decision over the whole
@@ -590,33 +621,34 @@ class ToolCatalogService:
         return gone
 
     async def set_source_enabled(self, source: str, enabled: bool) -> int:
-        """Mirror a server's on/off switch onto its rows' ``enabled`` flag.
+        """Mirror a server's on/off switch onto its rows' ``status``.
 
-        The sync's only write to this column, and a deliberately narrow one:
-        it never touches ``status`` (the model's loaded/unloaded decision
-        survives the round trip) and never deletes rows (a disabled server
-        keeps its tools, showing ``disabled`` — a state of its own, so the
-        model can tell "switched off" from "down", which is ``error``).
+        The sync's only config write to this column, and a deliberately narrow
+        one: it never touches ``load_status`` (the model's loaded/unloaded
+        decision survives the round trip) and never deletes rows (a disabled
+        server keeps its tools, showing ``disabled`` — a state of its own, so
+        the model can tell "switched off" from "down", which is ``error``).
         """
         if not self.write_owner:
             return 0
         return await self._store.set_source_enabled(source, enabled)
 
     async def mark_source_error(self, source: str) -> int:
-        """Flag one owner's tools ``unavailable`` — it is unusable right now.
+        """Flag one owner's tools ``error`` — it is unusable right now.
 
         The single verdict for every unavailable case: not yet connected at
         startup, disconnected, a failed connect, or a dead gateway child.
         Effective status becomes ``error`` — a state of its own, so the row
         still says the tool belongs to a server that is simply not up — while
-        the loaded/unloaded the model chose stays on the row untouched.
+        the loaded/unloaded the model chose stays on the row untouched.  A row
+        the config switched off is left alone: it is ``disabled``, not down.
         """
         if not self.write_owner:
             return 0
-        return await self._store.mark_source_unavailable(source)
+        return await self._store.mark_source_error(source)
 
     async def mark_all_external_error(self) -> int:
-        """Flag EVERY external tool ``unavailable`` — nothing is live yet.
+        """Flag EVERY external tool ``error`` — nothing is live yet.
 
         Used both at catalog init (no server has connected yet) and when the
         gateway child dies (all of its servers are unreachable at once).  It
@@ -625,28 +657,31 @@ class ToolCatalogService:
         """
         if not self.write_owner:
             return 0
-        return await self._store.mark_all_external_unavailable()
+        return await self._store.mark_all_external_error()
 
     async def mark_server_connected(self, source: str) -> int:
-        """A server (re)connected — clear its tools' verdict.
+        """A server (re)connected — clear its tools' ``error``.
 
         Nothing else moves: a tool the model had loaded is still ``loaded``,
-        because the verdict was never written into the load state.
+        because the verdict was never written into the load state.  And a tool
+        the config switched off stays ``disabled`` — coming back up is not a
+        config decision.
         """
         if not self.write_owner:
             return 0
-        return await self._store.clear_source_unavailable(source)
+        return await self._store.mark_source_connected(source)
 
     async def mark_plugin_connected(self, plugin: str) -> int:
-        """A plugin (re)connected — clear its tools' verdict.
+        """A plugin (re)connected — clear its tools' ``error``.
 
-        Identical to :meth:`mark_server_connected`: with the verdict in its own
-        column there is no per-tool default to restore, so a plugin restart
-        leaves every row saying exactly what it said before.
+        Identical to :meth:`mark_server_connected`: with the verdict in the
+        status column's runtime lane there is no per-tool default to restore,
+        so a plugin restart leaves every row saying exactly what it said
+        before.
         """
         if not self.write_owner or not plugin:
             return 0
-        return await self._store.clear_source_unavailable(plugin)
+        return await self._store.mark_source_connected(plugin)
 
     async def purge_source(self, source: str) -> int:
         """Drop every row of a server or plugin that is gone (main-owner only).
