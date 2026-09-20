@@ -40,10 +40,7 @@ def _manager_or_hint() -> tuple:
         # Subagents are full-fidelity workers and may spawn their own
         # descendants (each level has its own manager) — no subagent-specific
         # gate here. The manager only appears uninitialised mid-startup.
-        return None, (
-            "Subagent manager is not running yet — it starts automatically "
-            "when the agent service initializes."
-        )
+        return None, "Subagent manager is not running."
     return manager, ""
 
 

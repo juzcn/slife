@@ -646,12 +646,10 @@ class TurnPromptTool(Tool):
 
     name = "_turn_prompt"
     category = "Models"
-    description = ("Auto-invoked tool that builds the per-turn prompt, "
-                   "injected at the start of every turn: current time, "
-                   "context usage, what changed since the last turn, peer "
-                   "presence events, unsettled scheduled runs, and inbound "
-                   "A2A tasks orphaned by a restart — so the turn executes "
-                   "with up-to-date state.")
+    description = ("Auto-invoked tool that builds the per-turn prompt: "
+                   "current time, context usage, what changed since the last "
+                   "turn, peer presence events, unsettled scheduled runs, and "
+                   "inbound A2A tasks orphaned by a restart.")
     parameters = _TURN_PROMPT_PARAMS
 
     async def execute(self, **kwargs) -> str:

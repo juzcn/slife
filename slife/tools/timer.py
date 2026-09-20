@@ -22,13 +22,11 @@ MAX_WAIT_MINUTES = 24 * 60
 
 
 class WaitMinutesTool(Tool):
-    """Pause the current work and resume automatically after N minutes."""
+    """Schedule a one-shot wake-up N minutes from now."""
 
     name: ClassVar[str] = "wait_minutes"
     category: ClassVar[str] = "System"
-    description: ClassVar[str] = (
-        "Pause the current work and resume automatically after N minutes."
-    )
+    description: ClassVar[str] = "Schedule a one-shot wake-up N minutes from now."
     parameters: ClassVar[dict] = make_params(
         minutes={
             "type": "integer",
@@ -65,7 +63,4 @@ class WaitMinutesTool(Tool):
                 "main-agent tool (a subagent worker has no turn to resume)."
             )
         await schedule_wakeup(minutes * 60, note)
-        return (
-            f"Timer set for {minutes} minute(s). End this turn now — a "
-            f"[Timer] message will wake you when it elapses."
-        )
+        return f"Timer set for {minutes} minute(s); the wake is a [Timer] message."

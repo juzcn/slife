@@ -296,10 +296,7 @@ class RestApiListToolsTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncomp
         ctx = getattr(self, "_ctx", None)
         mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is None:
-            return (
-                f"[ERROR] mcp gateway unavailable — cannot read '{name}'s "
-                "operations right now."
-            )
+            return f"[ERROR] Cannot read '{name}'s operations."
         # The gateway applies the cap, so this tool never slices a list: one
         # implementation decides how much context a listing may spend, and it
         # is the same one mcp_list_tools uses.
@@ -341,7 +338,7 @@ class RestApiSetEnabledTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIn
 
     name = "rest_api_set_enabled"
     category = "REST API"
-    description = "Enable or disable a REST API. Connects/disconnects immediately."
+    description = "Enable or disable a REST API (enable connects it, disable disconnects it)."
     parameters = {
         "type": "object",
         "properties": {

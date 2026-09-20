@@ -501,8 +501,8 @@ async def __mcp_set(
 @mcp.tool(
     name="mcp_set_enabled",
     description=(
-        "Enable or disable an MCP server (true reconnects + loads tools; "
-        "false disconnects + unloads)."
+        "Enable or disable an MCP server (enable connects it, disable "
+        "disconnects it)."
     ),
 )
 async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) -> str:
@@ -601,7 +601,7 @@ async def _set_server_enabled(
 @mcp.tool(
     name="mcp_remove",
     description=(
-        "Remove an MCP server: stop process, unregister tools, persist removal to config."
+        "Remove an MCP server: stops it and deletes its config entry."
     ),
 )
 async def mcp_remove(name: str, ctx: Context | None = None) -> str:

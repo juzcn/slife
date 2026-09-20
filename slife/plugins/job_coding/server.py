@@ -371,8 +371,7 @@ async def job_run(job: str, params: str = "{}", ctx: Context | None = None) -> s
 @mcp.tool(
     name="job-write",
     description=(
-        "Write a job's code — create or replace; the job file becomes its own "
-        "durable tool of your own (callable directly, persists across restarts)."
+        "Write a job's code — create or replace; a broken write is rolled back."
     ),
 )
 async def job_write(name: str, code: str, ctx: Context | None = None) -> str:

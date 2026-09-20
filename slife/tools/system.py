@@ -295,8 +295,7 @@ async def check_wechat(client=None, config=None) -> list[dict]:
         if last_error:
             return [{"component": "wechat", "level": "warning", "key": "status",
                      "value": f"degraded (last error: {last_error})",
-                     "hint": ("The link may recover on its own; messages will "
-                              "not arrive until it does.")}]
+                     "hint": "Messages will not arrive while it is degraded."}]
         return [_entry("wechat", "ok", "status",
                        f"logged_in (session {age_h:.1f}h of {max_h:.0f}h, "
                        f"{remaining_h:.1f}h left)")]
@@ -1421,7 +1420,7 @@ class SystemToolsListTool(Tool):
         ctx = getattr(self, "_ctx", None)
         registry = ctx.registry if ctx is not None else None
         if registry is None:
-            return "Tool registry is not available (called before initialization)."
+            return "Tool registry is not available."
 
         all_tools = registry.list_tools()
         if not all_tools:
@@ -1620,8 +1619,7 @@ class SetMaxIterationsTool(Tool):
     name = "set_max_iterations"
     category: ClassVar[str] = "System"
     description = (
-        "Set the maximum tool-call iterations per turn (0 = unlimited); "
-        "applies from the next turn."
+        "Set the maximum tool-call iterations per turn (0 = unlimited)."
     )
     parameters = make_params(
         max_iterations={

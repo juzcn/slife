@@ -452,8 +452,10 @@ class TestRestApiListToolsTool:
         tool = RestApiListToolsTool(config_path=mcp_config_path)
         tool._ctx = None
         result = await tool.execute(name="github")
-        assert "[ERROR]" in result
-        assert "gateway unavailable" in result
+        # The tool reports its own failure and nothing else: why the client is
+        # missing (and what that means) is the reader's inference, not this
+        # tool's claim.
+        assert result == "[ERROR] Cannot read 'github's operations."
 
     @pytest.mark.asyncio
     async def test_server_without_a_spec_reports_why(self, mcp_config_path):

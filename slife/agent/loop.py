@@ -442,8 +442,8 @@ class AgentLoop:
             return f"Error: max_iterations must be >= 0 (0 = unlimited), got {max_iterations}."
         self.max_iterations = max_iterations
         if max_iterations == 0:
-            return "Max iterations set to 0 — unlimited (no cap). Applies next turn."
-        return f"Max iterations set to {max_iterations}. Applies next turn."
+            return "Max iterations set to 0 — unlimited (no cap)."
+        return f"Max iterations set to {max_iterations}."
 
     def cancel(self) -> None:
         """Signal the agent loop to stop at the next safe point."""
