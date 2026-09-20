@@ -505,7 +505,7 @@ Slife is one codebase, a few docs, split by audience:
 * **[A2A-MQTT.md](docs/A2A-MQTT.md)** — the adopted A2A-over-MQTT design: the official SDK, topics/wire/QoS/retry, the mesh driver, the standard tool surface, markers, drain schema.
 * **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)** — the authoritative spec of the plugin system (central `PluginSpec` table, the registry, the uniform lifecycle) for anyone writing a plugin.
 * **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)** — how Slife curates the model context each turn: channels, markers, the `_turn_prompt` harness tool-pair.
-* **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** — the unified tool catalog: the six `tools.yaml` category sections, `tools.db`, the load/unload threshold, `tool_search`/`func-tool-load`, per-turn injection, and the MCP reconcile.
+* **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** — the unified tool catalog: the six `tools.yaml` category sections, `tools.db`, the load/unload threshold, `tool_search`/`func-tool-load`, per-request injection, and the MCP reconcile.
 
 ```bash
 git clone https://github.com/juzcn/slife.git
