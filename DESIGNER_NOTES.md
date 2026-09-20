@@ -75,11 +75,17 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 很多场景，我们还是希望它像机器一样工作，按照我们编排的流程去执行。这就是怎么设计确定执行的方案。当前有不少技术选项，最稳的还Coding，把一个流程编写为一个代码，按照代码的确定性逻辑执行。
 
-5. 设计特点
+5. 设计原则
 
 - 有最新的、官方的、标准的、流行的package，一定要使用，不要重复造轮子。
+- 优雅、规范和正确设计，不要过度设计、也不要过于简单、补丁设计
+- 等更聪明的模型，而不是为笨模型做很多Harness, 现在做的harness是弥补模型暂时的能力不足
 
-- All are plugins design, plugin is a standard http streamable MCP with additional plugin contract。
+6. 设计特点
+
+- All are plugins design：所有进程组件都设计为插件，插件是一个标准的http streamable MCP server， 并附加plugin contract。
+
+- Agent的核心是一个朴素的openai 标准的大模型调用循环，从user到assitant, Inbox 是循环的统一入口。
 
 - Sessionless：没有session概念，agent重启使用退出时的上下文。
 
@@ -93,6 +99,8 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 - Channel: AgentLoop Inbox的来源， Inbox 进入AgentLoop有两个模式，排队和允许插队。插队是通过 auto invoke _check_new_input tool实现的， tool返回新的一条user message。 模式可配置。
 
+- Subagent是一个独立进程，是一个forked agent, 拥有Agent的所有能力，但没有永久性，会话不保留，short lived, 只是agent的worker, 没有人格。
+
 - Silence Contract:大模型保持静默的契约是输出".".
 
 - Heartbeat: 默认每30分钟，注入一条心跳Marker user消息。
@@ -101,7 +109,7 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 - Multiagents: 多agent依赖mosquitto消息中间件，以A2A标准为蓝本实现。 完全异步。
 
-- Progressive disclosure: 外部mcp 默认autoload=false, 使用渐进式披露，tool-search, tool-load
+- Tool system: 统一的工具系统，使用渐进式披露，tool-search, tool-load。
 
 - 轻量级的job systems: job-coding plugin, 相对于native tools, 它可以用到外接mcp服务的全部能力，可以调用大模型做编排。
 
@@ -111,58 +119,21 @@ Token，中文现在翻译成词元， 也第一次进入大众视野。从技�
 
 - Installation: 一键安装：从源码安装，避免pypi库的版本冲突；自动安装所有依赖，开箱即用，但语义功能需独立安装和配置。
 
-6. Context Harnessing
+7. To do list
 
-6.1 Tool Pair
+- 启动时（用户手改了大模型设置）或更换大模型时，上下文窗口可能变大或变小，怎么处理？
 
-_turn_prompt: Turn的提示词，每一轮开始，自动调用_turn_prompt， 用tool pair message注入到上下文，工具结果 turn_prompt.j2, 进入记忆。目的是让大模型在每轮开始知道更新的系统状态信息。 user → [attach_image pair] → _turn_prompt pair → LLM.
+- forget 和 recall：目前forget只有两个简单机制，大模型调用的clear context，另一个是harness调用的trim。recall是一个混合检索，以工具结果的形式注入到上下文。是否可以有个工具，在内存中更新自己的上下文，包括系统提示词、消息历史、工具列表。当大模型觉得当前的任务需要重新整理一下上下文？下一个迭代生效。副作用是影响缓存命中。有效可能不经济。排查一下现在的recall工具是否排除当前上下文？
 
-6.2 Context Marker
+- 共享代码库？现在项目里有重复的functions，增大代码量和维护量，是否值得？
 
-- slife 启动时，在每一个恢复的Turn的user message开头注入 [Turn:json] , 不进入记忆。目的是让agent知道上下文中每个Turn的id。
-- slife 当上下文达到80%上限。系统移除历史turns，使之降到20%（靠估算）。在assitant message尾部追加 [Turn: ... removed]，不进入记忆。目的是让大模型知道发生了截断，上下文中移除了多少Turns. trailing footnote. 
+- 多wechat接入
 
-6.3 Channel and Markers
+8. Current
 
-Channel 是指Agent Loop Inbox的来源，TUI是默认的、正常的channel。
+ToolSystem目前还是有很多挑战， 配置，和运行时与db的同步，逻辑还是比较复杂
 
-- Channel Heartbeat：系统每隔1800秒（默认值），向Inbox注入 [Heartbeat] click user Message， agent loop 闲时注入，忙时跳过。TUI 过滤这条User message，在状态栏提示；如果assistant message = '.', TUI过滤掉，非'.' 显示 自主 信息。进入记忆。使用silent handler，TUI过滤中间过程。
+- 配置变化（启动时或运行时修改配置）- 触发db同步 - 触发 embed/re-embed
+- 运行时tool error - 触发db同步
 
-- Channel Subagent：只有当创建的subagent是自动推送结果时才会出现。自动推送的结果要加上[Subagent:json], json数据中要有suabgent name和task name（id），让大模型知道是哪个subagent的哪个task发过来的信息。TUI显示 Subagent(subagent name)> ，并过滤TUIMarker。
-
-- Channel Wechat: 当用户微信输入时，注入inbox时加上 [Wechat:json], json里面包含send wechat message所需要的信息。TUI显示 Wechat> ， 并过滤掉marker。
-
-- Channel A2A: 有两者情况， 
-
-一种是发送消息和发送任务，需要在消息文本中增加Marker [A2A:json]，前者的json含peer，后者的json含peer，task。接收方 TUI 显示 A2A(peer)> ，TUI中过滤Marker。让大模型知道是哪个peer发过来的，如果是task，是什么task。
-
-另一个是结果自动推送。自动推送中加入MARKER [A2A-PUSH:json], json与前面一样。接收方逻辑也一样。
-
-- Schedule: 
-
-定时任务触发执行注入 schedule_trigger.j2，没有Marker，TUI 过滤这条user message， assistant message 显示 定时。
-
-定时任务结束的回复，是Subagent的回复, 按照Subagent channel 方式。
-
-7. Design Points  
-
-- A2A over MQTT: 集成a2a-over-mqtt标准库。支持task resquest, task response, message 和 broadcast消息类型，异步通信。
-
-- Timeout，集中配置timeout，分类管理。原则只在阻塞点配置timeout，不配置timeout总量。唯一例外是在AgentLoop的工具执行中，配置了统一的timeout，避免tool 执行阻塞。同时允许agent选择配置工具执行的timeout。规则如下：
-    1、工具执行timeout override 工具自身timeout: 如果agent没有选择配置timemout，则工具执行timeout生效，如果tool本身有timeout参数，则用工具执行timeout值赋值工具自身的timeout参数，使其自洽；否则工具执行timout兜底。
-    2、agent选择配置的timemout override all：agent的timeout替代统一配置的工具执行timeout，并规则1处理后续。
-
-- Async：允许大模型选择工具异步执行。选择了异步，系统先判断用户有没有选择approve，如果有先执行approve会话。 agent设了async，没设timeout， 就异步执行tool，不用看tool有没有timeout参数；如果slife 设了async，并同时设了timout，则看一下tool有没有timout参数，有的话用agent的timeout去赋值，没有话给异步执行加上timeout约束。
-
-- Subagent：我们的设计是deliberately opionated。一个独立进程的headless agent，一个worker，没有人格，既可以空上下文执行，也可以fork agent的上下文，拥有主agent的所有能力。一个task是一个子agent的一个turn，可以同步也可以异步，没有持久化，没有错误处理。所以task的结果推送是harness的，而不是子agent使用工具推送回来。另外， subagent 也执行 _turn_prompt 和 trim， 无用也无害。
-
-8. To do list
-
-8.1 启动时（用户手改了大模型设置）或更换大模型时，上下文窗口可能变大或变小，怎么处理？
-
-8.2 forget 和 recall：目前forget只有两个简单机制，大模型调用的clear context，另一个是harness调用的trim。recall是一个混合检索，以工具结果的形式注入到上下文。是否可以有个工具，在内存中更新自己的上下文，包括系统提示词、消息历史、工具列表。当大模型觉得当前的任务需要重新整理一下上下文？下一个迭代生效。副作用是影响缓存命中。有效可能不经济。排查一下现在的recall工具是否排除当前上下文？
-
-8.3 共享代码库？现在项目里有重复的functions，增大代码量和维护量，是否值得？
-
-8.4 多wechat接入
-
+没有想好一个优雅的设计。
