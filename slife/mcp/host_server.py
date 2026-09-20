@@ -178,26 +178,18 @@ async def _host_catalog_facts(catalog: "ToolCatalogService") -> dict:
         facts["loaded"] = await store.count_loaded()
 
         sem = getattr(catalog, "semantic_manager", None)
-        emb = sem.embedder if sem is not None else None
-        # ``local_drainer`` is the key that matters when this block is read by
-        # a process that holds no manager (a subagent worker): the index is
-        # SHARED and maintained by whichever process owns the drainer, so
-        # configured/available/ready below are THAT process's question, and
-        # "disabled" here means "not this process's", not "broken".  The key is
-        # additive on purpose — this block's shape is a contract for __check
-        # consumers, so nothing here may be dropped.
+        # The state comes from whichever source has it: the manager, when this
+        # process runs the drainer, or the row the owner published into this
+        # db's ``meta`` table (``_set_state`` → ``_publish_state``) when it does
+        # not.  Both carry the SAME shape — ``semantic_facts()`` is the one
+        # builder — so a reader cannot tell the two apart, which is the point:
+        # the index is shared, and its state is the same fact in either process.
         facts["semantic"] = {
-            "local_drainer": sem is not None,
-            "configured": bool(emb is not None and emb.available),
-            "available": bool(emb is not None and emb.available),
-            "semantic_ready": bool(sem is not None and sem.semantic_ready),
-            "state": sem.state if sem is not None else "disabled",
-            "reason": getattr(sem, "reason", None) or "",
-            "model": emb.model if emb is not None else "",
-            "dimension": emb.dimension if emb is not None else 0,
+            **(sem.semantic_facts() if sem is not None
+               else await _published_semantic_facts(store)),
             # The pending count is a DB fact, so it is answerable without a
-            # drainer — and it is the one part of the block a worker reports
-            # truthfully about the shared index.
+            # drainer, and it is never published (a copy would go stale against
+            # the rows it counts).
             "unembedded": (
                 await sem.unembedded() if sem is not None
                 else await store.count_unembedded()
@@ -208,6 +200,28 @@ async def _host_catalog_facts(catalog: "ToolCatalogService") -> dict:
         # report an error field instead of crashing the probe.
         facts["error"] = f"catalog probe failed: {e}"
     return facts
+
+
+async def _published_semantic_facts(store) -> dict:
+    """The shared index's state as published by its drainer (``meta`` row).
+
+    ``state: "unknown"`` when nothing has published one — the producer says so
+    rather than leaving the key out, so the harness never has to guess between
+    "no drainer has run" and "this block predates the vocabulary".
+    """
+    from slife.tools.semantic import SEMANTIC_STATE_KEY
+
+    try:
+        raw = await store.get_meta(SEMANTIC_STATE_KEY)
+    except Exception:
+        return {"state": "unknown"}
+    if not raw:
+        return {"state": "unknown"}
+    try:
+        published = json.loads(raw)
+    except ValueError:
+        return {"state": "unknown"}
+    return published if isinstance(published, dict) else {"state": "unknown"}
 
 
 def _current_exposed(server: FastMCP) -> set[str]:

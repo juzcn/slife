@@ -982,6 +982,42 @@ def test_catalog_semantic_inherits_the_memdb_embed_path():
     assert CatalogSM._embed_doc is MemdbSM._embed_doc
 
 
+@pytest.mark.asyncio
+async def test_catalog_semantic_publishes_its_state_for_other_processes(tmp_path):
+    """The drainer's state is published into the shared db, on every transition.
+
+    The state lives in the main process's manager, but the index it describes
+    (``tool_embeddings``) is shared — a subagent runs no drainer, so the only
+    way its ``system_health`` can report a degraded index is to read the row
+    its owner wrote.  Publishing rides ``_set_state``, which is the only writer
+    of the state, so the row cannot lag the transition it describes.
+    """
+    import json
+
+    from slife.tools.semantic import SEMANTIC_STATE_KEY
+    from slife.tools.semantic import SemanticManager as CatalogSM
+
+    store = CatalogStore(tmp_path / "tools.db")
+    await store.open()
+    try:
+        m = CatalogSM(store)
+        assert await store.get_meta(SEMANTIC_STATE_KEY) is None  # nothing yet
+
+        await m._set_state("stalled", "the embedder gave up this round")
+        published = json.loads(await store.get_meta(SEMANTIC_STATE_KEY))
+        assert published["state"] == "stalled"
+        assert published["reason"] == "the embedder gave up this round"
+        assert published["semantic_ready"] is False
+        assert published["model"] == "" and published["dimension"] == 0
+
+        # One row, rewritten — not one per transition.
+        await m._set_state("ready")
+        published = json.loads(await store.get_meta(SEMANTIC_STATE_KEY))
+        assert published["state"] == "ready" and published["reason"] == ""
+    finally:
+        await store.close()
+
+
 # ── Pragmas / schema version / helper sanity ────────────────────────
 
 @pytest.mark.asyncio

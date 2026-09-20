@@ -56,6 +56,56 @@ def _doc(**kw):
     return t
 
 
+class TestStatePublication:
+    """``_set_state`` is the ONE writer of ``_state``/``_reason``, and every
+    move notifies the publication hook — a subclass that writes the state
+    somewhere else (the catalog publishes it into the shared db) cannot lag
+    the transition it describes."""
+
+    @pytest.mark.asyncio
+    async def test_a_transition_notifies_once_with_the_new_state(self):
+        seen: list[tuple[str, str]] = []
+
+        class _Publishing(SemanticManager):
+            async def _publish_state(self) -> None:
+                seen.append((self._state, self._reason))
+
+        m = _Publishing(AsyncMock())
+        await m._set_state("stalled", "boom")
+
+        assert seen == [("stalled", "boom")]
+        assert m.state == "stalled" and m.reason == "boom"
+
+    @pytest.mark.asyncio
+    async def test_disable_publishes_through_the_public_path(self):
+        seen: list[str] = []
+
+        class _Publishing(SemanticManager):
+            async def _publish_state(self) -> None:
+                seen.append(self._state)
+
+        m = _Publishing(AsyncMock())
+        await m.disable()
+
+        assert seen == ["disabled"]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_publication_cannot_break_the_transition(self):
+        """The state is already moved when the hook runs, so a store that is
+        down must cost the publication, never the transition."""
+        published = []
+
+        class _Broken(SemanticManager):
+            async def _publish_state(self) -> None:
+                published.append(self._state)
+                raise RuntimeError("db down")
+
+        m = _Broken(AsyncMock())
+        await m._set_state("ready")          # must not raise
+
+        assert m.state == "ready" and published == ["ready"]
+
+
 class TestEnable:
     @pytest.mark.asyncio
     async def test_enable_loads_migrates_starts_drainer(self):

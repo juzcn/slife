@@ -191,11 +191,13 @@ class TestBuildRegistryMcp:
         await svc.load_tool("execute_shell")
         payload = _json.loads(await comp.fn())
         assert payload["catalog"]["loaded"] == 1
-        # no embedding endpoint configured → semantic disabled (keyword-only)
+        # Nothing has published a semantic state: this process holds no
+        # drainer, and no other process has announced one.  The block says
+        # exactly that — it does not claim "disabled", which would be a
+        # statement about a drainer nobody has heard from.
         sem = payload["catalog"]["semantic"]
-        assert sem["configured"] is False
-        assert sem["semantic_ready"] is False
-        assert sem["state"] == "disabled"
+        assert sem["state"] == "unknown"
+        assert "configured" not in sem
         await store.close()
 
         # without a catalog, __check keeps the registry-only shape
@@ -204,6 +206,58 @@ class TestBuildRegistryMcp:
                      if isinstance(c, FunctionTool) and c.name == "__check")
         p2 = _json.loads(await comp2.fn())
         assert "exposed_count" in p2 and "catalog" not in p2
+
+    @pytest.mark.asyncio
+    async def test_check_reports_the_published_semantic_state(self, tmp_path):
+        """A process without the drainer reports the state its owner published.
+
+        The tool-catalog index is shared, so its state is written into the same
+        db's ``meta`` table by whoever runs the drainer — a subagent reads that
+        row instead of knowing nothing (which is what made a degraded index
+        read as healthy in a worker while the main agent reported the failure).
+        """
+        import json as _json
+
+        from slife.tools.base import Tool
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+        from slife.tools.semantic import SEMANTIC_STATE_KEY
+
+        class _Shell(Tool):
+            name = "execute_shell"
+            description = "run a shell command"
+            parameters = {"type": "object", "properties": {}, "required": []}
+
+            async def execute(self, **kwargs) -> str:
+                return "ok"
+
+        store = CatalogStore(tmp_path / "tools.db")
+        await store.open()
+        try:
+            svc = ToolCatalogService(store, write_owner=True)
+            await svc.sync_system_tools([_Shell()])
+            await store.set_meta(SEMANTIC_STATE_KEY, _json.dumps({
+                "configured": True, "available": True, "semantic_ready": False,
+                "state": "stalled", "reason": "embedder gave up this round",
+                "model": "BAAI/bge-m3", "dimension": 1024,
+            }))
+
+            reg = _registry()
+            mcp = build_registry_mcp(reg, catalog=svc)
+            comp = next(c for c in mcp.local_provider._components.values()
+                        if isinstance(c, FunctionTool) and c.name == "__check")
+            sem = _json.loads(await comp.fn())["catalog"]["semantic"]
+
+            assert sem["state"] == "stalled"
+            assert sem["reason"] == "embedder gave up this round"
+            assert sem["model"] == "BAAI/bge-m3"
+            assert sem["dimension"] == 1024
+            # The pending count is never published — it is counted here, from
+            # the rows, so a copy in the published row cannot go stale against
+            # them.  One seeded tool row is awaiting its embedding.
+            assert sem["unembedded"] == 1
+        finally:
+            await store.close()
 
     @pytest.mark.asyncio
     async def test_serve_self_heals_on_unexpected_death(self):

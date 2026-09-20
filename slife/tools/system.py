@@ -144,18 +144,18 @@ def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, s
     text baked into the plugin, and keeps to the value/hint rule: a stalled
     index is a fact (it needs no action, it is catching up), a missing or
     broken endpoint is the case that carries a remedy.
+
+    The verdict is the SAME in every process: an index is shared, and its owner
+    publishes the state it holds (the catalog's ``tools.db`` ``meta`` row), so
+    a worker reads the facts the main agent reads.  A worker whose own search
+    is degraded by a stall says so, which is why nothing here branches on
+    which process runs the drainer.
     """
-    if sem.get("local_drainer") is False:
-        # This process holds the shared db but not the drainer, so it cannot
-        # observe "ready" OR "broken" — only how much is pending, which is a
-        # real shared fact.  Reporting the endpoint as unconfigured here was
-        # a false alarm: the same db, read by the process that owns the
-        # drainer, is fine.  A fact, not a problem — so no hint.
-        pending = sem.get("unembedded", 0)
-        value = "maintained by the main process"
-        if pending:
-            value += f" ({pending} {pending_noun} pending)"
-        return ("info", value, "")
+    if sem.get("state") == "unknown":
+        # The producer looked for a published state and found none: no drainer
+        # has ever run for this index.  A fact, not a degradation — and not
+        # "disabled", which would be a claim about a drainer that isn't there.
+        return ("info", "no drainer has published state", "")
     if sem.get("configured") is False:
         return ("warning", "unavailable (no embeddings endpoint configured)",
                 _EMBEDDING_FIX_HINT)
@@ -831,24 +831,62 @@ async def check_media(client=None) -> list[dict]:
     if not data.get("configured"):
         return [_entry("media", "ok", "enabled", "not_configured")]
     providers = data.get("providers") or []
+    calls = data.get("calls") or []
+    by_provider: dict[str, list[dict]] = {}
+    for c in calls:
+        by_provider.setdefault(c.get("provider", "?"), []).append(c)
     all_kinds = sorted({k for p in providers for k in (p.get("kinds") or [])})
     results: list[dict] = [_entry(
         "media", "ok", "enabled",
         f"{len(providers)} provider(s) ({', '.join(all_kinds) or 'no models'})",
     )]
+    # "Key present" is a config fact, never a health verdict: the panel can only
+    # see whether a key EXISTS, and a provider rejects plenty of calls it is
+    # configured for (an unpurchased model answers 403 — invisible to every
+    # config read).  So the config line is emitted only for a provider no call
+    # has exercised; once one has, its recorded outcomes are the facts.
     for p in providers:
         pid = p.get("id", "?")
         caps = ", ".join(p.get("kinds") or []) or "(no models)"
-        if p.get("has_api_key"):
-            results.append(_entry(
-                "media", "ok", pid, f"{caps} ({p.get('api')})",
-            ))
-        else:
+        if not p.get("has_api_key"):
             results.append(_entry(
                 "media", "warning", pid, caps,
                 "No api_key set, so generation calls fail.",
             ))
+        elif not by_provider.get(pid):
+            results.append(_entry(
+                "media", "ok", pid,
+                f"{caps} ({p.get('api')}) — key present, no call made",
+            ))
+    # One line per recorded call outcome, so a working kind can never mask a
+    # failing one (they are separate models behind the same key).
+    for pid, records in by_provider.items():
+        for c in records:
+            label = f"{c.get('kind')}/{c.get('model')}".strip("/")
+            ago = _age(c.get("age_s"))
+            if c.get("ok"):
+                results.append(_entry(
+                    "media", "ok", pid, f"{label} — last call {ago} ago OK",
+                ))
+            else:
+                results.append(_entry(
+                    "media", "warning", pid,
+                    f"{label} — last call {ago} ago failed: {c.get('message')}",
+                ))
     return results
+
+
+def _age(seconds) -> str:
+    """A short human age for a fact's timestamp (``45s`` / ``12m`` / ``3h``)."""
+    try:
+        s = float(seconds or 0)
+    except (TypeError, ValueError):
+        return "?"
+    if s < 60:
+        return f"{s:.0f}s"
+    if s < 3600:
+        return f"{s / 60:.0f}m"
+    return f"{s / 3600:.0f}h"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1277,6 +1315,28 @@ def _section_width(names: list[str]) -> int:
     return min(max((len(n) for n in names), default=0), 15)
 
 
+def _scope_line(groups: dict[str, list[dict]]) -> str:
+    """What this report does NOT cover, when a class of facts is absent.
+
+    The host facts (``_ENV_COMPONENTS``) are *recorded* by the interactive
+    startup — the config path, the active model and the external tool versions
+    are written there as a side effect of probing them.  A headless worker
+    never runs that startup, so it reports fewer components than the main
+    agent for the same healthy system: the counts differ by which process
+    asked, not by what is running.  Naming the gap keeps "14 components" from
+    reading as a smaller system than the parent's 20 — the objection a reader
+    raises five rounds running otherwise.
+
+    Derived from the known component set rather than from a role flag: the
+    report states which facts are missing, and does not need to know why.
+    """
+    missing = [c for c in _ENV_COMPONENTS if c not in groups]
+    if not missing:
+        return ""
+    return (f"Scope: {'/'.join(missing)} are host facts, recorded by the "
+            f"startup that probes them — absent from this process's report.")
+
+
 def _render_report(groups: dict[str, list[dict]]) -> str:
     """Render merged, grouped health entries into the LLM-facing report.
 
@@ -1308,6 +1368,8 @@ def _render_report(groups: dict[str, list[dict]]) -> str:
     oks.sort(key=lambda o: (_order(o[0]), o[0]))
 
     head = [f"system_health: {_verdict(problems, len(oks))}"]
+    if scope := _scope_line(groups):
+        head.append(scope)
     if problems:
         width = _section_width([p[2] for p in problems])
         head += ["", "## Problems"]

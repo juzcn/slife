@@ -198,13 +198,11 @@ class SemanticManager:
             # True behind for on_saved() to wake nothing with.
             self._enabled = False
             self._semantic_ready = False
-            self._state = "loading"
-            self._reason = ""
+            await self._set_state("loading")
 
             embedder = self._new_embedder()
             if not embedder.available:
-                self._state = "disabled"
-                self._reason = self._unavailable_reason(embedder)
+                await self._set_state("disabled", self._unavailable_reason(embedder))
                 return self._status(
                     status="degraded", embedder=embedder,
                     message="Embedding backend unavailable — keyword search still works.",
@@ -212,8 +210,7 @@ class SemanticManager:
 
             self._embedder = embedder
             if not await embedder.load():
-                self._state = "stalled"
-                self._reason = "embedding model failed to load"
+                await self._set_state("stalled", "embedding model failed to load")
                 return self._status(
                     status="degraded", message="Embedding model failed to load.",
                 )
@@ -222,8 +219,7 @@ class SemanticManager:
 
             self._enabled = True
             self._no_progress = 0
-            self._state = "indexing"
-            self._reason = _DRAIN_INDEXING_REASON
+            await self._set_state("indexing", _DRAIN_INDEXING_REASON)
             self._work_event.set()
             self._drain_task = asyncio.create_task(self._drain_loop())
             logger.info(
@@ -243,9 +239,9 @@ class SemanticManager:
             # setting an event nothing awaits.
             self._enabled = False
             self._semantic_ready = False
-            self._state = "disabled"
-            self._reason = (
-                "semantic search disabled — keyword (fts5/grep/time) search still works"
+            await self._set_state(
+                "disabled",
+                "semantic search disabled — keyword (fts5/grep/time) search still works",
             )
             self._embedder = None
             logger.info("semantic_disabled")
@@ -292,6 +288,31 @@ class SemanticManager:
 
     # ── internal ─────────────────────────────────────────────────────
 
+    def semantic_facts(self) -> dict:
+        """The index's state as facts — what this manager's process knows.
+
+        The ONE builder of the block, for both readers of it: a process that
+        runs the drainer reports these live, and the catalog's manager
+        publishes exactly this dict so a process that runs no drainer reads the
+        same thing (``slife/mcp/host_server.py`` builds the health block from
+        either source).
+
+        The pending count is deliberately absent — it is a store fact,
+        answerable by any process holding the db, and duplicating it here would
+        make a published copy go stale against the row it counts.
+        """
+        e = self._embedder
+        available = bool(e is not None and e.available)
+        return {
+            "configured": available,
+            "available": available,
+            "semantic_ready": self._semantic_ready,
+            "state": self._state,
+            "reason": self._reason,
+            "model": e._model if e is not None else "",
+            "dimension": e.dimension if e is not None else 0,
+        }
+
     def _status(self, *, status: str = "ok", message: str = "",
                 embedder: EmbeddingClient | None = None) -> dict:
         e = embedder if embedder is not None else self._embedder
@@ -319,7 +340,34 @@ class SemanticManager:
                 logger.debug("drainer_stop_error err=%s", e)
         self._drain_task = None
 
-    def _enter_stall(self, reason: str) -> None:
+    async def _set_state(self, state: str, reason: str = "") -> None:
+        """Move the state machine — the ONE writer of ``_state``/``_reason``.
+
+        A transition and its announcement are the same event, so they are the
+        same call: whatever a subclass publishes (the catalog's manager writes
+        the shared index's state into ``tools.db``) is written by the call that
+        moved the state, never by a second site that could drift from it.
+
+        The publication is best-effort and awaited rather than fired off: two
+        transitions in a row must land in the order they happened, or a reader
+        could be left holding the older one forever.  A failing store can never
+        reach the state machine — the state is already moved.
+        """
+        self._state = state
+        self._reason = reason
+        try:
+            await self._publish_state()
+        except Exception as e:
+            logger.debug("semantic_publish_failed state=%s err=%s", state, e)
+
+    async def _publish_state(self) -> None:
+        """Announce a transition — a hook for subclasses with somewhere to put it.
+
+        The base class publishes nothing: the state lives with the drainer, and
+        only a SHARED index needs it written where other processes can read it.
+        """
+
+    async def _enter_stall(self, reason: str) -> None:
         """Close the gate and park in ``stalled`` — ALIVE, not finished.
 
         ``_enabled`` deliberately stays True.  It is both what lets
@@ -329,9 +377,8 @@ class SemanticManager:
         content-driven wake a silent no-op — a transient embedder failure then
         disabled semantic search until the next process restart.
         """
-        self._state = "stalled"
         self._semantic_ready = False
-        self._reason = reason
+        await self._set_state("stalled", reason)
 
     async def _park_until_work(self) -> bool:
         """Wait for a wake; True when there is new work worth attempting.
@@ -367,22 +414,20 @@ class SemanticManager:
                 unembedded = await self._store.count_unembedded()
             except Exception as e:
                 logger.warning("drainer_aborted err=%s", e)
-                self._enter_stall(f"semantic index unavailable: {e}")
+                await self._enter_stall(f"semantic index unavailable: {e}")
                 if not await self._park_until_work():
                     return
                 backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
                 continue
             if unembedded == 0:
                 self._semantic_ready = True
-                self._state = "ready"
-                self._reason = ""
+                await self._set_state("ready")
                 if not await self._park_until_work():
                     return
                 backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
                 continue
             self._semantic_ready = False
-            self._state = "indexing"
-            self._reason = _DRAIN_INDEXING_REASON
+            await self._set_state("indexing", _DRAIN_INDEXING_REASON)
             try:
                 result = await self._process_batch()
             except Exception as e:
@@ -401,7 +446,7 @@ class SemanticManager:
                         "(%d attempts); parked until new content arrives",
                         self._no_progress,
                     )
-                    self._enter_stall(_DRAIN_STALLED_REASON)
+                    await self._enter_stall(_DRAIN_STALLED_REASON)
                     if not await self._park_until_work():
                         return
                     backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
@@ -422,7 +467,7 @@ class SemanticManager:
                         result.get("remaining"),
                         await self._stuck_doc_ids(),
                     )
-                    self._enter_stall(_DRAIN_STALLED_REASON)
+                    await self._enter_stall(_DRAIN_STALLED_REASON)
                     if not await self._park_until_work():
                         return
                     backoff = _timeouts.timeouts.ready.watchdog_backoff_initial

@@ -69,11 +69,14 @@ def _write_config(tmp_path, section):
 @pytest.fixture
 def fresh_plugin():
     """Reset plugin module globals around each test."""
-    saved = (plugin._config, dict(plugin._adapters))
+    saved = (plugin._config, dict(plugin._adapters), dict(plugin._LAST_CALL))
     plugin._config = None
     plugin._adapters = {}
+    plugin._LAST_CALL.clear()
     yield plugin
     plugin._config, plugin._adapters = saved[0], saved[1]
+    plugin._LAST_CALL.clear()
+    plugin._LAST_CALL.update(saved[2])
 
 
 def _fake_adapter(**results):
@@ -691,3 +694,92 @@ class TestCheck:
         data = json.loads(out)
         p1 = data["providers"][0]
         assert p1["has_api_key"] is False
+
+
+class TestCallFacts:
+    """The last call outcome per (provider, kind) — the only live evidence a
+    configured key works.  A 403 "model not purchased" is invisible to every
+    config read, so the panel learns it from here or not at all."""
+
+    @staticmethod
+    async def _check():
+        return json.loads(await getattr(plugin, "__check")())
+
+    @pytest.mark.asyncio
+    async def test_a_failed_call_is_reported_with_its_reason(self, fresh_plugin):
+        plugin._config = _full_config()
+        adapter = _fake_adapter()
+        adapter.generate_image = AsyncMock(
+            side_effect=MediaAdapterError("403 - model not purchased",
+                                          status_code=403))
+        plugin._adapters["test"] = adapter
+
+        result = await plugin.generate_image(prompt="x")
+        assert result.startswith("Error: 403")
+
+        with patch.object(plugin, "_ensure_config",
+                          return_value=_full_config()):
+            data = await self._check()
+        assert len(data["calls"]) == 1
+        rec = data["calls"][0]
+        assert rec["provider"] == "test"
+        assert rec["kind"] == "image"
+        assert rec["model"] == "img"
+        assert rec["ok"] is False
+        assert "403" in rec["message"]
+        assert rec["age_s"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_a_later_success_replaces_the_failure(self, fresh_plugin):
+        """"Last call" is the fact — a fixed key must not warn forever."""
+        plugin._config = _full_config()
+        adapter = _fake_adapter()
+        adapter.generate_image = AsyncMock(
+            side_effect=MediaAdapterError("403 - model not purchased",
+                                          status_code=403))
+        plugin._adapters["test"] = adapter
+        await plugin.generate_image(prompt="x")
+
+        adapter.generate_image = AsyncMock(return_value="/tmp/img.png")
+        await plugin.generate_image(prompt="x")
+
+        with patch.object(plugin, "_ensure_config",
+                          return_value=_full_config()):
+            data = await self._check()
+        assert len(data["calls"]) == 1
+        assert data["calls"][0]["ok"] is True
+        assert data["calls"][0]["message"] == ""
+
+    @pytest.mark.asyncio
+    async def test_kinds_are_separate_facts(self, fresh_plugin):
+        """One key, two models: an unpurchased image model says nothing about
+        whether TTS works."""
+        plugin._config = _full_config()
+        adapter = _fake_adapter()
+        adapter.generate_image = AsyncMock(
+            side_effect=MediaAdapterError("403 - model not purchased",
+                                          status_code=403))
+        plugin._adapters["test"] = adapter
+        await plugin.generate_image(prompt="x")
+        await plugin.text_to_speech(text="hi")
+
+        with patch.object(plugin, "_ensure_config",
+                          return_value=_full_config()):
+            data = await self._check()
+        facts = {c["kind"]: c["ok"] for c in data["calls"]}
+        assert facts == {"image": False, "tts": True}
+
+    @pytest.mark.asyncio
+    async def test_a_call_with_no_resolved_provider_records_nothing(
+        self, fresh_plugin,
+    ):
+        """An unresolvable config is its own fact (``error``/``configured``) —
+        there is no provider to attribute it to."""
+        plugin._config = _full_config()
+        result = await plugin.generate_image(prompt="x", model="test/nope")
+        assert result.startswith("Error: Unknown model")
+
+        with patch.object(plugin, "_ensure_config",
+                          return_value=_full_config()):
+            data = await self._check()
+        assert data["calls"] == []

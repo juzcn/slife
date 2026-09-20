@@ -1562,7 +1562,65 @@ class TestCheckMedia:
             assert "enabled" in keys and "p1" in keys
             p1 = next(e for e in result if e["key"] == "p1")
             assert p1["level"] == "ok"
-            assert p1["value"] == "image (openai-images)"
+            # A key's presence is reported as exactly that — the panel has not
+            # seen a call, and does not claim the provider works.
+            assert p1["value"] == "image (openai-images) — key present, no call made"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_call_is_a_warning(self):
+        """The 403 the config can never see: an unpurchased model answers a
+        real call with an error, and that is the fact the panel reports."""
+        with patch(
+            "slife.plugins.media.config.load_media_config",
+            return_value=MagicMock(is_empty=MagicMock(return_value=False)),
+        ):
+            payload = {
+                "configured": True, "error": "",
+                "providers": [{"id": "p1", "api": "dashscope-aigc",
+                               "kinds": ["image"], "has_api_key": True}],
+                "calls": [{"provider": "p1", "kind": "image", "model": "wanx-v1",
+                           "ok": False, "age_s": 90.0,
+                           "message": "403 - model not purchased"}],
+            }
+            client = MagicMock()
+            client.call_tool = AsyncMock(return_value=json.dumps(payload))
+            result = await check_media(client=client)
+
+            failed = next(e for e in result if "403" in e["value"])
+            assert failed["level"] == "warning"
+            assert failed["key"] == "p1"
+            assert "image/wanx-v1" in failed["value"]
+            assert "2m ago" in failed["value"]
+            # The config line yields to the call outcome: "key present" would
+            # sit next to a failure saying the opposite.
+            assert not any("no call made" in e["value"] for e in result)
+
+    @pytest.mark.asyncio
+    async def test_a_working_kind_does_not_mask_a_failing_one(self):
+        """Two models behind one key are two facts — the report keeps both."""
+        with patch(
+            "slife.plugins.media.config.load_media_config",
+            return_value=MagicMock(is_empty=MagicMock(return_value=False)),
+        ):
+            payload = {
+                "configured": True, "error": "",
+                "providers": [{"id": "p1", "api": "dashscope-aigc",
+                               "kinds": ["image", "tts"], "has_api_key": True}],
+                "calls": [
+                    {"provider": "p1", "kind": "image", "model": "wanx-v1",
+                     "ok": False, "age_s": 30.0, "message": "403 not purchased"},
+                    {"provider": "p1", "kind": "tts", "model": "cosyvoice",
+                     "ok": True, "age_s": 30.0, "message": ""},
+                ],
+            }
+            client = MagicMock()
+            client.call_tool = AsyncMock(return_value=json.dumps(payload))
+            result = await check_media(client=client)
+
+            assert any(e["level"] == "warning" and "image/wanx-v1" in e["value"]
+                       for e in result)
+            assert any(e["level"] == "ok" and "tts/cosyvoice" in e["value"]
+                       and "OK" in e["value"] for e in result)
 
     @pytest.mark.asyncio
     async def test_provider_without_a_key_warns_with_the_remedy(self):
@@ -1906,6 +1964,30 @@ class TestInactiveCloudProviderIsLeftAlone:
 class TestSemanticFacts:
     """``_semantic_facts`` renders all three semantic indexes (memdb,
     memfiles, tool_catalog) — one place, so one rule."""
+
+    def test_a_published_state_is_judged_like_a_local_one(self):
+        """A worker's verdict on the shared index is the owner's verdict.
+
+        The state is published by whoever runs the drainer, so a process
+        without one reads the same facts — a stall degrades the worker's own
+        search too, and reporting it as merely "maintained by the main
+        process" was the one place a child read healthier than reality.
+        """
+        level, value, hint = _semantic_facts({
+            "configured": True, "available": True, "semantic_ready": False,
+            "state": "stalled", "reason": "embedder failed repeatedly",
+            "model": "BAAI/bge-m3", "dimension": 1024, "unembedded": 7,
+        })
+        assert level == "warning"
+        assert value.startswith("stalled (7 items pending")
+        assert hint == ""
+
+    def test_nothing_published_is_a_fact_not_a_state(self):
+        """No drainer here AND none anywhere: the producer says "unknown" so
+        the report never claims "disabled" about a drainer that isn't there."""
+        level, value, hint = _semantic_facts({"state": "unknown"})
+        assert (level, hint) == ("info", "")
+        assert value == "no drainer has published state"
 
     def test_a_measured_width_is_reported(self):
         assert _semantic_facts(

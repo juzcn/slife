@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import time as _time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -137,6 +138,54 @@ def _error(e: Exception) -> str:
     return f"Error: {e}"
 
 
+#: The last call outcome per ``(provider, kind)`` — the plugin's only live
+#: evidence about whether a configured provider actually works.  The config can
+#: say a key is present; only a call says whether the account behind it may use
+#: that model (a 403 "model not purchased" is invisible to every config read).
+#: One slot per (provider, kind), overwritten by the next call of the same
+#: kind, so a record always means "the last attempt", never a permanent stain.
+_LAST_CALL: dict[tuple[str, str], dict] = {}
+
+#: Provider messages can be pages of JSON; the health report is line-oriented.
+_FAILURE_MESSAGE_CHARS = 240
+
+
+def _record_call(
+    pid: str, kind: str, model: str, e: Exception | None = None,
+) -> None:
+    """Record one call's outcome for ``(pid, kind)``.
+
+    ``e`` is the failure; ``None`` records a success.  A call whose provider
+    never resolved (no ``media:`` section, an unresolvable model) records
+    nothing — there is no key to attribute it to, and ``__check`` already
+    reports the config error as its own fact.
+    """
+    if not pid:
+        return
+    _LAST_CALL[(pid, kind)] = {
+        "provider": pid,
+        "kind": kind,
+        "model": model,
+        "at": _time.monotonic(),
+        "message": (str(e)[:_FAILURE_MESSAGE_CHARS] if e is not None else ""),
+    }
+
+
+def _call_facts() -> list[dict]:
+    """The recorded call outcomes as age-stamped facts (oldest first)."""
+    return [
+        {
+            "provider": rec["provider"],
+            "kind": rec["kind"],
+            "model": rec["model"],
+            "ok": not rec["message"],
+            "age_s": round(_time.monotonic() - rec["at"], 1),
+            "message": rec["message"],
+        }
+        for _key, rec in sorted(_LAST_CALL.items())
+    ]
+
+
 #: Bailian (DashScope AIGC) image generation total-pixel bounds.
 #: The API rejects sizes whose W*H total pixels fall outside
 #: [589824, 16777216] (~768x768 .. 4096x4096).
@@ -208,6 +257,7 @@ async def generate_image(
         image: Reference image: http(s) URL, data URI, or local path.
         folder: Output folder (default: working dir).
     """
+    pid, model_label = "", ""
     try:
         cfg = _ensure_config()
         if cfg.is_empty():
@@ -219,6 +269,7 @@ async def generate_image(
         if size_err:
             return size_err
         pid, pcfg, entry = cfg.resolve_model("image", model or None)
+        model_label = entry.model
         adapter = _get_adapter(pid, pcfg)
         result = await adapter.generate_image(
             model=entry.model,
@@ -228,14 +279,15 @@ async def generate_image(
             outputs_dir=_resolve_output_dir(folder),
             extra_params=entry.params,
         )
+        _record_call(pid, "image", entry.model)
         logger.info("media_image_generated provider=%s model=%s path=%s",
                     pid, entry.model, result)
         return result
-    except (MediaConfigError, MediaAdapterError, FileNotFoundError,
-            NotImplementedError) as e:
-        return _error(e)
     except Exception as e:
-        logger.exception("generate_image_failed")
+        _record_call(pid, "image", model_label or model, e)
+        if not isinstance(e, (MediaConfigError, MediaAdapterError,
+                              FileNotFoundError, NotImplementedError)):
+            logger.exception("generate_image_failed")
         return _error(e)
 
 
@@ -263,6 +315,7 @@ async def generate_video(
         folder: Output folder (default: working dir).
         timeout: generation poll deadline in seconds; omit for the registry default (transport.media_deadline)
     """
+    pid, model_label = "", ""
     try:
         cfg = _ensure_config()
         if cfg.is_empty():
@@ -271,6 +324,7 @@ async def generate_video(
                 "section to slife.yaml."
             )
         pid, pcfg, entry = cfg.resolve_model("video", model or None)
+        model_label = entry.model
         adapter = _get_adapter(pid, pcfg)
         params = dict(entry.params)
         if resolution:
@@ -288,14 +342,15 @@ async def generate_video(
             extra_params=params,
             deadline_s=deadline_s,
         )
+        _record_call(pid, "video", entry.model)
         logger.info("media_video_generated provider=%s model=%s path=%s",
                     pid, entry.model, result)
         return result
-    except (MediaConfigError, MediaAdapterError, FileNotFoundError,
-            NotImplementedError) as e:
-        return _error(e)
     except Exception as e:
-        logger.exception("generate_video_failed")
+        _record_call(pid, "video", model_label or model, e)
+        if not isinstance(e, (MediaConfigError, MediaAdapterError,
+                              FileNotFoundError, NotImplementedError)):
+            logger.exception("generate_video_failed")
         return _error(e)
 
 
@@ -316,6 +371,7 @@ async def text_to_speech(
         voice: Voice identifier (e.g. 'longxiaochun'); omit for model default.
         folder: Output folder (default: working dir).
     """
+    pid, model_label = "", ""
     try:
         cfg = _ensure_config()
         if cfg.is_empty():
@@ -324,6 +380,7 @@ async def text_to_speech(
                 "section to slife.yaml."
             )
         pid, pcfg, entry = cfg.resolve_model("tts", model or None)
+        model_label = entry.model
         adapter = _get_adapter(pid, pcfg)
         result = await adapter.text_to_speech(
             model=entry.model,
@@ -332,14 +389,15 @@ async def text_to_speech(
             outputs_dir=_resolve_output_dir(folder),
             extra_params=entry.params,
         )
+        _record_call(pid, "tts", entry.model)
         logger.info("media_tts_synthesized provider=%s model=%s path=%s",
                     pid, entry.model, result)
         return result
-    except (MediaConfigError, MediaAdapterError, FileNotFoundError,
-            NotImplementedError) as e:
-        return _error(e)
     except Exception as e:
-        logger.exception("text_to_speech_failed")
+        _record_call(pid, "tts", model_label or model, e)
+        if not isinstance(e, (MediaConfigError, MediaAdapterError,
+                              FileNotFoundError, NotImplementedError)):
+            logger.exception("text_to_speech_failed")
         return _error(e)
 
 
@@ -356,6 +414,7 @@ async def transcribe_audio(path: str, model: str = "") -> str:
         path: Absolute local path to the audio file to transcribe.
         model: Model ref ('provider/model' or bare name); omit for asr default.
     """
+    pid, model_label = "", ""
     try:
         cfg = _ensure_config()
         if cfg.is_empty():
@@ -364,6 +423,7 @@ async def transcribe_audio(path: str, model: str = "") -> str:
                 "section to slife.yaml."
             )
         pid, pcfg, entry = cfg.resolve_model("asr", model or None)
+        model_label = entry.model
         adapter = _get_adapter(pid, pcfg)
         audio_path = None
         if path:
@@ -379,14 +439,15 @@ async def transcribe_audio(path: str, model: str = "") -> str:
             audio_path=audio_path,
             extra_params=entry.params,
         )
+        _record_call(pid, "asr", entry.model)
         logger.info("media_audio_transcribed provider=%s model=%s chars=%d",
                     pid, entry.model, len(result))
         return result
-    except (MediaConfigError, MediaAdapterError, FileNotFoundError,
-            NotImplementedError) as e:
-        return _error(e)
     except Exception as e:
-        logger.exception("transcribe_audio_failed")
+        _record_call(pid, "asr", model_label or model, e)
+        if not isinstance(e, (MediaConfigError, MediaAdapterError,
+                              FileNotFoundError, NotImplementedError)):
+            logger.exception("transcribe_audio_failed")
         return _error(e)
 
 
@@ -394,19 +455,24 @@ async def transcribe_audio(path: str, model: str = "") -> str:
     name="__check",
     description=(
         "Media (image/video/TTS/ASR) live config facts: configured, each "
-        "provider's api/capabilities/api_key presence. Internal — probed by "
-        "the harness's system_health, never exposed to the LLM."
+        "provider's api/capabilities/api_key presence, and the last call "
+        "outcome per provider. Internal — probed by the harness's "
+        "system_health, never exposed to the LLM."
     ),
 )
 async def __check() -> str:
     """Return raw media facts for the harness's health check.
 
-    Media is configuration-only: its live technical state is the loaded
-    provider config (capabilities + key presence).  Internal (``__`` prefix):
-    probed by the harness's ``system_health``, which interprets the facts
-    into health entries.  Facts only — no levels, no remediation hints.
+    Media's live technical state is the loaded provider config (capabilities +
+    key presence) **plus the outcome of the last call per provider** — a key
+    being present says nothing about whether the account behind it may use the
+    model, and only a call finds that out.  Internal (``__`` prefix): probed by
+    the harness's ``system_health``, which interprets the facts into health
+    entries.  Facts only — no levels, no remediation hints.
     """
-    result: dict = {"configured": False, "error": "", "providers": []}
+    result: dict = {
+        "configured": False, "error": "", "providers": [], "calls": [],
+    }
     try:
         cfg = _ensure_config()
         if cfg.is_empty():
@@ -420,6 +486,7 @@ async def __check() -> str:
                 "kinds": sorted({m.kind for m in p.models}),
                 "has_api_key": bool(p.api_key),
             })
+        result["calls"] = _call_facts()
     except Exception as e:
         logger.warning("media_check_failed err=%s", e)
         result["error"] = str(e)

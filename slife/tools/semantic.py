@@ -16,6 +16,7 @@ formerly lived in the mcp plugin — moved here verbatim (httpx2).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import httpx2
@@ -31,6 +32,12 @@ from slife.plugins.memdb.semantic import SemanticManager as _BaseSemanticManager
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
+
+#: The ``meta`` key the drainer publishes its state under.  The tool-catalog
+#: index is SHARED (its vectors live in this same db), so its state has to be
+#: readable by a process that runs no drainer — a subagent worker's
+#: ``system_health`` asks the db, not a manager object it does not have.
+SEMANTIC_STATE_KEY = "semantic_state"
 
 
 class EmbeddingClient:
@@ -331,6 +338,25 @@ class SemanticManager(_BaseSemanticManager):
         super().__init__(store, config_path=config_path)
 
     # ── hook overrides ──────────────────────────────────────────────
+
+    async def _publish_state(self) -> None:
+        """Publish the shared index's state into the catalog's ``meta`` table.
+
+        The state lives in THIS process's manager, but the index it describes
+        (``tool_embeddings``, in this same db) is read by every process.  A
+        subagent runs no drainer, so before this it could report nothing but
+        the pending count — a degraded index read as "maintained by the main
+        process" in a worker while the main agent reported the real failure.
+
+        One row, rewritten by every transition (``_set_state`` is the only
+        writer of the state, so it is also the only publisher).  A reader that
+        finds no row is a reader in a process where no drainer has ever run —
+        which is a fact of its own, not a state to guess at.
+        """
+        await self._store.set_meta(
+            SEMANTIC_STATE_KEY,
+            json.dumps(self.semantic_facts(), ensure_ascii=False),
+        )
 
     def _new_embedder(self):
         from slife.plugins.memdb.embedding_config import get_active_endpoint
