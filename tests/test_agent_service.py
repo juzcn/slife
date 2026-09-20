@@ -149,8 +149,10 @@ class TestAgentServiceMCPEnrichment:
         """_sync_mcp_proxies registers proxies for EVERY enabled server.
 
         ``auto_load`` is not a registration gate: it decides what the catalog
-        seeds as loaded, not whether an execution instance exists.  A disabled
-        server is mirrored instead — rows, no proxies.
+        seeds as loaded, not whether an execution instance exists.  A DISABLED
+        server is not touched at all: mirroring it means reading its tool list,
+        and reading is connecting (``enabled: false`` = "stays configured but
+        is not connected").
         """
         service = AgentService(sample_config)
         client = AsyncMock()
@@ -165,16 +167,20 @@ class TestAgentServiceMCPEnrichment:
 
         with patch.object(
             service, "_discover_and_register_external_tools", AsyncMock(),
-        ) as mock_reg, patch.object(
-            service, "_mirror_disabled_server_tools", AsyncMock(),
-        ) as mock_mirror:
+        ) as mock_reg:
             await service._sync_mcp_proxies()
 
         client.call_tool.assert_any_await("__mcp_list")
         assert {c.kwargs["server_name"] for c in mock_reg.await_args_list} == {
             "autol", "ondemand",   # auto_load no longer decides
         }
-        mock_mirror.assert_awaited_once_with("disabled")
+        # Nothing asked for the disabled server's tool list — asking is what
+        # would spawn it.
+        assert not any(
+            c.args and c.args[0] == "__mcp_list_tools"
+            and c.args[1].get("server") == "disabled"
+            for c in client.call_tool.await_args_list
+        )
 
     @staticmethod
     def _fake_gateway(tools_server: str, *, enabled: bool = True,
@@ -516,13 +522,46 @@ class TestAgentServiceMCPEnrichment:
             await store.close()
 
     @pytest.mark.asyncio
-    async def test_sync_proxies_mirrors_disabled_server_rows_only(
+    async def test_sync_proxies_never_asks_a_disabled_server(self, sample_config):
+        """Nothing reads a disabled server's tool list — reading is connecting.
+
+        The rows-only mirror of a disabled server (a882ed8) spawns every
+        switched-off server at boot just to fill a catalog from it.
+        """
+        service = AgentService(sample_config)
+        asked: list[tuple] = []
+
+        async def fake_call_tool(name, arguments=None):
+            asked.append((name, (arguments or {}).get("server")))
+            if name == "__mcp_list":
+                return _json.dumps([
+                    {"name": "live", "enabled": True},
+                    {"name": "off", "enabled": False},
+                ])
+            if name == "__check":
+                return _json.dumps({"servers": [], "spawn_settled": True})
+            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+        client = AsyncMock()
+        client.is_connected = True
+        client.call_tool = AsyncMock(side_effect=fake_call_tool)
+        service._plugins["mcp-gateway"].client = client
+
+        with patch.object(
+            service, "_discover_and_register_external_tools", AsyncMock(),
+        ):
+            await service._sync_mcp_proxies()
+
+        assert ("__mcp_list", None) in asked       # the pass did run
+        assert ("__mcp_list_tools", "off") not in asked
+
+    @pytest.mark.asyncio
+    async def test_sync_proxies_leaves_a_disabled_server_alone(
         self, sample_config, tmp_path,
     ):
-        """A DISABLED server keeps its rows (disable-keeps-rows, so
-        tool_search still finds it and re-enabling needs no re-discovery) but
-        registers no proxies — a switched-off server's tools must not be
-        executable."""
+        """A disabled server is not mirrored, so a fresh catalog has no rows
+        for it — the rows a *previously enabled* one keeps are the catalog's,
+        not the reconcile's (see the test below)."""
         service, store = await self._sync_with_catalog(
             sample_config, tmp_path, "off", enabled=False,
         )
@@ -530,9 +569,43 @@ class TestAgentServiceMCPEnrichment:
             assert "off__search" not in {
                 t.name for t in service.tool_registry.list_tools()
             }
+            assert await store.get_tool("off__search") is None
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_sync_proxies_keeps_the_rows_of_a_server_just_disabled(
+        self, sample_config, tmp_path,
+    ):
+        """Disabling a server keeps the rows it mirrored while enabled.
+
+        They are the model's map of the server (``tool_search`` still finds
+        them, reporting ``disabled``); only the execution route and the process
+        go away.  Nothing re-reads the server to keep that true.
+        """
+        service, store = await self._sync_with_catalog(
+            sample_config, tmp_path, "off", enabled=True,
+        )
+        try:
+            assert await store.get_tool("off__search") is not None
+            # The config switches it off; the next reconcile must leave the row
+            # alone.  The helper's patches are re-applied because this pass
+            # purges the sources tools.yaml does not name.
+            service._plugins["mcp-gateway"].client = self._fake_gateway(
+                "off", enabled=False,
+            )
+            with patch(
+                "slife.plugins.mcp_gateway.config.servers",
+                return_value={"off": {}},
+            ), patch.object(
+                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            ):
+                await service._sync_mcp_proxies()
+
             row = await store.get_tool("off__search")
             assert row is not None
             assert row["category"] == "mcp"
+            assert await store.get_effective("off__search") == "disabled"
         finally:
             await store.close()
 

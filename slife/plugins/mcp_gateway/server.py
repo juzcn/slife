@@ -298,6 +298,22 @@ def _family_refusal(name: str, category: str, twin: str) -> str | None:
     return None
 
 
+def _disabled_refusal(server: str) -> str:
+    """The one sentence refusing a switched-off server's surface.
+
+    ``enabled: false`` means "stays configured but is not connected"
+    (tools.yaml), and the tool that connects it again belongs to its own
+    family — a REST API's caller is not sent to ``mcp_set_enabled``.  Both
+    refusals (``__mcp_list_tools`` and ``__mcp_call_tool``) say this, so a
+    switched-off server reads the same however it is approached.
+    """
+    enable_tool = (
+        "rest_api_set_enabled" if plugin_config.is_rest_api(server)
+        else "mcp_set_enabled"
+    )
+    return f"Server '{server}' is disabled — enable it with {enable_tool}."
+
+
 async def _set_server(
     name: str,
     command: str,
@@ -775,6 +791,13 @@ async def __mcp_list_tools(
                 "the configured servers."
             ),
         )
+    # A switched-off server is never read, because reading IS connecting
+    # (``refresh_tools`` → ``ensure_session``).  The gate sits ahead of the
+    # first read so no caller can spawn one by asking — the host's reconcile
+    # included, which is what used to bring every disabled server up just to
+    # mirror its rows.
+    if not conn.config.enabled:
+        return error_json(_disabled_refusal(server), server=server)
     if not conn.has_tools():
         await conn.refresh_tools()
     if not conn.has_tools():
@@ -883,8 +906,7 @@ async def __mcp_call_tool(
     conn = _pool.get_server(server)
     if conn is not None and not conn.config.enabled:
         return error_json(
-            f"Server '{server}' is disabled — enable it with mcp_set_enabled.",
-            server=server, tool=tool_name,
+            _disabled_refusal(server), server=server, tool=tool_name,
         )
 
     result = await _pool.call_tool(server, tool_name, args_dict)

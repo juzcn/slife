@@ -324,6 +324,26 @@ class TestConnectionPoolAddServerGate:
         mock_refresh.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_disabled_server_is_never_read(self):
+        """``refresh_tools`` refuses a switched-off server outright.
+
+        The read IS the connect, so this is the operation that used to bring
+        every disabled server up — the host's reconcile asked for its tool list
+        to fill the catalog.  The rule is the one ``call_tool`` already
+        enforced; the read was the gate that was missing.
+        """
+        conn = MCPServerConnection(
+            ServerConfig(name="off", command="npx", enabled=False),
+        )
+        with patch.object(
+            conn, "ensure_session", new=AsyncMock(),
+        ) as mock_session:
+            assert await conn.refresh_tools() is False
+
+        mock_session.assert_not_awaited()      # no transport was established
+        assert "disabled" in (conn.error or "")
+
+    @pytest.mark.asyncio
     async def test_enabled_server_is_read(self):
         pool = ConnectionPool()
         with patch(

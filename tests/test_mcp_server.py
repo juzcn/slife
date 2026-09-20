@@ -442,7 +442,7 @@ class TestMCPListToolsSingleRead:
 
     @staticmethod
     async def _list(srv, *, connected=True, live=None, live_raise="", autoload=False,
-                    limit=0, tool="mcp_list_tools"):
+                    limit=0, tool="mcp_list_tools", enabled=True):
         """Call a listing tool with a patched pool (no real catalog store).
 
         ``connected`` here means "a tool list is held"; with none, the tool
@@ -454,7 +454,9 @@ class TestMCPListToolsSingleRead:
         import json as _json
 
         conn = MagicMock()
-        conn.config = ServerConfig(name="fs", command="x", auto_load=autoload)
+        conn.config = ServerConfig(
+            name="fs", command="x", auto_load=autoload, enabled=enabled,
+        )
         conn.has_tools = MagicMock(return_value=connected)
         conn.refresh_tools = AsyncMock(return_value=connected)
         conn.error = None if connected else "connect failed"
@@ -538,6 +540,37 @@ class TestMCPListToolsSingleRead:
         assert len(out["tools"]) == gateway_config.DEFAULT_TOOL_LIST_LIMIT
         assert gateway_config.tool_list_limit() == gateway_config.DEFAULT_TOOL_LIST_LIMIT
         assert out["truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_server_is_refused_without_being_read(
+        self, restore_root_logger,
+    ):
+        """Reading IS connecting, so a switched-off server is never read.
+
+        ``enabled: false`` means "stays configured but is not connected"; a
+        listing — the host's reconcile included — must not be the thing that
+        brings it up.
+        """
+        import contextlib
+
+        srv = _import_mcp_server()
+        conn = MagicMock()
+        conn.config = ServerConfig(name="fs", command="x", enabled=False)
+        conn.has_tools = MagicMock(return_value=False)
+        conn.refresh_tools = AsyncMock(return_value=False)
+        pool = MagicMock()
+        pool.get_server.return_value = conn
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(srv, "_pool", pool))
+            # getattr: a dunder name inside a class body would be mangled.
+            raw = await getattr(srv, "__mcp_list_tools")(server="fs")
+
+        out = json.loads(raw)
+        assert out["status"] == "error"
+        assert "is disabled" in out["error"]
+        assert "mcp_set_enabled" in out["error"]
+        conn.refresh_tools.assert_not_awaited()   # the spawn never happened
 
     @pytest.mark.asyncio
     async def test_the_internal_twin_is_uncapped(self, restore_root_logger):

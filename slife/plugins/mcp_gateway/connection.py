@@ -781,6 +781,14 @@ class MCPServerConnection:
         snapshot without a request; ``force`` overrides that for the callers
         that know better (a rebuild, a repair pass).
         """
+        if not self.config.enabled:
+            # The rule ``call_tool`` already enforces, and the only operation
+            # that was missing it: a switched-off server has no transport.
+            # READING IS CONNECTING, so the read is where a switched-off server
+            # used to come up anyway — one ``mcp_list_tools`` (or the host's
+            # reconcile asking on the model's behalf) was enough to spawn it.
+            self._record_error(ValueError(f"Server '{self.config.name}' is disabled"))
+            return False
         if not force and not self._needs_fetch():
             return self.tools_ok
 

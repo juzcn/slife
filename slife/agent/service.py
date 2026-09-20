@@ -1286,13 +1286,14 @@ class AgentService:
            tool rows mirrored — ``_discover_and_register_external_tools``.
            ``auto_load`` does not enter here: it decides which tools the catalog
            seeds as *loaded* (and so what the turn snapshot injects), not which
-           ones can execute.
-        2b. **disabled servers**: their tool rows are mirrored so
-           ``tool_search`` still finds them and re-enabling needs no
-           re-discovery — ``_mirror_disabled_server_tools``, and no proxies.
+           ones can execute.  A **disabled** server is not mirrored at all: its
+           rows persist from when it was enabled (the switch, projected onto
+           them by step 1, is what reports them ``disabled``), and mirroring it
+           would mean reading its tool list — which IS connecting it.
         3. A proxy whose server left the CONFIG is unregistered; a merely
            disconnected/disabled server keeps its proxies — its rows carry the
-           ``error`` mark, which is what keeps them out of injection.
+           ``error``/``disabled`` mark, which is what keeps them out of
+           injection.
         3b. **Rows of a server that left tools.yaml are purged** (the §8.5
            "remove 清理干净" contract), compared against the config rather than
            the pool so a gateway restart never wipes a configured server.
@@ -1370,9 +1371,12 @@ class AgentService:
             # on-demand server's proxies does not inject them: injection is the
             # snapshot's job, and it is driven by ``load_status`` alone.
             #
-            # A disabled server still gets its rows mirrored (the "disable keeps
-            # rows" contract, so ``tool_search`` and re-enabling both work) but
-            # no proxies — a switched-off server's tools must not be executable.
+            # A disabled server is NOT mirrored: ``enabled: false`` means
+            # "stays configured but is not connected" (tools.yaml), and asking
+            # for its tool list is what connects it.  Its rows persist from
+            # whenever it was last enabled — step 1's switch projection puts
+            # ``disabled`` on them — so ``mcp_set_enabled`` still restores a
+            # catalog it can inject from, without the process ever running.
             #
             # CONCURRENTLY: each of these awaits a ``__mcp_list_tools``, i.e.
             # a real ``tools/list`` on the far side — and, for a peer the pool
@@ -1386,19 +1390,14 @@ class AgentService:
                 except Exception:
                     logger.debug("%s server=%s", tag, name, exc_info=True)
 
-            enabled_configured = {
-                n for n in configured if enabled_servers.get(n, True)
-            }
+            enabled_configured = [
+                n for n in sorted(configured) if enabled_servers.get(n, True)
+            ]
             await asyncio.gather(
                 *(
                     _mirror(n, self._discover_and_register_external_tools(server_name=n),
                             "mcp_sync_failed")
-                    for n in sorted(enabled_configured)
-                ),
-                *(
-                    _mirror(n, self._mirror_disabled_server_tools(n),
-                            "mcp_disabled_sync_failed")
-                    for n in sorted(configured - enabled_configured)
+                    for n in enabled_configured
                 ),
             )
 
@@ -1685,45 +1684,6 @@ class AgentService:
         await catalog.mirror_external_tools(
             server_name, tools, category=category, enabled=server_enabled,
         )
-
-    async def _mirror_disabled_server_tools(self, server_name: str) -> None:
-        """Upsert a DISABLED server's tool rows into the shared catalog.
-
-        Rows only — no proxies.  A switched-off server keeps its rows (the
-        "disable keeps rows" contract: ``tool_search`` still finds them and
-        flipping it back on needs no re-discovery), and its ``status =
-        disabled`` is what holds them out of the injection set.  No proxy is
-        registered because a disabled server's tools must not be executable —
-        the catalog's ``disabled`` verdict would refuse the call anyway, and an
-        instance that can never run is not worth holding.
-
-        Only a server with a working tool list yields rows (``__mcp_list_tools``
-        answers ``tools=[]`` otherwise); a disconnected server's existing rows
-        stay and are kept out of injection by its ``error`` mark (written by
-        :meth:`_mark_server_connectivity`).
-        """
-        if self.is_subagent or self._catalog is None:
-            return
-        lc = self._gateway_lifecycle()
-        client = lc.client if lc is not None else None
-        if client is None or not client.is_connected:
-            return
-        tools_json = await client.call_tool(
-            # __mcp_list_tools, not mcp_list_tools: this writes a catalog row
-            # per tool, so the context-protecting cap must not apply.
-            "__mcp_list_tools", {"server": server_name}
-        )
-        tools_data = json.loads(tools_json)
-        external = (
-            tools_data.get("tools", []) if isinstance(tools_data, dict) else []
-        )
-        if not external:
-            return
-        await self._upsert_external_catalog_rows(
-            server_name, external, category=_server_category(server_name),
-        )
-        if self._catalog_semantic is not None:
-            self._catalog_semantic.on_saved()
 
     async def _register_external_server_tools(self, name: str = "", **kwargs) -> None:
         """mcp_set / mcp_set_enabled connected a server — reconcile proxies.
