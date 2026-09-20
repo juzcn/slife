@@ -213,6 +213,26 @@ reports `state: "unknown"` (no drainer has published) — a fact, where
 is deliberately **not** published: whoever needs it counts the rows, so a copy
 here could not go stale against them.
 
+**Who owns the index, and who may query it.**  These are two grants, not one,
+and conflating them is what made every subagent's `tool_search` keyword-only:
+a worker owns no drainer, so it was given no semantic surface at all, while the
+index it needed was sitting in the database its parent was maintaining.
+
+| grant | main agent | worker |
+|---|---|---|
+| maintain the rows (`catalog_owner`) — seed, mirror, reconcile, purge, evict | yes | no — never writes the shared file |
+| maintain the vectors (`catalog_drainer`) — the drainer | yes | no |
+| **query** the index (`ToolCatalogService.semantic_query`) | its own manager | a `SemanticReader` over the same rows |
+
+Both surfaces answer the same three calls (`query_ready` / `reason` /
+`embed_query`), so `tool_search` does not branch on which role it is in — and a
+worker's answer comes from the index's *published* facts rather than from a
+guess: it refuses while the index is still filling, and it refuses when the
+published model is not the one this process would embed with (a different vector
+space can have the same width and every similarity would still be meaningless).
+Both grants live in `slife/agent/roles.py`.
+
+
 ### Effective status
 
 A tool's *effective* status is derived from its own row — there is nothing to
@@ -440,7 +460,7 @@ When the wrapper child dies, `on_plugin_child_exit` marks **every `mcp`/`rest-ap
 
 ## 7 · Consistency & concurrency
 
-- **One source of truth.** The catalog db is the single registry; the agent and every subagent maintain no second in-memory copy (subagents read the same file, write-owner gates apply to mutations). `tools.yaml` is the authority for *configuration*; the catalog is the authority for *state*.
+- **One source of truth.** The catalog db is the single registry; the agent and every subagent maintain no second in-memory copy (subagents read the same file; the ownership grants in `slife/agent/roles.py` — `catalog_owner`, `catalog_drainer` — are what make "apply to mutations" true of every mutation, including the skill/cli mirror, which used to sit outside every gate). `tools.yaml` is the authority for *configuration*; the catalog is the authority for *state*.
 - **Config writes are atomic + cross-process locked.** `write_config` writes a temp file + `os.replace`; the read→mutate→write window around it (model switches, embeddings-config edits, cli/rest-api persistence) is wrapped in a cross-process `filelock` (`config_read_modify_write`) so two processes (host + memdb child) can never clobber each other's change. The lock wait is bounded (`storage.filelock`).
 - **Rebuilds are live, not offline.** The catalog is synced from the live wrapper on every (re)connect; a schema change drops the stale embedding row and the drainer re-embeds. There is no offline rebuild step.
 

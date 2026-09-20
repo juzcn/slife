@@ -427,6 +427,7 @@ async def test_a_tool_a_server_stopped_publishing_loses_its_row(_isolate):
     catalog row, or ``tool_search`` goes on offering it and ``func-tool-load``
     materializes a proxy with nothing behind it."""
     from types import SimpleNamespace
+    from slife.agent.roles import Role, caps_for
 
     from slife.agent.service import AgentService
 
@@ -434,7 +435,7 @@ async def test_a_tool_a_server_stopped_publishing_loses_its_row(_isolate):
     await store.open()
     try:
         svc = ToolCatalogService(store, write_owner=True)
-        stub = SimpleNamespace(_catalog=svc)
+        stub = SimpleNamespace(_catalog=svc, caps=caps_for(Role.MAIN))
         listed = [
             {"name": t, "description": f"{t} desc",
              "inputSchema": {"type": "object", "properties": {}}}
@@ -473,6 +474,7 @@ async def test_an_empty_listing_never_purges_a_servers_rows(_isolate):
     second line of defence, so a future caller cannot turn the purge into a
     wipe by handing it an empty set."""
     from types import SimpleNamespace
+    from slife.agent.roles import Role, caps_for
 
     from slife.agent.service import AgentService
 
@@ -480,7 +482,7 @@ async def test_an_empty_listing_never_purges_a_servers_rows(_isolate):
     await store.open()
     try:
         svc = ToolCatalogService(store, write_owner=True)
-        stub = SimpleNamespace(_catalog=svc)
+        stub = SimpleNamespace(_catalog=svc, caps=caps_for(Role.MAIN))
         await _mirror_server(svc, "serper", ["search", "scrape"])
 
         await AgentService._upsert_external_catalog_rows(
@@ -658,6 +660,7 @@ async def test_connectivity_probe_failure_is_not_a_verdict(_isolate, sample_conf
 async def test_gateway_child_exit_marks_external_tools_error(_isolate):
     """The watchdog's exit hook is the crash path for the connectivity mark."""
     from types import SimpleNamespace
+    from slife.agent.roles import Role, caps_for
 
     from slife.agent.service import AgentService
 
@@ -670,7 +673,7 @@ async def test_gateway_child_exit_marks_external_tools_error(_isolate):
         ok, _ = await svc.load_tool("serper__search")
         assert ok
 
-        stub = SimpleNamespace(_catalog=svc, is_subagent=False)
+        stub = SimpleNamespace(_catalog=svc, caps=caps_for(Role.MAIN))
         # a non-gateway plugin exit is a no-op
         await AgentService.on_plugin_child_exit(stub, "memdb")
         assert await svc.effective_status("serper__search") == "loaded"

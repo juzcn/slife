@@ -26,16 +26,13 @@ from pathlib import Path
 
 from slife.server_utils import setup_server_logging, shutdown_server_logging
 from slife.logfmt import PROTOCOL_LINE_LIMIT, discard_overlong_line, elapsed
+from slife.agent.roles import Role
 
 logger = logging.getLogger("slife_subagent")
 
 
 #: Set by ``run_headless`` — log path so callers can find it.
 _log_path: Path | None = None
-
-#: Cloned parent history (received via the stdin "context" message),
-#: or None for a clean-context subagent.
-_inherited_context: list[dict] | None = None
 
 
 def _write(result=None, error=None, rpc_id=None) -> None:
@@ -133,28 +130,13 @@ async def run_headless(argv: list[str] | None = None) -> None:
     from slife.health import record_host_facts
     record_host_facts(config, source=_config_source)
 
-    service = AgentService(config, is_subagent=True)
+    service = AgentService(config, role=Role.WORKER)
 
-    # Connect to EVERY plugin the main agent started — a manifest loop, not a
-    # hardcoded subset.  The parent publishes ``SLIFE_<NAME>_PORT`` for each
-    # plugin it spawned (``plugin_port_env``); a plugin that was skipped (e.g.
-    # a2a with no broker) has no port env and is skipped here too.  Subagents
-    # share the main agent's plugin servers instead of spawning their own —
-    # avoids duplicate processes and shared state.  The a2a plugin connects
-    # as a thin client (register the ``a2a_*`` tools so we can send as the
-    # parent, but never drain the inbound queue — that stays with the parent).
-    from slife.plugins import discover_plugins
-    from slife.agent.plugins import plugin_port_env
-
-    for _name, _module in discover_plugins():
-        _port = os.environ.get(plugin_port_env(_name), "")
-        if not _port:
-            continue
-        try:
-            with elapsed(f"{_name}_connect", logger, level=logging.INFO, port=_port):
-                await service.connect_plugin_http(_name, int(_port))
-        except Exception as e:
-            logger.warning("%s_http_failed port=%s err=%s", _name, _port, e)
+    # Every plugin the parent started, shared by port — the one manifest loop
+    # (``AgentService.connect_shared_plugins``), so "which plugins does a
+    # worker use" is answered in the service that owns plugins rather than in
+    # this boot.
+    await service.connect_shared_plugins()
 
     # Subagents can spawn their own descendants (recursion enabled).
     await service.start_subagent()
@@ -191,33 +173,15 @@ async def run_headless(argv: list[str] | None = None) -> None:
 
     # ── Unified inbox (the same machinery as the main agent) ──────────
     # The subagent is a headless agent worker: identical loop, identical
-    # Esc-equivalent cancel.  The only differences are no TUI handler and
-    # no turn persistence. worker/send → inbox.post; the
-    # reader stays live while a task runs, so worker/cancel can preempt
-    # the running loop via inbox.cancel_correlation (→ agent_loop.cancel).
-    from slife.agent.message_history import MessageHistory
-    from slife.agent.inbox import MessageHistoryStore
-    from slife.agent.system_prompt import build as build_system_prompt
+    # Esc-equivalent cancel.  Its per-role differences — no turn persistence,
+    # a one-shot history per task, no heartbeat/scheduler/host server, the
+    # catalog queried rather than maintained — are the ROLE's and are wired by
+    # ``AgentService`` itself (``slife/agent/roles.py``), not patched in here.
+    # worker/send → inbox.post; the reader stays live while a task runs, so
+    # worker/cancel can preempt the running loop via inbox.cancel_correlation
+    # (→ agent_loop.cancel).
     from slife.a2a.identity import AgentName, AgentMessage, Channel
 
-    # Subagents never save turns to memory, even when sharing the main
-    # agent's memdb plugin (which would make memdb_enabled True).
-    service.inbox._on_turn_complete = None
-
-    class _WorkerMessageHistoryStore(MessageHistoryStore):
-        """Fresh one-shot history per task, seeded with the cloned
-        parent context (mirrors the main agent's remote-message model)."""
-
-        def get_or_create(self, source: AgentName) -> MessageHistory:
-            if _inherited_context:
-                return MessageHistory.from_history(
-                    self._system_prompt, _inherited_context,
-                )
-            return MessageHistory(system_prompt=self._system_prompt)
-
-    service.inbox._histories = _WorkerMessageHistoryStore(
-        system_prompt=build_system_prompt(service.config, is_subagent=True),
-    )
     await service.start_inbox()
     _source = AgentName(_name or "worker")
 
@@ -265,11 +229,12 @@ async def run_headless(argv: list[str] | None = None) -> None:
                 logger.info("subagent_shutdown requested task_count=%d", request_count)
                 break
             elif method == "context":
-                # Cloned parent context, sent over stdin at spawn time.
+                # Cloned parent context, sent over stdin at spawn time.  It is
+                # the service's field, not this module's: the worker's history
+                # store reads it when a task creates its history.
                 messages = params.get("messages")
                 if isinstance(messages, list):
-                    global _inherited_context
-                    _inherited_context = messages
+                    service.inherited_context = messages
                     logger.info(
                         "subagent_context_received messages=%d", len(messages),
                     )

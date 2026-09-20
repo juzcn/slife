@@ -30,7 +30,7 @@ from slife.tools.whitelist import ALWAYS_LOADED, is_meta_tool
 
 if TYPE_CHECKING:
     from slife.tools.base import Tool
-    from slife.tools.semantic import SemanticManager
+    from slife.tools.semantic import SemanticManager, SemanticReader
 
 logger = logging.getLogger(__name__)
 
@@ -167,9 +167,29 @@ class ToolCatalogService:
         self._disabled_builtins = frozenset(disabled_builtins)
         self._disabled_jobs = frozenset(disabled_jobs)
         self._disabled_plugin = frozenset(disabled_plugin)
-        #: The host's semantic actor (set by AgentService after startup) —
-        #: tool_search reads its embedder for hybrid retrieval.
+        #: The host's semantic DRAINER (set by AgentService after startup) — the
+        #: process that owns the catalog's vectors.  ``None`` in a process that
+        #: owns no index (a subagent worker).
         self.semantic_manager: "SemanticManager | None" = None
+        #: The query-side reader over that same index, for a process that owns
+        #: no drainer.  Set by AgentService in place of the manager; the index
+        #: and its published state are in this shared db, so reading needs no
+        #: ownership.
+        self.semantic_reader: "SemanticReader | None" = None
+
+    @property
+    def semantic_query(self) -> "SemanticManager | SemanticReader | None":
+        """This process's semantic query surface — the ONE resolution point.
+
+        The drainer's own manager where this process runs it, otherwise the
+        drainer-less reader over the shared index, otherwise nothing (a process
+        that could not open the catalog at all).  Both surfaces answer the same
+        three calls (``query_ready`` / ``reason`` / ``embed_query``), so
+        ``tool_search`` does not branch on which one it got — and a process
+        cannot accidentally read an index through a surface that lies about
+        its readiness.
+        """
+        return self.semantic_manager or self.semantic_reader
 
     @property
     def store(self) -> CatalogStore:
@@ -204,6 +224,10 @@ class ToolCatalogService:
         drainer parked, so ``tool_search`` reports ``semantic_ready`` while
         silently missing the tool.  A no-op before the manager exists (the
         boot seed), where the drainer's first pass covers it anyway.
+
+        The reader is deliberately NOT a wake target: it owns no drainer, so
+        there is nothing to wake — a process that merely queries can no more
+        schedule the index's maintenance than it can perform it.
         """
         if changed and self.semantic_manager is not None:
             self.semantic_manager.on_saved()

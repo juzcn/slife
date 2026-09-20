@@ -28,7 +28,8 @@ from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.message_history import MessageHistory, turn_header
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
-from slife.agent.inbox import Inbox, MemorySaveError, MessageHistoryStore
+from slife.agent.inbox import Inbox, MemorySaveError, MessageHistoryStore, WorkerHistoryStore
+from slife.agent.roles import Role, caps_for
 from slife.agent.plugins import (
     PluginBehavior,
     PluginLifecycle,
@@ -233,19 +234,28 @@ class AgentService:
     per-source histories.
     """
 
-    def __init__(self, config: Config, is_subagent: bool = False):
+    def __init__(self, config: Config, role: Role = Role.MAIN):
         self.config = config
         # __post_init__ guarantees these are never None at runtime
         assert self.config.a2a_config is not None
         assert self.config.subagent_config is not None
-        self.is_subagent = is_subagent
+        #: Which agent this process is, and the harness grants that follow from
+        #: it.  Every role-dependent decision reads ``self.caps`` — the table in
+        #: :mod:`slife.agent.roles` is the ONE place the two roles differ, and
+        #: ``tests/test_subagent_parity.py`` holds it to that.
+        self.role = role
+        self.caps = caps_for(role)
+        #: The parent's cloned history, when the transport delivered one at
+        #: spawn.  A worker's per-task history is seeded from it; the main
+        #: agent never sets it (its context is its own continuity).
+        self.inherited_context: list[dict] | None = None
 
         # Build the shared ToolContext, which carries the config + registry
         # that tools need at runtime.
         from slife.tools.context import ToolContext
         self._tool_ctx = ToolContext(config=config)
         self.tool_registry = create_tools_from_config(
-            config.tools, config=config, is_subagent=is_subagent,
+            config.tools, config=config, is_subagent=role.is_worker,
             ctx=self._tool_ctx,
         )
         # Backfill the registry reference (created by the factory)
@@ -285,9 +295,10 @@ class AgentService:
         # must surface as a pushed-back result rather than retrying a flaky
         # provider or hanging on a silent stall.  The main agent keeps the
         # module defaults (retry transient transport errors, no stream cap).
+        # ``stream_retries`` is that grant; the timeout is its companion.
         subagent_stream_timeout = (
             _timeouts.timeouts.work.task_budget
-            if is_subagent else None
+            if not self.caps.stream_retries else None
         )
         self.agent_loop = AgentLoop(
             llm_client=self.llm_client,
@@ -307,7 +318,7 @@ class AgentService:
             a2a_stale_provider=self._a2a_stale_provider,
             advance_context_start=self.advance_context_start,
             stream_timeout=subagent_stream_timeout,
-            stream_max_retries=0 if is_subagent else None,
+            stream_max_retries=None if self.caps.stream_retries else 0,
             tool_catalog=self._catalog,
             load_threshold=self._tool_load_threshold,
         )
@@ -323,9 +334,10 @@ class AgentService:
         # system prompt (re-reads USER.md) so the new preference is live
         # from the next call.  Populated for the main agent and subagents.
         self._tool_ctx.refresh_system_prompt = self.refresh_system_prompt
-        # Scheduled-task manual-fire hook for the run_schedule_now tool.
-        # Subagents are workers, never the scheduler — leave it None there.
-        if not is_subagent:
+        # Scheduled-task manual-fire hook for the run_schedule_now tool.  One
+        # timer per task belongs to the session the user is in, so a worker
+        # leaves the hooks None.
+        if self.caps.schedules:
             self._tool_ctx.fire_schedule_now = self.fire_schedule_now
             self._tool_ctx.schedule_wakeup = self.schedule_wakeup
         # Live-context boundary hook — the trim and clear_context (one big
@@ -368,31 +380,30 @@ class AgentService:
         # ── Unified message queue (always active) ──────────────────
         # Every input — human keyboard, A2A MQTT, WeChat — flows
         # through the same inbox queue.  Processed serially.
-        histories = MessageHistoryStore(
-            system_prompt=build_system_prompt(self.config),
-        )
+        histories = self._build_histories()
         histories._by_source[HUMAN] = self.message_history
 
         self.inbox = Inbox(
             agent_loop=self.agent_loop,
             histories=histories,
             on_activity=self._notify_activity,  # always active for WeChat etc.
-            on_turn_complete=self.save_to_memory,
+            # Turns are the main agent's to persist; a worker's are ephemeral.
+            on_turn_complete=(
+                self.save_to_memory if self.caps.turn_persistence else None
+            ),
             # Startup gate: no turn runs until every plugin spawn converged.
-            # Main agent only — subagents share the main process's plugins
-            # and spawn none themselves, so nothing would ever set the
-            # event; their inbox must not gate on it.
+            # Only the process that SPAWNS plugins can converge them, so a
+            # worker's inbox must not gate on an event nothing would ever set.
             ready=(
-                None if self.is_subagent
-                else self.wait_startup_settled
+                self.wait_startup_settled if self.caps.startup_gate else None
             ),
         )
         # Cut-in mode wiring: the loop gates the boundary check on the inbox's
         # has_injectable; the auto-invoked _check_new_input tool pulls the
         # message itself via the shared tool context's extract_injectable.
-        # Main agent only — subagents are single-task workers and never
-        # preempt their own turn (the hooks stay None → no injection).
-        if not self.is_subagent:
+        # Preempting one's own turn is the main agent's — a worker runs one
+        # task at a time and never cuts into it (the hooks stay None).
+        if self.caps.cutin:
             self.agent_loop.pending_input_has = self.inbox.has_injectable
             self._tool_ctx.extract_injectable = self.inbox.extract_injectable
         self._inbox_task: asyncio.Task | None = None
@@ -510,6 +521,24 @@ class AgentService:
         shows the full ref (``deepseek/deepseek-v4-flash``) to disambiguate.
         """
         return self.config.active_model.ref
+
+    def _build_histories(self) -> MessageHistoryStore:
+        """The inbox's history store for this role — built here, not by a boot.
+
+        The main agent has ONE context that persists for the session.  A worker
+        gets a fresh one-shot history per task, seeded from the clone its parent
+        sent at spawn — and a worker's system prompt is the subagent one, so the
+        store is built from the role rather than replaced afterwards.  (The
+        worker's boot used to swap ``inbox._histories`` and clear
+        ``_on_turn_complete`` after the service had wired itself; the
+        differences belong where the role is known.)
+        """
+        if self.role.is_worker:
+            return WorkerHistoryStore(
+                build_system_prompt(self.config, is_subagent=True),
+                context_provider=lambda: self.inherited_context,
+            )
+        return MessageHistoryStore(system_prompt=build_system_prompt(self.config))
 
     @property
     def context_window(self) -> int:
@@ -972,7 +1001,7 @@ class AgentService:
         for stale in old_names - new_names:
             self.tool_registry.unregister(stale)
         lifecycle.registered_tools = new_names
-        if not self.is_subagent and self._catalog is not None:
+        if self.caps.catalog_owner and self._catalog is not None:
             # One sync for the plugin's whole tool set: rows go in, and a tool
             # it dropped loses its row (source-scoped, so only this plugin's).
             await self._catalog.sync_system_tools(proxy_tools, source=name)
@@ -1137,7 +1166,7 @@ class AgentService:
             # loaded set, not the registry) — the spawn path is the one every
             # plugin actually takes, so a mirror confined to the rescan and
             # HTTP-connect twins left them invisible to the model.
-            if not self.is_subagent and self._catalog is not None:
+            if self.caps.catalog_owner and self._catalog is not None:
                 # Best-effort by contract, and it MUST NOT escape: this block
                 # sits inside the spawn's ``except BaseException`` handler,
                 # which stops the child — a catalog hiccup would otherwise kill
@@ -1357,7 +1386,7 @@ class AgentService:
             # own lane of the ``status`` column.  There is no server table to
             # carry either — the row itself is where "switched off" and "not
             # up" live now.
-            if not self.is_subagent and self._catalog is not None:
+            if self.caps.catalog_owner and self._catalog is not None:
                 await self._mark_server_connectivity(
                     client, configured, enabled_servers,
                 )
@@ -1407,7 +1436,7 @@ class AgentService:
             # the lists the mirrors just produced — one `__check` plus the
             # guarded per-server write, which now costs nothing where nothing
             # moved.  Best-effort: a failed probe is not a verdict.
-            if not self.is_subagent and self._catalog is not None:
+            if self.caps.catalog_owner and self._catalog is not None:
                 try:
                     pending = await self._mark_server_connectivity(
                         client, configured, enabled_servers,
@@ -1432,7 +1461,7 @@ class AgentService:
             # startup purge).  Comparing against tools.yaml (the authority)
             # rather than the pool keeps a transient empty pool or a gateway
             # restart from wiping configured servers' rows.
-            if not self.is_subagent and self._catalog is not None:
+            if self.caps.catalog_owner and self._catalog is not None:
                 try:
                     from slife.plugins.mcp_gateway import config as _gw_cfg
                     await self._catalog.purge_unconfigured_sources(
@@ -1532,7 +1561,7 @@ class AgentService:
         clears that mark when the child is back.  Best-effort.
         """
         catalog = self._catalog
-        if catalog is None or self.is_subagent:
+        if catalog is None or not self.caps.catalog_owner:
             return
         try:
             if name == "mcp-gateway":
@@ -1705,7 +1734,7 @@ class AgentService:
         removed = self.tool_registry.unregister_by_prefix(f"{name}__")
         if removed:
             logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
-        if not self.is_subagent and self._catalog is not None:
+        if self.caps.catalog_owner and self._catalog is not None:
             try:
                 await self._catalog.purge_source(name)
             except Exception as e:
@@ -1784,6 +1813,35 @@ class AgentService:
             setattr(self._tool_ctx, spec.ctx_field, self._plugins[name].client)
         logger.info("%s_http_connect_done tools=%d", name, len(self.tool_registry.list_tools()))
 
+    async def connect_shared_plugins(self) -> None:
+        """Connect to every plugin another process started, by inherited port.
+
+        The client half of plugin ownership: the parent publishes
+        ``SLIFE_<NAME>_PORT`` for each plugin it spawned (``plugin_port_env``),
+        and this process connects to each one as an MCP client — a manifest
+        loop over ``discover_plugins()``, never a hard-coded subset.  A plugin
+        the parent skipped (a2a with no broker, say) published no port and is
+        skipped here too, so the two processes agree on which plugins exist
+        without either one enumerating them.
+
+        This is the counterpart to spawning: a worker owns no plugin child, so
+        it also drains nothing inside them (the A2A inbound queue, the WeChat
+        poll, the gateway's watchdog all live in the parent's processes).
+        Failures are logged and skipped — one unreachable plugin must not cost
+        the worker its other tools.
+        """
+        from slife.plugins import discover_plugins
+        from slife.agent.plugins import plugin_port_env
+
+        for name, _module in discover_plugins():
+            port = os.environ.get(plugin_port_env(name), "")
+            if not port:
+                continue
+            try:
+                await self.connect_plugin_http(name, int(port))
+            except Exception as e:
+                logger.warning("%s_http_failed port=%s err=%s", name, port, e)
+
     async def _register_plugin_tools(self, name: str) -> None:
         """Discover and register a connected plugin's tools as proxy tools.
 
@@ -1826,7 +1884,7 @@ class AgentService:
         self._plugins[name].registered_tools = new_names
         for tool in proxy_tools:
             self.tool_registry.register(tool)
-        if not self.is_subagent and self._catalog is not None:
+        if self.caps.catalog_owner and self._catalog is not None:
             # One sync for the plugin's whole tool set: rows go in, and a tool
             # it dropped loses its row (source-scoped, so only this plugin's).
             await self._catalog.sync_system_tools(proxy_tools, source=name)
@@ -1909,7 +1967,7 @@ class AgentService:
             # Upsert this server's tool rows into the shared catalog (the
             # unified search/load surface).  Schema change → re-embed; the
             # host semantic drainer is woken below.
-            if not self.is_subagent and self._catalog is not None:
+            if self.caps.catalog_owner and self._catalog is not None:
                 await self._upsert_external_catalog_rows(
                     server_name, external, category=_server_category(server_name),
                 )
@@ -2716,7 +2774,7 @@ class AgentService:
             svc = ToolCatalogService(
                 store,
                 threshold=self._tool_load_threshold,
-                write_owner=not self.is_subagent,
+                write_owner=self.caps.catalog_owner,
                 # tools.yaml's per-entry `autoload: true` — the explicit "load
                 # these at startup" escape hatch around the default (only the
                 # whitelist is born loaded).  A server entry's flag covers its
@@ -2745,41 +2803,68 @@ class AgentService:
             self._catalog = svc
             self._tool_ctx.catalog = svc
             self.tool_registry.set_catalog(svc)
-            # Skill and cli rows come from their own live sources (the skills
-            # dir, the cli section of tools.yaml), not from the registry —
-            # sync_system_tools cannot see them, so they are mirrored here.  Same
-            # rows as any other tool: that is how tool_search reaches a skill,
-            # with no load state (type skill/cli instead of func).
-            await self._mirror_local_rows(svc)
-            # Nothing external is usable yet — no server has connected.  Mark
-            # every external tool ``error`` so the injection set starts empty
-            # (rather than offering tools from servers that may never come up);
-            # each server clears its own mark as the reconcile sees it connect.
-            await svc.mark_all_external_error()
-            # tools.yaml IS the authoritative config — anything that left its
-            # mcp/rest-api sections loses its rows here (hand-edits and
-            # agent-tool edits alike).  Startup does NOT wait on the servers
-            # themselves: the wrapper connects them in the background and each
-            # connect wakes the reconcile, so a slow machine opens the TUI
-            # immediately.
-            if not self.is_subagent:
+            # Owning the shared rows (the boot seed, the skill/cli mirror, the
+            # external-status marks, the config purge) is one grant: a worker
+            # only READS this catalog, and its parent has already seeded the
+            # same file.  Everything below this branch is the owner's alone —
+            # the rows it would write are already there, and two processes
+            # racing upsert-then-purge on one db is what the grant prevents.
+            if self.caps.catalog_owner:
+                await svc.sync_system_tools([
+                    *self.tool_registry.list_tools(),
+                    *disabled_tool_instances(
+                        self.config.tools, config=self.config, ctx=self._tool_ctx,
+                    ),
+                ])
+                # Skill and cli rows come from their own live sources (the
+                # skills dir, the cli section of tools.yaml), not from the
+                # registry — sync_system_tools cannot see them, so they are
+                # mirrored here.  Same rows as any other tool: that is how
+                # tool_search reaches a skill, with no load state (type
+                # skill/cli instead of func).
+                await self._mirror_local_rows(svc)
+                # Nothing external is usable yet — no server has connected.
+                # Mark every external tool ``error`` so the injection set
+                # starts empty (rather than offering tools from servers that
+                # may never come up); each server clears its own mark as the
+                # reconcile sees it connect.
+                await svc.mark_all_external_error()
+                # tools.yaml IS the authoritative config — anything that left
+                # its mcp/rest-api sections loses its rows here (hand-edits and
+                # agent-tool edits alike).  Startup does NOT wait on the servers
+                # themselves: the wrapper connects them in the background and
+                # each connect wakes the reconcile, so a slow machine opens the
+                # TUI immediately.
                 await self._sync_catalog_from_config()
             # The loop was built in __init__ before the catalog existed.
             self.agent_loop.tool_catalog = svc
             self.agent_loop.load_threshold = self._tool_load_threshold
-            # Host semantic drainer — the single embedding maintainer (the
-            # retired wrapper no longer drains).  Background task so a slow
-            # endpoint never blocks start_inbox; the reconcile kicks it via
-            # on_saved when mcp rows land.
-            if not self.is_subagent:
-                from slife.tools.semantic import SemanticManager
-                self._catalog_semantic = SemanticManager(store)
+            # The catalog's semantic surface, by grant.  ONE process maintains
+            # the index — the drainer, and the only writer of its vectors.
+            # Every process may QUERY it, because the vectors and the index's
+            # published state both live in this shared db: a worker gets a
+            # reader over what its parent embedded.  (Before this a worker got
+            # nothing, so a subagent's tool_search was keyword-only for its
+            # whole life against an index its parent was maintaining.)
+            from slife.tools.semantic import SemanticManager, SemanticReader
+
+            # ONE resolution of the section, for whichever surface this role
+            # gets: both embed against the same endpoint, so a second read is a
+            # second answer waiting to disagree.  ``__post_init__`` fills the
+            # optional sections, so it is never None here (the same guarantee
+            # ``__init__`` asserts for a2a/subagent config).
+            embeddings_config = self.config.embeddings_config
+            assert embeddings_config is not None
+            if self.caps.catalog_drainer:
+                self._catalog_semantic = SemanticManager(store, embeddings_config)
                 svc.semantic_manager = self._catalog_semantic
                 self._catalog_semantic_task = asyncio.create_task(
                     self._catalog_semantic.start(),
                     name="catalog-semantic",
                 )
-            logger.info("catalog_initialized subagent=%s", self.is_subagent)
+            else:
+                svc.semantic_reader = SemanticReader(store, embeddings_config)
+            logger.info("catalog_initialized role=%s", self.role.value)
         except Exception:
             logger.exception("catalog_init_failed — continuing without catalog")
 
@@ -2880,7 +2965,7 @@ class AgentService:
         reconcile refines runtime/tool rows afterwards.  Best-effort.
         """
         catalog = self._catalog
-        if catalog is None or self.is_subagent:
+        if catalog is None or not self.caps.catalog_owner:
             return
         try:
             from slife.plugins.mcp_gateway import config as _cfg
@@ -2908,7 +2993,7 @@ class AgentService:
         # slife-as-plugin — the in-process MCP server exposing the live
         # ToolRegistry to external MCP consumers (DESIGNER_NOTES §8).  Main
         # agent only; subagents are workers and never serve their own face.
-        if not self.is_subagent:
+        if self.caps.host_server:
             from slife.mcp.host_server import start_host_server
             try:
                 # Every instance binds its own OS-assigned free port — there is
@@ -2930,19 +3015,20 @@ class AgentService:
                 logger.exception("host_server_start_failed")
                 self._host_server = None
 
-        # Autonomous heartbeat — main agent only (period configurable via
-        # agent.heartbeat_interval).  Subagents are workers and never
-        # receive a heartbeat trigger.
-        if not self.is_subagent:
+        # Autonomous heartbeat — idle turns the agent gives itself (period
+        # configurable via agent.heartbeat_interval).  A worker is task-driven
+        # and never receives a heartbeat trigger.
+        if self.caps.heartbeat:
             from slife.agent.heartbeat import heartbeat_loop
 
             if self._heartbeat_task is None or self._heartbeat_task.done():
                 self._heartbeat_task = asyncio.create_task(heartbeat_loop(self))
                 logger.info("heartbeat_started")
 
-            # Scheduled-task trigger loop — same "main agent only" rule: a
-            # subagent is a worker, never the scheduler.  Fires due tasks;
-            # it never sweeps unfinished runs (see schedule_startup_sweep).
+        # Scheduled-task trigger loop — fires due tasks; it never sweeps
+        # unfinished runs (see schedule_startup_sweep).  One timer per task,
+        # and it belongs to the session the user is in.
+        if self.caps.schedules:
             from slife.agent.schedules import schedule_loop
 
             if self._schedule_task is None or self._schedule_task.done():

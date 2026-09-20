@@ -148,23 +148,28 @@ class ToolSearchTool(Tool):
             )
             results = keyword_hits
             if mode == "hybrid":
-                manager = getattr(catalog, "semantic_manager", None)
-                if manager is not None and manager.semantic_ready:
-                    embedder = manager.embedder
-                    if embedder is not None and embedder.available:
-                        emb = await embedder.embed_one(query)
-                        if emb:
-                            semantic_hits = await store.search_semantic(
-                                emb, limit=limit * 2, filters=filters,
-                            )
-                            results = merge_hybrid(
-                                keyword_hits, semantic_hits, key_field="name",
-                            )
+                # The process's semantic surface: the drainer's own manager
+                # where it runs one, otherwise a reader over the same shared
+                # index.  Both answer ``query_ready`` / ``reason`` /
+                # ``embed_query``, so a subagent gets real scores here instead
+                # of a permanent keyword-only fallback.
+                sem = getattr(catalog, "semantic_query", None)
+                if sem is not None and await sem.query_ready():
+                    emb = await sem.embed_query(query)
+                    if emb:
+                        semantic_hits = await store.search_semantic(
+                            emb, limit=limit * 2, filters=filters,
+                        )
+                        results = merge_hybrid(
+                            keyword_hits, semantic_hits, key_field="name",
+                        )
                     else:
-                        hint = (manager.reason or
-                                "semantic search unavailable — keyword only.")
+                        hint = sem.reason or "semantic search unavailable — keyword only."
                 else:
-                    hint = "semantic search unavailable — keyword only."
+                    hint = (
+                        (sem.reason if sem is not None else "")
+                        or "semantic search unavailable — keyword only."
+                    )
         # The shared scoring contract, used by every other hybrid path
         # (turn_search, cabinet_search): a normalized 0-1 `similarity` per
         # result plus the band legend.  Without it this tool was the one place

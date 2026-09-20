@@ -641,3 +641,36 @@ class MessageHistoryStore:
         base = self._by_source.get(HUMAN)
         if base is not None:
             base.clear()
+
+
+class WorkerHistoryStore(MessageHistoryStore):
+    """A worker's histories: one fresh history per task, nothing carried over.
+
+    A subagent's turns are ephemeral by design (``docs/SUBAGENT.md``): each task
+    runs on its own context, seeded — when the parent sent a clone — from the
+    parent's history as it stood at spawn.  The seed is read through
+    *context_provider* at creation time, so a clone that arrives before the
+    first task is the seed, and one that arrives later cannot retroactively
+    rewrite a history already in flight.
+
+    It lives beside the main agent's store, and ``AgentService`` picks between
+    the two from its role (``slife/agent/roles.py``).  It used to live in the
+    worker's boot, which reached into ``inbox._histories`` to replace what the
+    service had just built — one of the places where a worker's differences
+    were applied *outside* the service that owns them.
+    """
+
+    def __init__(
+        self,
+        system_prompt: str,
+        context_provider: "Callable[[], list[dict] | None]",
+    ):
+        super().__init__(system_prompt)
+        self._context_provider = context_provider
+
+    def get_or_create(self, source: AgentName) -> MessageHistory:
+        """A fresh history for this task — the cloned context, or an empty one."""
+        messages = self._context_provider()
+        if messages:
+            return MessageHistory.from_history(self._system_prompt, messages)
+        return MessageHistory(system_prompt=self._system_prompt)

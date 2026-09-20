@@ -30,6 +30,27 @@ class _NativeA(Tool):
         return "ok-native_a"
 
 
+class _SemanticStub:
+    """A semantic query surface — the three calls ``tool_search`` makes.
+
+    Both real implementations (the drainer's ``SemanticManager`` and the
+    drainer-less ``SemanticReader``) answer exactly these, which is what lets
+    the hybrid leg stay branch-free; the unit tests that only care about
+    scoring use this instead of standing up an endpoint.
+    """
+
+    def __init__(self, vector, *, ready=True, reason=""):
+        self._vector = vector
+        self._ready = ready
+        self.reason = reason
+
+    async def query_ready(self) -> bool:
+        return self._ready
+
+    async def embed_query(self, text):
+        return self._vector
+
+
 @pytest_asyncio.fixture
 async def db(tmp_path):
     s = CatalogStore(tmp_path / "tools.db")
@@ -232,9 +253,7 @@ class TestScoreBands:
         catalog = MagicMock(store=store)
         tool = ToolSearchTool()
         object.__setattr__(tool, "_ctx", SimpleNamespace(catalog=catalog))
-        catalog.semantic_manager = MagicMock(semantic_ready=True)
-        catalog.semantic_manager.embedder = MagicMock(available=True)
-        catalog.semantic_manager.embedder.embed_one = AsyncMock(return_value=[0.1, 0.2])
+        catalog.semantic_query = _SemanticStub([0.1, 0.2])
 
         payload = json.loads(await tool.execute(query="zzqx-nonexistent-thing-7788"))
         row = payload["results"][0]

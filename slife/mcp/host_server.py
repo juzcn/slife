@@ -205,23 +205,13 @@ async def _host_catalog_facts(catalog: "ToolCatalogService") -> dict:
 async def _published_semantic_facts(store) -> dict:
     """The shared index's state as published by its drainer (``meta`` row).
 
-    ``state: "unknown"`` when nothing has published one — the producer says so
-    rather than leaving the key out, so the harness never has to guess between
-    "no drainer has run" and "this block predates the vocabulary".
+    The parse lives with the key it reads (``slife/tools/semantic.py``) because
+    the query-side ``SemanticReader`` must agree with this health block about
+    whether the index is usable — two parsers of one row is two answers.
     """
-    from slife.tools.semantic import SEMANTIC_STATE_KEY
+    from slife.tools.semantic import read_published_state
 
-    try:
-        raw = await store.get_meta(SEMANTIC_STATE_KEY)
-    except Exception:
-        return {"state": "unknown"}
-    if not raw:
-        return {"state": "unknown"}
-    try:
-        published = json.loads(raw)
-    except ValueError:
-        return {"state": "unknown"}
-    return published if isinstance(published, dict) else {"state": "unknown"}
+    return await read_published_state(store)
 
 
 def _current_exposed(server: FastMCP) -> set[str]:

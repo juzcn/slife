@@ -12,13 +12,47 @@ Every clause of the design line is a non-negotiable property, mirrored in code:
 |---|---|
 | headless agent, a worker, no personality | `slife/subagent/headless.py` (no TUI); identity template `subagent.j2` — "no presence, no personality", acts as the parent |
 | empty context **or** fork the main agent's context | `spawn_subagent(clone_context=…)` → a spawn-time snapshot of the parent's message history, or a clean history |
-| all of the main agent's capabilities | same `Config`, same auto-discovered tool registry, every plugin the parent started shared by port |
+| all of the main agent's capabilities | same `Config` (losslessly inherited — `Config.to_dict`/`from_dict` are derived from one field list, so nothing can be dropped silently), same auto-discovered tool registry, every plugin the parent started shared by port, and the shared tool catalog queried as the parent queries it |
 | a task is one turn | one `worker/send` → one inbox message → exactly one `agent_loop.run()` → one JSON-RPC result |
 | synchronous or asynchronous | `subagent_send_task` (sync wait) / `subagent_send_task_async` (`mode=auto` push, `mode=poll`) |
-| no persistence | `inbox._on_turn_complete = None` + a fresh one-shot history per task — nothing survives the process |
-| does not run the main agent's harness | no TUI / persistence / scheduler / cut-in / A2A drain / plugin spawn — the *service* layer, not the loop |
-| no error handling | fail-fast: no retries (`stream_max_retries=0`), errors surface **as the task result** |
+| no persistence | `caps.turn_persistence=False` → `inbox._on_turn_complete = None`, and a one-shot history per task — nothing survives the process |
+| does not run the main agent's harness | the capabilities the worker is not granted, declared in `slife/agent/roles.py` — the *service* layer, not the loop |
+| no error handling | fail-fast: no retries (`caps.stream_retries=False`), errors surface **as the task result** |
 | the result push is the harness's | the worker replies over stdout; the **parent** harness auto-pushes `[Subagent:…]` into its own inbox |
+
+### How the difference is recorded
+
+The two roles differ, and that difference is **declared once** — as capabilities
+in `slife/agent/roles.py`:
+
+```python
+MAIN   = Caps()                    # the full harness
+WORKER = Caps(**{…: False})        # granted none of it
+```
+
+A capability is a *grant*: the process either owns the resource (the shared
+tool catalog's rows, its vector index, the plugin child processes, the host MCP
+face, the heartbeat, the scheduler, the mesh inbox drain) or holds the policy
+(turn persistence, the stream-retry ladder, the startup gate, mid-turn cut-in).
+The main agent holds all of them; a worker holds none — it is the loop, the
+tools and the shared infrastructure, with every harness singleton left to its
+parent.
+
+Why it is written down rather than spread around: it used to be ~two dozen
+`if not self.is_subagent` branches, so a worker's capability set was an
+*emergent* property of wherever a gate happened to be written. A capability
+added to the main agent's path then simply never reached a worker, silently —
+the tool catalog's semantic search was one: a worker held no drainer *and no
+query surface*, so every subagent's `tool_search` was keyword-only for its whole
+life, against an index its own parent was maintaining in the same database.
+
+Two guards keep the table honest (`tests/test_subagent_parity.py`): an AST gate
+that fails on any new `is_subagent` branch outside this table, and a parity test
+that builds both roles from one config and asserts their observable difference
+is exactly what the table declares. Reading the index is **not** the drainer's
+grant — see [TOOL-SYSTEM.md](TOOL-SYSTEM.md) for who owns the catalog and who
+may only query it.
+
 
 ## Architecture
 
@@ -148,25 +182,27 @@ This matches "no error handling" precisely: no retries, no recovery, no second a
 
 ## What the worker does not run
 
-The worker is the same loop wired to nothing else. Excluded from the *service layer*:
+The worker is the same loop wired to nothing else. Excluded from the *service layer* — one row per capability, and the capability's name **is** the gate in `slife/agent/roles.py` (the code locations are deliberately not listed: a line number in a table is a second copy of the code, and this one rotted twice before it was removed):
 
-| Main-agent harness feature | Worker behavior | Where |
+| Capability (`Caps` field) | Main-agent harness feature | Worker behavior |
 |---|---|---|
-| TUI handler & streaming | absent — headless | `headless.py` |
-| Turn persistence (`save_to_memory`) | `inbox._on_turn_complete = None` — even with the shared memdb | `headless.py:186` |
-| Scheduler (`run_schedule_now`, wakeups) | hooks left `None` | `service.py:279-281` |
-| Cut-in injection (`_check_new_input`) | `pending_input_has` never bound → **never auto-invoked**; `extract_injectable` unset → an explicit call is a no-op | `service.py:346-348`, `loop.py:1372-1376`, `tools/models.py:678-689` |
-| A2A inbound drain & presence | thin client only — can send as the parent, never drains | `headless.py:123-126` |
-| Plugin spawn / watchdog / health | none — connects to the **shared** parent plugin servers by inherited port (`SLIFE_{NAME}_PORT`) | `headless.py:127-141` |
-| Heartbeat loop | main-agent only | `service.py` / DESIGN.md Part 2 |
-| slife-as-plugin host server | absent for subagents | `service.py:352` |
-| Startup plugin-convergence gate | inbox `ready=None` (shares the parent's plugins, spawns none) | `service.py:336-339` |
+| — | TUI handler & streaming | absent — headless (`slife/subagent/headless.py`) |
+| `turn_persistence` | Turn persistence (`save_to_memory`) | `inbox._on_turn_complete = None` — even with the shared memdb |
+| `schedules` | Scheduler (`run_schedule_now`, wakeups) | hooks left `None`, no trigger loop, no startup sweep |
+| `cutin` | Cut-in injection (`_check_new_input`) | `pending_input_has` never bound → **never auto-invoked**; `extract_injectable` unset → an explicit call is a no-op |
+| `plugin_children` | A2A inbound drain & presence; plugin spawn / watchdog / health | thin client only — can send as the parent, never drains; connects to the **shared** parent plugin servers by inherited port (`SLIFE_{NAME}_PORT`) |
+| `heartbeat` | Heartbeat loop | task-driven only — no idle turns |
+| `host_server` | slife-as-plugin host server | absent for subagents |
+| `startup_gate` | Startup plugin-convergence gate | inbox `ready=None` (shares the parent's plugins, spawns none) |
+| `stream_retries` | LLM stream retry ladder | fail-fast: `stream_max_retries=0`, a capped stream timeout |
+| `catalog_owner` | Tool-catalog rows: boot seed, skill/cli mirror, reconcile projections, config purge, status marks, LRU eviction | reads the shared `tools.db` and never writes it — the parent seeded the same rows |
+| `catalog_drainer` | The catalog's embedding index | runs no drainer; **queries** the index its parent maintains (`SemanticReader`) |
 
 Every excluded feature is a *plugin of the loop*, not the loop itself — which is why the worker still runs the identical `AgentLoop` including the `_turn_prompt` harness tool-pair and the internal context trim. "Does not run the main agent's harness" is a statement about the service/orchestration layer, not the loop internals.
 
 ## Shared plugins & recursion
 
-- **Every plugin the parent started, shared by port.** The worker reads `SLIFE_<NAME>_PORT` for each discovered plugin and connects as an MCP client over Streamable HTTP — a manifest loop, not a hard-coded subset (`headless.py:127-141`). It never spawns its own plugin processes; a worker crash takes down only the worker, never shared infrastructure (the parent's watchdog is untouched).
+- **Every plugin the parent started, shared by port.** The worker reads `SLIFE_<NAME>_PORT` for each discovered plugin and connects as an MCP client over Streamable HTTP — a manifest loop, not a hard-coded subset (`AgentService.connect_shared_plugins`). It never spawns its own plugin processes; a worker crash takes down only the worker, never shared infrastructure (the parent's watchdog is untouched).
 - **No isolation.** Shared servers are exactly the parent's servers — same memdb, same cabinet, same MCP gateway. The worker is trusted, never fenced.
 - **Mesh as the parent.** The a2a plugin registers the `a2a_*` tools in the worker so it can send on the parent's identity; the inbound queue stays with the parent (a worker that can push into the parent's inbox via A2A could confuse *its own* history, so only the send side is shared).
 - **Recursion is allowed.** A subagent can `spawn_subagent` its own descendants — each level has its own `SubagentManager` (there is intentionally no subagent-specific gate; trust, not enforcement).

@@ -7,10 +7,17 @@ contract + ``meta`` table) and builds its embedder from the HOST's active
 embedding endpoint (``get_active_endpoint`` — the top-level ``embeddings``
 section of slife.yaml), the way memdb/memfiles do in their own processes.
 
-Only the main process starts this manager: it is the single embedding
-maintainer (the retired mcp-gateway wrapper no longer drains its own
-store).  ``EmbeddingClient`` is the api-only OpenAI-compatible client that
-formerly lived in the mcp plugin — moved here verbatim (httpx2).
+Exactly ONE process runs the manager: it is the single embedding
+maintainer.  Every OTHER process may still query the index, because the
+vectors (``tool_embeddings``) and the index's published state (the
+``semantic_state`` meta row) both live in this shared db — so a subagent
+worker, which runs no drainer, gets a :class:`SemanticReader` over what its
+parent embedded.  Owning the index and being able to search it are
+different grants; conflating them is what made every subagent's
+``tool_search`` keyword-only.
+
+``EmbeddingClient`` is the api-only OpenAI-compatible client that formerly
+lived in the mcp plugin — moved here verbatim (httpx2).
 """
 
 from __future__ import annotations
@@ -21,7 +28,7 @@ import logging
 
 import httpx2
 
-from slife.config import _resolve_secret
+from slife.config import EmbeddingsConfig, _resolve_secret
 from slife.env import is_env_ref
 from slife.plugins.memdb.embeddings import (  # shared model knowledge
     _guess_dim,
@@ -38,6 +45,29 @@ logger = logging.getLogger(__name__)
 #: readable by a process that runs no drainer — a subagent worker's
 #: ``system_health`` asks the db, not a manager object it does not have.
 SEMANTIC_STATE_KEY = "semantic_state"
+
+
+async def read_published_state(store) -> dict:
+    """The shared index's state as its owner published it, or ``{"state": "unknown"}``.
+
+    The ONE parser of :data:`SEMANTIC_STATE_KEY` — read by the harness's
+    ``__check`` (``slife/mcp/host_server.py``) and by the query-side
+    :class:`SemanticReader`, which must agree about whether the index is
+    usable.  "unknown" is a producer-side value, not a missing key: it says no
+    drainer has ever published here, so a reader never has to guess between
+    "no drainer has run" and "this block predates the vocabulary".
+    """
+    try:
+        raw = await store.get_meta(SEMANTIC_STATE_KEY)
+    except Exception:
+        return {"state": "unknown"}
+    if not raw:
+        return {"state": "unknown"}
+    try:
+        published = json.loads(raw)
+    except ValueError:
+        return {"state": "unknown"}
+    return published if isinstance(published, dict) else {"state": "unknown"}
 
 
 class EmbeddingClient:
@@ -332,10 +362,17 @@ class SemanticManager(_BaseSemanticManager):
     contract (the catalog drops stale vectors via its ``meta``/``drop``
     contract instead of an in-place vec0 migration) and the embedder source
     (the host's active endpoint).  Chunking of long schemas is inherited.
+
+    The endpoint comes from the process's own config (``EmbeddingsConfig``),
+    not from a fresh read of the yaml: the same section feeds the query-side
+    reader in the processes that hold no drainer, and one source cannot
+    disagree with itself.  It also makes ``--config other.yaml`` mean the same
+    thing here as everywhere else in the process.
     """
 
-    def __init__(self, store, config_path: str | None = None):
-        super().__init__(store, config_path=config_path)
+    def __init__(self, store, embeddings_config: EmbeddingsConfig):
+        super().__init__(store, config_path=None)
+        self._embeddings_config = embeddings_config
 
     # ── hook overrides ──────────────────────────────────────────────
 
@@ -359,13 +396,12 @@ class SemanticManager(_BaseSemanticManager):
         )
 
     def _new_embedder(self):
-        from slife.plugins.memdb.embedding_config import get_active_endpoint
-        ep = get_active_endpoint()
-        return EmbeddingClient.from_endpoint(ep)
+        return EmbeddingClient.from_endpoint(
+            self._embeddings_config.active_endpoint(),
+        )
 
     def _start_enabled(self) -> bool:
-        emb = self._new_embedder()
-        return bool(emb is not None and emb.available)
+        return bool(self._embeddings_config.enabled)
 
     async def _on_model_selected(self, embedder) -> None:
         """Record the model identity and drop vectors that live in a
@@ -391,5 +427,197 @@ class SemanticManager(_BaseSemanticManager):
             "Check the 'embeddings' section in slife.yaml."
         )
 
+    async def reload(self, embeddings_config: EmbeddingsConfig) -> dict:
+        """Re-point at a freshly written ``embeddings`` section and rebuild.
 
-__all__ = ["EmbeddingClient", "SemanticManager"]
+        The ``embeddings_*`` tools rewrite slife.yaml and hot-reload every
+        index; this process holds its config as a snapshot (a worker holds only
+        the snapshot), so the new section is handed over here instead of being
+        re-read from a file — reading it again would also resolve a DIFFERENT
+        path than the tool wrote when the agent runs under ``--config``.
+
+        ``enable()`` is a full rebuild: it stops the drainer, builds the
+        embedder from the new section, runs ``_on_model_selected`` (which drops
+        the vectors of a model that is no longer active) and drains again.  A
+        section with no usable endpoint leaves the index ``disabled`` with the
+        reason, which is what the query surfaces then report.
+        """
+        self._embeddings_config = embeddings_config
+        return await self.enable()
+
+    # ── query surface (shared with SemanticReader) ──────────────────
+
+    async def query_ready(self) -> bool:
+        """Whether a query can be embedded against the live index.
+
+        The drainer's own gate (an index that is still filling answers
+        "not yet", so a search never returns a partial index as if it were
+        complete) plus a usable embedder.  See :class:`SemanticReader` for the
+        drainer-less half of this contract.
+        """
+        e = self._embedder
+        return bool(self._semantic_ready and e is not None and e.available)
+
+    async def embed_query(self, text: str) -> list[float] | None:
+        """Embed a search query with the live embedder (None when unusable)."""
+        e = self._embedder
+        if e is None or not e.available:
+            return None
+        return await e.embed_one(text)
+
+
+class SemanticReader:
+    """Query-side semantic search over the shared tool index — any process.
+
+    The vectors and the index's state live in ``tools.db``, so a process that
+    runs no drainer (a subagent worker) can still search what the index's
+    owner embedded.  Before this, a worker got nothing at all: it held no
+    manager, so ``tool_search`` fell back to keywords for its whole life —
+    in the one process whose context is smallest and whose need for
+    meaning-based lookup is largest.
+
+    A reader owns nothing and writes nothing.  Its readiness is deliberately
+    not "the endpoint answers": it also asks the index's OWNER (through the
+    published state) whether the index is complete and which model built it,
+    so a reader cannot return a partial index as a result set, nor compare a
+    query vector against vectors from a different vector space.  That is the
+    same answer the owner's own ``tool_search`` gives, which is the point —
+    the index is one shared fact, not a per-process opinion.
+
+    The embedder is built from the config this process inherited and loaded
+    lazily, once: a worker that never searches never talks to the endpoint,
+    and a dead endpoint costs one bounded probe rather than a stall per call.
+    """
+
+    def __init__(
+        self,
+        store,
+        embeddings_config: EmbeddingsConfig,
+        transport: httpx2.AsyncBaseTransport | None = None,  # test hook
+    ):
+        self._store = store
+        #: ``embeddings: {enabled: false}`` is the user switching semantic
+        #: search off; a reader may no more ignore it than the drainer may.
+        self._enabled = bool(embeddings_config.enabled)
+        self._embedder = EmbeddingClient.from_endpoint(
+            embeddings_config.active_endpoint(),
+        )
+        if transport is not None:
+            self._embedder._transport = transport  # test hook, see EmbeddingClient
+        self._load_attempted = False
+        self._reason = ""
+
+    @property
+    def reason(self) -> str:
+        """Why the last :meth:`query_ready` said no (empty when it said yes)."""
+        return self._reason
+
+    async def query_ready(self) -> bool:
+        """Whether a query can be embedded and compared against this index.
+
+        Answered from the endpoint's own state plus the index's published
+        facts, in that order — the cheap, process-local check first.
+        """
+        if not await self._ensure_embedder():
+            return False
+        state = await read_published_state(self._store)
+        if not state.get("semantic_ready"):
+            if state.get("state") == "unknown":
+                self._reason = (
+                    "the shared tool index has no published state — no drainer "
+                    "has run in this database; keyword only."
+                )
+            else:
+                self._reason = (
+                    state.get("reason")
+                    or "semantic search unavailable — keyword only."
+                )
+            return False
+        # The index's owner embedded with ITS endpoint.  A reader whose config
+        # names a different model would compare query vectors against another
+        # vector space — width may match and the numbers would still be
+        # meaningless, so identity is the check, not the width.
+        published_model = state.get("model", "")
+        if published_model and published_model != self._embedder.model:
+            self._reason = (
+                f"the shared tool index was built with a different embedding "
+                f"model ({published_model}, not {self._embedder.model}) — "
+                "keyword only until this process is restarted with the current "
+                "config."
+            )
+            return False
+        self._reason = ""
+        return True
+
+    async def embed_query(self, text: str) -> list[float] | None:
+        """Embed a search query (None when the endpoint cannot answer)."""
+        if not await self._ensure_embedder():
+            return None
+        return await self._embedder.embed_one(text)
+
+    async def _ensure_embedder(self) -> bool:
+        """Load the embedder once; False (with a reason) when it cannot be used.
+
+        One attempt per process on purpose: a worker is long-lived and reused
+        across tasks, and retrying a dead endpoint on every ``tool_search``
+        would stall each one for the transport timeout.  A failed load leaves
+        ``reason`` naming the endpoint, which the caller reports.
+
+        The probe comes FIRST, and it is the one that decides.  ``load()``
+        alone is a shallow success for a model the built-in table knows: the
+        width is taken from that table, so it returns True without having
+        reached the endpoint at all.  The drainer tolerates that (an endpoint
+        that only fails at embed time leaves the index undrained, so its gate
+        never opens), but a reader has no such backstop — it would claim ready
+        and then answer every query with None, which is the silent degradation
+        this whole surface exists to avoid.
+        """
+        if not self._enabled:
+            self._reason = (
+                "semantic search is switched off in the config "
+                "(embeddings.enabled=false) — keyword only."
+            )
+            return False
+        e = self._embedder
+        if not e.available:
+            self._reason = (
+                "no embedding endpoint configured — add an 'embeddings' "
+                "section to slife.yaml to enable semantic tool search"
+            )
+            return False
+        if e.loaded:
+            return True
+        if not self._load_attempted:
+            self._load_attempted = True
+            try:
+                # Bounded at the endpoint-readiness budget: this is a "is it
+                # there" question, not a bulk embed.
+                ok = await asyncio.wait_for(
+                    self._probe_then_load(),
+                    timeout=_timeouts.timeouts.ready.probe_endpoint,
+                )
+            except Exception as exc:  # timeout, transport, bad payload
+                logger.warning("semantic_reader_load_failed err=%s", exc)
+                ok = False
+            if not ok:
+                self._reason = (
+                    f"embedding endpoint did not answer ({e.base_url}) — "
+                    "keyword only."
+                )
+                return False
+        return bool(e.loaded)
+
+    async def _probe_then_load(self) -> bool:
+        """Ask whether the endpoint is there, then pin the model and width."""
+        if not await self._embedder.probe_available():
+            return False
+        return await self._embedder.load()
+
+
+__all__ = [
+    "EmbeddingClient",
+    "SEMANTIC_STATE_KEY",
+    "SemanticManager",
+    "SemanticReader",
+    "read_published_state",
+]

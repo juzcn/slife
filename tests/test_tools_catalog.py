@@ -6,6 +6,7 @@ import asyncio
 import pytest
 import pytest_asyncio
 
+from slife.config import EmbeddingsConfig
 from slife.tools.catalog import (
     SCHEMA_VERSION,
     STATUS_DISABLED,
@@ -1000,7 +1001,7 @@ async def test_catalog_semantic_publishes_its_state_for_other_processes(tmp_path
     store = CatalogStore(tmp_path / "tools.db")
     await store.open()
     try:
-        m = CatalogSM(store)
+        m = CatalogSM(store, EmbeddingsConfig())
         assert await store.get_meta(SEMANTIC_STATE_KEY) is None  # nothing yet
 
         await m._set_state("stalled", "the embedder gave up this round")
