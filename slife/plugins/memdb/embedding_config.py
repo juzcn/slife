@@ -72,37 +72,23 @@ def write_embedding_config(cfg: dict) -> None:
 
 
 def _active_endpoint(cfg: dict) -> dict:
-    """Resolve the active provider from an embeddings section.
+    """Resolve the active provider from a raw ``embeddings`` section dict.
 
-    Returns ``{"provider": str, "base_url": str, "api_key": str,
-    "model": str}``.  Each provider is one OpenAI-compatible endpoint with a
-    single ``model`` (the id sent on ``/v1/embeddings``); ``active_model``
-    selects the provider.  A model may be empty when the provider omits it —
-    the client then discovers one from ``/v1/models``.
+    The resolution itself lives on :class:`~slife.config.EmbeddingsConfig`
+    (``active_endpoint()``) because the section is also held parsed, as
+    ``Config.embeddings_config`` — the process's own config.  Two
+    implementations of "which provider is active" is two answers waiting to
+    disagree; this is the raw-yaml face of the one resolver.
 
-    The vector dimension is deliberately NOT configured or resolved here —
-    it is discovered at runtime from the OpenAI-compatible endpoint: known
-    model families are guessed, anything else is probed before the vec0
-    tables are built (see :class:`~slife.plugins.memdb.embeddings.EmbeddingClient`).
+    Returns ``{"provider", "base_url", "api_key", "model"}``.  A model may be
+    empty when the provider omits it — the client then discovers one from
+    ``/v1/models``.  The vector dimension is deliberately NOT resolved here:
+    it is discovered at runtime from the endpoint (known model families are
+    guessed, anything else is probed before the vec0 tables are built).
     """
-    providers = cfg.get("providers", {})
-    if not isinstance(providers, dict) or not providers:
-        return {"provider": "", "base_url": "", "api_key": "", "model": ""}
-    active = cfg.get("active_model", "")
-    pid = active if active in providers else next(iter(providers))
-    pcfg = providers.get(pid)
-    if not isinstance(pcfg, dict):
-        pcfg = {}
-        pid = next(iter(providers))
-        pcfg = providers.get(pid)
-    if not isinstance(pcfg, dict):
-        return {"provider": "", "base_url": "", "api_key": "", "model": ""}
-    return {
-        "provider": pid,
-        "base_url": pcfg.get("base_url", ""),
-        "api_key": pcfg.get("api_key", ""),
-        "model": pcfg.get("model", ""),
-    }
+    from slife.config import EmbeddingsConfig
+
+    return EmbeddingsConfig.from_dict(cfg).active_endpoint()
 
 
 def get_active_endpoint() -> dict:

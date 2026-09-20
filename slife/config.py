@@ -14,9 +14,9 @@ Model refs: "provider-id/model-name"
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Callable, TypeVar
 
 from slife.env import parse_env_ref, resolve_env, resolve_secret_value
 from slife.a2a.config import A2AConfig
@@ -159,6 +159,58 @@ def _as_name_set(value) -> frozenset[str]:
     if not isinstance(value, list):
         return frozenset()
     return frozenset(v for v in value if isinstance(v, str))
+
+
+def _jsonable(value: Any) -> Any:
+    """The JSON face of one config field value.
+
+    Sets become sorted lists, tuples become lists (JSON has neither), and
+    containers — including nested dataclasses — are walked with THIS function
+    rather than handed to ``dataclasses.asdict``, which deep-copies a tuple
+    field as a tuple and would leave ``to_dict()`` returning something
+    ``json.dumps`` merely tolerates.  Everything else —
+    str/int/float/bool/None — rides as-is.
+    """
+    if isinstance(value, frozenset):
+        return sorted(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            f.name: _jsonable(getattr(value, f.name))
+            for f in fields(value)
+            if not f.name.startswith("_")
+        }
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    return value
+
+
+def _declares_tuple(f) -> bool:
+    """Whether a dataclass field's annotation is a tuple type."""
+    ann = f.type
+    if ann is tuple or (isinstance(ann, str) and ann.startswith("tuple")):
+        return True
+    return getattr(ann, "__origin__", None) is tuple
+
+
+def _nested(cls, data: Any):
+    """The inverse of :func:`_jsonable` for a nested config dataclass.
+
+    ``cls(**data)`` plus one repair: a field the class declares as a tuple
+    arrives as a list, because that is what JSON does to ``to_dict``'s output
+    (``ModelConfig.input_modalities`` is the one today).  Not repairing it
+    would hand the child a config that type-lies — a list where the parent
+    holds a tuple — which is exactly the drift this whole path exists to
+    prevent.  ``None`` for a missing/malformed section, as before.
+    """
+    if not isinstance(data, dict):
+        return None
+    kwargs = dict(data)
+    for f in fields(cls):
+        if _declares_tuple(f) and isinstance(kwargs.get(f.name), list):
+            kwargs[f.name] = tuple(kwargs[f.name])
+    return cls(**kwargs)
 
 
 def _flagged_names(section: list, key: str, flag: object) -> frozenset[str]:
@@ -356,6 +408,36 @@ class EmbeddingsConfig:
             enabled=bool(data.get("enabled", True)),
         )
 
+    def active_endpoint(self) -> dict:
+        """The active provider as one OpenAI-compatible endpoint.
+
+        Returns ``{"provider", "base_url", "api_key", "model"}`` — the single
+        resolver for "which endpoint do we embed against", fed by whichever
+        representation the caller holds (the parsed section here, the raw yaml
+        dict through ``embedding_config._active_endpoint``).  A provider named
+        by ``active_model`` is already normalized by :meth:`from_dict`; an
+        entry whose value is not a mapping is skipped rather than crashed on,
+        since yaml can hold anything.  All-empty means "no endpoint", which
+        every caller reads as the keyword-search fallback.
+        """
+        empty = {"provider": "", "base_url": "", "api_key": "", "model": ""}
+        if not self.providers:
+            return empty
+        pid = self.active_model
+        if pid not in self.providers or not isinstance(self.providers.get(pid), dict):
+            pid = next(
+                (k for k, v in self.providers.items() if isinstance(v, dict)), "",
+            )
+        pcfg = self.providers.get(pid) if pid else None
+        if not isinstance(pcfg, dict):
+            return empty
+        return {
+            "provider": pid,
+            "base_url": pcfg.get("base_url", ""),
+            "api_key": pcfg.get("api_key", ""),
+            "model": pcfg.get("model", ""),
+        }
+
 
 @dataclass
 class WechatConfig:
@@ -378,6 +460,27 @@ class WechatConfig:
         if not isinstance(data, dict):
             return cls()
         return cls(enabled=data.get("enabled", True))
+
+
+#: The fields JSON cannot rebuild on its own — the inverse of what
+#: :func:`_jsonable` does.  One entry per field whose type is not a plain
+#: JSON value; everything absent here is carried verbatim.  This table plus
+#: ``dataclasses.fields()`` IS the inheritance schema (see ``Config.to_dict``).
+_FIELD_DECODERS: dict[str, Callable[[Any], Any]] = {
+    "models": lambda v: [_nested(ModelConfig, m) for m in (v or [])],
+    "memdb_config": lambda v: _nested(MemdbConfig, v),
+    "embeddings_config": EmbeddingsConfig.from_dict,
+    "wechat_config": lambda v: _nested(WechatConfig, v),
+    "a2a_config": lambda v: _nested(A2AConfig, v),
+    # Name sets ride as sorted lists; ``_as_name_set`` is their one reader.
+    "plugins_required": _as_name_set,
+    "autoload_tools": _as_name_set,
+    "autoload_servers": _as_name_set,
+    "disabled_jobs": _as_name_set,
+    "disabled_skills": _as_name_set,
+    "disabled_plugin": _as_name_set,
+    "disabled_builtins": _as_name_set,
+}
 
 
 @dataclass
@@ -465,78 +568,58 @@ class Config:
             self.subagent_config = {"max_subagents": 5}
 
     # ── Serialization (for subagent inheritance) ────────────────────
+    #
+    # The two directions are DERIVED from the dataclass, not written out by
+    # hand.  A hand-written pair is a second definition of this schema, and a
+    # second definition drifts: the previous pair silently dropped
+    # ``embeddings_config`` and ``memory_tool_result_chars`` (so a worker's
+    # health reported ``embeddings=disabled`` while its parent reported
+    # ``enabled``) and never carried ``tool_load_threshold`` / ``autoload_*``
+    # / ``disabled_*`` at all — nine fields, found only because a subagent's
+    # tool search turned out to be keyword-only.  Deriving both directions
+    # from ``dataclasses.fields()`` makes that class of loss impossible: a
+    # new field is inherited unless it is explicitly private.
+    #
+    # ``slife/agent/roles.py``'s parity test asserts the round trip is a fixed
+    # point, which is what keeps "the worker has the same config" true.
 
     def to_dict(self) -> dict:
         """Serialize to a JSON-compatible dict for subagent inheritance.
 
-        Subagents receive this over ``SLIFE_CONFIG`` instead of reading
-        the yaml file — they inherit the main agent's in-memory config.
+        Subagents receive this over ``SLIFE_CONFIG_FILE`` instead of reading
+        the yaml file — they inherit the main agent's in-memory config.  Every
+        public field is carried; ``_``-prefixed fields are process-local (the
+        yaml/tools.yaml paths) and deliberately stay behind.
         """
-        from dataclasses import asdict
-
         return {
-            "models": [asdict(m) for m in self.models],
-            "active_model_ref": self.active_model_ref,
-            "tools": self.tools,
-            "env": self.env,
-            "max_iterations": self.max_iterations,
-            "tool_timeout": self.tool_timeout,
-            "heartbeat_interval": self.heartbeat_interval,
-            "cutin_enabled": self.cutin_enabled,
-            "context_floor": self.context_floor,
-            "context_ceiling": self.context_ceiling,
-            "tool_result_ceiling": self.tool_result_ceiling,
-            "memory_tool_result_chars": self.memory_tool_result_chars,
-            "agent_name": self.agent_name,
-            "memdb_config": asdict(self.memdb_config) if self.memdb_config else None,
-            "embeddings_config": asdict(self.embeddings_config) if self.embeddings_config else None,
-            "wechat_config": asdict(self.wechat_config) if self.wechat_config else None,
-            "a2a_config": asdict(self.a2a_config) if self.a2a_config else None,
-            "subagent_config": self.subagent_config,
-            "plugins_required": sorted(self.plugins_required),
-            "cli_tools": self.cli_tools,
+            f.name: _jsonable(getattr(self, f.name))
+            for f in fields(self)
+            if not f.name.startswith("_")
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
-        """Reconstruct a Config from a dict (inverse of ``to_dict()``).
+        """Reconstruct a Config from a dict — the inverse of ``to_dict()``.
 
-        Used by subagents to deserialize ``SLIFE_CONFIG``.
+        Used by subagents to deserialize the inherited config.  Unknown keys
+        are ignored and absent ones fall back to their dataclass default, so a
+        partial dict still constructs (a worker's config may predate a field
+        the parent grew).
         """
-        models = [ModelConfig(**m) for m in data.get("models", [])]
-
-        mem_cfg = data.get("memdb_config")
-        if isinstance(mem_cfg, dict):
-            mem_cfg = MemdbConfig(**mem_cfg)
-
-        wc_cfg = data.get("wechat_config")
-        if isinstance(wc_cfg, dict):
-            wc_cfg = WechatConfig(**wc_cfg)
-
-        a2a_cfg = data.get("a2a_config")
-        if isinstance(a2a_cfg, dict):
-            a2a_cfg = A2AConfig(**a2a_cfg)
-
-        return Config(
-            models=models,
-            active_model_ref=data.get("active_model_ref", ""),
-            tools=data.get("tools", []),
-            env=data.get("env"),
-            max_iterations=data.get("max_iterations", 30),
-            tool_timeout=data.get("tool_timeout"),
-            heartbeat_interval=data.get("heartbeat_interval", 1800),
-            cutin_enabled=data.get("cutin_enabled", True),
-            context_floor=data.get("context_floor", 0.2),
-            context_ceiling=data.get("context_ceiling", 0.8),
-            tool_result_ceiling=data.get("tool_result_ceiling", 0.2),
-            agent_name=data.get("agent_name", "slife"),
-            memdb_config=mem_cfg,
-            wechat_config=wc_cfg,
-            a2a_config=a2a_cfg,
-            subagent_config=data.get("subagent_config"),
-            plugins_required=_as_name_set(data.get("plugins_required")),
-            cli_tools=data.get("cli_tools", {}),
-        )
+        kwargs = {}
+        for f in fields(cls):
+            if f.name.startswith("_") or f.name not in data:
+                continue
+            decoder = _FIELD_DECODERS.get(f.name)
+            kwargs[f.name] = (
+                decoder(data[f.name]) if decoder is not None else data[f.name]
+            )
+        # The three fields with no dataclass default keep the historical
+        # absent-value fallback, so `from_dict({})` still constructs.
+        kwargs.setdefault("models", [])
+        kwargs.setdefault("tools", [])
+        kwargs.setdefault("active_model_ref", "")
+        return cls(**kwargs)
 
     # ── Config file I/O helpers ─────────────────────────────────────
 

@@ -5,6 +5,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 # pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 
+import json
 import logging
 import os
 
@@ -277,6 +278,56 @@ class TestConfigFromYAML:
         default = Config.from_dict({})
         assert default.plugins_required == frozenset()
         assert Config.from_dict(default.to_dict()).plugins_required == frozenset()
+
+    def test_the_inherited_config_is_a_fixed_point(self, tmp_path):
+        """``to_dict ∘ from_dict == to_dict`` — for EVERY public field.
+
+        The two directions are derived from ``dataclasses.fields()``, so a new
+        field is inherited unless it is explicitly private.  This is the lock on
+        that: a hand-written pair silently dropped nine fields before it (the
+        embeddings section, ``memory_tool_result_chars``, and seven that were
+        never serialized at all), and the symptom surfaced far away as a
+        subagent whose ``system_health`` reported ``embeddings=disabled`` while
+        its parent reported ``enabled``.
+
+        A fixed point rather than a field-by-field list on purpose: it is the
+        schema that is under test, not today's field set.
+        """
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
+            "models": {"providers": {"d": {
+                "api_key": "k",
+                "models": [{"model": "m", "input": ["text", "image"]}],
+            }}},
+            "embeddings": {"providers": {"local": {
+                "base_url": "http://127.0.0.1:1/v1", "api_key": "k",
+                "model": "bge-m3",
+            }}, "active_model": "local"},
+            "plugins": {"required": ["memdb"]},
+            "tools": {"job": [{"name": "j", "enabled": False}]},
+        }))
+        config = Config.from_yaml(str(cfg_path))
+
+        # JSON is what actually rides the wire (a 0600 temp file of json.dumps).
+        first = json.loads(json.dumps(config.to_dict()))
+        inherited = Config.from_dict(first)
+        assert inherited.to_dict() == first
+
+        # The facts that were lost before, asserted by name so a regression
+        # reads as itself rather than as "some field differs".
+        assert inherited.embeddings_config.providers == ("local",) or \
+            set(inherited.embeddings_config.providers) == {"local"}
+        assert inherited.embeddings_config.active_model == "local"
+        assert inherited.memory_tool_result_chars == config.memory_tool_result_chars
+        assert inherited.tool_load_threshold == config.tool_load_threshold
+        assert inherited.plugins_required == frozenset({"memdb"})
+        # A tuple field stays a tuple — JSON flattens it, the decoder restores
+        # it, or the child would hold a config that type-lies.
+        assert inherited.active_model.input_modalities == ("text", "image")
+
+        # Private (process-local) fields stay behind: they name THIS process's
+        # files, and a child must not inherit a path it does not own.
+        assert not {k for k in first if k.startswith("_")}
 
     def test_active_model_selection(self, tmp_path):
         """active_model field selects which model is active."""
