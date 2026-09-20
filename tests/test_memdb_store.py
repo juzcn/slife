@@ -1206,6 +1206,22 @@ class TestSessionStoreSearchTime:
         assert len(result) == 1
 
 
+async def _vec_store(tmp_path, dim: int = 8) -> SessionStore:
+    """A real store with sqlite-vec loaded — or a skip.
+
+    sqlite-vec cannot load on every platform (a macOS Python built without
+    ``enable_load_extension`` is the case CI hits): the store degrades to
+    keyword-only, no vec0 table exists, and a test of the vec metric has
+    nothing to measure.
+    """
+    store = SessionStore(tmp_path / "t.db")
+    await store.setup(embedding_dim=dim)
+    if not store._vec_available:
+        await store.close()
+        pytest.skip("sqlite-vec unavailable on this platform (vec_dim=0)")
+    return store
+
+
 class TestVecStoreMetric:
     """The vec0 tables measure COSINE — the metric the 0–1 ``similarity`` reads.
 
@@ -1226,8 +1242,7 @@ class TestVecStoreMetric:
 
     @pytest.mark.asyncio
     async def test_the_vec0_tables_declare_the_cosine_metric(self, tmp_path):
-        store = SessionStore(tmp_path / "t.db")
-        await store.setup(embedding_dim=8)
+        store = await _vec_store(tmp_path)
         try:
             cursor = await store._c.execute(
                 "SELECT sql FROM sqlite_master WHERE name = 'diary_semantic'",
@@ -1241,23 +1256,23 @@ class TestVecStoreMetric:
     async def test_a_table_on_the_old_metric_is_rebuilt(self, tmp_path):
         """A pre-existing L2 table must not survive: the reading would be
         plausible and wrong rather than visibly broken."""
-        import aiosqlite
-        import sqlite_vec
-
         db = tmp_path / "t.db"
-        conn = await aiosqlite.connect(str(db))
-        await conn.enable_load_extension(True)
-        await conn.load_extension(sqlite_vec.loadable_path())
-        await conn.execute(
+        store = await _vec_store(tmp_path)
+        # Hand-build the pre-change table on the store's own connection (the
+        # extension is loaded there; a macOS Python cannot load it at all,
+        # which is why _vec_store skipped us out otherwise).
+        await store._c.execute("DROP TABLE IF EXISTS diary_semantic")
+        await store._c.execute(
             "CREATE VIRTUAL TABLE diary_semantic USING vec0("
             "turn_embedding float[8], +diary_rowid INTEGER)",
         )
-        await conn.commit()
-        await conn.close()
+        await store._c.commit()
+        await store.close()
 
-        store = SessionStore(db)
+        store = SessionStore(db)          # the fresh start that must rebuild
         await store.setup(embedding_dim=8)
         try:
+            assert store._vec_available, "skip guard should have caught this"
             cursor = await store._c.execute(
                 "SELECT sql FROM sqlite_master WHERE name = 'diary_semantic'",
             )
@@ -1272,8 +1287,7 @@ class TestVecStoreMetric:
         report their cosine instead of clamping to 0.0."""
         from slife.plugins.memdb.search import annotate_scores
 
-        store = SessionStore(tmp_path / "t.db")
-        await store.setup(embedding_dim=8)
+        store = await _vec_store(tmp_path)
         try:
             a = [0.9, 1.4, -0.7, 2.1, 0.3, 0.3, 0.3, 0.3]
             b = [1.1, 1.2, -0.5, 1.9, 0.4, 0.4, 0.4, 0.4]
