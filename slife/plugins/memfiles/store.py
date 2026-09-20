@@ -150,7 +150,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
 
     # ── lifecycle ─────────────────────────────────────────────────
     # ``setup`` / ``reconfigure_for_embedding`` / ``_run_schema`` /
-    # ``_maybe_migrate_vec_dimension`` come from VecStoreLifecycleMixin.
+    # ``_maybe_migrate_vec_tables`` come from VecStoreLifecycleMixin.
 
     @property
     def _c(self):

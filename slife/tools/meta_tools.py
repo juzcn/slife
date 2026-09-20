@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING, ClassVar
 
 from slife.tools.base import Tool, make_params, require_params
 from slife.tools.catalog import NA, effective_from_row
-from slife.tools.catalog_search import SCORE_BAND_HINT, annotate_scores, merge_hybrid
+from slife.plugins.memdb.search import (  # the ONE hybrid-search implementation
+    SCORE_BAND_HINT,
+    annotate_scores,
+    merge_hybrid,
+)
 from slife.tools.whitelist import TOOL_META_CATEGORY
 
 if TYPE_CHECKING:
@@ -168,7 +172,7 @@ class ToolSearchTool(Tool):
         # identical — a semantic leg always returns its k nearest, however far
         # away they are.
         if mode == "hybrid" and results:
-            annotate_scores(results, metric="cosine")
+            annotate_scores(results)
             hint = SCORE_BAND_HINT if not hint else f"{hint} · {SCORE_BAND_HINT}"
 
         rows = []

@@ -104,13 +104,13 @@ class TestAnnotateScores:
     contract (now hosted with the catalog)."""
 
     def test_cosine_maps_to_cosine_similarity(self):
-        from slife.tools.catalog_search import annotate_scores
+        from slife.plugins.memdb.search import annotate_scores
         assert annotate_scores([{"distance": 0.0}])[0]["similarity"] == 1.0
         assert annotate_scores([{"distance": 0.3}])[0]["similarity"] == 0.7
         # Opposite vectors (cosine distance > 1) clip to 0.
         assert annotate_scores([{"distance": 1.3}])[0]["similarity"] == 0.0
 
     def test_keyword_only_results_untouched(self):
-        from slife.tools.catalog_search import annotate_scores
+        from slife.plugins.memdb.search import annotate_scores
         results = annotate_scores([{"full_name": "a", "distance": None}])
         assert "similarity" not in results[0]

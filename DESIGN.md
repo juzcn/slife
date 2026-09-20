@@ -494,7 +494,7 @@ Per-turn token consumption is queryable via **`turn_token_usage`** (`rowid`, `si
 
 ### Search
 
-Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN), B-tree on `created_at` (time range). All `since`/`until` bounds share one grammar via `slife.timeutil.normalize_time_bound`: an ISO datetime/date or the relative words `today` / `yesterday` / `tomorrow` / `now` (offset-aware inputs convert to local time). A bare-date `until` advances a day against a **timestamp** column (`created_at`), but not against a date-only column (memfiles `diary_list`).
+Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN — the metric is DECLARED in the vec0 DDL, `distance_metric=cosine`, because it is what makes the raw distance readable as a 0–1 `similarity`: `1 - distance` is the cosine only when the metric is, and the backends do not all normalize — llama.cpp's raw output, served by local-embed's gguf path, is not unit-norm, so an L2 table cannot yield a cosine at all), B-tree on `created_at` (time range). All `since`/`until` bounds share one grammar via `slife.timeutil.normalize_time_bound`: an ISO datetime/date or the relative words `today` / `yesterday` / `tomorrow` / `now` (offset-aware inputs convert to local time). A bare-date `until` advances a day against a **timestamp** column (`created_at`), but not against a date-only column (memfiles `diary_list`).
 
 | Mode | Best for |
 |------|----------|

@@ -73,14 +73,15 @@ class VecStoreLifecycleMixin:
     """sqlite-vec store lifecycle shared by memdb and memfiles.
 
     ``setup`` / ``reconfigure_for_embedding`` / ``_load_vec_extension`` /
-    ``_run_schema`` / ``_maybe_migrate_vec_dimension`` are the same algorithm
+    ``_run_schema`` / ``_maybe_migrate_vec_tables`` are the same algorithm
     in both stores; this base parameterizes only what differs — the vec0
     semantic tables to migrate, the meta table that records the active
     embedding model, the schema file, and the structured-log keys.
     """
 
     #: vec0 semantic table names this store migrates (dropped + recreated
-    #: when the embedding dimension, or the model, changes).
+    #: when the embedding dimension, the model, or the distance metric
+    #: differs from the schema's).
     _semantic_tables: tuple[str, ...] = ()
     #: Meta table holding the ``embedding_model`` key.
     _meta_table: str = "meta"
@@ -208,23 +209,34 @@ class VecStoreLifecycleMixin:
             self._embedding_dim, keep=keep,
             log_prefix=f"{self._store_log_key}_schema",
         )
-        await self._maybe_migrate_vec_dimension()
+        await self._maybe_migrate_vec_tables()
         await self._post_schema_check()
         logger.debug("schema_ready path=%s", self._db_path)
 
     async def _post_schema_check(self) -> None:
         """Store-specific schema post-check — nothing by default."""
 
-    async def _maybe_migrate_vec_dimension(self) -> None:
-        """Drop + recreate the vec0 tables when model/dimension changed.
+    async def _maybe_migrate_vec_tables(self) -> None:
+        """Drop + recreate the vec0 tables when they no longer match the schema.
 
-        ``CREATE TABLE IF NOT EXISTS`` won't resize an existing vec0 table; a
-        model/dimension change makes old vectors invalid (different vector
-        space), so they are dropped and rebuilt at the current width — a
-        background drainer repopulates them.  The new model identity is
-        recorded in ``_meta_table`` so future same-dimension switches are
-        also detected.  Skips when no embedding backend is configured
-        (dim ≤ 0).
+        ``CREATE TABLE IF NOT EXISTS`` never touches an existing table, so
+        three things have to be compared by reading the LIVE DDL:
+
+        - **dimension** — a change resizes the table, and old vectors are
+          invalid;
+        - **model** — a different embedding model is a different vector space,
+          even at the same width (the identity is kept in ``_meta_table``);
+        - **distance metric** — a table created before the schema declared
+          ``distance_metric=cosine`` still measures L2, and the search's
+          0–1 ``similarity`` is ``1 - distance``: on an L2 table that is not
+          the cosine, so the numbers would be plausible and wrong rather than
+          visibly broken.  Compared against the SCHEMA FILE rather than a
+          constant, so the two cannot drift.
+
+        A rebuilt table is empty, and the background drainer repopulates it —
+        the same path a model switch already takes.  Skips when no embedding
+        backend is configured (dim ≤ 0): there is nothing to size the table
+        for yet, and the next start with a backend does the work.
         """
         import re
 
@@ -237,6 +249,7 @@ class VecStoreLifecycleMixin:
         row = await cursor.fetchone()
         stored_model = row[0] if (row and isinstance(row[0], str)) else ""
         model_identity = self._embedding_model or ""
+        schema_metric = self._schema_vec_metric()
 
         migrated = False
         for sem in self._semantic_tables:
@@ -255,12 +268,16 @@ class VecStoreLifecycleMixin:
             model_changed = (
                 model_identity and stored_model and stored_model != model_identity
             )
+            metric_changed = bool(create_sql) and (
+                self._vec_metric(create_sql) != schema_metric
+            )
             table_missing = not create_sql
-            if dim_changed or model_changed or table_missing:
+            if dim_changed or model_changed or metric_changed or table_missing:
                 logger.info(
-                    "%s_vec_migrate table=%s dim=%s→%s model=%s→%s",
+                    "%s_vec_migrate table=%s dim=%s→%s model=%s→%s metric=%s→%s",
                     self._store_log_key, sem, existing_dim,
                     self._embedding_dim, stored_model, model_identity,
+                    self._vec_metric(create_sql), schema_metric,
                 )
                 await self._c.execute(f"DROP TABLE IF EXISTS {sem}")
                 migrated = True
@@ -280,6 +297,24 @@ class VecStoreLifecycleMixin:
                 (model_identity,),
             )
             await self._c.commit()
+
+    @staticmethod
+    def _vec_metric(create_sql: str) -> str:
+        """The distance metric a vec0 CREATE declares (sqlite-vec's default is L2)."""
+        import re
+
+        m = re.search(
+            r"distance_metric\s*=\s*(\w+)", create_sql or "", re.IGNORECASE,
+        )
+        return m.group(1).lower() if m else "l2"
+
+    def _schema_vec_metric(self) -> str:
+        """The metric this store's ``schema.sql`` declares for its vec0 tables."""
+        try:
+            text = (self._schema_dir / "schema.sql").read_text(encoding="utf-8")
+        except OSError:
+            return "l2"          # unreadable schema → do not force a rebuild
+        return self._vec_metric(text)
 
 
 class SessionStore(VecStoreLifecycleMixin):

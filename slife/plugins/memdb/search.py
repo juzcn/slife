@@ -13,10 +13,10 @@ logger = logging.getLogger(__name__)
 # 60 is the standard value from the literature.
 RRF_K = 60
 
-#: Shared 0–1 score guidance, appended to hybrid-search hints.  Same
-#: wording on turn_search / cabinet_search / mcp_tool_search (the MCP
-#: plugin mirrors this contract in its own search.py) so the normalized
-#: score reads identically across every hybrid retrieval path.
+#: Shared 0–1 score guidance, appended to hybrid-search hints.  ONE wording
+#: and ONE implementation (``annotate_scores`` below) for every hybrid
+#: retrieval path — ``turn_search`` / ``cabinet_search`` / ``tool_search`` —
+#: so the normalized score reads identically wherever it is asked for.
 SCORE_BAND_HINT = (
     "similarity is a normalized 0–1 readout (higher = more relevant; "
     "≈1 identical, ≥0.5 close, 0.1–0.5 weak, <0.1 mostly unrelated) — "
@@ -25,40 +25,37 @@ SCORE_BAND_HINT = (
 )
 
 
-def annotate_scores(results: list[dict], metric: str = "l2") -> list[dict]:
+def annotate_scores(results: list[dict]) -> list[dict]:
     """Add a normalized 0–1 ``similarity`` next to each result's raw
     ``distance`` (mutates *results* in place, returns it for chaining).
 
-    **One scale, all three hybrid paths**: whatever the store's raw distance
-    is, ``similarity`` reports the same quantity — the COSINE similarity.
-    That is what a neighbourhood in an embedding space actually means, and it
-    is what :data:`SCORE_BAND_HINT` reads.  Two stores, two metrics, one
-    number, so a caller comparing across searches is not comparing apples to
-    oranges.
+    **One metric, all three hybrid paths.**  ``similarity`` is the COSINE
+    similarity — what a neighbourhood in an embedding space actually means,
+    and what :data:`SCORE_BAND_HINT` reads — and cosine is what every store
+    measures: the vec0 tables declare ``distance_metric=cosine``, and the tool
+    catalog scores cosine in Python.  So the conversion is ``1 - distance``
+    everywhere, and a caller comparing across searches is never comparing
+    apples to oranges.
 
-    - ``l2`` — the vec0 stores (``turn_search``, ``cabinet_search``), which
-      rank by Euclidean distance: ``cos = 1 - d²/2``.  Exact, not an
-      approximation, because the stores hold **unit-norm** vectors — every
-      backend normalizes (``normalize_embeddings=True`` in the local
-      backends; the hosted models return unit vectors), which is the
-      identity ``d² = 2 - 2·cos``.
-    - ``cosine`` — the tool catalog, which scores in Python: ``cos = 1 - d``.
+    It used to convert an L2 distance with ``1 - d²/2``, which is the cosine
+    only for **unit-norm** vectors — and nothing here established that.  The
+    transformer backend normalizes, but llama.cpp's raw output (local-embed's
+    gguf path) does not, so distances ran far past the [0,2] that identity
+    allows and the clamp turned every strong hit into ``0.0``; at smaller
+    distances it produced plausible-but-wrong numbers instead (0.9 where the
+    cosine was 0.99).  Measuring cosine removes the assumption rather than
+    relying on it: a vector's norm is not part of what "how close is this
+    document" means.
 
-    Either way the map is strictly monotonic, so ranking is untouched; it
-    only rescales onto the readable axis.  Keyword-only results (``distance``
-    None) get no ``similarity`` key — nothing measured them, and inventing a
-    number would be a lie about the match.
+    Keyword-only results (``distance`` None) get no ``similarity`` key —
+    nothing measured them, and inventing a number would be a lie about the
+    match.
     """
     for r in results:
         d = r.get("distance")
         if d is None:
             continue
-        if metric == "cosine":
-            r["similarity"] = round(max(0.0, 1.0 - d), 4)
-        else:
-            # 1 - d²/2, clamped: a unit-vector distance of 2 is exactly
-            # opposite (cos = -1), which reads as 0 on the 0-1 axis.
-            r["similarity"] = round(max(0.0, 1.0 - (d * d) / 2.0), 4)
+        r["similarity"] = round(max(0.0, 1.0 - d), 4)
     return results
 
 

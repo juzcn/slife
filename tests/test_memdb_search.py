@@ -124,34 +124,32 @@ class TestMergeHybrid:
 
 
 class TestAnnotateScores:
-    """annotate_scores 0–1 normalizes the semantic distance presented to
-    the LLM — one contract shared with cabinet_search / mcp_tool_search
-    (the MCP plugin mirrors this function)."""
+    """annotate_scores turns the store's raw distance into the 0–1 readout the
+    LLM sees — ONE contract and ONE implementation for every hybrid path
+    (turn_search / cabinet_search / tool_search), so a turn hit and a tool hit
+    scored 0.9 mean the same thing."""
 
-    def test_l2_maps_to_the_SAME_cosine_the_cosine_metric_reports(self):
-        """One scale across all three hybrid paths — a turn hit and a tool hit
-        scored 0.9 mean the same thing.
+    def test_every_path_reports_the_cosine(self):
+        """The map is ``1 - distance``, because every store measures cosine:
+        the vec0 tables declare ``distance_metric=cosine`` and the catalog
+        scores cosine in Python.
 
-        ``d² = 2 - 2·cos`` holds because the stores hold unit-norm vectors, so
-        the L2 store can report the true cosine rather than an arbitrary
-        monotone rescale of its own distance.
+        It is NOT ``1 - d²/2`` — that is the cosine only for unit-norm vectors,
+        and the backends do not all normalize (llama.cpp's raw output, served
+        by local-embed's gguf path, is not unit-norm), so the old branch read
+        far past the [0,2] that identity allows and clamped strong hits to 0.0.
         """
         assert annotate_scores([{"distance": 0.0}])[0]["similarity"] == 1.0
-        assert annotate_scores([{"distance": 1.0}])[0]["similarity"] == 0.5
-        assert annotate_scores([{"distance": 2.0}])[0]["similarity"] == 0.0
+        assert annotate_scores([{"distance": 0.1}])[0]["similarity"] == 0.9
+        assert annotate_scores([{"distance": 0.6}])[0]["similarity"] == 0.4
+        # A cosine distance past 1 is opposite-or-worse; the 0–1 axis clips it.
+        assert annotate_scores([{"distance": 1.5}])[0]["similarity"] == 0.0
 
-        # The same vector pair, as each store's own metric reports it
-        # (measured on the live db: euclid 0.252029 / cosine 0.031759).
-        l2 = annotate_scores([{"distance": 0.252029}], metric="l2")[0]
-        cos = annotate_scores([{"distance": 0.031759}], metric="cosine")[0]
-        assert l2["similarity"] == cos["similarity"] == 0.9682
-
-    def test_cosine_metric_maps_as_true_cosine_similarity(self):
-        r = annotate_scores([{"distance": 0.2}], metric="cosine")[0]
-        assert r["similarity"] == round(0.8, 4)  # 1 − 0.2
-        # Clipped: cosine distance beyond 1 (opposite directions) → 0.
-        r = annotate_scores([{"distance": 1.5}], metric="cosine")[0]
-        assert r["similarity"] == 0.0
+    def test_the_reported_regression_now_reads_as_a_cosine(self):
+        """The reported turn hit: a strong match whose raw distance was 18.3
+        (non-unit vectors).  On the cosine metric that pair sits near 1.0; on
+        the old L2 branch ``1 - d²/2`` clamped it to 0.0."""
+        assert annotate_scores([{"distance": 0.0115}])[0]["similarity"] == 0.9885
 
     def test_keyword_only_results_get_no_key(self):
         results = annotate_scores([{"distance": None}, {"x": 1}])

@@ -174,8 +174,10 @@ END;
 -- 一个文档 → 一个或多个 chunk（长文按段落切分）。
 -- doc_id 引用 notes.id / diary.id / files.id；chunk_index 0 起。
 -- 结构对齐 memdb diary_semantic，方便复用嵌入/替换逻辑。
+-- distance_metric=cosine — see the memdb schema for why the metric (not the
+-- formula) is what makes a raw distance readable as a 0–1 similarity.
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_semantic USING vec0(
-    doc_embedding float[1536],
+    doc_embedding float[1536] distance_metric=cosine,
     +doc_id       INTEGER,
     +chunk_index  INTEGER,
     +summary      TEXT,
@@ -183,7 +185,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_semantic USING vec0(
     +created_at   TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS diary_semantic USING vec0(
-    doc_embedding float[1536],
+    doc_embedding float[1536] distance_metric=cosine,
     +doc_id       INTEGER,
     +chunk_index  INTEGER,
     +summary      TEXT,
@@ -191,7 +193,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS diary_semantic USING vec0(
     +created_at   TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS files_semantic USING vec0(
-    doc_embedding float[1536],
+    doc_embedding float[1536] distance_metric=cosine,
     +doc_id       INTEGER,
     +chunk_index  INTEGER,
     +summary      TEXT,
@@ -199,7 +201,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS files_semantic USING vec0(
     +created_at   TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS reports_semantic USING vec0(
-    doc_embedding float[1536],
+    doc_embedding float[1536] distance_metric=cosine,
     +doc_id       INTEGER,
     +chunk_index  INTEGER,
     +summary      TEXT,

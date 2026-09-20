@@ -79,8 +79,19 @@ END;
 -- One turn → one or more chunks (long turns are split by paragraph).
 -- diary_rowid references diary.rowid; chunk_index is 0-based within a turn.
 -- search_semantic groups results by diary_rowid (best chunk wins).
+--
+-- ``distance_metric=cosine`` — a vec0 option on the vector column: the raw
+-- ``distance`` this store returns is the
+-- number a search reports as its 0–1 ``similarity``, and only the COSINE
+-- metric survives the trip — ``1 - distance`` is the cosine whatever the
+-- vector's length.  vec0 defaults to L2, whose distance only converts to a
+-- cosine for UNIT vectors, and nothing here establishes that: the harness
+-- normalizes on the transformer backend but llama.cpp's raw output
+-- (local-embed's gguf path) is not normalized, so L2 distances ran far past
+-- the [0,2] that identity allows and every strong hit read as 0.0.
+-- A vector's norm is not part of what "how close is this document" means.
 CREATE VIRTUAL TABLE IF NOT EXISTS diary_semantic USING vec0(
-    turn_embedding float[1536],
+    turn_embedding float[1536] distance_metric=cosine,
     +diary_rowid   INTEGER,
     +chunk_index   INTEGER,
     +summary       TEXT,

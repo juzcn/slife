@@ -1206,6 +1206,98 @@ class TestSessionStoreSearchTime:
         assert len(result) == 1
 
 
+class TestVecStoreMetric:
+    """The vec0 tables measure COSINE — the metric the 0–1 ``similarity`` reads.
+
+    A vec0 table's metric is baked into its DDL, and ``1 - distance`` is only
+    the cosine when that metric IS cosine.  The tables used to take sqlite-vec's
+    L2 default and the search converted with ``1 - d²/2`` — the identity that
+    holds for unit-norm vectors, which nothing here establishes: llama.cpp's
+    raw output (local-embed's gguf path) is not normalized, so distances ran
+    past the [0,2] that identity allows and every strong hit clamped to 0.0.
+    """
+
+    @staticmethod
+    def _cosine(a, b) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        na = sum(x * x for x in a) ** 0.5
+        nb = sum(x * x for x in b) ** 0.5
+        return dot / (na * nb)
+
+    @pytest.mark.asyncio
+    async def test_the_vec0_tables_declare_the_cosine_metric(self, tmp_path):
+        store = SessionStore(tmp_path / "t.db")
+        await store.setup(embedding_dim=8)
+        try:
+            cursor = await store._c.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'diary_semantic'",
+            )
+            ddl = (await cursor.fetchone())[0]
+            assert "distance_metric=cosine" in ddl
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_a_table_on_the_old_metric_is_rebuilt(self, tmp_path):
+        """A pre-existing L2 table must not survive: the reading would be
+        plausible and wrong rather than visibly broken."""
+        import aiosqlite
+        import sqlite_vec
+
+        db = tmp_path / "t.db"
+        conn = await aiosqlite.connect(str(db))
+        await conn.enable_load_extension(True)
+        await conn.load_extension(sqlite_vec.loadable_path())
+        await conn.execute(
+            "CREATE VIRTUAL TABLE diary_semantic USING vec0("
+            "turn_embedding float[8], +diary_rowid INTEGER)",
+        )
+        await conn.commit()
+        await conn.close()
+
+        store = SessionStore(db)
+        await store.setup(embedding_dim=8)
+        try:
+            cursor = await store._c.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'diary_semantic'",
+            )
+            assert "distance_metric=cosine" in (await cursor.fetchone())[0]
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_an_unnormalized_pair_reads_as_its_true_cosine(self, tmp_path):
+        """The regression, at the level where the metric lives: non-unit
+        vectors — the shape the reported turn hit had (distance 18.3) — now
+        report their cosine instead of clamping to 0.0."""
+        from slife.plugins.memdb.search import annotate_scores
+
+        store = SessionStore(tmp_path / "t.db")
+        await store.setup(embedding_dim=8)
+        try:
+            a = [0.9, 1.4, -0.7, 2.1, 0.3, 0.3, 0.3, 0.3]
+            b = [1.1, 1.2, -0.5, 1.9, 0.4, 0.4, 0.4, 0.4]
+            await store._c.execute(
+                "INSERT INTO diary_semantic(turn_embedding, diary_rowid, "
+                "chunk_index) VALUES (?, 1, 0)",
+                (_serialize_f32(a),),
+            )
+            await store._c.commit()
+            cursor = await store._c.execute(
+                "SELECT distance FROM diary_semantic "
+                "WHERE turn_embedding MATCH ? AND k = 1",
+                (_serialize_f32(b),),
+            )
+            distance = (await cursor.fetchone())[0]
+
+            similarity = annotate_scores([{"distance": distance}])[0]["similarity"]
+            assert similarity == round(self._cosine(a, b), 4)
+            # …where the old L2 reading of the same pair was a clamped 0.0.
+            assert similarity > 0.9
+        finally:
+            await store.close()
+
+
 class TestSessionStoreSearchSemantic:
     """Tests for search_semantic."""
 
