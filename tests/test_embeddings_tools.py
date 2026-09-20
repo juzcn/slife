@@ -257,3 +257,132 @@ class TestEnableEmbeddingsTool:
         memfiles_client.call_tool.assert_called_once_with(
             "__memfiles_reload_semantic", {"enabled": False},
         )
+
+
+# ── Hot reload: which indexes follow the section ──────────────────────
+
+
+class TestHotReloadTargets:
+    """The reload loop is a manifest over the plugin specs, plus the host's own
+    index — the tool catalog's drainer, which is not a plugin and used to be
+    left out of the hand-written pair, so a provider switch left the tool index
+    embedding against the replaced endpoint until restart.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_loop_is_driven_by_the_specs_not_a_name_list(
+        self, tmp_path, monkeypatch,
+    ):
+        """A plugin declares its reload tool; the loop needs no edit for it.
+
+        This is the property that failed: the set of semantic indexes lived in
+        a hard-written tuple inside the reload helper, so an index anywhere
+        else (the host's own) had to be remembered separately — and was not.
+        """
+        from types import SimpleNamespace
+
+        from slife.plugins import spec as spec_module
+        from slife.plugins.spec import PluginSpec
+        from slife.tools import embeddings as emb_tools
+
+        client = MagicMock()
+        client.call_tool = AsyncMock(return_value='{"status": "rebuilt"}')
+        # Patch the registry the helper reads (it imports it at call time).
+        monkeypatch.setattr(spec_module, "PLUGIN_SPECS", {
+            "third-index": PluginSpec(
+                "third-index", "some.module", ctx_field="third_client",
+                semantic_reload_tool="__third_reload_semantic",
+            ),
+        }, raising=False)
+
+        ctx = SimpleNamespace(third_client=client, catalog=None, config=None)
+        notes = await emb_tools._hot_reload(ctx, enabled=True)
+        client.call_tool.assert_called_once_with(
+            "__third_reload_semantic", {"enabled": True},
+        )
+        assert "third-index: rebuilt" in notes
+
+    @pytest.mark.asyncio
+    async def test_a_declared_index_with_no_client_says_restart_to_apply(
+        self, monkeypatch,
+    ):
+        from types import SimpleNamespace
+
+        from slife.plugins import spec as spec_module
+        from slife.plugins.spec import PluginSpec
+        from slife.tools import embeddings as emb_tools
+
+        monkeypatch.setattr(spec_module, "PLUGIN_SPECS", {
+            "memdb": PluginSpec(
+                "memdb", "m", ctx_field="memdb_client",
+                semantic_reload_tool="__memory_reload_semantic",
+            ),
+        }, raising=False)
+        ctx = SimpleNamespace(memdb_client=None, catalog=None, config=None)
+        notes = await emb_tools._hot_reload(ctx, enabled=True)
+        assert "memdb: plugin not connected — restart to apply" in notes
+
+    @pytest.mark.asyncio
+    async def test_the_tool_index_is_reloaded_with_the_section_it_was_given(
+        self,
+    ):
+        """The host's index is rebuilt against the NEW section, in-process.
+
+        The manager holds the endpoint it was constructed with, so the section
+        has to be handed over: re-reading the file inside the reload would also
+        resolve a different path than the tool wrote under ``--config``.
+        """
+        from types import SimpleNamespace
+
+        from slife.tools import embeddings as emb_tools
+
+        manager = MagicMock()
+        manager.reload = AsyncMock(return_value={"status": "ok"})
+        manager.state = "indexing"
+        catalog = SimpleNamespace(semantic_manager=manager)
+        config = SimpleNamespace(embeddings_config="OLD")
+        ctx = SimpleNamespace(catalog=catalog, config=config)
+
+        section = {"providers": {"p": {"base_url": "http://x/v1"}}, "active_model": "p"}
+        notes = await emb_tools._apply_embeddings_change(ctx, section, enabled=True)
+
+        manager.reload.assert_awaited_once()
+        assert manager.reload.await_args.args[0] is config.embeddings_config
+        assert "tool catalog: indexing" in notes
+        # …and the process's config now describes the section that was written,
+        # which is what system_health and the NEXT subagent's config see.
+        assert config.embeddings_config.active_model == "p"
+
+    @pytest.mark.asyncio
+    async def test_switching_semantic_search_off_stops_the_tool_index_too(self):
+        """``embeddings_enable(false)`` must stop every index — the tool index
+        kept draining new tool rows while the two plugins stopped, which is the
+        same asymmetry seen from the other side."""
+        from types import SimpleNamespace
+
+        from slife.tools import embeddings as emb_tools
+
+        manager = MagicMock()
+        manager.disable = AsyncMock()
+        ctx = SimpleNamespace(
+            catalog=SimpleNamespace(semantic_manager=manager),
+            config=SimpleNamespace(embeddings_config="OLD"),
+        )
+        notes = await emb_tools._apply_embeddings_change(ctx, {}, enabled=False)
+        manager.disable.assert_awaited_once()
+        assert "tool catalog: disabled" in notes
+
+    @pytest.mark.asyncio
+    async def test_a_worker_owns_no_index_and_says_nothing_about_one(self):
+        """A worker queries its parent's index; it has nothing to reload, and
+        "restart to apply" would promise something its restart cannot give."""
+        from types import SimpleNamespace
+
+        from slife.tools import embeddings as emb_tools
+
+        ctx = SimpleNamespace(
+            catalog=SimpleNamespace(semantic_manager=None),
+            config=SimpleNamespace(embeddings_config="OLD"),
+        )
+        notes = await emb_tools._apply_embeddings_change(ctx, {}, enabled=True)
+        assert "tool catalog" not in notes

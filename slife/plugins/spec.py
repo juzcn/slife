@@ -66,6 +66,13 @@ class PluginSpec:
             to ``run_plugin_server(sockets=[...])``; every other plugin lets
             the OS assign one and signals it.  Declared here so the loader
             states the contract instead of a docstring claiming an exception.
+        semantic_reload_tool: Internal tool that rebuilds (or drops) this
+            plugin's semantic index after the ``embeddings`` section changes.
+            Declared so the hot-reload loop is a manifest over the specs, not a
+            hand-written list of plugin names — a list is a second place the
+            set of indexes is recorded, and the tool catalog's own index (in
+            the HOST process, not a plugin) was missing from the first one.
+            ``None`` = this plugin holds no index.
     """
 
     name: str
@@ -77,6 +84,7 @@ class PluginSpec:
     after_ready_method: str | None = None
     health: bool = True
     fixed_port: bool = False
+    semantic_reload_tool: str | None = None
 
 
 #: The built-in child plugins, in deterministic start order.
@@ -100,10 +108,12 @@ _PLUGIN_DEFS: tuple[PluginSpec, ...] = (
     PluginSpec(
         "memdb", "slife.plugins.memdb.server",
         ctx_field="memdb_client",
+        semantic_reload_tool="__memory_reload_semantic",
     ),
     PluginSpec(
         "memfiles", "slife.plugins.memfiles.server",
         ctx_field="memfiles_client",
+        semantic_reload_tool="__memfiles_reload_semantic",
     ),
     PluginSpec(
         "wechat", "slife.plugins.wechat.server",

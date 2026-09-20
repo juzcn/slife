@@ -14,10 +14,14 @@ active provider.  The vector dimension is never configured — it is
 discovered from the endpoint at runtime (known model families guessed,
 anything else probed before the vec0 tables are built).
 
-After a persist, the running memdb + memfiles plugins are asked to reload
-their semantic index via their internal ``__memory_reload_semantic`` /
-``__memfiles_reload_semantic`` tools (hot reload).  A failed reload degrades
-to "takes effect on restart" — it never blocks the persist.
+After a persist the change is adopted and then every semantic index that
+follows the section is rebuilt: the ``memdb`` / ``memfiles`` plugins through
+their internal reload tools (declared per plugin as ``semantic_reload_tool``)
+and the host's own tool-catalog drainer in-process.  One sequence, one entry
+point (``_apply_embeddings_change``) — the tool catalog used to be missing from
+it, so a provider switch left the tool index embedding against the replaced
+endpoint until restart while the two indexes beside it followed.  A failed
+reload degrades to "takes effect on restart" — it never blocks the persist.
 """
 
 from __future__ import annotations
@@ -58,36 +62,103 @@ def _active_ref(cfg: dict) -> str:
 
 
 async def _hot_reload(ctx, enabled: bool = True) -> str:
-    """Ask the running memdb + memfiles plugins to reload their semantic index.
+    """Rebuild or drop every semantic index that follows the ``embeddings`` section.
 
-    ``enabled=True`` → manager.enable() (rebuild); ``False`` → manager.disable().
-    Each plugin has an internal ``__*_reload_semantic`` tool.  Failures are
-    best-effort — a plugin that is down (or not started) degrades to
-    "takes effect on restart".
+    ONE loop over the plugin specs that declare ``semantic_reload_tool``, plus
+    the semantic index that is NOT a plugin: the host's own tool catalog.  The
+    spec field is what keeps the set of indexes in one place — the previous
+    hand-written pair of plugin names meant the tool catalog was never reloaded
+    at all, so switching the active provider (or switching semantic search off)
+    left the tool index embedding against the endpoint it was built with until
+    the next restart, while the two indexes beside it followed the change.
+
+    ``enabled=True`` → the index rebuilds against the current section;
+    ``False`` → it drops its embedder (index on disk kept).  Failures stay
+    best-effort: an index that cannot reload degrades to "takes effect on
+    restart", which is a fact the caller reports rather than an error.
 
     ``client.call_tool`` is async (MCPClient) — awaiting is mandatory; a bare
     call returns an un-awaited coroutine, the reload RPC is never sent, and the
     coroutine leaks with a "never awaited" warning.
     """
     notes: list[str] = []
-    targets = (
-        ("memdb", getattr(ctx, "memdb_client", None), "__memory_reload_semantic"),
-        ("memfiles", getattr(ctx, "memfiles_client", None), "__memfiles_reload_semantic"),
-    )
-    for name, client, tool in targets:
+    from slife.plugins.spec import PLUGIN_SPECS
+
+    for spec in PLUGIN_SPECS.values():
+        if spec.semantic_reload_tool is None:
+            continue
+        client = getattr(ctx, spec.ctx_field, None) if spec.ctx_field else None
         if client is None:
-            notes.append(f"{name}: plugin not connected — restart to apply")
+            notes.append(f"{spec.name}: plugin not connected — restart to apply")
             continue
         try:
-            raw = await client.call_tool(tool, {"enabled": enabled})
+            raw = await client.call_tool(spec.semantic_reload_tool, {"enabled": enabled})
             if isinstance(raw, str):
                 raw = json.loads(raw)
             status = raw.get("status", raw) if isinstance(raw, dict) else raw
-            notes.append(f"{name}: {status}")
+            notes.append(f"{spec.name}: {status}")
         except Exception as e:
-            logger.warning("embeddings_reload_failed plugin=%s err=%s", name, e)
-            notes.append(f"{name}: reload failed ({e}) — restart to apply")
-    return "; ".join(notes)
+            logger.warning("embeddings_reload_failed plugin=%s err=%s", spec.name, e)
+            notes.append(f"{spec.name}: reload failed ({e}) — restart to apply")
+
+    notes.append(await _reload_tool_index(ctx, enabled))
+    return "; ".join(n for n in notes if n)
+
+
+async def _reload_tool_index(ctx, enabled: bool) -> str:
+    """Reload the host's tool-catalog index — this process's own, in-process.
+
+    Present only where this process owns the index (``caps.catalog_drainer``):
+    a subagent worker queries its parent's index and owns none, so there is
+    nothing here to reload — and it says nothing rather than "restart to apply",
+    which would be a promise a worker's restart cannot keep.
+    """
+    manager = getattr(getattr(ctx, "catalog", None), "semantic_manager", None)
+    if manager is None:
+        return ""
+    name = "tool catalog"
+    try:
+        section = getattr(getattr(ctx, "config", None), "embeddings_config", None)
+        if not enabled:
+            await manager.disable()
+            return f"{name}: disabled"
+        if section is None:
+            return f"{name}: no config in this context — restart to apply"
+        await manager.reload(section)
+        return f"{name}: {manager.state}"
+    except Exception as e:
+        logger.warning("embeddings_reload_failed index=%s err=%s", name, e)
+        return f"{name}: reload failed ({e}) — restart to apply"
+
+
+def _adopt_section(ctx, section: dict) -> None:
+    """Put a freshly written ``embeddings`` section into this process's config.
+
+    The tools write slife.yaml; the process holds a ``Config`` snapshot — and a
+    worker holds ONLY the snapshot, so this is the one place a runtime change
+    can reach it.  Everything that reads the section after the write depends on
+    it: the health fact (``embeddings=enabled|disabled`` — and *which* provider
+    is active), every index reload above, and the config a LATER subagent
+    inherits.  Left alone, the report and the next spawn would describe the
+    endpoint that was just replaced.
+    """
+    cfg = getattr(ctx, "config", None)
+    if cfg is None:
+        return
+    from slife.config import EmbeddingsConfig
+
+    cfg.embeddings_config = EmbeddingsConfig.from_dict(section)
+
+
+async def _apply_embeddings_change(ctx, section: dict, enabled: bool = True) -> str:
+    """After a persist: adopt the new section, then rebuild what depends on it.
+
+    One entry point for all four mutation tools (set / switch / remove /
+    enable) — the sequence is the same for each, and a tool that forgot a step
+    would leave one consumer of the section describing the previous one.
+    """
+    _adopt_section(ctx, section)
+    return await _hot_reload(ctx, enabled)
 
 
 class _EmbeddingsConfigTool(_ConfigPathMixin, Tool):
@@ -229,7 +300,9 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
 
         write_config(self._config_path, raw)
         action = "Created" if created else "Updated"
-        reload_note = await _hot_reload(getattr(self, "_ctx", None), enabled=True)
+        reload_note = await _apply_embeddings_change(
+            getattr(self, "_ctx", None), emb, enabled=True,
+        )
         logger.info("embeddings_model_%s provider=%s", action.lower(), pid)
         return f"[OK] {action} embedding provider `{pid}`. {reload_note}"
 
@@ -273,7 +346,9 @@ class SwitchEmbeddingsTool(_EmbeddingsConfigTool):
         old = _active_ref(emb) or "(none)"
         emb["active_model"] = pid
         write_config(self._config_path, raw)
-        reload_note = await _hot_reload(getattr(self, "_ctx", None), enabled=True)
+        reload_note = await _apply_embeddings_change(
+            getattr(self, "_ctx", None), emb, enabled=True,
+        )
         logger.info("embeddings_model_switched from=%s to=%s", old, pid)
         return f"[OK] Switched active embedding provider from `{old}` to `{pid}`. {reload_note}"
 
@@ -325,7 +400,9 @@ class RemoveEmbeddingsTool(_EmbeddingsConfigTool):
             raw.pop(_EMBEDDINGS_KEY, None)
 
         write_config(self._config_path, raw)
-        reload_note = await _hot_reload(getattr(self, "_ctx", None), enabled=True)
+        reload_note = await _apply_embeddings_change(
+            getattr(self, "_ctx", None), emb, enabled=True,
+        )
         logger.info("embeddings_model_removed provider=%s", pid)
         return f"[OK] Removed `{pid}`. {reload_note}"
 
@@ -361,7 +438,9 @@ class EnableEmbeddingsTool(_EmbeddingsConfigTool):
             raw[_EMBEDDINGS_KEY] = emb
         emb["enabled"] = enabled
         write_config(self._config_path, raw)
-        reload_note = await _hot_reload(getattr(self, "_ctx", None), enabled=enabled)
+        reload_note = await _apply_embeddings_change(
+            getattr(self, "_ctx", None), emb, enabled=enabled,
+        )
         state = "enabled" if enabled else "disabled"
         logger.info("embeddings_%s", state)
         return f"[OK] Semantic search {state}. {reload_note}"
