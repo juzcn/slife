@@ -854,6 +854,36 @@ if [ -f "$_TOOLS" ] && ! grep -qE '^[[:space:]]{0,3}["'"'"']?tool_load["'"'"']?[
         && echo -e "  ${YELLOW}upgraded tools.yaml — added the tool_load section (threshold 100)${NC}"
 fi
 
+# "Did the bundled default move?" — compared over the DEFAULT's own files.
+#
+# A whole-tree diff (and a file-count check) also counts what the USER's tree
+# picked up that the default does not ship: `SKILL.md:Zone.Identifier` written
+# by a Windows tool reading the file over a UNC path, `.DS_Store`, `Thumbs.db`,
+# an editor's backup, the user's own notes.  That read as "the user's skill
+# changed", and seeded a <name>.<version> copy of a skill whose bundled content
+# was identical all along.  The question is only whether the DEFAULT moved, so
+# only the default's files are compared.
+#
+# A missing `cmp` (diffutils is not guaranteed on a minimal install) used to
+# fail the test silently — the same spurious seed by the other route — so the
+# tool's absence is reported once and then treated as "unchanged", which never
+# writes anything into the user's tree.
+_trees_match() {
+    local src="$1" dst="$2" rel
+    [ -d "$dst" ] || return 1
+    if ! command -v cmp >/dev/null 2>&1; then
+        if [ -z "${_NO_CMP_WARNED:-}" ]; then
+            _NO_CMP_WARNED=1
+            echo -e "  ${YELLOW}⚠ cmp not found — cannot compare bundled defaults; seeding nothing${NC}"
+        fi
+        return 0
+    fi
+    while IFS= read -r rel; do
+        cmp -s "$src/$rel" "$dst/$rel" 2>/dev/null || return 1
+    done < <(cd "$src" && find . -type f -print 2>/dev/null)
+    return 0
+}
+
 # Skills: copy the bundled skills into ~/.slife/skills/.  A skill that
 # doesn't exist yet is copied as-is; an existing skill of the SAME NAME is
 # left untouched — a changed bundled default is seeded into ~/.slife/ as
@@ -869,7 +899,7 @@ if [ -d "$SKILLS_SRC" ]; then
         _dst="$SKILLS_DST/$_name"
         if [ -d "$_dst" ]; then
             # Same content as the bundled default — do nothing, silently.
-            if diff -rq "$_skill" "$_dst" >/dev/null 2>&1; then
+            if _trees_match "$_skill" "$_dst"; then
                 continue
             fi
             # Never overwrite the user's skill, never prompt — seed into ~/.slife/

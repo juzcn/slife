@@ -768,12 +768,21 @@ try {
 
     # Recursive content comparison.  Only a REAL difference triggers seeding
     # a versioned copy; identical trees are left untouched silently.
+    # "Did the bundled default move?" — compared over the DEFAULT's own files.
+    #
+    # Counting the files first (as this did) also counts what the USER's tree
+    # picked up that the default does not ship — a note they dropped in, an
+    # editor's backup, `Thumbs.db`, `SKILL.md:Zone.Identifier` (the Windows
+    # mark-of-the-web, which lands as a real sibling file the moment a skill
+    # crosses to a Linux filesystem) — and read it as "the user's skill
+    # changed", seeding a <name>.<version> copy of a skill whose bundled
+    # content was identical all along.  The question is only whether the
+    # DEFAULT moved, so only the default's files are compared.  Mirrors
+    # `_trees_match` in install.sh.
     function Test-SameDir {
         param([string]$srcDir, [string]$dstDir)
         if (-not (Test-Path $dstDir)) { return $false }
         $srcFiles = @(Get-ChildItem $srcDir -Recurse -File -Force)
-        $dstFiles = @(Get-ChildItem $dstDir -Recurse -File -Force)
-        if ($srcFiles.Count -ne $dstFiles.Count) { return $false }
         $srcRoot = (Resolve-Path $srcDir).Path.TrimEnd('\')
         foreach ($f in $srcFiles) {
             $rel = $f.FullName.Substring($srcRoot.Length).TrimStart('\')
