@@ -181,12 +181,12 @@ def _isolate_a2a_inbound_state(tmp_path):
     """Point the A2A inbound-task store at a throwaway file for every test.
 
     ``A2AMesh`` opens the store on construction, and in dev mode its default
-    path resolves to ``<CWD>/a2a_inbound.json`` — the repo root.  Without this
+    path resolves to ``<CWD>/a2a_inbound.yaml`` — the repo root.  Without this
     override a test would read (and then rewrite) the developer's real state,
     making the stale-task assertions depend on whatever the last run left
     behind.
     """
-    path = tmp_path / "a2a_inbound.json"
+    path = tmp_path / "a2a_inbound.yaml"
     os.environ["A2A_INBOUND_FILE"] = str(path)
     yield path
     os.environ.pop("A2A_INBOUND_FILE", None)

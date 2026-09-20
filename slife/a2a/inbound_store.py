@@ -22,12 +22,16 @@ instead of walking into a refused ``task_response``.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from ruamel.yaml import YAMLError
+
+from slife.tools._config_io import write_config
+from slife.tools._yaml_doc import new_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +46,18 @@ def _iso_now() -> str:
 
 
 def default_path() -> Path:
-    """``<slife data dir>/a2a_inbound.json``.
+    """``<slife data dir>/a2a_inbound.yaml``.
 
     ``get_data_dir()`` honours ``$SLIFE_DATA_DIR``, which the host exports so
-    plugin children resolve the same directory as the main process.
+    plugin children resolve the same directory as the main process.  YAML, like
+    every other file in that directory (``slife.yaml``, ``tools.yaml``,
+    ``wechat_<agent>.yaml``): this is state a human may well open — an entry
+    here is a peer still owed a reply — so it reads as a document rather than
+    as one long line.
     """
     from slife.paths import get_data_dir
 
-    return get_data_dir() / "a2a_inbound.json"
+    return get_data_dir() / "a2a_inbound.yaml"
 
 
 def resolve_path() -> Path:
@@ -105,10 +113,10 @@ class InboundStore:
         forgive a reply the peer is still owed.
         """
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = new_yaml().load(self._path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, YAMLError) as e:
             # A corrupt state file must never block the mesh — losing it costs
             # the stale list, which is a reminder, not protocol state.
             logger.warning("a2a_inbound_state_unreadable err=%s", e)
@@ -138,18 +146,20 @@ class InboundStore:
     def _save(self) -> None:
         """Write atomically — a half-written file read by the next process
         would look like corruption (and the crash that caused it is exactly
-        when the stale list matters most)."""
+        when the stale list matters most).
+
+        Delegates to the shared atomic YAML writer (temp file + ``os.replace``
+        + fsync, mode-preserved) — the same one the config files use, so this
+        file needs no weaker private copy of that guarantee.  It also edits the
+        existing document rather than re-serializing, so an annotation a human
+        added by hand survives the next task.
+        """
         payload = {
             "pending": {k: v.as_dict() for k, v in self._pending.items()},
             "stale": {k: v.as_dict() for k, v in self._stale.items()},
         }
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(
-                json.dumps(payload, ensure_ascii=False), encoding="utf-8",
-            )
-            os.replace(tmp, self._path)
+            write_config(self._path, payload)
         except OSError as e:
             logger.warning("a2a_inbound_state_write_failed err=%s", e)
 
