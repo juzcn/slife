@@ -27,6 +27,7 @@ from slife.plugins.memdb.search import (
 )
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.server_utils import create_plugin_server, warm_after_ready
+from slife.timeutil import BOUND_GRAMMAR, InvalidTimeBound
 
 
 @asynccontextmanager
@@ -327,7 +328,7 @@ async def turn_list(
     """
     store = await _ensure_store()
     try:
-        entries = await store.list_recent(
+        entries = await store.turn_list(
             limit=limit,
             before_rowid=before_turn_id, after_rowid=after_turn_id,
         )
@@ -337,7 +338,7 @@ async def turn_list(
                 e["user_message"] = um[:200] + "…"
         return json.dumps(entries, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("list_recent_failed limit=%d", limit)
+        logger.exception("turn_list_failed limit=%d", limit)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -404,6 +405,8 @@ async def turn_count(
             since=since, until=until, query=query, mode=mode,
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
+    except InvalidTimeBound as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
     except Exception as e:
         logger.exception("count_failed query=%s mode=%s", query, mode)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -441,7 +444,8 @@ async def turn_read(turn_id: int) -> str:
     name="turn_search",
     description=(
         "Search turns (each result carries its turn id); mode hybrid "
-        "(default)/fts5/grep/time. Use turn_read for full turns."
+        "(default)/fts5/grep/time. Use turn_read for full turns. "
+        "since/until window the search — " + BOUND_GRAMMAR + "."
     ),
 )
 async def turn_search(
@@ -457,8 +461,10 @@ async def turn_search(
         query: Search text (not needed for mode="time").
         mode: grep (regex) | fts5 | hybrid (default) | time.
         limit: Maximum results.
-        since: Lower bound — ISO datetime/date or today/yesterday/tomorrow.
-        until: Upper bound — ISO datetime/date or today/yesterday/tomorrow.
+        since: Lower bound — ISO date/datetime or a relative phrase
+            (today/yesterday/tomorrow/now, last|this week|month|quarter|year,
+            "<N> days|weeks|months|years ago").
+        until: Upper bound — same grammar as since.
     """
     store = await _ensure_store()
     # Search only READS the semantic gate — no side effects, no reindex kick.
@@ -564,6 +570,12 @@ async def turn_search(
             "results": results,
             "hint": hint,
         }, ensure_ascii=False, indent=2)
+    except InvalidTimeBound as e:
+        # A bound in no known grammar is the caller's to fix: saying so beats a
+        # logged traceback, and beats the silent empty result a pass-through
+        # bound used to produce (SQLite compares the text, matches nothing, and
+        # reports it as "no matches").
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
     except Exception as e:
         logger.exception("search_failed query=%s mode=%s", query, mode)
         return json.dumps({"error": str(e)}, ensure_ascii=False)

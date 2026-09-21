@@ -11,9 +11,9 @@ saved files are recorded by metadata with an optional LLM summary.
 All save tools return the local path (clickable) — they never
 auto-publish.
 
-LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``,
+LLM-visible tools: ``note_save``, ``diary_save``, ``file_save``,
 ``url_save``, ``note_list``, ``diary_list``, ``note_read``, ``diary_read``,
-``list_files``, ``cabinet_search``, ``cabinet_read``,
+``file_list``, ``cabinet_search``, ``file_read``,
 ``report_save``, ``report_list``, ``report_read``.
 ``report_save`` saves a report (notes / diary / reports are the document
 types) — an optional ``name`` binds it to a scheduled task and confirms that

@@ -9,7 +9,7 @@ file-serving state directly.  Public sharing lives in a separate plugin
 Four typed knowledge stores (each md-mirrored on disk + SQLite-indexed):
   - ``note_save(subject, …)`` — a private note keyed by subject, appended
     to ``notes/<subject>.md``
-  - ``diary_write(date, …)``   — a private day's diary, appended to
+  - ``diary_save(date, …)``   — a private day's diary, appended to
     ``diary/<date>.md``
   - ``file_save`` / ``url_save`` — saved attachments (bytes on disk,
     metadata + optional LLM ``summary`` in the SQLite index)
@@ -19,11 +19,11 @@ Four typed knowledge stores (each md-mirrored on disk + SQLite-indexed):
     ``reports/<slug>.md``.
 All save tools return the saved **local path** (clickable) — they never
 auto-publish.  ``cabinet_search`` hybrid-searches them (FTS5 + vec0, reusing
-memdb's SemanticManager and RRF merge); ``cabinet_read`` re-opens a saved file.
+memdb's SemanticManager and RRF merge); ``file_read`` re-opens a saved file.
 
-LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
-``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``list_files``,
-``cabinet_search``, ``cabinet_read``, ``report_save``, ``report_list``,
+LLM-visible tools: ``note_save``, ``diary_save``, ``file_save``, ``url_save``,
+``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``file_list``,
+``cabinet_search``, ``file_read``, ``report_save``, ``report_list``,
 ``report_read``. Semantic-index status goes through the plugin's internal
 ``__check`` (probed by the harness's ``system_health``), not an LLM tool.
 The scheduled-task tools (``scheduled_task_*`` / ``scheduled_run_*``) are builtin
@@ -55,8 +55,14 @@ from urllib.parse import urljoin, urlparse
 from slife.paths import get_memfiles_dir
 from slife.plugins.memdb.search import SCORE_BAND_HINT, annotate_scores
 from slife.plugins.memdb.semantic import SemanticManager
-from slife.plugins.memfiles.store import MemfilesStore, _slugify, _unique_path
+from slife.plugins.memfiles.store import (
+    MemfilesStore,
+    _KIND_NAMES,
+    _slugify,
+    _unique_path,
+)
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.timeutil import BOUND_GRAMMAR, InvalidTimeBound
 from slife.plugins.memfiles.user_prefs import append_preference, user_prefs_path
 from slife.tools.base import require_params
 from slife.server_utils import (
@@ -126,11 +132,11 @@ mcp, _log_path, logger = create_plugin_server(
     "slife-memfiles",
     instructions=(
         "slife-memfiles — notes / diary / files cabinet (private). "
-        "note_save / diary_write / file_save / url_save all return the saved "
+        "note_save / diary_save / file_save / url_save all return the saved "
         "local path (clickable) — they never auto-publish. file_save / "
         "url_save store one or more files with an optional LLM summary "
         "(given at save time) for semantic search. cabinet_search finds them "
-        "by hybrid (keyword + semantic) search; cabinet_read re-opens a "
+        "by hybrid (keyword + semantic) search; file_read re-opens a "
         "saved file. To publish a local file as a public HTTPS URL, call the "
         "separate sharefile plugin's share_file explicitly. "
         "The plugin's health is probed by the harness through the internal "
@@ -302,13 +308,13 @@ async def note_save(
 
 
 @mcp.tool(
-    name="diary_write",
+    name="diary_save",
     description=(
         "Write a date's diary entry (diary/<date>.md; default today), "
         "re-indexed for search."
     ),
 )
-async def diary_write(
+async def diary_save(
     date: str | None = None, content: str = "", tags: str | None = None,
 ) -> str:
     """Write today's (or a given date's) diary entry.
@@ -529,27 +535,53 @@ async def url_save(
     name="cabinet_search",
     description=(
         "Search the cabinet (notes, diary, saved files): kind "
-        "note/diary/file/all, mode hybrid (default)/fts5/grep (regex)."
+        "note/diary/file/report/all, mode hybrid (default)/fts5/grep (regex). "
+        "since/until window the search on when the row was written — "
+        + BOUND_GRAMMAR + "."
     ),
 )
 async def cabinet_search(
     query: str, kind: str = "all", mode: str = "hybrid", limit: int = 20,
+    since: str | None = None, until: str | None = None,
 ) -> str:
     """Search the file cabinet (notes, diary and saved files).
 
     Args:
         query: The search text.
-        kind: note | diary | file | all (default).
+        kind: note | diary | file | report | all (default).
         mode: hybrid (default) | fts5 | grep (regex).
         limit: Maximum results.
+        since: Lower bound on when the row was written — ISO date/datetime or
+            a relative phrase (today/yesterday/tomorrow/now, last|this
+            week|month|quarter|year, "<N> days|weeks|months|years ago");
+            omit for no lower bound.
+        until: Upper bound — same grammar as since.
     """
     store = await _ensure_store()
     manager = _manager
     mode = mode.lower()
     if mode not in ("hybrid", "fts5", "grep"):
         mode = "hybrid"
-    if kind not in ("all", "note", "diary", "file"):
+    # `report` belongs in this list: it is a first-class kind in _KIND_SPECS
+    # (report_save / report_list / report_read all exist), and it is already in
+    # `search()`'s kind map.  Leaving it out silently rewrote kind="report" to
+    # "all" — so asking for reports got every kind instead.
+    if kind not in ("all", "note", "diary", "file", "report"):
         kind = "all"
+
+    if not query.strip():
+        # An empty query is not a search, and it must not be one.  It used to
+        # be worse than useless: `mode="grep"` compiled the empty pattern, which
+        # matches EVERY string, so it silently returned the whole window — with
+        # no `total`, no paging, and no mention in any description.  That was an
+        # accidental second browse path, one unrelated "reject empty patterns"
+        # fix away from vanishing.  Browsing is what the per-kind list tools are
+        # for, and memdb's `turn_search` rejects an empty query the same way.
+        return json.dumps(
+            {"error": "query must not be empty — to browse instead of search, "
+                      "use note_list / diary_list / file_list / report_list"},
+            ensure_ascii=False,
+        )
 
     emb: list[float] | None = None
     semantic_available = False
@@ -563,7 +595,14 @@ async def cabinet_search(
     try:
         hits = await store.search(
             query, kind=kind, limit=limit, mode=mode, embed_query=emb,
+            since=since, until=until,
         )
+    except InvalidTimeBound as e:
+        # A bound in no known grammar is the caller's to fix — the same
+        # treatment an unusable grep pattern gets, and never a silent empty
+        # result (which is what a pass-through bound produced: SQLite compares
+        # the text, matches nothing, and reports it as "no matches").
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
     except re.error as e:
         # grep is a regex: an unusable pattern is the caller's to fix, and
         # saying so beats a generic failure.
@@ -671,12 +710,12 @@ async def __memfiles_reload_semantic(enabled: bool = True) -> str:
 
 
 @mcp.tool(
-    name="cabinet_read",
+    name="file_read",
     description=(
         "Read a saved file's content by its cabinet-relative path."
     ),
 )
-async def cabinet_read(path: str) -> str:
+async def file_read(path: str) -> str:
     """Read a saved file's content.
 
     Args:
@@ -698,26 +737,65 @@ async def cabinet_read(path: str) -> str:
 # ── Notes & diary browsing ────────────────────────────────────────
 
 
-@mcp.tool(
-    name="note_list",
-    description=(
-        "List notes (newest-updated first); pass a higher offset to page."
-    ),
-)
-async def note_list(limit: int = 50, offset: int = 0) -> str:
-    """List notes, newest-updated first.
+async def _list_kind(
+    kind: str, limit: int, offset: int,
+    since: str | None = None, until: str | None = None,
+    **filters: object,
+) -> str:
+    """The ONE implementation behind every ``*_list`` tool.
 
-    Args:
-        limit: Maximum entries to return.
-        offset: Skip this many entries (for paging).
+    Each tool exists to name a kind and hand over its own extras; nothing else.
+    *kind* names both the family and the store method (``note_list`` →
+    ``store.note_list``), which is why the store layer's list methods were named
+    to match it; *filters* carries the per-kind extras through untouched
+    (``category`` for files, ``task_id`` for reports).
+
+    ``total`` is the count BEFORE ``limit``/``offset``, so a caller can tell
+    whether more remain (``offset + len(entries) < total``).  The envelope is
+    built here, once, for the same reason the store side shares one window: a
+    page whose shape varied by kind would be drift with nothing to catch it.
+
+    The tools stay FOUR rather than one ``cabinet_list(kind=...)`` because what
+    they do not share is their signature — ``file_list`` takes a category and
+    ``report_list`` a task name.  A model chooses a tool by reading its name and
+    docstring, not a "which parameters apply to which kind" matrix.
     """
+    if kind not in _KIND_NAMES:
+        raise ValueError(f"unknown list kind {kind!r}")
     store = await _ensure_store()
-    data = await store.list_notes(limit=limit, offset=offset)
+    data = await getattr(store, f"{kind}_list")(
+        since=since, until=until, limit=limit, offset=offset, **filters,
+    )
     return json.dumps(
         {"total": data["total"], "limit": len(data["entries"]),
          "offset": max(0, offset), "entries": data["entries"]},
         ensure_ascii=False, indent=2,
     )
+
+
+@mcp.tool(
+    name="note_list",
+    description=(
+        "List notes (newest-updated first), optionally within a since/until "
+        "range; pass a higher offset to page."
+    ),
+)
+async def note_list(
+    since: str | None = None, until: str | None = None,
+    limit: int = 50, offset: int = 0,
+) -> str:
+    """List notes, newest-updated first.
+
+    Args:
+        since: Lower bound on when the note was last UPDATED (the column the
+            list is ordered by) — ISO date/datetime or a relative phrase
+            (today/yesterday/tomorrow/now, last|this week|month|quarter|year,
+            "<N> days|weeks|months|years ago"); omit for no lower bound.
+        until: Upper bound — same grammar as since.
+        limit: Maximum entries to return.
+        offset: Skip this many entries (for paging).
+    """
+    return await _list_kind("note", limit, offset, since, until)
 
 
 @mcp.tool(
@@ -734,20 +812,14 @@ async def diary_list(
     """List diary entries, newest first.
 
     Args:
-        since: Lower bound — ISO datetime/date or today/yesterday/tomorrow
-            (omit for no lower bound).
-        until: Upper bound — ISO datetime/date or today/yesterday/tomorrow
-            (omit for no upper bound).
+        since: Lower bound — ISO datetime/date or a relative phrase
+            (today/yesterday/tomorrow/now, last|this week|month|quarter|year,
+            "<N> days|weeks|months|years ago"); omit for no lower bound.
+        until: Upper bound — same grammar as since.
         limit: Maximum entries to return.
         offset: Skip this many entries (for paging).
     """
-    store = await _ensure_store()
-    data = await store.list_diary(since=since, until=until, limit=limit, offset=offset)
-    return json.dumps(
-        {"total": data["total"], "limit": len(data["entries"]),
-         "offset": max(0, offset), "entries": data["entries"]},
-        ensure_ascii=False, indent=2,
-    )
+    return await _list_kind("diary", limit, offset, since, until)
 
 
 @mcp.tool(
@@ -775,7 +847,7 @@ async def diary_read(date: str) -> str:
     """Read a day's diary full content.
 
     Args:
-        date: The diary date, YYYY-MM-DD (from diary_list / diary_write).
+        date: The diary date, YYYY-MM-DD (from diary_list / diary_save).
     """
     store = await _ensure_store()
     entry = await store.get_diary(date)
@@ -785,27 +857,29 @@ async def diary_read(date: str) -> str:
 
 
 @mcp.tool(
-    name="list_files",
+    name="file_list",
     description=(
-        "List saved files (newest first), filterable by category; pass a "
-        "higher offset to page."
+        "List saved files (newest first), filterable by category and/or a "
+        "since/until range; pass a higher offset to page."
     ),
 )
-async def list_files(category: str = "", limit: int = 50, offset: int = 0) -> str:
+async def file_list(
+    category: str = "", since: str | None = None, until: str | None = None,
+    limit: int = 50, offset: int = 0,
+) -> str:
     """List saved files, newest first.
 
     Args:
         category: images/documents/archives/code/audio/video/data/other.
+        since: Lower bound on when the file was saved — ISO date/datetime or a
+            relative phrase (today/yesterday/tomorrow/now, last|this
+            week|month|quarter|year, "<N> days|weeks|months|years ago"); omit
+            for no lower bound.
+        until: Upper bound — same grammar as since.
         limit: Maximum entries to return.
         offset: Skip this many entries (for paging).
     """
-    store = await _ensure_store()
-    data = await store.list_files(category=category, limit=limit, offset=offset)
-    return json.dumps(
-        {"total": data["total"], "limit": len(data["entries"]),
-         "offset": max(0, offset), "entries": data["entries"]},
-        ensure_ascii=False, indent=2,
-    )
+    return await _list_kind("file", limit, offset, since, until, category=category)
 
 
 # ── Scheduled tasks & reports ───────────────────────────────────────
@@ -830,7 +904,7 @@ async def __scheduled_tasks_state() -> str:
     """Return enabled tasks, each with its newest run ``due_at`` (anchor)
     and whether it currently has a ``pending`` run."""
     store = await _ensure_store()
-    tasks = await store.list_scheduled_tasks(enabled_only=True)
+    tasks = await store.scheduled_tasks_list(enabled_only=True)
     pending_ids = await store.pending_run_task_ids()
     out = []
     for t in tasks:
@@ -957,7 +1031,7 @@ async def __scheduled_task_remove(name: str) -> str:
 )
 async def __scheduled_tasks_list(enabled_only: bool = False) -> str:
     store = await _ensure_store()
-    tasks = await store.list_scheduled_tasks(enabled_only=enabled_only)
+    tasks = await store.scheduled_tasks_list(enabled_only=enabled_only)
     return json.dumps({"total": len(tasks), "tasks": tasks},
                       ensure_ascii=False)
 
@@ -975,7 +1049,7 @@ async def __scheduled_runs_list(
         task_id = await _task_id_by_name(name.strip())
         if task_id is None:
             return f"Scheduled task not found: {name}"
-    runs = await store.list_scheduled_runs(
+    runs = await store.scheduled_runs_list(
         task_id=task_id, status=status or None, limit=limit,
     )
     return json.dumps({"total": len(runs), "runs": runs},
@@ -1092,30 +1166,33 @@ async def report_save(
 @mcp.tool(
     name="report_list",
     description=(
-        "List reports (newest first), filterable by task name; pass a higher "
-        "offset to page."
+        "List reports (newest first), filterable by task name and/or a "
+        "since/until range (when the report was produced, not the period it "
+        "covers); pass a higher offset to page."
     ),
 )
-async def report_list(name: str = "", limit: int = 50, offset: int = 0) -> str:
+async def report_list(
+    name: str = "", since: str | None = None, until: str | None = None,
+    limit: int = 50, offset: int = 0,
+) -> str:
     """List reports.
 
     Args:
         name: Filter by task name (omitted = all).
+        since: Lower bound on when the report was PRODUCED — not the period it
+            covers — ISO date/datetime or a relative phrase
+            (today/yesterday/tomorrow/now, last|this week|month|quarter|year,
+            "<N> days|weeks|months|years ago"); omit for no lower bound.
+        until: Upper bound — same grammar as since.
         limit: Maximum entries to return.
         offset: Skip this many entries (for paging).
     """
-    store = await _ensure_store()
     task_id = None
     if name.strip():
         task_id = await _task_id_by_name(name.strip())
         if task_id is None:
             return f"Scheduled task not found: {name}"
-    data = await store.list_reports(task_id=task_id, limit=limit, offset=offset)
-    return json.dumps(
-        {"total": data["total"], "limit": len(data["entries"]),
-         "offset": max(0, offset), "entries": data["entries"]},
-        ensure_ascii=False, indent=2,
-    )
+    return await _list_kind("report", limit, offset, since, until, task_id=task_id)
 
 
 @mcp.tool(

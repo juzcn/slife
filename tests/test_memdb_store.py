@@ -833,6 +833,144 @@ class TestSessionStoreCountTurns:
         assert "ESCAPE" in sql
 
     @pytest.mark.asyncio
+    async def test_count_and_search_share_one_like_clause(self):
+        """Regression: the count and the search each built their own LIKE clause
+        and drifted twice over.  The count LIKE'd the WHOLE query as a single
+        pattern over two columns, while ``_search_like`` ANDed each word over
+        four — so ``"子agent 委托"`` matched rows in turn_search and none in
+        turn_count, and a hit living only in ``summary``/``tags`` was invisible
+        to the count.  Both now come from ``_like_terms``."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        cursor = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(3,))
+        cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=cursor)
+        store._conn = mock_conn
+
+        await store.count_turns(query="子agent 委托", mode="fts5")
+        count_sql, count_params = mock_conn.execute.call_args_list[1][0]
+
+        mock_conn.execute.reset_mock()
+        await store.search_keyword(query="子agent 委托")
+        search_sql, search_params = mock_conn.execute.call_args[0]
+
+        # One predicate per word, one ? per column, ANDed.
+        assert count_params == ["%子agent%"] * 4 + ["%委托%"] * 4
+        # The search carries the instr snippet anchor first, the limit last.
+        assert search_params[0] == "子agent"
+        assert search_params[1:-1] == count_params
+        for sql in (count_sql, search_sql):
+            assert sql.count("LIKE") == 8
+            for col in ("user_message", "messages", "summary", "tags"):
+                assert col in sql
+        # The whole-query pattern that used to make the count miss is gone.
+        assert "%子agent 委托%" not in count_params
+
+    @pytest.mark.asyncio
+    async def test_count_matches_search_on_a_real_db(self, tmp_path):
+        """The tests above assert SQL *shape*; this one asserts BEHAVIOR against
+        a real SQLite file — the layer the divergence actually lived in, and the
+        one a mock cannot see.
+
+        Both halves of the old bug are staged here: two query words that land in
+        DIFFERENT columns (the old whole-query ``LIKE "%子agent 委托%"`` could
+        never match them), and a hit that lives only in ``tags`` (the old count
+        searched two columns, not four).  Each returned 1 hit from the search
+        and 0 from the count."""
+        import aiosqlite
+
+        db_path = tmp_path / "memory.db"
+        conn = await aiosqlite.connect(str(db_path))
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("""\
+            CREATE TABLE diary (
+                user_message   TEXT NOT NULL DEFAULT '',
+                messages       TEXT NOT NULL DEFAULT '[]',
+                summary        TEXT DEFAULT '',
+                tags           TEXT DEFAULT '',
+                created_at     TEXT NOT NULL
+            )""")
+        await conn.execute(
+            "INSERT INTO diary (user_message, messages, created_at) VALUES (?, ?, ?)",
+            ("让子agent 去处理这个任务",
+             '[{"role": "assistant", "content": "已经委托给子进程了"}]',
+             "2026-07-22T10:00:00"),
+        )
+        await conn.execute(
+            "INSERT INTO diary (user_message, messages, tags, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            ("无关内容", "[]", "重构", "2026-07-22T11:00:00"),
+        )
+        await conn.commit()
+
+        store = SessionStore(db_path)
+        store._conn = conn
+        try:
+            for query in ("子agent 委托", "重构"):
+                hits = await store.search_keyword(query)
+                counted = await store.count_turns(query=query, mode="fts5")
+                assert len(hits) == 1, query
+                assert counted["filtered"] == len(hits), query
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_time_window_windows_both_keyword_paths(self, tmp_path):
+        """A bound must narrow the keyword search on BOTH SQL paths — FTS5 for
+        an ASCII query, the CJK LIKE fallback for a Chinese one — and the two
+        must agree about it.  ``turn_search`` picks the path from the QUERY text
+        while the window comes from the bound, so a window that reached only one
+        path would make one bound mean two different things.
+
+        Absolute ISO bounds, deliberately not relative words: a relative bound
+        would make these expectations move with the wall clock.  The grammar
+        itself is pinned in ``tests/test_timeutil.py``."""
+        import aiosqlite
+
+        db_path = tmp_path / "memory.db"
+        conn = await aiosqlite.connect(str(db_path))
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("""\
+            CREATE TABLE diary (
+                user_message   TEXT NOT NULL DEFAULT '',
+                messages       TEXT NOT NULL DEFAULT '[]',
+                summary        TEXT DEFAULT '',
+                tags           TEXT DEFAULT '',
+                channel        TEXT DEFAULT '',
+                created_at     TEXT NOT NULL
+            )""")
+        await conn.execute("""\
+            CREATE VIRTUAL TABLE diary_fts USING fts5(
+                user_message, messages, summary, tags, channel,
+                content='diary', content_rowid='rowid')""")
+        await conn.execute(
+            "INSERT INTO diary (user_message, messages, created_at) VALUES (?, ?, ?)",
+            ("asyncio 并发笔记", '[{"role": "assistant", "content": "关于 asyncio"}]',
+             "2026-09-21T10:00:00+08:00"),
+        )
+        await conn.execute("INSERT INTO diary_fts(diary_fts) VALUES('rebuild')")
+        await conn.commit()
+
+        store = SessionStore(db_path)
+        store._conn = conn
+        try:
+            # "asyncio" is ASCII → FTS5 MATCH; "并发" is CJK → the LIKE fallback.
+            for query in ("asyncio", "并发"):
+                assert len(await store.search_keyword(
+                    query, since="2026-09-01")) == 1, query
+                # Closed before the row, and open after it — both exclude it.
+                assert await store.search_keyword(
+                    query, until="2026-09-01") == [], query
+                assert await store.search_keyword(
+                    query, since="2026-10-01") == [], query
+                # A window on both sides keeps it.
+                assert len(await store.search_keyword(
+                    query, since="2026-09-01", until="2026-09-30")) == 1, query
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
     async def test_count_unembedded_excludes_empty_turns(self):
         """Regression: a turn with no user text and no messages can never be
         embedded — it must not count as unembedded or the semantic gate stalls
@@ -854,10 +992,10 @@ class TestSessionStoreCountTurns:
 
 
 class TestSessionStoreListRecent:
-    """Tests for list_recent."""
+    """Tests for turn_list."""
 
     @pytest.mark.asyncio
-    async def test_list_recent(self):
+    async def test_turn_list(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
@@ -868,13 +1006,13 @@ class TestSessionStoreListRecent:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.list_recent(limit=5)
+        result = await store.turn_list(limit=5)
         assert len(result) == 2
-        # Newest first — list_recent maps rowid → turn_id
+        # Newest first — turn_list maps rowid → turn_id
         assert result[0]["turn_id"] == 2
 
     @pytest.mark.asyncio
-    async def test_list_recent_windowed_by_rowid(self):
+    async def test_turn_list_windowed_by_rowid(self):
         """before_rowid / after_rowid anchor the window (exclusive)."""
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
@@ -883,23 +1021,23 @@ class TestSessionStoreListRecent:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        await store.list_recent(limit=5, before_rowid=3)
+        await store.turn_list(limit=5, before_rowid=3)
         sql, params = mock_conn.execute.await_args.args
         assert "rowid < ?" in sql and "rowid > ?" not in sql
         assert 3 in params
 
-        await store.list_recent(limit=5, after_rowid=1)
+        await store.turn_list(limit=5, after_rowid=1)
         sql, params = mock_conn.execute.await_args.args
         assert "rowid > ?" in sql and "rowid < ?" not in sql
         assert 1 in params
 
-        await store.list_recent(limit=5, before_rowid=5, after_rowid=1)
+        await store.turn_list(limit=5, before_rowid=5, after_rowid=1)
         sql, params = mock_conn.execute.await_args.args
         assert "rowid < ?" in sql and "rowid > ?" in sql
         assert params[:2] == [5, 1]
 
         # No anchors → plain query, no WHERE.
-        await store.list_recent(limit=5)
+        await store.turn_list(limit=5)
         sql, params = mock_conn.execute.await_args.args
         assert "WHERE" not in sql
         assert params == [5]

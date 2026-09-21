@@ -162,7 +162,7 @@ def get_memfiles_dir(agent_name: str = "slife") -> Path:
     """Directory for user-saved files — one per agent.
 
     Files saved via the memfiles plugin (``file_save`` / ``url_save`` /
-    ``note_save`` / ``diary_write``) land here — plain files browsable by the
+    ``note_save`` / ``diary_save``) land here — plain files browsable by the
     user.  Public sharing of a file is a separate concern handled by the
     sharefile plugin.
 

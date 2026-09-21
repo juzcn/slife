@@ -69,6 +69,56 @@ def _like_escape(pattern: str) -> str:
     return pattern.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
 
+#: Columns memdb's CJK (LIKE) fallback searches — the indexed text columns of
+#: ``diary``.  memfiles passes its own per-kind list; both go through
+#: :func:`_like_terms`.
+_LIKE_COLUMNS = ("user_message", "messages", "summary", "tags")
+
+
+def _like_where(columns: tuple[str, ...]) -> str:
+    """One substring predicate across *columns* — a ``?`` per column, ORed.
+
+    Generated from the list rather than spelled out so the placeholder count
+    cannot drift away from the columns it belongs to.
+    """
+    return "(" + " OR ".join(
+        f"{c} LIKE ? ESCAPE '\\'" for c in columns
+    ) + ")"
+
+
+def _like_terms(
+    words: list[str], columns: tuple[str, ...],
+) -> tuple[str, list[str]]:
+    """AND-ed per-word substring predicates over *columns*.
+
+    Returns ``(clause, params)``; the clause is empty when *words* is.
+
+    The clause AND its params come from ONE place because everything that has
+    to agree about *what matched* must share it — and these drifted twice over
+    once they stopped:
+
+    - ``count_turns`` LIKE'd the whole query as a single pattern, so
+      ``"子agent 委托"`` matched rows in ``turn_search`` and none in
+      ``turn_count`` (the search ANDs the words; the count wanted the literal
+      space).
+    - The count searched two columns where the search searched four, so a hit
+      in ``summary``/``tags`` was invisible to it.
+    - memfiles' ``_like_search_kind`` built its own whole-query pattern too, so
+      ``cabinet_search`` missed a note that ``turn_search`` found — the same
+      question answered differently by two stores.
+
+    Same reason :meth:`SessionStore._grep_scan` is shared: two readers report
+    different numbers for one query exactly when they stop sharing.
+    """
+    where = _like_where(columns)
+    clauses: list[str] = []
+    params: list[str] = []
+    for word in words:
+        clauses.append(where)
+        params.extend([f"%{_like_escape(word)}%"] * len(columns))
+    return " AND ".join(clauses), params
+
+
 class VecStoreLifecycleMixin:
     """sqlite-vec store lifecycle shared by memdb and memfiles.
 
@@ -639,13 +689,16 @@ class SessionStore(VecStoreLifecycleMixin):
                 # while turn_search returns hits).
                 mode = "grep"
             if mode == "grep":
-                # Escape LIKE metacharacters so a pattern containing %/_ matches
-                # them literally; the ESCAPE '\' clause is required or the
-                # escapes are a no-op. Backslashes must be doubled first — the
-                # same rules as search_grep.
-                like_pattern = f"%{_like_escape(query)}%"
-                where = "(user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\')"
-                params: list = [like_pattern, like_pattern]
+                # The clause `search_keyword`'s LIKE fallback builds — escaping,
+                # word splitting AND the column set all come from `_like_terms`,
+                # so the count cannot disagree with the search about what
+                # matched.  It used to build its own: one pattern for the whole
+                # query over two columns.
+                words = [w for w in query.split() if w]
+                if not words:
+                    return {"total": total, "filtered": 0, "query": query,
+                            "mode": mode, "since": since, "until": until}
+                where, params = _like_terms(words, _LIKE_COLUMNS)
             else:
                 fts_query = _to_fts5_query(query)
                 # FTS5 has no created_at — join the diary rowid so since/until
@@ -720,7 +773,7 @@ class SessionStore(VecStoreLifecycleMixin):
 
     # ── Browse ─────────────────────────────────────────────────────
 
-    async def list_recent(
+    async def turn_list(
         self, limit: int = 20,
         before_rowid: int | None = None,
         after_rowid: int | None = None,
@@ -900,22 +953,18 @@ class SessionStore(VecStoreLifecycleMixin):
         applies), while each CJK word matches by substring.  Returns the
         same shape as ``search_keyword`` (``snippet`` + ``rank``); rank is
         a constant 0, ordering is newest-first.
+
+        The predicate comes from :func:`_like_terms` — the very one
+        :meth:`count_turns` builds — so the two cannot disagree about what
+        matched.
         """
         words = [w for w in pattern.split() if w]
         if not words:
             return []
-        and_clauses: list[str] = []
-        params: list[str | int] = [words[0]]  # instr context anchors on the first word
-        for w in words:
-            # Escape LIKE metacharacters so %/_ match literally —
-            # same escaping as search_grep.
-            safe = _like_escape(w)
-            like = f"%{safe}%"
-            and_clauses.append(
-                "(user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\'"
-                " OR summary LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')"
-            )
-            params.extend([like, like, like, like])
+        and_clause, like_params = _like_terms(words, _LIKE_COLUMNS)
+        # The instr snippet anchor is the statement's FIRST placeholder (it
+        # sits in the SELECT list, above the WHERE).
+        params: list[str | int] = [words[0], *like_params]
         time_clauses = ""
         if since:
             since = normalize_time_bound(since, role="since")
@@ -931,7 +980,7 @@ class SessionStore(VecStoreLifecycleMixin):
                       substr(messages, max(0, instr(messages, ?) - 40), 160) AS snippet,
                       0 AS rank
                FROM diary
-               WHERE {" AND ".join(and_clauses)}
+               WHERE {and_clause}
                      {time_clauses}
                ORDER BY rowid DESC LIMIT ?""",
             params,

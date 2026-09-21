@@ -65,7 +65,7 @@ import aiosqlite
 from slife.plugins.memdb.store import (
     _clamp_limit,
     _contains_cjk,
-    _like_escape,
+    _like_terms,
     _serialize_f32,
     _split_sql,
     _to_fts5_query,
@@ -451,12 +451,15 @@ _SCAN_COLS = (
     "t.name, t.description, t.category, t.source_id, t.schema, "
     "t.status, t.load_status, t.last_loaded"
 )
-# The four-column substring predicate shared by _search_like / search_grep
-# (4 ``?`` placeholders per column ANDed into name/description/category/schema).
-_LIKE_WHERE = (
-    "(t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\'"
-    " OR t.category LIKE ? ESCAPE '\\' OR t.schema LIKE ? ESCAPE '\\')"
-)
+#: The catalog's TEXT columns — what ``tool_fts`` indexes, and therefore what
+#: every text mode must read.  ONE list, because it used to be spelled out three
+#: times and one spelling silently lost ``source_id``: the LIKE fallback read
+#: four columns while the FTS index and grep read five, so a row matching only
+#: in ``source_id`` was findable two ways and invisible the third.
+_TEXT_COLUMNS = ("name", "description", "category", "source_id", "schema")
+
+#: :data:`_TEXT_COLUMNS` qualified with the ``t`` alias the LIKE query uses.
+_LIKE_COLUMNS = tuple(f"t.{c}" for c in _TEXT_COLUMNS)
 # Keyword-result spine: scan columns + a description snippet anchored on the
 # first search term + a zero rank.  Keyword searches order by category/name;
 # rank only matters to the hybrid semantic merge.
@@ -1466,24 +1469,24 @@ class CatalogStore:
     ) -> list[dict]:
         """Substring (LIKE) search — CJK fallback for :meth:`search_keyword`.
 
-        Space-split words all must match (AND semantics) across name /
-        description / category / schema; each CJK word matches by substring.
+        Space-split words all must match (AND semantics) across every text
+        column; each CJK word matches by substring.  The predicate comes from the
+        shared :func:`~slife.plugins.memdb.store._like_terms` — the same builder
+        memdb's ``_search_like`` and memfiles' ``_like_search_kind`` use — so all
+        three stores answer one CJK query the same way, and the column set cannot
+        drift from theirs again.
         """
         words = [w for w in pattern.split() if w]
         if not words:
             return []
-        and_clauses: list[str] = []
-        params: list = [words[0]]  # instr context anchors on the first word
-        for w in words:
-            safe = _like_escape(w)
-            like = f"%{safe}%"
-            and_clauses.append(_LIKE_WHERE)
-            params.extend([like, like, like, like])
-        return await self._search_by_sql(and_clauses, params, filters, limit)
+        clause, like_params = _like_terms(words, _LIKE_COLUMNS)
+        return await self._search_by_sql(
+            [clause], [words[0], *like_params], filters, limit,
+        )
 
-    #: The text `grep` matches against — the same columns the FTS index
-    #: carries, so the two text modes see one corpus.
-    _GREP_COLUMNS = ("name", "description", "category", "source_id", "schema")
+    #: The text `grep` matches against — :data:`_TEXT_COLUMNS` itself, so the
+    #: three text modes see one corpus by construction rather than by review.
+    _GREP_COLUMNS = _TEXT_COLUMNS
 
     async def browse(
         self, limit: int = 20, filters: "dict | None" = None,

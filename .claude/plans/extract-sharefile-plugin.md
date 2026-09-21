@@ -14,7 +14,7 @@ separate concern with a separate plugin, not a feature of the file cabinet.
 
 ## Current state (already done this session)
 
-- `note_save` / `diary_write` / `file_save` / `url_save` all return local
+- `note_save` / `diary_save` / `file_save` / `url_save` all return local
   paths only — no share URL, no token registration (share_file is the sole
   publisher, called by the LLM).
 - `_saved_result` in memfiles/server.py now just returns `Saved: <path>`.

@@ -33,10 +33,10 @@
 | 现名 | 新名 | 语义 |
 |---|---|---|
 | `search` | `cabinet_search` | 搜笔记/日记/文件柜 |
-| `read` | `cabinet_read` | 按相对路径读文件柜文件 |
+| `read` | `cabinet_read` (later `file_read`) | 按相对路径读文件柜文件 |
 | `embedding_check` | `cabinet_embedding_check` (later `memfiles_semantic_status`) | 文件柜索引嵌入状态 |
-| `note_save` `diary_write` `file_save` `url_save` | 保持 | |
-| `note_list` `diary_list` `note_read` `diary_read` `list_files` | 保持 | |
+| `note_save` `diary_write` `file_save` `url_save` | 保持（后 `diary_write`→`diary_save`） | |
+| `note_list` `diary_list` `note_read` `diary_read` `list_files` | 保持（后 `list_files`→`file_list`） | |
 
 ### sharefile / media / mcp / wechat / a2a
 - `share_file` / `generate_image` `generate_video` `text_to_speech` `transcribe_audio`
@@ -67,7 +67,7 @@
 - `slife/plugins/memdb/server.py`:9 个 `@mcp.tool(name=...)` + 函数名 + 内部 docstring
   引用 + 顶部模块 docstring(工具列表)+ `instructions` 里的工具名
 - `slife/plugins/memfiles/server.py`:`search`→`cabinet_search`,
-  `read`→`cabinet_read`, `embedding_check`→`cabinet_embedding_check` (later `memfiles_semantic_status`)
+  `read`→`cabinet_read` (later `file_read`), `embedding_check`→`cabinet_embedding_check` (later `memfiles_semantic_status`)
   (函数名、docstring、`instructions` 同步)
 - 函数名也一并改(`async def memory_search` → `async def turn_search`),保持 py 内一致。
 
@@ -80,7 +80,7 @@
 
 ### 5. 系统提示词 — `slife/agent/templates/slife.j2`
 - `memdb__memory_search` → `turn_search`
-- `memfiles__note_save` / `memfiles__diary_write` / `memfiles__file_save` /
+- `memfiles__note_save` / `memfiles__diary_save` / `memfiles__file_save` /
   `memfiles__url_save` → 裸名
 - `memfiles__search` → `cabinet_search`
 - `sharefile__share_file` → `share_file`

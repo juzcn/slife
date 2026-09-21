@@ -67,11 +67,11 @@ CREATE TABLE IF NOT EXISTS scheduled_runs (
 ### 2. memfiles store.py — 新方法
 
 - `upsert_report(task_id, title, content, tags, period_start, period_end)` — 对齐 `upsert_diary`（`:324`），双写 `reports/<slug>.md` + DB 行，返回 `{kind:"report", doc_id, key, file_path}`。
-- `list_reports(task_id=None, limit, offset)` / `get_report(id)` — 对齐 `list_diary`/`get_diary`。
+- `report_list(task_id=None, limit, offset)` / `get_report(id)` — 对齐 `diary_list`/`get_diary`。
 - **反填 `scheduled_runs.report_id`**：`upsert_report` 内按 `(task_id, due_at)` 定位 run（`due_at` 从调用方传入或取 `created_at`），UPDATE `report_id`。这就是"store 层反填，不依赖主 agent 第二次调用工具"。
 - 扩展 `_KIND_SPECS` 加 `"report"` 项 + `_KIND_NAMES += ("report",)`，使 `count_unembedded`/`get_unembedded_docs`/`replace_embedding_chunks`/`_clear_kind_chunks`/search 自动覆盖 reports。
-- `upsert_scheduled_task` / `list_scheduled_tasks` / `get_scheduled_task(name)` / `set_scheduled_task_enabled`。
-- `record_scheduled_run` / `mark_run_missed` / `mark_run_failed` / `list_scheduled_runs(task_id=None, status=None)`。
+- `upsert_scheduled_task` / `scheduled_tasks_list` / `get_scheduled_task(name)` / `set_scheduled_task_enabled`。
+- `record_scheduled_run` / `mark_run_missed` / `mark_run_failed` / `scheduled_runs_list(task_id=None, status=None)`。
 
 ### 3. memfiles server.py — 新 MCP 工具
 

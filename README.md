@@ -252,7 +252,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` (capped — `tool_search` finds the rest) |
 | `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `report_save`, `report_list`, `report_read` |
+| `memfiles` | `note_save`, `diary_save`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `file_read`, `report_save`, `report_list`, `report_read` |
 | `sharefile` | `share_file`, `sharefile_unshare` |
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_send_message`, `a2a_send_message_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`, `a2a_set_task_done` (complete a received task's result) |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |

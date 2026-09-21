@@ -908,6 +908,30 @@ async def test_search_keyword_and_cjk_fallback(store):
 
 
 @pytest.mark.asyncio
+async def test_cjk_fallback_reads_every_text_column(store):
+    """The LIKE fallback must read the SAME columns the FTS index and grep do.
+
+    It read four of five — ``source_id`` was missing — so a row matching only
+    there was findable by ``grep`` and by an ASCII ``search_keyword``, and
+    invisible to the CJK fallback: one corpus, two answers.
+
+    The distinguishing text has to be CJK *and* sit in ``source_id``, because
+    only a CJK query reaches this path.  A Chinese ``source_id`` is unrealistic;
+    the column coverage is what is under test, not the data."""
+    await store.upsert_tool(
+        "plain_tool", category="builtin", status=STATUS_ENABLED,
+        source_id="内置插件", description="nothing to see here",
+        load_status="unloaded",
+    )
+    # The CJK fallback, reaching the row through source_id alone.
+    assert {r["name"] for r in await store.search_keyword("内置插件")} == {"plain_tool"}
+    # …and the other two text modes agree that this row is a match, which is what
+    # makes the missing column a divergence rather than a scope choice.
+    assert {r["name"] for r in await store.search_keyword("builtin")} == {"plain_tool"}
+    assert {r["name"] for r in await store.search_grep("内置")} == {"plain_tool"}
+
+
+@pytest.mark.asyncio
 async def test_search_grep_is_a_real_regex(store):
     """``grep`` matches like grep: alternation, wildcards, and a pattern that
     LIKE could not express.  It was SQL ``LIKE %pattern%`` — a literal

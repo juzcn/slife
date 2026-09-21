@@ -14,7 +14,8 @@ Implements the SemanticManager "document source" contract
 ``reconfigure_for_embedding``) over a unified view of all three kinds, so the
 shared ``SemanticManager`` (memdb.semantic) drives the memfiles drainer.
 Code reuse is via memdb helpers: ``_chunk_text``, ``_split_chunks_to_token_limit``,
-``_serialize_f32``, ``_to_fts5_query``, ``_contains_cjk``, ``merge_hybrid``.
+``_serialize_f32``, ``_to_fts5_query``, ``_contains_cjk``, ``_like_terms``,
+``merge_hybrid``.
 """
 
 import asyncio
@@ -30,7 +31,7 @@ from slife.plugins.memdb.store import (
     VecStoreLifecycleMixin,
     _clamp_limit,
     _contains_cjk,
-    _like_escape,
+    _like_terms,
     _serialize_f32,
     _to_fts5_query,
     in_placeholders,
@@ -73,6 +74,27 @@ def _category_from_path(saved_path: str) -> str:
 
 
 #: Per-kind specs — maps a kind to its tables/columns in the generic doc shape.
+#:
+#: ``time_col`` is the kind's own TIME AXIS: the single column every time filter
+#: on that kind measures against — the list window AND the search window, and
+#: the column the list is ordered by.  It lives here, once per kind, because a
+#: bound that meant one thing arriving through ``cabinet_search(kind="diary")``
+#: and another through ``diary_list`` is precisely how "last month" came to have
+#: two answers.
+#:
+#: Which column that is follows from whether the CONTENT has a date:
+#: - ``diary`` is date-KEYED — ``date`` is UNIQUE and names the file on disk
+#:   (``diary/<date>.md``) — so its date is content, not bookkeeping;
+#: - a ``note`` has no date of its own but is a living document, so its axis is
+#:   ``updated_at``, which is also the order ``note_list`` shows;
+#: - a ``file`` is written once and never touched, so ``created_at`` IS its date;
+#: - a ``report`` likewise.  Its ``period_start``/``period_end`` say what the
+#:   report COVERS — a different dimension from when it exists, and nullable —
+#:   so the axis is ``created_at``.
+#:
+#: ``time_granularity`` follows the column: a date-only column compares in date
+#: terms (a bare ``until`` already includes that whole day, no +1-day advance),
+#: a timestamp column in datetime terms.
 _KIND_SPECS = {
     "note": {
         "id_label": "note",
@@ -84,6 +106,8 @@ _KIND_SPECS = {
         "file_col": "file_path",
         "snippet_col": 1,        # notes_fts(subject, content, tags)
         "like_cols": ["subject", "content", "tags"],
+        "time_col": "updated_at",
+        "time_granularity": "datetime",
     },
     "diary": {
         "id_label": "diary",
@@ -95,6 +119,8 @@ _KIND_SPECS = {
         "file_col": "file_path",
         "snippet_col": 0,        # diary_fts(content, tags)
         "like_cols": ["content", "tags"],
+        "time_col": "date",
+        "time_granularity": "date",
     },
     "file": {
         "id_label": "file",
@@ -106,6 +132,8 @@ _KIND_SPECS = {
         "file_col": "saved_path",
         "snippet_col": 3,        # files_fts(title, original_path, tags, summary)
         "like_cols": ["title", "original_path", "tags", "summary"],
+        "time_col": "created_at",
+        "time_granularity": "datetime",
     },
     "report": {
         "id_label": "report",
@@ -117,9 +145,84 @@ _KIND_SPECS = {
         "file_col": "file_path",
         "snippet_col": 0,        # reports_fts(title, content, tags)
         "like_cols": ["title", "content", "tags"],
+        "time_col": "created_at",
+        "time_granularity": "datetime",
     },
 }
+
+
+def _kind_window(
+    spec: dict, since: str | None, until: str | None,
+) -> tuple[str | None, str | None]:
+    """Normalize ``since``/``until`` for *spec*'s time axis.
+
+    The ONE mapping from a kind to normalized bounds: the granularity is the
+    kind's, so the same ``"last month"`` becomes a date for diary and a datetime
+    for a note, and every caller (list or search) gets that for free instead of
+    choosing a granularity of its own.
+    """
+    granularity = spec["time_granularity"]
+    return (
+        normalize_time_bound(since, role="since", granularity=granularity)
+        if since else None,
+        normalize_time_bound(until, role="until", granularity=granularity)
+        if until else None,
+    )
+
+
+def _list_window(
+    spec: dict, since: str | None, until: str | None,
+) -> tuple[list[str], list[str]]:
+    """``(clauses, params)`` for *spec*'s window, unaliased — the ``*_list`` shape.
+
+    The list-shaped twin of :func:`_time_clause`: a ``*_list`` query names its
+    columns bare, may merge the window with another predicate (a category, a
+    task id), and may have no WHERE at all — so it hands back clauses to join
+    rather than a suffix to append.  Both are built on :func:`_kind_window`, so
+    the axis and the grammar are decided once.
+    """
+    since, until = _kind_window(spec, since, until)
+    clauses: list[str] = []
+    params: list[str] = []
+    if since:
+        clauses.append(f"{spec['time_col']} >= ?")
+        params.append(since)
+    if until:
+        clauses.append(f"{spec['time_col']} <= ?")
+        params.append(until)
+    return clauses, params
 _KIND_NAMES = ("note", "diary", "file", "report")
+
+
+def _time_clause(
+    since: str | None, until: str | None, column: str = "t.created_at",
+) -> tuple[str, list[str]]:
+    """The window a search runs inside, as ``(sql, params)``.
+
+    *column* is the kind's time axis, qualified with the table alias these paths
+    use — ``spec["time_col"]``, so a diary search windows ``date`` and a note
+    search ``updated_at``.  The default keeps ``created_at`` for a caller with no
+    kind in hand.  Built in ONE place for the three SQL paths (FTS5 / LIKE /
+    regex): a window that meant different things in different modes would be the
+    same class of bug as two LIKE clauses drifting apart.
+
+    Returns a leading-``AND`` suffix, so a caller with no WHERE yet writes
+    ``WHERE 1=1{sql}`` (memdb's ``_grep_scan`` does the same).  The ``*_list``
+    methods do NOT use this — they have no table alias, may merge the window with
+    another predicate, and may not have a WHERE at all, so they build their own
+    clauses.  What they share with this is what matters: the axis
+    (:data:`_KIND_SPECS`) and the grammar
+    (:func:`~slife.timeutil.normalize_time_bound`).
+    """
+    clauses: list[str] = []
+    params: list[str] = []
+    if since:
+        clauses.append(f"{column} >= ?")
+        params.append(since)
+    if until:
+        clauses.append(f"{column} <= ?")
+        params.append(until)
+    return "".join(f" AND {c}" for c in clauses), params
 
 
 class MemfilesStore(VecStoreLifecycleMixin):
@@ -441,7 +544,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def list_scheduled_tasks(self, enabled_only: bool = False) -> list[dict]:
+    async def scheduled_tasks_list(self, enabled_only: bool = False) -> list[dict]:
         where = "WHERE enabled = 1" if enabled_only else ""
         cursor = await self._c.execute(
             f"SELECT id, name, description, schedule, timezone, enabled, "
@@ -597,7 +700,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
         )
         return {row["task_id"] for row in await cursor.fetchall()}
 
-    async def list_scheduled_runs(
+    async def scheduled_runs_list(
         self, task_id: int | None = None, status: str | None = None,
         limit: int = 50,
     ) -> list[dict]:
@@ -621,34 +724,45 @@ class MemfilesStore(VecStoreLifecycleMixin):
 
     # ── browse / read ────────────────────────────────────────────────
 
-    async def list_notes(self, limit: int = 50, offset: int = 0) -> dict:
+    async def note_list(
+        self, since: str | None = None, until: str | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> dict:
         """List notes, newest-updated first.  Lightweight — no content.
+
+        ``since``/``until`` window the kind's time axis (:data:`_KIND_SPECS`) —
+        for a note, ``updated_at``, which is also the column it orders by, so the
+        window and the ordering describe one axis.  ``total`` counts the window,
+        not the whole table.
 
         Returns ``{"entries": [...], "total": n}`` so the caller knows how
         many more remain beyond this page (``offset + len(entries) < total``).
         """
         limit = _clamp_limit(limit)
         offset = max(0, offset)
-        cursor = await self._c.execute("SELECT COUNT(*) FROM notes")
+        clauses, params = _list_window(_KIND_SPECS["note"], since, until)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor = await self._c.execute(f"SELECT COUNT(*) FROM notes {where}", params)
         row = await cursor.fetchone()
         total = row[0] if row else 0
         cursor = await self._c.execute(
-            "SELECT id, subject, tags, file_path, created_at, updated_at "
-            "FROM notes ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            f"SELECT id, subject, tags, file_path, created_at, updated_at "
+            f"FROM notes {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
         )
         entries = [dict(row) for row in await cursor.fetchall()]
         return {"entries": entries, "total": total}
 
-    async def list_diary(
+    async def diary_list(
         self, since: str | None = None, until: str | None = None,
         limit: int = 50, offset: int = 0,
     ) -> dict:
         """List diary entries, newest first, optionally within a date range.
 
-        ``since``/``until`` filter the date-only ``date`` column; bounds
-        accept an ISO date/datetime or a relative word (``today`` /
-        ``yesterday`` / ``tomorrow``), reduced to ``YYYY-MM-DD`` via
+        ``since``/``until`` window the date-only ``date`` column — the kind's
+        time axis, and the same column ``cabinet_search(kind="diary")`` windows,
+        so the two answer a range the same way instead of one of them reaching
+        for ``created_at``.  Reduced to ``YYYY-MM-DD`` via
         :func:`~slife.timeutil.normalize_time_bound`.
 
         Returns ``{"entries": [...], "total": n}`` (total counts every row in
@@ -656,16 +770,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
         """
         limit = _clamp_limit(limit)
         offset = max(0, offset)
-        clauses: list[str] = []
-        params: list[str] = []
-        if since:
-            since = normalize_time_bound(since, role="since", granularity="date")
-            clauses.append("date >= ?")
-            params.append(since)
-        if until:
-            until = normalize_time_bound(until, role="until", granularity="date")
-            clauses.append("date <= ?")
-            params.append(until)
+        clauses, params = _list_window(_KIND_SPECS["diary"], since, until)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         cursor = await self._c.execute(
             f"SELECT COUNT(*) FROM diary {where}", params,
@@ -680,10 +785,16 @@ class MemfilesStore(VecStoreLifecycleMixin):
         entries = [dict(row) for row in await cursor.fetchall()]
         return {"entries": entries, "total": total}
 
-    async def list_reports(
-        self, task_id: int | None = None, limit: int = 50, offset: int = 0,
+    async def report_list(
+        self, task_id: int | None = None, since: str | None = None,
+        until: str | None = None, limit: int = 50, offset: int = 0,
     ) -> dict:
-        """List reports, newest first, optionally filtered by task.
+        """List reports, newest first, optionally filtered by task and/or window.
+
+        ``since``/``until`` window the kind's time axis (:data:`_KIND_SPECS`) —
+        for a report, ``created_at``.  Note what that is NOT: a report's
+        ``period_start``/``period_end`` say what it COVERS, which is a different
+        dimension (and nullable), so they are not the axis.
 
         ``created_at`` is second-precision — the ``id DESC`` tiebreaker makes
         same-second inserts order deterministically (newest insert first)
@@ -693,11 +804,15 @@ class MemfilesStore(VecStoreLifecycleMixin):
         """
         limit = _clamp_limit(limit)
         offset = max(0, offset)
-        where = ""
+        clauses: list[str] = []
         params: list[str] = []
         if task_id is not None:
-            where = "WHERE task_id = ?"
+            clauses.append("task_id = ?")
             params.append(str(task_id))
+        w_clauses, w_params = _list_window(_KIND_SPECS["report"], since, until)
+        clauses += w_clauses
+        params += w_params
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         cursor = await self._c.execute(
             f"SELECT COUNT(*) FROM reports {where}", params,
         )
@@ -723,10 +838,16 @@ class MemfilesStore(VecStoreLifecycleMixin):
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def list_files(
-        self, category: str = "", limit: int = 50, offset: int = 0,
+    async def file_list(
+        self, category: str = "", since: str | None = None,
+        until: str | None = None, limit: int = 50, offset: int = 0,
     ) -> dict:
         """List saved files, newest first, optionally filtered by category.
+
+        ``since``/``until`` window the kind's time axis (:data:`_KIND_SPECS`) —
+        for a file, ``created_at`` (a file is written once, never "touched").  The
+        category filter and the window merge into one WHERE, and ``total`` counts
+        their intersection.
 
         Returns ``{"entries": [...], "total": n}``.  Each entry carries the
         file's metadata (title, saved_path, category, mime, size, tags,
@@ -734,11 +855,15 @@ class MemfilesStore(VecStoreLifecycleMixin):
         """
         limit = _clamp_limit(limit)
         offset = max(0, offset)
-        where = ""
+        clauses: list[str] = []
         params: list[str] = []
         if category.strip():
-            where = "WHERE saved_path LIKE ?"
+            clauses.append("saved_path LIKE ?")
             params.append(f"files/{_slugify(category)}/%")
+        w_clauses, w_params = _list_window(_KIND_SPECS["file"], since, until)
+        clauses += w_clauses
+        params += w_params
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         cursor = await self._c.execute(
             f"SELECT COUNT(*) FROM files {where}", params,
         )
@@ -871,12 +996,22 @@ class MemfilesStore(VecStoreLifecycleMixin):
     async def search(
         self, query: str, kind: str = "all", limit: int = 20,
         mode: str = "hybrid", embed_query: list[float] | None = None,
+        since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """Hybrid (FTS5 + vec0, RRF), keyword, or regex search across kinds.
 
         ``mode="grep"`` is a real grep: the pattern is a Python regex and the
         match runs here (SQLite has no regexp engine).  An unusable pattern
         raises ``re.error`` for the caller to report.
+
+        ``since``/``until`` window EACH KIND on its own time axis — the
+        ``time_col`` in :data:`_KIND_SPECS`, the same column ``*_list`` windows
+        and orders by.  So ``kind="all"`` reads one bound four ways, each the way
+        that kind means it: a diary by its ``date`` (content, since the date is
+        the key), a note by ``updated_at``, a file or report by ``created_at``.
+        That is what makes ``cabinet_search(kind="diary", ...)`` and
+        ``diary_list`` agree about "last month" instead of answering from two
+        different columns.  An unusable bound raises ``InvalidTimeBound``.
 
         Each result carries ``id`` (``"note:5"`` etc.), ``file_path``, the
         kind's key/text, ``snippet`` and the RRF annotations from
@@ -892,25 +1027,42 @@ class MemfilesStore(VecStoreLifecycleMixin):
         rx = re.compile(query) if mode == "grep" else None
         out: list[dict] = []
         for k in kinds:
+            # Normalized per kind rather than once up front: the GRANULARITY is
+            # the kind's (diary compares dates, a note datetimes), so one bound
+            # has to be read through each kind's own axis.  A bound in no known
+            # grammar still aborts the whole search — it raises on the first
+            # kind, before any result is returned.
+            k_since, k_until = _kind_window(_KIND_SPECS[k], since, until)
             key_hits = (
-                await self._regex_search_kind(k, rx, limit) if rx is not None
-                else await self._keyword_search_kind(k, query, limit)
+                await self._regex_search_kind(k, rx, limit, k_since, k_until)
+                if rx is not None
+                else await self._keyword_search_kind(
+                    k, query, limit, k_since, k_until,
+                )
             )
             sem_hits: list[dict] = []
             if use_semantic:
                 assert embed_query is not None  # guaranteed by use_semantic
-                sem_hits = await self._semantic_search_kind(k, embed_query, limit)
+                sem_hits = await self._semantic_search_kind(
+                    k, embed_query, limit, k_since, k_until,
+                )
             out.extend(merge_hybrid(key_hits, sem_hits, key_field="id"))
         out.sort(key=lambda r: r.get("rrf_score", 0.0), reverse=True)
         return out[:limit]
 
     async def _keyword_search_kind(
         self, kind: str, query: str, limit: int,
+        since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         spec = _KIND_SPECS[kind]
         if _contains_cjk(query):
-            return await self._like_search_kind(kind, query, limit)
+            return await self._like_search_kind(kind, query, limit, since, until)
         q = _to_fts5_query(query)
+        # FTS5 carries no created_at, so the JOIN is what supplies the window
+        # — memdb joins diary for the same reason.
+        time_sql, time_params = _time_clause(
+            since, until, f"t.{spec['time_col']}",
+        )
         cursor = await self._c.execute(
             f"SELECT t.id, t.{spec['key_col']} AS key, "
             f"t.{spec['text_col']} AS text, t.tags, t.created_at, "
@@ -918,8 +1070,8 @@ class MemfilesStore(VecStoreLifecycleMixin):
             f"snippet({spec['fts']}, {spec['snippet_col']}, '…', '…', '…', 40) AS snippet, "
             f"{spec['fts']}.rank AS rank "
             f"FROM {spec['fts']} JOIN {spec['table']} t ON t.id = {spec['fts']}.rowid "
-            f"WHERE {spec['fts']} MATCH ? ORDER BY rank LIMIT ?",
-            (q, limit),
+            f"WHERE {spec['fts']} MATCH ?{time_sql} ORDER BY rank LIMIT ?",
+            (q, *time_params, limit),
         )
         hits = []
         for row in await cursor.fetchall():
@@ -930,19 +1082,34 @@ class MemfilesStore(VecStoreLifecycleMixin):
 
     async def _like_search_kind(
         self, kind: str, query: str, limit: int,
+        since: str | None = None, until: str | None = None,
     ) -> list[dict]:
-        """CJK substring search — FTS5's unicode61 can't segment Chinese."""
+        """CJK substring search — FTS5's unicode61 can't segment Chinese.
+
+        The predicate is :func:`_like_terms`, the very one memdb's
+        ``_search_like`` uses: split on whitespace, every word must appear in
+        some column, ANDed.  One pattern for the whole query instead needs the
+        words adjacent and in order — so ``"子agent 委托"`` missed a note holding
+        the two words in different columns, while ``turn_search`` answered with
+        it.  Same query, two stores, two answers.
+        """
         spec = _KIND_SPECS[kind]
-        pat = f"%{_like_escape(query)}%"
-        like_clauses = " OR ".join(f"t.{c} LIKE ? ESCAPE '\\'" for c in spec["like_cols"])
-        params: list[str] = [pat] * len(spec["like_cols"])
+        words = [w for w in query.split() if w]
+        if not words:
+            return []
+        where, params = _like_terms(
+            words, tuple(f"t.{c}" for c in spec["like_cols"]),
+        )
+        time_sql, time_params = _time_clause(
+            since, until, f"t.{spec['time_col']}",
+        )
         cursor = await self._c.execute(
             f"SELECT t.id, t.{spec['key_col']} AS key, "
             f"t.{spec['text_col']} AS text, t.tags, t.created_at, "
             f"t.{spec['file_col']} AS file_path "
-            f"FROM {spec['table']} t WHERE {like_clauses} "
+            f"FROM {spec['table']} t WHERE {where}{time_sql} "
             f"ORDER BY t.id DESC LIMIT ?",
-            (*params, limit),
+            (*params, *time_params, limit),
         )
         hits = []
         for row in await cursor.fetchall():
@@ -955,19 +1122,27 @@ class MemfilesStore(VecStoreLifecycleMixin):
 
     async def _regex_search_kind(
         self, kind: str, rx: "re.Pattern", limit: int,
+        since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """REGEX search over the kind's text columns — a real ``grep``.
 
         SQLite has no regexp engine, so the match runs here: the kind's own
         row count is what bounds the scan (a cabinet is small, and the
-        alternative — SQL ``LIKE`` — is what made ``grep`` a misnomer).
+        alternative — SQL ``LIKE`` — is what made ``grep`` a misnomer).  The
+        time window still narrows in SQL, so it bounds the scan too — only the
+        text predicate is left to Python.
         """
         spec = _KIND_SPECS[kind]
+        time_sql, time_params = _time_clause(
+            since, until, f"t.{spec['time_col']}",
+        )
         cursor = await self._c.execute(
             f"SELECT t.id, t.{spec['key_col']} AS key, "
             f"t.{spec['text_col']} AS text, t.tags, t.created_at, "
             f"t.{spec['file_col']} AS file_path "
-            f"FROM {spec['table']} t ORDER BY t.id DESC",
+            f"FROM {spec['table']} t WHERE 1=1{time_sql} "
+            f"ORDER BY t.id DESC",
+            time_params,
         )
         hits: list[dict] = []
         for row in await cursor.fetchall():
@@ -988,6 +1163,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
 
     async def _semantic_search_kind(
         self, kind: str, embedding: list[float], limit: int,
+        since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         # No vec0 tables when embedding is disabled (dim 0) — hybrid search
         # degrades to keyword-only (search() keeps the FTS5 half).
@@ -996,11 +1172,20 @@ class MemfilesStore(VecStoreLifecycleMixin):
         spec = _KIND_SPECS[kind]
         vec_blob = _serialize_f32(embedding)
         # Fetch extra rows to dedup multi-chunk documents (vec0 KNN no GROUP BY).
+        #
+        # With a time window, fetch a WIDER pool: vec0 KNN is global
+        # nearest-neighbour and sqlite-vec forbids an auxiliary-column
+        # constraint inside it, so the window cannot narrow the KNN — it is
+        # applied below, in Python.  Without a wider pool the in-window hits
+        # could all sit outside the KNN's top `limit*2` and the windowed
+        # search would come back empty while matches existed.  memdb's
+        # `search_semantic` widens by the same factor for the same reason.
+        fetch_limit = (limit * 8) if (since or until) else (limit * 2)
         cursor = await self._c.execute(
             f"SELECT rowid, doc_id, summary, tags, created_at, distance "
             f"FROM {spec['semantic']} WHERE doc_embedding MATCH ? AND k = ? "
             f"ORDER BY distance",
-            (vec_blob, limit * 2),
+            (vec_blob, fetch_limit),
         )
         seen: set[int] = set()
         hits: list[dict] = []
@@ -1012,19 +1197,33 @@ class MemfilesStore(VecStoreLifecycleMixin):
             seen.add(rid)
             r["id"] = f"{spec['id_label']}:{rid}"
             hits.append(r)
-            if len(hits) >= limit:
-                break
+        # The window is applied on the metadata fetched below, NOT on the vec0
+        # row — the vec0 table carries only `created_at`, while the window is on
+        # the kind's OWN axis (`date` for diary, `updated_at` for a note).
+        # Filtering the aux column here is exactly what would make a hybrid
+        # diary search answer from `created_at` while its own keyword legs, in
+        # the same call, answered from `date`.
         if hits:
             ids = [h["doc_id"] for h in hits]
             ph = in_placeholders(len(ids))
             cur = await self._c.execute(
-                f"SELECT id, {spec['file_col']} AS file_path "
+                f"SELECT id, {spec['file_col']} AS file_path, "
+                f"{spec['time_col']} AS time_value "
                 f"FROM {spec['table']} WHERE id IN ({ph})",
                 ids,
             )
-            paths = {r["id"]: r["file_path"] for r in await cur.fetchall()}
+            meta = {r["id"]: r for r in await cur.fetchall()}
+            kept: list[dict] = []
             for h in hits:
-                h["file_path"] = paths.get(h["doc_id"], "")
+                m = meta.get(h["doc_id"])
+                h["file_path"] = m["file_path"] if m is not None else ""
+                value = (m["time_value"] if m is not None else "") or ""
+                if since and value < since:
+                    continue
+                if until and value > until:
+                    continue
+                kept.append(h)
+            hits = kept[:limit]
         return hits
 
     # ── read / path safety ─────────────────────────────────────────

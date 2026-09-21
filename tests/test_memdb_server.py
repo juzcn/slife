@@ -314,14 +314,14 @@ class TestListTurns:
 
         srv = _import_memdb_server()
         store = AsyncMock()
-        store.list_recent = AsyncMock(return_value=[
+        store.turn_list = AsyncMock(return_value=[
             {"rowid": 2, "user_message": "x"},
         ])
         srv._store = store
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
             out = await srv.turn_list(before_turn_id=10, limit=5)
 
-        store.list_recent.assert_awaited_once_with(
+        store.turn_list.assert_awaited_once_with(
             limit=5, before_rowid=10, after_rowid=None,
         )
         assert json.loads(out)[0]["rowid"] == 2  # store keeps internal rowid
@@ -420,3 +420,38 @@ class TestMemdbLifespan:
                 entered = True
         assert entered
         store.close.assert_awaited_once()
+
+
+class TestInvalidTimeBoundAtTheBoundary:
+    """An unusable ``since``/``until`` is the caller's to fix, so it must come
+    back as an error payload — never as a logged traceback, and never as an
+    empty result set.  A pass-through bound used to be exactly that: SQLite
+    compared the text, matched nothing, and reported a bound nobody understood
+    as "no matching memories"."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_bound_returns_an_error_payload(self, restore_root_logger):
+        import json
+
+        from slife.timeutil import InvalidTimeBound
+
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        store.search_keyword = AsyncMock(
+            side_effect=InvalidTimeBound(
+                "invalid since bound '昨天' — expected an ISO date/datetime, ..."
+            )
+        )
+        srv._store = store
+        srv._manager = None
+        # The two handlers return the SAME json, so the only observable
+        # difference is whether a traceback got logged: asserting on the logger
+        # is what proves the narrow clause caught it rather than the broad one.
+        srv.logger = MagicMock()
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.turn_search(query="天气", since="昨天")
+
+        data = json.loads(out)
+        assert "invalid since bound" in data["error"]
+        assert not srv.logger.exception.called

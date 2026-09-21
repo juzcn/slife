@@ -60,14 +60,14 @@ async def test_upsert_scheduled_task_create_and_update(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_list_scheduled_tasks_enabled_filter(tmp_path):
+async def test_scheduled_tasks_list_enabled_filter(tmp_path):
     store = await _real_store(tmp_path)
     try:
         await store.upsert_scheduled_task("a", schedule="0 9 * * *")
         await store.upsert_scheduled_task("b", schedule="0 9 * * *", enabled=False)
-        all_tasks = await store.list_scheduled_tasks()
+        all_tasks = await store.scheduled_tasks_list()
         assert {t["name"] for t in all_tasks} == {"a", "b"}
-        enabled = await store.list_scheduled_tasks(enabled_only=True)
+        enabled = await store.scheduled_tasks_list(enabled_only=True)
         assert [t["name"] for t in enabled] == ["a"]
     finally:
         await store.close()
@@ -84,7 +84,7 @@ async def test_remove_scheduled_task_cleans_runs(tmp_path):
 
         assert await store.remove_scheduled_task("daily") is True
         assert await store.get_scheduled_task("daily") is None
-        assert await store.list_scheduled_runs(task_id=task["task_id"]) == []
+        assert await store.scheduled_runs_list(task_id=task["task_id"]) == []
         # removing again is a no-op
         assert await store.remove_scheduled_task("daily") is False
     finally:
@@ -99,13 +99,13 @@ async def test_record_and_mark_missed(tmp_path):
         r = await store.record_scheduled_run(task["task_id"], "2026-08-25T00:00:00")
         assert r["run_id"] > 0
 
-        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        runs = await store.scheduled_runs_list(task_id=task["task_id"])
         assert len(runs) == 1
         assert runs[0]["status"] == "pending"  # success unconfirmed until a report
 
         # missed for a different due_at
         await store.mark_run_missed(task["task_id"], "2026-08-26T00:00:00")
-        runs = await store.list_scheduled_runs(status="missed")
+        runs = await store.scheduled_runs_list(status="missed")
         assert len(runs) == 1
         assert runs[0]["due_at"] == "2026-08-26T00:00:00"
     finally:
@@ -125,14 +125,14 @@ async def test_mark_run_skipped_closes_missed_and_failed(tmp_path):
         # The return value IS the verdict the caller reports on.
         assert await store.mark_run_skipped(task["task_id"], "2026-08-26T00:00:00") is True
         assert await store.mark_run_skipped(task["task_id"], "2026-08-25T00:00:00") is True
-        runs = await store.list_scheduled_runs(status="skipped")
+        runs = await store.scheduled_runs_list(status="skipped")
         assert {r["due_at"] for r in runs} == {
             "2026-08-25T00:00:00", "2026-08-26T00:00:00",
         }
 
         # a pending (unconfirmed) run is not closed by skip — only missed/failed
         assert await store.mark_run_skipped(task["task_id"], "2026-08-27T00:00:00") is False
-        runs = await store.list_scheduled_runs(status="pending")
+        runs = await store.scheduled_runs_list(status="pending")
         assert len(runs) == 1
         # an already-skipped run is not re-closed either
         assert await store.mark_run_skipped(task["task_id"], "2026-08-26T00:00:00") is False
@@ -154,7 +154,7 @@ async def test_mark_run_failed_only_pending(tmp_path):
         await store.record_scheduled_run(task["task_id"], "2026-08-25T00:00:00")
         await store.mark_run_failed(task["task_id"], "2026-08-25T00:00:00",
                                     "interrupted")
-        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        runs = await store.scheduled_runs_list(task_id=task["task_id"])
         assert runs[0]["status"] == "failed"
         assert runs[0]["error"] == "interrupted"
 
@@ -163,7 +163,7 @@ async def test_mark_run_failed_only_pending(tmp_path):
         await store.upsert_report(task["task_id"], "Ok", "fine")
         await store.mark_run_failed(task["task_id"], "2026-08-26T00:00:00",
                                     "late cancel")
-        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        runs = await store.scheduled_runs_list(task_id=task["task_id"])
         by_due = {r["due_at"]: r for r in runs}
         assert by_due["2026-08-26T00:00:00"]["status"] == "ran"
     finally:
@@ -192,7 +192,7 @@ async def test_fail_unconfirmed_runs_sweep(tmp_path):
         }
         assert stale[0]["name"] == "daily"
 
-        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        runs = await store.scheduled_runs_list(task_id=task["task_id"])
         by_due = {r["due_at"]: r for r in runs}
         assert by_due["2026-08-25T00:00:00"]["status"] == "failed"
         assert by_due["2026-08-26T00:00:00"]["status"] == "ran"
@@ -213,7 +213,7 @@ async def test_record_run_idempotent_on_due_at(tmp_path):
         task = await store.upsert_scheduled_task("daily", schedule="0 0 * * *")
         await store.record_scheduled_run(task["task_id"], "2026-08-25T00:00:00")
         await store.record_scheduled_run(task["task_id"], "2026-08-25T00:00:00")
-        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        runs = await store.scheduled_runs_list(task_id=task["task_id"])
         assert len(runs) == 1
     finally:
         await store.close()
@@ -239,7 +239,7 @@ async def test_upsert_report_mirrors_md_and_backfills_run(tmp_path):
 
         # report_id backfilled onto the run, and the report arrival confirms
         # it (pending → ran) — the one success writeback
-        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        runs = await store.scheduled_runs_list(task_id=task["task_id"])
         assert runs[0]["report_id"] == rep["doc_id"]
         assert runs[0]["status"] == "ran"
     finally:
@@ -264,14 +264,14 @@ async def test_late_report_clears_the_failure_reason(tmp_path):
         await store.mark_run_failed(
             task["task_id"], due, "worker finished without confirming the run",
         )
-        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        runs = await store.scheduled_runs_list(task_id=task["task_id"])
         assert runs[0]["status"] == "failed" and runs[0]["error"]
 
         await store.upsert_report(
             task_id=task["task_id"], due_at=due, title="Daily Report",
             content="Late but real.",
         )
-        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        runs = await store.scheduled_runs_list(task_id=task["task_id"])
         assert runs[0]["status"] == "ran"
         assert runs[0]["error"] == ""
     finally:
@@ -293,7 +293,7 @@ async def test_upsert_report_standalone_no_task(tmp_path):
         row = await store.get_report(rep["doc_id"])
         assert row["task_id"] is None
         # nothing was dispatched or confirmed — runs table stays empty
-        assert await store.list_scheduled_runs() == []
+        assert await store.scheduled_runs_list() == []
     finally:
         await store.close()
 
@@ -311,7 +311,7 @@ async def test_upsert_report_append_same_title(tmp_path):
         md = (tmp_path / "reports" / "summary.md").read_text(encoding="utf-8")
         assert "first" in md and "second" in md
         # both runs got linked to the (single) report and confirmed ran
-        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        runs = await store.scheduled_runs_list(task_id=task["task_id"])
         assert all(r["report_id"] == a["doc_id"] for r in runs)
         assert all(r["status"] == "ran" for r in runs)
     finally:
@@ -335,7 +335,7 @@ async def test_upsert_report_with_due_at_confirms_exact_run(tmp_path):
             due_at=old,
         )
         runs = {r["due_at"]: r for r in
-                await store.list_scheduled_runs(task_id=task["task_id"])}
+                await store.scheduled_runs_list(task_id=task["task_id"])}
         assert runs[old]["status"] == "ran"           # the backfilled run
         assert runs[old]["report_id"] == rep["doc_id"]
         assert runs[newer]["status"] == "missed"      # newer stale run untouched
@@ -353,7 +353,7 @@ async def test_list_and_get_report(tmp_path):
                                   period_start="2026-08-01", period_end="2026-08-07")
         await store.upsert_report(task["task_id"], "Beta", "content b")
 
-        listed = await store.list_reports(task_id=task["task_id"])
+        listed = await store.report_list(task_id=task["task_id"])
         assert listed["total"] == 2
         titles = {e["title"] for e in listed["entries"]}
         assert titles == {"Alpha", "Beta"}
@@ -552,7 +552,7 @@ class TestScheduledServerTools:
                 # The db agrees with the reply.
                 assert await store.run_status(
                     task["id"], "2026-08-27T00:00:00") == "pending"
-                assert await store.list_scheduled_runs(status="skipped") == []
+                assert await store.scheduled_runs_list(status="skipped") == []
 
                 # A run that does not exist is reported as absent, not skipped.
                 absent = await _sched_skip("daily", "2027-01-01T00:00:00")
@@ -592,7 +592,7 @@ class TestScheduledServerTools:
                 )
                 assert saved.startswith("Saved: ")
                 # run got linked
-                runs = await store.list_scheduled_runs(task_id=task["id"])
+                runs = await store.scheduled_runs_list(task_id=task["id"])
                 assert runs[0]["report_id"] is not None
 
                 reports = json.loads(await plugin.report_list(name="daily"))
@@ -616,10 +616,10 @@ class TestScheduledServerTools:
             with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
                 saved = await plugin.report_save(title="Standalone", content="solo")
                 assert saved.startswith("Saved: ")
-                rows = await store.list_reports()
+                rows = await store.report_list()
                 assert rows["total"] == 1
                 assert rows["entries"][0]["task_id"] is None
                 # no scheduled_runs rows were touched
-                assert await store.list_scheduled_runs() == []
+                assert await store.scheduled_runs_list() == []
         finally:
             await store.close()

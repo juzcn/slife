@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 
 import slife.plugins.memfiles.server as plugin
 from slife.plugins.memfiles.store import MemfilesStore
+from slife.timeutil import InvalidTimeBound
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -58,14 +59,14 @@ def _fake_store(mem_dir: Path) -> MagicMock:
     store.search = AsyncMock(return_value=[
         {"id": "note:1", "file_path": "notes/subj.md",
          "snippet": "…", "rrf_score": 0.01}])
-    store.list_notes = AsyncMock(return_value={
+    store.note_list = AsyncMock(return_value={
         "entries": [
             {"id": 1, "subject": "subj", "tags": "", "file_path": "notes/subj.md",
              "created_at": "2026-01-01", "updated_at": "2026-01-02"},
         ],
         "total": 1,
     })
-    store.list_diary = AsyncMock(return_value={
+    store.diary_list = AsyncMock(return_value={
         "entries": [
             {"id": 2, "date": "2026-08-15", "tags": "", "file_path": "diary/2026-08-15.md",
              "created_at": "2026-08-15", "updated_at": "2026-08-15"},
@@ -78,7 +79,7 @@ def _fake_store(mem_dir: Path) -> MagicMock:
     store.get_diary = AsyncMock(return_value={
         "id": 2, "date": "2026-08-15", "content": "# 2026-08-15\n\nbody", "tags": "",
         "file_path": "diary/2026-08-15.md", "created_at": "2026-08-15", "updated_at": "2026-08-15"})
-    store.list_files = AsyncMock(return_value={
+    store.file_list = AsyncMock(return_value={
         "entries": [
             {"id": 3, "title": "a.txt", "saved_path": "files/documents/a.txt",
              "category": "documents", "mime": "text/plain", "size": 3,
@@ -109,7 +110,7 @@ class TestHelpers:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# note_save / diary_write / file_save / url_save
+# note_save / diary_save / file_save / url_save
 # ═══════════════════════════════════════════════════════════════════════
 
 
@@ -144,7 +145,7 @@ class TestDiaryWrite:
     async def test_defaults_to_today(self, tmp_path):
         store = _fake_store(tmp_path / "files")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            await plugin.diary_write(content="today's entry")
+            await plugin.diary_save(content="today's entry")
         store.upsert_diary.assert_awaited_once()
         call_date = store.upsert_diary.await_args.args[0]
         assert call_date == "2026-08-15" or len(call_date.split("-")) == 3
@@ -153,7 +154,7 @@ class TestDiaryWrite:
     async def test_explicit_date(self, tmp_path):
         store = _fake_store(tmp_path / "files")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            await plugin.diary_write(date="2026-08-10", content="x")
+            await plugin.diary_save(date="2026-08-10", content="x")
         store.upsert_diary.assert_awaited_once_with("2026-08-10", "x", "")
 
     @pytest.mark.asyncio
@@ -164,7 +165,7 @@ class TestDiaryWrite:
         mem_dir.mkdir()
         store = _fake_store(mem_dir)
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            result = await plugin.diary_write(date="2026-08-10", content="x")
+            result = await plugin.diary_save(date="2026-08-10", content="x")
         assert "Saved:" in result
         assert result.rstrip().replace("\\", "/").endswith("diary/2026-08-15.md")
         assert "URL:" not in result
@@ -320,7 +321,7 @@ class TestUrlSave:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# cabinet_search / cabinet_read
+# cabinet_search / file_read
 # ═══════════════════════════════════════════════════════════════════════
 
 
@@ -335,6 +336,43 @@ class TestCabinetSearch:
         assert data["results"][0]["id"] == "note:1"
         store.search.assert_awaited_once()
         assert store.search.await_args.kwargs["embed_query"] is None
+
+    @pytest.mark.asyncio
+    async def test_kind_report_is_honoured_not_rewritten_to_all(self, tmp_path):
+        """`kind="report"` used to be silently rewritten to `"all"`: the server's
+        kind list predates reports joining `_KIND_SPECS`, so asking for reports
+        got every kind instead — while `report_save` / `report_list` /
+        `report_read` already treated reports as first-class, and `search()`'s
+        own kind map accepted `"report"`.  An unknown kind still falls back."""
+        store = _fake_store(tmp_path / "files")
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            await plugin.cabinet_search(query="weekly", kind="report")
+        assert store.search.await_args.kwargs["kind"] == "report"
+
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            await plugin.cabinet_search(query="weekly", kind="nonsense")
+        assert store.search.await_args.kwargs["kind"] == "all"
+
+    @pytest.mark.asyncio
+    async def test_empty_query_is_rejected_in_every_mode(self, tmp_path):
+        """An empty query is not a search, and it must not be one.
+
+        `mode="grep"` used to compile the empty pattern — which matches EVERY
+        string — so an empty query silently returned the whole window: no
+        `total`, no paging, invisible in every description.  That was an
+        accidental second browse path, one unrelated "reject empty patterns"
+        fix away from vanishing without a trace."""
+        store = _fake_store(tmp_path / "files")
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            for mode in ("hybrid", "fts5", "grep"):
+                for q in ("", "   "):
+                    data = json.loads(
+                        await plugin.cabinet_search(query=q, mode=mode)
+                    )
+                    assert "must not be empty" in data["error"], (mode, q)
+                    # And it names where browsing actually lives.
+                    assert "note_list" in data["error"]
+        store.search.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_hybrid_without_manager_degrades_to_fts5(self, tmp_path):
@@ -415,7 +453,7 @@ class TestCabinetRead:
         store = _fake_store(mem_dir)
         store.resolve_safe_path = MagicMock(return_value=mem_dir / "notes" / "subj.md")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.cabinet_read("notes/subj.md")
+            out = await plugin.file_read("notes/subj.md")
         assert out == "# content"
 
     @pytest.mark.asyncio
@@ -423,7 +461,7 @@ class TestCabinetRead:
         store = _fake_store(tmp_path / "files")
         store.resolve_safe_path = MagicMock(return_value=tmp_path / "files" / "none.md")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.cabinet_read("none.md")
+            out = await plugin.file_read("none.md")
         assert out.startswith("Error: not a file")
 
 
@@ -439,7 +477,9 @@ class TestNoteDiaryBrowse:
         assert data["total"] == 1
         assert data["entries"][0]["subject"] == "subj"
         assert data["entries"][0]["file_path"] == "notes/subj.md"
-        store.list_notes.assert_awaited_once_with(limit=50, offset=0)
+        store.note_list.assert_awaited_once_with(
+            since=None, until=None, limit=50, offset=0,
+        )
 
     @pytest.mark.asyncio
     async def test_diary_list_range(self, tmp_path):
@@ -448,7 +488,7 @@ class TestNoteDiaryBrowse:
             out = await plugin.diary_list(since="2026-08-01", until="2026-08-31")
         data = json.loads(out)
         assert data["entries"][0]["date"] == "2026-08-15"
-        store.list_diary.assert_awaited_once_with(
+        store.diary_list.assert_awaited_once_with(
             since="2026-08-01", until="2026-08-31", limit=50, offset=0,
         )
 
@@ -483,16 +523,16 @@ class TestNoteDiaryBrowse:
         assert out.startswith("Error: diary not found")
 
     @pytest.mark.asyncio
-    async def test_list_files(self, tmp_path):
+    async def test_file_list(self, tmp_path):
         store = _fake_store(tmp_path / "files")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.list_files(category="documents")
+            out = await plugin.file_list(category="documents")
         data = json.loads(out)
         assert data["total"] == 1
         assert data["entries"][0]["category"] == "documents"
         assert data["entries"][0]["saved_path"] == "files/documents/a.txt"
-        store.list_files.assert_awaited_once_with(
-            category="documents", limit=50, offset=0,
+        store.file_list.assert_awaited_once_with(
+            category="documents", since=None, until=None, limit=50, offset=0,
         )
 
 
@@ -755,23 +795,23 @@ class TestMemfilesStore:
             await store.upsert_diary("2026-08-15", "refactor day", "dev")
             await store.upsert_diary("2026-08-14", "setup day", "")
 
-            notes = await store.list_notes()
+            notes = await store.note_list()
             # newest-updated first; timestamps share second precision in-tests,
             # so don't assert tie order
             assert {n["subject"] for n in notes["entries"]} == {"Python", "Go"}
             assert notes["total"] == 2
             assert "content" not in notes["entries"][0]  # lightweight
 
-            days = await store.list_diary(since="2026-08-14", until="2026-08-15")
+            days = await store.diary_list(since="2026-08-14", until="2026-08-15")
             assert [d["date"] for d in days["entries"]] == ["2026-08-15", "2026-08-14"]
             assert days["total"] == 2
-            days = await store.list_diary(since="2026-08-15")
+            days = await store.diary_list(since="2026-08-15")
             assert [d["date"] for d in days["entries"]] == ["2026-08-15"]
 
             # paging: limit 1 of 2 → total tells the caller more remain
-            paged = await store.list_diary(limit=1)
+            paged = await store.diary_list(limit=1)
             assert len(paged["entries"]) == 1 and paged["total"] == 2
-            rest = await store.list_diary(limit=1, offset=1)
+            rest = await store.diary_list(limit=1, offset=1)
             assert len(rest["entries"]) == 1 and rest["total"] == 2
 
             note = await store.get_note("Python")
@@ -784,7 +824,7 @@ class TestMemfilesStore:
             await store.close()
 
     @pytest.mark.asyncio
-    async def test_list_diary_range_grammar(self, tmp_path):
+    async def test_diary_list_range_grammar(self, tmp_path):
         """since/until follow the shared grammar: ISO datetimes and relative
         words are reduced to the date-only column."""
         from datetime import date as _date
@@ -796,7 +836,7 @@ class TestMemfilesStore:
             await store.upsert_diary(today, "today's entry", "")
 
             # ISO datetime bounds reduce to their date part
-            days = await store.list_diary(
+            days = await store.diary_list(
                 since="2026-08-14T00:00:00+08:00",
                 until="2026-08-15T23:59:59Z",
             )
@@ -804,18 +844,18 @@ class TestMemfilesStore:
             assert days["total"] == 2
 
             # relative words resolve against today's calendar
-            todays = await store.list_diary(since="today")
+            todays = await store.diary_list(since="today")
             assert [d["date"] for d in todays["entries"]] == [today]
 
             # a date-only until stays on the day — no +1-day drift on a
             # date-only column
-            day = await store.list_diary(until="2026-08-14")
+            day = await store.diary_list(until="2026-08-14")
             assert [d["date"] for d in day["entries"]] == ["2026-08-14"]
         finally:
             await store.close()
 
     @pytest.mark.asyncio
-    async def test_list_files(self, tmp_path):
+    async def test_file_list(self, tmp_path):
         store = await _real_store(tmp_path)
         try:
             await store.add_file(title="a", original_path="/x/a",
@@ -825,17 +865,97 @@ class TestMemfilesStore:
                                  saved_path="files/images/b.png",
                                  mime="png", size=2, tags="", summary="s")
 
-            data = await store.list_files()
+            data = await store.file_list()
             assert data["total"] == 2
             assert {e["category"] for e in data["entries"]} == {"documents", "images"}
 
-            docs = await store.list_files(category="documents")
+            docs = await store.file_list(category="documents")
             assert docs["total"] == 1
             assert docs["entries"][0]["category"] == "documents"
             assert docs["entries"][0]["saved_path"] == "files/documents/a.pdf"
 
-            paged = await store.list_files(limit=1)
+            paged = await store.file_list(limit=1)
             assert len(paged["entries"]) == 1 and paged["total"] == 2
+
+            # The window merges with the category filter, and `total` counts
+            # their intersection rather than the whole table.
+            assert (await store.file_list(category="documents"))["total"] == 1
+            assert (await store.file_list(
+                category="documents", until="2020-01-01"))["total"] == 0
+            assert (await store.file_list(
+                category="documents", since="2020-01-01"))["total"] == 1
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_diary_search_windows_on_date_not_created_at(self, tmp_path):
+        """A diary's window is its ``date`` — the kind's axis — in the SEARCH
+        legs too, not only in ``diary_list``.
+
+        The entry is dated 2020 but written now, which is the only construction
+        that separates the two candidate columns: windowed on ``date`` it falls
+        inside "up to last month", windowed on ``created_at`` it does not.  That
+        asymmetry is what had ``cabinet_search(kind="diary")`` and ``diary_list``
+        answering "last month" from two different columns."""
+        store = await _real_store(tmp_path)
+        try:
+            await store.upsert_diary("2020-01-15", "asyncio retro", "")
+
+            early = await store.search("asyncio", kind="diary", mode="fts5",
+                                       until="last month")
+            assert [h["id"] for h in early] == ["diary:1"]
+            assert (await store.diary_list(until="last month"))["total"] == 1
+
+            # The same axis from the other side, in both entry points.
+            assert await store.search("asyncio", kind="diary", mode="fts5",
+                                      since="2020-06-01") == []
+            assert (await store.diary_list(since="2020-06-01"))["total"] == 0
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_report_list_window_is_production_time(self, tmp_path):
+        """A report's axis is when it was PRODUCED.  ``period_start`` /
+        ``period_end`` say what it COVERS — a different dimension, and nullable —
+        so a window must not read them.
+
+        The covering period here is years old while the report was produced just
+        now: a window on ``period_start`` would have kept it."""
+        store = await _real_store(tmp_path)
+        try:
+            await store.upsert_report(None, "Weekly", "body", "",
+                                      period_start="2020-01-01",
+                                      period_end="2020-01-31")
+            assert (await store.report_list(since="last month"))["total"] == 1
+            assert (await store.report_list(until="last month"))["total"] == 0
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_note_list_windows_on_updated_at(self, tmp_path):
+        """The list window lands on the column the list is ORDERED by — that is
+        the rule `diary_list` already followed (ordered and windowed on `date`).
+
+        Backdating one note's ``updated_at`` while leaving its ``created_at``
+        alone is what separates the two candidate columns: a window on
+        ``created_at`` would have kept both notes."""
+        store = await _real_store(tmp_path)
+        try:
+            await store.upsert_note("Python", "asyncio", "py")
+            await store.upsert_note("Go", "goroutines", "")
+            assert (await store.note_list())["total"] == 2
+
+            await store._c.execute(
+                "UPDATE notes SET updated_at = '2020-06-01T00:00:00' "
+                "WHERE subject = 'Go'",
+            )
+            await store._c.commit()
+
+            recent = await store.note_list(since="2026-01-01")
+            assert [n["subject"] for n in recent["entries"]] == ["Python"]
+            assert recent["total"] == 1        # total counts the window
+            old = await store.note_list(until="2026-01-01")
+            assert [n["subject"] for n in old["entries"]] == ["Go"]
         finally:
             await store.close()
 
@@ -855,6 +975,22 @@ class TestMemfilesStore:
             await store.close()
 
     @pytest.mark.asyncio
+    async def test_search_cjk_ands_words_across_columns(self, tmp_path):
+        """Regression: the CJK fallback LIKE'd the WHOLE query as a single
+        pattern, so it needed the words adjacent and in order — a note with
+        "子agent" in the subject and "委托" in the content was invisible to
+        ``cabinet_search`` while ``turn_search`` answered with it.  Both stores
+        now build the predicate with ``_like_terms``, so one query has one
+        answer."""
+        store = await _real_store(tmp_path)
+        try:
+            await store.upsert_note("子agent 调度", "已经委托给子进程处理了", "")
+            hits = await store.search("子agent 委托", kind="note", mode="fts5")
+            assert [h["id"] for h in hits] == ["note:1"]
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
     async def test_search_hybrid_with_vectors(self, tmp_path):
         store = await _real_store(tmp_path, require_vec=True)
         try:
@@ -870,6 +1006,76 @@ class TestMemfilesStore:
                                       mode="hybrid", embed_query=[0.1, 0.2, 0.3, 0.4])
             assert hits[0]["id"] == "note:1"
             assert all("rrf_score" in h for h in hits)
+
+            # A window applies to BOTH legs.  The semantic leg cannot take one
+            # in SQL — sqlite-vec forbids an auxiliary-column constraint inside
+            # a KNN query — so it filters a widened pool in Python.  If it
+            # ignored the window, this note (which HAS an embedding and is the
+            # closest hit) would still come back through the semantic leg, and
+            # a windowed search would silently answer with out-of-window rows.
+            assert await store.search(
+                "python concurrency", kind="all", mode="hybrid",
+                embed_query=[0.1, 0.2, 0.3, 0.4], until="last month",
+            ) == []
+            assert len(await store.search(
+                "python concurrency", kind="all", mode="hybrid",
+                embed_query=[0.1, 0.2, 0.3, 0.4], since="last month",
+            )) > 0
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_search_window_covers_every_mode(self, tmp_path):
+        """since/until window each mode on ``created_at`` — the column and the
+        datetime granularity memdb's ``turn_search`` uses, so one bound narrows
+        both stores.
+
+        A bound in no known grammar RAISES: it used to pass through, and
+        SQLite compared the text, matched nothing, and reported a bound nobody
+        understood as "no matches"."""
+        store = await _real_store(tmp_path)
+        try:
+            await store.upsert_note("Python", "Everything about asyncio", "")
+            await store.upsert_note("并发编程", "Python 异步笔记", "")
+            common = {"kind": "note", "limit": 10}
+
+            # Written just now: inside a window open since last month, outside
+            # one that closed at the end of it — in every mode.
+            assert len(await store.search("asyncio", mode="fts5",
+                                          since="last month", **common)) == 1
+            assert await store.search("asyncio", mode="fts5",
+                                      until="last month", **common) == []
+            assert len(await store.search("asyncio", mode="grep",
+                                          since="last month", **common)) == 1
+            assert await store.search("asyncio", mode="grep",
+                                      until="last month", **common) == []
+            # …including the CJK (LIKE) fallback.
+            assert len(await store.search("并发", mode="fts5",
+                                          since="last month", **common)) == 1
+            assert await store.search("并发", mode="fts5",
+                                      until="last month", **common) == []
+
+            with pytest.raises(InvalidTimeBound):
+                await store.search("asyncio", mode="fts5", since="昨天", **common)
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_search_kind_report_resolves_to_the_reports_index(self, tmp_path):
+        """The far end of the ``kind="report"`` path: the kind has to resolve to
+        ``reports_fts`` and nothing else.  The mock test in TestCabinetSearch
+        proves the server passes the kind through; this proves the pass-through
+        lands on a real index."""
+        store = await _real_store(tmp_path)
+        try:
+            await store.upsert_note("Python", "asyncio concurrency notes", "")
+            await store.upsert_report(None, "Weekly review", "asyncio report body", "")
+            assert [h["id"] for h in await store.search(
+                "asyncio", kind="report", mode="fts5")] == ["report:1"]
+            assert [h["id"] for h in await store.search(
+                "asyncio", kind="note", mode="fts5")] == ["note:1"]
+            assert {h["id"] for h in await store.search(
+                "asyncio", kind="all", mode="fts5")} == {"note:1", "report:1"}
         finally:
             await store.close()
 
