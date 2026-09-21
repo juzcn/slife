@@ -330,8 +330,6 @@ class AgentLoop:
         #: request — see :meth:`_refresh_inject_snapshot`).
         #: None ⇒ fall back to the whole registry (no catalog).
         self._inject_snapshot: AbstractSet[str] | None = None
-        #: Tools evicted at this turn's boundary (footnote in _turn_prompt).
-        self._evicted_this_turn: list[str] = []
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
         self.tool_timeout = (
@@ -727,9 +725,6 @@ class AgentLoop:
         # presence_events are NOT drained here — _auto_invoke reads them only
         # when the prompt is actually recorded, so a cancelled turn doesn't lose
         # them.
-        if self._evicted_this_turn:
-            kwargs["tools_evicted"] = list(self._evicted_this_turn)
-            self._evicted_this_turn = []  # consumed — reset for the next turn
         return kwargs
 
     async def _auto_invoke(
@@ -935,20 +930,19 @@ class AgentLoop:
             logger.exception("inject_snapshot_failed — injecting full registry")
             self._inject_snapshot = None
 
-    async def _maybe_evict(self) -> list[str]:
+    async def _maybe_evict(self) -> None:
         """Turn-boundary threshold eviction (harness-side LRU squeeze).
 
         ONLY the catalog's write owner (the main agent) evicts; a subagent
-        worker inherits the shared budget and never squeezes it.  Returns
-        the evicted names for the turn-prompt footnote.
+        worker inherits the shared budget and never squeezes it.  The
+        eviction is recorded by ``evict_to_threshold``'s own log line.
         """
         if self.tool_catalog is None:
-            return []
+            return
         try:
-            return await self.tool_catalog.evict_to_threshold()
+            await self.tool_catalog.evict_to_threshold()
         except Exception:
             logger.exception("turn_evict_failed")
-            return []
 
     async def _process_stream(
         self,
@@ -1500,10 +1494,10 @@ class AgentLoop:
 
                 # Threshold eviction BEFORE the first request: the
                 # oldest-by-LRU loaded tools over the budget leave the tool
-                # list for this turn, and the footnote tells the model.
-                # Eviction stays a turn-boundary operation (the injected list
-                # itself is rebuilt per request, below).
-                self._evicted_this_turn = await self._maybe_evict()
+                # list for this turn.  Eviction stays a turn-boundary
+                # operation (the injected list itself is rebuilt per
+                # request, below).
+                await self._maybe_evict()
 
                 # Context usage is computed ONCE and shared: _turn_prompt
                 # reports it as the usage %, and the TUI status bar.

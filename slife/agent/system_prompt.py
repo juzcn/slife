@@ -131,7 +131,6 @@ def build_turn_prompt(
     schedule_status: list[dict] | None = None,
     a2a_stale_tasks: list[dict] | None = None,
     restarted: bool = False,
-    tools_evicted: list[str] | None = None,
 ) -> str:
     """Render the turn prompt injected at the start of each turn.
 
@@ -163,11 +162,6 @@ def build_turn_prompt(
 
     *restarted* is the "system restarted" flag — set once by the loop on
     the first turn after a session restore.
-
-    *tools_evicted* lists tools the threshold eviction unloaded at this
-    turn's boundary — the model needs to know they left its tool list (and
-    that reloading is how to get their schema back; they stay callable by
-    name).  Only passed when non-empty.
     """
     now = datetime.now().astimezone()
     last_usage_pct = (
@@ -205,7 +199,6 @@ def build_turn_prompt(
         schedule_status=rendered_schedule,
         a2a_stale_tasks=rendered_a2a_stale,
         restarted=restarted,
-        tools_evicted=tools_evicted or [],
     ).strip()
 
 
