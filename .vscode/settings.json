@@ -1,6 +1,6 @@
 {
   "python.analysis.diagnosticMode": "workspace",
-  "python.analysis.exclude": ["**/venv/**", "**/.venv/**"],
+  "python.analysis.exclude": ["**/venv/**", "**/.venv/**", "**/node_modules", "**/__pycache__", "**/.*"],
   "mypy-type-checker.enabled": false,
   "files.associations": {
     "*.yaml": "yaml",
