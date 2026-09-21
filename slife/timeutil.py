@@ -4,8 +4,14 @@ Every LLM-visible ``since`` / ``until`` search bound speaks one grammar.
 This module is the single implementation of that grammar plus the
 column-granularity rounding:
 
-- relative words LLMs pass verbatim (``today`` / ``yesterday`` /
-  ``tomorrow`` / ``now``) are resolved against the local calendar;
+- relative words LLMs pass verbatim are resolved against the local calendar:
+  the day words (``today`` / ``yesterday`` / ``tomorrow`` / ``now``), the
+  calendar periods ``last|this week|month|quarter|year``, and offsets of the
+  form ``<N> day(s)|week(s)|month(s)|year(s) ago``;
+- **a period word anchors to the period's EDGE, not to today's day-of-month.**
+  ``since=last month`` means the FIRST of last month and ``until=last month``
+  its LAST day — the same word is two different instants, and neither is
+  ``today - 1 month`` (which for a mid-month today lands 20-odd days off);
 - offset-aware ISO datetimes are converted to the local offset so a
   lexicographic comparison against locally-stored timestamps does not
   misorder across the offset boundary;
@@ -14,25 +20,144 @@ column-granularity rounding:
   sort after the bare date), but is left alone against a **date** column
   (``date <= '2026-07-20'`` already includes the whole day).
 
+**Unrecognized input raises :class:`InvalidTimeBound`.**  It used to pass
+through unchanged, on the stated theory that "the SQL layer can reject it" —
+but SQLite does not reject it.  ``created_at >= '上个月'`` is a string
+comparison that matches nothing, so a bound nobody understood produced the
+same empty result as a real no-match: the one outcome a search bound must
+never produce silently.  Passing garbage through also meant a Chinese
+relative word (``昨天``) was a guaranteed empty result.
+
+Month arithmetic uses ``dateutil.relativedelta`` — ``timedelta`` has no month
+or year unit, because a month is not a fixed number of days.  That is a
+declared dependency (see ``pyproject.toml``); it used to arrive only
+transitively, via ``croniter``.
+
 Used by memdb (granularity ``"datetime"``, ``created_at``) and memfiles
-(granularity ``"date"``, the diary ``date`` column).  Unparseable input
-passes through unchanged so the SQL layer can reject it.
+(granularity ``"date"``, the diary ``date`` column).
 """
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 
-#: Relative-date words LLMs may pass verbatim despite being told to
-#: compute ISO datetimes.  We convert them server-side so a time-window
-#: search doesn't silently return zero (or wrong) results.  ``now`` is NOT
-#: cached here: it is a time-of-day, not a calendar date — see
-#: :func:`normalize_time_bound`.
-_RELATIVE_DATES: dict[str, str] = {
-    "today": "",
-    "yesterday": "",
-    "tomorrow": "",
+from dateutil.relativedelta import relativedelta
+
+
+class InvalidTimeBound(ValueError):
+    """A ``since``/``until`` bound written in no grammar this module speaks."""
+
+
+#: The grammar this module accepts, for tool ``description=`` (an expression
+#: context — a tool's *docstring* must stay a literal, or CPython files no
+#: docstring at all).  Single-sourced so what the LLM is told and what is
+#: implemented cannot drift.
+BOUND_GRAMMAR = (
+    "ISO date/datetime, or one of: today, yesterday, tomorrow, now, "
+    "last|this week|month|quarter|year, "
+    "'<N> day(s)|week(s)|month(s)|year(s) ago'"
+)
+
+
+#: Day words, as name -> offset in days from today.
+_DAY_WORDS: dict[str, int] = {"yesterday": -1, "today": 0, "tomorrow": 1}
+
+#: Calendar periods ``last``/``this`` may name, as name -> months per period
+#: (``week`` is 0: weeks are day-based, see :func:`_shift_period`).
+_PERIOD_MONTHS: dict[str, int] = {
+    "week": 0, "month": 1, "quarter": 3, "year": 12,
 }
+
+_PERIOD_RE = re.compile(r"^(last|this)\s+(week|month|quarter|year)$")
+_AGO_RE = re.compile(r"^(\d+)\s+(day|week|month|year)s?\s+ago$")
+
+
+def _bound_error(role: str, value: str) -> str:
+    return f"invalid {role} bound {value!r} — expected {BOUND_GRAMMAR}"
+
+
+def _shift_period(start: date, period: str, count: int) -> date:
+    """Shift a period's first day by *count* whole periods.
+
+    *start* must already BE a period start, so the month arithmetic cannot
+    clamp (``day=1`` never overflows a shorter month).
+    """
+    if period == "week":
+        return start + timedelta(weeks=count)
+    return start + relativedelta(months=_PERIOD_MONTHS[period] * count)
+
+
+def _period_start(day: date, period: str) -> date:
+    """The first day of the period containing *day* (weeks start Monday)."""
+    if period == "week":
+        return day - timedelta(days=day.weekday())
+    if period == "month":
+        return day.replace(day=1)
+    if period == "quarter":
+        return date(day.year, 3 * ((day.month - 1) // 3) + 1, 1)
+    if period == "year":
+        return date(day.year, 1, 1)
+    raise InvalidTimeBound(_bound_error("since", period))
+
+
+def _resolve_period(which: str, period: str, role: str, today: date) -> date:
+    """Resolve ``last|this <period>`` to an edge of that period.
+
+    ``since`` takes the period's first day, ``until`` its last — so the same
+    word bounds the window from either end rather than naming one instant.
+    """
+    current = _period_start(today, period)
+    if which == "this":
+        first = current
+    else:                                   # "last" — the period before
+        first = _shift_period(current, period, -1)
+    if role == "until":
+        return _shift_period(first, period, 1) - timedelta(days=1)
+    return first
+
+
+def _resolve_ago(count: int, unit: str, today: date) -> date:
+    """Resolve ``<N> <unit> ago`` — a POINT, deliberately not period-anchored.
+
+    ``3 days ago`` names a day, not a period, so unlike ``last week`` it is
+    measured back from today rather than snapped to a boundary.  Month/year
+    shifts clamp at month ends (``2026-03-31`` minus a month is ``2026-02-28``),
+    which is the arithmetic ``relativedelta`` exists to provide.
+    """
+    if unit == "day":
+        return today - timedelta(days=count)
+    if unit == "week":
+        return today - timedelta(weeks=count)
+    if unit == "month":
+        return today - relativedelta(months=count)
+    return today - relativedelta(years=count)
+
+
+def _resolve_relative(key: str, role: str, today: date) -> date | None:
+    """The date a relative phrase names, or None if it is not one."""
+    if key in _DAY_WORDS:
+        return today + timedelta(days=_DAY_WORDS[key])
+    m = _PERIOD_RE.match(key)
+    if m:
+        return _resolve_period(m.group(1), m.group(2), role, today)
+    m = _AGO_RE.match(key)
+    if m:
+        return _resolve_ago(int(m.group(1)), m.group(2), today)
+    return None
+
+
+def _is_iso(value: str) -> bool:
+    """True if *value* is an ISO date or datetime we can compare against.
+
+    ``datetime.fromisoformat`` covers bare dates too (midnight), and from
+    3.11 accepts the ``Z`` suffix as well as explicit offsets.
+    """
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def normalize_time_bound(
@@ -43,30 +168,32 @@ def normalize_time_bound(
 ) -> str:
     """Normalize an LLM-supplied ``since``/``until`` bound for comparison.
 
-    ``role`` is the bound's name ("since" or "until"), used by the
-    date-only-``until`` rounding.  ``granularity`` matches the column being
-    compared: ``"datetime"`` (a timestamp column) or ``"date"`` (a date-only
-    column — values are reduced to ``YYYY-MM-DD`` and a date-only ``until``
-    is not advanced).
+    ``role`` is the bound's name ("since" or "until"); it anchors a period
+    word to the period's first or last day, and drives the date-only-``until``
+    rounding.  ``granularity`` matches the column being compared:
+    ``"datetime"`` (a timestamp column) or ``"date"`` (a date-only column —
+    values are reduced to ``YYYY-MM-DD`` and a date-only ``until`` is not
+    advanced).
+
+    Raises :class:`InvalidTimeBound` for input in no known grammar.
     """
     today = date.today()
 
-    # Populate / refresh cached relative dates.  Refresh on calendar-date
-    # rollover — a long-running server must not serve yesterday's "today".
-    today_iso = today.isoformat()
-    if _RELATIVE_DATES["today"] != today_iso:
-        _RELATIVE_DATES["today"] = today_iso
-        _RELATIVE_DATES["yesterday"] = (today - timedelta(days=1)).isoformat()
-        _RELATIVE_DATES["tomorrow"] = (today + timedelta(days=1)).isoformat()
+    # Internal whitespace collapsed, so "last   month" reads as "last month".
+    # No caching of the resolved words: they are derived from `today`, which
+    # this reads per call, so a long-running server cannot serve a stale one.
+    key = " ".join(value.strip().lower().split())
 
-    key = value.strip().lower()
     if key == "now":
-        # ``now`` is a time-of-day, so it must stay fresh: day-caching it
-        # would pin a search window to the day's first resolution (a
-        # ``since=now`` at 14:00 after a 09:00 call would bound against 09:00).
+        # ``now`` is a time-of-day, not a calendar date — resolved to a full
+        # timestamp so a ``since=now`` is not pinned to the start of the day.
         value = now_local_seconds()
-    elif key in _RELATIVE_DATES:
-        value = _RELATIVE_DATES[key]
+    else:
+        resolved = _resolve_relative(key, role, today)
+        if resolved is not None:
+            value = resolved.isoformat()
+        elif not _is_iso(value.strip()):
+            raise InvalidTimeBound(_bound_error(role, value))
 
     if granularity == "date":
         # Date-only column: reduce a datetime bound to its date part so it

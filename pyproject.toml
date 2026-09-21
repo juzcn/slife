@@ -29,6 +29,10 @@ dependencies = [
     "local-embed",
     "ngrok",
     "croniter>=6.2.4",
+    # Calendar arithmetic for search time bounds (relativedelta — stdlib's
+    # timedelta has no month/year unit, so "last month" is not expressible
+    # with it).  Was arriving only transitively, via croniter.
+    "python-dateutil>=2.9.0",
     # Not imported directly; stdlib zoneinfo loads it for IANA zones on Windows.
     "tzdata>=2026.3",
     "filelock>=3.12.0",
