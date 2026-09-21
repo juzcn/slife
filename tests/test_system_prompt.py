@@ -104,22 +104,20 @@ class TestBuild:
         assert "skill_use" in result
 
     def test_tool_system_in_prompt(self, cfg):
-        """The catalog contract: search/load is per tool, the cap evicts LRU
-        at turn boundaries (the whitelist carved out), and an unusable server
-        shows as ``error``."""
+        """The catalog contract: discovery and load, the capped list with LRU
+        eviction and an always-injected whitelist, what cannot be called, the
+        ``_`` rule, and jobs."""
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "tool_search" in result
         assert "func_tool_load" in result
-        assert "Loading is **per tool**" in result
-        assert "capped by the `tool_load` threshold" in result
+        assert "{server}__{tool}" in result
+        assert "adds a `func` tool to your list from the next request" in result
+        assert "`tool_load` (default 100)" in result
         assert "least-recently-used" in result
         assert "Always injected: the whitelist" in result
-        assert "pinned `skill_use` / `system_health`" in result
-        assert "_func_tool_unload" in result
-        assert "mcp_set_enabled" in result
-        assert "rest_api_set_enabled" in result
-        assert "mcp_list" in result
+        assert "`skill_use`, `system_health`" in result
+        assert "`_`-prefixed tools are harness-invoked" in result
 
     def test_data_dirs_in_prompt(self, cfg):
         from slife.agent.system_prompt import build

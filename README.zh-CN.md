@@ -246,7 +246,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image`（给视觉模型喂图片）, `_turn_prompt`（每轮提示词，自动调用）, `_check_new_input`（轮中消息注入，自动调用） |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | embeddings | `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_enable` |
-| ToolSystem | `tool_search`（跨全部类别的目录搜索）、`func_tool_load`（mcp/rest-api 工具也走它，载入时物化 proxy）、`_func_tool_unload`（自助卸载） |
+| ToolSystem | `tool_search`（跨全部类别的目录搜索）、`func_tool_load`（mcp/rest-api 工具也走它，载入时物化 proxy）、`_func_tool_unload`（按名卸载） |
 
 **托管类别**（Skills / CLI / REST API / Models / MCP）支持 `X_list` / `X_set` / `X_remove`（+ 有开关时 `X_set_enabled`）——所有 `X_set` 工具都是幂等 upsert；`model_set` **合并**进现有条目，因此聚焦某一字段的改动不会悄悄剥掉模型的 `reasoning`/`input`/`compat`。`rest_api_set` 把 OpenAPI 描述的外部 API 注册为一个由 `mcp-openapi-proxy`（Low-Level Mode，默认模式）支撑的 server——spec 里的每个端点成为一个带类型的 `{name}__{endpoint}` 工具。
 

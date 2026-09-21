@@ -646,10 +646,10 @@ class TurnPromptTool(Tool):
 
     name = "_turn_prompt"
     category = "Models"
-    description = ("Auto-invoked tool that builds the per-turn prompt: "
-                   "current time, context usage, what changed since the last "
-                   "turn, peer presence events, unsettled scheduled runs, and "
-                   "inbound A2A tasks orphaned by a restart.")
+    description = ("The per-turn prompt: current time, context usage, what "
+                   "changed since the last turn, peer presence events, "
+                   "unsettled scheduled runs, and inbound A2A tasks orphaned "
+                   "by a restart.")
     parameters = _TURN_PROMPT_PARAMS
 
     async def execute(self, **kwargs) -> str:
@@ -676,9 +676,7 @@ class CheckNewInputTool(Tool):
 
     name = "_check_new_input"
     category = "Harness"
-    description = ("Auto-invoked by the harness at a safe point when a message "
-                   "arrived mid-turn (cut-in mode) — the tool result is the "
-                   "pending message verbatim.")
+    description = "The message that arrived mid-turn, verbatim (cut-in mode)."
     parameters = make_params()
 
     async def execute(self, **kwargs) -> str:

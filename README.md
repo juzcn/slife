@@ -241,7 +241,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image` (feed images to a vision model), `_turn_prompt` (per-turn prompt, auto-invoked), `_check_new_input` (mid-turn input, auto-invoked) |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | embeddings | `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_enable` |
-| ToolSystem | `tool_search` (catalog search across every category), `func_tool_load` (loads an mcp/rest-api tool too, materializing its proxy), `_func_tool_unload` (self-service unload) |
+| ToolSystem | `tool_search` (catalog search across every category), `func_tool_load` (loads an mcp/rest-api tool too, materializing its proxy), `_func_tool_unload` (unload by name) |
 
 **Managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts; `model_set` **merges** into the existing entry, so a field-focused change can't silently strip a model's `reasoning`/`input`/`compat`. `rest_api_set` registers an OpenAPI-described external API as one server backed by `mcp-openapi-proxy` (Low-Level Mode, the default) — every spec endpoint becomes a typed `{name}__{endpoint}` tool.
 

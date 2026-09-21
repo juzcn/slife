@@ -42,16 +42,11 @@
    - Share files as a path/URL — never rendered in-terminal.
 2. Credentials
    - `${VAR}` / `${VAR:-default}` resolves `os.environ` → credential store (credstore) → the default.
-3. Unified Tool System
-   - One catalog (`tools.db`), one row per tool. `type` is `func` (builtin / job / plugin / mcp / rest-api; external ones named `{server}__{tool}`, a plugin's own tools bare with the plugin as `source`), `skill`, or `cli`.
-   - A `func` row is `loaded` or `unloaded`: `tool_search` finds rows (category / status / mode filters), `func_tool_load` loads one, `_func_tool_unload` unloads one. Loading is **per tool** and governs the tool LIST: a loaded row is in your list carrying its schema, an unloaded row stays callable by name. `disabled` and `error` are what stop a call.
-   - Each LLM request injects the enabled, loaded `func` rows, capped by the `tool_load` threshold (default 100): above it the least-recently-used are unloaded at turn boundaries. A tool `func_tool_load` loads is in the next request. Always injected: the whitelist (harness pair, meta tools, pinned `skill_use` / `system_health`).
-   - `skill` and `cli` rows carry no load state: `tool_search` finds them the same way, `skill_use` returns a skill's SKILL.md, `cli_list` carries a CLI's command.
-   - A tool whose server is down carries status `error`: still searchable, and back in the injected set once the server connects (with whatever was loaded before). A tool switched off in the config carries status `disabled` — searchable, not loadable. `mcp_list` = the live pool; `mcp_set_enabled` / `rest_api_set_enabled` = the on/off switch per external family (it moves all of that server's tools at once).
-   - A server's tools list via `mcp_list_tools` / `rest_api_list_tools` — capped (`mcp.tool_list_limit`, default 20) with the real total reported; `tool_search` finds any tool behind the cap.
-   - `_`-prefixed tools are harness-injected (`_turn_prompt`, `_check_new_input`); a `_check_new_input` reply may carry a live mid-turn message (cut-in).
-   - `add_user_pref` writes standing rules to `USER.md` (prompt-level).
-   - **Job System** — deterministic tools named `job-<function>`, persisted across restarts; load the `job-coding` skill before authoring one.
+3. Unified Tool System — one catalog (`tools.db`), three families: `func` (builtin / job / plugin / mcp / rest-api), `skill`, `cli`. `tool_search` finds any of them, `func_tool_load` adds a `func` tool to your list from the next request, and an external tool is named `{server}__{tool}`.
+   - `tool_load` (default 100) caps the list: the least-recently-used leave at turn boundaries, and the turn prompt names them. Always injected: the whitelist (harness tools, the meta tools, `skill_use`, `system_health`).
+   - A `disabled` tool (off in the config) and an `error` one (its server is down; it returns when the server connects) cannot be called. `skill` and `cli` rows need no load/unload.
+   - `_`-prefixed tools are harness-invoked — do not call them. Their results can be harness content: the per-turn prompt, a mid-turn message (cut-in).
+   - Jobs — you author your own tools as jobs (`job-<function>`, persisted across restarts); read the `job-coding` skill before authoring one.
 4. Tool meta-parameters (every tool — choose per call)
    - `_timeout`: seconds — omit = the system default (registry ≈120 s); pass a larger positive value for slow tools. Your value overrides the tool's own timeout. `≤0` is never a valid value: it falls back to the default (never "no timeout", never instant) — ask for more time with a positive number.
    - `_async: true`: run in the background → returns a `task_id` (poll `check_async`, cancel `cancel_async`). Without `_timeout` the background task is unbounded — the tool carries its own limit; pass a positive `_timeout` to cap it.

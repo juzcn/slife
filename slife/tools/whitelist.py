@@ -18,7 +18,7 @@ none unloadable via ``_func_tool_unload``:
   §8.5 "系统元工具"): server management as TWO separate families — ``mcp_*``
   and ``rest_api_*`` (a rest-api is semantically distinct today even though
   it rides the mcp-openapi-proxy gateway, and may drop it later) — plus the
-  search/load surface and the self-service ``_func_tool_unload``.
+  search/load surface and the ``_func_tool_unload`` unloader.
 - :data:`PINNED_WHITELIST` — tools outside the tool system that are pinned
   always-loaded because the agent's own workflow keeps needing them.
 
@@ -41,7 +41,7 @@ HARNESS_WHITELIST: frozenset[str] = frozenset({
 #: The tool-system meta surface — DESIGNER_NOTES §8.5, minus the retired
 #: connect/disconnect pairs and `mcp_search`: server management (mcp AND
 #: rest-api as separate families) is one on/off switch per family, plus
-#: search/load and the self-service unloader.  A "connect" had nothing left to
+#: search/load and the unloader.  A "connect" had nothing left to
 #: establish once the modern protocol removed the session, and a server-level
 #: search lost its subject once the server registry went away — see
 #: docs/TOOL-SYSTEM.md.

@@ -2,8 +2,8 @@
 
 ``tool_search``     — cross-category hybrid search over the shared catalog
 ``func_tool_load``  — load a function tool (flip status + materialize proxy)
-``_func_tool_unload`` — unload a function tool (self-service; the harness
-                        also evicts LRU at turn boundaries)
+``_func_tool_unload`` — unload a function tool by name (the harness also
+                        evicts LRU at turn boundaries)
 
 These are in the meta whitelist (``slife.tools.whitelist``) — always
 injected, never evicted, not configurable.  ``func_tool_load`` is the ONLY
@@ -274,14 +274,11 @@ class FuncToolLoadTool(Tool):
 
 
 class FuncToolUnloadTool(Tool):
-    """Unload a function tool (self-service; eviction is the harness's LRU)."""
+    """Unload a function tool by name (the harness evicts LRU at boundaries)."""
 
     name = "_func_tool_unload"
     category: ClassVar[str] = TOOL_META_CATEGORY
-    description = (
-        "Unload a function tool (builtin/job/plugin/mcp/rest-api) from the loaded set "
-        "by name, freeing a slot in the tool list. Whitelisted tools stay loaded."
-    )
+    description = "Unload a function tool (builtin/job/plugin/mcp/rest-api) by name."
     parameters = make_params(
         full_name={
             "type": "string",
