@@ -137,3 +137,9 @@ ToolSystem目前还是有很多挑战， 配置，和运行时与db的同步，�
 - 运行时tool error - 触发db同步
 
 没有想好一个优雅的设计。
+
+local-embed它是一个外部依赖，可选依赖，当active model不是它的时候，应该不应该看它的状态，但它又是一个启动的 plugin，不check违背Plugin Contract.
+
+sharefile也很特殊， TUN fake-ip模式会失败。
+
+
