@@ -2551,8 +2551,13 @@ class AgentService:
                 {"type": "text", "text": " " + header}
             ]
 
-    async def get_recent_turns(self) -> tuple[list[dict], int, int]:
-        """Load the in-context turns for restore. Returns ([], 0, 0) if none.
+    async def get_exit_context_turns(self) -> list[dict]:
+        """Load the exit-time context's turns for restore. Returns [] if none.
+
+        Named for what it returns rather than for "recent" turns: this is not
+        a recency window but the persisted live-context list — the context
+        the agent was working with when it exited.  Restore is its only
+        caller, which is what makes the exit-time reading exact.
 
         Restores the **exit-time context** verbatim: it reads the persisted
         ordered live-context id list (:meth:`SessionStore.get_context_turns`,
@@ -2560,17 +2565,14 @@ class AgentService:
         and returns exactly those turns **in the list's order** — the slice the
         agent was working with when it exited.  No re-slicing against the
         ceiling: the list already encodes the trimmed state, so restore simply
-        replays it (the agent picks up exactly where it left off).
+        replays it (the agent picks up exactly where it left off).  The list is
+        its own bound, so nothing is dropped for a budget and there is no
+        ceiling to report against.
 
         The list order is authoritative and is never re-sorted by rowid: the
         in-context slice is not necessarily contiguous, so its order is part
         of the contract.  Heartbeat turns are included — they restore as
         ⚡ 自主, consistent with the live TUI.
-
-        Returns ``(turns, skipped, budget)`` — *skipped* is always 0 (no turns
-        are dropped for a budget), *budget* is 0 (the list is its own bound).
-        Kept as a 3-tuple so the call site and ``restore_session`` stay
-        compatible.
 
         Reads directly from SQLite — independent of the memory plugin / MCP.
         """
@@ -2581,13 +2583,13 @@ class AgentService:
 
             db_path = self._get_memory_db_path()
             if not (db_path and db_path.is_file()):
-                return [], 0, 0
+                return []
             store = SessionStore(db_path)
             await store.setup(embedding_dim=0)
             turn_ids = await store.get_context_turns()
             if not turn_ids:
-                return [], 0, 0
-            return await store.get_turns_by_ids(turn_ids), 0, 0
+                return []
+            return await store.get_turns_by_ids(turn_ids)
         except Exception as e:
             # A present-but-broken memory DB (missing column, corruption,
             # disk error) must NOT start a memory-less session silently —

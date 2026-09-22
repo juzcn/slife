@@ -1764,7 +1764,6 @@ class TestAgentServiceA2A:
         mock_a2a = MagicMock()
         mock_a2a.is_connected = True
         calls = [0]
-        completed_calls = []
 
         async def mock_call_tool(name, arguments=None):
             if name == "__a2a_drain_incoming":
@@ -1783,8 +1782,6 @@ class TestAgentServiceA2A:
                     "tasks": [], "presence": [],
                     "cancellations": [], "task_completions": [],
                 })
-            if name == "a2a_set_task_done":
-                completed_calls.append(arguments or {})
             return "{}"
 
         mock_a2a.call_tool = mock_call_tool
@@ -2728,7 +2725,7 @@ class TestAnnotateSavedTurn:
         assert "_turn_id" not in conv.messages[1]
 
 
-class TestGetRecentTurns:
+class TestGetExitContextTurns:
     """Restore fetch: the persisted live-context id list drives it — the
     turns on the list come back verbatim, in list order, and nothing else
     does."""
@@ -2785,12 +2782,10 @@ class TestGetRecentTurns:
         srv.config.context_ceiling = 0.8
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
 
-        turns, skipped, budget = await srv.get_recent_turns()
+        turns = await srv.get_exit_context_turns()
 
         ids = [t["rowid"] for t in turns]
         assert ids == [1, 2, 3, 4, 5], "the whole exit-time context comes back"
-        assert skipped == 0
-        assert budget == 0, "no ceiling budget — restore is verbatim"
 
     @pytest.mark.asyncio
     async def test_restore_returns_only_listed_turns(
@@ -2807,12 +2802,10 @@ class TestGetRecentTurns:
         srv.config.context_ceiling = 0.8
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
 
-        turns, skipped, budget = await srv.get_recent_turns()
+        turns = await srv.get_exit_context_turns()
 
         ids = [t["rowid"] for t in turns]
         assert ids == [5, 6, 7, 8], "only the listed turns are restored"
-        assert skipped == 0
-        assert budget == 0
 
     @pytest.mark.asyncio
     async def test_list_bounds_the_read_not_the_diary(
@@ -2828,7 +2821,7 @@ class TestGetRecentTurns:
         srv.config.context_ceiling = 0.8
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
 
-        turns, _skipped, _budget = await srv.get_recent_turns()
+        turns = await srv.get_exit_context_turns()
 
         assert [t["rowid"] for t in turns] == [18, 19, 20]
 
@@ -2844,7 +2837,7 @@ class TestGetRecentTurns:
         srv = AgentService(sample_config)
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
 
-        turns, _skipped, _budget = await srv.get_recent_turns()
+        turns = await srv.get_exit_context_turns()
 
         assert [t["rowid"] for t in turns] == [7, 2, 9]
 
@@ -2862,7 +2855,7 @@ class TestGetRecentTurns:
         srv = AgentService(sample_config)
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
 
-        turns, _skipped, _budget = await srv.get_recent_turns()
+        turns = await srv.get_exit_context_turns()
 
         assert turns == []
 
@@ -2900,7 +2893,7 @@ class TestGetRecentTurns:
         srv = AgentService(sample_config)
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
         with pytest.raises(MemoryDatabaseError):
-            await srv.get_recent_turns()
+            await srv.get_exit_context_turns()
 
 
 # ── Plugin spawn cancellation cleanup ─────────────────────────────────────

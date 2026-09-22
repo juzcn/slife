@@ -84,32 +84,25 @@ def tool_result_is_error(msg: dict) -> bool:
 
 async def restore_session(
     app: "SlifeApp",
-    recovery_info: dict,
+    turns: list[dict],
     history: "MessageHistory",
     config: "Config",
     assistant_prefix: str,
 ) -> None:
     """Restore a previous session from turn-based memory.
 
-    Rebuilds the **exit-time context**: ``get_recent_turns`` already
-    selected the turns recorded after the persisted live-context boundary,
-    within the context-ceiling token budget.  The re-select pass replays the
-    slice the exit-time path already fitted; older turns stay in the memory
-    DB and can be retrieved via ``turn_recall`` if needed.
+    *turns* is the **exit-time context**, already resolved: the caller read it
+    with ``get_exit_context_turns``, which returns the turns named by the
+    persisted live-context list, in that list's order, with no ceiling
+    re-slicing — the list already encodes the trimmed state.  Restore replays
+    it verbatim so the agent picks up exactly where it left off; older turns
+    stay in the memory DB and can be retrieved via ``turn_recall`` if needed.
 
-    This function is self-contained — it reads recovery_info, rebuilds
-    the history message list, and reconstructs the chat UI.
+    This function is self-contained — it rebuilds the history message list and
+    reconstructs the chat UI from *turns*.
     """
-    all_turns: list[dict] = recovery_info.get("turns", [])
-    if not all_turns:
+    if not turns:
         return
-
-    # ── Reuse the exit-time context verbatim ──────────────────────────
-    # get_recent_turns already returns every turn after the persisted
-    # live-context boundary — the exact slice that was live at exit.  No
-    # re-slicing against the ceiling: restore replays the exit state so the
-    # agent picks up exactly where it left off.
-    turns = all_turns
 
     # ── Phase 1: Reconstruct message list from selected turns ─────────
     try:

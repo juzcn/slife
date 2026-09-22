@@ -339,8 +339,6 @@ class SlifeApp(App):
         self._heartbeat_color: str = ""
         self._heartbeat_beat: int = 0
 
-        # Recovery state
-        self._recovery_info: dict | None = None  # interrupted diary for recovery
 
         # Model picker re-entry guard — a second Ctrl+S while one is open
         # would stack a second picker and leak the first's await-task.
@@ -410,15 +408,12 @@ class SlifeApp(App):
             return
 
         # ── Step 1: Restore session from SQLite (pure read, no services needed) ─
-        # get_recent_turns reads the DB directly via aiosqlite —
+        # get_exit_context_turns reads the DB directly via aiosqlite —
         # completely independent of the memory plugin process.
         try:
-            turns, _skipped, _budget = await self.service.get_recent_turns()
+            turns = await self.service.get_exit_context_turns()
             if turns:
-                # Only ``turns`` is consumed by restore (the re-select replays
-                # the fitted slice).
-                self._recovery_info = {"turns": turns}
-                await self._restore_session()
+                await self._restore_session(turns)
         except MemoryDatabaseError as e:
             # Memory is core — a broken memory DB must not start a
             # memory-less session.  Surface the error and abort startup.
@@ -1045,22 +1040,19 @@ class SlifeApp(App):
 
     # ── Restore helpers ──────────────────────────────────────────────
 
-    async def _restore_session(self) -> None:
+    async def _restore_session(self, turns: list[dict]) -> None:
         """Restore a previous session from turn-based memory.
 
-        Delegates to :func:`slife.ui.restore.restore_session`.
+        Delegates to :func:`slife.ui.restore.restore_session`, passing the
+        exit-time context straight through.
         """
-        if not self._recovery_info:
-            return
-
         await restore_session(
             app=self,
-            recovery_info=self._recovery_info,
+            turns=turns,
             history=self.service.message_history,
             config=self.service.config,
             assistant_prefix=self._assistant_prefix,
         )
-        self._recovery_info = None
 
     # ── Agent interaction ─────────────────────────────────────────
 
