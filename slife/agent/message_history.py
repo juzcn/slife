@@ -47,6 +47,21 @@ _VOCAB_FILE = _TIKTOKEN_CACHE_DIR / "fb374d419588a4632f3f557e76b4b70aebbca790"
 _VOCAB_BYTES = 3613922
 
 
+class TokenizerUnavailable(RuntimeError):
+    """No token figure can be measured — the BPE vocabulary is unusable.
+
+    An *environment* failure (a vocabulary never fetched, or fetched
+    short), never an input outcome.  Its own type rather than a bare
+    ``RuntimeError`` so a caller that answers other failures with a
+    default can tell this one apart and fail closed instead: an estimate
+    that silently becomes a default is indistinguishable from a real one
+    downstream, and the values built on it — trim decisions, budgets,
+    budgets' selections — then read as measured.  Subclasses
+    ``RuntimeError`` so a handler already treating this as a runtime
+    failure still catches it.
+    """
+
+
 def _get_encoding():
     """Return the cached BPE encoding, building it on first use.
 
@@ -77,7 +92,7 @@ def _get_encoding():
             # Reaching get_encoding here would block with no timeout — and a
             # truncated file would be read as a valid vocab.  A dead end with
             # instructions beats a hung agent.
-            raise RuntimeError(
+            raise TokenizerUnavailable(
                 f"tiktoken vocabulary for {_ENCODING_NAME} is missing or "
                 f"incomplete at {_VOCAB_FILE} (expected {_VOCAB_BYTES} bytes) "
                 f"— fetch it once with network access before running offline",

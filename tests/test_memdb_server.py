@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from slife.agent.message_history import TokenizerUnavailable
 from slife.plugins.memdb.recall import RecallPolicy
 
 import pytest
@@ -116,6 +117,36 @@ class TestRecallDegradation:
         data = json.loads(out)
         assert [t["turn_id"] for t in data["turns"]] == [1]
         assert "semantic index is building" in data["degraded"]
+
+    @pytest.mark.asyncio
+    async def test_tokenizer_failure_is_fatal_not_an_empty_answer(
+        self, restore_root_logger,
+    ):
+        """An unusable tokenizer is an environment failure, not an answer.
+
+        Every row's cost comes from it, so without one there is no budget and
+        no selection — but the empty selection this used to return is the one
+        shape the caller reads as "clear the context", and `degraded` was
+        empty with it, so a wiped context looked exactly like a thin recall.
+        Fatal instead: the MCP layer renders the raise as the error string
+        that makes the caller keep the context it has.
+        """
+        srv, store = self._server(
+            keyword_hits=[
+                {"turn_id": 1, "user_message": "微信登录", "snippet": "…", "rank": -1.0},
+            ],
+            manager=_fake_manager(semantic_ready=False, reason=""),
+            turns=self._turns(1),
+        )
+
+        with patch.object(
+            srv, "_ensure_store_locked", AsyncMock(return_value=store),
+        ), patch.object(
+            srv, "estimate_turn_tokens",
+            side_effect=TokenizerUnavailable("no vocabulary"),
+        ):
+            with pytest.raises(TokenizerUnavailable):
+                await srv.turn_recall(query="微信登录")
 
     @pytest.mark.asyncio
     async def test_gate_on_but_query_embed_fails(self, restore_root_logger):

@@ -21,7 +21,7 @@ import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from slife.agent.message_history import estimate_turn_tokens
+from slife.agent.message_history import TokenizerUnavailable, estimate_turn_tokens
 from slife.plugins.memdb.recall import (
     RecallPolicy, fit_budget, gate_turns, similarity_of,
 )
@@ -386,6 +386,9 @@ async def turn_recall(
     **store failure is fatal** instead (``sqlite3.Error`` propagates, like
     the startup readiness check): a plausible-looking empty list from a broken
     database is worse than no answer, because it silently wipes the context.
+    A **tokenizer failure is fatal** in the same way (``TokenizerUnavailable``
+    propagates): it is an environment failure like the store's, and the rows
+    cannot be sized — let alone selected within a budget — without it.
     """
     policy = _recall_policy()
     try:
@@ -449,6 +452,17 @@ async def turn_recall(
         return json.dumps({"turns": [], "degraded": ""}, ensure_ascii=False)
     except sqlite3.Error as e:
         logger.error("turn_recall_store_fatal query=%.60s err=%s", query, e)
+        raise
+    except TokenizerUnavailable as e:
+        # Fatal, for the same reason a store failure is.  Every row's cost —
+        # and therefore the budget the selection is fitted to — is measured by
+        # the tokenizer, so without one there is no budget and no selection.
+        # Falling through to the empty answer below would be the *worst* of
+        # the three shapes: the caller reads an empty selection as "clear the
+        # context", and `degraded` is empty too, so a wiped context would look
+        # exactly like a thin recall.  Raising reaches the caller as the MCP
+        # error string that makes recall_turns answer None — keep the context.
+        logger.error("turn_recall_tokenizer_fatal query=%.60s err=%s", query, e)
         raise
     except Exception:
         logger.warning("turn_recall_empty query=%.60s", query, exc_info=True)
