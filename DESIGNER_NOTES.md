@@ -142,4 +142,14 @@ local-embed它是一个外部依赖，可选依赖，当active model不是它的
 
 sharefile也很特殊， TUN fake-ip模式会失败。
 
+下一个重要重构：
+
+每轮agentloop开始前，根据当前上下文，和用户输入，召回与当前上下文相关的turns，用这个turns更新agentloop调用的messages 列表。然后再开始agentloop。
+
+1、创建函数 turn_recall， 用tool search一样的输入参数。但query为空时，变为list 行为，query非空执行带时间过滤的混合搜索。返回turn id列表。三个cap, 一个是总条数限制，第二个是相似度阈值，第三个是上下文窗口阈值（用tokenizer 估算，20%）.
+
+2、创建 rebuild_messages 函数，用 turn_recall 中返回的turn id 列表turn， 更新当前的messages. 
+
+3、执行agentloop前，执行判别器，判别器用当前上下文，user message 替换为 根据当前用户输入 {...}，召回相关历史轮次，召回函数用
+       使用 turn_recall 函数，schema 为 {...}，输出参数值。 用rebuild_messages.j2来渲染。
 
