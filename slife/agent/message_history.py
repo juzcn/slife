@@ -5,7 +5,7 @@ Supports multimodal messages (text + images) for vision-capable models.
 
 import json
 import logging
-import unicodedata
+from pathlib import Path
 
 from slife.logfmt import sanitize_secrets
 
@@ -13,38 +13,91 @@ logger = logging.getLogger(__name__)
 
 
 # ── Token estimation ─────────────────────────────────────────────────────
-# A single per-script estimator shared by every place that turns stored text
-# into a token figure (count_tokens, extract_turns / extract_oldest_turns,
-# and the restore sizing heuristic).  One formula keeps the trim stop
-# condition, the ``tokens_freed`` figure and the restore budget from
-# disagreeing.
+# Every place that turns stored text into a token figure — count_tokens,
+# extract_turns / extract_oldest_turns, the trim's stop condition, and the
+# restore and recall budgets — shares ONE implementation, so the trim decision,
+# its ``tokens_freed`` figure and those budgets can never disagree.
+#
+# The figure comes from tiktoken, the real BPE the OpenAI models use, rather
+# than a character heuristic.  A heuristic was tried first and had to guess
+# (CJK glyphs at ~1 token, Latin at ~3 chars/token); it was tunable but never
+# right, and getting it wrong meant the window could sit genuinely over the
+# ceiling.  tiktoken measures instead of guessing and handles CJK natively.
 
-#: Scripts whose glyphs are ~1 token each (a BytePair tokenizer spends
-#: roughly one token per Han character).  Determined by Unicode
-#: east-asian-width — covers CJK ideographs plus full-width forms.
-_WIDE_CHARS = ("W", "F")
+#: The BPE encoding.  ``o200k_base`` is OpenAI's current one (GPT-4o and
+#: later) and is markedly better on CJK than the older ``cl100k_base``.  For a
+#: non-OpenAI model it stands in for *that* model's tokenizer — the closest
+#: locally available approximation, and exact whenever the model is OpenAI's.
+_ENCODING_NAME = "o200k_base"
+_encoding = None
+
+#: Where tiktoken keeps its downloaded vocabularies.  Pinned explicitly
+#: because tiktoken's own default is a *temp* directory — a cleaned temp dir
+#: silently turns the next estimate back into a network fetch, and a fetch
+#: with no reachable network blocks indefinitely rather than failing.
+#: ``~/.cache`` is stable, outside the repo, and conventional.
+_TIKTOKEN_CACHE_DIR = Path.home() / ".cache" / "tiktoken"
+
+#: The cached vocabulary file (tiktoken names it after the sha1 of the blob URL
+#: it downloads from) and its exact size.  A *partial* download is the failure
+#: this guards: tiktoken does not validate the file, and a truncated vocab is
+#: worse than a missing one — it looks present, so the fetch is skipped and the
+#: encoding is silently wrong.  Update both if ``_ENCODING_NAME`` changes.
+_VOCAB_FILE = _TIKTOKEN_CACHE_DIR / "fb374d419588a4632f3f557e76b4b70aebbca790"
+_VOCAB_BYTES = 3613922
+
+
+def _get_encoding():
+    """Return the cached BPE encoding, building it on first use.
+
+    Lazy on purpose: ``tiktoken.get_encoding`` fetches the vocabulary on its
+    first call, and this module is imported by plugin processes whose startup
+    must stay handshake-fast.  Deferring pushes that fetch to the first
+    estimate (after the handshake) instead of import time.
+
+    The fetch is the fragile part: tiktoken reads the vocab over HTTP with no
+    timeout of its own, so on a host where that transfer stalls (a TUN/fake-ip
+    proxy throttles it to a crawl — measured at ~6 KB/s, and the vocab is
+    3.6 MB) it hangs the caller forever instead of erroring.  Pinning
+    :data:`_TIKTOKEN_CACHE_DIR` means it is fetched once, out of band, and every
+    later process reads it from disk.  The cache is checked first so a missing
+    vocabulary raises a clear error instead of reaching that hang.
+    """
+    global _encoding
+    if _encoding is None:
+        import os
+
+        cache = _TIKTOKEN_CACHE_DIR
+        os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(cache))
+        try:
+            complete = _VOCAB_FILE.stat().st_size == _VOCAB_BYTES
+        except OSError:
+            complete = False
+        if not complete:
+            # Reaching get_encoding here would block with no timeout — and a
+            # truncated file would be read as a valid vocab.  A dead end with
+            # instructions beats a hung agent.
+            raise RuntimeError(
+                f"tiktoken vocabulary for {_ENCODING_NAME} is missing or "
+                f"incomplete at {_VOCAB_FILE} (expected {_VOCAB_BYTES} bytes) "
+                f"— fetch it once with network access before running offline",
+            )
+        import tiktoken
+
+        _encoding = tiktoken.get_encoding(_ENCODING_NAME)
+    return _encoding
 
 
 def estimate_text_tokens(text: str) -> int:
-    """Estimate the token cost of *text* by per-script char weights.
+    """Token count of *text*, measured with the BPE encoding.
 
-    Narrow (Latin/digit) text runs ~3 chars/token; wide (CJK, full-width)
-    text runs closer to 1 token per char.  The old blanket ``chars // 3``
-    counted every char alike and undercounted a Chinese-heavy session by
-    ~2-3x — and because this estimate is the stop-condition for context
-    trimming and the restore budget, undercounting let the window sit
-    genuinely over the ceiling (trimmed to the floor yet still overflowing
-    the next request).  Weighing wide chars at 1 token errs high, which is
-    the safe direction for a ceiling/overflow guard.
+    ``disallowed_special=()`` matters: without it tiktoken *raises* on text
+    containing a special token's literal spelling (``<|endoftext|>``), which
+    any tool result or pasted document may contain.
     """
-    wide = 0
-    narrow = 0
-    for ch in text:
-        if unicodedata.east_asian_width(ch) in _WIDE_CHARS:
-            wide += 1
-        else:
-            narrow += 1
-    return narrow // 3 + wide
+    if not text:
+        return 0
+    return len(_get_encoding().encode(text, disallowed_special=()))
 
 
 def estimate_message_tokens(msg: dict) -> int:
@@ -69,6 +122,34 @@ def estimate_message_tokens(msg: dict) -> int:
         args = tc.get("function", {}).get("arguments", "")
         total += estimate_text_tokens(str(args))
     return total
+
+
+def estimate_turn_tokens(turn: dict) -> int:
+    """Estimate the *incremental* token cost of one stored turn row.
+
+    Counts the user message plus the stored assistant/tool messages using the
+    same per-script estimator as :meth:`MessageHistory.count_tokens` (narrow
+    ~3 chars/token, CJK/wide ~1 token per char) — a budget that under-counts a
+    Chinese-heavy session lets the next request overflow the context window.
+    Returns at least 1 so a zero-content turn still counts.
+
+    Lives here beside its two primitives rather than in the restore UI: it is
+    a pure turn→tokens read, and callers outside the TUI (a plugin sizing a
+    recall selection) need it without importing Textual.
+    """
+    user = turn.get("user_message", "") or ""
+    messages = turn.get("messages", "[]")
+    if isinstance(messages, str):
+        try:
+            messages = json.loads(messages)
+        except Exception:
+            messages = "[]"
+    if isinstance(messages, list):
+        body = sum(estimate_message_tokens(m) for m in messages)
+    else:
+        body = estimate_text_tokens(str(messages))
+    return max(estimate_text_tokens(user) + body, 1)
+
 
 # Machine-injected annotations appended to a message share one envelope,
 # ``[INFO: <payload>]``.  The payload is either a JSON object — the turn
@@ -157,6 +238,72 @@ def turn_header(turn: dict) -> str:
     if not payload:
         return ""
     return f"{INFO_PREFIX}{json.dumps(payload, ensure_ascii=False)}]"
+
+
+def messages_from_turns(
+    turns: list[dict],
+    *,
+    system_message: dict | None = None,
+    images_by_turn: dict[int, list[dict]] | None = None,
+    vision: bool = True,
+) -> list[dict]:
+    """Build a message list from stored turn rows — the ONE turn→messages
+    builder, shared by session restore and the per-turn rebuild.
+
+    Sharing it is a requirement, not tidiness: a rebuilt turn must render
+    byte-identically to the same turn restored, or the difference costs a
+    prompt-cache miss on every rebuild.
+
+    *turns* is **oldest-first**.  ``messages[0]`` is copied from
+    *system_message* (never re-rendered), then each turn contributes its user
+    message — carrying the ``[INFO: {…}]`` footnote, and its re-attached image
+    blocks when *images_by_turn* has any for it — followed by its stored
+    ``messages`` slice.
+
+    Image blocks are re-attached in the shape :meth:`inject_images_to_last_user`
+    produces (text first, then blocks, then the footnote as a trailing text
+    part), so a rebuilt turn matches its live form.  ``vision=False`` drops
+    them — the live path refuses to attach images a non-vision model would
+    reject, and a rebuild after a model switch must not smuggle them back.
+    """
+    # Function-local: this module is imported by plugin processes that only
+    # want the estimators, and ``schedules`` pulls in the prompt/template
+    # stack.  The builder itself is only ever called harness-side.
+    from slife.agent.schedules import is_autonomous_trigger
+
+    built: list[dict] = []
+    if system_message:
+        built.append(dict(system_message))
+
+    for turn in turns:
+        user_text = turn.get("user_message", "")
+        stored = turn.get("messages", "[]")
+        turn_msgs: list[dict] = (
+            json.loads(stored) if isinstance(stored, str) else stored
+        )
+        # Autonomous turns (heartbeat / schedule) carry a synthetic trigger as
+        # their user message, not a real query — no footnote.
+        header = "" if is_autonomous_trigger(user_text) else turn_header(turn)
+
+        rowid = turn.get("rowid")
+        blocks = (images_by_turn or {}).get(rowid) if (vision and rowid is not None) else None
+        if blocks:
+            content: object = [{"type": "text", "text": user_text}, *blocks]
+            if header:
+                content = [*content, {"type": "text", "text": " " + header}]
+        else:
+            content = user_text + (" " + header if header else "")
+
+        user_msg: dict = {"role": "user", "content": content}
+        # The structural turn id rides the message so the loop can map an
+        # in-context turn back to its diary row.  Runtime-only: it is popped
+        # before the wire and never part of a stored ``messages`` slice.
+        if rowid is not None:
+            user_msg["_turn_id"] = rowid
+        built.append(user_msg)
+        built.extend(turn_msgs)
+
+    return built
 
 
 def trim_note(count: int) -> str:
@@ -359,6 +506,55 @@ class MessageHistory:
                 continue
             conv.messages.append(dict(msg))
         return conv
+
+    def rebuild_messages(
+        self,
+        turns: list[dict],
+        *,
+        images_by_turn: dict[int, list[dict]] | None = None,
+        vision: bool = True,
+    ) -> int:
+        """Replace the context with a rebuild from *turns* (oldest-first).
+
+        The per-turn rebuild: `messages[0]` — the system prompt — is preserved
+        byte-identically (copied, never re-rendered, so the cached prefix
+        survives), and everything after it is regenerated from the stored
+        turns by :func:`messages_from_turns`, the same builder session restore
+        uses.  Sharing that builder is what makes a rebuilt turn render
+        identically to a restored one.
+
+        In place, and never by rebinding the object: the loop, the TUI handler
+        and ``save_to_memory`` all hold this instance.
+
+        *turns* is sorted by rowid defensively.  The list order is a contract
+        (restore reads the last entry as the newest, the renderer pairs
+        position with message order), so a caller passing a scrambled list
+        would otherwise render a garbled conversation silently.
+
+        Returns the new message count.
+        """
+        ordered = sorted(turns, key=lambda t: t.get("rowid") or 0)
+        if [t.get("rowid") for t in ordered] != [t.get("rowid") for t in turns]:
+            logger.warning(
+                "rebuild_reordered turns=%d — caller passed a non-chronological "
+                "selection", len(turns),
+            )
+
+        sys_msg = (
+            self.messages[0]
+            if self.messages and self.messages[0].get("role") == "system"
+            else None
+        )
+        self.messages = messages_from_turns(
+            ordered,
+            system_message=sys_msg,
+            images_by_turn=images_by_turn,
+            vision=vision,
+        )
+        # The one invariant enforcer — a rebuild splices an arbitrary turn set,
+        # so it gets the same guarantee on load that a restored history does.
+        self._ensure_turn_consistent()
+        return len(self.messages)
 
     def _ensure_turn_consistent(self, content: str = "") -> int:
         """Restore the history to a consistent state.

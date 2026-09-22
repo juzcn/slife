@@ -2,9 +2,15 @@
 
 Uses Reciprocal Rank Fusion (RRF) — a simple, parameter-free algorithm
 that combines ranked lists without needing to tune weights.
+
+This module owns the ONE hybrid composition (:func:`run_hybrid`) — the
+two legs, the embedding gate, the rename that makes the merge align, and
+the fusion.  Every caller that needs "search turns, both ways" goes
+through it rather than re-wiring the legs.
 """
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -142,3 +148,120 @@ def merge_hybrid(
         len(keyword_results), len(semantic_results), len(results),
     )
     return results
+
+
+# ── The one hybrid composition ────────────────────────────────────────
+
+
+def rename_rowid_to_turn_id(entries: list[dict]) -> None:
+    """Rewrite each entry's internal ``rowid`` to the model-visible
+    ``turn_id`` (in place), and drop the semantic dedup key.
+
+    The store keys both legs on the internal ``rowid``; the merge aligns on
+    ``turn_id``, so the rename MUST happen before :func:`merge_hybrid` —
+    otherwise every key lookup misses and the merge collapses to empty
+    (keyword=6 semantic=6 merged=0).
+    """
+    for e in entries:
+        if "rowid" in e:
+            e["turn_id"] = e.pop("rowid")
+        e.pop("diary_rowid", None)
+
+
+@dataclass
+class HybridResult:
+    """One hybrid search: the fused hits plus how the semantic leg fared."""
+
+    hits: list[dict]
+    """Merged, RRF-ordered, already renamed to ``turn_id``.  Each entry
+    carries ``rrf_score``, ``keyword_rank``, ``semantic_rank``, ``snippet``
+    and ``distance`` — and a ``similarity`` when the semantic leg produced
+    it (see :func:`annotate_scores`)."""
+
+    semantic_available: bool
+    """False → the semantic leg was skipped or failed and the result is
+    keyword-only.  The signal a caller must branch on before trusting a
+    retrieval as complete."""
+
+    embedder_ready: bool
+    """``manager.semantic_ready`` at call time — separates "the embedder is
+    not ready" from "it is ready but this query's embedding failed"."""
+
+    reason: str | None
+    """``manager.reason`` (the prose degradation cause), or None when there
+    is no manager at all."""
+
+
+async def run_hybrid(
+    store: Any,
+    manager: Any,
+    *,
+    query: str,
+    limit: int,
+    since: str | None = None,
+    until: str | None = None,
+    overfetch: int = 2,
+) -> HybridResult:
+    """Run both legs and fuse them — the single hybrid composition.
+
+    *overfetch* multiplies the per-leg ``limit``.  Both legs truncate
+    internally before returning, so a caller that will discard results
+    (a similarity threshold, an exclusion set, a token budget) must
+    over-fetch to have anything left to discard from.
+    """
+    keyword_hits = await store.search_keyword(
+        query=query, limit=limit * overfetch, since=since, until=until,
+    )
+
+    semantic_hits: list[dict] = []
+    semantic_available = False
+    if (
+        manager is not None
+        and manager.semantic_ready
+        and manager.embedder is not None
+        and manager.embedder.available
+    ):
+        emb = await manager.embedder.embed_one(query)
+        if emb:
+            semantic_hits = await store.search_semantic(
+                embedding=emb, limit=limit * overfetch,
+                since=since, until=until,
+            )
+            semantic_available = True
+
+    rename_rowid_to_turn_id(keyword_hits)
+    rename_rowid_to_turn_id(semantic_hits)
+    hits = merge_hybrid(keyword_hits, semantic_hits)
+
+    if semantic_available and hits:
+        annotate_scores(hits)
+
+    return HybridResult(
+        hits=hits,
+        semantic_available=semantic_available,
+        embedder_ready=bool(manager is not None and manager.semantic_ready),
+        reason=manager.reason if manager is not None else None,
+    )
+
+
+def hybrid_hint(result: HybridResult) -> str:
+    """The degradation/no-match prose for a :class:`HybridResult`.
+
+    One wording for every hybrid caller, so a degraded result reads the
+    same wherever it surfaces — and an empty result is exactly when a
+    silent fallback would mislead.
+    """
+    if not result.semantic_available:
+        if result.embedder_ready:
+            hint = ("hybrid degraded to fts5 — query embedding generation "
+                    "failed (API error or timeout). Check the API key, or "
+                    "switch to a local model")
+        else:
+            hint = result.reason if result.reason is not None else (
+                "hybrid degraded to fts5 — embedding backend unavailable")
+        if not result.hits:
+            hint += " — no keyword (fts5) matches either"
+        return hint
+    if not result.hits:
+        return "no matching memories found"
+    return SCORE_BAND_HINT

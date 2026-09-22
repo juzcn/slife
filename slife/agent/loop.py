@@ -313,6 +313,11 @@ class AgentLoop:
         cutin_enabled: bool = True,
         pending_input_has: "Callable[[], bool] | None" = None,
         drop_context_turns: Callable[[list[int]], Awaitable[bool]] | None = None,
+        set_context_turns: Callable[[list[int]], Awaitable[bool]] | None = None,
+        recall_turns: Callable[..., Awaitable[list[int]]] | None = None,
+        turns_by_ids: Callable[[list[int]], Awaitable[list[dict]]] | None = None,
+        rebuild_message: bool = False,
+        images_by_turn: dict[int, list[dict]] | None = None,
         stream_timeout: float | None = None,
         stream_max_retries: int | None = None,
         stream_stall_timeout: float | None = None,
@@ -371,6 +376,12 @@ class AgentLoop:
         #: unreachable memdb only leaves the boundary stale (restore becomes
         #: a superset, never a loss).  Wired by AgentService (bound method).
         self.drop_context_turns = drop_context_turns
+        self.set_context_turns = set_context_turns
+        self.recall_turns = recall_turns
+        self.turns_by_ids = turns_by_ids
+        # Per-turn context rebuild (see the recall step in run()).
+        self.rebuild_message = rebuild_message
+        self._images_by_turn = images_by_turn if images_by_turn is not None else {}
         self.supports_vision = supports_vision
         self.model_name = model_name
         self.input_modalities = input_modalities
@@ -587,6 +598,132 @@ class AgentLoop:
             return usage.total_tokens
         return 0  # fresh start — no previous round's usage yet
 
+    @staticmethod
+    def _parse_recall_args(text: str) -> dict | None:
+        """Extract the discriminator's parameter object from its reply.
+
+        The reply is asked to be a bare JSON object, but a model may wrap it in
+        prose or a fenced block, so the outer ``{…}`` is taken rather than the
+        whole string.  Unknown keys are dropped and only string values kept —
+        the args reach ``turn_recall`` directly, bypassing the registry's
+        schema validation, so this is the only gate on what a model can inject.
+        """
+        if not text:
+            return None
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            parsed = json.loads(text[start:end + 1])
+        except Exception:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        return {
+            k: v for k, v in parsed.items()
+            if k in ("query", "since", "until") and isinstance(v, (str, type(None)))
+        }
+
+    async def _discriminate_recall(
+        self, history: MessageHistory, user_input: str,
+    ) -> dict | None:
+        """One call deciding which history this turn needs; None on failure.
+
+        The current context is sent as-is with the user message **replaced** by
+        the instruction (``rebuild_messages.j2``), so the model reasons about
+        the input rather than about the conversation it is about to rebuild.
+
+        Never persisted, never streamed to the TUI.  It degrades to None rather
+        than retrying: a retry would double the latency of the pre-turn path
+        for a call whose failure has a perfectly good fallback (keep the
+        existing context).
+        """
+        if self.llm_client is None:
+            return None
+        from slife.agent.system_prompt import build_recall_instruction
+
+        messages = [m for m in history.messages if m.get("role") == "system"]
+        messages.append(
+            {"role": "user", "content": build_recall_instruction(user_input)},
+        )
+        try:
+            resp, _usage = await asyncio.wait_for(
+                self.llm_client.chat(messages),
+                timeout=_timeouts.timeouts.work.recall_discriminator,
+            )
+            text = (resp.choices[0].message.content or "") if resp else ""
+        except Exception:
+            logger.warning("recall_discriminator_failed", exc_info=True)
+            return None
+        return self._parse_recall_args(text)
+
+    async def _recall_and_rebuild(
+        self, history: MessageHistory, user_input: str,
+        handler: object | None = None,
+    ) -> bool:
+        """Rebuild the context from a recall selection — once per turn.
+
+        Returns True when the context was replaced.  **Every** failure path
+        leaves the existing context untouched: a recall that cannot answer must
+        never shrink the context, so the store and the history are only touched
+        once a known-good selection exists.
+        """
+        if not self.rebuild_message or self.recall_turns is None:
+            return False
+
+        args = await self._discriminate_recall(history, user_input) or {}
+        ids = await self.recall_turns(
+            str(args.get("query") or ""),
+            args.get("since") or None,
+            args.get("until") or None,
+        )
+        if not ids:
+            logger.info("recall_abandoned reason=empty_selection")
+            return False
+
+        turns = await self.turns_by_ids(ids) if self.turns_by_ids else []
+        if not turns:
+            logger.warning("recall_abandoned reason=unfetchable ids=%d", len(ids))
+            return False
+
+        # Rebuild before persisting: if the persist fails, the turn still runs
+        # on the right context and only the *restart* path is stale — a
+        # superset, which is the safe direction.
+        history.rebuild_messages(
+            turns,
+            images_by_turn=self._images_by_turn,
+            vision=self.supports_vision,
+        )
+        # Deliberately NOT resetting the cached usage: `context_tokens_for`
+        # reports the previous round's real API usage and returns 0 when there
+        # is none (it never presents an estimate as real usage), so clearing it
+        # would make every turn prompt read 0%.  The previous round's number is
+        # one turn behind and bounded by the same budget — a far better read
+        # than nothing.  Only the trim consumes it as a decision input, and the
+        # trim is disabled in this mode.
+        # "Context covers" comes from the selection now, not from an
+        # incremental date list.
+        stamps = [t.get("created_at") or "" for t in turns]
+        stamps = [s for s in stamps if s]
+        self._context_time_start = stamps[0] if stamps else ""
+        self._context_turn_dates = list(stamps[1:])
+        self._last_context_time_start = ""
+
+        if self.set_context_turns is not None:
+            written = await self.set_context_turns([t["rowid"] for t in turns])
+            if not written:
+                logger.warning("recall_persist_failed ids=%d", len(turns))
+        # Tell the human: the model's context just changed under them.
+        on_rebuild = getattr(handler, "on_rebuild", None)
+        if on_rebuild is not None:
+            try:
+                on_rebuild(len(turns))
+            except Exception:
+                logger.exception("recall_notice_ui_failed")
+        logger.info("recall_rebuilt turns=%d", len(turns))
+        return True
+
     async def _trim_after_save(
         self, history: MessageHistory, handler: object | None = None,
     ) -> None:
@@ -622,6 +759,13 @@ class AgentLoop:
         just_restored = self._just_restored_history == id(history)
         if just_restored:
             self._just_restored_history = None
+            return
+
+        # In rebuild mode the recall selection *is* the bound: the context is
+        # rebuilt every turn at the floor, so a trim would fight it — evicting
+        # turns that the next recall simply re-selects.  The two are alternatives,
+        # selected by `rebuild_message`.
+        if self.rebuild_message:
             return
 
         # Only the just-finished turn exists / nothing to trim — the loop
@@ -1466,6 +1610,15 @@ class AgentLoop:
         # content blocks into the user message in memory (never persisted —
         # restore rebuilds text-only).  All images go in ONE call so a single
         # (user, assistant, tool) triple carries the whole batch.
+        # The context rebuild runs BEFORE the user message is added: it
+        # replaces `messages` wholesale, so anything appended first (the user
+        # message, the attach_image blocks) would be destroyed — and the image
+        # blocks exist only in memory, so they could not be recovered.  It also
+        # stays outside the iteration loop, whose per-iteration work
+        # (_check_new_input, the tool-schema refresh) belongs to the turn in
+        # progress.
+        await self._recall_and_rebuild(history, user_input, handler)
+
         history.add_user_message(user_input)
         if images:
             await self._auto_invoke(

@@ -225,6 +225,123 @@ class TestTurnPromptKwargsRestarted:
 # ── Internal trim after save (_trim_after_save) ──────────────────────────
 
 
+class TestRecallRebuild:
+    """The per-turn context rebuild, and its guard.
+
+    The guard is the behaviour that matters most: a recall that cannot answer
+    must leave the context **untouched**.  Persisting an empty selection would
+    wipe the agent's context for the next restart, and rebuilding in memory
+    from a failed fetch would do it immediately.
+    """
+
+    TURN = {
+        "rowid": 7,
+        "user_message": "recalled question",
+        "messages": '[{"role": "assistant", "content": "recalled reply"}]',
+        "created_at": "2026-09-01T10:00:00+08:00",
+    }
+
+    @staticmethod
+    def _loop(**kwargs):
+        return AgentLoop(
+            llm_client=None, tool_registry=create_tools_from_config(),
+            context_window=1000, context_ceiling=0.8, context_floor=0.2,
+            rebuild_message=kwargs.get("rebuild", True),
+            recall_turns=kwargs.get("recall"),
+            turns_by_ids=kwargs.get("turns_by_ids"),
+            set_context_turns=kwargs.get("set"),
+        )
+
+    @staticmethod
+    def _history():
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("old question")
+        conv.add_assistant_message("old reply")
+        return conv
+
+    @pytest.mark.asyncio
+    async def test_empty_recall_leaves_context_untouched(self):
+        conv = self._history()
+        before = [dict(m) for m in conv.messages]
+        persisted: list[list[int]] = []
+
+        async def recall(*_a, **_k):
+            return []
+
+        async def save(ids):
+            persisted.append(list(ids))
+            return True
+
+        loop = self._loop(recall=recall, set=save)
+        assert await loop._recall_and_rebuild(conv, "new input") is False
+        assert conv.messages == before, "a failed recall must not touch the context"
+        assert persisted == [], "and must never persist an empty selection"
+
+    @pytest.mark.asyncio
+    async def test_unfetchable_turns_leave_context_untouched(self):
+        conv = self._history()
+        before = [dict(m) for m in conv.messages]
+        persisted: list[list[int]] = []
+
+        async def recall(*_a, **_k):
+            return [7]
+
+        async def turns_by_ids(_ids):
+            return []
+
+        async def save(ids):
+            persisted.append(list(ids))
+            return True
+
+        loop = self._loop(recall=recall, turns_by_ids=turns_by_ids, set=save)
+        assert await loop._recall_and_rebuild(conv, "new input") is False
+        assert conv.messages == before
+        assert persisted == []
+
+    @pytest.mark.asyncio
+    async def test_successful_recall_rebuilds_and_persists(self):
+        conv = self._history()
+        persisted: list[list[int]] = []
+
+        async def recall(*_a, **_k):
+            return [7]
+
+        async def turns_by_ids(_ids):
+            return [dict(self.TURN)]
+
+        async def save(ids):
+            persisted.append(list(ids))
+            return True
+
+        loop = self._loop(recall=recall, turns_by_ids=turns_by_ids, set=save)
+        assert await loop._recall_and_rebuild(conv, "new input") is True
+
+        # The context is now the selection, not the old history.
+        assert conv.messages[0]["role"] == "system", "the system prompt is preserved"
+        assert not any(
+            m.get("content") == "old question" for m in conv.messages
+        ), "the previous context was replaced, not merged"
+        assert any(
+            "recalled question" in str(m.get("content")) for m in conv.messages
+        )
+        assert persisted == [[7]], "the selection is persisted for the next restart"
+
+    @pytest.mark.asyncio
+    async def test_disabled_flag_skips_recall_entirely(self):
+        conv = self._history()
+        before = [dict(m) for m in conv.messages]
+        called: list[bool] = []
+
+        async def recall(*_a, **_k):
+            called.append(True)
+            return [7]
+
+        loop = self._loop(rebuild=False, recall=recall)
+        assert await loop._recall_and_rebuild(conv, "new input") is False
+        assert called == [], "the legacy mode must not pay for a discriminator call"
+        assert conv.messages == before
+
+
 class TestTrimAfterSave:
     """_trim_after_save: called after a turn is saved, uses real usage,
     appends a runtime trim note, and never shreds a restored context."""

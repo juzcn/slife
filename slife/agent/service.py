@@ -221,6 +221,12 @@ def _extract_turn_annotation(
     return summary, tags
 
 
+#: How many turns' image blocks the session keeps for a context rebuild.
+#: Bounded because the blocks are base64 data URIs (megabytes each); past
+#: this, an old turn simply rebuilds text-only.
+_MAX_TURN_IMAGES = 100
+
+
 class AgentService:
     """Wires together LLM client, tools, message history, and agent loop.
 
@@ -303,6 +309,12 @@ class AgentService:
             _timeouts.timeouts.work.task_budget
             if not self.caps.stream_retries else None
         )
+        # Session-scoped image blocks by turn id, for a context rebuild's
+        # `images_by_turn`.  Images are never persisted (there is no column),
+        # so a rebuild can only re-attach them from memory; a miss simply
+        # yields a text-only turn.  Insertion-ordered and bounded — the blocks
+        # are base64 data URIs.  Initialised before the loop, which reads it.
+        self._image_by_turn: dict[int, list[dict]] = {}
         self.agent_loop = AgentLoop(
             llm_client=self.llm_client,
             tool_registry=self.tool_registry,
@@ -320,6 +332,16 @@ class AgentService:
             schedule_provider=self._schedule_pending_provider,
             a2a_stale_provider=self._a2a_stale_provider,
             drop_context_turns=self.drop_context_turns,
+            set_context_turns=self.set_context_turns,
+            recall_turns=self.recall_turns,
+            turns_by_ids=self.turns_by_ids,
+            # A worker's history is one-shot per task, so recall has nothing to
+            # select from — and it would cost a discriminator call per task.
+            # The role decides, not the config.
+            rebuild_message=(
+                self.config.rebuild_message and not self.role.is_worker
+            ),
+            images_by_turn=self._image_by_turn,
             stream_timeout=subagent_stream_timeout,
             stream_max_retries=None if self.caps.stream_retries else 0,
             tool_catalog=self._catalog,
@@ -349,6 +371,7 @@ class AgentService:
         # (it is not connected during __init__), so a missing/unready
         # client degrades to "skip" rather than raising.
         self._tool_ctx.drop_context_turns = self.drop_context_turns
+        self._tool_ctx.set_context_turns = self.set_context_turns
         self._tool_ctx.clear_context_turns = self.clear_context_turns
         self._tool_ctx.reset_context_time = self.agent_loop.reset_context_time
         self.session_usage = TokenUsage()
@@ -2498,6 +2521,9 @@ class AgentService:
         if not (0 <= user_idx < len(msgs)) or msgs[user_idx].get("role") != "user":
             return
         msgs[user_idx]["_turn_id"] = rowid
+        # Record any image blocks for a later rebuild — they are never
+        # persisted, so memory is the only place they exist after this turn.
+        self.remember_turn_images(rowid, msgs[user_idx].get("content"))
 
         from slife.agent.schedules import is_autonomous_trigger
 
@@ -2600,6 +2626,99 @@ class AgentService:
             return False
         return await self._call_context_tool(
             "__memory_context_turns_drop",
+            {"turn_ids": list(turn_ids)},
+            f"count={len(turn_ids)}",
+        )
+
+    async def _call_context_tool_payload(
+        self, tool: str, args: dict,
+    ) -> dict | None:
+        """Call an internal memdb tool; return its parsed payload or None.
+
+        The sibling of :meth:`_call_context_tool` for the calls whose *answer*
+        matters rather than just whether the write landed.
+        """
+        plugin = self._plugins.get("memdb")
+        client = getattr(plugin, "client", None) if plugin else None
+        if client is None:
+            return None
+        try:
+            result = await asyncio.wait_for(
+                client.call_tool(tool, args),
+                timeout=_timeouts.timeouts.work.save_memory,
+            )
+        except Exception:
+            logger.warning("context_tool_call_failed tool=%s", tool)
+            return None
+        if not isinstance(result, str):
+            return None
+        try:
+            parsed = json.loads(result)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    async def recall_turns(
+        self, query: str = "", since: str | None = None,
+        until: str | None = None,
+    ) -> list[int]:
+        """Recall the turn ids that should form the next turn's context.
+
+        Returns ``[]`` on any failure.  The caller must treat that as "keep
+        the existing context" — never as "empty the context".
+        """
+        if not self.memdb_enabled:
+            return []
+        payload = await self._call_context_tool_payload(
+            "__memory_turn_recall",
+            {"query": query, "since": since, "until": until},
+        )
+        if not payload or payload.get("error"):
+            return []
+        return [
+            int(i) for i in (payload.get("turns") or [])
+            if isinstance(i, int)
+        ]
+
+    async def turns_by_ids(self, turn_ids: list[int]) -> list[dict]:
+        """Fetch the turn rows for *turn_ids* (the recall companion)."""
+        if not turn_ids or not self.memdb_enabled:
+            return []
+        payload = await self._call_context_tool_payload(
+            "__memory_turns_by_ids", {"turn_ids": list(turn_ids)},
+        )
+        if not payload or payload.get("error"):
+            return []
+        return payload.get("turns") or []
+
+    def remember_turn_images(self, rowid: int, content) -> None:
+        """Record a saved turn's image blocks for a later rebuild."""
+        if not isinstance(content, list):
+            return
+        blocks = [
+            p for p in content
+            if isinstance(p, dict) and p.get("type") == "image_url"
+        ]
+        if not blocks:
+            return
+        self._image_by_turn[rowid] = blocks
+        while len(self._image_by_turn) > _MAX_TURN_IMAGES:
+            self._image_by_turn.pop(next(iter(self._image_by_turn)))
+
+    async def set_context_turns(self, turn_ids: list[int]) -> bool:
+        """Replace the persisted live-context list with *turn_ids*.
+
+        The write behind the per-turn rebuild: recall's selection overrides
+        the previous context, so this replaces rather than merges.  Only
+        called after a known-good recall — a partial list silently shrinks
+        the context, so an empty one is refused outright rather than wiping
+        it.  Best-effort like its siblings: on failure the in-memory rebuild
+        still stands and only the *restart* path is stale (a superset).
+        """
+        if not turn_ids or not self.memdb_enabled:
+            return False
+        return await self._call_context_tool(
+            "__memory_context_turns_set",
             {"turn_ids": list(turn_ids)},
             f"count={len(turn_ids)}",
         )

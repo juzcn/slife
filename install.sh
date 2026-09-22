@@ -795,6 +795,32 @@ else
     fi
 fi
 
+# ── Tokenizer vocabulary: fetch it once, here ───────────────────────────
+# tiktoken downloads its 3.6 MB vocabulary on first use with NO timeout, so a
+# slow or proxy-throttled link hangs the agent instead of failing.  Fetch it at
+# install time (network is up and the wait is visible) into tiktoken's cache
+# dir, named by the SHA-1 of the blob URL — that IS the cache key tiktoken
+# looks for.  Slife refuses to start on a missing or partial file rather than
+# mis-count tokens from a truncated vocabulary.
+echo -e "${YELLOW}[4b] Fetching the tokenizer vocabulary…${NC}"
+_TIKTOKEN_DIR="$HOME/.cache/tiktoken"
+_TIKTOKEN_FILE="$_TIKTOKEN_DIR/fb374d419588a4632f3f557e76b4b70aebbca790"
+_TIKTOKEN_BYTES=3613922
+_tiktoken_size() { wc -c < "$1" 2>/dev/null | tr -d ' '; }
+if [ "$(_tiktoken_size "$_TIKTOKEN_FILE")" = "$_TIKTOKEN_BYTES" ]; then
+    echo -e "  ${GRAY}already present${NC}"
+else
+    mkdir -p "$_TIKTOKEN_DIR" 2>/dev/null || true
+    if curl -fL --retry 3 --retry-delay 2 -o "$_TIKTOKEN_FILE" \
+        "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken" 2>/dev/null \
+        && [ "$(_tiktoken_size "$_TIKTOKEN_FILE")" = "$_TIKTOKEN_BYTES" ]; then
+        echo -e "  ${GRAY}fetched $_TIKTOKEN_FILE${NC}"
+    else
+        rm -f "$_TIKTOKEN_FILE"
+        echo -e "  ${YELLOW}⚠ tokenizer vocabulary not fetched — slife will not start until it is (see README)${NC}"
+    fi
+fi
+
 # ── Configs: seed the git-tracked defaults out-of-the-box ───────────────
 # slife.yaml / local_embed.yaml / tools.yaml / sharefile.yaml come
 # from the downloaded source tree (now git-tracked).  slife.yaml,

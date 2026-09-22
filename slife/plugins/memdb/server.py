@@ -21,9 +21,11 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from slife.agent.message_history import estimate_turn_tokens
+from slife.plugins.memdb.recall import RecallPolicy, fit_budget, gate_turns
 from slife.plugins.memdb.store import SessionStore, _clamp_limit
 from slife.plugins.memdb.search import (
-    SCORE_BAND_HINT, annotate_scores, merge_hybrid,
+    hybrid_hint, rename_rowid_to_turn_id, run_hybrid,
 )
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.server_utils import create_plugin_server, warm_after_ready
@@ -90,18 +92,41 @@ _store: SessionStore | None = None
 _manager: SemanticManager | None = None
 _db_path: Path | None = None
 _init_lock: asyncio.Lock | None = None
+_recall_policy_cache: "RecallPolicy | None" = None
 
 
-def _rename_rowid_to_turn_id(entries: list[dict]) -> None:
-    """Map a store result's internal ``rowid`` key to the model-visible
-    ``turn_id``, in place.  The store layer uses the SQLite rowid; the LLM
-    sees and addresses turns by their turn id.  Also drops ``diary_rowid`` —
-    the semantic search's dedup key, which holds the same value and is
-    internal noise for the model."""
-    for e in entries:
-        if "rowid" in e:
-            e["turn_id"] = e.pop("rowid")
-        e.pop("diary_rowid", None)
+def _recall_policy() -> RecallPolicy:
+    """Recall's own caps, read once from the agent config.
+
+    The caps are recall's *configuration*, not its caller's arguments: the
+    discriminator chooses what to look for, never how much to take.  A config
+    that cannot be read degrades to the dataclass defaults rather than failing
+    the turn — a wrong-sized context beats no context.
+    """
+    global _recall_policy_cache
+    if _recall_policy_cache is not None:
+        return _recall_policy_cache
+    policy = RecallPolicy()
+    try:
+        from slife.config import Config
+        from slife.paths import get_config_path
+
+        cfg = Config.from_yaml(get_config_path())
+        policy = RecallPolicy(
+            min_similarity=cfg.recall_min_similarity,
+            limit=cfg.recall_limit,
+            # The budget IS the context floor — the same knob the trim
+            # compacts to.  Both modes therefore hold the context at the same
+            # size, so flipping `rebuild_message` changes how the context is
+            # chosen, never how big it is.
+            token_budget=int(
+                cfg.active_model.context_window * cfg.context_floor
+            ),
+        )
+    except Exception:
+        logger.warning("recall_policy_defaulted", exc_info=True)
+    _recall_policy_cache = policy
+    return policy
 
 
 def _get_db_path() -> Path:
@@ -285,6 +310,111 @@ async def __memory_context_turns_drop(turn_ids: list[int]) -> str:
         return json.dumps({"context_turns": remaining}, ensure_ascii=False)
     except Exception as e:
         logger.exception("context_turns_drop_failed ids=%d", len(turn_ids))
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__memory_turn_recall",
+    description="Select the turns that should form the next turn's context. Internal — called by the agent loop.",
+)
+async def __memory_turn_recall(
+    query: str = "",
+    since: str | None = None,
+    until: str | None = None,
+) -> str:
+    """Return the recalled turn ids — nothing else.
+
+    The turn's whole context is rebuilt from this each turn, so the answer
+    **overrides** the previous context: there is no reconciliation with what
+    was already there.
+
+    An empty *query* takes the list behaviour (the most recent turns in the
+    time window); a non-empty one runs the hybrid search.  Either way the
+    three caps come from recall's own configuration
+    (``agent.recall_*``), not from the caller — see
+    :mod:`slife.plugins.memdb.recall`.
+
+    Returns ``{"turns": [ids], "degraded": "<reason>"}`` — ids ascending
+    (chronological), and a non-empty ``degraded`` when the semantic leg was
+    unavailable so the caller can tell a thin recall from a broken one.
+    """
+    policy = _recall_policy()
+    try:
+        async with _get_init_lock():
+            store = await _ensure_store_locked()
+            manager = _manager
+
+            if not query.strip():
+                # List behaviour.  This branch MUST run before the hybrid legs:
+                # an empty query reaches FTS5 as `MATCH ''` (an OperationalError)
+                # and embeds to noise, so the legs cannot express "no query".
+                hits = await store.search_time(
+                    limit=policy.limit, since=since, until=until,
+                )
+                ranked = [h["rowid"] for h in hits][: policy.limit]
+                degraded = ""
+            else:
+                result = await run_hybrid(
+                    store, manager, query=query, limit=policy.limit,
+                    since=since, until=until, overfetch=3,
+                )
+                ranked = gate_turns(result.hits, policy=policy)
+                degraded = "" if result.semantic_available else hybrid_hint(result)
+
+            # The token budget needs each turn's stored messages, so it is a
+            # second phase over what gating kept.
+            turns = await store.get_turns_by_ids(ranked)
+            costs = {t["rowid"]: estimate_turn_tokens(t) for t in turns}
+            selected = fit_budget(ranked, costs, policy.token_budget)
+
+        return json.dumps(
+            {"turns": selected, "degraded": degraded}, ensure_ascii=False,
+        )
+    except Exception as e:
+        logger.exception("turn_recall_failed query=%.60s", query)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+@mcp.tool(
+    name="__memory_turns_by_ids",
+    description="Fetch turns by id, in the caller's order. Internal — called by the agent loop.",
+)
+async def __memory_turns_by_ids(turn_ids: list[int]) -> str:
+    """Return the full turn rows for *turn_ids*, in the given order.
+
+    The companion to ``__memory_turn_recall``: recall selects *which* turns
+    (ids only, by design), this retrieves them.  Kept separate so recall's
+    answer stays a plain id list.
+    """
+    try:
+        async with _get_init_lock():
+            store = await _ensure_store_locked()
+            turns = await store.get_turns_by_ids(turn_ids)
+        return json.dumps({"turns": turns}, ensure_ascii=False)
+    except Exception as e:
+        logger.exception("turns_by_ids_failed ids=%d", len(turn_ids))
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__memory_context_turns_set",
+    description="Replace the persisted live-context list. Internal — called by the agent loop.",
+)
+async def __memory_context_turns_set(turn_ids: list[int]) -> str:
+    """Replace the live-context list with *turn_ids*.
+
+    The write behind the per-turn rebuild: recall's selection **overrides**
+    the previous context, so this replaces rather than merges.  The ids must
+    already be the complete, ordered selection — a partial list silently
+    shrinks the context, which is why the harness only calls this after a
+    known-good recall.
+    """
+    try:
+        async with _get_init_lock():
+            store = await _ensure_store_locked()
+            written = await store.set_context_turns(turn_ids)
+        return json.dumps({"context_turns": written}, ensure_ascii=False)
+    except Exception as e:
+        logger.exception("context_turns_set_failed ids=%d", len(turn_ids))
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -484,7 +614,7 @@ async def turn_search(
     if mode == "time":
         try:
             hits = await store.search_time(limit=limit, since=since, until=until)
-            _rename_rowid_to_turn_id(hits)
+            rename_rowid_to_turn_id(hits)
             return json.dumps({"mode": "time", "since": since, "until": until, "results": hits},
                               ensure_ascii=False, indent=2)
         except Exception as e:
@@ -505,7 +635,7 @@ async def turn_search(
                 return json.dumps(
                     {"error": f"invalid regex {query!r}: {e}"}, ensure_ascii=False,
                 )
-            _rename_rowid_to_turn_id(hits)
+            rename_rowid_to_turn_id(hits)
             return json.dumps({"mode": "grep", "query": query, "results": hits,
                                "hint": "" if hits else f"no memories contain '{query}'"},
                               ensure_ascii=False, indent=2)
@@ -513,65 +643,23 @@ async def turn_search(
         if mode == "fts5":
             hits = await store.search_keyword(query=query, limit=limit,
                                               since=since, until=until)
-            _rename_rowid_to_turn_id(hits)
+            rename_rowid_to_turn_id(hits)
             return json.dumps({"mode": "fts5", "query": query, "results": hits,
                                "hint": "" if hits else f"no memories related to '{query}'"},
                               ensure_ascii=False, indent=2)
 
-        # hybrid
-        keyword_hits = await store.search_keyword(query=query, limit=limit * 2,
-                                                  since=since, until=until)
-        semantic_hits: list[dict] = []
-        semantic_available = False
-        if (
-            manager is not None
-            and manager.semantic_ready
-            and manager.embedder is not None
-            and manager.embedder.available
-        ):
-            emb = await manager.embedder.embed_one(query)
-            if emb:
-                semantic_hits = await store.search_semantic(embedding=emb,
-                                                            limit=limit * 2,
-                                                            since=since, until=until)
-                semantic_available = True
-
-        # The store keys both hit lists on the internal ``rowid`` — rename
-        # to the model-visible ``turn_id`` BEFORE the RRF merge, which aligns
-        # on ``turn_id``.  Otherwise every item's key lookup misses and the
-        # merge collapses to empty (keyword=6 semantic=6 merged=0).  This
-        # also keeps hybrid results keyed like every other turn_search mode.
-        _rename_rowid_to_turn_id(keyword_hits)
-        _rename_rowid_to_turn_id(semantic_hits)
-
-        merged = merge_hybrid(keyword_hits, semantic_hits)
-
-        # Surface the degradation reason even when no keyword hits survive —
-        # an empty result is exactly when a silent fallback would mislead.
-        hint = ""
-        if not semantic_available:
-            if manager is not None and manager.semantic_ready:
-                hint = ("hybrid degraded to fts5 — query embedding generation "
-                        "failed (API error or timeout). Check the API key, or "
-                        "switch to a local model")
-            else:
-                hint = manager.reason if manager else (
-                    "hybrid degraded to fts5 — embedding backend unavailable")
-            if not merged:
-                hint += " — no keyword (fts5) matches either"
-        elif not merged:
-            hint = "no matching memories found"
-
-        results = merged[:limit]
-        if semantic_available and results:
-            annotate_scores(results)
-            hint = SCORE_BAND_HINT if not hint else f"{hint} · {SCORE_BAND_HINT}"
-
+        # hybrid — the composition lives in ONE place (search.run_hybrid);
+        # this tool only formats its result.
+        result = await run_hybrid(
+            store, manager, query=query, limit=limit,
+            since=since, until=until,
+        )
+        results = result.hits[:limit]
         return json.dumps({
-            "mode": "hybrid" if semantic_available else "fts5",
+            "mode": "hybrid" if result.semantic_available else "fts5",
             "query": query,
             "results": results,
-            "hint": hint,
+            "hint": hybrid_hint(result),
         }, ensure_ascii=False, indent=2)
     except InvalidTimeBound as e:
         # A bound in no known grammar is the caller's to fix: saying so beats a

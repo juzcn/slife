@@ -109,6 +109,19 @@ class TUIHandler:
             else:
                 self._current_assistant.finalize(intermediate=False)
 
+    def on_rebuild(self, count: int) -> None:
+        """Show the context-rebuild notice for this turn.
+
+        Called by the loop *before* the turn runs, when the per-turn rebuild
+        replaced the context from a recall selection.  A user-facing status
+        line rather than a log: the model's context changed under it, and
+        staying silent would make the agent look like it had forgotten things
+        for no visible reason.
+        """
+        self._chat_view.add_system_message(
+            f"↻ {count} turns recalled, context's messages rebuilt",
+        )
+
     def on_trim(self, count: int) -> None:
         """Show the runtime trim note on the turn's last assistant message.
 

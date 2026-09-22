@@ -37,6 +37,7 @@ class Work:
     shell: float = 120.0          # execute_shell default timeout — generous backstop: the agent's injected timeout overrides it, so this base must not preempt longer work
     pip_install: float = 120.0    # pip_install tool deadline
     save_memory: float = 10.0     # memdb save_turn / drop_context_turns bound
+    recall_discriminator: float = 20.0  # pre-turn recall discriminator call
 
 
 @dataclass

@@ -10,7 +10,7 @@ import json
 from typing import TYPE_CHECKING
 
 from slife.a2a.identity import Channel
-from slife.agent.message_history import turn_header
+from slife.agent.message_history import messages_from_turns
 from slife.agent.schedules import is_autonomous_trigger, is_schedule_trigger
 from slife.agent.timer import is_timer_trigger
 from slife.agent.llm_client import TokenUsage
@@ -23,38 +23,6 @@ if TYPE_CHECKING:
     from slife.agent.message_history import MessageHistory
     from slife.ui.app import SlifeApp
     from slife.ui.chat import ChatView
-
-
-# ── Turn token estimation ─────────────────────────────────────────────
-
-
-def estimate_turn_tokens(turn: dict) -> int:
-    """Estimate the *incremental* token cost of a single turn.
-
-    Counts the user message plus the stored assistant/tool messages using
-    the same per-script estimator as ``MessageHistory.count_tokens``
-    (narrow ~3 chars/token, CJK/wide ~1 token per char) — the restore
-    budget must not under-count a Chinese-heavy session or the next request
-    overflows the context window.  Returns at least 1 so a zero-content
-    turn still counts.
-    """
-    from slife.agent.message_history import (
-        estimate_message_tokens,
-        estimate_text_tokens,
-    )
-
-    user = turn.get("user_message", "") or ""
-    messages = turn.get("messages", "[]")
-    if isinstance(messages, str):
-        try:
-            messages = json.loads(messages)
-        except Exception:
-            messages = "[]"
-    if isinstance(messages, list):
-        body = sum(estimate_message_tokens(m) for m in messages)
-    else:
-        body = estimate_text_tokens(str(messages))
-    return max(estimate_text_tokens(user) + body, 1)
 
 
 # ── Turn header (restore-time annotation) ────────────────────────────
@@ -152,44 +120,9 @@ async def restore_session(
             else None
         )
 
-        all_messages: list[dict] = []
-        if sys_msg:
-            all_messages.append(dict(sys_msg))
-
-        for turn in turns:
-            user_msg_text = turn.get("user_message", "")
-            turn_messages_json = turn.get("messages", "[]")
-            turn_msgs: list[dict] = (
-                json.loads(turn_messages_json)
-                if isinstance(turn_messages_json, str)
-                else turn_messages_json
-            )
-            # (The images column is gone — image blocks live only in the
-            # in-memory user message and are never persisted; restore is
-            # text-only.  The user message here is plain text + turn header.)
-            # Autonomous turns (heartbeat / schedule) carry a synthetic
-            # trigger as the user message, not a real query — no turn header
-            # (restore also filters them from the TUI).
-            header = (
-                "" if is_autonomous_trigger(user_msg_text)
-                else turn_header(turn)
-            )
-            # The turn header is an inline footnote concatenated onto the end
-            # of the user-message text (not a separate part or line) — so
-            # both the LLM context and the restored TUI bubble carry it,
-            # reading as metadata right after the user's words.
-            if header:
-                user_msg_text = user_msg_text + " " + header
-            user_msg: dict = {"role": "user", "content": user_msg_text}
-            # The structural turn id rides the message so a later trim can
-            # hand the store the real ids to drop from the persisted
-            # live-context list.  Runtime-only: never persisted (the user
-            # message is not part of the stored ``messages`` slice) and
-            # popped before the wire.
-            if turn.get("rowid") is not None:
-                user_msg["_turn_id"] = turn["rowid"]
-            all_messages.append(user_msg)
-            all_messages.extend(turn_msgs)
+        # One turn→messages builder, shared with the per-turn rebuild, so a
+        # restored turn and a rebuilt one render identically.
+        all_messages = messages_from_turns(turns, system_message=sys_msg)
 
         # Repair orphaned tool_calls (persisted by a pre-ensure session)
         # BEFORE building the tool-result lookup and UI ops — otherwise the
@@ -465,12 +398,14 @@ async def restore_session(
     # the status bar fall back to `_last_usage`.  Use the **latest restored
     # turn's persisted context_tokens** — the last call's prompt+completion,
     # i.e. the exact context size at exit (what _turn_prompt would have
-    # reported) — instead of an estimate.  A missing/zero value (e.g. a
-    # cancelled turn) falls back to the estimate.
+    # reported).
+    #
+    # A missing/zero value (e.g. a cancelled turn) primes nothing: the report
+    # is then genuinely unknown, and `context_tokens_for` returns 0 for that.
+    # Substituting an estimate here would present a guess as the real exit-time
+    # occupancy — the one thing that function is written never to do.
     last_turn = turns[-1] if turns else {}
     prompt = last_turn.get("context_tokens") or 0
-    if prompt <= 0:
-        prompt = estimate_turn_tokens(last_turn) if last_turn else 0
     if prompt > 0:
         app.service.agent_loop._last_usage = TokenUsage(
             prompt_tokens=prompt,

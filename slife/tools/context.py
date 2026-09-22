@@ -126,6 +126,11 @@ class ToolContext:
     turns it evicted.  Populated by AgentService; a restart replays exactly
     the turns still on the list."""
 
+    set_context_turns: Callable[[list[int]], Awaitable[bool]] | None = None
+    """Replace the persisted live-context list with a recall selection — the
+    write behind the per-turn rebuild.  Populated by AgentService; a restart
+    replays the replaced list (and an empty one is refused, never written)."""
+
     clear_context_turns: Callable[[], Awaitable[bool]] | None = None
     """Empty the persisted live-context list — the cut-op behind
     ``clear_context``.  Turns saved afterwards re-enter it as they save.

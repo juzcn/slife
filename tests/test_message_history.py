@@ -834,26 +834,41 @@ class TestCountTokens:
         assert count > 5  # tool call arguments contribute
 
 
-class TestTokenEstimatePerScript:
-    """A11 regression: wide (CJK) text is ~1 token per char, never chars//3 —
-    the old blanket estimate undercounted Chinese-heavy sessions ~2-3x and
-    let the trim stop-condition / restore budget sit genuinely over the
-    window."""
+class TestTokenEstimate:
+    """The estimator is tiktoken's BPE, so assertions are on *properties* the
+    trim depends on, not on exact counts — those move with the encoding and
+    pinning them would just make every tiktoken bump a test failure.
 
-    def test_wide_chars_one_token_each(self):
-        from slife.agent.message_history import estimate_text_tokens
-        assert estimate_text_tokens("汉" * 100) == 100          # not ≈ 33
-        assert estimate_text_tokens("漢字全角ＡＢＣ") >= 7        # CJK + full-width
+    The property that matters is the A11 regression: CJK must never be
+    undercounted, or the trim's stop condition lets the window sit genuinely
+    over the ceiling."""
 
-    def test_narrow_chars_three_per_token(self):
+    def test_empty_is_zero(self):
         from slife.agent.message_history import estimate_text_tokens
-        assert estimate_text_tokens("abc") == 1
-        assert estimate_text_tokens("a" * 100) == 33
+        assert estimate_text_tokens("") == 0
 
-    def test_mixed_text_counts_both(self):
+    def test_cjk_costs_more_per_char_than_latin(self):
         from slife.agent.message_history import estimate_text_tokens
-        # 6 narrow (→2) + 6 wide (→6) = 8
-        assert estimate_text_tokens("abcdef" + "汉" * 6) == 8
+        cjk = "这是一段比较长的中文用户输入内容，用来测试分词器估算。"
+        latin = "the quick brown fox jumps over the lazy dog"
+        cjk_per_char = estimate_text_tokens(cjk) / len(cjk)
+        latin_per_char = estimate_text_tokens(latin) / len(latin)
+        # CJK is information-dense, so it spends more tokens per character.
+        # The old chars//3 heuristic inverted this and undercounted Chinese.
+        assert cjk_per_char > latin_per_char
+
+    def test_wide_chars_never_undercounted(self):
+        from slife.agent.message_history import estimate_text_tokens
+        # A Han char is at least a whole token — the old blanket estimate
+        # reported ~0.33 and undercounted Chinese-heavy sessions ~2-3x.
+        assert estimate_text_tokens("汉" * 100) >= 100
+        assert estimate_text_tokens("漢字全角ＡＢＣ") >= 7
+
+    def test_mixed_text_costs_at_least_each_part(self):
+        from slife.agent.message_history import estimate_text_tokens
+        mixed = estimate_text_tokens("abcdef" + "汉" * 6)
+        assert mixed >= estimate_text_tokens("汉" * 6)
+        assert mixed >= 6
 
     def test_count_tokens_cjk_not_undercounted(self):
         conv = MessageHistory()

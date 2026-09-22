@@ -793,6 +793,36 @@ try {
         return $true
     }
 
+    # 4b. Tokenizer vocabulary: fetch it once, here.  tiktoken downloads its
+    # 3.6 MB vocabulary on first use with NO timeout, so a slow or
+    # proxy-throttled link hangs the agent instead of failing.  Fetch it at
+    # install time into tiktoken's cache dir, named by the SHA-1 of the blob
+    # URL - that IS the cache key tiktoken looks for.  Slife refuses to start
+    # on a missing or partial file rather than mis-count tokens from a
+    # truncated vocabulary.
+    Write-Step "[4b] Fetching the tokenizer vocabulary..."
+    $tikTokenDir = "$env:USERPROFILE\.cache\tiktoken"
+    $tikTokenFile = Join-Path $tikTokenDir "fb374d419588a4632f3f557e76b4b70aebbca790"
+    $tikTokenBytes = 3613922
+    $haveVocab = (Test-Path $tikTokenFile) -and ((Get-Item $tikTokenFile).Length -eq $tikTokenBytes)
+    if ($haveVocab) {
+        Write-Host "  already present" -ForegroundColor DarkGray
+    } else {
+        New-Item -ItemType Directory -Force $tikTokenDir | Out-Null
+        try {
+            Invoke-WebRequest -Uri "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken" `
+                -OutFile $tikTokenFile -UseBasicParsing -ErrorAction Stop
+        } catch {
+            Write-Host "  could not reach the vocabulary host" -ForegroundColor DarkGray
+        }
+        if ((Test-Path $tikTokenFile) -and ((Get-Item $tikTokenFile).Length -eq $tikTokenBytes)) {
+            Write-Host "  fetched $tikTokenFile" -ForegroundColor DarkGray
+        } else {
+            Remove-Item $tikTokenFile -Force -ErrorAction SilentlyContinue
+            Write-Host "  tokenizer vocabulary not fetched - slife will not start until it is (see README)" -ForegroundColor Yellow
+        }
+    }
+
     # 4c. Configs: seed the git-tracked defaults out-of-the-box.  slife.yaml /
     # local_embed.yaml / tools.yaml / sharefile.yaml come from the
     # downloaded source tree (now git-tracked).  slife.yaml, tools.yaml and

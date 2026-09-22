@@ -94,6 +94,22 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/install.ps1 | iex"
 ```
 
+### 分词器词表（一次性）
+
+Slife 用 `tiktoken`（OpenAI 的 BPE）度量上下文大小，它会在首次使用时下载
+3.6 MB 的词表——而该下载**没有超时**，所以在慢速或被代理限速的链路上它会
+卡住而不是报错。请提前取一次：
+
+```bash
+mkdir -p ~/.cache/tiktoken
+curl -fL --retry 3 -o ~/.cache/tiktoken/fb374d419588a4632f3f557e76b4b70aebbca790 \
+  https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken
+```
+
+文件名是该 URL 的 SHA-1（即 tiktoken 的缓存键）；文件必须**恰好 3613922
+字节**。只有满足这个条件 Slife 才会启动：否则残缺文件会被当成合法词表读取，
+从而静默地算错 token 数。
+
 ### 免安装试用
 
 ```bash

@@ -168,7 +168,7 @@ User Input → MessageHistory.add_user_message()        (secrets sanitized)
   1. **No orphaned tool_calls** — an assistant `tool_call` whose result never arrived (an interrupted turn) gets a synthetic `(Tool execution interrupted)` result right after it.
   2. **Alternating roles** — a history ending on a `user`/`tool` message (a tool result is a `user` role on the Anthropic wire, which rejects two consecutive users with a 400) gets a closing assistant message (`"(Turn interrupted)"`).
   It has exactly **two call sites**: `save_to_memory` (before persisting — the save-side guarantee, which runs unconditionally after every turn) and `restore_session` (after loading — the load-side guarantee).
-- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (the last API call's actual prompt + completion tokens — the exact token count of the persisted history as the next request would re-send it — else the restore-time value primed on `_last_usage` — the latest restored turn's persisted `context_tokens` — else the chars÷3 live estimate). It drives `_turn_prompt`, the trim decision, and the TUI status bar — one value, no recompute. Usage is tracked **per history** (`_usage_by_history`, keyed by `id()`), which matters because a history is not always the main one: the main agent has exactly ONE shared context — every channel (human, WeChat, heartbeat, A2A, subagent completion) writes into it — while a worker process gets a fresh one-shot history per task, so a worker's tiny task context never drags down anything else.
+- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (the last API call's actual prompt + completion tokens — the exact token count of the persisted history as the next request would re-send it — else the restore-time value primed on `_last_usage` — the latest restored turn's persisted `context_tokens` — else `0`). It drives `_turn_prompt`, the trim decision, and the TUI status bar — one value, no recompute. **It never substitutes an estimate**: a context that has not been sent has no real count, and reporting a guess as occupancy is worse than reporting zero, so `0` (honestly unknown) is the floor. Estimates appear in exactly one place — sizing a recall selection that has not been built yet (`estimate_turn_tokens`, see *Context Rebuild*) — and are never presented as usage. Usage is tracked **per history** (`_usage_by_history`, keyed by `id()`), which matters because a history is not always the main one: the main agent has exactly ONE shared context — every channel (human, WeChat, heartbeat, A2A, subagent completion) writes into it — while a worker process gets a fresh one-shot history per task, so a worker's tiny task context never drags down anything else.
 
 ### Context Window Management
 
@@ -182,10 +182,83 @@ Active history stays within `context_floor`–`context_ceiling` (default 20%–8
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Detect**: usage is `context_tokens_for()` — the history's last API call's actual prompt + completion tokens after the first round (per-history), else the restore-time `_last_usage` (the latest restored turn's **persisted `context_tokens`**), else the chars÷3 estimate.
+- **Detect**: usage is `context_tokens_for()` — the history's last API call's actual prompt + completion tokens after the first round (per-history), else the restore-time `_last_usage` (the latest restored turn's **persisted `context_tokens`**), else `0`. No estimate is ever substituted (see *Context tracking*).
 - **Trim**: happens **after a turn is saved** (`save_to_memory` → `AgentLoop._trim_after_save`) — by then the last API call's real prompt + completion tokens are known. When occupancy hits `context_ceiling` (default 80%), `extract_oldest_turns` removes the oldest **complete** turns down to `context_window × context_floor` (default 20%), always keeping the current (just-saved) turn. It is an **internal mechanism — no tool call, no LLM-visible pair**: the cut is marked with a runtime-only **`[INFO: N oldest turns have been removed from context]`** note appended to the last assistant message, mirrored in the live TUI as a dim/italic footnote. The evicted turns are then dropped from the persisted live-context list (via the memdb internal tool `__memory_context_turns_drop`, passed the **actual ids** the trim removed — each turn carries its diary rowid as a runtime-only `_turn_id` on its opening user message, set at save and re-stamped on restore), and the tracked "Context covers" time range advances by the same count. A freshly-restored history is exempt from the first-turn trim (`_just_restored_history`).
 - **Turn prompt**: once per turn the loop auto-invokes **`_turn_prompt`** (a normal tool-call pair) — it renders `turn_prompt.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), any A2A peer presence events since the last turn (drained read-once), open failed/missed scheduled runs, and the one-shot "system restarted" flag. On the first round after a restore, `context_tokens_for` falls back to `_last_usage`, primed with the latest restored turn's persisted `context_tokens` — so the first prompt reports the real exit-time occupancy.
 - **Restore**: on startup, the turns named by the persisted **live-context id list** are loaded directly from SQLite **verbatim — no ceiling re-slicing**: the list already encodes the trimmed state. It lives in `diary_meta.context_turns` as an **ordered JSON array of rowids** whose order is authoritative (reads replay it as written and never re-sort by rowid) — the slice is not necessarily contiguous. Three events maintain it: the save **appends** the new rowid inside the same transaction as the diary row (so a missed write can never lose a turn), the trim drops the turns it evicted, and `clear_context` empties it. `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept for call-site compatibility only. The list is its own bound, so there is no token cap on the restore path. There is **no migration layer** (backward compatibility is not supported): a DB predating the list restores an *empty* context — its turns stay searchable via `turn_search` and re-enter as new turns are saved — and `_post_schema_check` logs that case loudly. Schema changes land directly in `schema.sql` and apply to fresh databases only (the one exception: `scripts/migrate_context_tokens.py` renames `prompt_tokens` → `context_tokens`).
+#### Context Rebuild (per-turn recall)
+
+`agent.rebuild_message` (default **true**) replaces the context from a recall
+selection **before every turn**, instead of letting it grow append-only and
+trimming it:
+
+```
+run()
+  ├─ recall step — once per turn, BEFORE the user message is added
+  │    ├─ discriminator: the current context as-is, the user message REPLACED
+  │    │     by rebuild_messages.j2 → recall parameters
+  │    ├─ __memory_turn_recall(query, since, until) → turn ids (or [])
+  │    ├─ GUARD: empty / unfetchable → keep the existing context, log, continue
+  │    ├─ __memory_context_turns_set(ids)      (persisted; restore replays it)
+  │    └─ MessageHistory.rebuild_messages(turns, images_by_turn=…)
+  ├─ add_user_message · attach_image · _turn_prompt        (unchanged)
+  └─ iteration loop
+        └─ save_to_memory → save_turn appends the new rowid to the list
+```
+
+The hook sits **before** `add_user_message` deliberately: the rebuild replaces
+`messages` wholesale, so anything appended first — the user message, the
+`attach_image` blocks (memory-only, unrecoverable) — would be destroyed. It also
+stays outside the iteration loop, whose per-iteration work belongs to the turn
+in progress.
+
+- **The selection overrides, it does not merge.** `turn_recall` returns only
+  ids — it is a harness function, not an LLM tool — and its three caps are its
+  own configuration: `agent.recall_limit`, `agent.recall_min_similarity`, and
+  `context_floor` as the token budget (the same knob the trim compacts to, so
+  flipping the mode changes *how* the context is chosen, never how big it is).
+  An empty query takes the `search_time` **list** branch, which must run before
+  the hybrid legs: they cannot express "no query" (FTS5 `MATCH ''` is an error).
+- **The similarity cap gates the measured `similarity`, never `rrf_score`** —
+  the fused score is a function of rank position, so it carries no magnitude to
+  threshold. Keyword-leg hits have no measured similarity and are exempt: an
+  exact match is a stronger signal than a cosine neighbourhood, and "no number"
+  is not evidence against it.
+- **Order is chronological.** Recall decides membership, time decides order —
+  the list order is the restore contract (see *Session Restore*).
+- **A failed recall never shrinks the context.** Every failure path —
+  discriminator timeout, empty selection, unfetchable turns — leaves both the
+  live context and the persisted list untouched. The store is written only once
+  a known-good selection exists, so a store outage degrades to the previous
+  turn's context, never to an empty one.
+- **The trim is idle in this mode** (`_trim_after_save` returns early): recall
+  *is* the bound, and a trim would evict turns the next recall simply
+  re-selects. With `rebuild_message: false` the previous logic runs instead —
+  the two share the same persisted list and the same save-append path, so the
+  flag flips freely and neither needs a migration.
+- **Workers never rebuild.** A subagent's history is one-shot per task, so
+  recall has nothing to select from and would cost a discriminator call per
+  task. The role decides, not the config.
+- **Images** are re-attached from a session-scoped, bounded (100 turns)
+  `turn_id → blocks` map, since image blocks are never persisted.
+- **TUI**: the rebuild announces itself — `↻ N turns recalled, context's
+  messages rebuilt`. The context changed under the user; silence would make the
+  agent look like it had forgotten things for no visible reason.
+
+**Token estimation is measured, not guessed.** `estimate_text_tokens` uses
+`tiktoken` (`o200k_base`), and the whole estimator family — `count_tokens`,
+`extract_turns` / `extract_oldest_turns`, the trim's stop condition, the recall
+budget — shares that one implementation, so they can never disagree. It replaced
+a per-script character heuristic (CJK ≈ 1 token/char, Latin ≈ 3 chars/token)
+that over-counted real text by **40–60%**, which made the trim evict more than
+it needed to. Two consequences: the trim now compacts to a more accurate point,
+and the same nominal budget buys materially more real conversation. The
+vocabulary is provisioned at install time (see README) and pinned via
+`TIKTOKEN_CACHE_DIR`, because tiktoken fetches it over HTTP **with no timeout** —
+an unreachable or throttled fetch hangs the agent rather than failing, and a
+truncated file would be read as a valid vocabulary. Slife refuses to start on a
+missing or partial vocabulary rather than mis-count silently.
+
 - **Tool result cap (HARD constraint)**: a single tool result is truncated at `tool_result_ceiling × context_window × 3` characters (default 20% of the window; ~3 chars/token heuristic) with an explicit truncation marker in the output. This is the deliberate window-safety limit — generous enough that a large-but-real file read is never truncated; only pathological outputs that could not fit the window at all are capped.
 - **Permanent-memory compaction**: the diary does **not** hoard reproducible tool output. At `save_to_memory`, any tool result exceeding `memory_tool_result_chars` (default 8000) is stored as a head+tail digest with an explicit marker — original size plus which tool to re-run (`… [compacted at save: original N chars — full output retrievable by re-running <tool>]`). Small results are stored as-is. The live history keeps the full result — compaction only affects the persisted copy.
 - **Truncation is announced in the tool output itself** (not the system prompt): both the live cap and the save-side compaction append a marker inside the result telling the model it was truncated and that re-running the tool retrieves the full version.
@@ -200,7 +273,7 @@ Two distinct concepts live under different prefixes. They are **not** two tiers 
 | Tool | Shape | Category |
 |------|-------|----------|
 | `_turn_prompt` | Builtin tool, auto-invoked each turn | Harness — visible-but-reserved |
-| `__memory_save_turn` / `__memory_reload_semantic` / `__memory_context_turns_drop` / `__memory_context_turns_clear` / `__check` | memdb plugin | Internal — invisible |
+| `__memory_save_turn` / `__memory_reload_semantic` / `__memory_context_turns_set` / `__memory_context_turns_drop` / `__memory_context_turns_clear` / `__memory_turn_recall` / `__memory_turns_by_ids` / `__check` | memdb plugin | Internal — invisible |
 | `__wechat_drain_incoming` / `__check` | wechat plugin | Internal — invisible |
 | `__scheduled_*` (10) / `__memfiles_reload_semantic` / `__user_pref_append` / `__check` | memfiles plugin | Internal — invisible |
 | `__a2a_drain_incoming` / `__a2a_dispatch_result` / `__check` | a2a plugin | Internal — invisible |

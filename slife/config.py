@@ -495,6 +495,21 @@ class Config:
     context_floor: float = 0.2
     context_ceiling: float = 0.8
     tool_result_ceiling: float = 0.2  # max tool result = 20% of context window (HARD constraint, see DESIGN)
+    # Recall caps — the per-turn context rebuild's own configuration.  The
+    # rebuild replaces the whole context from a recall selection, so these
+    # bound *what the model is sent*, not an increment on top of it.
+    #: Rebuild the context from a recall selection each turn.  ``True``
+    #: (default) — recall selects the context and the internal trim is idle.
+    #: ``False`` — the previous logic: the context grows append-only and the
+    #: trim bounds it.  The two modes are compatible: both maintain the same
+    #: persisted live-context list and the same save-append path, so the flag
+    #: can be flipped between runs without a migration.
+    rebuild_message: bool = True
+    #: Cosine similarity a semantic hit must reach to enter the context.
+    #: Keyword hits are exempt (nothing measured them).
+    recall_min_similarity: float = 0.35
+    #: Maximum turns in the selection.
+    recall_limit: int = 40
     # Per-tool-result char budget for PERMANENT memory (save side).  The live
     # context keeps oversized results whole for the current turn; the
     # Turns DB stores a head+tail digest so a single result can never starve
@@ -1099,6 +1114,9 @@ class Config:
         context_floor = agent.get("context_floor", 0.2)
         context_ceiling = agent.get("context_ceiling", 0.8)
         tool_result_ceiling = agent.get("tool_result_ceiling", 0.2)
+        rebuild_message = agent.get("rebuild_message", True)
+        recall_min_similarity = agent.get("recall_min_similarity", 0.35)
+        recall_limit = agent.get("recall_limit", 40)
         memory_tool_result_chars = agent.get("memory_tool_result_chars", 8000)
 
         # Env -- inject into os.environ so child processes (MCP wrappers,
@@ -1228,6 +1246,9 @@ class Config:
             context_floor=context_floor,
             context_ceiling=context_ceiling,
             tool_result_ceiling=tool_result_ceiling,
+            rebuild_message=rebuild_message,
+            recall_min_similarity=recall_min_similarity,
+            recall_limit=recall_limit,
             memory_tool_result_chars=memory_tool_result_chars,
             agent_name=agent_name,
             memdb_config=memdb_config,

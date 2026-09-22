@@ -24,6 +24,21 @@ agent:
   # turn just finished is never dropped.  0.8 / 0.2 = trim at 80%, to 20%.
   context_floor: 0.2
   context_ceiling: 0.8
+  # Rebuild the context from a recall selection before every turn.
+  # true  — recall selects the context (bounded by context_floor) and the
+  #         internal trim is idle.
+  # false — the previous logic: the context grows append-only and the trim
+  #         bounds it at context_ceiling / context_floor.
+  # The two modes are compatible — both maintain the same persisted
+  # live-context list and the same save path, so this can be flipped freely.
+  rebuild_message: true
+  # Recall caps (rebuild mode only).
+  # Cosine similarity a semantic hit must reach to enter the context; the
+  # budget is context_floor (the same knob the trim compacts to), so flipping
+  # rebuild_message changes how the context is chosen, never how big it is.
+  recall_min_similarity: 0.35
+  # Maximum turns in a recall selection.
+  recall_limit: 40
   # Idle heartbeat period in SECONDS (1800 = 30 min): how often an otherwise
   # idle agent may wake itself for a scheduled turn.
   heartbeat_interval: 1800
