@@ -690,7 +690,7 @@ async def test_load_state_is_decided_by_the_category(store):
 
     await store.upsert_tool("execute_shell", category="builtin")
     await store.upsert_tool("svc__search", category="mcp", source_id="svc")
-    await store.upsert_tool("turn_search", category="plugin", source_id="memdb")
+    await store.upsert_tool("turn_recall", category="plugin", source_id="memdb")
     await store.upsert_tool("job_x", category="job", source_id="job-coding")
     await store.upsert_tool("api__x", category="rest-api", source_id="api")
     await store.upsert_tool("readme", category="skill")
@@ -776,7 +776,7 @@ async def test_stale_category_check_is_reported_not_silently_broken(tmp_path):
     # write the plugin mirror would make is refused by the old constraint.
     import sqlite3
     with pytest.raises(sqlite3.IntegrityError):
-        await store.upsert_tool("turn_search", category="plugin", source_id="memdb")
+        await store.upsert_tool("turn_recall", category="plugin", source_id="memdb")
     # The pre-existing row is untouched and still readable.
     assert (await store.get_tool("execute_shell"))["category"] == "builtin"
     await store.close()

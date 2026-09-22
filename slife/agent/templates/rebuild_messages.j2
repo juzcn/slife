@@ -6,7 +6,8 @@ needs.
 Current user input:
 {{ user_input }}
 
-Reply with ONE JSON object holding the recall parameters below, and nothing
-else. An empty object means "no search" — take the most recent turns instead.
+Reply with ONE JSON object holding the parameters of the tool below, and
+nothing else. An empty object means no recall is needed — the context
+already in hand is enough for this turn.
 
-{{ recall_params }}
+{{ tool_schema }}

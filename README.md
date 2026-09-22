@@ -3,7 +3,7 @@
 > **Tool families, in one line.** Slife presents three families to the LLM,
 > indistinguishable at the call site: the developer's **system** tools —
 > builtin (`slife/tools/`, auto-discovered) and built-in plugin tools
-> (first-class, bare names — e.g. `turn_search`, `mcp_set`) — the user's
+> (first-class, bare names — e.g. `turn_recall`, `mcp_set`) — the user's
 > **jobs** (`job-<function>` — code the user wrote), and a third party's **external MCP server**
 > tools (`{server}__{tool}`, loaded on demand).
 
@@ -16,7 +16,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: **61 builtin tools by default** across 13 categories (including the reserved harness tool `_turn_prompt`, auto-invoked each turn), **nine internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, the MCP gateway `mcp-gateway`, and the **`local-embed`** embedding service), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: **60 builtin tools by default** across 13 categories (including the reserved harness tool `_turn_prompt`, auto-invoked each turn), **nine internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, the MCP gateway `mcp-gateway`, and the **`local-embed`** embedding service), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -242,11 +242,11 @@ models:
 
 All unified as OpenAI function definitions — the LLM sees no difference between system tools (builtin + built-in plugin) and external MCP tools. Every tool additionally accepts three meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt — Y approve / N, Esc deny).
 
-**61 builtin tools in 13 categories** (62 classes auto-discovered from `slife/tools/`; `install_python_package` ships disabled in the bundled config). The reserved harness tools `_turn_prompt` (per-turn prompt, once per turn) and `_check_new_input` (mid-turn message injection, at iteration boundaries in cut-in mode) are auto-invoked by the loop — the model reads their results but is told not to call them. `attach_image` is auto-invoked on `@`-attachments and refuses at call time on a vision-less model.
+**60 builtin tools in 13 categories** (61 classes auto-discovered from `slife/tools/`; `install_python_package` ships disabled in the bundled config). The reserved harness tools `_turn_prompt` (per-turn prompt, once per turn) and `_check_new_input` (mid-turn message injection, at iteration boundaries in cut-in mode) are auto-invoked by the loop — the model reads their results but is told not to call them. `attach_image` is auto-invoked on `@`-attachments and refuses at call time on a vision-less model.
 
 | Category | Tools |
 |----------|-------|
-| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `set_midturn_input` (mid-turn preemption on/off), `notify_user`, `wait_minutes` (pause the turn and resume automatically), `add_user_pref` (record a preference in `USER.md`) |
+| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `set_max_iterations`, `set_midturn_input` (mid-turn preemption on/off), `notify_user`, `wait_minutes` (pause the turn and resume automatically), `add_user_pref` (record a preference in `USER.md`) |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` (disabled by default) |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Job | `job-list`, `job-write`, `job-remove`, `job-run` + one tool per registered job (`job-<name>`), from the `job-coding` plugin |
@@ -267,7 +267,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | Server | Tools |
 |--------|-------|
 | `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` (capped — `tool_search` finds the rest) |
-| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
+| `memdb` | `turn_recall`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_save`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `file_read`, `report_save`, `report_list`, `report_read` |
 | `sharefile` | `share_file`, `sharefile_unshare` |

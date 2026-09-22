@@ -70,7 +70,7 @@ class TestBuild:
         assert "_sys_trim" not in result  # trim is now internal (note, not tool)
         assert "oldest turns have been removed from context" in result
         assert '[INFO: {"turn_id"' in result  # the turn footnote is documented
-        assert "turn_search" in result
+        assert "turn_recall" in result
 
     def test_heartbeat_interval_rendered_from_config(self, cfg):
         """The Autonomy heartbeat window advertises the configured interval."""
@@ -421,6 +421,50 @@ class TestHelpers:
         monkeypatch.setattr(sys, "platform", "linux")
         with patch("os.path.exists", return_value=True):
             assert _platform_type() == "wsl"
+
+
+# ── Recall discriminator instruction ─────────────────────────────────────
+
+class TestRecallInstruction:
+    """``build_recall_instruction`` renders the tool's own schema.
+
+    There is no second copy of the parameter surface: the instruction carries
+    exactly what the registry holds for ``turn_recall``, so the discriminator is
+    asked for the tool's parameters in the tool's own words (the four retrieval
+    modes are stated in that description — see the memdb server's
+    ``TestTurnRecallSchema``).
+    """
+
+    TOOL = {
+        "name": "turn_recall",
+        "description": "Recall turns into context: a query searches, no query browses.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search text."},
+                "since": {"type": "string", "description": "Lower bound."},
+            },
+            "required": [],
+        },
+    }
+
+    def test_renders_the_schema_verbatim(self):
+        from slife.agent.system_prompt import build_recall_instruction
+
+        text = build_recall_instruction("查一下首经贸新闻", self.TOOL)
+
+        assert "查一下首经贸新闻" in text
+        assert "turn_recall" in text
+        assert "a query searches, no query browses" in text, "the description is the surface"
+        assert '"query"' in text and '"since"' in text
+        assert "Lower bound" in text, "parameter descriptions are how-to-use"
+
+    def test_states_the_empty_object_rule(self):
+        from slife.agent.system_prompt import build_recall_instruction
+
+        text = build_recall_instruction("x", self.TOOL)
+
+        assert "empty object means no recall is needed" in text
 
 
 # ── Turn prompt presence events ──────────────────────────────────────────

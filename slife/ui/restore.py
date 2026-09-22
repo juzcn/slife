@@ -95,7 +95,7 @@ async def restore_session(
     selected the turns recorded after the persisted live-context boundary,
     within the context-ceiling token budget.  The re-select pass replays the
     slice the exit-time path already fitted; older turns stay in the memory
-    DB and can be retrieved via ``turn_search`` if needed.
+    DB and can be retrieved via ``turn_recall`` if needed.
 
     This function is self-contained — it reads recovery_info, rebuilds
     the history message list, and reconstructs the chat UI.

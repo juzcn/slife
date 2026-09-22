@@ -6,7 +6,6 @@ Registered LLM tools:
     system_tools_list        — the system's own tool inventory (grouped, harness markers)
     check_async              — poll background task result
     cancel_async             — cancel a running background task
-    clear_context            — reset the loaded turns
     set_max_iterations       — change the loop's iteration cap at runtime (0 = unlimited)
     notify_user              — push a desktop notification to the human operator
 
@@ -1642,48 +1641,6 @@ class CancelAsyncTool(Tool):
         _pop_task(task_id)
         logger.info("async_task_cancelled id=%s", task_id)
         return f"✓ Task '{task_id}' cancelled."
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# clear_context
-# ═══════════════════════════════════════════════════════════════════════
-
-class ClearContextTool(Tool):
-    name = "clear_context"
-    category: ClassVar[str] = "System"
-    description = "Clear the loaded turns from context, keeping only the system prompt."
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        ctx = getattr(self, "_ctx", None)
-        conv = ctx.message_history if ctx is not None else None
-        if conv is None:
-            return "MessageHistory is not yet initialised. This tool must be called after the agent service has started."
-        removed = conv.clear_history()
-        if removed == 0:
-            return "Context is already clean — no old turns to remove."
-        # Empty the persisted live-context list, so the next restore is a
-        # genuine fresh start — only turns saved after this point re-enter
-        # it (the in-flight turn appends itself when it saves).  Best-effort:
-        # an unreachable memdb only makes the next restore a superset, never
-        # a loss.
-        clear_persisted = getattr(ctx, "clear_context_turns", None)
-        if clear_persisted is not None:
-            try:
-                await clear_persisted()
-            except Exception:
-                logger.exception("context_turns_clear_failed_on_clear")
-        # Restart the "Context covers" range — otherwise the next _turn_prompt
-        # would keep reporting the pre-clear start.
-        reset_time = getattr(ctx, "reset_context_time", None)
-        if reset_time is not None:
-            try:
-                reset_time()
-            except Exception:
-                logger.exception("context_time_reset_failed")
-        remaining = len(conv.messages)
-        logger.info("clear_context removed=%d remaining=%d", removed, remaining)
-        return f"[OK] Cleared {removed} old message(s); {remaining} remaining (system prompt + current turn)."
 
 
 # ═══════════════════════════════════════════════════════════════════════

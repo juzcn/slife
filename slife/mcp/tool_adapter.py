@@ -95,7 +95,7 @@ class MCPProxyTool(Tool):
         self._on_server_updated = on_server_updated
 
         # Tool name: built-in plugin tools (DIRECT/WRAPPER) register under
-        # their bare name (semantic, self-describing — e.g. "turn_search",
+        # their bare name (semantic, self-describing — e.g. "turn_recall",
         # "note_save", "mcp_set", "wechat_login"); they are first-class like
         # builtin tools and the `{server}_` prefix inside the name is preserved
         # as-is where the plugin chose it.  External MCP server tools ALWAYS

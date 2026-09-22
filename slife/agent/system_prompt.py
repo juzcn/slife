@@ -50,31 +50,23 @@ def render_template(template: str, **kwargs: object) -> str:
     return _env.get_template(template).render(**kwargs).strip()
 
 
-#: The parameter surface the recall discriminator fills in.  The **caps**
-#: (count / similarity / token budget) are deliberately absent — they are
-#: recall's own configuration, so the discriminator chooses *what to look
-#: for*, never how much of it to take.
-RECALL_PARAMS: dict[str, str] = {
-    "query": "Search text for the history this turn needs. Empty string "
-             "means no search — take the most recent turns instead.",
-    "since": "Optional lower time bound: an ISO date, or a relative phrase "
-             "such as yesterday / last week. Empty string for none.",
-    "until": "Optional upper time bound, same grammar as since.",
-}
-
-
-def build_recall_instruction(user_input: str) -> str:
+def build_recall_instruction(user_input: str, tool_function: dict) -> str:
     """Render the discriminator's instruction (``rebuild_messages.j2``).
 
-    Replaces the user message for the pre-turn recall call: the current
-    context is sent as-is, and this instruction takes the place of the turn's
-    own input, which it quotes.  See ``DESIGNER_NOTES.md`` — "user message
-    替换为 …".
+    The pre-turn recall call's whole user turn: it quotes the current input and
+    states the parameter surface the discriminator fills in — which is
+    ``turn_recall``'s **own tool schema**, not a copy of it, so the discriminator
+    is asked for exactly the parameters the tool takes and the wording cannot
+    drift from the tool's.  *tool_function* is that schema as the registry holds
+    it (``Tool.to_openai_function()["function"]``).
+
+    The call sees the system prompt plus this instruction and nothing else —
+    the history is not sent (docs/CONTEXT_HARNESSING.md §7.1).
     """
     return render_template(
         "rebuild_messages.j2",
         user_input=user_input,
-        recall_params=json.dumps(RECALL_PARAMS, indent=2, ensure_ascii=False),
+        tool_schema=json.dumps(tool_function, indent=2, ensure_ascii=False),
     )
 
 

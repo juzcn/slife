@@ -84,8 +84,8 @@ class ToolContext:
     query registered-job status via the plugin's internal ``__check`` tool."""
 
     message_history: MessageHistory | None = None
-    """The active :class:`MessageHistory` (needed by ``clear_context``,
-    ``attach_image`` and subagent context cloning)."""
+    """The active :class:`MessageHistory` (needed by ``attach_image`` and
+    subagent context cloning)."""
 
     set_max_iterations: Callable[[int], str] | None = None
     """Runtime hook to change the agent loop's per-turn iteration cap
@@ -119,24 +119,3 @@ class ToolContext:
     """Schedule a one-shot ``[Timer]`` wake after *delay_seconds*.
     Populated by AgentService (main agent only); used by the ``wait_minutes``
     tool to resume the agent after a delay.  ``None`` for subagents."""
-
-    drop_context_turns: Callable[[list[int]], Awaitable[bool]] | None = None
-    """Drop turn ids from the persisted live-context list — the cut-op behind
-    the internal trim (``AgentLoop._trim_after_save``), which passes the
-    turns it evicted.  Populated by AgentService; a restart replays exactly
-    the turns still on the list."""
-
-    set_context_turns: Callable[[list[int]], Awaitable[bool]] | None = None
-    """Replace the persisted live-context list with a recall selection — the
-    write behind the per-turn rebuild.  Populated by AgentService; a restart
-    replays the replaced list (and an empty one is refused, never written)."""
-
-    clear_context_turns: Callable[[], Awaitable[bool]] | None = None
-    """Empty the persisted live-context list — the cut-op behind
-    ``clear_context``.  Turns saved afterwards re-enter it as they save.
-    Populated by AgentService."""
-
-    reset_context_time: Callable[[], None] | None = None
-    """Clear the loop's tracked context time range so "Context covers"
-    restarts from the fresh context.  Populated by AgentService; used by
-    ``clear_context``."""

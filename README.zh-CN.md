@@ -2,7 +2,7 @@
 
 > **工具家族，一句话。** Slife 向 LLM 呈现三个家族的工具，调用侧无差别：开发者的
 > **系统工具**——内置（`slife/tools/` 自动发现）与内置插件工具（一等公民、裸名，
-> 如 `turn_search`、`mcp_set`）；用户自己 coding 的 **job**（`job-<函数名>`）；以及第三方的
+> 如 `turn_recall`、`mcp_set`）；用户自己 coding 的 **job**（`job-<函数名>`）；以及第三方的
 > **外部 MCP server** 工具（`{server}__{tool}`，按需加载）。
 
 **终端 AI 智能体** — 基于函数调用循环的最小化框架。与 LLM 对话，它能调用工具、永久记忆每一轮对话、协调其他智能体。
@@ -14,7 +14,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：**默认 61 个内置工具**、横跨 13 个类别（含保留的 harness 工具 `_turn_prompt` 与 `_check_new_input`——由循环自动调用），**九个内部插件服务**（memdb、wechat、memfiles、sharefile、a2a、media、job-coding、MCP 网关 `mcp-gateway`，以及 **`local-embed`** 嵌入服务）、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：**默认 60 个内置工具**、横跨 13 个类别（含保留的 harness 工具 `_turn_prompt` 与 `_check_new_input`——由循环自动调用），**九个内部插件服务**（memdb、wechat、memfiles、sharefile、a2a、media、job-coding、MCP 网关 `mcp-gateway`，以及 **`local-embed`** 嵌入服务）、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -246,11 +246,11 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 
 全部统一为 OpenAI 函数定义——LLM 看不出系统工具（内置 + 内置插件）与外部 MCP 工具的区别。每个工具还额外接受三个元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（内联批准提示——Y 批准 / N 拒绝，Esc 拒绝）。
 
-**13 个类别共 61 个内置工具**（从 `slife/tools/` 自动发现 62 个类；`install_python_package` 在随附配置中默认禁用）。保留的 harness 工具 `_turn_prompt`（每轮提示词）与 `_check_new_input`（插队模式下的轮中消息注入）由循环自动调用；`attach_image` 在 `@` 附件时自动调用——模型会读取它们的产出，但被嘱咐不要调用它们。`attach_image` 对无视觉模型会在调用时拒绝（它从不被隐藏）。
+**13 个类别共 60 个内置工具**（从 `slife/tools/` 自动发现 61 个类；`install_python_package` 在随附配置中默认禁用）。保留的 harness 工具 `_turn_prompt`（每轮提示词）与 `_check_new_input`（插队模式下的轮中消息注入）由循环自动调用；`attach_image` 在 `@` 附件时自动调用——模型会读取它们的产出，但被嘱咐不要调用它们。`attach_image` 对无视觉模型会在调用时拒绝（它从不被隐藏）。
 
 | 类别 | 工具 |
 |----------|-------|
-| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user`, `wait_minutes`（暂停本轮，稍后自动继续）, `add_user_pref`（把偏好记录到 `USER.md`） |
+| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `set_max_iterations`, `notify_user`, `wait_minutes`（暂停本轮，稍后自动继续）, `add_user_pref`（把偏好记录到 `USER.md`） |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package`（默认禁用） |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Job | `job-list`、`job-write`、`job-remove`、`job-run` + 每个已注册 job 一个工具（`job-<name>`），由 `job-coding` 插件提供 |
@@ -271,7 +271,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | 服务器 | 工具 |
 |--------|-------|
 | `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
-| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
+| `memdb` | `turn_recall`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_save`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `file_read`, `report_save`, `report_list`, `report_read` |
 | `sharefile` | `share_file`, `sharefile_unshare` |

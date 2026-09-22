@@ -1,4 +1,4 @@
-"""Tests for slife.tools.system — SystemToolsListTool, CheckAsyncTool, CancelAsyncTool, ClearContextTool."""
+"""Tests for slife.tools.system — SystemToolsListTool, CheckAsyncTool, CancelAsyncTool."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -12,7 +12,6 @@ from slife.tools.system import (
     SystemToolsListTool,
     CheckAsyncTool,
     CancelAsyncTool,
-    ClearContextTool,
     SetMaxIterationsTool,
     _system_category,
     _strip_server_prefix,
@@ -258,7 +257,7 @@ class TestSystemToolsListTool:
         registry = ToolRegistry()
         registry.register(_job_tool("job-translate"))     # the user's
         registry.register(_job_tool("job-write"))         # the plugin's own
-        registry.register(_job_tool("turn_search"))       # another plugin's
+        registry.register(_job_tool("turn_recall"))       # another plugin's
 
         tool = SystemToolsListTool()
         try:
@@ -266,7 +265,7 @@ class TestSystemToolsListTool:
             result = await tool.execute()
             assert "`job-translate`" not in result
             assert "`job-write`" in result
-            assert "`turn_search`" in result
+            assert "`turn_recall`" in result
         finally:
             tool._ctx = None
 
@@ -529,161 +528,6 @@ class TestCancelAsyncTool:
         result = await tool.execute(task_id=tid)
         assert "cancelled" in result
         assert tid not in _tasks
-
-
-# ── ClearContextTool ──────────────────────────────────────────────────────
-
-
-class TestClearContextTool:
-    """Tests for ClearContextTool."""
-
-    def test_metadata(self):
-        tool = ClearContextTool()
-        assert tool.name == "clear_context"
-        assert tool.category == "System"
-        assert tool.parameters == {
-            "type": "object", "properties": {}, "required": [],
-            "additionalProperties": False,
-        }
-
-    @pytest.mark.asyncio
-    async def test_message_history_not_initialised(self):
-        """When history is None, returns appropriate message."""
-        tool = ClearContextTool()
-        from slife.tools.context import ToolContext
-        try:
-            tool._ctx = ToolContext(message_history=None)
-            result = await tool.execute()
-            assert "not yet initialised" in result.lower()
-        finally:
-            tool._ctx = None
-
-    @pytest.mark.asyncio
-    async def test_already_clean(self):
-        """When context is already clean, returns appropriate message."""
-        from slife.agent.message_history import MessageHistory
-        tool = ClearContextTool()
-        conv = MessageHistory(system_prompt="You are helpful.")
-
-        from slife.tools.context import ToolContext
-        try:
-            tool._ctx = ToolContext(message_history=conv)
-            result = await tool.execute()
-            assert "already clean" in result.lower()
-        finally:
-            tool._ctx = None
-
-    @pytest.mark.asyncio
-    async def test_clears_history(self):
-        """Clears old turns, keeps system prompt and current turn."""
-        from slife.agent.message_history import MessageHistory
-        tool = ClearContextTool()
-        conv = MessageHistory(system_prompt="You are helpful.")
-        # Add TWO turns — clear_history preserves the last user message
-        # and everything after it (the "current turn").  Only turns before
-        # the last user message are cleared.
-        conv.add_user_message("old question")       # turn 1 (will be cleared)
-        conv.add_assistant_message(content="old answer")
-        conv.add_user_message("current question")    # turn 2 (current, preserved)
-        conv.add_assistant_message(content="current answer")
-
-        from slife.tools.context import ToolContext
-        try:
-            tool._ctx = ToolContext(message_history=conv)
-            result = await tool.execute()
-            assert "Cleared" in result
-            assert "remaining" in result.lower()
-            # System prompt should still be there
-            assert len(conv.messages) >= 1
-        finally:
-            tool._ctx = None
-
-    @pytest.mark.asyncio
-    async def test_resets_context_time(self):
-        """Clearing context restarts the "Context covers" range — otherwise
-        the next _turn_prompt would keep reporting the pre-clear start."""
-        from slife.agent.message_history import MessageHistory
-        from slife.tools.context import ToolContext
-        tool = ClearContextTool()
-        conv = MessageHistory(system_prompt="You are helpful.")
-        conv.add_user_message("old question")
-        conv.add_assistant_message(content="old answer")
-        conv.add_user_message("current question")
-        conv.add_assistant_message(content="current answer")
-
-        reset_called = []
-        try:
-            tool._ctx = ToolContext(
-                message_history=conv,
-                reset_context_time=lambda: reset_called.append(True),
-            )
-            result = await tool.execute()
-            assert "Cleared" in result
-            assert reset_called == [True]
-        finally:
-            tool._ctx = None
-
-    @pytest.mark.asyncio
-    async def test_clears_persisted_context_list(self):
-        """clear_context empties the persisted live-context list, so the next
-        restore is a fresh start (only turns saved afterwards come back).
-        The hook must be called only when something was actually removed."""
-        from slife.agent.message_history import MessageHistory
-        from slife.tools.context import ToolContext
-        tool = ClearContextTool()
-        conv = MessageHistory(system_prompt="You are helpful.")
-        conv.add_user_message("old question")       # turn 1 (will be cleared)
-        conv.add_assistant_message(content="old answer")
-        conv.add_user_message("current question")    # turn 2 (current, preserved)
-        conv.add_assistant_message(content="current answer")
-
-        cleared = []
-
-        async def _clear():
-            cleared.append(True)
-            return True
-
-        try:
-            tool._ctx = ToolContext(
-                message_history=conv,
-                clear_context_turns=_clear,
-            )
-            result = await tool.execute()
-            assert "Cleared" in result
-            assert cleared == [True]
-        finally:
-            tool._ctx = None
-
-    @pytest.mark.asyncio
-    async def test_clears_skipped_when_clean(self):
-        """Already-clean context returns early — no persisted clear, no
-        time reset (mirrors the real loop's no-op guard)."""
-        from slife.agent.message_history import MessageHistory
-        from slife.tools.context import ToolContext
-        tool = ClearContextTool()
-        conv = MessageHistory(system_prompt="You are helpful.")
-        conv.add_user_message("only question")
-        conv.add_assistant_message(content="only answer")
-
-        cleared = []
-        reset_called = []
-
-        async def _clear():
-            cleared.append(True)
-            return True
-
-        try:
-            tool._ctx = ToolContext(
-                message_history=conv,
-                clear_context_turns=_clear,
-                reset_context_time=lambda: reset_called.append(True),
-            )
-            result = await tool.execute()
-            assert "already clean" in result.lower()
-            assert cleared == [], "no persisted clear when nothing was removed"
-            assert reset_called == []
-        finally:
-            tool._ctx = None
 
 
 # ── SetMaxIterationsTool ─────────────────────────────────────────────

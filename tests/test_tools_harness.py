@@ -16,6 +16,8 @@ import pytest; pytestmark = pytest.mark.unit
 
 import pytest
 
+from types import SimpleNamespace
+
 from slife.agent.message_history import MessageHistory
 from slife.agent.loop import AgentLoop
 from slife.tools.factory import create_tools_from_config
@@ -27,6 +29,49 @@ def _registry():
 
 def _loop(registry):
     return AgentLoop(llm_client=None, tool_registry=registry, context_window=131072)
+
+
+class _ReplyLLM:
+    """A client that always answers the discriminator with *reply*.
+
+    The rebuild tests drive the path *after* the discriminator, so they need a
+    reply that actually asks for something: an empty one is "no recall needed"
+    and a missing client is "no reply" — both keep the context.
+    """
+
+    def __init__(self, reply: str):
+        self.reply = reply
+
+    async def chat(self, messages, **_kwargs):
+        msg = SimpleNamespace(content=self.reply)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)]), None
+
+
+def _registry_with_recall(with_recall: bool = True):
+    """A registry carrying ``turn_recall``.
+
+    The discriminator's instruction IS that tool's schema, so the call needs the
+    tool registered — in production the memdb plugin provides it, and a process
+    without it (memdb down) skips the discriminator entirely.
+    """
+    from slife.tools.base import Tool
+
+    class _TurnRecall(Tool):
+        name = "turn_recall"
+        description = "Recall turns into context: a query searches, a time range browses."
+        parameters = {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Search text."}},
+            "required": [],
+        }
+        category = "memdb"
+
+        async def execute(self, **kwargs): return "{}"
+
+    reg = create_tools_from_config()
+    if with_recall:
+        reg.register(_TurnRecall())
+    return reg
 
 
 # ── Registration & schema ────────────────────────────────────────────────
@@ -226,12 +271,15 @@ class TestTurnPromptKwargsRestarted:
 
 
 class TestRecallRebuild:
-    """The per-turn context rebuild, and its guard.
+    """The per-turn context rebuild, and the line between its two outcomes.
 
-    The guard is the behaviour that matters most: a recall that cannot answer
-    must leave the context **untouched**.  Persisting an empty selection would
-    wipe the agent's context for the next restart, and rebuilding in memory
-    from a failed fetch would do it immediately.
+    The selection **is** the context, so an empty selection is an empty
+    context — the turns in it were judged irrelevant, and keeping them would
+    mean the recall never took effect.  What must never happen is a *failure*
+    wearing an empty selection's clothes: when the store cannot be asked
+    (``None``) or the selection cannot be fetched, the context stays exactly
+    as it was.  ``recall_turns`` returning ``[]`` for "could not ask" is what
+    made those two indistinguishable.
     """
 
     TURN = {
@@ -244,12 +292,14 @@ class TestRecallRebuild:
     @staticmethod
     def _loop(**kwargs):
         return AgentLoop(
-            llm_client=None, tool_registry=create_tools_from_config(),
+            llm_client=_ReplyLLM('{"since": "yesterday"}'),
+            tool_registry=_registry_with_recall(),
             context_window=1000, context_ceiling=0.8, context_floor=0.2,
             rebuild_message=kwargs.get("rebuild", True),
             recall_turns=kwargs.get("recall"),
             turns_by_ids=kwargs.get("turns_by_ids"),
             set_context_turns=kwargs.get("set"),
+            clear_context_turns=kwargs.get("clear"),
         )
 
     @staticmethod
@@ -260,10 +310,10 @@ class TestRecallRebuild:
         return conv
 
     @pytest.mark.asyncio
-    async def test_empty_recall_leaves_context_untouched(self):
+    async def test_empty_recall_clears_the_context(self):
         conv = self._history()
-        before = [dict(m) for m in conv.messages]
         persisted: list[list[int]] = []
+        cleared: list[bool] = []
 
         async def recall(*_a, **_k):
             return []
@@ -272,16 +322,55 @@ class TestRecallRebuild:
             persisted.append(list(ids))
             return True
 
-        loop = self._loop(recall=recall, set=save)
+        async def clear():
+            cleared.append(True)
+            return True
+
+        loop = self._loop(recall=recall, set=save, clear=clear)
+        assert await loop._recall_and_rebuild(conv, "new input") is True
+
+        assert [m["role"] for m in conv.messages] == ["system"], (
+            "an empty selection is an empty context — the system prompt alone"
+        )
+        assert cleared == [True], "and the persisted list is emptied to match"
+        assert persisted == [], (
+            "set_context_turns refuses an empty list by design (it guards a "
+            "partial selection); the clear tool is the write for this case"
+        )
+
+    @pytest.mark.asyncio
+    async def test_unavailable_recall_keeps_the_context(self):
+        """``None`` is "the store could not be asked" — the context stays."""
+        conv = self._history()
+        before = [dict(m) for m in conv.messages]
+        persisted: list[list[int]] = []
+        cleared: list[bool] = []
+
+        async def recall(*_a, **_k):
+            return None
+
+        async def save(ids):
+            persisted.append(list(ids))
+            return True
+
+        async def clear():
+            cleared.append(True)
+            return True
+
+        loop = self._loop(recall=recall, set=save, clear=clear)
         assert await loop._recall_and_rebuild(conv, "new input") is False
-        assert conv.messages == before, "a failed recall must not touch the context"
-        assert persisted == [], "and must never persist an empty selection"
+        assert conv.messages == before
+        assert persisted == [] and cleared == [], (
+            "a store that cannot answer must leave both the history and the "
+            "persisted list untouched"
+        )
 
     @pytest.mark.asyncio
     async def test_unfetchable_turns_leave_context_untouched(self):
         conv = self._history()
         before = [dict(m) for m in conv.messages]
         persisted: list[list[int]] = []
+        cleared: list[bool] = []
 
         async def recall(*_a, **_k):
             return [7]
@@ -293,10 +382,17 @@ class TestRecallRebuild:
             persisted.append(list(ids))
             return True
 
-        loop = self._loop(recall=recall, turns_by_ids=turns_by_ids, set=save)
+        async def clear():
+            cleared.append(True)
+            return True
+
+        loop = self._loop(recall=recall, turns_by_ids=turns_by_ids, set=save,
+                          clear=clear)
         assert await loop._recall_and_rebuild(conv, "new input") is False
         assert conv.messages == before
-        assert persisted == []
+        assert persisted == [] and cleared == [], (
+            "a selection that cannot be rendered is not an empty selection"
+        )
 
     @pytest.mark.asyncio
     async def test_successful_recall_rebuilds_and_persists(self):
@@ -342,9 +438,143 @@ class TestRecallRebuild:
         assert conv.messages == before
 
 
+class TestRecallDiscriminator:
+    """The pre-turn discriminator call.
+
+    It is a *discriminator*: one call that decides what this turn needs, and
+    nothing else.  It never writes to the history (so it can never become part
+    of the conversation, the diary, the TUI, or the next request), and it
+    answers with recall parameters or nothing at all.
+    """
+
+    REPLY = '{"query": "首经贸 新闻", "since": null, "until": null}'
+
+    class _FakeLLM:
+        def __init__(self, reply: str):
+            self.reply = reply
+            self.sent: list[list[dict]] = []
+
+        async def chat(self, messages, **_kwargs):
+            self.sent.append([dict(m) for m in messages])
+            msg = SimpleNamespace(content=self.reply)
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)]), None
+
+    @staticmethod
+    def _loop(llm, registry=None):
+        return AgentLoop(
+            llm_client=llm,
+            tool_registry=registry if registry is not None else
+            _registry_with_recall(),
+            context_window=1000, context_ceiling=0.8, context_floor=0.2,
+            rebuild_message=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_call_is_never_written_to_the_history(self):
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("old question")
+        conv.add_assistant_message("old reply")
+        before = [dict(m) for m in conv.messages]
+        llm = self._FakeLLM(self.REPLY)
+
+        args = await self._loop(llm)._discriminate_recall(conv, "查一下首经贸新闻")
+
+        assert args == {"query": "首经贸 新闻", "since": None, "until": None}
+        assert conv.messages == before, (
+            "the discriminator is not part of the conversation — it must not "
+            "append the instruction or its own reply to the history"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_call_carries_the_system_prompt_and_the_instruction(self):
+        """The shape of the request, pinned: the system prompt plus the
+        instruction — which quotes the input and states the tool's **own**
+        schema, so the discriminator is asked for exactly the parameters
+        ``turn_recall`` takes.  The history is **not** sent: the discriminator
+        chooses what the turn needs from the input alone, which keeps the call
+        small (see ``prompt_chars`` in its log line)."""
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("old question")
+        llm = self._FakeLLM(self.REPLY)
+
+        await self._loop(llm)._discriminate_recall(conv, "查一下首经贸新闻")
+
+        sent = llm.sent[0]
+        assert [m["role"] for m in sent] == ["system", "user"]
+        assert sent[0]["content"] == "SYS"
+        assert "查一下首经贸新闻" in sent[1]["content"]
+        assert "turn_recall" in sent[1]["content"], "the tool's schema is the surface"
+        assert "\"query\"" in sent[1]["content"]
+        assert not any(
+            m.get("content") == "old question" for m in sent
+        ), "the context being rebuilt is not an input to the decision"
+
+    @pytest.mark.asyncio
+    async def test_no_tool_means_no_call(self, caplog):
+        """The schema IS the instruction, so without the tool registered there
+        is nothing to ask for: the call is skipped and the context kept —
+        rather than spending a model call on a surface it cannot state."""
+        import logging
+
+        conv = MessageHistory(system_prompt="SYS")
+        llm = self._FakeLLM(self.REPLY)
+        loop = self._loop(llm, registry=_registry_with_recall(with_recall=False))
+
+        with caplog.at_level(logging.INFO, logger="slife.agent.loop"):
+            args = await loop._discriminate_recall(conv, "查一下首经贸新闻")
+
+        assert args is None
+        assert llm.sent == [], "no tool schema, no discriminator call"
+        assert any(
+            "no_turn_recall_tool" in r.getMessage() for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_execution_is_logged(self, caplog):
+        """Every run leaves a trace: the parameters it produced, its latency
+        and the shape of the call."""
+        import logging
+
+        conv = MessageHistory(system_prompt="SYS")
+        llm = self._FakeLLM(self.REPLY)
+
+        with caplog.at_level(logging.INFO, logger="slife.agent.loop"):
+            await self._loop(llm)._discriminate_recall(conv, "查一下首经贸新闻")
+
+        line = next(
+            r.getMessage() for r in caplog.records
+            if "recall_discriminated" in r.getMessage()
+        )
+        assert "query=首经贸 新闻" in line
+        assert "msgs=2" in line
+        assert "took_ms=" in line
+
+    @pytest.mark.asyncio
+    async def test_an_unparseable_reply_is_logged_and_degrades(self, caplog):
+        """Prose instead of JSON is a degradation, not a crash — and it is
+        named, so a silent recall is never mistaken for an empty one."""
+        import logging
+
+        conv = MessageHistory(system_prompt="SYS")
+        llm = self._FakeLLM("I think you should search for the news.")
+
+        with caplog.at_level(logging.WARNING, logger="slife.agent.loop"):
+            args = await self._loop(llm)._discriminate_recall(conv, "查新闻")
+
+        assert args is None
+        assert any(
+            "recall_discriminator_unparsed" in r.getMessage()
+            for r in caplog.records
+        )
+
+
 class TestTrimAfterSave:
     """_trim_after_save: called after a turn is saved, uses real usage,
-    appends a runtime trim note, and never shreds a restored context."""
+    appends a runtime trim note, and never shreds a restored context.
+
+    The ceiling is the window's safety valve, so it holds in both modes —
+    ``rebuild_message`` decides how the context is *chosen*, never how big it
+    may grow within a turn."""
 
     @staticmethod
     def _cfg():
@@ -373,6 +603,7 @@ class TestTrimAfterSave:
         return AgentLoop(
             llm_client=None, tool_registry=create_tools_from_config(),
             context_window=200, context_ceiling=0.8, context_floor=0.2,
+            rebuild_message=kwargs.get("rebuild", False),
             drop_context_turns=kwargs.get("drop"),
         )
 
@@ -398,6 +629,22 @@ class TestTrimAfterSave:
         assert "oldest turns have been removed from context" in conv.messages[-1].get("content", "")
         # no tool-call pair was produced (internal mechanism, not a tool)
         assert not any(m.get("tool_calls") for m in conv.messages)
+
+    @pytest.mark.asyncio
+    async def test_trims_in_rebuild_mode_too(self):
+        """The ceiling is not a property of how the context is *chosen*: a
+        turn whose tool results outgrew it is compacted in rebuild mode as
+        well.  The next recall re-selects, so the eviction bounds the window
+        without deciding anything."""
+        conv = self._conv(12)
+        loop = self._loop(conv, self._cfg(), rebuild=True)
+        await self._prime_usage(loop, conv)
+        assert conv.count_tokens() > 160  # over 0.8 × 200 ceiling
+
+        await loop._trim_after_save(conv)
+
+        assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
+        assert "oldest turns have been removed from context" in conv.messages[-1].get("content", "")
 
     @pytest.mark.asyncio
     async def test_no_trim_when_under_ceiling(self):
@@ -664,3 +911,83 @@ class TestConsecutiveUserFix:
         # closing assistant keeps roles alternating
         assert conv.messages[-1]["role"] == "assistant"
 
+
+
+class TestRecallNotNeeded:
+    """``{}`` from the discriminator means *no recall is needed*.
+
+    The reply format is a decision, not a default: an empty parameter object
+    says the context already in hand is enough.  Reading it as "give me the
+    most recent turns" would silently *replace* that context, which is very
+    possibly not what the model wanted — so the store is not asked at all.
+    """
+
+    class _FakeLLM:
+        def __init__(self, reply):
+            self.reply = reply
+            self.sent = []
+
+        async def chat(self, messages, **_kwargs):
+            self.sent.append([dict(m) for m in messages])
+            from types import SimpleNamespace
+            msg = SimpleNamespace(content=self.reply)
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)]), None
+
+    def _loop(self, reply, **kwargs):
+        asked = []
+
+        async def recall(*a, **k):
+            asked.append((a, k))
+            return []
+
+        sim = kwargs.get("set") or []
+        loop = AgentLoop(
+            llm_client=self._FakeLLM(reply), tool_registry=_registry_with_recall(),
+            context_window=1000, context_ceiling=0.8, context_floor=0.2,
+            rebuild_message=True,
+            recall_turns=recall,
+            turns_by_ids=kwargs.get("turns_by_ids"),
+            set_context_turns=lambda ids: sim.append(list(ids)) or True,  # noqa: E731
+            clear_context_turns=kwargs.get("clear"),
+        )
+        return loop, asked, sim
+
+    @pytest.mark.asyncio
+    async def test_an_empty_object_keeps_the_context_and_asks_nothing(self):
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("old question")
+        conv.add_assistant_message("old reply")
+        before = [dict(m) for m in conv.messages]
+
+        loop, asked, persisted = self._loop("{}")
+        assert await loop._recall_and_rebuild(conv, "new input") is False
+
+        assert asked == [], "no recall needed means no store call either"
+        assert persisted == [], "and nothing is persisted"
+        assert conv.messages == before, "the context it judged sufficient stands"
+
+    @pytest.mark.asyncio
+    async def test_all_empty_parameters_read_as_no_recall(self):
+        """The schema's defaults serialized out loud — same meaning."""
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("old question")
+        before = [dict(m) for m in conv.messages]
+
+        loop, asked, _ = self._loop(
+            '{"query": "", "since": null, "until": null}'
+        )
+        assert await loop._recall_and_rebuild(conv, "new input") is False
+
+        assert asked == []
+        assert conv.messages == before
+
+    @pytest.mark.asyncio
+    async def test_a_time_bound_still_recalls(self):
+        """A bound is a request: it goes to the store (time-only branch)."""
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("old question")
+        loop, asked, _ = self._loop('{"since": "yesterday"}')
+
+        await loop._recall_and_rebuild(conv, "new input")
+
+        assert asked and asked[0][0][1] == "yesterday", "the bound reaches the store"

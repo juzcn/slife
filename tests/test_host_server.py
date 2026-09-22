@@ -51,8 +51,8 @@ class EchoTool:
 
 
 class ConfigTool:  # an excluded harness/context-control
-    name = "clear_context"
-    description = "Resets loaded turns (harness control)."
+    name = "set_max_iterations"
+    description = "Changes the host loop's iteration cap (harness control)."
     parameters = {"type": "object", "properties": {}}
 
     async def execute(self, **kwargs) -> str:
@@ -101,7 +101,7 @@ class TestIsExposed:
         assert is_exposed(EchoTool()) is True
 
     def test_harness_context_control_excluded(self):
-        assert is_exposed(ConfigTool()) is False      # clear_context
+        assert is_exposed(ConfigTool()) is False      # set_max_iterations
         assert is_exposed(TurnPromptTool()) is False  # _turn_prompt
         assert is_exposed(CheckInputTool()) is False  # _check_new_input
 
@@ -124,7 +124,7 @@ class TestBuildRegistryMcp:
         names = _registered_names(mcp)
         assert "echo" in names                # native tool, bare name
         assert "__check" in names             # internal harness probe
-        assert "clear_context" not in names   # harness control excluded
+        assert "set_max_iterations" not in names  # harness control excluded
         assert "_turn_prompt" not in names    # harness marker excluded
         assert "_check_new_input" not in names  # input injector excluded
 
@@ -344,7 +344,7 @@ class TestMultiToolRouting:
     @pytest.mark.asyncio
     async def test_routing_survives_a_live_sync_pass(self):
         """Adding a later tool must not rewire the earlier tools' target."""
-        reg = _registry()  # registers echo/clear_context/_turn_prompt together
+        reg = _registry()  # registers echo/set_max_iterations/_turn_prompt
         mcp = build_registry_mcp(reg)
         echo = next(c for c in mcp.local_provider._components.values()
                     if isinstance(c, FunctionTool) and c.name == "echo")

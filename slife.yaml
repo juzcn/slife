@@ -25,12 +25,12 @@ agent:
   context_floor: 0.2
   context_ceiling: 0.8
   # Rebuild the context from a recall selection before every turn.
-  # true  — recall selects the context (bounded by context_floor) and the
-  #         internal trim is idle.
-  # false — the previous logic: the context grows append-only and the trim
-  #         bounds it at context_ceiling / context_floor.
-  # The two modes are compatible — both maintain the same persisted
-  # live-context list and the same save path, so this can be flipped freely.
+  # true  — recall selects the context before every turn.
+  # false — the context grows append-only.
+  # Either way the internal trim bounds the window at context_ceiling /
+  # context_floor.  The two modes are compatible — both maintain the same
+  # persisted live-context list and the same save path, so this can be
+  # flipped freely.
   rebuild_message: true
   # Recall caps (rebuild mode only).
   # Cosine similarity a semantic hit must reach to enter the context; the

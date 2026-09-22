@@ -2796,8 +2796,8 @@ class TestGetRecentTurns:
     async def test_restore_returns_only_listed_turns(
         self, sample_config, tmp_path, monkeypatch
     ):
-        """Turns dropped from the list by the internal trim (or by
-        clear_context) do not come back — the diary keeps them, the context
+        """Turns dropped from the list by the internal trim (or by an empty
+        recall selection) do not come back — the diary keeps them, the context
         does not."""
         from slife.agent.service import AgentService
 
@@ -2948,7 +2948,7 @@ class TestSpawnPluginListToolsRetry:
         first_client.list_tools.side_effect = TimeoutError("list_tools timed out")
         second_client = AsyncMock()
         second_client.list_tools.return_value = [{
-            "name": "turn_search", "description": "d",
+            "name": "turn_recall", "description": "d",
             "inputSchema": {"type": "object", "properties": {}},
         }]
         second_client.call_tool = AsyncMock(

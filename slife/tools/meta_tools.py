@@ -171,7 +171,7 @@ class ToolSearchTool(Tool):
                         or "semantic search unavailable — keyword only."
                     )
         # The shared scoring contract, used by every other hybrid path
-        # (turn_search, cabinet_search): a normalized 0-1 `similarity` per
+        # (turn_recall, cabinet_search): a normalized 0-1 `similarity` per
         # result plus the band legend.  Without it this tool was the one place
         # where "nothing matched" and "the nearest neighbours are weak" looked
         # identical — a semantic leg always returns its k nearest, however far

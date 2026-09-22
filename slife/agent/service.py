@@ -131,7 +131,7 @@ def _short_reason(reason: str, limit: int = 140) -> str:
 # only live cap, a hard window-safety constraint).  Permanent memory does
 # NOT: tool output is reproducible (re-run the tool), so the Turns DB stores
 # a head+tail digest.  This keeps saved turns small enough that session
-# restore can fill the context floor, and keeps turn_search recall cheap.
+# restore can fill the context floor, and keeps a turn_recall call cheap.
 # Truncation is always announced to the model via an explicit marker.
 
 
@@ -333,6 +333,7 @@ class AgentService:
             a2a_stale_provider=self._a2a_stale_provider,
             drop_context_turns=self.drop_context_turns,
             set_context_turns=self.set_context_turns,
+            clear_context_turns=self.clear_context_turns,
             recall_turns=self.recall_turns,
             turns_by_ids=self.turns_by_ids,
             # A worker's history is one-shot per task, so recall has nothing to
@@ -365,15 +366,6 @@ class AgentService:
         if self.caps.schedules:
             self._tool_ctx.fire_schedule_now = self.fire_schedule_now
             self._tool_ctx.schedule_wakeup = self.schedule_wakeup
-        # Live-context boundary hook — the trim and clear_context (one big
-        # trim) advance the boundary so a restart rebuilds the exit-time
-        # context.  The bound method resolves the memdb client at call time
-        # (it is not connected during __init__), so a missing/unready
-        # client degrades to "skip" rather than raising.
-        self._tool_ctx.drop_context_turns = self.drop_context_turns
-        self._tool_ctx.set_context_turns = self.set_context_turns
-        self._tool_ctx.clear_context_turns = self.clear_context_turns
-        self._tool_ctx.reset_context_time = self.agent_loop.reset_context_time
         self.session_usage = TokenUsage()
 
         # Autonomous heartbeat — background idle task + TUI surfacing hooks.
@@ -2564,8 +2556,8 @@ class AgentService:
 
         Restores the **exit-time context** verbatim: it reads the persisted
         ordered live-context id list (:meth:`SessionStore.get_context_turns`,
-        maintained by the save / ``_trim_after_save`` / ``clear_context``) and
-        returns exactly those turns **in the list's order** — the slice the
+        maintained by the save / ``_trim_after_save`` / the per-turn rebuild)
+        and returns exactly those turns **in the list's order** — the slice the
         agent was working with when it exited.  No re-slicing against the
         ceiling: the list already encodes the trimmed state, so restore simply
         replays it (the agent picks up exactly where it left off).
@@ -2637,6 +2629,13 @@ class AgentService:
 
         The sibling of :meth:`_call_context_tool` for the calls whose *answer*
         matters rather than just whether the write landed.
+
+        ``None`` covers four states and they are all "the store could not be
+        asked" — no client, a failed/timed-out call, a non-text result, an
+        unparseable one.  A plugin-side failure arrives as an ``"Error: …"``
+        string (the MCP client never raises), which is exactly the
+        unparseable case, so it is logged here: it is the shape a *fatal*
+        store failure takes, and it must not read as silence.
         """
         plugin = self._plugins.get("memdb")
         client = getattr(plugin, "client", None) if plugin else None
@@ -2651,37 +2650,72 @@ class AgentService:
             logger.warning("context_tool_call_failed tool=%s", tool)
             return None
         if not isinstance(result, str):
+            logger.warning("context_tool_result_not_text tool=%s", tool)
             return None
         try:
             parsed = json.loads(result)
         except Exception:
+            # Local import, off the success path (as at the save path).
+            from slife.logfmt import sanitize_secrets
+
+            logger.warning(
+                "context_tool_payload_unusable tool=%s result=%.120s",
+                tool, sanitize_secrets(result),
+            )
             return None
         return parsed if isinstance(parsed, dict) else None
 
     async def recall_turns(
         self, query: str = "", since: str | None = None,
         until: str | None = None,
-    ) -> list[int]:
+    ) -> list[int] | None:
         """Recall the turn ids that should form the next turn's context.
 
-        Returns ``[]`` on any failure.  The caller must treat that as "keep
-        the existing context" — never as "empty the context".
+        Reads them out of ``turn_recall``'s rows — the same rows the model
+        sees when it calls that tool itself; the rebuild needs only the ids,
+        and fetches the full turns with :meth:`turns_by_ids`.
+
+        ``None`` means the store could not be asked — memdb is off, the
+        channel is unreachable, the store reported a failure, or the payload
+        was not a usable selection — and the caller must keep the context it
+        has: nothing was learned about what this turn needs, so changing the
+        context would be a guess.
+
+        ``[]`` is an *answer*, not a failure: the store was asked and no turn
+        qualified.  The caller honours it — the selection overrides, and an
+        empty selection is an empty context.
         """
         if not self.memdb_enabled:
-            return []
+            return None
         payload = await self._call_context_tool_payload(
-            "__memory_turn_recall",
+            "turn_recall",
             {"query": query, "since": since, "until": until},
         )
         if not payload or payload.get("error"):
-            return []
-        return [
-            int(i) for i in (payload.get("turns") or [])
-            if isinstance(i, int)
+            return None
+        rows = payload.get("turns")
+        if not isinstance(rows, list):
+            return None
+        ids = [
+            r["turn_id"] for r in rows
+            if isinstance(r, dict) and isinstance(r.get("turn_id"), int)
         ]
+        if rows and not ids:
+            # A non-empty selection carrying no ids is a broken payload, not
+            # an empty answer — and the difference is the context: `[]`
+            # clears it, so only a selection that genuinely says "nothing"
+            # may be read as one.
+            logger.warning("recall_payload_unusable turns=%d", len(rows))
+            return None
+        return ids
 
     async def turns_by_ids(self, turn_ids: list[int]) -> list[dict]:
-        """Fetch the turn rows for *turn_ids* (the recall companion)."""
+        """Fetch the turn rows for *turn_ids* (the recall companion).
+
+        ``[]`` here is unambiguous — the caller only asks with a non-empty id
+        list, so no turns means the fetch failed, which it reads as "keep the
+        context" (a selection it cannot render must not replace one it can).
+        """
         if not turn_ids or not self.memdb_enabled:
             return []
         payload = await self._call_context_tool_payload(
@@ -2724,7 +2758,8 @@ class AgentService:
         )
 
     async def clear_context_turns(self) -> bool:
-        """Empty the persisted live-context list (``clear_context``).
+        """Empty the persisted live-context list — the write behind an empty
+        recall selection (the per-turn rebuild's own clear).
 
         Same best-effort contract as :meth:`drop_context_turns`.
         """

@@ -295,6 +295,29 @@ class TestTUIHandler:
         handler = TUIHandler(app)
         handler.on_trim(2)  # should not raise
 
+    def test_on_rebuild_counts_the_selection(self):
+        """The rebuild notice names how many turns were recalled."""
+        app = self._make_app_mock()
+        handler = TUIHandler(app)
+
+        handler.on_rebuild(3)
+
+        app.query_one.return_value.add_system_message.assert_called_once_with(
+            "↻ 3 turns recalled, context's messages rebuilt",
+        )
+
+    def test_on_rebuild_zero_reports_the_cleared_context(self):
+        """A count of 0 is a recall that selected nothing — the context is
+        gone, so it is the case that most needs saying."""
+        app = self._make_app_mock()
+        handler = TUIHandler(app)
+
+        handler.on_rebuild(0)
+
+        app.query_one.return_value.add_system_message.assert_called_once_with(
+            "↻ no turn recalled — context's messages cleared",
+        )
+
     @pytest.mark.asyncio
     async def test_on_token_usage_updates_current_assistant(self):
         """on_token_usage sets usage on the current assistant message."""

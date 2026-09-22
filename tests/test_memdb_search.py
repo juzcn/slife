@@ -126,7 +126,7 @@ class TestMergeHybrid:
 class TestAnnotateScores:
     """annotate_scores turns the store's raw distance into the 0–1 readout the
     LLM sees — ONE contract and ONE implementation for every hybrid path
-    (turn_search / cabinet_search / tool_search), so a turn hit and a tool hit
+    (turn_recall / cabinet_search / tool_search), so a turn hit and a tool hit
     scored 0.9 mean the same thing."""
 
     def test_every_path_reports_the_cosine(self):

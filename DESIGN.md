@@ -1,6 +1,6 @@
 # Slife Design
 
-> Developer documentation for the Slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md). The **authoritative, exhaustive** treatment of each subsystem lives in a standalone doc — [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) (plugins), [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) (context curation), [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md) (the tool catalog), [TIMEOUT.md](docs/TIMEOUT.md) (timeouts), [SUBAGENT.md](docs/SUBAGENT.md) (workers), [A2A-MQTT.md](docs/A2A-MQTT.md) (the mesh) — and this document **summarizes and links rather than re-derives**: where a section names one of those docs, that doc is the reference and this text keeps only the DESIGN-level shape. Written for people who work on the code; assumes you have read the README.
+> Developer documentation for the Slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md). The **authoritative, exhaustive** treatment of each subsystem lives in a standalone doc — [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) (plugins), [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) (context curation: injection, markers, and the per-turn context rebuild), [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md) (the tool catalog), [TIMEOUT.md](docs/TIMEOUT.md) (timeouts), [SUBAGENT.md](docs/SUBAGENT.md) (workers), [A2A-MQTT.md](docs/A2A-MQTT.md) (the mesh) — and this document **summarizes and links rather than re-derives**: where a section names one of those docs, that doc is the reference and this text keeps only the DESIGN-level shape. Written for people who work on the code; assumes you have read the README.
 
 ## Contents
 
@@ -15,6 +15,7 @@
 * [Part 8 · UI, Config, Credentials, Health, Logging, Paths](#part-8--ui-config-credentials-health-logging-paths)
 * [Part 9 · Project Structure](#part-9--project-structure)
 * [Appendix A · Design Decisions & Hard-Won Lessons](#appendix-a--design-decisions--hard-won-lessons)
+* [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) — context curation: channels, markers, the `_turn_prompt` harness pair, and the per-turn context rebuild (§7)
 * [TIMEOUT.md](docs/TIMEOUT.md) — the timeout registry model (values, ownership, gates)
 * [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md) — the unified tool catalog: tools.yaml sections, tools.db, load/unload threshold, search, injection, MCP reconcile
 
@@ -27,7 +28,7 @@ The sections are layered — orientation first, then the deep mechanics, then re
 | If you are… | Read |
 |---|---|
 | New to the codebase, wanting the map | **Part 1** (orientation + concepts), then skim Part 2 |
-| Working on the agent loop / context / prompts | **Part 2** |
+| Working on the agent loop / context / prompts | **Part 2**, + [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) for the per-turn rebuild (§7) |
 | Adding an LLM backend or dealing with wire formats | **Part 3** |
 | Adding or changing a builtin tool | **Part 4** |
 | Working on tool load/unload, the catalog, search, or MCP reconcile | **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** |
@@ -38,13 +39,14 @@ The sections are layered — orientation first, then the deep mechanics, then re
 | Looking for a file or module | **Part 9** |
 | Asking "why is it designed this way?" or debugging a hard-to-see regression | **Appendix A** + the relevant part |
 
-**Authority and freshness.** Where this document and a dedicated spec disagree, the dedicated spec and the code win: [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) is the authoritative statement of the plugin system; [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) is the authoritative statement of context injection (channels, markers, the `_turn_prompt` harness tool-pair) and the deep companion to Part 2's *Context Injection* section; [SUBAGENT.md](docs/SUBAGENT.md) is the authoritative statement of the subagent (agent-worker) model and the deep companion to Part 5's *Subagents* section; [A2A-MQTT.md](docs/A2A-MQTT.md) is the authoritative statement of the A2A mesh (topics, wire, markers, drain — Part 7's deep companion); [TIMEOUT.md](docs/TIMEOUT.md) is the timeout registry model (values, ownership, gates). This document is kept current with the code; if a sentence names something that no longer exists, file a fix.
+**Authority and freshness.** Where this document and a dedicated spec disagree, the dedicated spec and the code win: [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) is the authoritative statement of the plugin system; [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) is the authoritative statement of context curation — injection (channels, markers, the `_turn_prompt` harness tool-pair) and the per-turn context rebuild that selects the turns (§7) — and the deep companion to Part 2's *Context Injection* and *Context Rebuild* sections; [SUBAGENT.md](docs/SUBAGENT.md) is the authoritative statement of the subagent (agent-worker) model and the deep companion to Part 5's *Subagents* section; [A2A-MQTT.md](docs/A2A-MQTT.md) is the authoritative statement of the A2A mesh (topics, wire, markers, drain — Part 7's deep companion); [TIMEOUT.md](docs/TIMEOUT.md) is the timeout registry model (values, ownership, gates). This document is kept current with the code; if a sentence names something that no longer exists, file a fix.
 
 **Terminology** is defined where it first matters; a quick glossary of the load-bearing terms (also used in the README):
 
 | Term | Meaning |
 |---|---|
 | **Turn** | One user→assistant exchange, persisted to the diary as one row. Turn is the unit of conversation history, memory, and trimming. |
+| **Recall** | The per-turn selection of history turns that becomes the context (`agent.rebuild_message`): a discriminator call picks the parameters, the memory store answers with turn ids. Not an LLM tool — the harness calls it. Full contract: [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) §7. |
 | **Diary** | The `diary` table in `memdb` — a continuous, time-ordered log of every turn. (Not to be confused with the memfiles **Diary** records that `diary_save` writes.) |
 | **Channel** | The sender identity of a message entering the unified inbox (`human`, `wechat`, `subagent`, `heartbeat`, `system`, `a2a`), persisted with the turn. A marker never determines a channel and vice versa. |
 | **Marker** | Machine-generated notation inside a raw message (`[Heartbeat]`, `[Wechat:…]`, `[A2A:…]`, `[INFO: …]`) telling the model or the TUI something the message text alone doesn't say. |
@@ -131,7 +133,7 @@ Two audiences, two languages. The model input reads uniformly in English; the hu
 
 ### Context injection — a preview of the taxonomy
 
-The system introduces information into the context on its own initiative via three orthogonal notions, distinguished by *what* is injected and *whether it persists*: **channels** (the sender identity, by default not part of the LLM context), **markers** (machine-generated notation an injection carries), and a **harness tool-pair** (`_turn_prompt` / `_check_new_input`). Each mechanism — the channel table with per-channel TUI display, the marker shapes, the harness pair, and the decorations appended to existing messages — is bound precisely in **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)**; the load-bearing terms are in the glossary above.
+The system introduces information into the context on its own initiative via three orthogonal notions, distinguished by *what* is injected and *whether it persists*: **channels** (the sender identity, by default not part of the LLM context), **markers** (machine-generated notation an injection carries), and a **harness tool-pair** (`_turn_prompt` / `_check_new_input`). Orthogonal to all three is the **per-turn context rebuild**, which injects nothing and decorates nothing — it selects which turns exist in the context at all (see *Context Rebuild* below). Each mechanism — the channel table with per-channel TUI display, the marker shapes, the harness pair, the decorations appended to existing messages, and the rebuild's discriminator and selection — is bound precisely in **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)**; the load-bearing terms are in the glossary above.
 
 ---
 
@@ -142,7 +144,8 @@ The system introduces information into the context on its own initiative via thr
 Single function-calling loop. Every tool is registered as an OpenAI function definition in one `ToolRegistry`. The LLM decides what to call and when.
 
 ```
-User Input → MessageHistory.add_user_message()        (secrets sanitized)
+User Input → per-turn context rebuild (recall selects the history; see Context Rebuild)
+  → MessageHistory.add_user_message()                    (secrets sanitized)
   → loop (max_iterations):
     → cancel check
     → auto-invoke _turn_prompt (per-turn prompt)    (usage computed once)
@@ -178,72 +181,66 @@ Active history stays within `context_floor`–`context_ceiling` (default 20%–8
                 context_window
 ┌──────────────────────────────────────────────────────────────┐
 │   trimmed (in diary —        │  current context  │  headroom  │
-│   recall via turn_search)  │  floor ~ ceiling  │  1-ceiling │
+│   recall via turn_recall)  │  floor ~ ceiling  │  1-ceiling │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 - **Detect**: usage is `context_tokens_for()` — the history's last API call's actual prompt + completion tokens after the first round (per-history), else the restore-time `_last_usage` (the latest restored turn's **persisted `context_tokens`**), else `0`. No estimate is ever substituted (see *Context tracking*).
 - **Trim**: happens **after a turn is saved** (`save_to_memory` → `AgentLoop._trim_after_save`) — by then the last API call's real prompt + completion tokens are known. When occupancy hits `context_ceiling` (default 80%), `extract_oldest_turns` removes the oldest **complete** turns down to `context_window × context_floor` (default 20%), always keeping the current (just-saved) turn. It is an **internal mechanism — no tool call, no LLM-visible pair**: the cut is marked with a runtime-only **`[INFO: N oldest turns have been removed from context]`** note appended to the last assistant message, mirrored in the live TUI as a dim/italic footnote. The evicted turns are then dropped from the persisted live-context list (via the memdb internal tool `__memory_context_turns_drop`, passed the **actual ids** the trim removed — each turn carries its diary rowid as a runtime-only `_turn_id` on its opening user message, set at save and re-stamped on restore), and the tracked "Context covers" time range advances by the same count. A freshly-restored history is exempt from the first-turn trim (`_just_restored_history`).
 - **Turn prompt**: once per turn the loop auto-invokes **`_turn_prompt`** (a normal tool-call pair) — it renders `turn_prompt.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), any A2A peer presence events since the last turn (drained read-once), open failed/missed scheduled runs, and the one-shot "system restarted" flag. On the first round after a restore, `context_tokens_for` falls back to `_last_usage`, primed with the latest restored turn's persisted `context_tokens` — so the first prompt reports the real exit-time occupancy.
-- **Restore**: on startup, the turns named by the persisted **live-context id list** are loaded directly from SQLite **verbatim — no ceiling re-slicing**: the list already encodes the trimmed state. It lives in `diary_meta.context_turns` as an **ordered JSON array of rowids** whose order is authoritative (reads replay it as written and never re-sort by rowid) — the slice is not necessarily contiguous. Three events maintain it: the save **appends** the new rowid inside the same transaction as the diary row (so a missed write can never lose a turn), the trim drops the turns it evicted, and `clear_context` empties it. `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept for call-site compatibility only. The list is its own bound, so there is no token cap on the restore path. There is **no migration layer** (backward compatibility is not supported): a DB predating the list restores an *empty* context — its turns stay searchable via `turn_search` and re-enter as new turns are saved — and `_post_schema_check` logs that case loudly. Schema changes land directly in `schema.sql` and apply to fresh databases only (the one exception: `scripts/migrate_context_tokens.py` renames `prompt_tokens` → `context_tokens`).
+- **Restore**: on startup, the turns named by the persisted **live-context id list** are loaded directly from SQLite **verbatim — no ceiling re-slicing**: the list already encodes the trimmed state. It lives in `diary_meta.context_turns` as an **ordered JSON array of rowids** whose order is authoritative (reads replay it as written and never re-sort by rowid) — the slice is not necessarily contiguous. Three events maintain it: the save **appends** the new rowid inside the same transaction as the diary row (so a missed write can never lose a turn), the trim drops the turns it evicted, and the per-turn rebuild **replaces** it with its recall selection (`__memory_context_turns_set` — or `..._clear` when that selection is empty, the one remaining way the context is emptied outright). `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept for call-site compatibility only. The list is its own bound, so there is no token cap on the restore path. There is **no migration layer** (backward compatibility is not supported): a DB predating the list restores an *empty* context — its turns stay searchable via `turn_recall` and re-enter as new turns are saved — and `_post_schema_check` logs that case loudly. Schema changes land directly in `schema.sql` and apply to fresh databases only (the one exception: `scripts/migrate_context_tokens.py` renames `prompt_tokens` → `context_tokens`).
 #### Context Rebuild (per-turn recall)
 
-`agent.rebuild_message` (default **true**) replaces the context from a recall
-selection **before every turn**, instead of letting it grow append-only and
-trimming it:
+`agent.rebuild_message` (default **true**) makes the context **selected**
+rather than accumulated: before every turn the harness asks the memory store
+which turns that turn needs, and replaces the context with the answer. With
+the flag false the previous behaviour runs instead — the context grows
+append-only and the trim bounds it — and one persisted live-context list plus
+one save-append path serve both, so the flag flips freely with no migration.
 
 ```
 run()
   ├─ recall step — once per turn, BEFORE the user message is added
-  │    ├─ discriminator: the current context as-is, the user message REPLACED
-  │    │     by rebuild_messages.j2 → recall parameters
-  │    ├─ __memory_turn_recall(query, since, until) → turn ids (or [])
-  │    ├─ GUARD: empty / unfetchable → keep the existing context, log, continue
-  │    ├─ __memory_context_turns_set(ids)      (persisted; restore replays it)
-  │    └─ MessageHistory.rebuild_messages(turns, images_by_turn=…)
+  │    ├─ discriminator → recall parameters   (one model call; never persisted)
+  │    ├─ __memory_turn_recall(…) → turn ids, [] or None
+  │    ├─ None / unfetchable → keep the existing context, log, continue
+  │    ├─ __memory_context_turns_set(ids) | __memory_context_turns_clear()
+  │    └─ history.rebuild_messages(turns, images_by_turn=…)
   ├─ add_user_message · attach_image · _turn_prompt        (unchanged)
   └─ iteration loop
-        └─ save_to_memory → save_turn appends the new rowid to the list
+        └─ save_to_memory → the new rowid is appended to the persisted list
 ```
 
-The hook sits **before** `add_user_message` deliberately: the rebuild replaces
+The step sits **before** `add_user_message` deliberately: the rebuild replaces
 `messages` wholesale, so anything appended first — the user message, the
 `attach_image` blocks (memory-only, unrecoverable) — would be destroyed. It also
 stays outside the iteration loop, whose per-iteration work belongs to the turn
 in progress.
 
-- **The selection overrides, it does not merge.** `turn_recall` returns only
-  ids — it is a harness function, not an LLM tool — and its three caps are its
-  own configuration: `agent.recall_limit`, `agent.recall_min_similarity`, and
-  `context_floor` as the token budget (the same knob the trim compacts to, so
-  flipping the mode changes *how* the context is chosen, never how big it is).
-  An empty query takes the `search_time` **list** branch, which must run before
-  the hybrid legs: they cannot express "no query" (FTS5 `MATCH ''` is an error).
-- **The similarity cap gates the measured `similarity`, never `rrf_score`** —
-  the fused score is a function of rank position, so it carries no magnitude to
-  threshold. Keyword-leg hits have no measured similarity and are exempt: an
-  exact match is a stronger signal than a cosine neighbourhood, and "no number"
-  is not evidence against it.
-- **Order is chronological.** Recall decides membership, time decides order —
-  the list order is the restore contract (see *Session Restore*).
-- **A failed recall never shrinks the context.** Every failure path —
-  discriminator timeout, empty selection, unfetchable turns — leaves both the
-  live context and the persisted list untouched. The store is written only once
-  a known-good selection exists, so a store outage degrades to the previous
-  turn's context, never to an empty one.
-- **The trim is idle in this mode** (`_trim_after_save` returns early): recall
-  *is* the bound, and a trim would evict turns the next recall simply
-  re-selects. With `rebuild_message: false` the previous logic runs instead —
-  the two share the same persisted list and the same save-append path, so the
-  flag flips freely and neither needs a migration.
-- **Workers never rebuild.** A subagent's history is one-shot per task, so
-  recall has nothing to select from and would cost a discriminator call per
-  task. The role decides, not the config.
-- **Images** are re-attached from a session-scoped, bounded (100 turns)
-  `turn_id → blocks` map, since image blocks are never persisted.
-- **TUI**: the rebuild announces itself — `↻ N turns recalled, context's
-  messages rebuilt`. The context changed under the user; silence would make the
-  agent look like it had forgotten things for no visible reason.
+DESIGN-level shape of the contract:
+
+- **The selection overrides, it does not merge** — so an empty selection is an
+  empty context. Four things leave the context untouched instead: an empty
+  reply (`{}` — no recall needed, the store is not even asked), no reply at
+  all, "the store could not be asked" (`None`), and a selection that cannot be
+  fetched. A rejected time bound, an unparseable query, or a pipeline failure
+  is answered as an empty selection; a **store failure is fatal**, never a
+  plausible-looking empty list.
+- **The discriminator is never a participant**: one model call, nothing it
+  sends or receives touches the history, the diary or the TUI, and it degrades
+  to `None` rather than retrying.
+- **Workers never rebuild** (a subagent's history is one-shot, so recall has
+  nothing to select from); **images** are re-attached from a session-scoped
+  bounded map; the **TUI** announces every rebuild — `↻ N turns recalled,
+  context's messages rebuilt`, or `↻ no turn recalled — context's messages
+  cleared`.
+- **The ceiling is untouched by the mode**: `_trim_after_save` bounds the
+  window in both (see *Context Window Management*).
+
+The **full contract** — the discriminator's request shape and what each reply
+means, the three caps (`recall_limit` / `recall_min_similarity` /
+`context_floor`), the store's answer, and the `set`/`clear` persistence pair —
+is **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) §7**.
 
 **Token estimation is measured, not guessed.** `estimate_text_tokens` uses
 `tiktoken` (`o200k_base`), and the whole estimator family — `count_tokens`,
@@ -323,7 +320,7 @@ Tools: `scheduled_task_set` / `scheduled_task_remove` / `scheduled_task_list`, `
 
 ### Context Injection
 
-> The authoritative description of channels, markers, and the `_turn_prompt` harness tool-pair is [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md); the condensed overview is in [Part 1 · Context injection](#context-injection--a-preview-of-the-taxonomy). Context trimming is internal and announced by the trim note, not by a harness pair.
+> The authoritative description of channels, markers, the `_turn_prompt` harness tool-pair, **and the per-turn context rebuild that selects which turns are present (§7)** is [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md); the condensed overview is in [Part 1 · Context injection](#context-injection--a-preview-of-the-taxonomy). Context trimming is internal and announced by the trim note, not by a harness pair.
 
 ## Part 3 · LLM Backends & Model Management
 
@@ -390,7 +387,7 @@ Three families exist by **ownership**, indistinguishable to the LLM at the call 
 The schema is the model's only view of a tool — write it for the model, not the maintainer:
 
 - **`description` = what the tool does.** One or two sentences: what it does and what it returns. Do **not** write when-to-use ("Use when…"), and do **not** restate knowledge the LLM already has (pip, timeouts, env-var concepts). Keep project-specific facts the model cannot infer — idempotency ("upsert — add + update in one call"), blocking ("BLOCKS until the model is loaded"), effect timing ("takes effect after restart"), or that a value comes from a sibling tool.
-- **Parameter docs = how to use.** Per parameter: the accepted format, where the value comes from ("`turn_id` from `turn_list`"), what the values mean, and the default.
+- **Parameter docs = how to use.** Per parameter: the accepted format, where the value comes from ("`turn_id` from `turn_recall`"), what the values mean, and the default.
 - **Mechanism.** Builtin tools carry parameter docs directly in the `parameters` dict. Plugin tools (`@mcp.tool`) get them from a Google-style `Args:` docstring — fastmcp parses it into the input schema, so a plugin tool whose parameters have no `Args:` yields an undocumented schema.
 - **Language.** Model-visible strings are English (see [Language policy](#language-policy)). Content authored by an external source keeps the source language.
 
@@ -408,7 +405,7 @@ Two deliberate exceptions. A schema that states `additionalProperties` itself ke
 
 `slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory` and the `_skip_auto_register` base classes `_ModelConfigTool` / `_EmbeddingsConfigTool`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides and per-model requirements enforced at **execute time** rather than load time: tools are always registered, and a tool like `attach_image` refuses at runtime when the active model has no vision (`vision=false` error) instead of being silently-missing.
 
-The current inventory — 62 builtin classes in 13 categories (61 LLM-visible with the shipped config's `install_python_package: enabled: false`), plus the built-in plugin tools by server — is enumerated in the [README](README.md#tools). It is a *reference*, not a duplicate: the mechanism lives here, the catalog lives there.
+The current inventory — 61 builtin classes in 13 categories (60 LLM-visible with the shipped config's `install_python_package: enabled: false`), plus the built-in plugin tools by server — is enumerated in the [README](README.md#tools). It is a *reference*, not a duplicate: the mechanism lives here, the catalog lives there.
 
 ### Tool Categories, the Unified Catalog & Managed Surfaces
 
@@ -569,7 +566,7 @@ Per-turn token consumption is queryable via **`turn_token_usage`** (`rowid`, `si
 
 ### Search
 
-Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN — the metric is DECLARED in the vec0 DDL, `distance_metric=cosine`, because it is what makes the raw distance readable as a 0–1 `similarity`: `1 - distance` is the cosine only when the metric is, and the backends do not all normalize — llama.cpp's raw output, served by local-embed's gguf path, is not unit-norm, so an L2 table cannot yield a cosine at all), B-tree on `created_at` (time range). All `since`/`until` bounds share one grammar via `slife.timeutil.normalize_time_bound`: an ISO datetime/date, the day words `today` / `yesterday` / `tomorrow` / `now`, the calendar periods `last|this week|month|quarter|year`, or `<N> days|weeks|months|years ago` (offset-aware inputs convert to local time). A period word anchors to the period's **edge**, not to today's day-of-month — `since=last month` is the first of last month and `until=last month` its last day, neither being `today - relativedelta(months=1)` — which is also why month arithmetic needs `python-dateutil` (stdlib's `timedelta` has no month unit). A bare-date `until` advances a day against a **timestamp** column, but not against a date-only one. Which column a bound measures is the KIND's own time axis (memfiles `_KIND_SPECS[kind]["time_col"]`): diary's date-only `date`, a note's `updated_at`, a file's or a report's `created_at` — the same column that kind's list tool orders and windows by, used by its search legs too, so `cabinet_search(kind="diary")` and `diary_list` cannot answer one range from two different columns. memdb has no per-kind axis: one `diary` table, so `turn_search` windows `created_at` throughout. A bound in no known grammar **raises** rather than passing through: SQLite would compare the text, match nothing, and report a bound nobody understood as "no results".
+Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN — the metric is DECLARED in the vec0 DDL, `distance_metric=cosine`, because it is what makes the raw distance readable as a 0–1 `similarity`: `1 - distance` is the cosine only when the metric is, and the backends do not all normalize — llama.cpp's raw output, served by local-embed's gguf path, is not unit-norm, so an L2 table cannot yield a cosine at all), B-tree on `created_at` (time range). All `since`/`until` bounds share one grammar via `slife.timeutil.normalize_time_bound`: an ISO datetime/date, the day words `today` / `yesterday` / `tomorrow` / `now`, the calendar periods `last|this week|month|quarter|year`, or `<N> days|weeks|months|years ago` (offset-aware inputs convert to local time). A period word anchors to the period's **edge**, not to today's day-of-month — `since=last month` is the first of last month and `until=last month` its last day, neither being `today - relativedelta(months=1)` — which is also why month arithmetic needs `python-dateutil` (stdlib's `timedelta` has no month unit). A bare-date `until` advances a day against a **timestamp** column, but not against a date-only one. Which column a bound measures is the KIND's own time axis (memfiles `_KIND_SPECS[kind]["time_col"]`): diary's date-only `date`, a note's `updated_at`, a file's or a report's `created_at` — the same column that kind's list tool orders and windows by, used by its search legs too, so `cabinet_search(kind="diary")` and `diary_list` cannot answer one range from two different columns. memdb has no per-kind axis: one `diary` table, so `turn_recall` windows `created_at` throughout. A bound in no known grammar **raises** rather than passing through: SQLite would compare the text, match nothing, and report a bound nobody understood as "no results".
 
 | Mode | Best for |
 |------|----------|
@@ -580,7 +577,7 @@ Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN — the metric
 
 Hybrid mode uses Reciprocal Rank Fusion (RRF, k=60). Without an embedding backend, hybrid degrades to FTS5-only gracefully (and reports its degraded mode + reason).
 
-Search hardening: every `LIKE` path escapes `%`/`_`/`\` through a shared `_like_escape` helper paired with an `ESCAPE '\'` clause; **CJK queries** route keyword search to a LIKE substring fallback (FTS5 unicode61 can't segment Chinese); FTS5 MATCH operator words are quoted and stray symbols stripped so a user query can't crash the MATCH parser; `turn_count` honors `since`/`until` in fts5 mode; LLM-facing search clamps `limit` to `[1, 200]`; semantic search is gated on index completeness (`SemanticManager.semantic_ready`) — hybrid degrades to FTS5 while any turn lacks an embedding, and `turn_search` is a pure read of the gate (no reindex side effect).
+Search hardening: every `LIKE` path escapes `%`/`_`/`\` through a shared `_like_escape` helper paired with an `ESCAPE '\'` clause; **CJK queries** route keyword search to a LIKE substring fallback (FTS5 unicode61 can't segment Chinese); FTS5 MATCH operator words are quoted and stray symbols stripped so a user query can't crash the MATCH parser; `turn_count` honors `since`/`until` in fts5 mode; the selection's own caps clamp it (count, similarity, tokens); semantic search is gated on index completeness (`SemanticManager.semantic_ready`) — hybrid degrades to FTS5 while any turn lacks an embedding, and `turn_recall` is a pure read of the gate (no reindex side effect).
 
 ### Embeddings & the SemanticManager
 
@@ -602,7 +599,7 @@ The gate (`semantic_ready`) opens exactly when `embedder_ready ∧ count_unembed
 
 **Model / dimension change.** The `embeddings_*` builtin tools persist the top-level `embeddings` section and then hot-reload: they call the internal `__memory_reload_semantic` / `__memfiles_reload_semantic` tools, which `await manager.enable()` — stopping the drainer, migrating the vec0 table in place (`reconfigure_for_embedding` compares the vec0 `float[N]` width and the current model identity (`backend:model`, persisted in `diary_meta.embedding_model`; the endpoint is not included, so two providers serving the same model name are not distinguished) against what the DB was built with; a mismatch drops and recreates `diary_semantic`, since old vectors live in a different vector space), and restarting the drainer. `embeddings_enable(false)` calls `manager.disable()` instead. A failed reload degrades to "takes effect on restart" (never blocks the persist).
 
-**Search.** `turn_search` has four modes; `hybrid` runs the FTS5 keyword query and a vec0 KNN side by side, then merges via RRF (k=60). sqlite-vec forbids auxiliary-column constraints or JOINs inside a KNN query, so the KNN runs alone, time-window filtering happens in Python (with a wider fetch pool), and `user_message` is fetched in a second query.
+**Retrieval.** One tool, `turn_recall`, and its mode follows from the arguments: a **query** runs the FTS5 keyword leg and a vec0 KNN side by side and merges them via RRF (k=60); no query takes the **time** branch (the most recent turns in the window, or unbounded). sqlite-vec forbids auxiliary-column constraints or JOINs inside a KNN query, so the KNN runs alone, time-window filtering happens in Python (with a wider fetch pool), and `user_message` is fetched in a second query.
 
 ### Session Restore
 
@@ -610,7 +607,7 @@ On startup, recent turns are read **directly from SQLite** — no MCP transport,
 
 **Turn headers on restore.** Each restored user message gets a compact `[INFO: {"turn_id": N, "begin": …, "end": …}]` footnote regenerated from persisted columns (rowid + begin → end). The footnote is **runtime-only and never persisted** — the DB carries the clean original in both paths. Heartbeat turns are excluded. The current in-flight turn carries none — a missing footnote is the "current session" signal.
 
-**The id list replays the exit-time context.** `diary_meta.context_turns` — an **ordered JSON array of rowids** — names the live context: the save appends the new rowid in the diary row's own transaction, the internal trim drops the turns it evicts, and `clear_context` empties the list. The list's order is authoritative and the slice need not be contiguous, so reads replay it as written and never re-sort by rowid. Turns on the list are returned **verbatim — no ceiling re-slicing**: the list already encodes the trimmed state, and it is its own bound (no token cap on this path). The just-restored history is exempt from the first-turn trim. Turn headers are re-appended to restored, non-synthetic turns; every restored turn is run through `_ensure_turn_consistent` before the UI is built. The restored turn prompt is primed with the **latest restored turn's persisted `context_tokens`** — the exact context size at exit — so the first `_turn_prompt`/status bar shows real occupancy. A missing/zero value falls back to the token estimate. A DB predating the list restores an empty context (turns stay searchable; `_post_schema_check` warns).
+**The id list replays the exit-time context.** `diary_meta.context_turns` — an **ordered JSON array of rowids** — names the live context: the save appends the new rowid in the diary row's own transaction, the internal trim drops the turns it evicts, and the per-turn rebuild replaces the list with its recall selection (rebuild mode — `__memory_context_turns_set` / `..._clear`, the only remaining outright empty). The list's order is authoritative and the slice need not be contiguous, so reads replay it as written and never re-sort by rowid. Turns on the list are returned **verbatim — no ceiling re-slicing**: the list already encodes the trimmed state, and it is its own bound (no token cap on this path). The just-restored history is exempt from the first-turn trim. Turn headers are re-appended to restored, non-synthetic turns; every restored turn is run through `_ensure_turn_consistent` before the UI is built. The restored turn prompt is primed with the **latest restored turn's persisted `context_tokens`** — the exact context size at exit — so the first `_turn_prompt`/status bar shows real occupancy. A missing/zero value falls back to the token estimate. A DB predating the list restores an empty context (turns stay searchable; `_post_schema_check` warns).
 
 **Restore failure is fatal, never silent.** A present-but-broken memory DB raises `MemoryDatabaseError` instead of returning `[]` — the TUI shows the error and **aborts startup**. Required plugins that fail to *load* (including the bounded 60 s spawn hang-guard) likewise abort startup, stop all plugins, and exit.
 
@@ -721,7 +718,7 @@ Not all tools are in every request. Several categories use lightweight summaries
 
 | Category | Browse | Load |
 |----------|--------|------|
-| MemDB | `turn_search` | `turn_read` |
+| MemDB | `turn_recall` | `turn_read` |
 | Skills | `skill_list` | `skill_use` |
 | Every function tool (builtin/job/mcp/rest-api) | `tool_search` (the unified catalog — see [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)) | `func_tool_load` |
 
@@ -876,7 +873,7 @@ slife/
     heartbeat.py       #   Autonomous heartbeat scheduling
     schedules.py       #   schedule_loop, run records, startup sweep, trigger markers
     timer.py           #   [Timer] wake message helper (posted by wait_minutes)
-  tools/               # Builtin tools (auto-discovered; 62 classes / 13 categories)
+  tools/               # Builtin tools (auto-discovered; 61 classes / 13 categories)
     base.py            #   Tool ABC + make_params/NO_PARAMS/require_params
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
@@ -887,7 +884,7 @@ slife/
     catalog_search.py  #   hybrid search adapter (RRF + score annotator over memdb.search)
     whitelist.py       #   harness pair + 5 meta tools + 2 pinned (ALWAYS_LOADED — never evicted / not unloadable)
     meta_tools.py      #   tool_search / func_tool_load / _func_tool_unload (see TOOL-SYSTEM.md)
-    system.py          #   system_health, system_tools_list, async tasks, clear_context, set_max_iterations, notify_user
+    system.py          #   system_health, system_tools_list, async tasks, set_max_iterations, notify_user
     exec.py            #   Shell, Python, package install (+ _kill_process_tree)
     schedule.py        #   Scheduled-task tools (scheduled_task_*/scheduled_run_* + run_schedule_now)
     skill.py           #   Skill management (SKILL.md)

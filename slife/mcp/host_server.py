@@ -59,15 +59,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: Tools excluded from the outward face — harness/context controls that mutate
-#: the *host* agent's own state (a foreign client must not reset the host's
-#: turns or change its iteration cap).  Everything else in the registry is a
-#: consumer-usable capability — including plugin proxy tools, which execute in
-#: the owning plugin process just as for the agent itself.
+#: the *host* agent's own state (a foreign client must not change the host's
+#: iteration cap, or inject into its context).  Everything else in the registry
+#: is a consumer-usable capability — including plugin proxy tools, which
+#: execute in the owning plugin process just as for the agent itself.
 _EXCLUDED_NAMES = frozenset({
     "_turn_prompt",        # harness marker injector — mutates the host context
     "_check_new_input",    # mid-turn input injector — reads the host's queue
     "_model_config_tool",  # internal base class, not a real tool
-    "clear_context",       # resets the host's loaded turns
     "set_max_iterations",  # changes the host loop's iteration cap
 })
 

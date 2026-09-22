@@ -116,10 +116,14 @@ class TUIHandler:
         replaced the context from a recall selection.  A user-facing status
         line rather than a log: the model's context changed under it, and
         staying silent would make the agent look like it had forgotten things
-        for no visible reason.
+        for no visible reason.  A count of 0 is a recall that selected
+        nothing — which clears the context, so it is the case that most needs
+        saying.
         """
         self._chat_view.add_system_message(
-            f"↻ {count} turns recalled, context's messages rebuilt",
+            f"↻ {count} turns recalled, context's messages rebuilt"
+            if count else
+            "↻ no turn recalled — context's messages cleared",
         )
 
     def on_trim(self, count: int) -> None:

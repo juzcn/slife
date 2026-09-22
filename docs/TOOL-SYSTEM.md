@@ -27,7 +27,7 @@ Three families, by **who owns the tool** — the category column is the *provena
 
 | family | owner | categories | what it is |
 |---|---|---|---|
-| **system** | the developer | `builtin`, `plugin` | slife ships it: a module in `slife/tools/`, or a built-in plugin's own tool (memdb's `turn_search`, the gateway's `mcp_set`, job-coding's `job-write`) |
+| **system** | the developer | `builtin`, `plugin` | slife ships it: a module in `slife/tools/`, or a built-in plugin's own tool (memdb's `turn_recall`, the gateway's `mcp_set`, job-coding's `job-write`) |
 | **job** | the user | `job` | code the user wrote themselves: a public function in `jobs/`, exposed by the job-coding plugin as `job-<function>` |
 | **external** | a third party | `mcp`, `rest-api` | someone else's server, reached through the mcp-gateway (`{server}__{tool}`) |
 
@@ -307,7 +307,7 @@ was unreachable and the keyword leg matched nothing at all.
 **Results are scored on one scale.** A hybrid result carries `similarity`, a
 normalized 0–1 cosine (≈1 identical, ≥0.5 close, 0.1–0.5 weak, <0.1 mostly
 unrelated) plus that legend in the payload's `hint` — the same scale
-`turn_search` and `cabinet_search` report, so the numbers are comparable
+`turn_recall` and `cabinet_search` report, so the numbers are comparable
 across the three.  A semantic leg always returns its k nearest, however far
 away they are, so without the number "nothing matched" and "the nearest
 neighbours are unrelated" look identical.  A keyword-only hit carries no

@@ -130,13 +130,13 @@ def _like_terms(
     once they stopped:
 
     - ``count_turns`` LIKE'd the whole query as a single pattern, so
-      ``"子agent 委托"`` matched rows in ``turn_search`` and none in
+      ``"子agent 委托"`` matched rows in ``turn_recall`` and none in
       ``turn_count`` (the search ANDs the words; the count wanted the literal
       space).
     - The count searched two columns where the search searched four, so a hit
       in ``summary``/``tags`` was invisible to it.
     - memfiles' ``_like_search_kind`` built its own whole-query pattern too, so
-      ``cabinet_search`` missed a note that ``turn_search`` found — the same
+      ``cabinet_search`` missed a note that ``turn_recall`` found — the same
       question answered differently by two stores.
 
     Same reason :meth:`SessionStore._grep_scan` is shared: two readers report
@@ -489,7 +489,7 @@ class SessionStore(VecStoreLifecycleMixin):
                 logger.warning(
                     "context_turns_absent turns=%d — pre-list DB: the live "
                     "context starts empty; older turns stay searchable via "
-                    "turn_search and re-enter as new turns are saved "
+                    "turn_recall and re-enter as new turns are saved "
                     "(path=%s)", turns, self._db_path,
                 )
         except Exception:
@@ -737,7 +737,7 @@ class SessionStore(VecStoreLifecycleMixin):
         return remaining
 
     async def clear_context_turns(self) -> None:
-        """Empty the live-context list (``clear_context`` — one big cut)."""
+        """Empty the live-context list — the whole context, at once."""
         async with self._write_lock:
             await self._write_context_turns_locked([])
             await self._c.commit()
@@ -769,7 +769,7 @@ class SessionStore(VecStoreLifecycleMixin):
 
         if query and query.strip() and mode.lower() == "grep":
             # grep is a regex, so the count goes through the SAME scan the
-            # search does — otherwise turn_count and turn_search would report
+            # search does — otherwise turn_count and a recall would report
             # different numbers for one query, which is the disagreement the
             # fts5 fallback below already guards against.
             hits = await self._grep_scan(
@@ -784,7 +784,7 @@ class SessionStore(VecStoreLifecycleMixin):
                 # FTS5 unicode61 cannot match a whole-sentence CJK query —
                 # search_keyword routes CJK to the LIKE fallback, so the count
                 # must do the same or count/search disagree (turn_count=0
-                # while turn_search returns hits).
+                # while the recall returns hits).
                 mode = "grep"
             if mode == "grep":
                 # The clause `search_keyword`'s LIKE fallback builds — escaping,
@@ -868,41 +868,6 @@ class SessionStore(VecStoreLifecycleMixin):
         return {"total": total, "filtered": filtered,
                 "since": since, "until": until,
                 "query": query, "mode": mode if query else None}
-
-    # ── Browse ─────────────────────────────────────────────────────
-
-    async def turn_list(
-        self, limit: int = 20,
-        before_rowid: int | None = None,
-        after_rowid: int | None = None,
-    ) -> list[dict]:
-        """List turns, newest first. Lightweight — no full messages.
-
-        ``before_rowid`` / ``after_rowid`` anchor the window by rowid
-        (exclusive) so the LLM can page the diary from a
-        ``[INFO: {"turn_id": N, …}]`` footnote: ``before_rowid`` = older
-        turns only, ``after_rowid`` = newer turns only.
-        """
-        limit = _clamp_limit(limit)
-        clauses: list[str] = []
-        params: list = []
-        if before_rowid is not None:
-            clauses.append("rowid < ?")
-            params.append(before_rowid)
-        if after_rowid is not None:
-            clauses.append("rowid > ?")
-            params.append(after_rowid)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(limit)
-        cursor = await self._c.execute(
-            f"""SELECT rowid, user_message, summary, tags, created_at,
-                      token_count, who_helped, what_model
-               FROM diary{where}
-               ORDER BY rowid DESC
-               LIMIT ?""",
-            params,
-        )
-        return [dict(row) for row in await cursor.fetchall()]
 
     async def token_usage(
         self,
@@ -1199,9 +1164,9 @@ class SessionStore(VecStoreLifecycleMixin):
 
         The time bounds stay in SQL (indexed, and they need no regex); only
         the TEXT predicate runs here, because SQLite has no regexp engine.
-        The search and the count both go through this, so
-        ``turn_search(mode="grep")`` and ``turn_count(mode="grep")`` cannot
-        disagree about what matched.
+        The regex reader and the count both go through this, so
+        ``turn_count(mode="grep")`` reports exactly what a regex scan of the
+        same pattern would return.
         """
         where = ""
         params: list = []
@@ -1229,39 +1194,6 @@ class SessionStore(VecStoreLifecycleMixin):
             if len(hits) >= hard_limit:
                 break
         return hits
-
-    @staticmethod
-    def _grep_snippet(row: dict, rx: "re.Pattern") -> str:
-        """A window of text around the match, for the result's ``context``."""
-        for field in ("user_message", "messages"):
-            text = row.get(field) or ""
-            m = rx.search(text)
-            if m is not None:
-                start = max(0, m.start() - 40)
-                return text[start:start + 160]
-        return ""
-
-    async def search_grep(
-        self, pattern: str, limit: int = 20,
-        since: str | None = None, until: str | None = None,
-    ) -> list[dict]:
-        """REGEX search over user_message + messages — a real ``grep``.
-
-        ``translat(e|or)`` and ``summ.rize`` match; an invalid pattern raises
-        ``re.error`` for the caller to report.  See :meth:`_grep_scan` for why
-        the match runs in Python and how the count stays in step.
-        """
-        rx = re.compile(pattern)
-        limit = _clamp_limit(limit)
-        rows = await self._grep_scan(rx, since, until, hard_limit=limit)
-        results = []
-        for row in rows:
-            r = dict(row)
-            r.pop("messages", None)
-            r["context"] = self._grep_snippet(row, rx)
-            results.append(r)
-        logger.debug("search_grep pattern=%s hits=%s", pattern[:80], len(results))
-        return results
 
     # ── Embedding ───────────────────────────────────────────────────
 

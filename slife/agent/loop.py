@@ -314,7 +314,8 @@ class AgentLoop:
         pending_input_has: "Callable[[], bool] | None" = None,
         drop_context_turns: Callable[[list[int]], Awaitable[bool]] | None = None,
         set_context_turns: Callable[[list[int]], Awaitable[bool]] | None = None,
-        recall_turns: Callable[..., Awaitable[list[int]]] | None = None,
+        clear_context_turns: Callable[[], Awaitable[bool]] | None = None,
+        recall_turns: Callable[..., Awaitable[list[int] | None]] | None = None,
         turns_by_ids: Callable[[list[int]], Awaitable[list[dict]]] | None = None,
         rebuild_message: bool = False,
         images_by_turn: dict[int, list[dict]] | None = None,
@@ -377,6 +378,11 @@ class AgentLoop:
         #: a superset, never a loss).  Wired by AgentService (bound method).
         self.drop_context_turns = drop_context_turns
         self.set_context_turns = set_context_turns
+        #: Empties the persisted live-context list — the write behind an empty
+        #: recall selection, whose counterpart ``set_context_turns`` refuses
+        #: (its empty-list guard protects a *partial* selection; a deliberate
+        #: empty one goes through the clear tool that exists for it).
+        self.clear_context_turns = clear_context_turns
         self.recall_turns = recall_turns
         self.turns_by_ids = turns_by_ids
         # Per-turn context rebuild (see the recall step in run()).
@@ -464,13 +470,13 @@ class AgentLoop:
         self._cancel_event.clear()
 
     def reset_context_time(self) -> None:
-        """Clear the tracked context time range (after ``clear_context``).
+        """Clear the tracked context time range and the measured occupancy.
 
-        The next turn re-seeds ``_context_time_start`` from its own start,
-        so "Context covers" reflects the fresh context instead of the
-        pre-clear range.  Also forgets the measured context occupancy —
-        the history was just wiped, so ``_turn_prompt`` / the status bar must
-        not keep reporting the pre-clear size until the next API call.
+        The next turn re-seeds ``_context_time_start`` from its own start, so
+        "Context covers" reflects the fresh context; forgetting the measured
+        size keeps ``_turn_prompt`` / the status bar from reporting a context
+        that no longer exists.  Called by the rebuild's empty selection — the
+        one remaining path that empties the context outright.
         """
         self._context_time_start = ""
         self._context_turn_dates = []
@@ -630,9 +636,13 @@ class AgentLoop:
     ) -> dict | None:
         """One call deciding which history this turn needs; None on failure.
 
-        The current context is sent as-is with the user message **replaced** by
-        the instruction (``rebuild_messages.j2``), so the model reasons about
-        the input rather than about the conversation it is about to rebuild.
+        What it is sent is the **system prompt plus the instruction**
+        (``rebuild_messages.j2``) — not the conversation, which the selection
+        does not need: the answer *overrides* the context, so a turn already
+        in it is simply re-selected rather than having to be reported
+        (docs/CONTEXT_HARNESSING.md §7.1).  The instruction quotes the input so
+        the model reasons about the input rather than about the conversation it
+        is about to rebuild.
 
         Never persisted, never streamed to the TUI.  It degrades to None rather
         than retrying: a retry would double the latency of the pre-turn path
@@ -640,13 +650,33 @@ class AgentLoop:
         existing context).
         """
         if self.llm_client is None:
+            logger.info("recall_discriminator_skipped reason=no_llm_client")
+            return None
+        # The instruction states `turn_recall`'s own schema, so the tool must be
+        # registered to ask at all — no tool means no recall this turn (memdb
+        # down or disabled), which the caller reads as "keep the context".
+        tool = self.tool_registry.get("turn_recall") if self.tool_registry else None
+        if tool is None:
+            logger.info("recall_discriminator_skipped reason=no_turn_recall_tool")
             return None
         from slife.agent.system_prompt import build_recall_instruction
 
         messages = [m for m in history.messages if m.get("role") == "system"]
         messages.append(
-            {"role": "user", "content": build_recall_instruction(user_input)},
+            {"role": "user",
+             "content": build_recall_instruction(
+                 user_input, tool.to_openai_function()["function"],
+             )},
         )
+        # `msgs` / `prompt_chars` are the call's *shape*: what the
+        # discriminator was actually asked with, which is not the same thing
+        # as what the turn will run on.
+        prompt_chars = sum(len(m.get("content") or "") for m in messages)
+        logger.debug(
+            "recall_discriminator_prompt msgs=%d chars=%d text=%.300s",
+            len(messages), prompt_chars, sanitize_secrets(messages[-1]["content"]),
+        )
+        t0 = _time.monotonic()
         try:
             resp, _usage = await asyncio.wait_for(
                 self.llm_client.chat(messages),
@@ -654,9 +684,30 @@ class AgentLoop:
             )
             text = (resp.choices[0].message.content or "") if resp else ""
         except Exception:
-            logger.warning("recall_discriminator_failed", exc_info=True)
+            logger.warning(
+                "recall_discriminator_failed took_ms=%.0f",
+                (_time.monotonic() - t0) * 1000, exc_info=True,
+            )
             return None
-        return self._parse_recall_args(text)
+        args = self._parse_recall_args(text)
+        took_ms = (_time.monotonic() - t0) * 1000
+        if args is None:
+            # A reply that is not the requested JSON object — prose, or
+            # nothing at all.  The turn keeps its context either way, so this
+            # is the only trace of why the recall did not run.
+            logger.warning(
+                "recall_discriminator_unparsed took_ms=%.0f reply=%.200s",
+                took_ms, sanitize_secrets(text),
+            )
+            return None
+        logger.info(
+            "recall_discriminated msgs=%d prompt_chars=%d took_ms=%.0f "
+            "query=%.60s since=%s until=%s",
+            len(messages), prompt_chars, took_ms,
+            sanitize_secrets(str(args.get("query") or "")),
+            args.get("since"), args.get("until"),
+        )
+        return args
 
     async def _recall_and_rebuild(
         self, history: MessageHistory, user_input: str,
@@ -664,32 +715,57 @@ class AgentLoop:
     ) -> bool:
         """Rebuild the context from a recall selection — once per turn.
 
-        Returns True when the context was replaced.  **Every** failure path
-        leaves the existing context untouched: a recall that cannot answer must
-        never shrink the context, so the store and the history are only touched
-        once a known-good selection exists.
+        Returns True when the context was replaced.  The outcomes, and the
+        difference is the whole contract:
+
+        * **No parameters** (``{}``) means *no recall is needed* — the
+          discriminator judged that what is already in context is enough.  The
+          turn runs on it as it stands (and the ceiling still bounds it); no
+          store call is made.
+        * **The selection** (empty or not) replaces the context.  An empty
+          selection is an *answer* — no turn qualified for this turn, so the
+          context is the system prompt and nothing else.
+        * **No selection at all** (no reply, or the store could not be asked)
+          and **a selection that cannot be fetched** leave the context
+          untouched: nothing was learned about what this turn needs, and a
+          guess is not an improvement on what is already there.
         """
         if not self.rebuild_message or self.recall_turns is None:
             return False
 
-        args = await self._discriminate_recall(history, user_input) or {}
+        args = await self._discriminate_recall(history, user_input)
+        if args is None:
+            # No reply at all — a failure the discriminator already logged.
+            logger.info("recall_not_needed reason=no_discriminator_reply")
+            return False
+        if not any(args.values()):
+            # `{}`: the context is judged sufficient.  Nothing to look up, so
+            # the store is not asked and the context is not touched.
+            logger.info("recall_not_needed reason=context_sufficient")
+            return False
+
         ids = await self.recall_turns(
             str(args.get("query") or ""),
             args.get("since") or None,
             args.get("until") or None,
         )
-        if not ids:
-            logger.info("recall_abandoned reason=empty_selection")
+        if ids is None:
+            logger.info("recall_unavailable")
             return False
 
-        turns = await self.turns_by_ids(ids) if self.turns_by_ids else []
-        if not turns:
+        turns = await self.turns_by_ids(ids) if (ids and self.turns_by_ids) else []
+        if ids and not turns:
             logger.warning("recall_abandoned reason=unfetchable ids=%d", len(ids))
             return False
 
         # Rebuild before persisting: if the persist fails, the turn still runs
         # on the right context and only the *restart* path is stale — a
         # superset, which is the safe direction.
+        # Whether the context held anything is read *before* the rebuild: a
+        # cleared context is only news when there was something in it, and
+        # announcing a clear over an already-empty one (a fresh store's first
+        # turn) would report a change that did not happen.
+        had_turns = len(history.messages) > 1
         history.rebuild_messages(
             turns,
             images_by_turn=self._images_by_turn,
@@ -700,8 +776,8 @@ class AgentLoop:
         # is none (it never presents an estimate as real usage), so clearing it
         # would make every turn prompt read 0%.  The previous round's number is
         # one turn behind and bounded by the same budget — a far better read
-        # than nothing.  Only the trim consumes it as a decision input, and the
-        # trim is disabled in this mode.
+        # than nothing.  The trim is a consumer too: its ceiling applies in
+        # this mode as well (see `_trim_after_save`).
         # "Context covers" comes from the selection now, not from an
         # incremental date list.
         stamps = [t.get("created_at") or "" for t in turns]
@@ -710,13 +786,26 @@ class AgentLoop:
         self._context_turn_dates = list(stamps[1:])
         self._last_context_time_start = ""
 
-        if self.set_context_turns is not None:
+        if not turns:
+            # An empty selection is persisted by *clearing*: the restore
+            # contract is the same list, and it must agree with the history
+            # the turn actually ran on.
+            if self.clear_context_turns is not None:
+                if not await self.clear_context_turns():
+                    logger.warning("recall_clear_failed")
+            # The context is now the system prompt, so the *measured* size of
+            # the one it replaced must go too (unlike a normal rebuild, where
+            # the previous round's number is one turn behind and a far better
+            # read than nothing).  Without this, `_turn_prompt` and the status
+            # bar would report the pre-clear occupancy.
+            self.reset_context_time()
+        elif self.set_context_turns is not None:
             written = await self.set_context_turns([t["rowid"] for t in turns])
             if not written:
                 logger.warning("recall_persist_failed ids=%d", len(turns))
         # Tell the human: the model's context just changed under them.
         on_rebuild = getattr(handler, "on_rebuild", None)
-        if on_rebuild is not None:
+        if on_rebuild is not None and (turns or had_turns):
             try:
                 on_rebuild(len(turns))
             except Exception:
@@ -728,6 +817,13 @@ class AgentLoop:
         self, history: MessageHistory, handler: object | None = None,
     ) -> None:
         """Trim the oldest turns after a turn is saved to memory.
+
+        The ceiling is the window's safety valve and applies in **both** modes
+        (`rebuild_message` true or false): a turn that grew past it — tool
+        results, above all — is compacted down to the floor regardless of how
+        the context was chosen.  In rebuild mode the next turn's recall
+        re-selects the context anyway, so the eviction is not a decision, only
+        a bound.
 
         Called by ``save_to_memory`` once the just-completed turn is
         persisted.  By then the last API call's real prompt + completion tokens are
@@ -761,13 +857,12 @@ class AgentLoop:
             self._just_restored_history = None
             return
 
-        # In rebuild mode the recall selection *is* the bound: the context is
-        # rebuilt every turn at the floor, so a trim would fight it — evicting
-        # turns that the next recall simply re-selects.  The two are alternatives,
-        # selected by `rebuild_message`.
-        if self.rebuild_message:
-            return
-
+        # The ceiling is the window's safety valve, not a function of how the
+        # context is *chosen*: it applies in both modes.  In rebuild mode the
+        # next turn's recall re-selects anyway, so an eviction here costs
+        # nothing — while a turn whose tool results ballooned past the ceiling
+        # (and, on a smaller window, past the window itself) would otherwise
+        # have nothing bounding it at all.
         # Only the just-finished turn exists / nothing to trim — the loop
         # also needs a boundary to not trim a history whose context
         # usage is unmeasurable (no API call yet → estimate fallback).
@@ -1292,9 +1387,9 @@ class AgentLoop:
             logger.info("agent_cancelled phase=before_batch iter=%d", iteration)
             return
 
-        # Any tool that reads ctx.message_history (attach_image, clear_context)
-        # must see the history this loop is processing — not the startup
-        # human history — while a WeChat/remote-agent turn is running.
+        # Any tool that reads ctx.message_history (attach_image) must see the
+        # history this loop is processing — not the startup human history —
+        # while a WeChat/remote-agent turn is running.
         # All builtin tools share one ToolContext, so a single swap covers the
         # concurrent batch; it is restored in the finally below.
         _ctx = None

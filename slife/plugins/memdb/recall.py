@@ -1,8 +1,8 @@
 """Turn recall — choose the turns that become the agent's context.
 
-``turn_search`` answers *"what matches this query"*.  Recall answers *"what
-should be in the context now"*, and the answer **overrides** the previous
-context: the returned list *is* the new live context, with no reconciliation
+A query answers *"what matches this text"*.  The per-turn recall answers
+*"what should be in the context now"*, and its answer **overrides** the
+previous context: the returned list *is* the new live context, with no reconciliation
 against what was there before.  That simplicity is the point — there is
 nothing to merge, no incumbent to defend, and therefore no need to exclude
 turns that are already in context (re-selecting one is the intended outcome,
@@ -27,7 +27,7 @@ order).
 The policy is a pure function over already-retrieved candidates, so it can be
 tested without a store or a server.  Retrieval (the hybrid legs and the
 similarity measurement) happens in the caller — see
-``server.__memory_turn_recall``.
+``server.turn_recall``.
 """
 
 import logging

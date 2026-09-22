@@ -231,19 +231,19 @@ class TestPluginLifecycleSpawn:
         mock_process.port = 8888
         mock_process.start = AsyncMock()
         mock_process.create_client = AsyncMock(return_value=self._client_with([
-            {"name": "turn_search", "description": "Search turns."},
+            {"name": "turn_recall", "description": "Search turns."},
             {"name": "__check", "description": "Internal."},
         ]))
 
         with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
              patch("slife.agent.service.create_proxy_tools") as mock_create:
             MockProc.return_value = mock_process
-            mock_create.return_value = [_real_proxy("turn_search", "Search turns.")]
+            mock_create.return_value = [_real_proxy("turn_recall", "Search turns.")]
             assert await service._spawn_plugin_generic(
                 "memdb", "slife.plugins.mcp_gateway.server",
             ) is True
 
-        row = await store.get_tool("turn_search")
+        row = await store.get_tool("turn_recall")
         assert row["category"] == "plugin"
         assert row["source_id"] == "memdb"
         assert row["load_status"] == "unloaded"      # searchable, not injected
@@ -262,7 +262,7 @@ class TestPluginLifecycleSpawn:
                 "memdb", "slife.plugins.mcp_gateway.server",
             ) is True
 
-        assert await store.get_tool("turn_search") is None
+        assert await store.get_tool("turn_recall") is None
         await store.close()
 
     @pytest.mark.asyncio
@@ -286,7 +286,7 @@ class TestPluginLifecycleSpawn:
 
         store = CatalogStore(tmp_path / "tools.db")
         await store.open()
-        config = replace(sample_config, disabled_plugin=frozenset({"turn_search"}))
+        config = replace(sample_config, disabled_plugin=frozenset({"turn_recall"}))
         service = AgentService(config)
         # One config value reaches two places, and both are needed: the catalog
         # writes the row's `status` from ITS copy of the switch (the service
@@ -301,7 +301,7 @@ class TestPluginLifecycleSpawn:
         mock_process.port = 8888
         mock_process.start = AsyncMock()
         mock_process.create_client = AsyncMock(return_value=self._client_with([
-            {"name": "turn_search", "description": "Search turns."},
+            {"name": "turn_recall", "description": "Search turns."},
             {"name": "turn_count", "description": "Count turns."},
         ]))
 
@@ -309,7 +309,7 @@ class TestPluginLifecycleSpawn:
              patch("slife.agent.service.create_proxy_tools") as mock_create:
             MockProc.return_value = mock_process
             mock_create.return_value = [
-                _real_proxy("turn_search", "Search turns."),
+                _real_proxy("turn_recall", "Search turns."),
                 _real_proxy("turn_count", "Count turns."),
             ]
             assert await service._spawn_plugin_generic(
@@ -317,14 +317,14 @@ class TestPluginLifecycleSpawn:
             ) is True
 
         # No route for the switched-off tool; its neighbour is untouched.
-        assert service.tool_registry.get("turn_search") is None
+        assert service.tool_registry.get("turn_recall") is None
         assert service.tool_registry.get("turn_count") is not None
         assert service._plugins["memdb"].registered_tools == {"turn_count"}
         # …and both keep a row: the tool set stays visible either way.
-        row = await store.get_tool("turn_search")
+        row = await store.get_tool("turn_recall")
         assert row is not None
         assert row["status"] == "disabled"
-        assert await store.get_effective("turn_search") == "disabled"
+        assert await store.get_effective("turn_recall") == "disabled"
         assert await store.get_tool("turn_count") is not None
         await store.close()
 
@@ -348,10 +348,10 @@ class TestPluginLifecycleSpawn:
         mock_process.port = 8888
         mock_process.start = AsyncMock()
         mock_process.create_client = AsyncMock(return_value=self._client_with([
-            {"name": "turn_search", "description": "Search turns."},
+            {"name": "turn_recall", "description": "Search turns."},
         ]))
         proxy = MagicMock()
-        proxy.name = "turn_search"
+        proxy.name = "turn_recall"
 
         with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
              patch("slife.agent.service.create_proxy_tools") as mock_create:

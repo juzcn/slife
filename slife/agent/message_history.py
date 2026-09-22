@@ -851,8 +851,7 @@ class MessageHistory:
         """Index of the last user message — the current turn's start.
 
         Shared by every turn-boundary operation (pop_last_turn,
-        clear_history, extract_oldest_turns); None when the history has no
-        user message.
+        extract_oldest_turns); None when the history has no user message.
         """
         for i in range(len(self.messages) - 1, -1, -1):
             if self.messages[i]["role"] == "user":
@@ -892,46 +891,6 @@ class MessageHistory:
         )
         self.messages = [system_msg] if system_msg else []
         logger.debug("conv_clear removed=%d", old_count - len(self.messages))
-
-    def clear_history(self) -> int:
-        """Clear all old turns, preserving system prompt and the current turn.
-
-        The "current turn" starts with the last user message and includes
-        all following assistant and tool messages.  This is safe to call
-        from within a tool — the assistant(tool_calls) and pending tool
-        results are preserved so the history stays well-formed.
-
-        Returns:
-            Number of messages removed.
-        """
-        last_user_idx = self._last_user_index()
-        if last_user_idx is None:
-            return 0
-
-        # System prompt is always at index 0 if present
-        system_msg = (
-            self.messages[0]
-            if self.messages and self.messages[0]["role"] == "system"
-            else None
-        )
-
-        # Keep: system prompt (if present) + everything from the last user
-        # message onwards (the current turn).
-        kept: list[dict] = []
-        if system_msg is not None and last_user_idx > 0:
-            kept.append(system_msg)
-        kept.extend(self.messages[last_user_idx:])
-
-        old_count = len(self.messages)
-        self.messages = kept
-        removed = old_count - len(self.messages)
-
-        if removed > 0:
-            logger.debug(
-                "conv_clear_history removed=%d remaining=%d (system+current turn)",
-                removed, len(self.messages),
-            )
-        return removed
 
     # ── Context window trimming ──────────────────────────────────
 

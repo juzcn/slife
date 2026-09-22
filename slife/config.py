@@ -499,11 +499,12 @@ class Config:
     # rebuild replaces the whole context from a recall selection, so these
     # bound *what the model is sent*, not an increment on top of it.
     #: Rebuild the context from a recall selection each turn.  ``True``
-    #: (default) — recall selects the context and the internal trim is idle.
-    #: ``False`` — the previous logic: the context grows append-only and the
-    #: trim bounds it.  The two modes are compatible: both maintain the same
-    #: persisted live-context list and the same save-append path, so the flag
-    #: can be flipped between runs without a migration.
+    #: (default) — recall selects the context before every turn.  ``False`` —
+    #: the context grows append-only.  The internal trim's ceiling applies in
+    #: both modes (it bounds the window, not the selection).  The two modes are
+    #: compatible: both maintain the same persisted live-context list and the
+    #: same save-append path, so the flag can be flipped between runs without a
+    #: migration.
     rebuild_message: bool = True
     #: Cosine similarity a semantic hit must reach to enter the context.
     #: Keyword hits are exempt (nothing measured them).
@@ -1182,7 +1183,7 @@ class Config:
         builtin_overrides = _parse_section(tools_raw, "builtin", list, [])
         # ``plugin`` — the built-in plugins' OWN tools, one section for the
         # ``plugin`` category (one section per category, like every other).
-        # Their tool names are bare (turn_search, wechat_login, mcp_set), so a
+        # Their tool names are bare (turn_recall, wechat_login, mcp_set), so a
         # flat entry list is all the config needs.
         plugin_overrides = _parse_section(tools_raw, "plugin", list, [])
         disabled_jobs = _disabled_names(job_overrides)
