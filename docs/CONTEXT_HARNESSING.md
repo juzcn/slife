@@ -323,17 +323,21 @@ the same rows and calls `turn_read` when it wants one in full.  `degraded`
 is non-empty when the semantic leg was unavailable (`recall_degraded`,
 logged; a degraded leg widens the empty case, which clears the context).
 
-**There is no error return.**  Everything that is not a store failure is
-answered as an empty selection: a time bound the grammar rejects (the
-discriminator's phrase matched no calendar period), a query the store cannot
-parse, an unexpected failure in the selection pipeline.  The reason is the
+**There is no error return.**  Everything that is not a fatal environment
+failure — the store's or the tokenizer's, below — is answered as an empty
+selection: a time bound the grammar rejects (the discriminator's phrase
+matched no calendar period), a query the store cannot parse, an unexpected
+failure in the selection pipeline.  The reason is the
 caller's side of the contract — its only safe reading of "error" is *keep the
 context you have*, and that would license exactly the wipe an empty selection
 performs deliberately.  **A store failure is fatal instead**: `sqlite3.Error`
 propagates, like the startup readiness check, because a plausible-looking
-empty list from a broken database silently wipes the context.  It reaches the
-harness as a tool *error* (the MCP client turns a raise into an `Error: …`
-result), so the context is kept and both sides log it.
+empty list from a broken database silently wipes the context.  **An unusable
+tokenizer is fatal the same way** (`TokenizerUnavailable`): it is an
+environment failure like the store's — every row's cost, and so the budget the
+selection is fitted to, comes from it.  Both reach the harness as a tool
+*error* (the MCP client turns a raise into an `Error: …` result), so the
+context is kept and both sides log it.
 
 ### 7.4 What the selection does to the context
 
@@ -350,7 +354,7 @@ result), so the context is kept and both sides log it.
   *smaller* context, where the previous round's real count remains the better
   read).  Keeping the turns the recall just judged irrelevant would mean the
   recall never took effect.
-- **Three ways the context is kept.**  The discriminator answered `{}` (no
+- **Four ways the context is kept.**  The discriminator answered `{}` (no
   recall needed); no reply came back at all; `recall_turns` returned `None`
   (memdb off, channel unreachable, store failure, an unusable payload); or the
   selected turns cannot be fetched.  Nothing was learned about what the turn

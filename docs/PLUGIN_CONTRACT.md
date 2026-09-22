@@ -187,13 +187,15 @@ the same `PluginLifecycle` watchdog (`_watchdog_loop`): on unexpected child
 exit it unregisters the plugin's exact registered bare-name tools (plus any
 registry tools bound to the dead client), disconnects the dead client, and
 **restarts through the full uniform start** (spawn + ctx re-point +
-after-ready) with exponential backoff — `_WATCHDOG_BACKOFF_INITIAL` (1 s) →
-2 s → 4 s → … capped at `_WATCHDOG_BACKOFF_MAX` (30 s) — up to
+after-ready) with exponential backoff — `ready.watchdog_backoff_initial`
+(1 s) × `ready.watchdog_backoff_multiplier` (2) → 2 s → 4 s → … capped at
+`ready.watchdog_backoff_max` (30 s), all three in the timeout registry
+(`slife/timeouts.py`, see [TIMEOUT.md](TIMEOUT.md)) — up to
 `_WATCHDOG_MAX_RESTARTS` (5) consecutive failures, after which the watchdog
 gives up and logs.  A restart re-runs `_arm_watchdog`'s restart path with
 `allow_gate=False` and then tells every live subagent sharing the plugin its
 new port (`worker/plugin_restart`).  The restart counter resets **only when
-the crashed child had stayed up ≥ `_WATCHDOG_STABLE_UPTIME` (60 s)** — a fast
+the crashed child had stayed up ≥ `ready.spawn`** — a fast
 boot-loop is deliberately NOT reset, so a crashing plugin accumulates toward
 the cap.  The poll/restore tasks are reaped (`cancel_tasks`) before each
 respawn so a restart never stacks a second loop.  Restart state is recorded

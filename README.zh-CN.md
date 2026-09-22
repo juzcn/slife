@@ -28,7 +28,7 @@
 > * **想知道它到底能做什么** → [功能](#features)
 > * **想让语义（混合）记忆搜索跑起来** → [语义记忆搜索 — 安装指南](#semantic-memory-search--installation-guide)
 > * **日常使用**（快捷键、参数、健康检查）→ [使用方法参考](#usage-reference)
-> * **要开发或调试 Slife 本身** → [开发](#development) — 开发者文档见 [DESIGN.md](DESIGN.md)
+> * **要开发或调试 Slife 本身** → [从源码运行](#development)
 
 <a id="quick-start" name="quick-start"></a>
 
@@ -116,6 +116,30 @@ curl -fL --retry 3 -o ~/.cache/tiktoken/fb374d419588a4632f3f557e76b4b70aebbca790
 uvx --from git+https://github.com/juzcn/slife.git slife
 ```
 
+<a id="development" name="development"></a>
+### 从源码运行
+
+从源码运行（用于开发或调试）：
+
+```bash
+git clone https://github.com/juzcn/slife.git
+cd slife
+uv sync
+
+uv run credstore set-password
+uv run credstore set DEEPSEEK_API_KEY
+uv run slife
+
+# 测试
+uv run pytest
+uv run pytest --cov --cov-report=term-missing
+```
+
+`uv sync` 是**精确同步**：它会把检出目录的 `.venv` 对齐到 lock，而 lock 里没有任何 embedding 后端（它们是按平台手动安装的——见[重新加入后端（手动安装）](local-embed/README.md#re-adding-a-backend-manual-installs)）。如果你想在开发 venv 里保留 `llama-cpp-python` 或 `sentence-transformers` 做真实端到端运行，要么用 `uv sync --inexact`，要么同步后重新装上后端。
+
+开发模式自动检测（从源码树运行时）：数据文件留在项目目录里。生产安装（uv tool / pipx / pip）一律使用 `~/.slife/`——即使在 checkout 目录或 home 目录里启动也不会误判。CI 在 Ubuntu、macOS 与 Windows 上用 Python 3.13 跑测试套件（测试针对构建出的 wheels 运行）。
+
+
 ### 更新
 
 重跑安装脚本即可升级 slife——它从最新的 `main` 重建，并保留你自定义过的东西：
@@ -162,6 +186,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/r
 |-------|---------|----------|
 | **密钥** | 凭据库（credstore） | API Key——OS 级加密，另有加密的 cryptfile 备份 |
 | **配置** | `~/.slife/slife.yaml` | `${VAR}` 引用 + 非敏感值 |
+| **工具配置** | `~/.slife/tools.yaml` | 按类别的工具定义——`builtin` / `plugin` / `mcp` / `rest-api` / `job` / `cli` / `skill`（见下面网关一节） |
 
 ### 密钥与 API Key
 
@@ -246,17 +271,17 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 
 全部统一为 OpenAI 函数定义——LLM 看不出系统工具（内置 + 内置插件）与外部 MCP 工具的区别。每个工具还额外接受三个元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（内联批准提示——Y 批准 / N 拒绝，Esc 拒绝）。
 
-**13 个类别共 60 个内置工具**（从 `slife/tools/` 自动发现 61 个类；`install_python_package` 在随附配置中默认禁用）。保留的 harness 工具 `_turn_prompt`（每轮提示词）与 `_check_new_input`（插队模式下的轮中消息注入）由循环自动调用；`attach_image` 在 `@` 附件时自动调用——模型会读取它们的产出，但被嘱咐不要调用它们。`attach_image` 对无视觉模型会在调用时拒绝（它从不被隐藏）。
+**13 个类别共 60 个内置工具**（从 `slife/tools/` 自动发现 61 个类；`install_python_package` 在随附配置中默认禁用）。保留的 harness 工具 `_turn_prompt`（每轮提示词）与 `_check_new_input`（插队模式下的轮中消息注入）由循环自动调用——模型会读取它们的产出，但被嘱咐不要调用它们。`attach_image` 在 `@` 附件时自动调用，且**不是**保留工具：模型可以自己调用它，无视觉模型会在调用时被拒绝。
 
 | 类别 | 工具 |
 |----------|-------|
-| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `set_max_iterations`, `notify_user`, `wait_minutes`（暂停本轮，稍后自动继续）, `add_user_pref`（把偏好记录到 `USER.md`） |
+| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `set_max_iterations`, `set_midturn_input`（轮中抢先开/关）, `notify_user`, `wait_minutes`（暂停本轮，稍后自动继续）, `add_user_pref`（把偏好记录到 `USER.md`） |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package`（默认禁用） |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
-| Job | `job-list`、`job-write`、`job-remove`、`job-run` + 每个已注册 job 一个工具（`job-<name>`），由 `job-coding` 插件提供 |
+| Job | `job-<name>`——你写在 `~/.slife/jobs/` 里的每个 job 一个工具；通过 `job-list` / `job-write` / `job-remove` / `job-run` 增删，这四个属于 `job-coding` 插件 |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
-| REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
+| REST API | `rest_api_list`, `rest_api_list_tools`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove` |
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image`（给视觉模型喂图片）, `_turn_prompt`（每轮提示词，自动调用）, `_check_new_input`（轮中消息注入，自动调用） |
@@ -270,16 +295,16 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 
 | 服务器 | 工具 |
 |--------|-------|
-| `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
+| `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`（有截断——其余用 `tool_search` 找） |
 | `memdb` | `turn_recall`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_save`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `file_read`, `report_save`, `report_list`, `report_read` |
 | `sharefile` | `share_file`, `sharefile_unshare` |
-| `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_send_message`, `a2a_send_message_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`, `a2a_set_task_done`（完成收到的任务并发布结果） |
+| `a2a` | `a2a_send_message`（异步——返回 task_id，结果稍后自动推送）、`a2a_cancel_task`、`a2a_list_agents`、`a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `job-translate`） |
 
-**所有工具共用一个目录，由阈值管理。** 第三方能力只能作为 `tools.yaml` 里的标准 MCP 服务器接入（`mcp` + `rest-api` 两个 section——任何 stdio / SSE / Streamable HTTP 服务器都可以，无需 Slife SDK；REST API 就是放在 `rest-api` section 里的普通 MCP 服务器，条目格式完全相同）。所有类别——builtin、job、plugin、mcp、rest-api、skill、cli——共用同一个 `tools.db`；LLM 用 `tool_search` 跨全部类别检索（grep / 关键词 / 语义混合，按目录的列过滤），再用 `func_tool_load(full_name)` 载入具体工具——按工具而非按服务器，所以一个上千工具的大服务器只会注入真正用到的那几个。不是"存在就被注入"：新工具生来是 `unloaded`，只有 `func_tool_load` 能把它放进工具列表（例外是白名单——harness 对、系统元工具、固定注入的 `skill_use` / `system_health`——以及 `tools.yaml` 里标了 `autoload: true` 的条目；而 `autoload` 的条目会**一直**是 loaded：它是唯一能赢过模型自己 unload 的配置决定）。这份列表是上下文预算，不是许可：只要有执行实例，工具按名字就能调用（load 状态不拦截调用），载入的作用是把工具的 schema 放到模型面前。注入列表由阈值封顶（默认 100，可在 `tools.yaml` 调整），harness 在轮次边界淘汰最久未用的工具，从不淘汰 `autoload` 的。服务器生命周期每个家族一个开关（`mcp_set_enabled` / `rest_api_set_enabled`）——现代 MCP 协议没有要开关的 session，所以 enable 即连接、之后调用时若掉线会懒重连——并且**启动时所有 enabled 服务器都会被拉起**（只 spawn、不读工具列表；列表留给第一个真正需要它的调用方）；服务器连不上时它的工具被标记 `error`，因此死连接永远不会被注入。目录在每次（重）连接时实时同步——不存在离线重建步骤。完整设计见 **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**。
+**所有工具共用一个目录，由阈值管理。** 第三方能力只能作为 `tools.yaml` 里的标准 MCP 服务器接入（`mcp` + `rest-api` 两个 section——任何 stdio / SSE / Streamable HTTP 服务器都可以，无需 Slife SDK；REST API 就是放在 `rest-api` section 里的普通 MCP 服务器，条目格式完全相同）。所有类别——builtin、job、plugin、mcp、rest-api、skill、cli——共用同一个 `tools.db`；LLM 用 `tool_search` 跨全部类别检索（grep / 关键词 / 语义混合，按目录的列过滤），再用 `func_tool_load(full_name)` 载入具体工具——按工具而非按服务器，所以一个上千工具的大服务器只会注入真正用到的那几个。不是"存在就被注入"：新工具生来是 `unloaded`，只有 `func_tool_load` 能把它放进工具列表（例外是白名单——harness 工具、系统元工具、固定注入的 `skill_use` / `system_health`——以及 `tools.yaml` 里标了 `autoload: true` 的条目；而 `autoload` 的条目会**一直**是 loaded：它是唯一能赢过模型自己 unload 的配置决定）。这份列表是上下文预算，不是许可：只要有执行实例，工具按名字就能调用（load 状态不拦截调用），载入的作用是把工具的 schema 放到模型面前。注入列表由阈值封顶（默认 100，可在 `tools.yaml` 调整），harness 在轮次边界淘汰最久未用的工具，从不淘汰 `autoload` 的。服务器生命周期每个家族一个开关（`mcp_set_enabled` / `rest_api_set_enabled`）——现代 MCP 协议没有要开关的 session，所以 enable 即连接、之后调用时若掉线会懒重连——并且**启动时所有 enabled 服务器都会被拉起**（只 spawn、不读工具列表；列表留给第一个真正需要它的调用方）；服务器连不上时它的工具被标记 `error`，因此死连接永远不会被注入。目录在每次（重）连接时实时同步——不存在离线重建步骤。
 
 **Windows 下的命令执行。** `execute_shell` 在检测到的 shell 中运行——PowerShell 或 cmd（与系统提示报告的值一致，保证 LLM 写的语法真的能执行）——并用系统代码页解码输出（中文 Windows 为 GBK/cp936）。`run_python_script` 强制子 Python 以 UTF-8 运行（`-X utf8`），这样非 ASCII 输出不会让子进程崩溃。
 
@@ -304,7 +329,7 @@ Embeddings 是 `slife.yaml` 中**一级顶层的 `embeddings` 配置段**（由 
 
 ### 自主心跳
 
-空闲时，agent 按 `agent.heartbeat_interval` 秒（代码默认 60，随附模板设为 1800）获得一个周期性的自主窗口。它作为一个正常 turn 运行（独立的一轮，存入记忆）；回复契约是：有值得说的话就输出真实内容，否则只输出一个 `.`。单独的 `.` 回复表示**沉默**——来自任何事件（心跳、A2A 异步完成通知等）的 `.` 都不会渲染到聊天或会话恢复里；`[Heartbeat]` 触发消息被过滤，真正的自主回复显示为 `⚡ 自主`。这是涌现自发性行为的前提。
+空闲时，agent 按 `agent.heartbeat_interval` 秒（默认 1800）获得一个周期性的自主窗口。它作为一个正常 turn 运行（独立的一轮，存入记忆）；回复契约是：有值得说的话就输出真实内容，否则只输出一个 `.`。单独的 `.` 回复表示**沉默**——来自任何事件（心跳、A2A 异步完成通知等）的 `.` 都不会渲染到聊天或会话恢复里；`[Heartbeat]` 触发消息被过滤，真正的自主回复显示为 `⚡ 自主`。这是涌现自发性行为的前提。
 
 ### 定时任务
 
@@ -348,14 +373,15 @@ job 还能通过 `mcp` 句柄（`from slife.plugins.job_coding import mcp`）驱
 | **a2a** | 基于 MQTT 的 A2A 网格通道（仅在 broker 可达时启动） |
 | **media** | 来自任意 provider 的非聊天式 AI 生成（图片、视频、TTS、ASR）——自持 `media:` 配置段与跟 provider 无关的适配层。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio` |
 | **job-coding** | 确定性 jobs 作为 MCP 工具——`~/.slife/jobs/` 里的代码定义函数按声明的参数精确执行；一次性 LLM 调用走 `llm.chat`、用 `job_coding_model`。工具：`job-list`、`job-write`、`job-remove`、`job-run` + 每个 job 一个 `job-<函数名>` |
+| **local-embed** | 本地 embedding 端点服务——在 `127.0.0.1:17347/v1` 提供 GGUF/transformer 模型，每个模型只加载一次，由 `memdb` + `memfiles` 共享。也可独立运行；你已自建实例时 slife 会用它，而不是再起一个 |
 
-所有内置插件都跑一个**看门狗（watchdog）**，崩溃时自动重启（指数退避 1s→30s，最多连续 5 次失败），只有在插件稳定运行约 60 秒后才恢复重启计数。就绪遵循 MCP 标准（`initialize` 握手只在插件自身 init 成功后才完成）；**必需插件**（`plugins.required`——随附配置里是 `memdb` 与 `memfiles`）是核心：无法就绪时**中止启动**而不是带病运行。外部/从属依赖——外部 MCP 服务器、隧道、微信登录、媒体 provider、A2A broker——从不阻塞就绪：它们不可控、运行时会自愈，并经由 `system_health` 里的状态工具单独上报。`local-embed` 属于插件而非外部依赖，但同样**不是**必需插件，所以它启动失败也不会中止启动——它和其他子进程一样被 spawn，并上报自己的状态。
+所有内置插件都跑一个**看门狗（watchdog）**，崩溃时自动重启，每次连续失败后退避更久。插件只有自身初始化成功后才算就绪（MCP `initialize` 握手），而**必需插件**（`plugins.required`——随附配置里是 `memdb` 与 `memfiles`）是核心：无法就绪时**中止启动**而不是带病运行。外部/从属依赖——外部 MCP 服务器、隧道、微信登录、媒体 provider、A2A broker——从不阻塞就绪：它们不可控、运行时会自愈，并经由 `system_health` 里的状态工具单独上报。`local-embed` 属于插件而非外部依赖，但同样**不是**必需插件，所以它启动失败也不会中止启动——它和其他子进程一样被 spawn，并上报自己的状态。
 
 ### A2A — 智能体间网格
 
-A2A 协议运行在可插拔的传输 **binding**（当前为 MQTT）上，让多个智能体——同一台机器或不同机器——互相发现、发送任务与消息、共享结果：
+A2A 协议运行在官方的 **A2A-over-MQTT** profile 上——即 EMQX 的 `a2a-over-mqtt` SDK（主题、JSON-RPC wire、presence、任务生命周期）——让多个智能体——同一台机器或不同机器——互相发现、委派任务、推送结果：
 
-- **网格工具**（统一 `a2a_` 前缀）：`a2a_send_task`、`a2a_send_task_async`、`a2a_send_message`、`a2a_send_message_async`、`a2a_get_task_result`、`a2a_cancel_task`、`a2a_list_agents`、`a2a_list_tasks`、`a2a_agent_card`、`a2a_broadcast`、`a2a_set_task_done`（完成收到的任务并发布结果）。入站的 peer 消息/任务以 **`[A2A:{"from": …, "task_id": …}]`** 前缀到达模型（`from` 是发送方 peer——永远不是接收者自己；`task_id` 只在任务时出现——无状态消息只带 peer），自动推送的异步结果以 **`[A2A-PUSH:…]`** 前缀；TUI 显示 `A2A(<peer>)>`。任务由模型显式用 `a2a_set_task_done` 完成——harness 不再自动回发。`a2a` 插件只在 MQTT broker 可达时启动。
+- **网格工具**（标准 A2A 操作，统一 `a2a_` 前缀）：`a2a_send_message`（异步——立即返回 task_id，结果稍后自动推送）、`a2a_cancel_task`、`a2a_list_agents`、`a2a_broadcast`（发后即忘的事件）。入站的 peer 流量统一以一个 `[A2A:…]` 信封到达模型（`from` 是发送方 peer——永远不是接收者自己）；TUI 显示 `A2A(<peer>)>`。`a2a` 插件只在 MQTT broker 可达时启动。
 - **Subagent 是本地 worker，不是 A2A peer**：`spawn_subagent` / `subagent_send_task` / `subagent_get_task_result` / ……创建共享你的插件、一次处理一个任务的子进程 worker（对忙碌 worker 的同步发送会自动转为异步入队）。异步结果自动推送到你的聊天（`mode="auto"`，默认）或只能轮询（`mode="poll"`）。Subagent 绝不清空你的收件箱——所有回复与管理都属于主 agent。
 
 所有消息——人类输入、微信、MQTT、subagent 结果——都流经单一收件箱队列，逐轮处理。
@@ -364,133 +390,14 @@ A2A 协议运行在可插拔的传输 **binding**（当前为 MQTT）上，让�
 
 ## 语义记忆搜索 — 安装指南
 
-语义（混合）记忆搜索——跨越 `memdb` 轮次与 `memfiles` 笔记按含义召回——需要一键安装器**刻意不带**的**两样东西**：一个本地嵌入**后端**（Python 包，依赖平台）和**模型权重**（由你下载——服务器从不自动下载）。关键词搜索（`grep` / `fts5` / `time`）不需要这些即可工作。设置是一个**用户手动**步骤；每个环节都 fail-open，所以缺后端也留下一个可用的纯关键词搜索核心。
+语义（混合）记忆搜索——跨越 `memdb` 轮次与 `memfiles` 笔记按含义召回——需要一个本地 embedding
+**后端**和**模型权重**，而一键安装器刻意不带这两样。关键词搜索（`grep` / `fts5` / `time`）不需要它们，
+且每一环都是 fail-open：后端缺失时关键词核心照常可用。
 
-**它是怎么拼起来的。** Slife 把每个嵌入 provider 都当成 OpenAI 兼容端点（`base_url` + `api_key`）。`local-embed` 服务——由 slife 作为内部插件启动，也可以通过 `local-embed` CLI 独立运行——把每个本地模型**加载一次**，并在 `http://127.0.0.1:17347/v1` 提供（`POST /v1/embeddings`、`GET /v1/models`、`GET /health`）。`memdb` 与 `memfiles` 都调用这个端点，所以一个模型永远不会被加载两次。local-embed **没有 "active model"**——每个请求都指名它要的模型；slife 的 `embeddings.active_model`（例如本地守护进程用 `"local_embed"`、云 provider 用 `"siliconflow"`——随附配置默认 `"siliconflow"`）选择用哪个 provider 做嵌入。
-
-### 1. 安装后端依赖
-
-把后端**装进 slife 的工具 venv**——与 `local-embed` 运行在同一个解释器。用它的**根目录**引用这个 venv：`"$(uv tool dir)/slife"`——这在 **macOS、Linux 与 Windows 上都能用**（uv 在 venv 内部定位解释器，所以你无需知道究竟是 `bin/` 还是 `Scripts/`）：
-
-| 后端 | 命令 |
-|---------|---------|
-| **Transformer · 无 NVIDIA GPU**（Linux / WSL / Windows） | 先 `uv pip install --python "$(uv tool dir)/slife" --index-url https://download.pytorch.org/whl/cpu torch`，再 `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
-| **Transformer · 有 NVIDIA GPU，或 macOS** | `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
-| **GGUF · CPU（Linux / WSL / macOS）** | `uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
-| **GGUF · NVIDIA CUDA（Linux）** | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34`（需要工具包**和** NVIDIA 设备） |
-| **GGUF · macOS Metal** | `CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
-| **GGUF · Windows CPU** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34` |
-| **GGUF · Windows CUDA** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34`（把 `cu124` 换成驱动支持的 CUDA 版本——`cu118`、`cu121`…`cu125`、`cu130`、`cu132`） |
-
-- llama-cpp-python **没有 PyPI wheel**（只有 sdist），所以 Linux / WSL / macOS 三行会**源码编译**——这是标准构建——需要 **C 编译器 + CMake ≥ 3.21**（macOS：Xcode CLT clang；Linux：`build-essential` + `cmake`）。GPU 两行传 `CMAKE_ARGS` 选择后端。**Windows 没有默认 C 工具链**，所以它改用上游预编译的 wheel——CPU 或 CUDA，都不需要 MSVC。
-- 两个后端可以共存——在**一次** `uv pip install` 里都装上（例如 `sentence-transformers` 加上 `llama-cpp-python` 的 CPU 行写进一条命令）。装两次会替换掉第一个安装。
-- `sentence-transformers` 会带上 `torch`，而 Linux 上 PyPI 的 `torch` 是 **CUDA 构建**：十几个 `nvidia-*` 运行时 wheel（约 2.5 GB），无论有没有 GPU——里面没有 `nvcc`，所以在无 GPU 的机器上它们什么都启用不了。这正是上面 CPU 行先装 PyTorch 官方索引的 `torch` 的原因：第二条命令随后发现 torch 已满足，不会再拉这些 wheel。事后再换成 CPU 构建会让这些 wheel 变成孤儿，清理：`uv pip freeze --python "$(uv tool dir)/slife" | grep ^nvidia | cut -d= -f1 | xargs uv pip uninstall --python "$(uv tool dir)/slife"`。`llama-cpp-python` 完全不依赖 torch。
-- 若后端缺失，`local-embed` 会记录一条针对你平台的精确安装命令，而不是静默失败。
-
-### 2. 下载模型权重
-
-默认离线——`HF_HUB_OFFLINE=1`，**不自动下载**。你自己通过下面两条路线之一把权重准备好。`hf` CLI 不随后端提供——一次性安装即可：`uv tool install "huggingface-hub[cli]"`（也可以给任何 `hf` 命令加 `uvx --from huggingface-hub` 前缀）。
-
-**Transformer 路线（默认配置，约 2 GB）。** 随附配置的模型是 `BAAI/bge-m3`；把它下载进 HF 缓存，无需改配置：
-
-```bash
-hf download BAAI/bge-m3                                    # → ~/.cache/huggingface/hub
-HF_ENDPOINT=https://hf-mirror.com hf download BAAI/bge-m3  # 国内镜像
-```
-
-**GGUF 路线（离线单文件）。** 用你信得过的任何量化版 BGE-M3 GGUF——这些是社区转换，没有唯一权威来源（优先高保真的 `Q8_0`，约 635 MB；更重的量化更小）。从任何来源获取（HF 单文件拉取、浏览器、`wget`/`curl`），然后放到默认路径并让客户端指向 `bge-m3` 模型：
-
-```bash
-hf download <owner>/<repo> <model>.gguf --local-dir ~/.local-embed/models   # HF 单文件拉取
-mv ~/.local-embed/models/<model>.gguf ~/.local-embed/models/bge-m3-Q8_0.gguf     # 期望的默认路径
-```
-
-`models` 映射里的每个模型都作为**对等（peer）**被提供——没有 `active_model`；客户端在每个请求上指名模型（现有配置里过时的 `active_model` 键会被忽略）。
-
-### 3. 配置 HF 缓存与 GGUF 路径
-
-一切——host、port、models、backend——都住在 **`local_embed.yaml`** 里，由安装器铺设（路径解析：`$LOCAL_EMBED_FILE` > slife 项目根目录（开发）> `~/.local-embed/local_embed.yaml`）。值支持 `${VAR}` / `${VAR:-default}` 展开，**shell 环境变量优先于配置**。随附文件已经带有可移植的占位符——通常你只需设置环境变量或改两行：
-
-```yaml
-env:
-  HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}"   # transformer 仓库解析到哪
-  HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}"          # 1 = 永不自动下载；0 = 允许按需下载
-models:
-  "BAAI/bge-m3":
-    backend: "transformer"
-    model: "BAAI/bge-m3"
-  "bge-m3":
-    backend: "gguf"
-    gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/bge-m3-Q8_0.gguf}"
-port: 17347
-```
-
-| 设置 | 含义 |
-|---------|---------|
-| `env.HF_HUB_CACHE` / `HF_HUB_CACHE` | Transformer 路线解析 HF repo id 的位置。默认 `~/.cache/huggingface/hub`。若你的模型下载到别的缓存，把它指过去——否则仓库会被静默重新拉取。 |
-| `env.HF_HUB_OFFLINE` / `HF_HUB_OFFLINE` | `"1"`（默认）——离线；模型必须已经在缓存/磁盘上。`"0"`——允许模型加载器访问网络（无托管下载/镜像回退）。 |
-| `models."bge-m3".gguf_path` / `BGE_M3_GGUF_PATH` | GGUF 路线的 `.gguf` 文件。`~` 会展开；shell 里的 `BGE_M3_GGUF_PATH` 覆盖配置默认值。 |
-
-请求会指名它们想要的模型（slife 的 provider `model` id——transformer 路线是 `"BAAI/bge-m3"`，GGUF 路线是 `"bge-m3"`）。改动在 local-embed 服务下一次启动时生效（重启 slife）。
-
-**CLI 替代方案** —— `local-embed`（安装后已在 PATH）upsert 一个模型配置并钉住端口（幂等，不影响其它模型）：
-
-```bash
-local-embed set BAAI/bge-m3 --HF_HUB_CACHE ~/.cache/huggingface/hub
-local-embed set-gguf bge-m3 --path ~/.local-embed/models/bge-m3-Q8_0.gguf
-```
-
-### 4. 让服务就绪 — 验证
-
-直接启动 slife 即可——它会为你启动 `local-embed`（同一个服务也在 PATH 上，即 `local-embed` CLI）。自己先启动它是可选的：如果**端口上已经有实例在服务**，slife 会直接使用那个实例，而不会再加载一份模型——这正是 Windows 上的 slife 与 WSL 里的 agent 共用一个服务的方式。参见 [local-embed → Adopting a running service](local-embed/README.md#adopting-a-running-service)。
-
-**模型加载是延迟的**——第一次嵌入时才加载（GGUF 几秒，约 2 GB 的 transformer 最多一分钟）。从聊天里或通过 HTTP 验证：
-
-- **在聊天里** — 让 agent 运行 `system_health`（`memdb`/`memfiles` 组件会报告语义门：`semantic_ready`、模型、pending embeddings）。
-- **通过 HTTP**（服务独立运行在固定端口上）：
-
-```bash
-curl http://127.0.0.1:17347/health            # {status, backend, model, dimension, loaded}
-curl http://127.0.0.1:17347/v1/models         # 每个已配置模型 + active 标志
-curl http://127.0.0.1:17347/v1/embeddings -H 'Content-Type: application/json' \
-  -d '{"model": "bge-m3", "input": ["hello world"]}'   # 返回一个真实向量
-```
-
-健康状态：`/health` → `status: ok`；`system_health` → `embeddings` 组件探测活动嵌入端点（可达 = `ok`，并报出本次会话嵌入用的模型——无论这个端点是本地守护进程还是硅基流动这类云 provider），`memdb`/`memfiles` 组件显示 `semantic_ready`。当服务不可达（后端缺失、权重缺失、仍在加载）时，slife **优雅降级为关键词搜索**——`system_health` 报告原因，一旦当前模型的索引完整构建，hybrid 结果自动恢复。
-
-### 故障排查
-
-| 症状 | 修复 |
-|---------|-----|
-| 日志：`backend_unavailable … reason=llama_cpp_not_installed` / `sentence_transformers_not_installed` | 按你的平台跑第 1 步安装——日志会打印精确命令。 |
-| Transformer 路线在 `HF_HUB_OFFLINE=1` 下加载失败 | 仓库不在缓存里——跑 `hf download BAAI/bge-m3`，并确保 `HF_HUB_CACHE` 指向持有它的缓存。 |
-| GGUF 路线加载失败 | `gguf_path` 处文件缺失——检查 `BGE_M3_GGUF_PATH` / `gguf_path`，以及客户端请求的是 `"bge-m3"`（所有已配置模型都是对等——没有任何东西被挡在 `active_model` 后面）。 |
-| `system_health` 显示 `embeddings` 为 `unavailable` | 活动嵌入端点没有应答 `GET /v1/models`。如果该 provider 是 `local_embed`，请看同一份报告里的 `local-embed` 那一行——服务由 slife 自己启动，所以缺失意味着插件启动失败（原因在它的日志里；**非** local-embed 的服务占着 17347 端口就会这样）。否则修云 provider 的 key：`api_key` 按 `${VAR}` → env → credstore 解析。该组件只探测**活动的** provider，行首的 key 就是该 provider 的 id。 |
-| 首次嵌入非常慢 | transformer 下载/预热延迟到第一次嵌入；后续调用很快。 |
-
-### 可选扩展（手动安装）
-
-上面那些 embedding 后端就是同类的 "可选扩展"——供直接手动安装（uvx / git 检出）或在 slife venv 里重新加入后端：
-
-| 扩展 | 启用功能 |
-|-------|---------|
-| `local-embed[gguf]` | 通过 llama-cpp-python 的本地 GGUF 嵌入（离线，约 300 MB） |
-| `local-embed[transformer]` | 通过 sentence-transformers 的 HuggingFace transformer 嵌入（约 2 GB） |
-| `slife[gguf]` / `slife[transformer]` / `slife[embeddings]` | 旧版进程内嵌入（默认不使用） |
-
-```bash
-# 工具安装（安装脚本）——装进 slife 的工具 venv：
-uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34   # slife[gguf]
-uv pip install --python "$(uv tool dir)/slife" sentence-transformers      # slife[transformer]
-
-# uvx / git 检出——没有工具 venv；把扩展加进临时环境：
-uvx --with llama-cpp-python==0.3.34 --from git+https://github.com/juzcn/slife.git slife
-```
-
-各平台的 wheel 选型见第 1 步的表（Windows 用 `--extra-index-url …/whl/cpu` 或 `…/whl/cu124`，Linux/Metal 的 GPU 构建用 `CMAKE_ARGS`）；无 GPU 的 Linux 机器先装 CPU 版 `torch`——两者都在第 1 步的要点里。
+**完整指南——各平台后端安装、权重、`local_embed.yaml`、验证、排障：**
+**[local-embed/README.md](local-embed/README.md)**——`local-embed` 服务就是 slife 嵌入时打交道的那个端点，那份文件就是它的手册。
 
 <a id="usage-reference" name="usage-reference"></a>
-
 ## 使用方法参考
 
 ### 键盘快捷键
@@ -520,32 +427,6 @@ uvx --with llama-cpp-python==0.3.34 --from git+https://github.com/juzcn/slife.gi
 
 * **`system_health`** 一次调用报告每个子系统的实时状态——先说问题和该怎么处理，然后每个健康组件一行——它是 agent 唯一的健康工具（各子系统的 `check_*` 函数是内部实现）。感觉任何东西不对劲时都让 agent 跑一下。
 * **日志**在 `~/.slife/logs/`（每个会话一个文件，`event_name key=value` 行格式，DEBUG+；插件继承会话 id）。终端保留给 TUI——除了聊天，什么都不往终端打印。
-
-<a id="development" name="development"></a>
-
-## 开发
-
-Slife 是一个代码库、几份文档，按读者拆分：
-
-* **[DESIGN.md](DESIGN.md)** — 面向代码开发者的架构与实现：agent loop、上下文工程、工具系统、插件架构、MCP 网关、记忆、A2A。
-* **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)** — 插件系统的权威规范（中央 `PluginSpec` 表、registry、统一生命周期），给所有写插件的人。
-* **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)** — Slife 每轮如何策划模型上下文：渠道、标记、`_turn_prompt` harness 工具对。
-
-```bash
-git clone https://github.com/juzcn/slife.git
-cd slife
-uv sync --all-extras
-
-uv run credstore set-password
-uv run credstore set DEEPSEEK_API_KEY
-uv run slife
-
-# 测试
-uv run pytest
-uv run pytest --cov --cov-report=term-missing
-```
-
-开发模式自动检测（从源码树运行时）：数据文件留在项目目录里。生产安装（uv tool / pipx / pip）一律使用 `~/.slife/`——即使在 checkout 目录或 home 目录里启动也不会误判。CI 在 Ubuntu、macOS 与 Windows 上用 Python 3.13 跑测试套件（测试针对构建出的 wheels 运行）。
 
 ## 许可证
 

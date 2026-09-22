@@ -11,13 +11,17 @@
 * [Part 4 · The Tool System](#part-4--the-tool-system)
 * [Part 5 · Plugins & the MCP Gateway](#part-5--plugins--the-mcp-gateway) — lifecycle, built-ins, gateway, jobs, subagents
 * [Part 6 · Memory, Search & Embeddings](#part-6--memory-search--embeddings)
-* [Part 7 · A2A — Agent-to-Agent](#part-7--a2a--agent-to-agent)
+* [Part 7 · A2A — Agent-to-Agent](#part-7--a2a--agent-to-agent-mesh)
 * [Part 8 · UI, Config, Credentials, Health, Logging, Paths](#part-8--ui-config-credentials-health-logging-paths)
 * [Part 9 · Project Structure](#part-9--project-structure)
 * [Appendix A · Design Decisions & Hard-Won Lessons](#appendix-a--design-decisions--hard-won-lessons)
-* [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) — context curation: channels, markers, the `_turn_prompt` harness pair, and the per-turn context rebuild (§7)
-* [TIMEOUT.md](docs/TIMEOUT.md) — the timeout registry model (values, ownership, gates)
+* [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) — the plugin system: spec, lifecycle, the gateway, health
+* [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) — context curation: channels, markers, the harness tool-pairs, and the per-turn context rebuild (§7)
 * [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md) — the unified tool catalog: tools.yaml sections, tools.db, load/unload threshold, search, injection, MCP reconcile
+* [TIMEOUT.md](docs/TIMEOUT.md) — the timeout registry model (values, ownership, gates)
+* [SUBAGENT.md](docs/SUBAGENT.md) — the agent-worker model: parity, capabilities, the one-turn task
+* [A2A-MQTT.md](docs/A2A-MQTT.md) — the A2A mesh: topics, wire, the `[A2A:…]` envelope, drain schema
+* [License](#license)
 
 ---
 
@@ -39,7 +43,7 @@ The sections are layered — orientation first, then the deep mechanics, then re
 | Looking for a file or module | **Part 9** |
 | Asking "why is it designed this way?" or debugging a hard-to-see regression | **Appendix A** + the relevant part |
 
-**Authority and freshness.** Where this document and a dedicated spec disagree, the dedicated spec and the code win: [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) is the authoritative statement of the plugin system; [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) is the authoritative statement of context curation — injection (channels, markers, the `_turn_prompt` harness tool-pair) and the per-turn context rebuild that selects the turns (§7) — and the deep companion to Part 2's *Context Injection* and *Context Rebuild* sections; [SUBAGENT.md](docs/SUBAGENT.md) is the authoritative statement of the subagent (agent-worker) model and the deep companion to Part 5's *Subagents* section; [A2A-MQTT.md](docs/A2A-MQTT.md) is the authoritative statement of the A2A mesh (topics, wire, markers, drain — Part 7's deep companion); [TIMEOUT.md](docs/TIMEOUT.md) is the timeout registry model (values, ownership, gates). This document is kept current with the code; if a sentence names something that no longer exists, file a fix.
+**Authority and freshness.** Where this document and a dedicated spec disagree, the dedicated spec and the code win: [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) is the authoritative statement of the plugin system; [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) is the authoritative statement of context curation — injection (channels, markers, the harness tool-pairs) and the per-turn context rebuild that selects the turns (§7) — and the deep companion to Part 2's *Context Injection* and *Context Rebuild* sections; [SUBAGENT.md](docs/SUBAGENT.md) is the authoritative statement of the subagent (agent-worker) model and the deep companion to Part 5's *Subagents* section; [A2A-MQTT.md](docs/A2A-MQTT.md) is the authoritative statement of the A2A mesh (topics, wire, markers, drain — Part 7's deep companion); [TIMEOUT.md](docs/TIMEOUT.md) is the timeout registry model (values, ownership, gates); [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md) is the authoritative statement of the tool catalog and the deep companion to Part 4. This document is kept current with the code; if a sentence names something that no longer exists, file a fix.
 
 **Terminology** is defined where it first matters; a quick glossary of the load-bearing terms (also used in the README):
 
@@ -188,7 +192,7 @@ Active history stays within `context_floor`–`context_ceiling` (default 20%–8
 - **Detect**: usage is `context_tokens_for()` — the history's last API call's actual prompt + completion tokens after the first round (per-history), else the restore-time `_last_usage` (the latest restored turn's **persisted `context_tokens`**), else `0`. No estimate is ever substituted (see *Context tracking*).
 - **Trim**: happens **after a turn is saved** (`save_to_memory` → `AgentLoop._trim_after_save`) — by then the last API call's real prompt + completion tokens are known. When occupancy hits `context_ceiling` (default 80%), `extract_oldest_turns` removes the oldest **complete** turns down to `context_window × context_floor` (default 20%), always keeping the current (just-saved) turn. It is an **internal mechanism — no tool call, no LLM-visible pair**: the cut is marked with a runtime-only **`[INFO: N oldest turns have been removed from context]`** note appended to the last assistant message, mirrored in the live TUI as a dim/italic footnote. The evicted turns are then dropped from the persisted live-context list (via the memdb internal tool `__memory_context_turns_drop`, passed the **actual ids** the trim removed — each turn carries its diary rowid as a runtime-only `_turn_id` on its opening user message, set at save and re-stamped on restore), and the tracked "Context covers" time range advances by the same count. A freshly-restored history is exempt from the first-turn trim (`_just_restored_history`).
 - **Turn prompt**: once per turn the loop auto-invokes **`_turn_prompt`** (a normal tool-call pair) — it renders `turn_prompt.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), any A2A peer presence events since the last turn (drained read-once), open failed/missed scheduled runs, and the one-shot "system restarted" flag. On the first round after a restore, `context_tokens_for` falls back to `_last_usage`, primed with the latest restored turn's persisted `context_tokens` — so the first prompt reports the real exit-time occupancy.
-- **Restore**: on startup, the turns named by the persisted **live-context id list** are loaded directly from SQLite **verbatim — no ceiling re-slicing**: the list already encodes the trimmed state. It lives in `diary_meta.context_turns` as an **ordered JSON array of rowids** whose order is authoritative (reads replay it as written and never re-sort by rowid) — the slice is not necessarily contiguous. Three events maintain it: the save **appends** the new rowid inside the same transaction as the diary row (so a missed write can never lose a turn), the trim drops the turns it evicted, and the per-turn rebuild **replaces** it with its recall selection (`__memory_context_turns_set` — or `..._clear` when that selection is empty, the one remaining way the context is emptied outright). `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept for call-site compatibility only. The list is its own bound, so there is no token cap on the restore path. There is **no migration layer** (backward compatibility is not supported): a DB predating the list restores an *empty* context — its turns stay searchable via `turn_recall` and re-enter as new turns are saved — and `_post_schema_check` logs that case loudly. Schema changes land directly in `schema.sql` and apply to fresh databases only (the one exception: `scripts/migrate_context_tokens.py` renames `prompt_tokens` → `context_tokens`).
+- **Restore**: what startup replays is the persisted **live-context id list**, verbatim and with no ceiling re-slicing. The mechanism — where the list lives and why its order is the contract, its three maintainers, the absent token cap, and what a DB predating the list does — is *Session Restore* (Part 6), stated once, there.
 #### Context Rebuild (per-turn recall)
 
 `agent.rebuild_message` (default **true**) makes the context **selected**
@@ -224,8 +228,8 @@ DESIGN-level shape of the contract:
   reply (`{}` — no recall needed, the store is not even asked), no reply at
   all, "the store could not be asked" (`None`), and a selection that cannot be
   fetched. A rejected time bound, an unparseable query, or a pipeline failure
-  is answered as an empty selection; a **store failure is fatal**, never a
-  plausible-looking empty list.
+  is answered as an empty selection; a **store or tokenizer failure is
+  fatal**, never a plausible-looking empty list.
 - **The discriminator is never a participant**: one model call, nothing it
   sends or receives touches the history, the diary or the TUI, and it degrades
   to `None` rather than retrying.
@@ -264,12 +268,13 @@ missing or partial vocabulary rather than mis-count silently.
 
 Two distinct concepts live under different prefixes. They are **not** two tiers of the same thing:
 
-1. **`_` (single underscore) = harness, LLM-visible but reserved.** Harness tools are invoked by the agent loop *on the agent's behalf* — the LLM does not decide to call them. The only one is the builtin `_turn_prompt` (`slife/tools/models.py`): `AgentLoop._auto_invoke()` injects it each turn as a normal `assistant(tool_calls)` + `tool` pair. It **does** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept its tool-call pair in history — and the system prompt tells the model to *read its latest result* rather than call it (an implicit don't-call; it is side-effect free if invoked anyway). Context trimming is **not** a tool. Note: `attach_image` is also auto-invoked via `_auto_invoke`, but it has no `_` prefix and is not schema-reserved, so it is not a harness tool.
+1. **`_` (single underscore) = harness, LLM-visible but reserved.** Harness tools are invoked by the agent loop *on the agent's behalf* — the LLM does not decide to call them. There are two, both builtin (`slife/tools/models.py`): `_turn_prompt`, injected once per turn, and `_check_new_input`, injected at iteration boundaries when cut-in mode is on. `AgentLoop._auto_invoke()` injects each as a normal `assistant(tool_calls)` + `tool` pair. They **do** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept their tool-call pairs in history — and the system prompt tells the model to *read the latest result* rather than call them (an implicit don't-call; both are side-effect free if invoked anyway). Context trimming is **not** a tool. Note: `attach_image` is auto-invoked the same way and sits in `HARNESS_WHITELIST` beside the pair, but it has no `_` prefix and is not schema-reserved, so it is not a harness tool. The per-turn contract of both harness pairs is [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) §4.
 2. **`__` (double underscore) = plugin internal tool, LLM-invisible.** This is a **plugin-spec marker**, not a harness concept. Plugin internal tools (`__memory_save_turn`, `__a2a_drain_incoming`, `__mcp_call_tool`, `__check`, …) are ordinary MCP tools that happen to serve the main process rather than the LLM. They are filtered out of the schema before registration (`is_internal_tool` in `slife/server_utils.py`, applied on every registration and reconcile path) and are called programmatically via `client.call_tool("__…")`.
 
 | Tool | Shape | Category |
 |------|-------|----------|
 | `_turn_prompt` | Builtin tool, auto-invoked each turn | Harness — visible-but-reserved |
+| `_check_new_input` | Builtin tool, auto-invoked at iteration boundaries (cut-in mode) | Harness — visible-but-reserved |
 | `__memory_save_turn` / `__memory_reload_semantic` / `__memory_context_turns_set` / `__memory_context_turns_drop` / `__memory_context_turns_clear` / `__memory_turn_recall` / `__memory_turns_by_ids` / `__check` | memdb plugin | Internal — invisible |
 | `__wechat_drain_incoming` / `__check` | wechat plugin | Internal — invisible |
 | `__scheduled_*` (10) / `__memfiles_reload_semantic` / `__user_pref_append` / `__check` | memfiles plugin | Internal — invisible |
@@ -300,12 +305,13 @@ The system prompt additionally forbids nothing by list — it relies on scaffold
 
 ### Autonomous Heartbeat
 
-The agent is otherwise purely user-driven. A heartbeat gives it a periodic **autonomous window** (a precondition for emergent self-initiated behavior): while idle, every `agent.heartbeat_interval` seconds (default 60, shipped template 1800) the service posts a `[Heartbeat]` message to the inbox, which runs as a **normal agent-loop turn** (own history via the heartbeat source, saved to the diary like any turn).
+The agent is otherwise purely user-driven. A heartbeat gives it a periodic **autonomous window** (a precondition for emergent self-initiated behavior): while idle, every `agent.heartbeat_interval` seconds (default 1800, in code and in the shipped template) the service posts a `[Heartbeat]` message to the inbox, which runs as a **normal agent-loop turn** (own history via the heartbeat source, saved to the diary like any turn).
 
 - **Reply contract** (also in the system prompt): real content if the agent has something worth proactively saying, otherwise exactly `.` — never empty, satisfying the user→assistant role alternation.
 - **TUI filtering** (live + restore): heartbeat turns are recognised by the `[Heartbeat]` mark and filtered — the trigger is never shown, and a real reply renders as `⚡ 自主` (the TUI's zh-locale "autonomous" label). More generally, a bare `.` reply is **silence** from any event. The status bar shows the last beat (`●` act / `·` quiet).
 - **Main agent only**: subagents never start the heartbeat loop — they are task-driven workers.
 - The heartbeat history is separate (source `heartbeat`), so autonomous reflections persist without polluting the human history.
+- The marker vocabulary and the silence contract (`.` = silence from any source) are [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md).
 
 ### Scheduled Tasks (the timing side)
 
@@ -317,6 +323,8 @@ Recurring tasks the agent runs on a cron schedule, designed as three separated c
 - **Failed & missed runs — settled at startup.** The one-shot `schedule_startup_sweep` reaps every surviving `pending` run to `failed`, and fires due while slife was down to `missed`. It posts no message. Both surface via `scheduled_run_list` and can be backfilled (`run_schedule_now`) or closed (`scheduled_run_skip`). Tasks fire **only while slife is running**.
 
 Tools: `scheduled_task_set` / `scheduled_task_remove` / `scheduled_task_list`, `scheduled_run_list` / `scheduled_run_skip`, `run_schedule_now` — all builtin, "Schedule" category. `run_schedule_now` takes `due_at` (backfill) and `clone_context=True` (spawn the worker with a clone of the current conversation). `scheduled_task_set`'s `description` is **schema-required** — it is the worker's instruction.
+
+The **two surfaces** a task produces in the context and the TUI — the dispatch trigger, and the completion arriving over the subagent channel — are [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) §6.
 
 ### Context Injection
 
@@ -409,7 +417,7 @@ The current inventory — 61 builtin classes in 13 categories (60 LLM-visible wi
 
 ### Tool Categories, the Unified Catalog & Managed Surfaces
 
-**The catalog is the load/unload model.** Every tool is a row in one shared `tools.db` — a *function tool* (builtin / job / plugin / mcp / rest-api) or a *skill* / *cli* entry, which its `category` says (there is no derived `type` column: the load-state question is a membership test, not a second thing to keep in sync). Function tools carry a `load_status` of `loaded / unloaded`; **skill and cli carry `'n/a'`** (they have no load state). A separate `status` column holds the three states a row can be in — `enabled`, `disabled` (config switched it off) and `error` (its owner is unusable right now: a server that never came up, a SKILL.md that cannot be read) — with config and runtime in two guarded lanes of that one column, so neither overwrites the other and a fixed owner returns to `enabled`. No column is nullable: "not applicable" is a value, so every read is a plain comparison. Skill and cli rows are mirrored from their own live sources — the skills dir and `tools.yaml`'s `cli` section — at boot and after every `skill_*` / `cli_*` mutation, which is how `tool_search` finds them; a skill row's `schema` is its SKILL.md, so a playbook is searchable by its own text. State never lives in the registry — `ToolRegistry` is only the execution pool of materialized instances. The system is configured by the six category sections of `tools.yaml` (plus the `tool_load.threshold` knob) — every entry carries the two policy flags `enabled` and `autoload`, per tool where a tool has its own name (builtin / job — a plugin tool is configured in one of those two) and per server in mcp / rest-api, whose tool names are unknown until they connect. Seeding is at boot: a new row is born `loaded` only for the two autoload sources — the whitelist (system protection, not configurable) and the `autoload` entries — `unloaded` otherwise; an existing row keeps the model's decision, **except** for an `autoload` entry, which re-asserts `loaded` on every sync (the one place config wins; `load_status` has exactly four writers — autoload, `func_tool_load`, `_func_tool_unload`, eviction). **Removal is a row DELETE, never a status mark** — one statement per set (`remove_tools`), so a whole server, a category mirror or a single vanished tool drops cheaply and every removal counts as 移除 on the sync line, while a tool that is merely switched off keeps its row with `status = disabled`. The families differ only in who reports the death: `tools.yaml` for an external server leaving it, the server's own `tools/list` for one tool it stopped publishing, the source mirror for a skill / cli / job, and the **boot seed** for a builtin whose class left the code — the registry plus the `tools.yaml`-disabled set is that family's whole membership, and nothing else can ever claim a builtin row.. Injection is per-request from the catalog's `schema` column (re-read before every LLM request, so a mid-turn `func_tool_load` lands in the next call), and a threshold trims the least-recently-used tools with both autoload sources carved out. That stored `schema` **is** the injected definition — strictly the tool def (`name` + `description` + a plain JSON Schema `inputSchema`, no other keys, never docstring text) — so the catalog and the wire carry one schema, not two. Discovery is one `tool_search` (grep / keyword / hybrid across every category, filtering on the catalog's own columns — `category` / `source_id` / `status` / `load_status`, each a real SQL predicate, so a filter runs before the LIMIT); loading is one `func_tool_load`, which for `mcp`/`rest-api` rows also materializes the execution proxy. The full design — the db schema (there is no `server` table), the effective status, the per-request snapshot, the eviction order, the boot sequence, and the `_sync_mcp_proxies` reconcile — is **[docs/TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**; this section keeps only what no other document covers.
+**The catalog is the load/unload model.** Every tool is a row in one shared `tools.db` — a *function tool* (builtin / job / plugin / mcp / rest-api) or a *skill* / *cli* entry, which its `category` says (there is no derived `type` column: the load-state question is a membership test, not a second thing to keep in sync). Function tools carry a `load_status` of `loaded / unloaded`; **skill and cli carry `'n/a'`** (they have no load state). A separate `status` column holds the three states a row can be in — `enabled`, `disabled` (config switched it off) and `error` (its owner is unusable right now: a server that never came up, a SKILL.md that cannot be read) — with config and runtime in two guarded lanes of that one column, so neither overwrites the other and a fixed owner returns to `enabled`. No column is nullable: "not applicable" is a value, so every read is a plain comparison. Skill and cli rows are mirrored from their own live sources — the skills dir and `tools.yaml`'s `cli` section — at boot and after every `skill_*` / `cli_*` mutation, which is how `tool_search` finds them; a skill row's `schema` is its SKILL.md, so a playbook is searchable by its own text. State never lives in the registry — `ToolRegistry` is only the execution pool of materialized instances. The system is configured by the seven category sections of `tools.yaml` (plus the `tool_load.threshold` knob) — every entry carries the two policy flags `enabled` and `autoload`, per tool where a tool has its own name (builtin / job — a plugin tool is configured in one of those two) and per server in mcp / rest-api, whose tool names are unknown until they connect. Seeding is at boot: a new row is born `loaded` only for the two autoload sources — the whitelist (system protection, not configurable) and the `autoload` entries — `unloaded` otherwise; an existing row keeps the model's decision, **except** for an `autoload` entry, which re-asserts `loaded` on every sync (the one place config wins; `load_status` has exactly four writers — autoload, `func_tool_load`, `_func_tool_unload`, eviction). **Removal is a row DELETE, never a status mark** — one statement per set (`remove_tools`), so a whole server, a category mirror or a single vanished tool drops cheaply and every removal counts as 移除 on the sync line, while a tool that is merely switched off keeps its row with `status = disabled`. The families differ only in who reports the death: `tools.yaml` for an external server leaving it, the server's own `tools/list` for one tool it stopped publishing, the source mirror for a skill / cli / job, and the **boot seed** for a builtin whose class left the code — the registry plus the `tools.yaml`-disabled set is that family's whole membership, and nothing else can ever claim a builtin row.. Injection is per-request from the catalog's `schema` column (re-read before every LLM request, so a mid-turn `func_tool_load` lands in the next call), and a threshold trims the least-recently-used tools with both autoload sources carved out. That stored `schema` **is** the injected definition — strictly the tool def (`name` + `description` + a plain JSON Schema `inputSchema`, no other keys, never docstring text) — so the catalog and the wire carry one schema, not two. Discovery is one `tool_search` (grep / keyword / hybrid across every category, filtering on the catalog's own columns — `category` / `source_id` / `status` / `load_status`, each a real SQL predicate, so a filter runs before the LIMIT); loading is one `func_tool_load`, which for `mcp`/`rest-api` rows also materializes the execution proxy. The full design — the db schema (there is no `server` table), the effective status, the per-request snapshot, the eviction order, the boot sequence, and the `_sync_mcp_proxies` reconcile — is **[docs/TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**; this section keeps only what no other document covers.
 
 **Managed categories** (Skills / CLI / REST API / Models / MCP / embeddings) support a standard **`X_list` / `X_set` / `X_remove`** surface (plus `X_set_enabled` where a toggle applies). `X_set` is an idempotent upsert — add + update in one call. Config uses the `config_env_*` prefix (no `config_list`); Models substitutes `model_switch` for `X_set_enabled`; embeddings tools are `embeddings_model_*` + `embeddings_enable`.
 
@@ -607,7 +615,7 @@ On startup, recent turns are read **directly from SQLite** — no MCP transport,
 
 **Turn headers on restore.** Each restored user message gets a compact `[INFO: {"turn_id": N, "begin": …, "end": …}]` footnote regenerated from persisted columns (rowid + begin → end). The footnote is **runtime-only and never persisted** — the DB carries the clean original in both paths. Heartbeat turns are excluded. The current in-flight turn carries none — a missing footnote is the "current session" signal.
 
-**The id list replays the exit-time context.** `diary_meta.context_turns` — an **ordered JSON array of rowids** — names the live context: the save appends the new rowid in the diary row's own transaction, the internal trim drops the turns it evicts, and the per-turn rebuild replaces the list with its recall selection (rebuild mode — `__memory_context_turns_set` / `..._clear`, the only remaining outright empty). The list's order is authoritative and the slice need not be contiguous, so reads replay it as written and never re-sort by rowid. Turns on the list are returned **verbatim — no ceiling re-slicing**: the list already encodes the trimmed state, and it is its own bound (no token cap on this path). The just-restored history is exempt from the first-turn trim. Turn headers are re-appended to restored, non-synthetic turns; every restored turn is run through `_ensure_turn_consistent` before the UI is built. The restored turn prompt is primed with the **latest restored turn's persisted `context_tokens`** — the exact context size at exit — so the first `_turn_prompt`/status bar shows real occupancy. A missing/zero value falls back to the token estimate. A DB predating the list restores an empty context (turns stay searchable; `_post_schema_check` warns).
+**The id list replays the exit-time context.** `diary_meta.context_turns` — an **ordered JSON array of rowids** — names the live context: the save appends the new rowid in the diary row's own transaction, the internal trim drops the turns it evicts, and the per-turn rebuild replaces the list with its recall selection (rebuild mode — `__memory_context_turns_set` / `..._clear`, the only remaining outright empty). The list's order is authoritative and the slice need not be contiguous, so reads replay it as written and never re-sort by rowid. Turns on the list are returned **verbatim — no ceiling re-slicing**: the list already encodes the trimmed state, and it is its own bound (no token cap on this path). The just-restored history is exempt from the first-turn trim. Turn headers are re-appended to restored, non-synthetic turns; every restored turn is run through `_ensure_turn_consistent` before the UI is built. The restored turn prompt is primed with the **latest restored turn's persisted `context_tokens`** — the exact context size at exit — so the first `_turn_prompt`/status bar shows real occupancy. A missing/zero value reports `0`: an estimate is never substituted, because a chars÷3 figure would be indistinguishable from a real reading (`context_tokens_for`). A DB predating the list restores an empty context (turns stay searchable; `_post_schema_check` warns): there is **no migration layer**, so schema changes land directly in `schema.sql` and apply to fresh databases only (the one exception: `scripts/migrate_context_tokens.py` renames `prompt_tokens` → `context_tokens`).
 
 **Restore failure is fatal, never silent.** A present-but-broken memory DB raises `MemoryDatabaseError` instead of returning `[]` — the TUI shows the error and **aborts startup**. Required plugins that fail to *load* (including the bounded 60 s spawn hang-guard) likewise abort startup, stop all plugins, and exit.
 
@@ -658,11 +666,11 @@ Multiple `@` may sit **adjacent without spaces** — `@a.png@b.png`, `@a.png @b.
 
 The A2A protocol runs over the official **A2A-over-MQTT** profile — the `a2a-over-mqtt` SDK from EMQX — *not* a self-built binding. The **`a2a` plugin** owns the mesh: it hosts the LLM-facing `a2a_*` tools, drains inbound tasks and presence into the unified inbox, and wraps the SDK's `Responder` for out-of-band completion by the agent. The topics, wire, QoS + retry, markers, drain schema, tool surface, and the Windows selector-loop note are specified in **[A2A-MQTT.md](docs/A2A-MQTT.md)**.
 
-Only MQTT is implemented. A `transport` other than `"mqtt"` in the `a2a` config section disables A2A with a warning at config load instead of crashing startup. The LLM-facing tools are the **standard A2A operations** — async push model, no message/task split, nothing waits: `a2a_send_message`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_set_task_done`, `a2a_broadcast`. One uniform prefix. Subagents are **not** part of A2A (they are local workers; the worker model is [SUBAGENT.md](docs/SUBAGENT.md)).
+Only MQTT is implemented. A `transport` other than `"mqtt"` in the `a2a` config section disables A2A with a warning at config load instead of crashing startup. The LLM-facing tools are the **standard A2A operations** — async push model, no message/task split, nothing waits: `a2a_send_message`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_broadcast`. One uniform prefix. Subagents are **not** part of A2A (they are local workers; the worker model is [SUBAGENT.md](docs/SUBAGENT.md)).
 
 ### MQTT Mesh
 
-- **Standard wire.** The topics (`$a2a/v1/…`), JSON-RPC 2.0 over MQTT v5 (`ResponseTopic`/`CorrelationData`), retained Agent Cards with `a2a-status` presence + LWT, per-task dedup and ack → artifact → terminal, the QoS rules (1 for discovery/request/reply, 0 for broadcast), the requester retry ladder (15 s first-reply, ≤ 3 attempts), and all three marker payloads (`[A2A:…]`, `[A2A-RESULT:…]`, `[A2A-BROADCAST:…]`) are specified in **[A2A-MQTT.md](docs/A2A-MQTT.md)**.
+- **Standard wire.** The topics (`$a2a/v1/…`), JSON-RPC 2.0 over MQTT v5 (`ResponseTopic`/`CorrelationData`), retained Agent Cards with `a2a-status` presence + LWT, per-task dedup and ack → artifact → terminal, the QoS rules (1 for discovery/request/reply, 0 for broadcast), the requester retry ladder (15 s first-reply, ≤ 3 attempts), and the one `[A2A:…]` envelope (`type` picks out task_request / task_response / message / broadcast) are specified in **[A2A-MQTT.md](docs/A2A-MQTT.md)**.
 - Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; a failed probe
   means the a2a plugin is not started and this is reported via `system_health`.
 - The mesh connects **eagerly** when the plugin starts so presence is announced at launch; a failed
@@ -672,8 +680,8 @@ Only MQTT is implemented. A `transport` other than `"mqtt"` in the `a2a` config 
   the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with
   stale state.
 - Results are **always auto-delivered** (the standard push model): a peer's terminal reply is pushed
-  into the history as `[A2A-RESULT:{"from": …, "task_id": …}]` — "Peer X completed/cancelled async task
-  (ID: …)". There is no poll mode and nothing to wait on.
+  into the history as an `[A2A:…]` envelope with `type: "task_response"` — "Peer X completed/cancelled
+  async task (ID: …)". There is no poll mode and nothing to wait on.
 
 ### Unified Inbox
 
@@ -774,7 +782,7 @@ Known shapes: `sk-*`, `ghp_*`, `ya29.*`, `pypi-*`, `Authorization: Bearer` token
 | `env` | `${VAR}` references, applied to the environment at startup |
 | `models.providers` / `active_model` | LLM providers (api_key, base_url, api, models[]) + the active `"provider/model"` ref |
 | `job_coding_model` | Top-level provider/model ref for jobs (plugin-read, independent of `active_model`) |
-| `agent` | `max_iterations`, `context_floor`, `context_ceiling`, `tool_result_ceiling`, `memory_tool_result_chars`, `heartbeat_interval` |
+| `agent` | `max_iterations`, `context_floor`, `context_ceiling`, `tool_result_ceiling`, `memory_tool_result_chars`, `heartbeat_interval`, `cutin_enabled`, `rebuild_message`, `recall_limit`, `recall_min_similarity` |
 | `embeddings` | First-class embeddings config: `providers` (OpenAI-compatible endpoints), `active_model` (bare provider id), `enabled` — shared by memdb/memfiles + the gateway's tool catalog (host passes the active endpoint via handshake) |
 | `wechat` | `enabled` toggle |
 | `media` | Non-chat generation config (plugin-read, ignored by the main `Config` parser) |
@@ -824,7 +832,7 @@ system_health: DEGRADED — 2 problems (0 errors, 2 warnings): rest-api, wechat;
 memdb: db=7.3 MB (slife.db); embedding=ready (BAAI/bge-m3, dim=1024)
 ```
 
-One rule shapes every entry a check returns: **`value` is the fact, `hint` is what to do about it.** `value` must be self-contained (it is what the healthy section prints); `hint` is rendered only for `warning`/`error` entries, so a healthy entry carries none (enforced by `TestOkEntriesCarryNoHint`). Any other key on an entry is machine-only — the renderer reads only `component`/`level`/`key`/`value`/`hint`. Entries that agree on `(level, value, hint)` collapse into one fact with a key list, which is what keeps 19 disconnected servers to one line; ranking puts problems first, and the static environment records last. Nothing may name a `check_*` function as a remedy — they are not callable.
+One rule shapes every entry a check returns: **`value` is the fact, `hint` is what to do about it** — a healthy entry carries no `hint` at all. The full entry contract (what the renderer reads, the collapse rule, the `info` semantics, and how the check list is derived from the plugin registry) is [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) → *Health*. Ranking puts problems first and the static environment records last, and nothing may name a `check_*` function as a remedy — they are not callable.
 
 **Startup records vs live checks.** A startup record (`health.record`) is dropped when a live entry covers the same `(component, key)` — so a producer names its component after the live check that re-reports it (`mcp_servers` / `rest-api`, `watchdog`, `wechat`, `a2a`), and the live report wins in both directions. This is why `_discover_and_register_external_tools` records under `_health_component()` rather than a fixed name.
 
@@ -865,7 +873,8 @@ slife/
     message_history.py #   Message storage + history (OpenAI format, sanitization, _ensure_turn_consistent, turn/trim headers)
     llm_client.py      #   Backend router + StreamChunk
     system_prompt.py   #   Prompt rendering (static + dynamic Jinja2)
-    templates/         #   agent.j2, subagent.j2, slife.j2, turn_prompt.j2, schedule.j2, schedule_trigger.j2
+    roles.py           #   Harness capabilities and which role (main agent / worker) holds them
+    templates/         #   agent.j2, subagent.j2, slife.j2, turn_prompt.j2, rebuild_messages.j2, schedule.j2, schedule_trigger.j2
     llm_backends/      #   API backends: openai.py, anthropic.py, openai_responses.py
     inbox.py           #   Unified message queue + MessageHistoryStore
     plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle), plugin_port_env
@@ -879,10 +888,13 @@ slife/
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
     context.py         #   ToolContext — runtime refs (registry, mcp_client, config, history)
     _config_io.py      #   YAML read/write helpers (+ cross-process config_read_modify_write lock)
+    _yaml_doc.py       #   Comment-preserving YAML writes (edit the document, never re-serialize it)
     catalog.py         #   CatalogStore — the shared tools.db (SQL, FTS5 + semantic, effective status, evict_lru)
+    catalog_schema.sql #   The tools.db schema (fresh databases only; no migration layer)
     catalog_service.py #   ToolCatalogService — policy: seeding, snapshot, load/unload matrix, threshold eviction
     catalog_search.py  #   hybrid search adapter (RRF + score annotator over memdb.search)
-    whitelist.py       #   harness pair + 5 meta tools + 2 pinned (ALWAYS_LOADED — never evicted / not unloadable)
+    semantic.py        #   Host-side semantic leg for the catalog (projection driver + write-back)
+    whitelist.py       #   3 harness tools + 5 meta tools + 2 pinned (ALWAYS_LOADED — never evicted / not unloadable)
     meta_tools.py      #   tool_search / func_tool_load / _func_tool_unload (see TOOL-SYSTEM.md)
     system.py          #   system_health, system_tools_list, async tasks, set_max_iterations, notify_user
     exec.py            #   Shell, Python, package install (+ _kill_process_tree)
@@ -891,7 +903,7 @@ slife/
     cli.py             #   External CLI tool management
     rest_api.py        #   REST API tool management
     subagent.py        #   Local worker tools (spawn/list/stop + delegation + task mgmt)
-    models.py          #   Model management + attach_image (vision) + _turn_prompt (harness) + _ModelConfigTool base
+    models.py          #   Model management + attach_image (vision) + the two harness tools + _ModelConfigTool base
     config.py          #   Config env var tools
     credentials.py     #   Credential check/inject/uninject
     embeddings.py      #   embeddings_model_* — first-class embeddings section config
@@ -899,7 +911,7 @@ slife/
     user_prefs.py      #   add_user_pref (appends to USER.md)
   plugins/             # Built-in plugins (auto-discovered server.py packages) + the spec
     spec.py            #   PLUGIN_SPECS — the central spec table (single source of truth)
-    memdb/             #   Turns database (server.py, store.py, search.py, semantic.py, embeddings.py, schema.sql)
+    memdb/             #   Turns database (server.py, store.py, search.py, recall.py, semantic.py, embeddings.py, embedding_config.py, schema.sql)
     wechat/            #   WeChat messaging (server.py, client.py, config.py)
     memfiles/          #   Private notes/diary/files/reports cabinet (server.py, store.py, user_prefs.py, schema.sql)
     sharefile/         #   Public file sharing (server.py, config.py, providers.py = pluggable tunnel)
@@ -913,9 +925,18 @@ slife/
       config.py        #   tools.yaml → the merged mcp.servers/rest-api server view + resolve_server_config
       oauth.py         #   OAuth device flow (tokens in the credential store)
       process.py / i18n.py
+  a2a/                 # The mesh's transport-agnostic core (the plugin owns the SDK binding)
+    mesh.py            #   A2AMesh — Responder subclass, outbound driver, presence, task lifecycle
+    broker.py          #   Mosquitto broker detection (slife never spawns it)
+    card.py            #   AgentCard — slife's display/presence view of a peer
+    config.py          #   The `a2a` config section
+    identity.py        #   A2A identity types (transport-agnostic)
+    inbound_store.py   #   Persisted inbound-task record (in flight, and orphaned by a restart)
+    task_store.py      #   Shared task-lifecycle tracking
   mcp/                 # Host-process MCP infra
     host_server.py     #   slife-as-plugin — in-process FastMCP exposing the live ToolRegistry
     tool_adapter.py    #   MCPProxyTool (bridges MCP → Tool ABC, ProxyRoute dispatch)
+    era.py             #   Protocol-era glue for every MCP link (the 2026-07-28 revision)
   subagent/            # Local workers (agent workers, not A2A; see docs/SUBAGENT.md)
     headless.py        #   Headless worker-scoped JSON-RPC process
     identity.py        #   SUBAGENT unified-inbox source sentinel
@@ -934,6 +955,8 @@ slife/
   config.py            #   YAML config parsing (models, env, plugins, embeddings, A2A, subagent)
   paths.py             #   Filesystem paths (dev vs prod, data dir, DB, memfiles, jobs)
   platform.py          #   OS detection, shell detection, process lifecycle, notifications
+  net.py               #   Network address facts shared across components (fake-ip proxy detection …)
+  timeouts.py          #   The central timeout registry — every value, owner and gate (see TIMEOUT.md)
   logfmt.py            #   Structured logging + secret sanitization
   timeutil.py          #   Unified since/until search-bound grammar (normalize_time_bound)
   env.py               #   ${VAR} environment resolution

@@ -68,8 +68,12 @@ these fails startup with a named error:
    `stream.retries` must be an int);
 2. `grace.gentle ≤ grace.force` (the kill ladder escalates);
 3. `ready.relisten ≤ ready.connect_attempt ≤ ready.spawn` (nested budgets nest);
-4. `ready.connect_startup ≥ ready.spawn`;
-5. `work.stall > 0`.
+4. `ready.relisten_max ≥ ready.relisten`;
+5. `ready.connect_startup ≥ ready.spawn`;
+6. `ready.tunnel_heal ≥ ready.tunnel_read_url` (a running child gets at least
+   the patience a fresh start gets, or the monitor would respawn one that was
+   never given time to heal);
+7. `work.stall > 0`.
 
 ## The convention — how consumers read values
 

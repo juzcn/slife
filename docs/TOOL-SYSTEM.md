@@ -1,6 +1,6 @@
 # The Unified Tool System
 
-> Authoritative design of Slife's tool catalog (the "Tool System" — DESIGNER_NOTES §8.5). Covers the six-category `tools.yaml` model, the shared `tools.db` catalog, the load/unload threshold, the search surface, the per-request injection chain, and MCP/REST-API integration. Reader: a developer working on tool discovery, loading, eviction, or the mcp-gateway reconcile. The everyday tool inventory lives in the [README](../README.md#tools); the plugin-side server contract in [PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md).
+> Authoritative design of Slife's tool catalog (the "Tool System" — DESIGNER_NOTES §8.5). Covers the seven-category `tools.yaml` model, the shared `tools.db` catalog, the load/unload threshold, the search surface, the per-request injection chain, and MCP/REST-API integration. Reader: a developer working on tool discovery, loading, eviction, or the mcp-gateway reconcile. The everyday tool inventory lives in the [README](../README.md#tools); the plugin-side server contract in [PLUGIN_CONTRACT.md](PLUGIN_CONTRACT.md).
 
 ---
 
@@ -16,8 +16,8 @@ The goal is one unified model: **every function tool** (builtin, job, plugin, mc
 
 Key properties:
 
-- **Unified search + load.** `tool_search` spans every category in the catalog (the six `tools.yaml` sections plus the plugin tools); `func_tool_load` loads any function tool by name.
-- **Threshold-managed.** A configurable cap (`tool_load.threshold`, default 100) bounds how many function tools are injected; the harness evicts the oldest-by-usage at turn boundaries. Never evicted — and the only things injected before the model asks: the whitelist (harness pair + 5 meta tools + 2 pinned) and anything marked `autoload` in `tools.yaml`.
+- **Unified search + load.** `tool_search` spans every category in the catalog (every `tools.yaml` category section); `func_tool_load` loads any function tool by name.
+- **Threshold-managed.** A configurable cap (`tool_load.threshold`, default 100) bounds how many function tools are injected; the harness evicts the oldest-by-usage at turn boundaries. Never evicted — and the only things injected before the model asks: the whitelist (3 harness tools + 5 meta tools + 2 pinned) and anything marked `autoload` in `tools.yaml`.
 - **Granular.** Load/unload is per-tool, not per-server. A connected MCP server with 50 tools injects only the ones the model loaded.
 - **DB-driven injection.** The schema injected into the LLM comes from the catalog's `schema` column — never re-fetched from the live MCP server or parsed from tool code.
 
@@ -43,6 +43,7 @@ The tool system is configured entirely in `tools.yaml` (sibling of `slife.yaml` 
 
 ```
 builtin:   [{name, enabled, autoload, ...overrides}]
+plugin:    [{name, enabled, autoload}]                          # a built-in plugin's own tool
 mcp:       {servers: {<name>: {command|url, args, env, enabled, autoload, source, ...}}}
 rest-api:  {<name>: {command, args, env, enabled, autoload, source, ...}}   # OpenAPI via mcp-openapi-proxy
 job:       [{name, enabled, autoload}]                          # jobs are files in jobs/ (tool: job-<name>)

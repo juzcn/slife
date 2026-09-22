@@ -16,7 +16,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: **60 builtin tools by default** across 13 categories (including the reserved harness tool `_turn_prompt`, auto-invoked each turn), **nine internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, the MCP gateway `mcp-gateway`, and the **`local-embed`** embedding service), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: **60 builtin tools by default** across 13 categories (including the two reserved harness tools, `_turn_prompt` and `_check_new_input`, auto-invoked by the loop), **nine internal plugin services** (memdb, wechat, memfiles, sharefile, a2a, media, job-coding, the MCP gateway `mcp-gateway`, and the **`local-embed`** embedding service), always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -30,7 +30,7 @@ Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 > * **What can it actually do?** → [Features](#features)
 > * **I want semantic (hybrid) memory search to work** → [Semantic Memory Search — Installation Guide](#semantic-memory-search--installation-guide)
 > * **Day-to-day use** (keys, flags, health) → [Usage Reference](#usage-reference)
-> * **I'm going to develop or debug Slife itself** → [Development](#development) — developer docs live in [DESIGN.md](DESIGN.md)
+> * **I'm going to develop or debug Slife itself** → [Run from source](#run-from-source)
 
 ## Quick Start
 
@@ -115,6 +115,29 @@ otherwise be read as a valid vocabulary and silently mis-count tokens.
 uvx --from git+https://github.com/juzcn/slife.git slife
 ```
 
+### Run from source
+
+Running from source, for development or debugging:
+
+```bash
+git clone https://github.com/juzcn/slife.git
+cd slife
+uv sync
+
+uv run credstore set-password
+uv run credstore set DEEPSEEK_API_KEY
+uv run slife
+
+# Tests
+uv run pytest
+uv run pytest --cov --cov-report=term-missing
+```
+
+`uv sync` is **exact**: it prunes the checkout's `.venv` to the lock, and no embedding backend is in the lock (they are per-platform manual installs — see [Re-adding a backend (manual installs)](local-embed/README.md#re-adding-a-backend-manual-installs)). If you keep `llama-cpp-python` or `sentence-transformers` in a dev venv for real end-to-end runs, either pass `uv sync --inexact` or reinstall the backend after syncing.
+
+Dev mode auto-detects when you run from the source tree: data files stay in the project directory. Production installs (uv tool / pipx / pip) always use `~/.slife/` — even when launched from inside a checkout or from the home directory. CI runs the test suite on Ubuntu, macOS, and Windows with Python 3.13 (tests run against the built wheels).
+
+
 ### Update
 
 Re-run the install script to upgrade slife — it rebuilds from the latest `main` and preserves what you've customized:
@@ -140,7 +163,7 @@ The uninstaller removes the `slife` and `credstore` tool commands (they share on
 
 ### Related tools
 
-The repo also ships three standalone packages — install each independently (the MCP gateway ships **inside** slife as an internal plugin; `local-embed` is one too, and *also* runnable as a standalone service — you may start it yourself, and slife will use that instance rather than starting a second one):
+Besides slife itself, the repo ships three standalone packages — install each independently (the MCP gateway ships **inside** slife as an internal plugin; `local-embed` is one too, and *also* runnable as a standalone service — you may start it yourself, and slife will use that instance rather than starting a second one):
 
 | Package | Install | Purpose |
 |---------|---------|---------|
@@ -159,7 +182,7 @@ Installing slife depends on [credstore](credstore/README.md) — it does **not**
 |-------|---------|----------|
 | **Secrets** | credential store (credstore) | API keys — encrypted at OS level, plus an encrypted cryptfile backup |
 | **Config** | `~/.slife/slife.yaml` | `${VAR}` references + non-secret values |
-| **Tool config** | `~/.slife/tools.yaml` | Tool definitions by category — `builtin` / `mcp` / `rest-api` / `job` / `cli` / `skill` (see the gateway section below) |
+| **Tool config** | `~/.slife/tools.yaml` | Tool definitions by category — `builtin` / `plugin` / `mcp` / `rest-api` / `job` / `cli` / `skill` (see the gateway section below) |
 
 ### Secrets & API keys
 
@@ -249,7 +272,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `set_max_iterations`, `set_midturn_input` (mid-turn preemption on/off), `notify_user`, `wait_minutes` (pause the turn and resume automatically), `add_user_pref` (record a preference in `USER.md`) |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` (disabled by default) |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
-| Job | `job-list`, `job-write`, `job-remove`, `job-run` + one tool per registered job (`job-<name>`), from the `job-coding` plugin |
+| Job | `job-<name>` — one tool per job you wrote in `~/.slife/jobs/`; added and removed through `job-list` / `job-write` / `job-remove` / `job-run`, which belong to the `job-coding` plugin |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_list_tools`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
@@ -271,11 +294,11 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_save`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `file_read`, `report_save`, `report_list`, `report_read` |
 | `sharefile` | `share_file`, `sharefile_unshare` |
-| `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_send_message`, `a2a_send_message_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`, `a2a_set_task_done` (complete a received task's result) |
+| `a2a` | `a2a_send_message` (async — returns a task_id, the result pushes back later), `a2a_cancel_task`, `a2a_list_agents`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
-| `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + one tool per registered job (e.g. `translate`) |
+| `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + one tool per registered job (e.g. `job-translate`) |
 
-**One catalog for every tool, managed by a threshold.** Third-party capability enters only as a standard MCP server in `tools.yaml` (`mcp` + `rest-api` sections — any stdio / SSE / Streamable HTTP server works, no Slife SDK required). Every category — builtin, job, plugin, mcp, rest-api, skill, cli — lives in one shared `tools.db`; the model discovers across all of them with `tool_search` (grep / keyword / semantic hybrid, filtering on the catalog's columns), then loads a specific tool with `func_tool_load(full_name)` — per-tool, not per-server, so one large server injects only the tools actually used. Nothing is injected just because it exists: a tool is born `unloaded` and only `func_tool_load` puts it in the tool list (the whitelist — harness pair, meta tools, and the pinned `skill_use` / `system_health` — and anything marked `autoload: true` in `tools.yaml` excepted, and an `autoload` entry stays loaded: it is the one config decision that wins over the model's own unload). That list is a context budget, not a permission: a tool with an execution route is callable by name whether or not the model has loaded it, and loading is what puts the tool's schema in front of it. The injected list is capped by a threshold (default 100, tunable in `tools.yaml`) and the harness evicts least-recently-used tools at turn boundaries, never an `autoload` one. A server's lifecycle is one switch per family (`mcp_set_enabled` / `rest_api_set_enabled`) — the modern MCP protocol has no session to open or close, so enabling connects and a tool call reconnects lazily — and **every enabled server is brought up at boot**; a server that is down has its tools marked `error`, so they never inject a dead transport. The catalog is synced live from the connections on every (re)connect — no offline rebuild step. Full design: **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
+**One catalog for every tool, managed by a threshold.** Third-party capability enters only as a standard MCP server in `tools.yaml` (`mcp` + `rest-api` sections — any stdio / SSE / Streamable HTTP server works, no Slife SDK required). Every category — builtin, job, plugin, mcp, rest-api, skill, cli — lives in one shared `tools.db`: the model discovers across all of them with `tool_search` (grep / keyword / semantic hybrid), then loads a specific tool with `func_tool_load(full_name)` — per-tool, not per-server, so one large server injects only the tools actually used. Nothing is injected just because it exists; the exceptions are the always-on whitelist (the harness tools, the meta tools, and the pinned `skill_use` / `system_health`) and anything you mark `autoload: true`, which also stays loaded. That list is a context budget, not a permission: a tool with an execution route is callable by name whether or not the model has loaded it, and loading is what puts the tool's schema in front of the model. The list is capped by `tool_load.threshold` (default 100); least-recently-used tools are evicted as it fills, never an `autoload` one. A server's lifecycle is one switch per family (`mcp_set_enabled` / `rest_api_set_enabled`), and every enabled server is brought up at boot — a server that is down has its tools marked `error`, so they never inject a dead transport.
 
 **Windows execution.** `execute_shell` runs in the detected shell — PowerShell or cmd (the same value the system prompt reports, so the LLM's syntax actually executes) — and its output is decoded with the system code page (GBK/cp936 on Chinese Windows). `run_python_script` forces the child Python to UTF-8 (`-X utf8`) so non-ASCII output can't crash the child.
 
@@ -300,7 +323,7 @@ Every turn also preserves its **source channel** — `human`, `wechat`, a subage
 
 ### Autonomous heartbeat
 
-While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_interval` seconds; the code default is 60, the shipped template sets 1800). It runs as a normal turn (own turn, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.`. A bare `.` reply is **silence** — never rendered in the chat or session restore, from any event (heartbeat, A2A async-completion notification, etc.); the `[Heartbeat]` trigger is filtered, and a real autonomous reply renders as `⚡ 自主`. This is the precondition for emergent self-initiated behavior.
+While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_interval` seconds; default 1800). It runs as a normal turn (own turn, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.`. A bare `.` reply is **silence** — never rendered in the chat or session restore, from any event (heartbeat, A2A async-completion notification, etc.); the `[Heartbeat]` trigger is filtered, and a real autonomous reply renders as `⚡ 自主`. This is the precondition for emergent self-initiated behavior.
 
 ### Scheduled tasks
 
@@ -344,144 +367,28 @@ Nine internal plugins run as independent child processes, each declared by one r
 | **a2a** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
 | **media** | Non-chat AI generation (image, video, TTS, ASR) from any provider — owns the `media:` config section and a provider-agnostic adapter layer. Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | **job-coding** | Deterministic jobs as MCP tools — code-defined functions in `~/.slife/jobs/` run with exactly their declared args; one-shot LLM calls via `llm.chat` on `job_coding_model`. Tools: `job-list`, `job-write`, `job-remove`, `job-run` + one per job |
+| **local-embed** | Local embedding endpoint service — serves GGUF/transformer models at `127.0.0.1:17347/v1`, each loaded once and shared by `memdb` + `memfiles`. Also runnable standalone; slife uses your instance rather than starting a second one |
 
-All internal plugins run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 consecutive failures) and recovers the restart counter only after a plugin stays up ~60 s. Readiness follows the MCP standard (the `initialize` handshake completes only after the plugin's own init succeeded); **required plugins** (`plugins.required` — `memdb` and `memfiles` in the bundled config) are core: failing to become ready **aborts startup** instead of limping on. External/subordinate dependencies — external MCP servers, the tunnel, WeChat login, media providers, the A2A broker — never gate readiness; they are uncontrollable, self-heal at runtime, and are surfaced separately via status tools in `system_health`. `local-embed` is a plugin rather than an external dependency, but is likewise **not** required, so its failure to start never aborts startup either — it is spawned like any other child and reports its state.
+All internal plugins run with a **watchdog** that auto-restarts them on crash, backing off further after each consecutive failure. A plugin counts as ready only once its own initialization has succeeded (the MCP `initialize` handshake), and **required plugins** (`plugins.required` — `memdb` and `memfiles` in the bundled config) are core: failing to become ready **aborts startup** instead of limping on. External/subordinate dependencies — external MCP servers, the tunnel, WeChat login, media providers, the A2A broker — never gate readiness; they are uncontrollable, self-heal at runtime, and are surfaced separately via status tools in `system_health`. `local-embed` is a plugin rather than an external dependency, but is likewise **not** required, so its failure to start never aborts startup either — it is spawned like any other child and reports its state.
 
 ### A2A — agent-to-agent mesh
 
 The A2A protocol runs over the official **A2A-over-MQTT** profile — the `a2a-over-mqtt` SDK from EMQX (topics, JSON-RPC wire, presence, task lifecycle) — so multiple agents — on the same machine or different ones — discover each other, delegate tasks, and push results:
 
-- **Mesh tools** (standard A2A operations, one uniform `a2a_` prefix): `a2a_send_message` (async — returns a task_id immediately, the result auto-pushes later), `a2a_cancel_task`, `a2a_list_agents`, `a2a_set_task_done`, `a2a_broadcast` (fire-and-forget event). Inbound tasks reach the model as `[A2A:{"from": …, "task_id": …}]` (`from` names the sending peer — never the receiver), auto-delivered results as `[A2A-RESULT:…]`, broadcast events as `[A2A-BROADCAST:…]`; the TUI shows `A2A(<peer>)>`. The `a2a` plugin only starts when the MQTT broker is reachable. Design details: **[A2A-MQTT.md](docs/A2A-MQTT.md)**.
+- **Mesh tools** (standard A2A operations, one uniform `a2a_` prefix): `a2a_send_message` (async — returns a task_id immediately, the result auto-pushes later), `a2a_cancel_task`, `a2a_list_agents`, `a2a_broadcast` (fire-and-forget event). Inbound peer traffic reaches the model in one `[A2A:…]` envelope (`from` names the sending peer — never the receiver); the TUI shows `A2A(<peer>)>`. The `a2a` plugin only starts when the MQTT broker is reachable.
 - **Subagents are local workers, not A2A peers**: `spawn_subagent` / `subagent_send_task` / `subagent_get_task_result` / … create child-process workers that share your plugins and run one task at a time (a sync send to a busy worker is auto-queued as async). Async results auto-push to your chat (`mode="auto"`, default) or stay pollable-only (`mode="poll"`). Subagents never drain your inbox — all replies and management belong to the main agent.
 
 All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
 
 ## Semantic Memory Search — Installation Guide
 
-Semantic (hybrid) memory search — recall by meaning across `memdb` turns and `memfiles` notes — needs **two things** the one-click installer deliberately does not bring: a local embedding **backend** (a Python package, platform-specific) and the **model weights** (downloaded by you — the server never auto-downloads). Keyword search (`grep` / `fts5` / `time`) works without any of this. Setup is a **user-run** step; every piece is fail-open, so a missing backend leaves a working keyword-only core.
+Semantic (hybrid) memory search — recall by meaning across `memdb` turns and `memfiles` notes — needs a
+local embedding **backend** and the **model weights**, which the one-click installer deliberately does not
+bring. Keyword search (`grep` / `fts5` / `time`) works without them, and every piece is fail-open: a
+missing backend leaves a working keyword-only core.
 
-**How it fits together.** Slife treats every embedding provider as an OpenAI-compatible endpoint (`base_url` + `api_key`). The `local-embed` service — an internal plugin slife spawns, also runnable standalone via the `local-embed` CLI — loads each local model **once** and serves it at `http://127.0.0.1:17347/v1` (`POST /v1/embeddings`, `GET /v1/models`, `GET /health`). `memdb` and `memfiles` both call that endpoint, so a model is never loaded twice. local-embed has **no "active model"** — every request names the model it wants; slife's `embeddings.active_model` (e.g. `"local_embed"` for the local daemon, `"siliconflow"` for a cloud provider — the seeded config ships `"siliconflow"`) chooses which provider to embed against.
-
-### 1. Install the backend dependency
-
-Install the backend **into the slife tool venv** — the same interpreter `local-embed` runs under. Reference the venv by its **root directory**, `"$(uv tool dir)/slife"` — this works on **macOS, Linux and Windows alike** (uv locates the interpreter inside the venv itself, so you never need to know whether it's `bin/` or `Scripts/`):
-
-| Backend | Command |
-|---------|---------|
-| **Transformer · no NVIDIA GPU** (Linux / WSL / Windows) | `uv pip install --python "$(uv tool dir)/slife" --index-url https://download.pytorch.org/whl/cpu torch`, then `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
-| **Transformer · NVIDIA GPU, or macOS** | `uv pip install --python "$(uv tool dir)/slife" sentence-transformers` |
-| **GGUF · CPU (Linux / WSL / macOS)** | `uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
-| **GGUF · NVIDIA CUDA (Linux)** | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` (needs the toolkit **and** an NVIDIA device) |
-| **GGUF · macOS Metal** | `CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34` |
-| **GGUF · Windows CPU** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34` |
-| **GGUF · Windows CUDA** | `uv pip install --python "$(uv tool dir)/slife" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34` (swap `cu124` for your driver's CUDA — `cu118`, `cu121`…`cu125`, `cu130`, `cu132`) |
-
-- llama-cpp-python ships **no PyPI wheel** (only the sdist), so the Linux / WSL / macOS rows **compile from source** — the standard build — and need a **C compiler + CMake ≥ 3.21** (macOS: Xcode CLT clang; Linux: `build-essential` + `cmake`). The GPU rows pass `CMAKE_ARGS` to select the backend. **Windows has no default C toolchain**, so it uses the upstream prebuilt wheels instead — CPU or CUDA, neither needing MSVC.
-- The two backends can coexist — install both in **one** `uv pip install` (e.g. `sentence-transformers` plus the `llama-cpp-python` CPU row in a single command). Installing twice replaces the first install.
-- `sentence-transformers` pulls `torch`, and on Linux PyPI's `torch` is the **CUDA build**: a dozen-odd `nvidia-*` runtime wheels (~2.5 GB) whether or not a GPU exists — none of them `nvcc`, so on a GPU-less machine they enable nothing. That is why the CPU row installs `torch` from PyTorch's own index first: the second command then finds it satisfied and pulls none of them. Swapping to the CPU build afterwards orphans the wheels — drop them with `uv pip freeze --python "$(uv tool dir)/slife" | grep ^nvidia | cut -d= -f1 | xargs uv pip uninstall --python "$(uv tool dir)/slife"`. `llama-cpp-python` has no torch dependency at all.
-- If the backend is missing, `local-embed` logs the exact install command for your platform instead of failing silently.
-
-### 2. Download the model weights
-
-Offline by default — `HF_HUB_OFFLINE=1`, **no auto-download**. Make the weights available yourself via one of two routes. The `hf` CLI is not shipped by the backends — install it once: `uv tool install "huggingface-hub[cli]"` (or prefix any `hf` command with `uvx --from huggingface-hub`).
-
-**Transformer route (default config, ~2 GB).** The seeded model is `BAAI/bge-m3`; download it into the HF cache and no config change is needed:
-
-```bash
-hf download BAAI/bge-m3                                    # → ~/.cache/huggingface/hub
-HF_ENDPOINT=https://hf-mirror.com hf download BAAI/bge-m3  # mainland-China mirror
-```
-
-**GGUF route (offline single file).** Use any quantized BGE-M3 GGUF you trust — these are community conversions with no single authoritative source (prefer a high-fidelity `Q8_0`, ~635 MB; heavier quants are smaller). Get it from any source (HF single-file pull, browser, `wget`/`curl`), then place it at the default path and point the client at the `bge-m3` model:
-
-```bash
-hf download <owner>/<repo> <model>.gguf --local-dir ~/.local-embed/models   # HF single-file pull
-mv ~/.local-embed/models/<model>.gguf ~/.local-embed/models/bge-m3-Q8_0.gguf     # the expected default path
-```
-
-Every model in the `models` map is served as a **peer** — there is no `active_model`; the client names the model on every request (a stale `active_model` key in an existing config is ignored).
-
-### 3. Configure the HF cache & GGUF path
-
-Everything — host, port, models, backend — lives in **`local_embed.yaml`**, seeded by the installer (path resolution: `$LOCAL_EMBED_FILE` > slife project root (dev) > `~/.local-embed/local_embed.yaml`). Values support `${VAR}` / `${VAR:-default}` expansion, and **a shell env var wins over the config**. The seeded file already carries portable placeholders — usually you only set env vars or edit two lines:
-
-```yaml
-env:
-  HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}"   # where transformer repos resolve
-  HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}"          # 1 = never auto-download; 0 = allow on-demand
-models:
-  "BAAI/bge-m3":
-    backend: "transformer"
-    model: "BAAI/bge-m3"
-  "bge-m3":
-    backend: "gguf"
-    gguf_path: "${BGE_M3_GGUF_PATH:-~/.local-embed/models/bge-m3-Q8_0.gguf}"
-port: 17347
-```
-
-| Setting | Meaning |
-|---------|---------|
-| `env.HF_HUB_CACHE` / `HF_HUB_CACHE` | Where the transformer route resolves HF repo ids. Default `~/.cache/huggingface/hub`. If your model was downloaded into a different cache, point this at it — otherwise the repo is silently re-fetched. |
-| `env.HF_HUB_OFFLINE` / `HF_HUB_OFFLINE` | `"1"` (default) — offline; the model must already be in the cache / on disk. `"0"` — allow the model loader to reach the network (no managed download / mirror fallback). |
-| `models."bge-m3".gguf_path` / `BGE_M3_GGUF_PATH` | The `.gguf` file for the GGUF route. `~` is expanded; `BGE_M3_GGUF_PATH` in the shell overrides the config default. |
-
-Requests name the model they want (slife's provider `model` id — `"BAAI/bge-m3"` for the transformer route, `"bge-m3"` for the GGUF route). Changes apply on the next start of the local-embed service (restart slife).
-
-**CLI alternative** — `local-embed` (on PATH after install) upserts a model config and pins the port (idempotent, leaves other models untouched):
-
-```bash
-local-embed set BAAI/bge-m3 --HF_HUB_CACHE ~/.cache/huggingface/hub
-local-embed set-gguf bge-m3 --path ~/.local-embed/models/bge-m3-Q8_0.gguf
-```
-
-### 4. Make the service ready — verify
-
-Just start slife — it spawns `local-embed` for you (the same service is also on PATH as the `local-embed` CLI). Running it yourself first is optional: if one is **already serving the port**, slife uses that instance rather than starting a second copy of the model — which is how one service can be shared by slife on Windows and an agent in WSL. See [local-embed → Adopting a running service](local-embed/README.md#adopting-a-running-service).
-
-The **model load is deferred** — the first embed loads it (a few seconds for GGUF, up to a minute for the ~2 GB transformer). Verify from inside the chat or over HTTP:
-
-- **In the chat** — ask the agent to run `system_health` (the `memdb`/`memfiles` components report the semantic gate: `semantic_ready`, model, pending embeddings).
-- **Over HTTP** (the service is standalone at the fixed port):
-
-```bash
-curl http://127.0.0.1:17347/health            # {status, backend, model, dimension, loaded}
-curl http://127.0.0.1:17347/v1/models         # every configured model + the active flag
-curl http://127.0.0.1:17347/v1/embeddings -H 'Content-Type: application/json' \
-  -d '{"model": "bge-m3", "input": ["hello world"]}'   # returns a real vector
-```
-
-A healthy state: `/health` → `status: ok`; `system_health` → the `embeddings` component probes the active embedding endpoint (reachable = `ok`, and it names the model this session embeds with — whether that endpoint is the local daemon or a cloud provider like SiliconFlow), and the `memdb`/`memfiles` components show `semantic_ready`. When the service is unreachable (backend missing, weights missing, still loading), slife **degrades gracefully to keyword search** — `system_health` reports the reason, and once the index is fully built for the current model, hybrid results resume automatically.
-
-### Troubleshooting
-
-| Symptom | Fix |
-|---------|-----|
-| Log: `backend_unavailable … reason=llama_cpp_not_installed` / `sentence_transformers_not_installed` | Run the step-1 install for your platform — the log prints the exact command. |
-| Transformer route won't load with `HF_HUB_OFFLINE=1` | The repo isn't in the cache — run `hf download BAAI/bge-m3` and make sure `HF_HUB_CACHE` points at the cache that holds it. |
-| GGUF route won't load | File missing at `gguf_path` — check `BGE_M3_GGUF_PATH` / `gguf_path`, and that the client requests `"bge-m3"` (all configured models are peers — nothing is gated behind an `active_model`). |
-| `system_health` shows `embeddings` as `unavailable` | The active embedding endpoint didn't answer `GET /v1/models`. If that provider is `local_embed`, check the `local-embed` line in the same report — slife starts the service itself, so a missing one means the plugin failed to start (its log has the reason; a **non**-local-embed service holding port 17347 will do it). Otherwise fix the cloud provider's key: `api_key` resolves `${VAR}` → env → credstore. The component only ever probes the **active** provider, and its line is keyed by that provider's id. |
-| First embed very slow | A transformer download/warm-up is deferred to the first embed; subsequent calls are fast. |
-
-### Optional extras (manual installs)
-
-The embedding backends above are that same "optional extra" — for direct manual installs (uvx / git checkout) or to re-add a backend into the slife venv:
-
-| Extra | Enables |
-|-------|---------|
-| `local-embed[gguf]` | Local GGUF embeddings via llama-cpp-python (offline, ~300 MB) |
-| `local-embed[transformer]` | HuggingFace transformer embeddings via sentence-transformers (~2 GB) |
-| `slife[gguf]` / `slife[transformer]` / `slife[embeddings]` | Legacy in-process embeddings (not used by default) |
-
-```bash
-# a tool install (the installers) — into slife's tool venv:
-uv pip install --python "$(uv tool dir)/slife" llama-cpp-python==0.3.34   # slife[gguf]
-uv pip install --python "$(uv tool dir)/slife" sentence-transformers      # slife[transformer]
-
-# uvx / git checkout — there is no tool venv; add the extra to the ephemeral env:
-uvx --with llama-cpp-python==0.3.34 --from git+https://github.com/juzcn/slife.git slife
-```
-
-Wheel selection per platform is the step-1 table (`--extra-index-url …/whl/cpu` or `…/whl/cu124` on Windows, `CMAKE_ARGS` for the Linux/Metal GPU builds); on a GPU-less Linux machine install the CPU `torch` first — the step-1 bullets give both.
+**Full guide — backend install per platform, weights, `local_embed.yaml`, verification, troubleshooting:**
+**[local-embed/README.md](local-embed/README.md)** — the `local-embed` service is the endpoint slife embeds against, and that file is its manual.
 
 ## Usage Reference
 
@@ -512,33 +419,6 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 
 * **`system_health`** reports live status for every subsystem in one call — problems first with what to do about them, then one line per healthy component — and it is the only health tool the agent has (the per-subsystem `check_*` functions are internal). Ask the agent to run it any time something seems off.
 * **Logs** live in `~/.slife/logs/` (one per session, `event_name key=value` lines, DEBUG+; plugins inherit the session id). The terminal is reserved for the TUI — nothing prints to it but the chat.
-
-## Development
-
-Slife is one codebase, a few docs, split by audience:
-
-* **[DESIGN.md](DESIGN.md)** — architecture & implementation for people working on the code: the agent loop, context engineering, tool system, plugin architecture, MCP gateway, memory, A2A.
-* **[A2A-MQTT.md](docs/A2A-MQTT.md)** — the adopted A2A-over-MQTT design: the official SDK, topics/wire/QoS/retry, the mesh driver, the standard tool surface, markers, drain schema.
-* **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)** — the authoritative spec of the plugin system (central `PluginSpec` table, the registry, the uniform lifecycle) for anyone writing a plugin.
-* **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)** — how Slife curates the model context each turn: channels, markers, the `_turn_prompt` harness tool-pair.
-* **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** — the unified tool catalog: the six `tools.yaml` category sections, `tools.db`, the load/unload threshold, `tool_search`/`func_tool_load`, per-request injection, and the MCP reconcile.
-
-```bash
-git clone https://github.com/juzcn/slife.git
-cd slife
-uv sync --all-extras
-
-uv run credstore set-password
-uv run credstore set DEEPSEEK_API_KEY
-uv run slife
-
-# Tests
-uv run pytest
-uv run pytest --cov --cov-report=term-missing
-```
-
-Dev mode auto-detects when you run from the source tree: data files stay in the project directory. Production installs (uv tool / pipx / pip) always use `~/.slife/` — even when launched from inside a checkout or from the home directory. CI runs the test suite on Ubuntu, macOS, and Windows with Python 3.13 (tests run against the built wheels).
-
 ## License
 
 MIT

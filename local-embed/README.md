@@ -10,7 +10,7 @@ embedding, and a Streamable HTTP MCP endpoint at `/mcp`.
 
 local-embed is three things at once: an independent app, a Streamable HTTP
 **MCP server** (see [As an MCP server](#as-an-mcp-server)), and a conforming
-**slife plugin** (see [Loading as a slife plugin](#loading-as-a-slife-plugin)).
+**slife plugin** (see [Running as a slife embedding backend](#running-as-a-slife-embedding-backend)).
 The product is the embedding URL; the MCP and plugin surfaces are how hosts
 manage the same standalone service.
 
@@ -39,14 +39,15 @@ them ([Model weights](#model-weights)).
   model at startup).
 - **Real dimension** reported after load (a guessed width is never served).
 - Runs standalone, and can also be **loaded as a slife plugin** (see
-  [Loading as a slife plugin](#loading-as-a-slife-plugin)).
+  [Running as a slife embedding backend](#running-as-a-slife-embedding-backend)).
 
 Requires Python ≥ 3.13.
 
 ## Install
 
 The core package is `fastmcp` + `starlette` + `ruamel.yaml` (round-trip YAML —
-the comment-preserving config parser); the model backends are optional extras.
+the comment-preserving config parser).  The model backends are installed
+separately, per the platform matrix below.
 
 One-click installers (install `uv` if needed, then `uv tool install --force
 local-embed` — the backend is **not** included, see below):
@@ -64,11 +65,12 @@ Manual installs are equivalent:
 ```bash
 # the app + CLI (standalone tool)
 uv tool install --force local-embed
-
-# with a backend:
-uv tool install --force "local-embed[transformer]"
-uv tool install --force "local-embed[gguf]"
 ```
+
+The backend is **not** part of the package — there are no extras, because every
+real install needs a per-platform index or `CMAKE_ARGS` that an extra cannot
+carry.  Add it with `uv pip install --python "$(uv tool dir)/local-embed" …`,
+per the matrix below.
 
 `--force` (used by the installers too) is **idempotent** — the first run
 installs, re-running **updates** to the latest PyPI release.  A plain
@@ -90,15 +92,25 @@ PY=.venv                          # a project checkout (run from its root)
 ```
 
 Pick the line that matches your install, then `uv pip install --python "$PY"
-llama-cpp-python==0.3.34` — the matrix below uses the same `$PY`.
+llama-cpp-python` — the matrix below uses the same `$PY`.
+
+**Every command block here is POSIX shell** (`bash` / `zsh` / WSL).  On Windows
+PowerShell the same two things have different spellings, and nothing else
+changes: the variable assignment, and the `VAR=value command` prefix that sets
+an environment variable for one command.
+
+```powershell
+$PY = "$(uv tool dir)\slife"          # the same target, PowerShell syntax
+$env:CMAKE_ARGS = "-DGGML_CUDA=on"    # then run the uv pip install on its own line
+```
 
 The install you ran decides which line:
 
 - **Tool install** — `uv tool install local-embed` and the installers above
   land in uv's tool venv.  When local-embed runs as slife's embedding backend
   the serving process is slife's, so the backend belongs in slife's tool venv
-  (`install.sh` / `install.ps1` install slife).  `uv tool install
-  "local-embed[gguf]"` is *not* that fix — it builds a separate standalone tool
+  (`install.sh` / `install.ps1` install slife).  A fresh `uv tool install
+  local-embed` is *not* that fix — it builds a separate standalone tool
   rather than the environment that is serving.
 - **Project checkout** — that checkout's `.venv`.
 - **A running server** — a missing backend is reported at startup with the
@@ -126,15 +138,37 @@ target as `$PY`, the environment set under [Install](#install):
 
 | Platform | Command |
 |---|---|
-| Linux / WSL / macOS, CPU | `uv pip install --python "$PY" llama-cpp-python==0.3.34` (compiles from source) |
-| macOS arm64 (Metal) | `CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python "$PY" llama-cpp-python==0.3.34` |
-| NVIDIA CUDA (Linux) | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$PY" llama-cpp-python==0.3.34` (needs the CUDA toolkit **and** an NVIDIA device) |
-| **Windows, CPU** | `uv pip install --python "$PY" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34` (prebuilt wheel — no MSVC) |
-| **Windows, CUDA** | `uv pip install --python "$PY" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34` (prebuilt CUDA wheel — no MSVC, needs an NVIDIA driver) |
+| Linux / WSL / macOS, CPU | `uv pip install --python "$PY" llama-cpp-python` (compiles from source) |
+| macOS arm64 (Metal) | `CMAKE_ARGS="-DGGML_METAL=on" uv pip install --python "$PY" llama-cpp-python` |
+| NVIDIA CUDA (Linux) | `CMAKE_ARGS="-DGGML_CUDA=on" uv pip install --python "$PY" llama-cpp-python` (needs the CUDA toolkit **and** an NVIDIA device) |
+| **Windows, CPU** | `uv pip install --python "$PY" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python` (prebuilt wheel — no MSVC) |
+| **Windows, CUDA** | `uv pip install --python "$PY" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python` (prebuilt CUDA wheel — no MSVC, needs an NVIDIA driver) |
 
-Swap the `cu124` suffix for the CUDA release your driver supports — `cu118`,
-`cu121` … `cu125`, `cu130`, `cu132`.  Upstream asks for compute capability
-≥ 6.0 on the CUDA 12 wheels and ≥ 7.5 on CUDA 13.
+Swap the `cu124` suffix for the CUDA series whose **runtime is installed** on
+the machine — `cu118`, `cu121` … `cu125`, `cu130`, `cu132` — not merely the one
+the driver supports; the next paragraph is why that distinction bites.
+Upstream asks for compute capability ≥ 6.0 on the CUDA 12 wheels and ≥ 7.5 on
+CUDA 13.
+
+Those wheels link their CUDA series **dynamically** — a `cu124` wheel imports
+`cudart64_12.dll` and `cublas64_12.dll` — so that runtime has to be installed
+for real.  The NVIDIA **driver alone is not enough**: it provides `nvcuda.dll`
+and nothing more.  A CUDA 12 wheel on a machine with only the CUDA 11.8
+toolkit (`cudart64_110.dll`) fails, and the error names the outermost module
+rather than the missing one:
+
+```
+RuntimeError: Failed to load shared library '...\llama_cpp\lib\llama.dll'
+```
+
+The real gap is two levels down: `llama.dll` → `ggml.dll` → `ggml-cuda.dll` →
+`cudart64_12.dll`.  Match the index to the CUDA major version you have
+(`cu118` against a CUDA 11.8 install), or install the CUDA runtime for the
+series you picked.  **Determine the version rather than assuming it** — they are
+two different numbers on the same machine: `nvidia-smi` prints the newest CUDA
+the *driver* can drive (a ceiling), while `nvcc --version` prints the *toolkit*
+actually installed.  The wheel needs the second.  `--extra-index-url .../whl/cpu`
+sidesteps it all, at the cost of GPU offload.
 
 The two Windows rows are the workarounds — everywhere else uses the standard
 source build from PyPI.  Take a CUDA row only with a GPU present: without a
@@ -166,17 +200,71 @@ depends on them any more — so drop them:
 uv pip freeze --python "$PY" | grep ^nvidia | cut -d= -f1 | xargs uv pip uninstall --python "$PY"
 ```
 
-macOS needs none of this (its `torch` is CPU/MPS), and on Windows the CUDA
-payload normally hides inside torch's own wheel instead of `nvidia-*`
-packages — the `+cpu` wheel avoids it there too.  The `gguf` backend touches
-none of it: llama-cpp-python has no torch dependency.
+macOS needs none of this (its `torch` is CPU/MPS).  The `gguf` backend touches
+none of it either: llama-cpp-python has no torch dependency.
+
+### `transformer` backend — Linux / WSL + NVIDIA GPU
+
+The plain install is already the right one — nothing to route around:
+
+```bash
+uv pip install --python "$PY" sentence-transformers
+```
+
+On Linux, PyPI's `torch` *is* the CUDA build with its `nvidia-*` runtime wheels,
+which is the problem described above **only on a machine without a GPU**; with
+one, that is exactly what you want.  The runtime comes from those wheels, so the
+`nvidia-smi` ceiling is the check that matters (driver new enough for the torch
+build), and the `torch.cuda.is_available()` check below confirms it.
+
+### `transformer` backend — Windows + NVIDIA GPU
+
+PyPI's **Windows** `torch` is the mirror image of Linux's: a ~124 MB **CPU-only**
+wheel, with every `nvidia-*` requirement in its metadata marked
+`platform_system == "Linux"`.  A plain `uv pip install sentence-transformers`
+therefore gets a CPU torch — silently, with no error, just no GPU.
+
+The CUDA build exists only on PyTorch's own index, as `+cuXXX` wheels that
+bundle the CUDA runtime DLLs (hence ~2 GB, and no `nvidia-*` packages on
+Windows) — **bundled**, unlike the `gguf` wheels above, which link the runtime
+externally: so here the `nvidia-smi` driver ceiling *is* the right rule, and a
+separately installed CUDA toolkit is not needed:
+
+```bash
+uv pip install --python "$PY" --index-url https://download.pytorch.org/whl/cu130 torch
+uv pip install --python "$PY" sentence-transformers
+```
+
+Two steps, same ordering as the CPU row and for the same reason.  Pick `cuXXX`
+at most the CUDA version `nvidia-smi` reports — on Windows / cp313 the newest
+`torch` each index resolves is:
+
+| Index | Latest `torch` |
+|---|---|
+| `cu126` | 2.14.0 |
+| `cu130` | 2.14.0 |
+| `cu132` | 2.14.0 |
+| `cu128` | 2.11.0 |
+| `cu129` | 2.9.0 |
+| `cu124` | 2.6.0 |
+| `cu118` | 2.7.1 |
+
+Confirm the build, not just the version — a CPU torch installs cleanly and
+reports a plain `2.14.0`:
+
+```bash
+uv run --python "$PY" python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+# 2.14.0+cu130 True
+```
+
+The `+cuXXX` suffix is the tell; without it nothing will offload.
 
 ### Both backends at once
 
 One `uv pip install`:
 
 ```bash
-uv pip install --python "$PY" sentence-transformers llama-cpp-python==0.3.34
+uv pip install --python "$PY" sentence-transformers llama-cpp-python
 # Windows CPU: add the upstream wheel index (see the matrix above)
 ```
 
@@ -542,6 +630,40 @@ model list, dimensions, load state) — a service-provider facade
 for direct probing, not a slife plugin contract. It also serves plain OpenAPI
 routes (`/v1/embeddings`, `/v1/models`, `/health`) on the same port via
 `@mcp.custom_route` — one port, two protocols, no slife involvement.
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Log: `backend_unavailable … reason=llama_cpp_not_installed` / `sentence_transformers_not_installed` | Run the platform's install from *Install* above — the log prints the exact command. |
+| Transformer route won't load with `HF_HUB_OFFLINE=1` | The repo isn't in the cache — run `hf download BAAI/bge-m3` and make sure `HF_HUB_CACHE` points at the cache that holds it. |
+| GGUF route won't load | File missing at `gguf_path` — check `BGE_M3_GGUF_PATH` / `gguf_path`, and that the client requests `"bge-m3"` (all configured models are peers — nothing is gated behind an `active_model`). |
+| `system_health` shows `embeddings` as `unavailable` | The active embedding endpoint didn't answer `GET /v1/models`. If that provider is `local_embed`, check the `local-embed` line in the same report — slife starts the service itself, so a missing one means the plugin failed to start (its log has the reason; a **non**-local-embed service holding port 17347 will do it). Otherwise fix the cloud provider's key: `api_key` resolves `${VAR}` → env → credstore. The component only ever probes the **active** provider, and its line is keyed by that provider's id. |
+| First embed very slow | A transformer download/warm-up is deferred to the first embed; subsequent calls are fast. |
+
+## Re-adding a backend (manual installs)
+
+The backends are **not** package extras — every real install needs a per-platform choice (a PyTorch index, `CMAKE_ARGS`, or the upstream Windows wheel index). Install the package directly; the platform matrix under *Install* above is the authority on which command your platform needs:
+
+| Backend | Package | Cost |
+|---------|---------|------|
+| GGUF | `llama-cpp-python` | offline, ~300 MB + the model |
+| Transformer | `sentence-transformers` | ~2 GB + the model |
+
+```bash
+# a tool install (the installers) — into slife's tool venv:
+uv pip install --python "$(uv tool dir)/slife" llama-cpp-python
+uv pip install --python "$(uv tool dir)/slife" sentence-transformers
+
+# uvx / git checkout — there is no tool venv; add the package to the ephemeral env:
+uvx --with llama-cpp-python --from git+https://github.com/juzcn/slife.git slife
+```
+
+Add `--extra-index-url …/whl/cpu` (or `…/whl/cu124`) on Windows and `CMAKE_ARGS` for the Linux/Metal GPU builds; on a GPU-less Linux machine install the CPU `torch` first — the step-1 bullets give both. The legacy in-process embedding backends use these same two packages, so this covers them too.
+
+Nothing is lost by dropping the declaration: `install.sh` / `install.ps1` snapshot the venv's freeze and re-add whatever was there after an upgrade, so an installed backend survives a reinstall anyway.
 
 ## License
 

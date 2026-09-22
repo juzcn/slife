@@ -14,8 +14,8 @@ Apache-2.0) implementing the A2A-over-MQTT transport profile. **We adopted it wh
   task bookkeeping, presence display, the LLM tool surface).
 - **Interop** with the EMQX ecosystem becomes possible (same topics, same wire, same presence).
 - Standard A2A is **async-native**: `SendMessage` returns a task_id immediately; the result is pushed
-  back later. slife's harness already had that push machinery (`[A2A-RESULT:…]` cut-in), so the model no
-  longer needs sync-wait tools or a message/task distinction.
+  back later. slife's harness already had that push machinery (the result cut into the context), so the
+  model no longer needs sync-wait tools or a separate send-task surface.
 
 ## The standard profile (SDK `a2a-over-mqtt` v0.1.0)
 
@@ -88,7 +88,7 @@ broadcast. GetTask is unimplemented in the SDK — out of scope.
 ```
         a2a plugin (slife.plugins.a2a.server, FastMCP subprocess)
                  │  LLM tools: a2a_send_message / a2a_cancel_task / a2a_list_agents
-                 │            a2a_set_task_done / a2a_broadcast
+                 │            a2a_broadcast
                  │  internal: __a2a_drain_incoming / __check
         A2AMesh (slife/a2a/mesh.py)
            ├─ MeshResponder(Responder)  ── own connection: LWT + retained card + a2a-status,
@@ -181,7 +181,8 @@ Machine-facing; `unwrap_info_envelope` strips it for the TUI (channel shows `A2A
  "task_completions":[{"corr_id":"<task_id>","result":"<text>","cancelled":false,"peer":"<peer>"}]}
 ```
 
-Every inbound exchange is a task and always carries a task_id.
+Only a `task_request` is a task and carries a `task_id`: a `message` is enqueued task-less (no bridge,
+no completion expected), and a broadcast arrives as an `event` with no task_id at all.
 
 ## Config
 
