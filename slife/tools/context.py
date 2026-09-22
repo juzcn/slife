@@ -120,12 +120,16 @@ class ToolContext:
     Populated by AgentService (main agent only); used by the ``wait_minutes``
     tool to resume the agent after a delay.  ``None`` for subagents."""
 
-    advance_context_start: Callable[[int], Awaitable[bool]] | None = None
-    """Advance the persisted live-context boundary past *count* rows — the
-    one cut-op behind every context cut: the internal trim
-    (``AgentLoop._trim_after_save``) and ``clear_context`` (one big trim).
-    Populated by AgentService; restart rebuilds the exit-time context from
-    the boundary."""
+    drop_context_turns: Callable[[list[int]], Awaitable[bool]] | None = None
+    """Drop turn ids from the persisted live-context list — the cut-op behind
+    the internal trim (``AgentLoop._trim_after_save``), which passes the
+    turns it evicted.  Populated by AgentService; a restart replays exactly
+    the turns still on the list."""
+
+    clear_context_turns: Callable[[], Awaitable[bool]] | None = None
+    """Empty the persisted live-context list — the cut-op behind
+    ``clear_context``.  Turns saved afterwards re-enter it as they save.
+    Populated by AgentService."""
 
     reset_context_time: Callable[[], None] | None = None
     """Clear the loop's tracked context time range so "Context covers"

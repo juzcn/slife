@@ -244,6 +244,10 @@ class TestTrimAfterSave:
         conv = MessageHistory(system_prompt="SYS")
         for i in range(turns):
             conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大Context usage估计。")
+            # Every saved turn carries its diary rowid on its opening user
+            # message (set at save, re-stamped on restore) — the trim reads
+            # them to drop the evicted turns from the persisted list.
+            conv.messages[-1]["_turn_id"] = i + 1
             conv.add_assistant_message(f"这是第{i}轮的回复，也需要一定长度以参与 token 估算。")
         return conv
 
@@ -252,7 +256,7 @@ class TestTrimAfterSave:
         return AgentLoop(
             llm_client=None, tool_registry=create_tools_from_config(),
             context_window=200, context_ceiling=0.8, context_floor=0.2,
-            advance_context_start=kwargs.get("advance"),
+            drop_context_turns=kwargs.get("drop"),
         )
 
     async def _prime_usage(self, loop, conv):
@@ -291,21 +295,25 @@ class TestTrimAfterSave:
         assert not any("oldest turns have been removed from context" in (m.get("content") or "") for m in conv.messages)
 
     @pytest.mark.asyncio
-    async def test_advances_context_start(self):
+    async def test_drops_evicted_turn_ids(self):
         conv = self._conv(12)
-        advanced: list[int] = []
+        dropped: list[list[int]] = []
 
-        async def advance(count):
-            advanced.append(count)
+        async def drop(turn_ids):
+            dropped.append(list(turn_ids))
             return True
 
-        loop = self._loop(conv, self._cfg(), advance=advance)
+        loop = self._loop(conv, self._cfg(), drop=drop)
         await self._prime_usage(loop, conv)
         await loop._trim_after_save(conv)
 
-        assert advanced, "advance_context_start should be called with the removed count"
-        users = len([m for m in conv.messages if m.get("role") == "user"])
-        assert advanced[0] >= 12 - users  # advanced by at least the removed turns
+        assert dropped, "drop_context_turns should be called with the evicted ids"
+        survivors = [m for m in conv.messages if m.get("role") == "user"]
+        # The ids are EXACT — the turns that are no longer in the history,
+        # not a count the store has to re-derive.
+        assert dropped[0] == [i + 1 for i in range(12 - len(survivors))]
+        # ...and no id that survived was dropped.
+        assert not (set(dropped[0]) & {m["_turn_id"] for m in survivors})
 
     @pytest.mark.asyncio
     async def test_restored_context_not_shredded_on_first_turn(self):

@@ -312,7 +312,7 @@ class AgentLoop:
         a2a_stale_provider: Callable[[], list[dict]] | None = None,
         cutin_enabled: bool = True,
         pending_input_has: "Callable[[], bool] | None" = None,
-        advance_context_start: Callable[[int], Awaitable[bool]] | None = None,
+        drop_context_turns: Callable[[list[int]], Awaitable[bool]] | None = None,
         stream_timeout: float | None = None,
         stream_max_retries: int | None = None,
         stream_stall_timeout: float | None = None,
@@ -370,7 +370,7 @@ class AgentLoop:
         #: from exactly where the live one now stands.  Best-effort: an
         #: unreachable memdb only leaves the boundary stale (restore becomes
         #: a superset, never a loss).  Wired by AgentService (bound method).
-        self.advance_context_start = advance_context_start
+        self.drop_context_turns = drop_context_turns
         self.supports_vision = supports_vision
         self.model_name = model_name
         self.input_modalities = input_modalities
@@ -638,14 +638,20 @@ class AgentLoop:
         if not turns:
             return
 
-        # Advance the persisted live-context boundary past the removed
-        # turns (best-effort — see advance_context_start).
-        if self.advance_context_start is not None:
+        # Drop the evicted turns from the persisted live-context list
+        # (best-effort — see drop_context_turns).  The ids are exact: each
+        # turn carries its diary rowid as ``_turn_id`` on its opening user
+        # message, set at save and re-stamped on restore.  A turn whose save
+        # failed has no id and is simply left on the list (a superset on the
+        # next restore, never a loss) — hence ``removed`` counts turns while
+        # ``evicted`` counts droppable ones, and the two may differ.
+        evicted = [t["turn_id"] for t in turns if t.get("turn_id") is not None]
+        if evicted and self.drop_context_turns is not None:
             try:
-                await self.advance_context_start(len(turns))
+                await self.drop_context_turns(evicted)
             except Exception:
                 logger.exception(
-                    "context_start_advance_failed count=%d", len(turns),
+                    "context_turns_drop_failed count=%d", len(evicted),
                 )
 
         # Advance the tracked "Context covers" time range by the same
@@ -667,8 +673,8 @@ class AgentLoop:
             self._context_time_start = getattr(
                 self, "_current_turn_start", "") or format_turn_ts()
         logger.info(
-            "context_trimmed_after_save turns=%d tokens_freed=%d time_start=%s",
-            removed, tokens_freed, self._context_time_start,
+            "context_trimmed_after_save turns=%d ids=%d tokens_freed=%d time_start=%s",
+            removed, len(evicted), tokens_freed, self._context_time_start,
         )
 
         # Tell the LLM how much of its context was just cut.  Runtime-only

@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import struct
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import aiosqlite
@@ -24,6 +24,38 @@ import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/pa
 logger = logging.getLogger(__name__)
 
 DEFAULT_EMBEDDING_DIM = 1536
+
+#: Bound-variable budget per statement for the ``WHERE rowid IN (…)`` reads.
+#: SQLite's ``SQLITE_MAX_VARIABLE_NUMBER`` default is 999 (32766 from 3.32),
+#: so chunk below it rather than trusting the build.
+_MAX_SQL_VARS = 900
+
+#: The diary columns a live-context read returns — one spelling, so the
+#: read and any future windowed query over the same rows agree.
+_TURN_COLUMNS = """rowid, user_message, messages, summary, tags,
+                   channel, created_at, completed_at,
+                   who_helped, what_model, token_count, context_tokens"""
+
+
+def _normalise_turns(rowids) -> list[int]:
+    """Coerce a sequence of ids to a clean ordered list.
+
+    Positive ints only, duplicates collapsed to their **first** position —
+    the one normalisation shared by the reader and the setter, so a stored
+    list and a read-back list are always the same shape.
+    """
+    turns: list[int] = []
+    seen: set[int] = set()
+    for item in rowids:
+        try:
+            rowid = int(item)
+        except (TypeError, ValueError):
+            continue
+        if rowid in seen:
+            continue
+        seen.add(rowid)
+        turns.append(rowid)
+    return turns
 
 #: Local ISO-seconds timestamp — the shared helper under the store's name
 #: (memfiles/mcp_gateway stores alias it the same way).
@@ -421,13 +453,20 @@ class SessionStore(VecStoreLifecycleMixin):
     _schema_dir = Path(__file__).parent
 
     async def _post_schema_check(self) -> None:
-        """Audit the diary schema for the legacy ``prompt_tokens`` column.
+        """Audit the diary schema and meta for pre-list leftovers.
 
         A diary table still carrying ``prompt_tokens`` predates the rename to
         ``context_tokens`` (CREATE IF NOT EXISTS never alters an existing
         table).  The new code SELECT/INSERTs ``context_tokens``, so such a DB
         fails on the next save or restore — surface the one-time migration
         path loudly.
+
+        A DB with turns but no ``context_turns`` key predates this list: the
+        live context starts *empty* (there is no migration — the old scalar
+        boundary is deliberately not read).  The turns are not lost, only out
+        of context, and the list rebuilds from the next save — but say so,
+        because the first restore after the upgrade is otherwise silently
+        blank.
         """
         try:
             cursor = await self._c.execute("PRAGMA table_info(diary)")
@@ -437,6 +476,21 @@ class SessionStore(VecStoreLifecycleMixin):
                     "diary_legacy_column prompt_tokens still present — run "
                     "`python scripts/migrate_context_tokens.py` to rename to "
                     "context_tokens (path=%s)", self._db_path,
+                )
+            # ``context_turns`` is a diary_meta KEY, not a diary column.
+            cursor = await self._c.execute("SELECT COUNT(*) FROM diary")
+            row = await cursor.fetchone()
+            turns = row[0] if row else 0
+            cursor = await self._c.execute(
+                "SELECT 1 FROM diary_meta WHERE key = ?",
+                (self._CONTEXT_TURNS_KEY,),
+            )
+            if turns and await cursor.fetchone() is None:
+                logger.warning(
+                    "context_turns_absent turns=%d — pre-list DB: the live "
+                    "context starts empty; older turns stay searchable via "
+                    "turn_search and re-enter as new turns are saved "
+                    "(path=%s)", turns, self._db_path,
                 )
         except Exception:
             pass
@@ -485,7 +539,12 @@ class SessionStore(VecStoreLifecycleMixin):
         payload for the channel's own fields (A2A peer name, subagent
         name/task, …), written to the sibling ``turn_channel`` table under
         the same lock/commit as the diary row.  An empty payload writes no
-        row (see :meth:`get_recent_turns`, which tolerates missing rows).
+        row (see :meth:`get_turns_by_ids`, which tolerates missing rows).
+
+        The new rowid is also appended to the live-context list
+        (:meth:`get_context_turns`) inside the same lock/commit — every saved
+        turn is in the context, and doing it transactionally is what keeps
+        the persisted list from ever dropping a turn.
         """
         now = created_at or _now()
         done = completed_at or _now()
@@ -501,16 +560,21 @@ class SessionStore(VecStoreLifecycleMixin):
                 (user_message, messages_json, channel, now, done,
                  who_helped, what_model, token_count, context_tokens),
             )
+            rowid = cursor.lastrowid
+            assert rowid is not None  # insert just succeeded
             if channel_data and channel_data != "{}":
                 # Per-channel payload rides a sibling row — CREATE IF NOT
                 # EXISTS covers existing DBs, no ALTER/migration needed.
                 await self._c.execute(
                     "INSERT INTO turn_channel (turn_id, data) VALUES (?, ?)",
-                    (cursor.lastrowid, channel_data),
+                    (rowid, channel_data),
                 )
+            # The turn enters the live context in the same transaction as
+            # the row itself.
+            in_context = await self._read_context_turns()
+            in_context.append(rowid)
+            await self._write_context_turns_locked(in_context)
             await self._c.commit()
-        rowid = cursor.lastrowid
-        assert rowid is not None  # insert just succeeded
         logger.debug("turn_saved rowid=%s", rowid)
         return rowid
 
@@ -523,127 +587,161 @@ class SessionStore(VecStoreLifecycleMixin):
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def get_recent_turns(
-        self, limit: int = 50, offset: int = 0, after_rowid: int = 0
-    ) -> list[dict]:
-        """Return the most recent N turns (from *offset*), newest-first.
+    async def get_turns_by_ids(self, rowids: Sequence[int]) -> list[dict]:
+        """Fetch turns by id, in the caller's order.
 
-        ``offset`` enables batched pagination: the caller fetches 20 at a
-        time (newest batch first) and accumulates — each batch is already
-        newest-first, so appending batches stays globally newest-first.
+        *rowids* is the authoritative, **ordered** live-context list, so the
+        result preserves that order and is never re-sorted by rowid: the list
+        may be non-contiguous and its order is part of the contract.  Ids that
+        no longer resolve are skipped.
 
-        ``after_rowid`` is the persisted live-context boundary (exclusive):
-        only turns strictly after it are returned.  Restore passes the
-        boundary stored by :meth:`get_context_start` so startup rebuilds
-        exactly the context that was live at exit.
+        Fetched in chunks to stay under SQLite's bound-variable limit, then
+        merged with the sibling ``turn_channel`` payload rows (missing rows —
+        pre-feature turns / schema-bypass fixtures — read back as ``"{}"`` so
+        callers fall back to the identity string).
+
+        Ids are normalised first, so a repeated id yields one turn dict, not
+        the same dict aliased twice in the result.
         """
-        cursor = await self._c.execute(
-            """SELECT rowid, user_message, messages, summary, tags,
-                      channel, created_at, completed_at,
-                      who_helped, what_model, token_count, context_tokens
-               FROM diary
-               WHERE rowid IN (
-                   SELECT rowid FROM diary
-                   WHERE rowid > ?
-                   ORDER BY rowid DESC LIMIT ? OFFSET ?
-               )
-               ORDER BY rowid DESC""",
-            (after_rowid, limit, offset),
-        )
-        rows = [dict(row) for row in await cursor.fetchall()]
-        if rows:
-            # Merge the per-channel payload rows (sibling table, one per
-            # turn).  Missing rows (pre-feature turns / schema-bypass
-            # fixtures) read back as "{}" so callers fall back to the
-            # identity string.  The table itself is created on existing DBs
-            # by setup() → _run_schema (CREATE IF NOT EXISTS).
-            ids = [r["rowid"] for r in rows]
-            placeholders = in_placeholders(len(ids))
+        ordered = _normalise_turns(rowids)
+        if not ordered:
+            return []
+
+        found: dict[int, dict] = {}
+        for start in range(0, len(ordered), _MAX_SQL_VARS):
+            chunk = ordered[start:start + _MAX_SQL_VARS]
+            cursor = await self._c.execute(
+                f"SELECT {_TURN_COLUMNS} FROM diary "
+                f"WHERE rowid IN ({in_placeholders(len(chunk))})",
+                chunk,
+            )
+            for row in await cursor.fetchall():
+                found[row["rowid"]] = dict(row)
+        if not found:
+            return []
+
+        present = [r for r in ordered if r in found]
+        payloads: dict[int, str] = {}
+        for start in range(0, len(present), _MAX_SQL_VARS):
+            chunk = present[start:start + _MAX_SQL_VARS]
             cur = await self._c.execute(
                 "SELECT turn_id, data FROM turn_channel "
-                f"WHERE turn_id IN ({placeholders})",
-                ids,
+                f"WHERE turn_id IN ({in_placeholders(len(chunk))})",
+                chunk,
             )
-            payloads = {r["turn_id"]: r["data"] for r in await cur.fetchall()}
-            for r in rows:
-                r["channel_data"] = payloads.get(r["rowid"], "{}")
-        return rows
+            payloads.update(
+                {r["turn_id"]: r["data"] for r in await cur.fetchall()}
+            )
 
-    # ── Live-context boundary ────────────────────────────────────────
+        turns: list[dict] = []
+        for rowid in present:
+            turn = found[rowid]
+            turn["channel_data"] = payloads.get(rowid, "{}")
+            turns.append(turn)
+        return turns
+
+    # ── Live context ─────────────────────────────────────────────────
     #
     # The diary is the whole session history; the *live context* is the
     # slice the agent was actually working with (bounded to the window by
-    # the internal trim).  ``context_start`` (stored in ``diary_meta``) marks the
-    # boundary — every turn with ``rowid <= context_start`` is outside the
-    # live context (trimmed or cleared), every newer turn is inside.
-    # Restore reads from the boundary so startup rebuilds the exact
-    # exit-time context instead of re-slicing an arbitrary percentage.
-    # 0 (the default) means "everything" — the first-ever session.
+    # the internal trim).  ``context_turns`` (stored in ``diary_meta``) is
+    # the ordered list of the rowids that are in it.
+    #
+    # An ordered *list*, not a boundary: the in-context slice is not
+    # necessarily contiguous, and the list order is authoritative — reads
+    # replay it as written and never re-sort by rowid.  Three events
+    # maintain it: the save appends (atomically, see :meth:`save_turn`),
+    # the trim drops the turns it evicted, the clear empties it.
+    #
+    # The list order must always equal history order (oldest first): restore
+    # pairs position with the rebuilt message order, and the turn prompt's
+    # "Context covers" reads the first entry as the oldest.  A future scheme
+    # may pick a non-contiguous *set*, but not reorder it.
 
-    _CONTEXT_START_KEY = "context_start"
+    _CONTEXT_TURNS_KEY = "context_turns"
 
-    async def get_context_start(self) -> int:
-        """Return the persisted live-context start boundary (exclusive).
+    async def _read_context_turns(self) -> list[int]:
+        """Parse the stored list.  Absent or unparseable → ``[]``.
 
-        Turns with ``rowid <= boundary`` are outside the live context.
-        Absent (fresh DB) or non-numeric → 0 (restore everything).
+        Order is preserved; duplicate ids collapse to their first position.
         """
         cursor = await self._c.execute(
             "SELECT value FROM diary_meta WHERE key = ?",
-            (self._CONTEXT_START_KEY,),
+            (self._CONTEXT_TURNS_KEY,),
         )
         row = await cursor.fetchone()
         if not row:
-            return 0
+            return []
         try:
-            return max(int(row[0]), 0)
+            raw = json.loads(row[0])
         except (TypeError, ValueError):
-            return 0
+            return []
+        if not isinstance(raw, list):
+            return []
+        return _normalise_turns(raw)
 
-    async def set_context_start(self, rowid: int) -> None:
-        """Write the live-context start boundary (exclusive)."""
-        async with self._write_lock:
-            await self._c.execute(
-                "INSERT OR REPLACE INTO diary_meta (key, value) "
-                "VALUES (?, ?)",
-                (self._CONTEXT_START_KEY, str(max(int(rowid), 0))),
-            )
-            await self._c.commit()
+    async def _write_context_turns_locked(self, rowids: Sequence[int]) -> None:
+        """Write the list.  The caller holds ``_write_lock`` and commits."""
+        await self._c.execute(
+            "INSERT OR REPLACE INTO diary_meta (key, value) VALUES (?, ?)",
+            (self._CONTEXT_TURNS_KEY, json.dumps(list(rowids))),
+        )
 
-    async def advance_context_start(self, count: int) -> int:
-        """Advance the boundary past *count* diary rows; return new boundary.
+    async def get_context_turns(self) -> list[int]:
+        """Return the ordered live-context id list (empty when unset)."""
+        return await self._read_context_turns()
 
-        Moves the live-context start forward by *count* rows strictly after
-        the current boundary and records the result.  The same cut-op backs
-        every context cut: the internal trim (``AgentLoop._trim_after_save``)
-        passes the turns it evicted; ``clear_context`` passes a deliberately
-        generous count so the window runs to the end — a one-shot clear is
-        one big trim.
+    async def set_context_turns(self, rowids: Sequence[int]) -> list[int]:
+        """Replace the live-context list wholesale; return what was written.
 
-        The rule is always the same: the boundary becomes the last row in
-        the *count*-row window, or stays put when no rows remain.  It never
-        moves backward and never overshoots the newest row (a generous count
-        from a clear simply lands on the last row).
+        Normalised the same way a read normalises (positive ints, duplicates
+        collapsed to their first position) so a set/get round-trip is
+        identity — a caller passing ``[4, 4]`` does not read back ``[4, 4]``.
         """
-        current = await self.get_context_start()
-        if count <= 0:
-            return current
-        cursor = await self._c.execute(
-            "SELECT rowid FROM diary WHERE rowid > ? "
-            "ORDER BY rowid ASC LIMIT ?",
-            (current, count),
-        )
-        rows = [r[0] for r in await cursor.fetchall()]
-        # Last row in the *count*-row window is the new (exclusive) boundary;
-        # nothing left after the current boundary → stay put.  No derived
-        # "latest row" snapshot — the window itself is authoritative.
-        boundary = rows[-1] if rows else current
-        await self.set_context_start(boundary)
+        turns = _normalise_turns(rowids)
+        async with self._write_lock:
+            await self._write_context_turns_locked(turns)
+            await self._c.commit()
+        logger.info("context_turns_set count=%d", len(turns))
+        return turns
+
+    async def drop_context_turns(self, rowids: Sequence[int]) -> list[int]:
+        """Remove *rowids* from the live-context list; return the new list.
+
+        Order-preserving — the survivors keep their relative positions, so a
+        non-contiguous list stays exactly as it was minus the given ids.
+        Unknown ids are ignored (removing twice is a no-op, not an error).
+
+        A turn with no id is never dropped: the caller only ever passes ids
+        it read off real turns, so a turn whose save failed simply stays in
+        the list and comes back on the next restore — the *superset*
+        direction, never a loss.
+        """
+        drop = {int(r) for r in rowids}
+        if not drop:
+            return await self._read_context_turns()
+        # Read INSIDE the lock: save_turn appends under the same lock, and a
+        # read-then-write outside it could commit a stale list over a
+        # concurrent append, silently erasing the newest turn.
+        async with self._write_lock:
+            current = await self._read_context_turns()
+            remaining = [r for r in current if r not in drop]
+            if len(remaining) == len(current):
+                return current  # nothing matched — don't rewrite the row
+            await self._write_context_turns_locked(remaining)
+            await self._c.commit()
         logger.info(
-            "context_start_advanced boundary=%s count=%d rows=%d",
-            boundary, count, len(rows),
+            "context_turns_dropped dropped=%d remaining=%d",
+            len(current) - len(remaining), len(remaining),
         )
-        return boundary
+        return remaining
+
+    async def clear_context_turns(self) -> None:
+        """Empty the live-context list (``clear_context`` — one big cut)."""
+        async with self._write_lock:
+            await self._write_context_turns_locked([])
+            await self._c.commit()
+        logger.info("context_turns_cleared")
 
     async def has_turns(self) -> bool:
         """Check if there are any turns.

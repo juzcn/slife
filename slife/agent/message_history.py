@@ -543,6 +543,32 @@ class MessageHistory:
             cleaned.append(m)
         return cleaned
 
+    @staticmethod
+    def strip_turn_ids(messages: list[dict]) -> list[dict]:
+        """Return a copy of *messages* with the runtime turn ids removed.
+
+        ``_turn_id`` is how the loop maps an in-context turn back to its
+        diary row — the trim needs the real ids to drop them from the
+        persisted live-context list.  It rides the message that *opens* a
+        turn, and the persisted slice deliberately excludes that message
+        (``save_to_memory`` stores ``all_messages[user_idx + 1:]`` and keeps
+        the user text in its own column), so this is a persist-boundary
+        invariant rather than a live leak being plugged: it keeps the
+        ``messages`` column free of runtime keys if that slice ever widens.
+
+        It never reaches the LLM wire either — :meth:`to_openai_messages`
+        pops it on the way out.
+
+        Only the user message that opens a turn carries one, so a message
+        without the key is passed through untouched.
+        """
+        cleaned = []
+        for m in messages:
+            if "_turn_id" in m:
+                m = {k: v for k, v in m.items() if k != "_turn_id"}
+            cleaned.append(m)
+        return cleaned
+
     def add_tool_result(
         self, tool_call_id: str, content: str, is_error: bool = False,
     ) -> None:
@@ -620,6 +646,7 @@ class MessageHistory:
                 # reasoning.
                 m["reasoning_content"] = ""
             m.pop("images", None)  # internal attachment tracking
+            m.pop("_turn_id", None)  # internal diary-row mapping
             cleaned.append(m)
 
         return cleaned
@@ -737,21 +764,31 @@ class MessageHistory:
           - ``user_message`` (str) — the user's text
           - ``messages`` (list[dict]) — all messages in the turn
           - ``estimated_tokens`` (int) — rough token count
+          - ``turn_id`` (int | None) — the turn's diary rowid when known
         """
         turns: list[dict] = []
         current_turn: list[dict] = []
         current_user_msg = ""
 
+        def _turn_dict(msgs: list[dict], user_text: str) -> dict:
+            first = msgs[0] if msgs else {}
+            return {
+                "user_message": user_text,
+                "messages": list(msgs),
+                "estimated_tokens": sum(
+                    estimate_message_tokens(m) for m in msgs
+                ),
+                # The turn's diary rowid when known — runtime-only, stamped
+                # on the opening user message at save and on restore.  The
+                # trim reads it to drop the evicted turns from the persisted
+                # live-context list.
+                "turn_id": first.get("_turn_id"),
+            }
+
         for msg in messages:
             role = msg.get("role", "")
             if role == "user" and current_turn:
-                turns.append({
-                    "user_message": current_user_msg,
-                    "messages": list(current_turn),
-                    "estimated_tokens": sum(
-                        estimate_message_tokens(m) for m in current_turn
-                    ),
-                })
+                turns.append(_turn_dict(current_turn, current_user_msg))
                 current_turn = []
                 current_user_msg = ""
 
@@ -769,13 +806,7 @@ class MessageHistory:
             current_turn.append(msg)
 
         if current_turn:
-            turns.append({
-                "user_message": current_user_msg,
-                "messages": list(current_turn),
-                "estimated_tokens": sum(
-                    estimate_message_tokens(m) for m in current_turn
-                ),
-            })
+            turns.append(_turn_dict(current_turn, current_user_msg))
 
         return turns
 

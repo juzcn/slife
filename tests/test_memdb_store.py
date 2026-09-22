@@ -1,5 +1,6 @@
 """Tests for slife.plugins.memdb.store — SessionStore and helpers."""
 
+import json
 import re
 import pytest; pytestmark = pytest.mark.unit
 
@@ -32,7 +33,7 @@ async def _create_diary_table(conn) -> None:
     already-open aiosqlite connection.
 
     Matches ``schema.sql``; the full column list is required because
-    ``get_recent_turns`` SELECTs every column.
+    ``get_turns_by_ids`` SELECTs every column.
     """
     await conn.execute("""\
         CREATE TABLE IF NOT EXISTS diary (
@@ -52,6 +53,13 @@ async def _create_diary_table(conn) -> None:
         CREATE TABLE IF NOT EXISTS turn_channel (
             turn_id  INTEGER PRIMARY KEY,
             data     TEXT NOT NULL DEFAULT '{}'
+        )""")
+    # save_turn appends the new rowid to the live-context list inside the
+    # same transaction, so the meta table is part of what it needs.
+    await conn.execute("""\
+        CREATE TABLE IF NOT EXISTS diary_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         )""")
 
 
@@ -357,8 +365,11 @@ class TestSessionStoreSaveTurn:
     async def test_save_turn_basic(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
-        mock_cursor = MagicMock()
+        mock_cursor = AsyncMock()
         mock_cursor.lastrowid = 42
+        # The save also reads the live-context list inside the same
+        # transaction; no row means an empty list.
+        mock_cursor.fetchone = AsyncMock(return_value=None)
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         mock_conn.commit = AsyncMock()
         store._conn = mock_conn
@@ -375,13 +386,35 @@ class TestSessionStoreSaveTurn:
         mock_conn.commit.assert_called()
 
     @pytest.mark.asyncio
+    async def test_save_turn_appends_to_context_list(self):
+        """The new rowid joins the live-context list in the same commit."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.lastrowid = 42
+        mock_cursor.fetchone = AsyncMock(return_value=None)
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        mock_conn.commit = AsyncMock()
+        store._conn = mock_conn
+
+        await store.save_turn(user_message="Hello")
+
+        writes = [
+            call[0] for call in mock_conn.execute.call_args_list
+            if "diary_meta" in call[0][0] and "INSERT OR REPLACE" in call[0][0]
+        ]
+        assert writes, "save_turn must append to the live-context list"
+        assert json.loads(writes[0][1][1]) == [42]
+
+    @pytest.mark.asyncio
     async def test_save_turn_honors_created_at(self):
         """save_turn persists created_at (user input) and completed_at
         (assistant completion) when both are threaded from the harness."""
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
-        mock_cursor = MagicMock()
+        mock_cursor = AsyncMock()
         mock_cursor.lastrowid = 7
+        mock_cursor.fetchone = AsyncMock(return_value=None)
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         mock_conn.commit = AsyncMock()
         store._conn = mock_conn
@@ -393,7 +426,13 @@ class TestSessionStoreSaveTurn:
         )
 
         assert rowid == 7
-        args = mock_conn.execute.call_args[0][1]
+        # The save writes several statements (diary INSERT, context-list
+        # append) — pick the diary row's.
+        insert = next(
+            call for call in mock_conn.execute.call_args_list
+            if "INSERT INTO diary " in call[0][0]
+        )
+        args = insert[0][1]
         # INSERT tuple order: (user_message, messages_json, channel,
         #                      created_at, completed_at,
         #                      who_helped, what_model, token_count)
@@ -428,11 +467,13 @@ class TestSessionStoreGetTurn:
         assert result is None
 
 
-class TestSessionStoreGetRecentTurns:
-    """Tests for get_recent_turns."""
+class TestSessionStoreGetTurnsByIds:
+    """Tests for get_turns_by_ids — the ordered live-context read."""
 
     @pytest.mark.asyncio
-    async def test_get_recent_turns(self):
+    async def test_returns_turns_in_caller_order(self):
+        """The id list is authoritative: the result follows it, and is
+        never re-sorted by rowid."""
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
@@ -440,8 +481,8 @@ class TestSessionStoreGetRecentTurns:
             {"rowid": 1, "user_message": "Turn 1"},
             {"rowid": 2, "user_message": "Turn 2"},
         ])
-        # get_recent_turns now issues a second query (the turn_channel
-        # payload merge) — no rows → every turn falls back to "{}".
+        # A second query merges the turn_channel payload rows — no rows →
+        # every turn falls back to "{}".
         channel_cursor = AsyncMock()
         channel_cursor.fetchall = AsyncMock(return_value=[])
         mock_conn.execute = AsyncMock(
@@ -449,23 +490,27 @@ class TestSessionStoreGetRecentTurns:
         )
         store._conn = mock_conn
 
-        result = await store.get_recent_turns(limit=50)
-        assert len(result) == 2
-        assert result[0]["user_message"] == "Turn 1"
+        result = await store.get_turns_by_ids([2, 1])
+        assert [t["user_message"] for t in result] == ["Turn 2", "Turn 1"]
         assert result[0]["channel_data"] == "{}"
-        assert result[1]["user_message"] == "Turn 2"
         assert result[1]["channel_data"] == "{}"
 
     @pytest.mark.asyncio
-    async def test_get_recent_turns_real_db(self, tmp_path):
-        """Integration test: read recent turns from a real SQLite DB."""
-        import json
+    async def test_empty_list_reads_nothing(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock()
+        store._conn = mock_conn
 
+        assert await store.get_turns_by_ids([]) == []
+        mock_conn.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_turns_by_ids_real_db(self, tmp_path):
+        """Integration test: the list drives the read, order included."""
         db_path = tmp_path / "memory.db"
 
         # ── Set up schema directly (bypass setup() to avoid sqlite_vec) ──
-        import aiosqlite
-
         conn = await aiosqlite.connect(str(db_path))
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA journal_mode=WAL")
@@ -514,16 +559,15 @@ class TestSessionStoreGetRecentTurns:
         store._conn = await aiosqlite.connect(str(db_path))
         store._conn.row_factory = aiosqlite.Row
 
-        # With limit=3, should return the 3 most recent (rows 3,4,5), newest-first
-        result = await store.get_recent_turns(limit=3)
-        assert len(result) == 3
-        assert result[0]["user_message"] == "User message 5"
-        assert result[1]["user_message"] == "User message 4"
-        assert result[2]["user_message"] == "User message 3"
+        # A contiguous slice, oldest-first as the list spells it.
+        result = await store.get_turns_by_ids([3, 4, 5])
+        assert [t["user_message"] for t in result] == [
+            "User message 3", "User message 4", "User message 5",
+        ]
 
         # All columns should be present in each row
         for turn in result:
-            assert "rowid" in turn  # get_recent_turns keeps the internal rowid
+            assert "rowid" in turn  # restore's turn_header reads it
             assert "user_message" in turn
             assert "messages" in turn
             assert "created_at" in turn
@@ -533,20 +577,64 @@ class TestSessionStoreGetRecentTurns:
             assert "token_count" in turn
 
         # Verify messages are parseable JSON
-        assert json.loads(result[0]["messages"])[0]["content"] == "Reply 5"
+        assert json.loads(result[2]["messages"])[0]["content"] == "Reply 5"
 
-        # No limit: should return all 5, newest-first
-        all_result = await store.get_recent_turns(limit=50)
-        assert len(all_result) == 5
-        assert all_result[0]["user_message"] == "User message 5"
-        assert all_result[4]["user_message"] == "User message 1"
+        # NON-CONTIGUOUS — the point of the list.  A rowid boundary could
+        # never express this, and the order is the caller's, not rowid's.
+        sparse = await store.get_turns_by_ids([5, 1, 3])
+        assert [t["user_message"] for t in sparse] == [
+            "User message 5", "User message 1", "User message 3",
+        ]
 
-        # after_rowid (persisted live-context boundary) — only newer rows
-        boundary_result = await store.get_recent_turns(limit=50, after_rowid=2)
-        assert len(boundary_result) == 3
-        assert boundary_result[0]["user_message"] == "User message 5"
-        assert boundary_result[-1]["user_message"] == "User message 3"
+        # Unknown ids are skipped, the rest keep their given order.
+        assert [t["user_message"] for t in await store.get_turns_by_ids([2, 999])] \
+            == ["User message 2"]
+        assert await store.get_turns_by_ids([]) == []
 
+        await store._conn.close()
+
+        await store._conn.close()
+
+    @pytest.mark.asyncio
+    async def test_chunks_past_the_sql_variable_limit(self, tmp_path):
+        """A long list must not blow SQLite's bound-variable limit — the
+        read chunks, and the caller's order still wins across chunks."""
+        from slife.plugins.memdb.store import _MAX_SQL_VARS
+
+        store = SessionStore(tmp_path / "memory.db")
+        store._conn = await aiosqlite.connect(str(tmp_path / "memory.db"))
+        store._conn.row_factory = aiosqlite.Row
+        await _create_diary_table(store._conn)
+
+        n = _MAX_SQL_VARS + 5
+        for i in range(n):
+            await store._conn.execute(
+                "INSERT INTO diary (user_message, created_at) VALUES (?, ?)",
+                (f"msg {i + 1}", "2026-08-12T00:00:00+08:00"),
+            )
+        await store._conn.commit()
+
+        ids = list(range(n, 0, -1))  # descending — deliberately not rowid order
+        turns = await store.get_turns_by_ids(ids)
+
+        assert len(turns) == n
+        assert [t["rowid"] for t in turns] == ids
+        await store._conn.close()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_input_ids_yield_one_turn(self, tmp_path):
+        store = SessionStore(tmp_path / "memory.db")
+        store._conn = await aiosqlite.connect(str(tmp_path / "memory.db"))
+        store._conn.row_factory = aiosqlite.Row
+        await _create_diary_table(store._conn)
+        await store._conn.execute(
+            "INSERT INTO diary (user_message, created_at) VALUES ('a', '2026-08-12T00:00:00+08:00')"
+        )
+        await store._conn.commit()
+
+        turns = await store.get_turns_by_ids([1, 1, 1])
+
+        assert len(turns) == 1, "one id, one turn — not the same dict aliased"
         await store._conn.close()
 
     @pytest.mark.asyncio
@@ -581,7 +669,7 @@ class TestSessionStoreGetRecentTurns:
         assert row is not None
         assert row["data"] == '{"agent_name": "Jack"}'
 
-        turns = await store.get_recent_turns(limit=10)
+        turns = await store.get_turns_by_ids([a2a_rowid, a2a_rowid + 1])
         by_user = {t["user_message"]: t for t in turns}
         assert by_user["GO"]["channel_data"] == '{"agent_name": "Jack"}'
         assert by_user["hi"]["channel_data"] == "{}"
@@ -589,121 +677,108 @@ class TestSessionStoreGetRecentTurns:
         await store._conn.close()
 
 
-class TestSessionStoreContextStart:
-    """Live-context boundary on diary_meta — the exclusive-start rowid
-    that makes restore rebuild the exit-time context."""
+class TestSessionStoreContextTurns:
+    """Live-context id list on diary_meta — the ordered list of turns that
+    makes restore rebuild the exit-time context."""
 
-    @pytest.mark.asyncio
-    async def test_fresh_db_defaults_to_zero(self, tmp_path):
-        """No meta row → boundary 0 → restore everything."""
-        db_path = tmp_path / "memory.db"
-        store = SessionStore(db_path)
-        store._conn = await aiosqlite.connect(str(db_path))
+    @staticmethod
+    async def _store_with_meta(tmp_path, diary=True):
+        store = SessionStore(tmp_path / "memory.db")
+        store._conn = await aiosqlite.connect(str(tmp_path / "memory.db"))
         store._conn.row_factory = aiosqlite.Row
-        # diary_meta exists via schema.sql — just create the table bare.
         await store._conn.execute(
             "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
-        await store._conn.execute("CREATE TABLE diary (user_message TEXT)")
+        if diary:
+            await _create_diary_table(store._conn)
+        return store
 
-        assert await store.get_context_start() == 0
+    @pytest.mark.asyncio
+    async def test_fresh_db_is_empty(self, tmp_path):
+        """No meta row → empty list → nothing is in context.
 
+        (Under the old scalar boundary an absent row meant ``0`` =
+        "replay everything"; an empty list means the opposite, which is why
+        the existing databases are being thrown away rather than migrated.)
+        """
+        store = await self._store_with_meta(tmp_path)
+        assert await store.get_context_turns() == []
         await store._conn.close()
 
     @pytest.mark.asyncio
-    async def test_set_and_get_roundtrip(self, tmp_path):
-        db_path = tmp_path / "memory.db"
-        store = SessionStore(db_path)
-        store._conn = await aiosqlite.connect(str(db_path))
-        store._conn.row_factory = aiosqlite.Row
-        await store._conn.execute(
-            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-
-        await store.set_context_start(7)
-        assert await store.get_context_start() == 7
-
+    async def test_set_and_get_roundtrip_preserves_order(self, tmp_path):
+        store = await self._store_with_meta(tmp_path)
+        await store.set_context_turns([7, 3, 11])
+        assert await store.get_context_turns() == [7, 3, 11]
         await store._conn.close()
 
     @pytest.mark.asyncio
-    async def test_advance_skips_count_rows(self, tmp_path):
-        """advance(count) moves the exclusive boundary past count rows."""
-        db_path = tmp_path / "memory.db"
-        store = SessionStore(db_path)
-        store._conn = await aiosqlite.connect(str(db_path))
-        store._conn.row_factory = aiosqlite.Row
+    async def test_unparseable_value_reads_empty(self, tmp_path):
+        """A corrupt value degrades to "nothing in context", never a crash."""
+        store = await self._store_with_meta(tmp_path)
         await store._conn.execute(
-            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        await _create_diary_table(store._conn)
-        await store._conn.execute(
-            "INSERT INTO diary (user_message, created_at) VALUES "
-            "('a','2026-08-12T00:00:00+08:00'),"
-            "('b','2026-08-12T00:01:00+08:00'),"
-            "('c','2026-08-12T00:02:00+08:00'),"
-            "('d','2026-08-12T00:03:00+08:00'),"
-            "('e','2026-08-12T00:04:00+08:00')"
+            "INSERT INTO diary_meta (key, value) VALUES ('context_turns', ?)",
+            ("not json at all",),
         )
         await store._conn.commit()
-        await store.set_context_start(1)  # everything from rowid 2 on is in-context
-
-        boundary = await store.advance_context_start(2)  # trim turns 2,3
-
-        assert boundary == 3          # exclusive: rows 2,3 out, 4+ in
-        assert await store.get_context_start() == 3
-        # get_recent_turns sees only the in-context suffix
-        turns = await store.get_recent_turns(after_rowid=boundary)
-        assert [t["rowid"] for t in turns] == [5, 4]  # get_recent_turns is internal (rowid), "newest-first, only after boundary"
-
+        assert await store.get_context_turns() == []
         await store._conn.close()
 
     @pytest.mark.asyncio
-    async def test_advance_window_overrun_lands_on_last_row(self, tmp_path):
-        """A count larger than the remaining rows lands on the last existing
-        row — the same rule covers a generous clear_context count (one big
-        trim).  Never overshoots, never moves backward."""
-        db_path = tmp_path / "memory.db"
-        store = SessionStore(db_path)
-        store._conn = await aiosqlite.connect(str(db_path))
-        store._conn.row_factory = aiosqlite.Row
+    async def test_duplicate_ids_collapse_to_first_position(self, tmp_path):
+        store = await self._store_with_meta(tmp_path)
         await store._conn.execute(
-            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            "INSERT INTO diary_meta (key, value) VALUES ('context_turns', ?)",
+            (json.dumps([4, 2, 4, 9, 2]),),
         )
-        await store._conn.execute(
-            "CREATE TABLE diary (user_message TEXT)"
-        )
-        await store._conn.execute(
-            "INSERT INTO diary (user_message) VALUES ('a'),('b')"
-        )
-
-        boundary = await store.advance_context_start(50)
-
-        assert boundary == 2, "the window runs to the last row"
-
+        await store._conn.commit()
+        assert await store.get_context_turns() == [4, 2, 9]
         await store._conn.close()
 
     @pytest.mark.asyncio
-    async def test_advance_nothing_after_boundary_stays_put(self, tmp_path):
-        """No rows after the current boundary → the boundary does not move
-        (monotone — a clear with nothing in context is a no-op)."""
-        db_path = tmp_path / "memory.db"
-        store = SessionStore(db_path)
-        store._conn = await aiosqlite.connect(str(db_path))
-        store._conn.row_factory = aiosqlite.Row
-        await store._conn.execute(
-            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        await store._conn.execute(
-            "CREATE TABLE diary (user_message TEXT)"
-        )
-        await store._conn.execute(
-            "INSERT INTO diary (user_message) VALUES ('a'),('b')"
-        )
+    async def test_drop_removes_only_the_given_ids(self, tmp_path):
+        """A trim drops exactly the evicted turns, keeping the survivors'
+        relative positions — a non-contiguous list stays non-contiguous."""
+        store = await self._store_with_meta(tmp_path)
+        await store.set_context_turns([1, 4, 7, 9])
 
-        await store.set_context_start(2)  # everything is already outside
-        boundary = await store.advance_context_start(10)
+        remaining = await store.drop_context_turns([4, 9])
 
-        assert boundary == 2, "no rows strictly after the boundary → stay put"
+        assert remaining == [1, 7]
+        assert await store.get_context_turns() == [1, 7]
+        await store._conn.close()
+
+    @pytest.mark.asyncio
+    async def test_drop_unknown_ids_is_a_noop(self, tmp_path):
+        store = await self._store_with_meta(tmp_path)
+        await store.set_context_turns([2, 5])
+        assert await store.drop_context_turns([99]) == [2, 5]
+        assert await store.drop_context_turns([]) == [2, 5]
+        await store._conn.close()
+
+    @pytest.mark.asyncio
+    async def test_clear_empties_the_list(self, tmp_path):
+        store = await self._store_with_meta(tmp_path)
+        await store.set_context_turns([1, 2, 3])
+        await store.clear_context_turns()
+        assert await store.get_context_turns() == []
+        await store._conn.close()
+
+    @pytest.mark.asyncio
+    async def test_save_appends_and_restore_reads_it_back(self, tmp_path):
+        """The end-to-end shape: saving builds the list, and that list is
+        what restore replays."""
+        store = await self._store_with_meta(tmp_path)
+        first = await store.save_turn(user_message="a")
+        second = await store.save_turn(user_message="b")
+
+        assert await store.get_context_turns() == [first, second]
+
+        # A trim of the oldest turn leaves only the newer one.
+        await store.drop_context_turns([first])
+        assert await store.get_context_turns() == [second]
+        turns = await store.get_turns_by_ids(await store.get_context_turns())
+        assert [t["user_message"] for t in turns] == ["b"]
 
         await store._conn.close()
 

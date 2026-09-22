@@ -660,6 +660,57 @@ class TestStripTrimMarkers:
         assert cleaned[-1]["content"] == "reply"
 
 
+class TestRuntimeTurnIds:
+    """``_turn_id`` maps an in-context turn back to its diary row.  It is
+    runtime-only: stripped before the turn is persisted and popped before
+    the wire."""
+
+    def test_strip_turn_ids_removes_only_that_key(self):
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("hi")
+        conv.messages[-1]["_turn_id"] = 7
+        conv.add_assistant_message("reply")
+        conv.messages[-1]["thinking"] = "hmm"
+
+        cleaned = MessageHistory.strip_turn_ids(conv.messages)
+
+        assert "_turn_id" not in cleaned[1]
+        assert cleaned[1]["content"] == "hi"
+        # Every other key survives — the assistant message is untouched.
+        assert cleaned[2]["thinking"] == "hmm"
+        # The live history keeps its id (the trim reads it later).
+        assert conv.messages[1]["_turn_id"] == 7
+
+    def test_to_openai_messages_drops_turn_id(self):
+        """The OpenAI backend copies message dicts verbatim (it only pops
+        ``is_error`` by hand), so the funnel must drop the id or it rides
+        into the request body as an unknown field."""
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("hi")
+        conv.messages[-1]["_turn_id"] = 7
+        conv.add_assistant_message("reply")
+
+        wire = conv.to_openai_messages()
+
+        assert all("_turn_id" not in m for m in wire)
+        assert wire[0]["content"] == "SYS"
+        assert wire[1]["content"] == "hi"
+
+    def test_extract_turns_surfaces_the_turn_id(self):
+        """The trim learns which turns it evicted from the turn dict."""
+        conv = MessageHistory(system_prompt="SYS")
+        for i in (11, 22):
+            conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大估算。" * 3)
+            conv.messages[-1]["_turn_id"] = i
+            conv.add_assistant_message("回复" * 40)
+
+        turns = MessageHistory.extract_turns(conv.messages[1:])  # skip system
+
+        assert [t["turn_id"] for t in turns] == [11, 22]
+        # A turn with no stamp reports None rather than a bogus id.
+        assert MessageHistory.extract_turns([{"role": "user", "content": "x"}])[0]["turn_id"] is None
+
+
 # ── add_assistant_message with thinking ───────────────────────────────
 
 

@@ -36,7 +36,7 @@ class Work:
     stall: float = 120.0          # LLM stream inactivity watchdog (resets per chunk)
     shell: float = 120.0          # execute_shell default timeout — generous backstop: the agent's injected timeout overrides it, so this base must not preempt longer work
     pip_install: float = 120.0    # pip_install tool deadline
-    save_memory: float = 10.0     # memdb save_turn / advance_context_start bound
+    save_memory: float = 10.0     # memdb save_turn / drop_context_turns bound
 
 
 @dataclass

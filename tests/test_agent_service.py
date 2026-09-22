@@ -2674,12 +2674,66 @@ class TestSwitchModel:
         assert "GPT" in msg
 
 
-class TestGetRecentTurns:
-    """Restore fetch: page-by-page (batch), start from the persisted
-    live-context boundary, select newest within the context-ceiling budget,
-    return oldest-first so the history rebuilds chronologically."""
+class TestAnnotateSavedTurn:
+    """_annotate_saved_turn carries two different things: the LLM-facing
+    footnote, and the structural id the trim needs.  Only the first is
+    suppressed for autonomous turns."""
 
-    def _make_db(self, tmp_path, n, context_start=None):
+    @staticmethod
+    def _history(user_text: str):
+        from slife.agent.message_history import MessageHistory
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message(user_text)
+        conv.add_assistant_message("reply")
+        return conv
+
+    def test_footnote_and_structural_id(self, sample_config):
+        from datetime import datetime
+        from slife.agent.service import AgentService
+
+        srv = AgentService(sample_config)
+        conv = self._history("hello")
+        now = datetime(2026, 8, 12, 14, 3, 0)
+
+        srv._annotate_saved_turn(conv, 1, 27, now, now)
+
+        assert conv.messages[1]["_turn_id"] == 27
+        assert '[INFO: {"turn_id": 27' in conv.messages[1]["content"]
+
+    def test_autonomous_turn_gets_the_id_but_no_footnote(self, sample_config):
+        """A heartbeat/schedule turn is in context like any other — the trim
+        must be able to drop it — but its synthetic trigger carries no
+        LLM-facing footnote."""
+        from datetime import datetime
+        from slife.agent.service import AgentService
+
+        srv = AgentService(sample_config)
+        conv = self._history("[Heartbeat] click. Reply per your contract.")
+        now = datetime(2026, 8, 12, 14, 3, 0)
+
+        srv._annotate_saved_turn(conv, 1, 31, now, now)
+
+        assert conv.messages[1]["_turn_id"] == 31
+        assert "INFO" not in conv.messages[1]["content"]
+
+    def test_no_rowid_stamps_nothing(self, sample_config):
+        from datetime import datetime
+        from slife.agent.service import AgentService
+
+        srv = AgentService(sample_config)
+        conv = self._history("hello")
+
+        srv._annotate_saved_turn(conv, 1, None, None, datetime(2026, 8, 12))
+
+        assert "_turn_id" not in conv.messages[1]
+
+
+class TestGetRecentTurns:
+    """Restore fetch: the persisted live-context id list drives it — the
+    turns on the list come back verbatim, in list order, and nothing else
+    does."""
+
+    def _make_db(self, tmp_path, n, context_turns=None):
         import sqlite3
 
         db = tmp_path / "test.db"
@@ -2693,6 +2747,10 @@ class TestGetRecentTurns:
         con.execute(
             "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
+        con.execute(
+            "CREATE TABLE turn_channel (turn_id INTEGER PRIMARY KEY, "
+            "data TEXT NOT NULL DEFAULT '{}')"
+        )
         for i in range(1, n + 1):
             con.execute(
                 "INSERT INTO diary (user_message, messages, channel, created_at, token_count) "
@@ -2704,114 +2762,109 @@ class TestGetRecentTurns:
                     100 + i,
                 ),
             )
-        if context_start is not None:
+        if context_turns is not None:
             con.execute(
-                "INSERT INTO diary_meta (key, value) VALUES ('context_start', ?)",
-                (str(context_start),),
+                "INSERT INTO diary_meta (key, value) VALUES ('context_turns', ?)",
+                (_json.dumps(context_turns),),
             )
         con.commit()
         con.close()
         return db
 
     @pytest.mark.asyncio
-    async def test_all_turns_after_boundary_restored_whole(
+    async def test_listed_turns_restored_whole(
         self, sample_config, tmp_path, monkeypatch
     ):
-        """No ceiling re-slicing: every turn after the live-context boundary
-        is restored verbatim — the exit-time context, not a budgeted slice."""
+        """No ceiling re-slicing: every turn on the list is restored
+        verbatim — the exit-time context, not a budgeted slice."""
         from slife.agent.service import AgentService
 
-        db = self._make_db(tmp_path, 5)
+        db = self._make_db(tmp_path, 5, context_turns=[1, 2, 3, 4, 5])
         srv = AgentService(sample_config)
         srv.config.active_model.context_window = 1000
         srv.config.context_ceiling = 0.8
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
 
-        turns, skipped, budget = await srv.get_recent_turns(limit=2)
+        turns, skipped, budget = await srv.get_recent_turns()
 
         ids = [t["rowid"] for t in turns]
-        assert ids == sorted(ids), "must be oldest-first for the restore"
         assert ids == [1, 2, 3, 4, 5], "the whole exit-time context comes back"
         assert skipped == 0
         assert budget == 0, "no ceiling budget — restore is verbatim"
 
     @pytest.mark.asyncio
-    async def test_restore_starts_at_persisted_boundary(
+    async def test_restore_returns_only_listed_turns(
         self, sample_config, tmp_path, monkeypatch
     ):
-        """Turning the context_floor off must not matter: restore reads the
-        persisted live-context start, so turns evicted by the internal trim
-        (and by clear_context — a one-shot clear is one big trim) do not
-        come back."""
+        """Turns dropped from the list by the internal trim (or by
+        clear_context) do not come back — the diary keeps them, the context
+        does not."""
         from slife.agent.service import AgentService
 
-        db = self._make_db(tmp_path, 8, context_start=4)
+        db = self._make_db(tmp_path, 8, context_turns=[5, 6, 7, 8])
         srv = AgentService(sample_config)
         srv.config.active_model.context_window = 1000000
         srv.config.context_ceiling = 0.8
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
 
-        turns, skipped, budget = await srv.get_recent_turns(limit=2)
+        turns, skipped, budget = await srv.get_recent_turns()
 
         ids = [t["rowid"] for t in turns]
-        assert ids == [5, 6, 7, 8], "only rows after the boundary are restored"
+        assert ids == [5, 6, 7, 8], "only the listed turns are restored"
         assert skipped == 0
         assert budget == 0
 
     @pytest.mark.asyncio
-    async def test_hard_cap_only_for_stale_boundary(
+    async def test_list_bounds_the_read_not_the_diary(
         self, sample_config, tmp_path, monkeypatch
     ):
-        """A stale boundary of 0 (pre-boundary DB) would replay the whole
-        history — the defensive hard cap (2× ceiling) bounds it.  Normal
-        in-boundary history stays far below the cap and is restored whole."""
+        """The list is its own bound: a large diary with a short list
+        restores only the list."""
         from slife.agent.service import AgentService
 
-        db = tmp_path / "big.db"
-        import sqlite3
-
-        con = sqlite3.connect(str(db))
-        con.execute(
-            "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
-            "tags TEXT, channel TEXT, "
-            "created_at TEXT, completed_at TEXT, "
-            "who_helped TEXT, what_model TEXT, token_count INT, context_tokens INT)"
-        )
-        con.execute(
-            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        # ~147 est-tokens per turn: 20 turns ≈ 2940 >> 2 × 800 hard cap, so
-        # the newest-first fetch stops once the cap is crossed — the oldest
-        # turns are not replayed.
-        for i in range(1, 21):
-            con.execute(
-                "INSERT INTO diary (user_message, messages, channel, created_at, token_count) "
-                "VALUES (?, ?, 'human', ?, ?)",
-                (
-                    f"msg {i}",
-                    _json.dumps([{"role": "assistant", "content": "x" * 400}]),
-                    f"2026-08-12T{i:02d}:00:00+08:00",
-                    1000 + i,
-                ),
-            )
-        con.commit()
-        con.close()
-
+        db = self._make_db(tmp_path, 20, context_turns=[18, 19, 20])
         srv = AgentService(sample_config)
         srv.config.active_model.context_window = 1000
-        srv.config.context_ceiling = 0.8  # hard cap = 2 × 800 = 1600
+        srv.config.context_ceiling = 0.8
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
 
-        turns, skipped, budget = await srv.get_recent_turns(limit=3)
+        turns, _skipped, _budget = await srv.get_recent_turns()
 
-        # The cap stopped the fetch (newest-first, ~441/batch) — the oldest
-        # turns are absent but the newest in-window ones are kept.
-        ids = [t["rowid"] for t in turns]
-        assert ids == sorted(ids), "must be oldest-first for the restore"
-        assert len(ids) < 20, "the cap stopped the replay"
-        assert ids[0] > 1, "the oldest turns past the cap are not replayed"
-        assert skipped == 0
-        assert budget == 0
+        assert [t["rowid"] for t in turns] == [18, 19, 20]
+
+    @pytest.mark.asyncio
+    async def test_non_contiguous_list_order_is_authoritative(
+        self, sample_config, tmp_path, monkeypatch
+    ):
+        """The point of the list: a non-contiguous set restores exactly
+        those turns, in the list's order — never re-sorted by rowid."""
+        from slife.agent.service import AgentService
+
+        db = self._make_db(tmp_path, 9, context_turns=[7, 2, 9])
+        srv = AgentService(sample_config)
+        monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
+
+        turns, _skipped, _budget = await srv.get_recent_turns()
+
+        assert [t["rowid"] for t in turns] == [7, 2, 9]
+
+    @pytest.mark.asyncio
+    async def test_absent_list_restores_nothing(
+        self, sample_config, tmp_path, monkeypatch
+    ):
+        """A DB with turns but no list restores an empty context.
+
+        This is the deliberate break from the old scalar boundary, where an
+        absent row meant ``0`` = "replay everything"."""
+        from slife.agent.service import AgentService
+
+        db = self._make_db(tmp_path, 5)  # no context_turns key
+        srv = AgentService(sample_config)
+        monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
+
+        turns, _skipped, _budget = await srv.get_recent_turns()
+
+        assert turns == []
 
     @pytest.mark.asyncio
     async def test_broken_db_raises_memory_error(
@@ -2834,6 +2887,12 @@ class TestGetRecentTurns:
         con.execute(
             "INSERT INTO diary (user_message, messages, channel, created_at, token_count) "
             "VALUES ('hi', '[]', 'human', '2026-08-12T00:00:00+08:00', 100)"
+        )
+        con.execute(
+            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        con.execute(
+            "INSERT INTO diary_meta (key, value) VALUES ('context_turns', '[1]')"
         )
         con.commit()
         con.close()

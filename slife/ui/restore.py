@@ -181,6 +181,13 @@ async def restore_session(
             if header:
                 user_msg_text = user_msg_text + " " + header
             user_msg: dict = {"role": "user", "content": user_msg_text}
+            # The structural turn id rides the message so a later trim can
+            # hand the store the real ids to drop from the persisted
+            # live-context list.  Runtime-only: never persisted (the user
+            # message is not part of the stored ``messages`` slice) and
+            # popped before the wire.
+            if turn.get("rowid") is not None:
+                user_msg["_turn_id"] = turn["rowid"]
             all_messages.append(user_msg)
             all_messages.extend(turn_msgs)
 

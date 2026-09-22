@@ -233,17 +233,6 @@ async def __memory_save_turn(
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(name="__memory_get_recent_turns", description="Load recent turns for restore. Internal — called by the main process.")
-async def __memory_get_recent_turns(limit: int = 50, after_rowid: int = 0) -> str:
-    store = await _ensure_store()
-    try:
-        turns = await store.get_recent_turns(limit=limit, after_rowid=after_rowid)
-        return json.dumps({"turns": turns}, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.exception("get_recent_turns_failed limit=%d", limit)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
 @mcp.tool(
     name="__memory_reload_semantic",
     description="Reload the semantic index after an embeddings config change. Internal — called by the harness.",
@@ -282,23 +271,37 @@ async def _ensure_manager_for_reload() -> SemanticManager:
 
 
 @mcp.tool(
-    name="__memory_context_start_advance",
-    description="Advance the persisted live-context start by count rows. Internal — called by the agent loop.",
+    name="__memory_context_turns_drop",
+    description="Drop turn ids from the persisted live-context list. Internal — called by the agent loop.",
 )
-async def __memory_context_start_advance(count: int) -> str:
-    """Persist the live-context boundary after a context cut removed
-    *count* turns — the internal trim, or ``clear_context`` (a one-shot
-    clear is one big trim).  Restore starts where the boundary points, so
+async def __memory_context_turns_drop(turn_ids: list[int]) -> str:
+    """Remove *turn_ids* from the persisted live-context list after the
+    internal trim evicted them.  Restore replays exactly what is left, so
     startup rebuilds the exit-time context instead of re-slicing 20%."""
     try:
         async with _get_init_lock():
             store = await _ensure_store_locked()
-            boundary = await store.advance_context_start(count)
-            if _manager is not None:
-                _manager.on_saved()
-        return json.dumps({"context_start": boundary}, ensure_ascii=False)
+            remaining = await store.drop_context_turns(turn_ids)
+        return json.dumps({"context_turns": remaining}, ensure_ascii=False)
     except Exception as e:
-        logger.exception("context_start_advance_failed count=%d", count)
+        logger.exception("context_turns_drop_failed ids=%d", len(turn_ids))
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__memory_context_turns_clear",
+    description="Empty the persisted live-context list. Internal — called by clear_context.",
+)
+async def __memory_context_turns_clear() -> str:
+    """Empty the live-context list — the one-shot cut behind
+    ``clear_context``.  Turns saved afterwards re-enter it as they save."""
+    try:
+        async with _get_init_lock():
+            store = await _ensure_store_locked()
+            await store.clear_context_turns()
+        return json.dumps({"context_turns": []}, ensure_ascii=False)
+    except Exception as e:
+        logger.exception("context_turns_clear_failed")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

@@ -319,7 +319,7 @@ class AgentService:
             presence_provider=self._drain_presence_events,
             schedule_provider=self._schedule_pending_provider,
             a2a_stale_provider=self._a2a_stale_provider,
-            advance_context_start=self.advance_context_start,
+            drop_context_turns=self.drop_context_turns,
             stream_timeout=subagent_stream_timeout,
             stream_max_retries=None if self.caps.stream_retries else 0,
             tool_catalog=self._catalog,
@@ -348,7 +348,8 @@ class AgentService:
         # context.  The bound method resolves the memdb client at call time
         # (it is not connected during __init__), so a missing/unready
         # client degrades to "skip" rather than raising.
-        self._tool_ctx.advance_context_start = self.advance_context_start
+        self._tool_ctx.drop_context_turns = self.drop_context_turns
+        self._tool_ctx.clear_context_turns = self.clear_context_turns
         self._tool_ctx.reset_context_time = self.agent_loop.reset_context_time
         self.session_usage = TokenUsage()
 
@@ -2335,9 +2336,13 @@ class AgentService:
 
         # The runtime trim note must never reach the Turns DB — it is
         # meaningful only in the live session.  Strip it from the copy
-        # being persisted (the live history keeps its note).
+        # being persisted (the live history keeps its note).  The runtime
+        # turn ids go with it: the loop needs them in memory to map turns
+        # back to diary rows, but they are not part of the record.
         from slife.agent.message_history import MessageHistory as _MH
-        turn_messages = _MH.strip_trim_markers(turn_messages)
+        turn_messages = _MH.strip_turn_ids(
+            _MH.strip_trim_markers(turn_messages)
+        )
 
         # Permanent memory keeps only head+tail digests of oversized tool
         # results — the Turns DB never hoards reproducible tool output, so a
@@ -2480,12 +2485,20 @@ class AgentService:
         reference the turn precisely.  Heartbeat turns are skipped (their
         user message is a synthetic trigger).  Purely additive and
         best-effort — a failure leaves the message unannotated.
+
+        The **structural** id (``_turn_id``) is separate from that footnote
+        and is set on every saved turn, autonomous ones included: the loop
+        maps in-context turns back to diary rows with it, so the trim can
+        hand the store the real ids to drop.  It is runtime-only and stripped
+        before the turn is persisted.
         """
         if rowid is None:
             return
         msgs = history.messages
         if not (0 <= user_idx < len(msgs)) or msgs[user_idx].get("role") != "user":
             return
+        msgs[user_idx]["_turn_id"] = rowid
+
         from slife.agent.schedules import is_autonomous_trigger
 
         content = msgs[user_idx].get("content", "")
@@ -2520,32 +2533,26 @@ class AgentService:
                 {"type": "text", "text": " " + header}
             ]
 
-    async def get_recent_turns(self, limit: int = 20) -> tuple[list[dict], int, int]:
-        """Load recent turns for restore. Returns ([], 0, 0) if no turns.
+    async def get_recent_turns(self) -> tuple[list[dict], int, int]:
+        """Load the in-context turns for restore. Returns ([], 0, 0) if none.
 
         Restores the **exit-time context** verbatim: it reads the persisted
-        live-context start boundary (:meth:`SessionStore.get_context_start`,
-        maintained by ``_trim_after_save`` / ``clear_context``) and returns
-        **every** turn recorded after it — the exact slice the agent was
-        working with when it exited.  No re-slicing against the ceiling: the
-        boundary already encodes the trimmed state, so restore simply replays
-        it (the agent picks up exactly where it left off).
+        ordered live-context id list (:meth:`SessionStore.get_context_turns`,
+        maintained by the save / ``_trim_after_save`` / ``clear_context``) and
+        returns exactly those turns **in the list's order** — the slice the
+        agent was working with when it exited.  No re-slicing against the
+        ceiling: the list already encodes the trimmed state, so restore simply
+        replays it (the agent picks up exactly where it left off).
 
-        Fetches newest-first in batches of *limit* (each batch already
-        newest-first, so appending stays globally newest-first), then reverses
-        to **oldest-first** so the restore rebuilds the history
-        chronologically.  Heartbeat turns are included — they restore as
+        The list order is authoritative and is never re-sorted by rowid: the
+        in-context slice is not necessarily contiguous, so its order is part
+        of the contract.  Heartbeat turns are included — they restore as
         ⚡ 自主, consistent with the live TUI.
 
-        Returns ``(selected, skipped, budget)`` — *skipped* is always 0 (no
-        turns are dropped for a budget), *budget* is 0 (no ceiling cap: the
-        boundary already bounds what is restored).  Kept as a 3-tuple so the
-        call site and ``restore_session`` stay compatible.
-
-        A defensive hard cap (2× the ceiling) guards against a stale
-        boundary of 0 from a pre-boundary DB: it would otherwise replay the
-        entire history at once.  Normal operation never reaches it — the
-        live trim bounds the in-context slice well below the ceiling.
+        Returns ``(turns, skipped, budget)`` — *skipped* is always 0 (no turns
+        are dropped for a budget), *budget* is 0 (the list is its own bound).
+        Kept as a 3-tuple so the call site and ``restore_session`` stay
+        compatible.
 
         Reads directly from SQLite — independent of the memory plugin / MCP.
         """
@@ -2553,37 +2560,16 @@ class AgentService:
         db_path = None
         try:
             from slife.plugins.memdb.store import SessionStore
-            from slife.ui.restore import estimate_turn_tokens
 
             db_path = self._get_memory_db_path()
             if not (db_path and db_path.is_file()):
                 return [], 0, 0
             store = SessionStore(db_path)
             await store.setup(embedding_dim=0)
-            start_rowid = await store.get_context_start()
-
-            # Accumulate newest-first batches after the live-context boundary
-            # until exhausted.  The defensive cap stops a pre-trim boundary
-            # (0, not yet trimmed) from replaying unbounded history.
-            hard_cap = int(
-                self.config.active_model.context_window
-                * self.config.context_ceiling * 2
-            )
-            all_turns: list[dict] = []
-            total = 0
-            offset = 0
-            while total < hard_cap:
-                batch = await store.get_recent_turns(
-                    limit=limit, offset=offset, after_rowid=start_rowid,
-                )
-                if not batch:
-                    break
-                all_turns.extend(batch)
-                total += sum(estimate_turn_tokens(t) for t in batch)
-                offset += limit
-
-            all_turns.reverse()  # oldest-first for restore
-            return all_turns, 0, 0
+            turn_ids = await store.get_context_turns()
+            if not turn_ids:
+                return [], 0, 0
+            return await store.get_turns_by_ids(turn_ids), 0, 0
         except Exception as e:
             # A present-but-broken memory DB (missing column, corruption,
             # disk error) must NOT start a memory-less session silently —
@@ -2601,35 +2587,50 @@ class AgentService:
                 except Exception:
                     pass
 
-    async def advance_context_start(self, count: int) -> bool:
-        """Persist the live-context boundary after a cut removed *count*.
+    async def drop_context_turns(self, turn_ids: list[int]) -> bool:
+        """Persist the live context after the internal trim evicted turns.
 
-        The one cut-op behind every context cut: called by the internal
-        trim (``AgentLoop._trim_after_save``) after it evicts the oldest
-        turns, and by ``clear_context`` (a one-shot clear is one big trim —
-        a generous count, the advance lands on the last row).  Either way,
-        a restart rebuilds the exit-time context from exactly where the
-        live one stood.  Best-effort — if the memdb channel is unreachable
-        the boundary just stays stale, which makes the next restore a
-        *superset* (old trimmed turns come back searchable in context),
-        never a loss.
+        Called by ``AgentLoop._trim_after_save`` with the ids it removed, so
+        a restart rebuilds the exit-time context from exactly where the live
+        one stood.  Best-effort — if the memdb channel is unreachable the
+        list just stays longer than it should, which makes the next restore a
+        *superset* (trimmed turns come back into context), never a loss.
         """
-        if count <= 0 or not self.memdb_enabled:
+        if not turn_ids or not self.memdb_enabled:
             return False
+        return await self._call_context_tool(
+            "__memory_context_turns_drop",
+            {"turn_ids": list(turn_ids)},
+            f"count={len(turn_ids)}",
+        )
+
+    async def clear_context_turns(self) -> bool:
+        """Empty the persisted live-context list (``clear_context``).
+
+        Same best-effort contract as :meth:`drop_context_turns`.
+        """
+        if not self.memdb_enabled:
+            return False
+        return await self._call_context_tool(
+            "__memory_context_turns_clear", {}, "clear",
+        )
+
+    async def _call_context_tool(
+        self, tool: str, args: dict, tag: str,
+    ) -> bool:
+        """Call an internal memdb context tool, best-effort."""
         plugin = self._plugins.get("memdb")
         client = getattr(plugin, "client", None) if plugin else None
         if client is None:
             return False
         try:
             await asyncio.wait_for(
-                client.call_tool(
-                    "__memory_context_start_advance", {"count": count},
-                ),
+                client.call_tool(tool, args),
                 timeout=_timeouts.timeouts.work.save_memory,
             )
             return True
         except Exception:
-            logger.warning("context_start_advance_skipped count=%d", count)
+            logger.warning("context_turns_call_skipped tool=%s %s", tool, tag)
             return False
 
     def _get_memory_db_path(self) -> Path | None:
