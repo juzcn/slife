@@ -45,7 +45,7 @@ def backend_install_hint(
     local-embed normally runs inside the slife tool venv (it is a slife
     dependency), so the backend must be added to *that* interpreter — ``uv
     pip install --python <this venv's python>``.  ``uv tool install
-    'local-embed[gguf]'`` would rebuild a separate standalone tool instead of
+    local-embed`` would rebuild a separate standalone tool instead of
     fixing the running venv, so it is never the right hint here.
 
     ``gguf`` = llama-cpp-python: no PyPI wheel, so the standard build
@@ -56,7 +56,7 @@ def backend_install_hint(
     """
     platform = platform or sys.platform
     pyp = python or sys.executable
-    package = "llama-cpp-python==0.3.34" if backend == "gguf" else "sentence-transformers"
+    package = "llama-cpp-python" if backend == "gguf" else "sentence-transformers"
     if backend == "gguf" and platform == "win32":
         return (
             f"uv pip install --python {pyp} "

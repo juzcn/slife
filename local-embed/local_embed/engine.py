@@ -474,7 +474,7 @@ class Engine:
     def _read_model_dim(client: Any) -> int:
         """Read a loaded llama-cpp model's embedding width defensively.
 
-        ``n_embd`` is a bound *method* on llama_cpp 0.3.34 — ``int(n_embd)``
+        ``n_embd`` is a bound *method* on current llama_cpp releases — ``int(n_embd)``
         raises ``TypeError`` and would fail every GGUF load.  Accept the
         property value or invoke the method, then convert; anything else
         degrades to 0 so the caller keeps its guessed dimension.
@@ -504,7 +504,7 @@ class Engine:
                 logger.warning(
                     "backend_unavailable name=%s backend=gguf "
                     "reason=llama_cpp_not_installed "
-                    "hint='uv pip install --python %s llama-cpp-python==0.3.34'",
+                    "hint='uv pip install --python %s llama-cpp-python'",
                     spec.name, sys.executable,
                 )
                 self._failed.add(spec.name)

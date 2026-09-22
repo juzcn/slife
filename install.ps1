@@ -680,18 +680,13 @@ try {
             } else {
                 $hasExtras = $true
                 $oldPkgs | Out-File -Encoding utf8 $preservedReqs
-                # llama-cpp-python is env-specific and version-locked in the
-                # README (==0.3.34).  The name-only restore resolves the
-                # newest version and silently drifts from the lock — pin the
-                # README version.  Windows has no default MSVC, so use the
-                # upstream prebuilt CPU wheel (the one workaround); Linux /
-                # WSL / macOS compile from the PyPI sdist instead.
+                # llama-cpp-python is restored by name like every other extra,
+                # so it resolves the newest release.  Windows has no default
+                # MSVC, so it comes from the upstream prebuilt CPU wheel (the
+                # one workaround); Linux / WSL / macOS compile from the PyPI
+                # sdist instead.
                 if ($oldPkgs -contains "llama-cpp-python") {
-                    Write-Warn "  llama-cpp-python: pinning to the README lock ==0.3.34 (Windows: upstream prebuilt CPU wheel)"
-                    $pinned = Get-Content $preservedReqs | ForEach-Object {
-                        if ($_ -match '^llama-cpp-python$') { "llama-cpp-python==0.3.34" } else { $_ }
-                    }
-                    $pinned | Set-Content $preservedReqs
+                    Write-Dim "  llama-cpp-python: prebuilt CPU wheel (upstream index)"
                     $extraIndexArgs = @("--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cpu")
                 }
                 Write-Warn "  Re-adding $extraCount extra packages:"

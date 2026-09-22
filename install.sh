@@ -554,13 +554,14 @@ fi
 # User data (~/.slife/) is never touched.
 echo -e "${YELLOW}[4/5] Installing slife v${VERSION}…${NC}"
 
-# Detect previously installed optional packages so we can preserve
-# them across reinstall.  Without this, "uv tool uninstall" + "uv tool
-# install" silently drops llama-cpp-python / sentence-transformers,
-# which live in optional-dependencies and are not installed by default.
+# Detect previously installed packages so we can preserve them across
+# reinstall.  Without this, "uv tool uninstall" + "uv tool install"
+# silently drops llama-cpp-python / sentence-transformers — the embedding
+# backends are installed by hand (no extras, see the README), so nothing
+# else would bring them back.
 #
 # Capture all user-installed packages from the old venv (including
-# extras and manually pip-installed packages) so we can re-add them
+# manually pip-installed packages) so we can re-add them
 # after the fresh install.
 # Save outside TMP_DIR so the file survives cleanup.
 PRESERVED_REQS="${TMPDIR:-/tmp}/slife-preserved-requirements.txt"
@@ -692,17 +693,11 @@ if [ -s "$PRESERVED_REQS" ]; then
         uv pip freeze --python "$NEW_PYTHON" 2>/dev/null | sed 's/==.*//' | sort > "$TMP_DIR/new-freeze.txt"
         sort "$PRESERVED_REQS" | comm -23 - "$TMP_DIR/new-freeze.txt" > "$EXTRA_REQS"
 
-        # llama-cpp-python is env-specific and version-locked in the README
-        # (==0.3.34).  The name-only restore resolves the newest version and
-        # silently drifts from the lock — pin the README version.  On
-        # Linux/WSL/macOS it then compiles from the PyPI sdist (the standard
-        # build; needs a C compiler + CMake); Windows uses the upstream
-        # prebuilt wheel instead (no default MSVC).
-        if grep -qi '^llama-cpp-python' "$EXTRA_REQS" 2>/dev/null; then
-            echo -e "  ${YELLOW}llama-cpp-python: pinning to the README lock ==0.3.34 (source-compiled from PyPI)${NC}"
-            sed -i 's/^llama-cpp-python.*/llama-cpp-python==0.3.34/' "$EXTRA_REQS"
-        fi
-
+        # llama-cpp-python is restored by name like every other extra, so it
+        # resolves the newest release and compiles from the PyPI sdist (the
+        # standard build; needs a C compiler + CMake).  Windows has no default
+        # MSVC — install.ps1 adds the upstream prebuilt wheel index there.
+        #
         # torch drifts by BUILD FLAVOUR, which the name-only diff cannot see:
         # a preserved "torch==2.14.0+cpu" is a different artifact, from a
         # different index, than the "torch" PyPI resolves by default — and on

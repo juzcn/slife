@@ -417,7 +417,7 @@ class EmbeddingClient:
     def _read_model_dim(client) -> int:
         """Read a loaded llama-cpp model's embedding width defensively.
 
-        ``n_embd`` is a bound *method* on llama_cpp 0.3.34 — ``int(n_embd)``
+        ``n_embd`` is a bound *method* on current llama_cpp releases — ``int(n_embd)``
         raises ``TypeError`` and would fail every GGUF load.  Accept the
         property value or invoke the method, then convert; anything else
         (0, None, a type that won't coerce) degrades to 0 so the caller

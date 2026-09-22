@@ -23,10 +23,6 @@ classifiers = [
     "Topic :: Terminals",
 ]
 
-[project.optional-dependencies]
-gguf = ["llama-cpp-python==0.3.34"]
-transformer = ["sentence-transformers"]
-
 [project.urls]
 Homepage = "https://github.com/juzcn/slife"
 Repository = "https://github.com/juzcn/slife"

@@ -123,17 +123,17 @@ class TestBackendInstallHint:
         # install --python <this venv>), never a fresh `uv tool install`
         # (that rebuilds a separate standalone tool).
         assert backend_install_hint("gguf", "linux", "/venv/python") == (
-            "uv pip install --python /venv/python llama-cpp-python==0.3.34"
+            "uv pip install --python /venv/python llama-cpp-python"
         )
         assert backend_install_hint("gguf", "darwin", "/venv/python") == (
-            "uv pip install --python /venv/python llama-cpp-python==0.3.34"
+            "uv pip install --python /venv/python llama-cpp-python"
         )
 
     def test_gguf_windows_adds_cpu_index(self):
         assert backend_install_hint("gguf", "win32", "/venv/python") == (
             "uv pip install --python /venv/python "
             "--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu "
-            "llama-cpp-python==0.3.34"
+            "llama-cpp-python"
         )
 
     def test_transformer_plain(self):

@@ -60,9 +60,8 @@ if ! command -v local-embed &>/dev/null; then
 fi
 
 echo ""
-echo -e "${YELLOW}Backends are optional extras — install per your platform (see local-embed/README.md):${NC}"
-echo "  uv tool install \"local-embed[gguf]\"          # llama-cpp backend (compiles on Linux/WSL/macOS)"
-echo "  uv tool install \"local-embed[transformer]\"   # sentence-transformers backend"
+echo -e "${YELLOW}The embedding backend is NOT installed.  It is a per-platform install —${NC}"
+echo -e "${YELLOW}the command differs by OS and GPU.  See the matrix in local-embed/README.md.${NC}"
 echo ""
 echo -e "${GREEN}local-embed installed successfully!${NC}"
 echo ""

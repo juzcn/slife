@@ -72,9 +72,8 @@ if ($userPath -notlike "*$localBin*") {
 }
 
 Write-Host ""
-Write-Warn "Backends are optional extras — install per your platform (see local-embed\README.md):"
-Write-Host "  uv tool install `"local-embed[gguf]`"          # llama-cpp backend (Windows: prebuilt CPU wheel)"
-Write-Host "  uv tool install `"local-embed[transformer]`"   # sentence-transformers backend"
+Write-Warn "The embedding backend is NOT installed.  It is a per-platform install —"
+Write-Warn "the command differs by OS and GPU.  See the matrix in local-embed\README.md."
 Write-Host ""
 Write-Host "local-embed installed successfully!" -ForegroundColor Green
 Write-Host ""

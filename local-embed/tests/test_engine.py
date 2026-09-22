@@ -100,7 +100,7 @@ class TestGgufLoad:
             patch("local_embed.engine.run_daemon", new_callable=AsyncMock) as mock_run,
         ):
             client = MagicMock()
-            # n_embd is a bound METHOD on llama_cpp 0.3.34 (regression guard)
+            # n_embd is a bound METHOD on current llama_cpp (regression guard)
             client.n_embd = MagicMock(return_value=768)
             mock_run.return_value = client
 
