@@ -816,7 +816,7 @@ try {
             Write-Host "  fetched $tikTokenFile" -ForegroundColor DarkGray
         } else {
             Remove-Item $tikTokenFile -Force -ErrorAction SilentlyContinue
-            Write-Host "  tokenizer vocabulary not fetched - slife will not start until it is (see README)" -ForegroundColor Yellow
+            Write-Host "  tokenizer vocabulary not fetched - slife fetches it on first use, with no timeout (see README)" -ForegroundColor Yellow
         }
     }
 

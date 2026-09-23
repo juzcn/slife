@@ -803,7 +803,12 @@ echo -e "${YELLOW}[4b] Fetching the tokenizer vocabulary…${NC}"
 _TIKTOKEN_DIR="$HOME/.cache/tiktoken"
 _TIKTOKEN_FILE="$_TIKTOKEN_DIR/fb374d419588a4632f3f557e76b4b70aebbca790"
 _TIKTOKEN_BYTES=3613922
-_tiktoken_size() { wc -c < "$1" 2>/dev/null | tr -d ' '; }
+# The cached file's size in bytes, or nothing when it cannot be read.  The
+# stderr redirect wraps the whole command, not just wc: a *failed redirection*
+# is reported by bash itself, before wc runs, so `wc -c < "$1" 2>/dev/null`
+# still prints "No such file or directory" — and an absent file is the ordinary
+# case on a machine that has never run slife, which is the case being checked.
+_tiktoken_size() { { wc -c < "$1"; } 2>/dev/null | tr -d ' '; }
 if [ "$(_tiktoken_size "$_TIKTOKEN_FILE")" = "$_TIKTOKEN_BYTES" ]; then
     echo -e "  ${GRAY}already present${NC}"
 else
@@ -814,7 +819,7 @@ else
         echo -e "  ${GRAY}fetched $_TIKTOKEN_FILE${NC}"
     else
         rm -f "$_TIKTOKEN_FILE"
-        echo -e "  ${YELLOW}⚠ tokenizer vocabulary not fetched — slife will not start until it is (see README)${NC}"
+        echo -e "  ${YELLOW}⚠ tokenizer vocabulary not fetched — slife fetches it on first use, with no timeout (see README)${NC}"
     fi
 fi
 
