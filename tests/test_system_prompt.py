@@ -478,9 +478,26 @@ class TestRecallInstruction:
 
         assert "the turns you name become the" in text
         assert "in place of the ones in hand" in text
-        assert "subject carried over from the" in text and "conversation" in text
-        assert "becomes the query" in text
-        assert "那人工智能学院呢？" in text
+        # The rule, then the two cases it covers as worked examples: the
+        # subject carried over from the conversation, and the way back to a
+        # turn the context has dropped.  Without the second the discriminator
+        # reads a follow-up naming something it cannot see as "the context is
+        # sufficient" and answers from what happens to be in hand.
+        assert "Name what the turn needs" in text
+        # Each case is written as the reply itself — the JSON object the schema
+        # asks for — not as a prose shorthand for it.
+        assert "the subject is in the conversation above" in text
+        assert '→ {"query": "首经贸 人工智能学院 成立"}' in text
+        assert "that turn has left the context" in text
+        assert '→ {"query": "首经贸 管理工程学院 院长"}' in text
+        # The time shapes, pure and combined, in the bound grammar.
+        assert "a period, and no topic" in text
+        assert '→ {"since": "yesterday"}' in text
+        assert "a topic within a period" in text
+        assert '→ {"query": "首经贸 校庆", "since": "last week"}' in text
+        # …and the case that needs no history at all.
+        assert "the turn reads on its own" in text
+        assert "→ {}" in text
 
 
 # ── Turn prompt presence events ──────────────────────────────────────────

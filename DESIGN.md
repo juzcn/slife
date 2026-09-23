@@ -239,11 +239,27 @@ conversation and nothing it says is ever shown.
   leaves the turn with the system prompt alone and an answer invented from nothing.
 - **What the instruction states**: what the call decides (the named turns become the context, in
   place of the ones in hand), the current input, how the query is matched (against stored turns —
-  their user messages, the tools they called, their answers), a worked example of carrying the
-  subject over (`那人工智能学院呢？` → `首经贸 人工智能学院 成立`), and `turn_recall`'s **own tool
-  schema**, read out of the registry, so it is asked for exactly the parameters the tool takes in
-  the tool's own words. With no `turn_recall` in the registry there is no call at all: the schema
-  *is* the instruction.
+  their user messages, the tools they called, their answers), one rule — *name what the turn needs,
+  in the words a stored turn would contain* — and `turn_recall`'s **own tool schema**, read out of
+  the registry, so it is asked for exactly the parameters the tool takes in the tool's own words.
+  With no `turn_recall` in the registry there is no call at all: the schema *is* the instruction.
+
+  The rule is carried by five worked cases, one per shape the reply can take, each written as the
+  reply itself — the JSON object the schema asks for — rather than as a shorthand for it: `{}` (the
+  turn reads on its own), a query for a subject in the conversation (`那人工智能学院呢？` →
+  `{"query": "首经贸 人工智能学院 成立"}`), a query for a turn that has left the context (`刚才问首经贸
+  管工学院院长是谁？` → `{"query": "首经贸 管理工程学院 院长"}`), a bare period (`这两天都做了些什么？`
+  → `{"since": "yesterday"}`), and a topic within a period (`上周关于校庆都说了什么？` →
+  `{"query": "首经贸 校庆", "since": "last week"}`).  Worked cases
+  rather than prose because the two composition rules — carry the subject, name what is missing —
+  are what a bare rule statement was failing to convey; every bound in them is in
+  `timeutil.BOUND_GRAMMAR`, and an unparseable bound is answered as an empty selection, so a wrong
+  example would be a context wipe.
+
+  The second example covers the case `{}` cannot: a turn the context has dropped is invisible from
+  the context itself, so "the context in hand is enough" reads as correct while the referent is
+  gone.  It also widens the empty-selection path — a query for a turn that was never stored selects
+  nothing, and an empty selection clears the context.
 - **Cost**: one context-sized call per turn — the pre-turn call is now about as expensive as the turn
   itself. That is what judging from the conversation costs; the log line's `msgs` / `chars` are what
   say whether it is being paid.
