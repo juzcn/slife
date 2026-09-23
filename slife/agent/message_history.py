@@ -39,10 +39,11 @@ _encoding = None
 _TIKTOKEN_CACHE_DIR = Path.home() / ".cache" / "tiktoken"
 
 #: The cached vocabulary file (tiktoken names it after the sha1 of the blob URL
-#: it downloads from) and its exact size.  A *partial* download is the failure
-#: this guards: tiktoken does not validate the file, and a truncated vocab is
-#: worse than a missing one — it looks present, so the fetch is skipped and the
-#: encoding is silently wrong.  Update both if ``_ENCODING_NAME`` changes.
+#: it downloads from) and its exact size.  The size is checked only for a file
+#: that is *present*, and that asymmetry is the point: tiktoken does not
+#: validate what it reads, so a truncated vocab is worse than a missing one —
+#: it looks present, the fetch is skipped, and the encoding is silently wrong.
+#: Update both if ``_ENCODING_NAME`` changes.
 _VOCAB_FILE = _TIKTOKEN_CACHE_DIR / "fb374d419588a4632f3f557e76b4b70aebbca790"
 _VOCAB_BYTES = 3613922
 
@@ -50,8 +51,8 @@ _VOCAB_BYTES = 3613922
 class TokenizerUnavailable(RuntimeError):
     """No token figure can be measured — the BPE vocabulary is unusable.
 
-    An *environment* failure (a vocabulary never fetched, or fetched
-    short), never an input outcome.  Its own type rather than a bare
+    An *environment* failure (a vocabulary present but not whole, or a fetch
+    that landed short), never an input outcome.  Its own type rather than a bare
     ``RuntimeError`` so a caller that answers other failures with a
     default can tell this one apart and fail closed instead: an estimate
     that silently becomes a default is indistinguishable from a real one
@@ -62,44 +63,63 @@ class TokenizerUnavailable(RuntimeError):
     """
 
 
+def _vocab_size():
+    """The cached vocabulary's size in bytes, or ``None`` when it is absent."""
+    try:
+        return _VOCAB_FILE.stat().st_size
+    except OSError:
+        return None
+
+
 def _get_encoding():
-    """Return the cached BPE encoding, building it on first use.
+    """Return the BPE encoding, letting tiktoken fetch the vocabulary if needed.
 
     Lazy on purpose: ``tiktoken.get_encoding`` fetches the vocabulary on its
     first call, and this module is imported by plugin processes whose startup
     must stay handshake-fast.  Deferring pushes that fetch to the first
     estimate (after the handshake) instead of import time.
 
-    The fetch is the fragile part: tiktoken reads the vocab over HTTP with no
+    A **missing** vocabulary is fetched — :data:`_TIKTOKEN_CACHE_DIR` is pinned
+    so the download lands somewhere stable and every later process reads it from
+    disk.  The installers pre-fetch it, so the ordinary path never reaches the
+    network, which is worth keeping: tiktoken reads the vocab over HTTP with no
     timeout of its own, so on a host where that transfer stalls (a TUN/fake-ip
     proxy throttles it to a crawl — measured at ~6 KB/s, and the vocab is
-    3.6 MB) it hangs the caller forever instead of erroring.  Pinning
-    :data:`_TIKTOKEN_CACHE_DIR` means it is fetched once, out of band, and every
-    later process reads it from disk.  The cache is checked first so a missing
-    vocabulary raises a clear error instead of reaching that hang.
+    3.6 MB) it hangs the caller forever instead of erroring.
+
+    A **present but wrong-sized** vocabulary is refused instead, and the
+    asymmetry is deliberate: tiktoken does not validate what it reads, so a
+    truncated file looks present, skips the fetch, and silently mis-counts every
+    figure built on it.  Deleting the file restores the fetch.
     """
     global _encoding
     if _encoding is None:
         import os
 
-        cache = _TIKTOKEN_CACHE_DIR
-        os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(cache))
-        try:
-            complete = _VOCAB_FILE.stat().st_size == _VOCAB_BYTES
-        except OSError:
-            complete = False
-        if not complete:
-            # Reaching get_encoding here would block with no timeout — and a
-            # truncated file would be read as a valid vocab.  A dead end with
-            # instructions beats a hung agent.
+        os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(_TIKTOKEN_CACHE_DIR))
+        size = _vocab_size()
+        if size is not None and size != _VOCAB_BYTES:
             raise TokenizerUnavailable(
-                f"tiktoken vocabulary for {_ENCODING_NAME} is missing or "
-                f"incomplete at {_VOCAB_FILE} (expected {_VOCAB_BYTES} bytes) "
-                f"— fetch it once with network access before running offline",
+                f"tiktoken vocabulary for {_ENCODING_NAME} is truncated at "
+                f"{_VOCAB_FILE} ({size} bytes, expected {_VOCAB_BYTES}) — a "
+                f"partial vocabulary is read as a whole one and would "
+                f"mis-count; delete the file and it will be fetched again",
             )
         import tiktoken
 
         _encoding = tiktoken.get_encoding(_ENCODING_NAME)
+        # A fetch that stopped short leaves exactly the file the check above
+        # guards against, and by now tiktoken has already loaded it — so the
+        # check is repeated rather than assumed.  An *absent* file here is not a
+        # failure: it means tiktoken found the vocabulary where it did not look.
+        size = _vocab_size()
+        if size is not None and size != _VOCAB_BYTES:
+            _encoding = None
+            raise TokenizerUnavailable(
+                f"tiktoken vocabulary for {_ENCODING_NAME} is truncated at "
+                f"{_VOCAB_FILE} ({size} bytes, expected {_VOCAB_BYTES}) — the "
+                f"download did not complete; delete the file and retry",
+            )
     return _encoding
 
 

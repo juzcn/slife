@@ -795,8 +795,10 @@ fi
 # slow or proxy-throttled link hangs the agent instead of failing.  Fetch it at
 # install time (network is up and the wait is visible) into tiktoken's cache
 # dir, named by the SHA-1 of the blob URL — that IS the cache key tiktoken
-# looks for.  Slife refuses to start on a missing or partial file rather than
-# mis-count tokens from a truncated vocabulary.
+# looks for.  This is an optimisation, not a requirement: a missing file is
+# fetched on first use.  A wrong-sized one is refused rather than used, because
+# tiktoken does not validate what it reads and a truncated vocabulary would
+# mis-count silently — so re-fetch over it (which the branch below already does).
 echo -e "${YELLOW}[4b] Fetching the tokenizer vocabulary…${NC}"
 _TIKTOKEN_DIR="$HOME/.cache/tiktoken"
 _TIKTOKEN_FILE="$_TIKTOKEN_DIR/fb374d419588a4632f3f557e76b4b70aebbca790"

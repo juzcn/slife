@@ -92,12 +92,13 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/install.ps1 | iex"
 ```
 
-### Tokenizer vocabulary (one-time)
+### Tokenizer vocabulary (optional, one-time)
 
 Slife measures context size with `tiktoken` (the OpenAI BPE), which downloads
-its 3.6 MB vocabulary on first use — and that download has **no timeout**, so
-on a slow or proxy-throttled link it hangs instead of failing. Fetch it once,
-up front:
+its 3.6 MB vocabulary on first use. That happens automatically when the file is
+absent — but the download has **no timeout**, so on a slow or proxy-throttled
+link it hangs instead of failing. Fetching it once, up front, keeps that out of
+the agent's first turn:
 
 ```bash
 mkdir -p ~/.cache/tiktoken
@@ -105,9 +106,11 @@ curl -fL --retry 3 -o ~/.cache/tiktoken/fb374d419588a4632f3f557e76b4b70aebbca790
   https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken
 ```
 
-The filename is the SHA-1 of that URL (tiktoken's cache key); the file must be
-exactly **3613922** bytes. Slife starts only when it is: a partial file would
-otherwise be read as a valid vocabulary and silently mis-count tokens.
+The filename is the SHA-1 of that URL (tiktoken's cache key) and the file must
+be exactly **3613922** bytes. A file that is present but shorter is refused
+rather than used — tiktoken does not validate what it reads, so a truncated
+vocabulary would pass as a whole one and silently mis-count tokens. Delete it
+and it will be fetched again.
 
 ### Try without installing
 

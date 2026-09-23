@@ -792,9 +792,11 @@ try {
     # 3.6 MB vocabulary on first use with NO timeout, so a slow or
     # proxy-throttled link hangs the agent instead of failing.  Fetch it at
     # install time into tiktoken's cache dir, named by the SHA-1 of the blob
-    # URL - that IS the cache key tiktoken looks for.  Slife refuses to start
-    # on a missing or partial file rather than mis-count tokens from a
-    # truncated vocabulary.
+    # URL - that IS the cache key tiktoken looks for.  This is an optimisation,
+    # not a requirement: a missing file is fetched on first use.  A wrong-sized
+    # one is refused rather than used, because tiktoken does not validate what
+    # it reads and a truncated vocabulary would mis-count silently - so
+    # re-fetch over it (which the branch below already does).
     Write-Step "[4b] Fetching the tokenizer vocabulary..."
     $tikTokenDir = "$env:USERPROFILE\.cache\tiktoken"
     $tikTokenFile = Join-Path $tikTokenDir "fb374d419588a4632f3f557e76b4b70aebbca790"
