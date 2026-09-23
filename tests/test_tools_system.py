@@ -257,7 +257,7 @@ class TestSystemToolsListTool:
         registry = ToolRegistry()
         registry.register(_job_tool("job-translate"))     # the user's
         registry.register(_job_tool("job-write"))         # the plugin's own
-        registry.register(_job_tool("turn_recall"))       # another plugin's
+        registry.register(_job_tool("turn_search"))       # another plugin's
 
         tool = SystemToolsListTool()
         try:
@@ -265,7 +265,7 @@ class TestSystemToolsListTool:
             result = await tool.execute()
             assert "`job-translate`" not in result
             assert "`job-write`" in result
-            assert "`turn_recall`" in result
+            assert "`turn_search`" in result
         finally:
             tool._ctx = None
 

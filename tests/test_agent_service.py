@@ -2941,7 +2941,7 @@ class TestSpawnPluginListToolsRetry:
         first_client.list_tools.side_effect = TimeoutError("list_tools timed out")
         second_client = AsyncMock()
         second_client.list_tools.return_value = [{
-            "name": "turn_recall", "description": "d",
+            "name": "turn_search", "description": "d",
             "inputSchema": {"type": "object", "properties": {}},
         }]
         second_client.call_tool = AsyncMock(

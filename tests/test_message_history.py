@@ -291,6 +291,58 @@ class TestAddUserMessage:
 # ── add_assistant_message ────────────────────────────────────────────
 
 
+class TestStripImages:
+    """strip_images — an attachment the provider rejected is not kept.
+
+    A block lives in the session only, so nothing else removes it: left in
+    place it rides every later request and is re-rejected there.
+    """
+
+    def test_restores_the_text_only_string(self):
+        """The list collapses back to exactly what the same turn renders
+        without images, so an evicted turn costs no prompt-cache miss."""
+        conv = MessageHistory()
+        conv.add_user_message("look at this")
+        conv.inject_images_to_last_user([
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ])
+        assert conv.strip_images() == 1
+        assert conv.messages[0]["content"] == "look at this"
+
+    def test_keeps_text_parts_around_the_block(self):
+        """The injected footnote part carries its own leading space, so
+        concatenating the text parts reproduces the text-only render."""
+        conv = MessageHistory()
+        conv.add_user_message("what is this")
+        conv.inject_images_to_last_user([
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            {"type": "text", "text": " [2026-09-23 17:17]"},
+        ])
+        assert conv.strip_images() == 1
+        assert conv.messages[0]["content"] == "what is this [2026-09-23 17:17]"
+
+    def test_removes_from_every_message(self):
+        """A rebuild re-attaches blocks per turn, so more than one turn can
+        carry them — this is not only the last user message."""
+        conv = MessageHistory()
+        block = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        conv.add_user_message("one")
+        conv.inject_images_to_last_user([block])
+        conv.add_assistant_message("seen")
+        conv.add_user_message("two")
+        conv.inject_images_to_last_user([block, block])
+        assert conv.strip_images() == 3
+        assert conv.messages[0]["content"] == "one"
+        assert conv.messages[2]["content"] == "two"
+
+    def test_noop_without_images(self):
+        conv = MessageHistory()
+        conv.add_user_message("plain")
+        conv.add_assistant_message("hi")
+        assert conv.strip_images() == 0
+        assert conv.messages[0]["content"] == "plain"
+
+
 class TestAddAssistantMessage:
     """Tests for MessageHistory.add_assistant_message."""
 

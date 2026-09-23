@@ -139,13 +139,13 @@ def _like_terms(
     once they stopped:
 
     - ``count_turns`` LIKE'd the whole query as a single pattern, so
-      ``"子agent 委托"`` matched rows in ``turn_recall`` and none in
+      ``"子agent 委托"`` matched rows in ``turn_search`` and none in
       ``turn_count`` (the search ANDs the words; the count wanted the literal
       space).
     - The count searched two columns where the search searched four, so a hit
       in ``summary``/``tags`` was invisible to it.
     - memfiles' ``_like_search_kind`` built its own whole-query pattern too, so
-      ``cabinet_search`` missed a note that ``turn_recall`` found — the same
+      ``cabinet_search`` missed a note that ``turn_search`` found — the same
       question answered differently by two stores.
 
     Same reason :meth:`SessionStore._grep_scan` is shared: two readers report
@@ -543,7 +543,7 @@ class SessionStore(VecStoreLifecycleMixin):
                 logger.warning(
                     "context_turns_absent turns=%d — pre-list DB: the live "
                     "context starts empty; older turns stay searchable via "
-                    "turn_recall and re-enter as new turns are saved "
+                    "turn_search and re-enter as new turns are saved "
                     "(path=%s)", turns, self._db_path,
                 )
         except Exception:
@@ -1175,35 +1175,75 @@ class SessionStore(VecStoreLifecycleMixin):
         logger.debug("search_semantic hits=%s", len(results))
         return results
 
+    @staticmethod
+    def _time_window(
+        since: str | None, until: str | None,
+    ) -> tuple[str, list[str]]:
+        """``(where, params)`` for the ``created_at`` window.
+
+        The turns' one time axis, written once: the browse and the recall
+        selector's time branch both window it, so the grammar and the column
+        cannot drift apart.
+        """
+        clauses: list[str] = []
+        params: list[str] = []
+        if since:
+            clauses.append("created_at >= ?")
+            params.append(normalize_time_bound(since, role="since"))
+        if until:
+            clauses.append("created_at <= ?")
+            params.append(normalize_time_bound(until, role="until"))
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        return where, params
+
+    async def turn_list(
+        self, since: str | None = None, until: str | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> dict:
+        """Browse turns, newest first, within an optional time window.
+
+        ``total`` counts the window, not the whole table, so a caller can tell
+        how many more remain (``offset + len(entries) < total``).
+
+        Ordering is by ``rowid`` — the turn id, monotonic with creation —
+        rather than by ``created_at``, so a page boundary can never fall
+        inside a group of turns sharing a timestamp and make offset paging
+        skip or repeat one.
+
+        Returns ``{"entries": [...], "total": n}``.  The entries keep the
+        internal ``rowid`` name, as every reader here does; the plugin's tool
+        layer is what renames it to ``turn_id``.
+        """
+        limit = _clamp_limit(limit)
+        offset = max(0, offset)
+        where, params = self._time_window(since, until)
+        cursor = await self._c.execute(f"SELECT COUNT(*) FROM diary {where}", params)
+        row = await cursor.fetchone()
+        total = row[0] if row else 0
+        cursor = await self._c.execute(
+            f"""SELECT rowid, user_message, summary, tags, created_at, token_count
+               FROM diary {where} ORDER BY rowid DESC LIMIT ? OFFSET ?""",
+            (*params, limit, offset),
+        )
+        entries = [dict(row) for row in await _fetch_all_bounded(cursor)]
+        logger.debug(
+            "turn_list since=%s until=%s offset=%s entries=%s total=%s",
+            since, until, offset, len(entries), total,
+        )
+        return {"entries": entries, "total": total}
+
     async def search_time(
         self, limit: int = 20,
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
-        """Time-range browsing of turns."""
-        limit = _clamp_limit(limit)
-        clauses: list[str] = []
-        params: list[str | int] = []
-        if since:
-            since = normalize_time_bound(since, role="since")
-            clauses.append("created_at >= ?")
-            params.append(since)
-        if until:
-            until = normalize_time_bound(until, role="until")
-            clauses.append("created_at <= ?")
-            params.append(until)
-        if clauses:
-            where = "WHERE " + " AND ".join(clauses)
-        else:
-            where = ""
-        params.append(limit)
-        cursor = await self._c.execute(
-            f"""SELECT rowid, user_message, summary, tags, created_at, token_count
-               FROM diary {where} ORDER BY created_at DESC LIMIT ?""",
-            params,
-        )
-        results = [dict(row) for row in await _fetch_all_bounded(cursor)]
-        logger.debug("search_time since=%s until=%s hits=%s", since, until, len(results))
-        return results
+        """Time-range browsing of turns — the recall selector's window.
+
+        Delegates to :meth:`turn_list`, so the window, its axis and the
+        ordering are built in one place; it only drops the envelope and the
+        paging.
+        """
+        result = await self.turn_list(since=since, until=until, limit=limit)
+        return result["entries"]
 
     #: Rows examined per regex ``grep``.  A regex cannot use an index, so grep
     #: scans (newest first); the cap keeps the worst case bounded on a
@@ -1248,6 +1288,44 @@ class SessionStore(VecStoreLifecycleMixin):
             if len(hits) >= hard_limit:
                 break
         return hits
+
+    @staticmethod
+    def _grep_snippet(row: dict, rx: "re.Pattern") -> str:
+        """A window of text around the match, for the result's ``context``."""
+        for field in ("user_message", "messages"):
+            text = row.get(field) or ""
+            m = rx.search(text)
+            if m is not None:
+                start = max(0, m.start() - 40)
+                return text[start:start + 160]
+        return ""
+
+    async def search_grep(
+        self, pattern: str, limit: int = 20,
+        since: str | None = None, until: str | None = None,
+    ) -> list[dict]:
+        """REGEX search over user_message + messages — a real ``grep``.
+
+        ``translat(e|or)`` and ``summ.rize`` match; an invalid pattern raises
+        ``re.error`` for the caller to report.  See :meth:`_grep_scan` for why
+        the match runs in Python and how the count stays in step.
+
+        ``_grep_scan`` hands back the heavy ``messages`` column — the scan
+        needs it to match against — so it is dropped here and replaced by the
+        ``context`` window around the hit, which is what a result can afford
+        to carry.
+        """
+        rx = re.compile(pattern)
+        limit = _clamp_limit(limit)
+        rows = await self._grep_scan(rx, since, until, hard_limit=limit)
+        results = []
+        for row in rows:
+            r = dict(row)
+            r.pop("messages", None)
+            r["context"] = self._grep_snippet(row, rx)
+            results.append(r)
+        logger.debug("search_grep pattern=%s hits=%s", pattern[:80], len(results))
+        return results
 
     # ── Embedding ───────────────────────────────────────────────────
 

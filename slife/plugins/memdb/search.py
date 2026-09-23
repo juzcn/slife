@@ -21,7 +21,7 @@ RRF_K = 60
 
 #: Shared 0–1 score guidance, appended to hybrid-search hints.  ONE wording
 #: and ONE implementation (``annotate_scores`` below) for every hybrid
-#: retrieval path — ``turn_recall`` / ``cabinet_search`` / ``tool_search`` —
+#: retrieval path — ``turn_search`` / ``cabinet_search`` / ``tool_search`` —
 #: so the normalized score reads identically wherever it is asked for.
 SCORE_BAND_HINT = (
     "similarity is a normalized 0–1 readout (higher = more relevant; "

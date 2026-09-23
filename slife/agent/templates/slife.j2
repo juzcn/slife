@@ -22,7 +22,7 @@
    - Context is managed dynamically to stay between {{ context_floor }}% and {{ context_ceiling }}% of the window — on overflow the oldest turns are trimmed from context (never from memory).
    - A restart restores the exit-time context, as if nothing was interrupted.
 3. Memory — the persistent layer, two stores
-   - Turns DB (memdb) — the turn history: all turns remain there permanently; `turn_recall` (hybrid search, or a time range) recalls any into context.
+   - Turns DB (memdb) — the turn history: all turns remain there permanently; browse it with `turn_list` and search it with `turn_search`, then `turn_read` one in full.
    - File Cabinet (memfiles) — notes, diaries and files (browsable markdown); recall them via `cabinet_search`.
 4. Annotations — machine-generated metadata in messages, never the user's or assistant's words.
    - `[INFO: {"turn_id": N, …}]` — a memory turn's footnote (persisted; never on the in-flight turn).

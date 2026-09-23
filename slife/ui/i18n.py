@@ -302,9 +302,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Message Slife…",
         "zh": "给 Slife 发消息…",
     },
+    # No scroll keys here: the wheel, Home/End and PageUp/PageDown all reach
+    # the transcript, so naming one pair of them was noise — and wrong about
+    # which keys work.
     "status_keybinds": {
-        "en": "│ Ctrl+C quit  Esc cancel  Ctrl+S model  Home/End scroll",
-        "zh": "│ Ctrl+C 退出  Esc 取消  Ctrl+S 模型  Home/End 滚动",
+        "en": "│ Ctrl+C quit  Esc cancel  Ctrl+S model",
+        "zh": "│ Ctrl+C 退出  Esc 取消  Ctrl+S 模型",
     },
 
     # ── handler.py ──
@@ -351,12 +354,27 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "✗ {err}",
         "zh": "✗ {err}",
     },
-    # A turn the provider rejected with a 400-class error is rolled back, not
-    # just failed: the message leaves the context entirely, so the next turn
-    # cannot see it.  Lead with that — the error alone reads as retryable.
+    # A *content filter* reject drops the turn, not just the call: the message
+    # is what the provider will not accept, so it leaves the context entirely.
+    # Lead with that — the error alone reads as retryable.
     "turn_dropped": {
         "en": "✗ Turn dropped (not in context): {err}",
         "zh": "✗ 该轮已丢弃（未进入上下文）：{err}",
+    },
+    # An attachment the provider rejected is dropped rather than kept: a
+    # block rides in the session only, so a rejected one is re-sent — and
+    # re-rejected — on every later turn.  Say so, or the user blames the
+    # model for not seeing an image that is no longer in the context.
+    "turn_dropped_images": {
+        "en": "✗ Turn dropped (not in context); image attachments removed: {err}",
+        "zh": "✗ 该轮已丢弃（未进入上下文）；图片附件已移除：{err}",
+    },
+    # A request the provider refused for a *non*-content reason: the turn
+    # stands (the user's message was not what was refused) and only the
+    # attachment it was rejected for is gone.
+    "attachments_removed": {
+        "en": "✗ {err} — image attachments were removed from the context",
+        "zh": "✗ {err} — 图片附件已从上下文移除",
     },
     "turn_error": {
         "en": "✗ Error: {err}",

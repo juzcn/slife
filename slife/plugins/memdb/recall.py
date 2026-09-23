@@ -27,7 +27,7 @@ order).
 The policy is a pure function over already-retrieved candidates, so it can be
 tested without a store or a server.  Retrieval (the hybrid legs and the
 similarity measurement) happens in the caller — see
-``server.turn_recall``.
+``server.__memory_turn_recall``.
 """
 
 import logging

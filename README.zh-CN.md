@@ -2,7 +2,7 @@
 
 > **工具家族，一句话。** Slife 向 LLM 呈现三个家族的工具，调用侧无差别：开发者的
 > **系统工具**——内置（`slife/tools/` 自动发现）与内置插件工具（一等公民、裸名，
-> 如 `turn_recall`、`mcp_set`）；用户自己 coding 的 **job**（`job-<函数名>`）；以及第三方的
+> 如 `turn_search`、`mcp_set`）；用户自己 coding 的 **job**（`job-<函数名>`）；以及第三方的
 > **外部 MCP server** 工具（`{server}__{tool}`，按需加载）。
 
 **终端 AI 智能体** — 基于函数调用循环的最小化框架。与 LLM 对话，它能调用工具、永久记忆每一轮对话、协调其他智能体。
@@ -296,7 +296,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | 服务器 | 工具 |
 |--------|-------|
 | `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`（有截断——其余用 `tool_search` 找） |
-| `memdb` | `turn_recall`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
+| `memdb` | `turn_search`, `turn_list`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_save`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `file_read`, `report_save`, `report_list`, `report_read` |
 | `sharefile` | `share_file`, `sharefile_unshare` |

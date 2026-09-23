@@ -979,7 +979,7 @@ class TestMemfilesStore:
         """Regression: the CJK fallback LIKE'd the WHOLE query as a single
         pattern, so it needed the words adjacent and in order — a note with
         "子agent" in the subject and "委托" in the content was invisible to
-        ``cabinet_search`` while ``turn_recall`` answered with it.  Both stores
+        ``cabinet_search`` while ``turn_search`` answered with it.  Both stores
         now build the predicate with ``_like_terms``, so one query has one
         answer."""
         store = await _real_store(tmp_path)
@@ -1027,7 +1027,7 @@ class TestMemfilesStore:
     @pytest.mark.asyncio
     async def test_search_window_covers_every_mode(self, tmp_path):
         """since/until window each mode on ``created_at`` — the column and the
-        datetime granularity memdb's ``turn_recall`` uses, so one bound narrows
+        datetime granularity memdb's ``turn_search`` uses, so one bound narrows
         both stores.
 
         A bound in no known grammar RAISES: it used to pass through, and

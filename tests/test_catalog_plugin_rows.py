@@ -63,7 +63,7 @@ def test_plugin_category_splits_jobs_from_the_plugins_own_tools():
     for own in sorted(JOB_PLUGIN_OWN_TOOLS):
         assert plugin_category(JOB_PLUGIN_NAME, own) == "plugin"
     # Every other plugin's tools are ``plugin``, whatever they are named.
-    assert plugin_category("memdb", "turn_recall") == "plugin"
+    assert plugin_category("memdb", "turn_search") == "plugin"
     assert plugin_category("wechat", "wechat_login") == "plugin"
     assert plugin_category("mcp-gateway", "mcp_set") == "plugin"
     # …and only job-coding owns jobs.
@@ -98,7 +98,7 @@ def test_catalog_category_routes_a_plugin_proxy():
         tool._route = route
         return tool
 
-    assert catalog_category(proxy("turn_recall", "memdb", ProxyRoute.DIRECT)) == "plugin"
+    assert catalog_category(proxy("turn_search", "memdb", ProxyRoute.DIRECT)) == "plugin"
     assert catalog_category(proxy("job-translate", JOB_PLUGIN_NAME, ProxyRoute.DIRECT)) == "job"
     assert catalog_category(proxy("job-list", JOB_PLUGIN_NAME, ProxyRoute.DIRECT)) == "plugin"
     assert catalog_category(proxy("gh__search", "gh", ProxyRoute.EXTERNAL)) == "mcp"
@@ -110,30 +110,30 @@ def test_catalog_category_routes_a_plugin_proxy():
 async def test_plugin_rows_are_searchable_born_unloaded(db, svc):
     """The point of the row: ``tool_search`` finds the plugin's tool, and it
     stays out of the tool list until the model loads it."""
-    await db.reconcile(_plugin_rows("memdb", ["turn_recall", "turn_count"]))
+    await db.reconcile(_plugin_rows("memdb", ["turn_search", "turn_count"]))
 
-    hits = await db.search_keyword("turn_recall")
-    assert [h["name"] for h in hits] == ["turn_recall"]
+    hits = await db.search_keyword("turn_search")
+    assert [h["name"] for h in hits] == ["turn_search"]
     assert hits[0]["category"] == "plugin"
     assert hits[0]["source_id"] == "memdb"
     assert hits[0]["load_status"] == "unloaded"
-    assert "turn_recall" not in await svc.snapshot_loaded()
+    assert "turn_search" not in await svc.snapshot_loaded()
 
-    ok, _ = await svc.load_tool("turn_recall")
+    ok, _ = await svc.load_tool("turn_search")
     assert ok is True
-    assert "turn_recall" in await svc.snapshot_loaded()
+    assert "turn_search" in await svc.snapshot_loaded()
 
 
 @pytest.mark.asyncio
 async def test_plugin_tool_disabled_in_its_section_reports_disabled(db, svc):
     """``status`` mirrors the section a plugin tool is configured in, so a
     disabled one refuses to load instead of silently injecting."""
-    rows = _plugin_rows("memdb", ["turn_recall"])
+    rows = _plugin_rows("memdb", ["turn_search"])
     rows[0]["status"] = "disabled"
     await db.reconcile(rows)
 
-    assert await svc.effective_status("turn_recall") == "disabled"
-    ok, reason = await svc.load_tool("turn_recall")
+    assert await svc.effective_status("turn_search") == "disabled"
+    ok, reason = await svc.load_tool("turn_search")
     assert ok is False and "is disabled" in reason
 
 
@@ -144,22 +144,22 @@ async def test_plugin_down_marks_its_rows_and_ready_clears_them(db, svc):
     """A dead plugin's tools must not read as merely unloaded: they go
     ``error`` (searchable, not loadable), and the restart gives back exactly
     what the outage took."""
-    rows = _plugin_rows("memdb", ["turn_recall", "turn_count"])
+    rows = _plugin_rows("memdb", ["turn_search", "turn_count"])
     await db.reconcile(rows)
     await svc.load_tool("turn_count")
 
     marked = await svc.mark_source_error("memdb")
     assert marked == 2
-    assert await svc.effective_status("turn_recall") == "error"
+    assert await svc.effective_status("turn_search") == "error"
     # The refusal is one line and offers no remedy: a row in `error` is not a
     # row any switch can fix, and every family gets the same true statement.
-    ok, reason = await svc.load_tool("turn_recall")
+    ok, reason = await svc.load_tool("turn_search")
     assert ok is False
-    assert reason == "Error: tool 'turn_recall' cannot be loaded — its status is error."
+    assert reason == "Error: tool 'turn_search' cannot be loaded — its status is error."
 
     reset = await svc.mark_plugin_connected("memdb")
     assert reset == 2
-    assert await svc.effective_status("turn_recall") == "unloaded"
+    assert await svc.effective_status("turn_search") == "unloaded"
     # The one the model had loaded is still loaded — the verdict was never
     # written into the load state.
     assert await svc.effective_status("turn_count") == "loaded"
@@ -176,7 +176,7 @@ async def test_plugin_restart_does_not_re_derive_the_load_state(db, svc):
     row saying exactly what it said before.
     """
     # Both born loaded — what an autoloaded plugin's rows look like.
-    await db.reconcile(_plugin_rows("memdb", ["turn_recall", "turn_count"],
+    await db.reconcile(_plugin_rows("memdb", ["turn_search", "turn_count"],
                                     load_status="loaded"))
     await svc.unload_tool("turn_count")            # the model's call
 
@@ -184,7 +184,7 @@ async def test_plugin_restart_does_not_re_derive_the_load_state(db, svc):
     await svc.mark_plugin_connected("memdb")
 
     assert await svc.effective_status("turn_count") == "unloaded"   # kept
-    assert await svc.effective_status("turn_recall") == "loaded"    # kept
+    assert await svc.effective_status("turn_search") == "loaded"    # kept
 
 
 @pytest.mark.asyncio
@@ -192,7 +192,7 @@ async def test_plugin_rows_are_spared_by_the_unconfigured_source_purge(db, svc):
     """``purge_missing_sources`` keeps only the CONFIGURED mcp/rest servers —
     plugin rows carry a source_id too, so without the category scoping every
     plugin tool would be deleted on every boot and every gateway reconcile."""
-    await db.reconcile(_plugin_rows("memdb", ["turn_recall"]))
+    await db.reconcile(_plugin_rows("memdb", ["turn_search"]))
     await db.reconcile([
         {"name": "gh__search", "description": "", "category": "mcp",
          "source_id": "gh", "schema": "", "status": None,
@@ -207,7 +207,7 @@ async def test_plugin_rows_are_spared_by_the_unconfigured_source_purge(db, svc):
 
     purged = await svc.purge_unconfigured_sources({"gh"})
     assert purged == {"gone"}
-    assert await db.get_tool("turn_recall") is not None
+    assert await db.get_tool("turn_search") is not None
     assert await db.get_tool("gone__tool") is None
 
 
@@ -215,7 +215,7 @@ async def test_plugin_rows_are_spared_by_the_unconfigured_source_purge(db, svc):
 async def test_gateway_death_does_not_touch_plugin_rows(db, svc):
     """``plugin`` is a source owner, not an EXTERNAL one: the gateway dying
     must mark the external rows, never memdb's."""
-    await db.reconcile(_plugin_rows("memdb", ["turn_recall"]))
+    await db.reconcile(_plugin_rows("memdb", ["turn_search"]))
     await db.reconcile([
         {"name": "gh__search", "description": "", "category": "mcp",
          "source_id": "gh", "schema": "", "status": None,
@@ -226,7 +226,7 @@ async def test_gateway_death_does_not_touch_plugin_rows(db, svc):
 
     assert marked == 1
     assert await svc.effective_status("gh__search") == "error"
-    assert await svc.effective_status("turn_recall") == "unloaded"
+    assert await svc.effective_status("turn_search") == "unloaded"
 
 
 @pytest.mark.asyncio

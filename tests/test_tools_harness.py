@@ -47,33 +47,6 @@ class _ReplyLLM:
         return SimpleNamespace(choices=[SimpleNamespace(message=msg)]), None
 
 
-def _registry_with_recall(with_recall: bool = True):
-    """A registry carrying ``turn_recall``.
-
-    The discriminator's instruction IS that tool's schema, so the call needs the
-    tool registered — in production the memdb plugin provides it, and a process
-    without it (memdb down) skips the discriminator entirely.
-    """
-    from slife.tools.base import Tool
-
-    class _TurnRecall(Tool):
-        name = "turn_recall"
-        description = "Recall turns into context: a query searches, a time range browses."
-        parameters = {
-            "type": "object",
-            "properties": {"query": {"type": "string", "description": "Search text."}},
-            "required": [],
-        }
-        category = "memdb"
-
-        async def execute(self, **kwargs): return "{}"
-
-    reg = create_tools_from_config()
-    if with_recall:
-        reg.register(_TurnRecall())
-    return reg
-
-
 # ── Registration & schema ────────────────────────────────────────────────
 
 
@@ -293,7 +266,7 @@ class TestRecallRebuild:
     def _loop(**kwargs):
         return AgentLoop(
             llm_client=_ReplyLLM('{"since": "yesterday"}'),
-            tool_registry=_registry_with_recall(),
+            tool_registry=_registry(),
             context_window=1000, context_ceiling=0.8, context_floor=0.2,
             rebuild_message=kwargs.get("rebuild", True),
             recall_turns=kwargs.get("recall"),
@@ -460,13 +433,19 @@ class TestRecallDiscriminator:
             return SimpleNamespace(choices=[SimpleNamespace(message=msg)]), None
 
     @staticmethod
-    def _loop(llm, registry=None):
+    def _loop(llm, recall_available=None):
+        """A rebuild-mode loop.
+
+        The discriminator needs no registered tool — the selector is the memory
+        plugin's *internal* one, reached by name over MCP — so the registry is
+        irrelevant here and the store's reachability is the gate.
+        """
         return AgentLoop(
             llm_client=llm,
-            tool_registry=registry if registry is not None else
-            _registry_with_recall(),
+            tool_registry=_registry(),
             context_window=1000, context_ceiling=0.8, context_floor=0.2,
             rebuild_message=True,
+            recall_available=recall_available,
         )
 
     @pytest.mark.asyncio
@@ -506,8 +485,13 @@ class TestRecallDiscriminator:
         assert sent[1]["content"] == "old question", "the context is the decision's input"
         assert sent[2]["content"] == "old reply"
         assert "查一下首经贸新闻" in sent[3]["content"]
-        assert "turn_recall" in sent[3]["content"], "the tool's schema is the surface"
+        # The parameter surface is stated in the instruction itself
+        # (system_prompt.RECALL_PARAMS) — there is no LLM-facing tool schema to
+        # quote any more, and these three keys are the ones the loop whitelists
+        # out of the reply.
         assert "\"query\"" in sent[3]["content"]
+        assert "\"since\"" in sent[3]["content"]
+        assert "\"until\"" in sent[3]["content"]
 
     @pytest.mark.asyncio
     async def test_the_context_goes_out_without_the_runtime_turn_ids(self):
@@ -530,24 +514,39 @@ class TestRecallDiscriminator:
         assert conv.messages[1].get("_turn_id") == 7, "the live context keeps its mapping"
 
     @pytest.mark.asyncio
-    async def test_no_tool_means_no_call(self, caplog):
-        """The schema IS the instruction, so without the tool registered there
-        is nothing to ask for: the call is skipped and the context kept —
-        rather than spending a model call on a surface it cannot state."""
+    async def test_an_unreachable_store_means_no_call(self, caplog):
+        """The selector lives in the memory plugin, and nothing in the
+        registry proves it is reachable — so the availability check is the
+        gate.  Asking a model to decide a recall that cannot run would spend a
+        call every turn for nothing; the context is kept instead."""
         import logging
 
         conv = MessageHistory(system_prompt="SYS")
         llm = self._FakeLLM(self.REPLY)
-        loop = self._loop(llm, registry=_registry_with_recall(with_recall=False))
+        loop = self._loop(llm, recall_available=lambda: False)
 
         with caplog.at_level(logging.INFO, logger="slife.agent.loop"):
             args = await loop._discriminate_recall(conv, "查一下首经贸新闻")
 
         assert args is None
-        assert llm.sent == [], "no tool schema, no discriminator call"
+        assert llm.sent == [], "no store to ask, no discriminator call"
         assert any(
-            "no_turn_recall_tool" in r.getMessage() for r in caplog.records
+            "store_unavailable" in r.getMessage() for r in caplog.records
         )
+
+    @pytest.mark.asyncio
+    async def test_no_gate_wired_still_asks(self):
+        """``recall_available`` unset means unset — a loop built without it
+        (tests, and any embedder of the loop) makes the call rather than
+        silently skipping every recall."""
+        conv = MessageHistory(system_prompt="SYS")
+        llm = self._FakeLLM(self.REPLY)
+        loop = self._loop(llm)
+
+        args = await loop._discriminate_recall(conv, "查一下首经贸新闻")
+
+        assert args == {"query": "首经贸 新闻", "since": None, "until": None}
+        assert len(llm.sent) == 1
 
     @pytest.mark.asyncio
     async def test_the_execution_is_logged(self, caplog):
@@ -962,7 +961,7 @@ class TestRecallNotNeeded:
 
         sim = kwargs.get("set") or []
         loop = AgentLoop(
-            llm_client=self._FakeLLM(reply), tool_registry=_registry_with_recall(),
+            llm_client=self._FakeLLM(reply), tool_registry=_registry(),
             context_window=1000, context_ceiling=0.8, context_floor=0.2,
             rebuild_message=True,
             recall_turns=recall,

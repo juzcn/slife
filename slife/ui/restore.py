@@ -96,7 +96,7 @@ async def restore_session(
     persisted live-context list, in that list's order, with no ceiling
     re-slicing — the list already encodes the trimmed state.  Restore replays
     it verbatim so the agent picks up exactly where it left off; older turns
-    stay in the memory DB and can be retrieved via ``turn_recall`` if needed.
+    stay in the memory DB and can be retrieved via ``turn_search`` if needed.
 
     This function is self-contained — it rebuilds the history message list and
     reconstructs the chat UI from *turns*.

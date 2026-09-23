@@ -73,13 +73,13 @@ class TestMCPProxyToolConstruction:
 
     def test_direct_builtin_registers_bare_name(self):
         """Built-in plugin tools (DIRECT) register under their bare semantic
-        name — no ``{server}__`` prefix (e.g. ``memdb__turn_recall`` →
-        ``turn_recall``)."""
-        info = make_tool_info(server="memdb", name="turn_recall")
+        name — no ``{server}__`` prefix (e.g. ``memdb__turn_search`` →
+        ``turn_search``)."""
+        info = make_tool_info(server="memdb", name="turn_search")
         client = make_mock_mcp_client()
         tool = MCPProxyTool(client, info, route=ProxyRoute.DIRECT)
 
-        assert tool.name == "turn_recall"
+        assert tool.name == "turn_search"
 
     def test_external_server_keeps_full_namespace(self):
         """External MCP server tools (EXTERNAL) ALWAYS keep the full

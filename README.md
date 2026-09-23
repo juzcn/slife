@@ -3,7 +3,7 @@
 > **Tool families, in one line.** Slife presents three families to the LLM,
 > indistinguishable at the call site: the developer's **system** tools —
 > builtin (`slife/tools/`, auto-discovered) and built-in plugin tools
-> (first-class, bare names — e.g. `turn_recall`, `mcp_set`) — the user's
+> (first-class, bare names — e.g. `turn_search`, `mcp_set`) — the user's
 > **jobs** (`job-<function>` — code the user wrote), and a third party's **external MCP server**
 > tools (`{server}__{tool}`, loaded on demand).
 
@@ -293,7 +293,7 @@ All unified as OpenAI function definitions — the LLM sees no difference betwee
 | Server | Tools |
 |--------|-------|
 | `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` (capped — `tool_search` finds the rest) |
-| `memdb` | `turn_recall`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
+| `memdb` | `turn_search`, `turn_list`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_save`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `file_read`, `report_save`, `report_list`, `report_read` |
 | `sharefile` | `share_file`, `sharefile_unshare` |

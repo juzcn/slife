@@ -1184,7 +1184,7 @@ class Config:
         builtin_overrides = _parse_section(tools_raw, "builtin", list, [])
         # ``plugin`` — the built-in plugins' OWN tools, one section for the
         # ``plugin`` category (one section per category, like every other).
-        # Their tool names are bare (turn_recall, wechat_login, mcp_set), so a
+        # Their tool names are bare (turn_search, wechat_login, mcp_set), so a
         # flat entry list is all the config needs.
         plugin_overrides = _parse_section(tools_raw, "plugin", list, [])
         disabled_jobs = _disabled_names(job_overrides)

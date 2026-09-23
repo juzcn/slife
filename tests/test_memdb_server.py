@@ -2,8 +2,9 @@
 
 The semantic lifecycle (gate, embedder, index drainer) lives in
 ``SemanticManager`` (semantic.py) and is covered by ``test_memdb_semantic.py``.
-These tests cover the FastMCP tool layer: how ``turn_recall`` reads the gate,
-and how ``__memory_save_turn`` wakes the drainer.
+These tests cover the FastMCP tool layer: how ``__memory_turn_recall`` reads
+the gate, how the LLM-visible ``turn_search`` / ``turn_list`` answer, and how
+``__memory_save_turn`` wakes the drainer.
 """
 
 import pytest; pytestmark = pytest.mark.unit
@@ -11,6 +12,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import importlib
 import logging
+import re
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,8 +45,19 @@ def _import_memdb_server():
         return importlib.import_module("slife.plugins.memdb.server")
 
 
+def _recall(srv):
+    """The internal selector, fetched by NAME.
+
+    ``srv.__memory_turn_recall`` written inside a test class would be
+    name-mangled to ``srv._ClassName__memory_turn_recall`` and miss — the
+    leading double underscore is the plugin's internal-tool marker, not a
+    private attribute.
+    """
+    return getattr(srv, "__memory_turn_recall")
+
+
 def _fake_manager(*, semantic_ready: bool = False, reason: str = "") -> MagicMock:
-    """A stand-in SemanticManager: gate read by turn_recall."""
+    """A stand-in SemanticManager: gate read by the recall selector."""
     m = MagicMock()
     m.semantic_ready = semantic_ready
     m.reason = reason
@@ -53,11 +66,13 @@ def _fake_manager(*, semantic_ready: bool = False, reason: str = "") -> MagicMoc
 
 
 class TestRecallDegradation:
-    """The hybrid→fts5 degradation is reported on the recall answer itself —
-    even when nothing survives it.  An empty selection is exactly when a silent
-    fallback would mislead (REVIEW: silent degradation), and it is also the
-    answer that *clears* the context, so "nothing matched" and "the semantic
-    leg is down" must never read the same."""
+    """The hybrid→fts5 degradation is logged, even when nothing survives it.
+
+    It used to ride the answer, back when the answer was rows the model also
+    read.  The selector now answers ids to the harness alone, and the
+    selection stands whether or not the semantic leg ran — so the reason is
+    kept as the operator's trace (``recall_degraded``) rather than put in a
+    payload nothing would branch on."""
 
     def _server(self, keyword_hits, manager, turns=None, semantic_hits=None):
         srv = _import_memdb_server()
@@ -80,8 +95,16 @@ class TestRecallDegradation:
             for r in rowids
         ]
 
+    @staticmethod
+    def _degradation_logged(srv: MagicMock) -> str:
+        """The ``recall_degraded`` line's reason, or "" when none was logged."""
+        for call in srv.logger.info.call_args_list:
+            if call.args and call.args[0] == "recall_degraded reason=%.120s":
+                return str(call.args[1])
+        return ""
+
     @pytest.mark.asyncio
-    async def test_empty_recall_still_reports_degradation(self, restore_root_logger):
+    async def test_empty_recall_still_logs_degradation(self, restore_root_logger):
         import json
 
         srv, store = self._server(
@@ -89,17 +112,17 @@ class TestRecallDegradation:
             manager=_fake_manager(semantic_ready=False,
                                   reason="hybrid degraded to fts5 — semantic index is building"),
         )
+        srv.logger = MagicMock()
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
-            out = await srv.turn_recall(query="北京天气怎么样")
+            out = await _recall(srv)(query="北京天气怎么样")
 
-        data = json.loads(out)
-        assert data["turns"] == []
+        assert json.loads(out) == {"turns": []}
         # The degradation reason, not just "no matching memories found".
-        assert "semantic index is building" in data["degraded"]
+        assert "semantic index is building" in self._degradation_logged(srv)
 
     @pytest.mark.asyncio
-    async def test_keyword_hits_with_gate_off_also_report(self, restore_root_logger):
+    async def test_keyword_hits_with_gate_off_also_log(self, restore_root_logger):
         import json
 
         srv, store = self._server(
@@ -110,13 +133,13 @@ class TestRecallDegradation:
                                   reason="hybrid degraded to fts5 — semantic index is building"),
             turns=self._turns(1),
         )
+        srv.logger = MagicMock()
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
-            out = await srv.turn_recall(query="微信登录")
+            out = await _recall(srv)(query="微信登录")
 
-        data = json.loads(out)
-        assert [t["turn_id"] for t in data["turns"]] == [1]
-        assert "semantic index is building" in data["degraded"]
+        assert json.loads(out) == {"turns": [1]}
+        assert "semantic index is building" in self._degradation_logged(srv)
 
     @pytest.mark.asyncio
     async def test_tokenizer_failure_is_fatal_not_an_empty_answer(
@@ -124,12 +147,12 @@ class TestRecallDegradation:
     ):
         """An unusable tokenizer is an environment failure, not an answer.
 
-        Every row's cost comes from it, so without one there is no budget and
+        Every turn's cost comes from it, so without one there is no budget and
         no selection — but the empty selection this used to return is the one
-        shape the caller reads as "clear the context", and `degraded` was
-        empty with it, so a wiped context looked exactly like a thin recall.
-        Fatal instead: the MCP layer renders the raise as the error string
-        that makes the caller keep the context it has.
+        shape the caller reads as "clear the context", so a wiped context
+        looked exactly like a thin recall.  Fatal instead: the MCP layer
+        renders the raise as the error string that makes the caller keep the
+        context it has.
         """
         srv, store = self._server(
             keyword_hits=[
@@ -146,7 +169,7 @@ class TestRecallDegradation:
             side_effect=TokenizerUnavailable("no vocabulary"),
         ):
             with pytest.raises(TokenizerUnavailable):
-                await srv.turn_recall(query="微信登录")
+                await _recall(srv)(query="微信登录")
 
     @pytest.mark.asyncio
     async def test_gate_on_but_query_embed_fails(self, restore_root_logger):
@@ -158,20 +181,25 @@ class TestRecallDegradation:
         # embed_one returns None → no semantic hits
         manager.embedder.embed_one = AsyncMock(return_value=None)
         srv, store = self._server(keyword_hits=[], manager=manager)
+        srv.logger = MagicMock()
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
-            out = await srv.turn_recall(query="北京天气怎么样")
+            out = await _recall(srv)(query="北京天气怎么样")
 
-        data = json.loads(out)
-        assert "query embedding generation failed" in data["degraded"]
+        assert json.loads(out) == {"turns": []}
+        assert "query embedding generation failed" in self._degradation_logged(srv)
 
 
-class TestRecallRowsCarryTurnId:
-    """The store keys search hits on the internal ``rowid``, while
-    ``merge_hybrid`` aligns on ``turn_id`` — and every row the answer carries
-    must expose ``turn_id``, because the rebuild reads its ids straight out of
-    these rows.  The real hit shape is rowid-keyed (regression: hybrid returned
-    `keyword=6 semantic=6 merged=0`)."""
+class TestRecallAnswerIsIds:
+    """The selector answers turn ids and nothing else.
+
+    The store keys search hits on the internal ``rowid`` and ``merge_hybrid``
+    aligns on ``turn_id``; the ids that survive gating and the token budget are
+    what the answer carries.  Nothing model-facing rides here any more — the
+    model reads ``turn_search`` / ``turn_list`` for that — so the answer is
+    exactly the list the rebuild reads (regression: hybrid returned
+    `keyword=6 semantic=6 merged=0`, an empty selection that cleared the
+    context)."""
 
     def _server(self, keyword_hits, semantic_hits):
         srv = _import_memdb_server()
@@ -191,7 +219,7 @@ class TestRecallRowsCarryTurnId:
         return srv, store
 
     @pytest.mark.asyncio
-    async def test_store_shaped_hits_merge_and_carry_turn_id(self, restore_root_logger):
+    async def test_store_shaped_hits_merge_into_ids(self, restore_root_logger):
         import json
 
         srv, store = self._server(
@@ -208,19 +236,11 @@ class TestRecallRowsCarryTurnId:
         )
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
-            out = await srv.turn_recall(query="微信登录")
+            out = await _recall(srv)(query="微信登录")
 
-        data = json.loads(out)
-        assert [t["turn_id"] for t in data["turns"]] == [1, 2, 5], (
+        assert json.loads(out) == {"turns": [1, 2, 5]}, (
             "merged hits, ordered by turn id"
         )
-        for row in data["turns"]:
-            assert "rowid" not in row          # internal key never exposed
-            assert "diary_rowid" not in row    # semantic dedup key not exposed
-            assert "messages" not in row       # turn_read is for those
-        # Only the semantic hit carried a measured similarity.
-        assert data["turns"][2]["score"] == 0.5
-        assert "score" not in data["turns"][0]
 
 
 class TestStoreLifecycleLocking:
@@ -454,7 +474,7 @@ class TestMemdbLifespan:
 
 
 class TestTurnRecallContract:
-    """``turn_recall`` has no error return — only a store failure is
+    """``__memory_turn_recall`` has no error return — only a store failure is
     fatal.
 
     The recall answer **is** the caller's context, so an empty selection is a
@@ -489,12 +509,12 @@ class TestTurnRecallContract:
         store.search_time = AsyncMock(
             side_effect=InvalidTimeBound("invalid since bound '下周'")
         )
-        recall = getattr(srv, "turn_recall")
+        recall = _recall(srv)
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
             out = await recall(query="", since="下周")
 
-        assert json.loads(out) == {"turns": [], "degraded": ""}
+        assert json.loads(out) == {"turns": []}
 
     @pytest.mark.asyncio
     async def test_an_unexpected_failure_is_also_an_empty_selection(
@@ -505,12 +525,12 @@ class TestTurnRecallContract:
         srv, store = self._server()
         store.get_turns_by_ids = AsyncMock(side_effect=RuntimeError("pipeline bug"))
         store.search_time = AsyncMock(return_value=[{"rowid": 1}])
-        recall = getattr(srv, "turn_recall")
+        recall = _recall(srv)
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
             out = await recall(query="", since="today")
 
-        assert json.loads(out) == {"turns": [], "degraded": ""}
+        assert json.loads(out) == {"turns": []}
 
     @pytest.mark.asyncio
     async def test_a_store_failure_propagates(self, restore_root_logger):
@@ -520,39 +540,51 @@ class TestTurnRecallContract:
         store.search_time = AsyncMock(
             side_effect=sqlite3.DatabaseError("database disk image is malformed")
         )
-        recall = getattr(srv, "turn_recall")
+        recall = _recall(srv)
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
             with pytest.raises(sqlite3.DatabaseError):
                 await recall(query="", since="today")
 
 
-class TestTurnRecallSchema:
-    """``turn_recall``'s own description states every retrieval mode.
+class TestTurnRecallIsInternal:
+    """The selector is an **internal** tool.
 
-    It is the **only** statement of the parameter surface: the harness
-    discriminator's instruction renders this schema, so a mode the description
-    does not name is unreachable however good the model is — and the tool's
-    callers read the same words.
+    The ``__`` prefix is the whole hiding mechanism (``is_internal_tool``), so
+    it never reaches the LLM's registry — the model's own reading of the Turns
+    DB is ``turn_search`` / ``turn_list``, and neither of those touches the
+    context.  Its three parameters are still exactly the ones the
+    discriminator fills in — the caps are recall's configuration, and the
+    surface is stated once, in ``system_prompt.RECALL_PARAMS``.
     """
 
     @pytest.mark.asyncio
-    async def test_description_names_every_mode(self, restore_root_logger):
+    async def test_it_is_registered_under_the_internal_prefix(
+        self, restore_root_logger,
+    ):
         srv = _import_memdb_server()
 
         tools = await srv.mcp.list_tools()
-        tool = next(t for t in tools if t.name == "turn_recall")
-        desc = tool.description
+        names = {t.name for t in tools}
+        assert "__memory_turn_recall" in names
+        assert "turn_recall" not in names, "the selector is not an LLM tool"
 
-        assert "A query searches the whole history" in desc, "query, no range"
-        assert "a time range narrows it" in desc, "query + range"
-        assert "a time range without a query browses that period" in desc, (
-            "no query + range — time-only retrieval"
-        )
-        assert "With neither there is nothing to recall" in desc, (
-            "no parameters — an empty call recalls nothing"
-        )
-        assert "ascending turn-id order" in desc, "the order contract"
+    @pytest.mark.asyncio
+    async def test_schema_parameters_are_the_three(self, restore_root_logger):
+        """The discriminator fills exactly these in — no caps, no mode knob."""
+        srv = _import_memdb_server()
+
+        tools = await srv.mcp.list_tools()
+        tool = next(t for t in tools if t.name == "__memory_turn_recall")
+
+        props = tool.parameters["properties"]
+        assert set(props) == {"query", "since", "until"}
+        assert tool.parameters.get("required", []) == [], "all three are optional"
+        # The per-parameter how-to-use text rides the schema (FastMCP lifts it
+        # from the docstring's Args block), and the discriminator is asked for
+        # the same three keys the loop whitelists.
+        for name in ("query", "since", "until"):
+            assert props[name].get("description"), f"{name} has no description"
 
     @pytest.mark.asyncio
     async def test_an_empty_call_recalls_nothing(self, restore_root_logger):
@@ -567,28 +599,200 @@ class TestTurnRecallSchema:
         srv._store = store
         srv._manager = None
         srv._recall_policy = lambda: RecallPolicy()
-        recall = getattr(srv, "turn_recall")
+        recall = _recall(srv)
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
             out = await recall()
 
-        assert json.loads(out) == {"turns": [], "degraded": ""}
+        assert json.loads(out) == {"turns": []}
         store.search_time.assert_not_awaited()
         store.get_turns_by_ids.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_schema_parameters_are_the_three(self, restore_root_logger):
-        """The discriminator fills exactly these in — no caps, no mode knob."""
+
+class TestTurnSearch:
+    """``turn_search`` is the model's own reading of the Turns DB — it answers
+    with hits and never touches the context.
+
+    Its shape mirrors memfiles' ``cabinet_search``: a
+    mode/query/results/hint envelope whose ``mode`` names what actually ran,
+    and an empty query refused rather than quietly browsed.
+    """
+
+    @staticmethod
+    def _server(store):
         srv = _import_memdb_server()
+        srv._store = store
+        srv._manager = None  # no semantic leg
+        return srv
 
-        tools = await srv.mcp.list_tools()
-        tool = next(t for t in tools if t.name == "turn_recall")
+    @pytest.mark.asyncio
+    async def test_an_empty_query_is_refused_not_browsed(self, restore_root_logger):
+        """grep compiles the empty pattern, which matches EVERY string — so an
+        empty query would silently become a second browse path.  ``turn_list``
+        is the browse, which is why this one says so."""
+        import json
 
-        props = tool.parameters["properties"]
-        assert set(props) == {"query", "since", "until"}
-        assert tool.parameters.get("required", []) == [], "all three are optional"
-        # The per-parameter how-to-use text rides the schema (FastMCP lifts it
-        # from the docstring's Args block) — and the discriminator's instruction
-        # IS this schema, so a missing description is a missing instruction.
-        for name in ("query", "since", "until"):
-            assert props[name].get("description"), f"{name} has no description"
+        store = AsyncMock()
+        srv = self._server(store)
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.turn_search(query="")
+
+        assert "turn_list" in json.loads(out)["error"]
+        store.search_keyword.assert_not_awaited()
+        store.search_grep.assert_not_awaited()
+        store.search_time.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fts5_renames_rowid_to_turn_id(self, restore_root_logger):
+        import json
+
+        store = AsyncMock()
+        store.search_keyword = AsyncMock(return_value=[
+            {"rowid": 3, "user_message": "微信登录", "snippet": "…", "rank": -1.0},
+        ])
+        srv = self._server(store)
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.turn_search(query="微信登录", mode="fts5")
+
+        data = json.loads(out)
+        assert data["mode"] == "fts5"
+        assert [r["turn_id"] for r in data["results"]] == [3]
+        assert "rowid" not in data["results"][0], "internal key never exposed"
+
+    @pytest.mark.asyncio
+    async def test_grep_reports_an_unusable_pattern(self, restore_root_logger):
+        import json
+
+        store = AsyncMock()
+        store.search_grep = AsyncMock(
+            side_effect=re.error("missing ), unterminated subpattern")
+        )
+        srv = self._server(store)
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.turn_search(query="a(b", mode="grep")
+
+        assert "invalid regex" in json.loads(out)["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_time_bound_is_an_error(self, restore_root_logger):
+        """A search is the model's own reading, not the context — so an
+        unusable bound is the caller's to fix, exactly as in ``cabinet_search``.
+        (The *selector* collapses the same failure into an empty selection,
+        because there an error would force the caller to keep a context it was
+        told to replace.)"""
+        import json
+
+        from slife.timeutil import InvalidTimeBound
+
+        store = AsyncMock()
+        store.search_keyword = AsyncMock(
+            side_effect=InvalidTimeBound("invalid since bound '下周'")
+        )
+        srv = self._server(store)
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.turn_search(query="天气", since="下周")
+
+        assert "invalid since bound" in json.loads(out)["error"]
+
+    @pytest.mark.asyncio
+    async def test_hybrid_reports_the_mode_that_ran(self, restore_root_logger):
+        """A degraded hybrid is an fts5 result — answering "hybrid" would
+        misreport what was searched."""
+        import json
+
+        store = AsyncMock()
+        store.search_keyword = AsyncMock(return_value=[
+            {"rowid": 1, "user_message": "微信登录", "summary": "", "tags": "",
+             "created_at": "2026-08-01", "snippet": "…", "rank": -1.0},
+        ])
+        srv = self._server(store)
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.turn_search(query="微信登录")
+
+        data = json.loads(out)
+        assert data["mode"] == "fts5", "no manager → the semantic leg cannot run"
+        assert [r["turn_id"] for r in data["results"]] == [1]
+        assert "degraded to fts5" in data["hint"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_search_is_an_error_not_a_silent_empty(
+        self, restore_root_logger,
+    ):
+        import json
+
+        store = AsyncMock()
+        store.search_keyword = AsyncMock(side_effect=RuntimeError("pipeline bug"))
+        srv = self._server(store)
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.turn_search(query="微信登录", mode="fts5")
+
+        assert "pipeline bug" in json.loads(out)["error"]
+
+
+class TestTurnList:
+    """``turn_list`` is the browse to ``turn_search``'s search.
+
+    It carries the memfiles ``*_list`` envelope — ``total``/``limit``/
+    ``offset``/``entries`` — so a caller can tell whether more remain and page
+    for them, and the store's ``rowid`` is exposed as ``turn_id``.
+    """
+
+    @staticmethod
+    def _server(store):
+        srv = _import_memdb_server()
+        srv._store = store
+        return srv
+
+    @pytest.mark.asyncio
+    async def test_envelope_paging_and_truncation(self, restore_root_logger):
+        import json
+
+        store = AsyncMock()
+        store.turn_list = AsyncMock(return_value={
+            "total": 7,
+            "entries": [
+                {"rowid": 2, "user_message": "x" * 250, "summary": "s",
+                 "tags": "t", "created_at": "2026-08-02", "token_count": 5},
+                {"rowid": 1, "user_message": "short", "summary": "",
+                 "tags": "", "created_at": "2026-08-01", "token_count": 3},
+            ],
+        })
+        srv = self._server(store)
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.turn_list(limit=2, offset=1)
+
+        store.turn_list.assert_awaited_once_with(
+            since=None, until=None, limit=2, offset=1,
+        )
+        data = json.loads(out)
+        assert (data["total"], data["limit"], data["offset"]) == (7, 2, 1)
+        assert [e["turn_id"] for e in data["entries"]] == [2, 1]
+        assert "rowid" not in data["entries"][0]
+        # The ellipsis is how a cut message reads as cut — without it a model
+        # has no reason to call turn_read.
+        assert data["entries"][0]["user_message"] == "x" * 200 + "…"
+        assert data["entries"][1]["user_message"] == "short"
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_time_bound_is_an_error(self, restore_root_logger):
+        import json
+
+        from slife.timeutil import InvalidTimeBound
+
+        store = AsyncMock()
+        store.turn_list = AsyncMock(
+            side_effect=InvalidTimeBound("invalid until bound '下周'")
+        )
+        srv = self._server(store)
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.turn_list(until="下周")
+
+        assert "invalid until bound" in json.loads(out)["error"]

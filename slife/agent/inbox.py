@@ -25,23 +25,80 @@ logger = logging.getLogger(__name__)
 
 
 def _is_bad_request(exc: BaseException) -> bool:
-    """True if *exc* is a provider bad-request/content-policy error — the
-    only class of failure where the message history itself is the problem.
+    """True if *exc* is a provider bad-request rejection: the provider read
+    the payload and refused it.
 
     Both SDK generations (openai, anthropic — the latter also covering
     Bailian/Qwen via the Anthropic-compatible endpoint) raise an API-status
-    error with ``status_code == 400`` for content-filter / policy rejects
-    and for malformed-request 400s; matching the status code instead of the
-    SDK's class names keeps this provider-agnostic (a hard ``openai`` import
-    here both pulled in the package for a match and missed the anthropic
-    backends entirely).  4xx auth errors (401/403) are deliberately NOT
-    rolled back — the turn is valid, the credentials are the problem.
+    error with ``status_code == 400`` for malformed-request rejects and for
+    content-filter rejects; matching the status code instead of the SDK's
+    class names keeps this provider-agnostic (a hard ``openai`` import here
+    both pulled in the package for a match and missed the anthropic backends
+    entirely).  4xx auth errors (401/403) are deliberately NOT included — the
+    turn is valid, the credentials are the problem.
+
+    This is the class that costs an **attachment**, never the turn: something
+    in the payload was refused, and the attachment is the one part of it we
+    can drop without losing what the user said.  Whether the turn goes too is
+    :func:`_is_content_filter`'s question, and only that one.
     """
     status = getattr(exc, "status_code", None)
     if isinstance(status, int) and status == 400:
         return True
     # openai's client-side content-filter signal (no HTTP round-trip).
     return type(exc).__name__ == "ContentFilterFinishReasonError"
+
+
+#: Substrings that mark a rejection as a **content filter** rather than a
+#: malformed request.  Providers spell it differently and share no code:
+#: OpenAI/Azure report ``content_filter``, DashScope/Qwen (Bailian)
+#: ``data_inspection_failed``, and Anthropic returns a plain
+#: ``invalid_request_error`` whose *message* is the only place the filtering
+#: policy is named.  Hence codes first, message last: an unmatched filter
+#: reject is the expensive direction (the message is what the provider
+#: refuses, so keeping it re-earns the rejection on every later turn), while
+#: a false match costs one dropped turn.
+_FILTER_MARKERS = (
+    "content_filter",
+    "contentfilter",
+    "content_policy",
+    "content policy",
+    "content filtering",
+    "inappropriate content",
+    "data_inspection",
+    "datainspection",
+    "prohibited content",
+    "safety_violation",
+)
+
+
+def _is_content_filter(exc: BaseException) -> bool:
+    """True if *exc* is a **content filter** reject — the one failure that
+    drops the turn.
+
+    A filtered message is what the provider will not accept, so keeping it in
+    the context only re-earns the same rejection on every later turn.  That is
+    the sole exception to "a turn is saved unconditionally": every other
+    rejection — a malformed part, an image the provider could not fetch or
+    will not read — leaves the turn in place, because the user's message was
+    not what was refused.
+    """
+    if type(exc).__name__ == "ContentFilterFinishReasonError":
+        return True
+    if not _is_bad_request(exc):
+        return False
+    # The code the SDK exposes, the raw response body it carries, and the
+    # rendered message — providers put the signal in any of the three.
+    parts = [str(getattr(exc, "code", "") or "")]
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        err = err if isinstance(err, dict) else body
+        for key in ("code", "type"):
+            parts.append(str(err.get(key) or ""))
+    parts.append(str(exc))
+    haystack = " ".join(parts).lower()
+    return any(marker in haystack for marker in _FILTER_MARKERS)
 
 
 class MemorySaveError(RuntimeError):
@@ -410,22 +467,38 @@ class Inbox:
                     handler.finalize_current()
                 except Exception:
                     pass
-            # Only rollback on content-policy / bad-request errors
-            # where the history itself is the problem.  Transient
-            # errors (connection, timeout, rate-limit, server errors)
-            # keep the history intact so typing "go" continues
-            # with full context.
+            # A rejected request costs whatever the provider refused of it.
+            # Attachments first: a block rides in the session only, so it is
+            # re-sent with every later request and rejected the same way —
+            # one failed attach, then a session that errored on every turn
+            # until a restart.
+            #
+            # The turn goes too in exactly one case: a *content filter*
+            # reject, where the message itself is what the provider will not
+            # accept and keeping it would re-earn the rejection forever.  Any
+            # other rejection is a malformed *request*, not a bad history —
+            # the user's message stands, so the turn is kept and saved.
+            # Transient failures (connection, timeout, rate-limit, server
+            # errors) cost nothing at all: they say nothing about the
+            # payload, so the context is left as it is and typing "go"
+            # continues with it.
+            images_dropped = 0
             if history is not None and _is_bad_request(e):
                 try:
-                    history.pop_last_turn()
-                    # The rejected turn was rolled back — the finally must NOT
-                    # re-save it.  The backward text match in save_to_memory
-                    # would otherwise match an earlier turn with identical text
-                    # (heartbeat content is constant) and duplicate it as a
-                    # fresh diary row.
-                    rolled_back = True
+                    images_dropped = self._agent_loop.forget_images(history)
                 except Exception:
                     pass
+                if _is_content_filter(e):
+                    try:
+                        history.pop_last_turn()
+                        # The rejected turn was rolled back — the finally must
+                        # NOT re-save it.  The backward text match in
+                        # save_to_memory would otherwise match an earlier turn
+                        # with identical text (heartbeat content is constant)
+                        # and duplicate it as a fresh diary row.
+                        rolled_back = True
+                    except Exception:
+                        pass
             # Notify TUI so the user sees the error in chat.  ``dropped``
             # carries the rollback verdict explicitly (never re-derived from
             # the error text): a rolled-back turn is GONE from the context, so
@@ -439,6 +512,7 @@ class Inbox:
                         source=msg.source,
                         error=str(e),
                         dropped=rolled_back,
+                        images_dropped=images_dropped,
                     )
                 except Exception:
                     pass
@@ -465,11 +539,12 @@ class Inbox:
                     pass
         finally:
             # ★ Persist turn unconditionally — even on cancel, error,
-            # or max-iterations.  Preserves everything that was produced
-            # so far so the history and images are never lost.  The
-            # one exception: a content-policy / bad-request rollback, whose
-            # rejected turn must not be saved (re-saving would also match an
-            # earlier identical turn and duplicate it).
+            # or max-iterations.  Preserves everything that was produced so
+            # far.  The one exception: a **content filter** reject, whose
+            # message the provider will not accept, so the turn must not be
+            # saved (re-saving would also match an earlier identical turn and
+            # duplicate it).  A malformed *request* is not that: the turn is
+            # saved and only the attachment it was rejected for is dropped.
             if self._on_turn_complete and history is not None and not rolled_back:
                 try:
                     token_count = 0

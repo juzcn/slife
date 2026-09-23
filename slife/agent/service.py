@@ -131,7 +131,7 @@ def _short_reason(reason: str, limit: int = 140) -> str:
 # only live cap, a hard window-safety constraint).  Permanent memory does
 # NOT: tool output is reproducible (re-run the tool), so the Turns DB stores
 # a head+tail digest.  This keeps saved turns small enough that session
-# restore can fill the context floor, and keeps a turn_recall call cheap.
+# restore can fill the context floor, and keeps a recall call cheap.
 # Truncation is always announced to the model via an explicit marker.
 
 
@@ -335,6 +335,7 @@ class AgentService:
             set_context_turns=self.set_context_turns,
             clear_context_turns=self.clear_context_turns,
             recall_turns=self.recall_turns,
+            recall_available=lambda: self.memdb_enabled,
             turns_by_ids=self.turns_by_ids,
             # A worker's history is one-shot per task, so recall has nothing to
             # select from — and it would cost a discriminator call per task.
@@ -2314,8 +2315,8 @@ class AgentService:
         # stores sanitize_secrets(content), so a raw match would miss when
         # the user pasted an API key — and the turn would be saved with
         # empty messages (silent data loss).  If no user message matches at
-        # all (the turn was rolled back on a content-policy / bad-request
-        # error), there is nothing to persist.
+        # all (the turn was rolled back on a content-filter reject), there is
+        # nothing to persist.
         from slife.logfmt import sanitize_secrets
         target = sanitize_secrets(user_message)
         all_messages = list(conv.messages)
@@ -2673,9 +2674,11 @@ class AgentService:
     ) -> list[int] | None:
         """Recall the turn ids that should form the next turn's context.
 
-        Reads them out of ``turn_recall``'s rows — the same rows the model
-        sees when it calls that tool itself; the rebuild needs only the ids,
-        and fetches the full turns with :meth:`turns_by_ids`.
+        The selector is the memory plugin's internal tool, so this is the
+        harness asking its own store — the model has ``turn_search`` and
+        ``turn_list`` for its own reading, and neither touches the context.
+        The rebuild needs only the ids, and fetches the turns themselves with
+        :meth:`turns_by_ids`.
 
         ``None`` means the store could not be asked — memdb is off, the
         channel is unreachable, the store reported a failure, or the payload
@@ -2690,24 +2693,21 @@ class AgentService:
         if not self.memdb_enabled:
             return None
         payload = await self._call_context_tool_payload(
-            "turn_recall",
+            "__memory_turn_recall",
             {"query": query, "since": since, "until": until},
         )
         if not payload or payload.get("error"):
             return None
-        rows = payload.get("turns")
-        if not isinstance(rows, list):
+        turns = payload.get("turns")
+        if not isinstance(turns, list):
             return None
-        ids = [
-            r["turn_id"] for r in rows
-            if isinstance(r, dict) and isinstance(r.get("turn_id"), int)
-        ]
-        if rows and not ids:
+        ids = [t for t in turns if isinstance(t, int)]
+        if turns and not ids:
             # A non-empty selection carrying no ids is a broken payload, not
             # an empty answer — and the difference is the context: `[]`
             # clears it, so only a selection that genuinely says "nothing"
             # may be read as one.
-            logger.warning("recall_payload_unusable turns=%d", len(rows))
+            logger.warning("recall_payload_unusable turns=%d", len(turns))
             return None
         return ids
 

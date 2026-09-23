@@ -50,16 +50,31 @@ def render_template(template: str, **kwargs: object) -> str:
     return _env.get_template(template).render(**kwargs).strip()
 
 
-def build_recall_instruction(user_input: str, tool_function: dict) -> str:
+#: The parameter surface the recall discriminator fills in.  The **caps**
+#: (count / similarity / token budget) are deliberately absent — they are
+#: recall's own configuration, so the discriminator chooses *what to look
+#: for*, never how much of it to take.
+#:
+#: Stated here, once, because the selector is an internal tool the model never
+#: sees: there is no LLM-facing schema left to quote.  The loop is the only
+#: caller, it builds the internal call itself, and it whitelists exactly these
+#: three keys — so this text and the call site are one contract in one
+#: repository, not two copies that can drift.
+RECALL_PARAMS: dict[str, str] = {
+    "query": "Search text for the history this turn needs. Empty string "
+             "means no search — browse the time range instead.",
+    "since": "Optional lower time bound: an ISO date, or a relative phrase "
+             "such as yesterday / last week. Empty string for none.",
+    "until": "Optional upper time bound, same grammar as since.",
+}
+
+
+def build_recall_instruction(user_input: str) -> str:
     """Render the discriminator's instruction (``rebuild_messages.j2``).
 
     The user turn of the pre-turn recall call: it states what the call
     decides, quotes the current input, says how the query is matched, and
-    states the parameter surface the discriminator fills in — which is
-    ``turn_recall``'s **own tool schema**, not a copy of it, so the
-    discriminator is asked for exactly the parameters the tool takes and the
-    wording cannot drift from the tool's.  *tool_function* is that schema as
-    the registry holds it (``Tool.to_openai_function()["function"]``).
+    states the parameters the discriminator fills in (:data:`RECALL_PARAMS`).
 
     The rest of the call is the agent's **current context** — the loop sends
     the live messages with the instruction in place of the user message, so
@@ -69,7 +84,7 @@ def build_recall_instruction(user_input: str, tool_function: dict) -> str:
     return render_template(
         "rebuild_messages.j2",
         user_input=user_input,
-        tool_schema=json.dumps(tool_function, indent=2, ensure_ascii=False),
+        recall_params=json.dumps(RECALL_PARAMS, indent=2, ensure_ascii=False),
     )
 
 

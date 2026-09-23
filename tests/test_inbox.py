@@ -635,19 +635,29 @@ class TestInboxProcessOne:
 
     @pytest.mark.asyncio
     async def test_process_bad_request_marks_the_turn_dropped(self, mock_loop, mock_store):
-        """A 400-class rejection rolls the turn back — the message leaves the
-        context entirely, so no later turn can see it.  The activity reports
-        that explicitly: a bare error would read as retryable."""
+        """A **content filter** reject rolls the turn back — the message is
+        what the provider will not accept, so keeping it would only re-earn
+        the rejection.  The activity reports that explicitly: a bare error
+        would read as retryable.
+
+        Image attachments go with it.  A block is session-only, so the
+        rollback — which removes the *new* turn alone — would leave it riding
+        every later request to be rejected again: one failed attach, then a
+        session that errored on every turn until a restart.
+        """
         from slife.agent.inbox import Inbox
 
-        class _BadRequest(Exception):
+        class _Filtered(Exception):
             status_code = 400
+            code = "content_filter"
 
         on_activity = AsyncMock()
         inbox = Inbox(mock_loop, mock_store, on_activity=on_activity)
+        history = MagicMock()
+        mock_loop.forget_images = MagicMock(return_value=2)
 
-        mock_loop.run = AsyncMock(side_effect=_BadRequest("bad"))
-        mock_store.get_or_create.return_value = MagicMock()
+        mock_loop.run = AsyncMock(side_effect=_Filtered("blocked"))
+        mock_store.get_or_create.return_value = history
 
         msg = self._make_msg(source=AgentName("remote"), content="do it",
                              reply_to="Slife/human/tasks", corr_id="br-1")
@@ -657,17 +667,63 @@ class TestInboxProcessOne:
             c for c in on_activity.call_args_list if c.args[0] == "loop_error"
         )
         assert err.kwargs["dropped"] is True
+        assert err.kwargs["images_dropped"] == 2
         # ... and the rollback is real, not merely reported.
-        mock_store.get_or_create.return_value.pop_last_turn.assert_called_once()
+        history.pop_last_turn.assert_called_once()
+        mock_loop.forget_images.assert_called_once_with(history)
+
+    @pytest.mark.asyncio
+    async def test_process_malformed_request_keeps_the_turn(self, mock_loop, mock_store):
+        """A 400 that is NOT a content filter keeps the turn and saves it.
+
+        The provider refused the *request* — an image it could not fetch, a
+        part it would not read — not the user's message, so dropping the turn
+        would throw away what the user said.  Only the attachment it was
+        rejected for is dropped; without that the next turn re-sends it and is
+        rejected identically, which is how one bad image stalled every turn of
+        a session.
+        """
+        from slife.agent.inbox import Inbox
+
+        class _Malformed(Exception):
+            status_code = 400
+            code = "invalid_request_error"
+
+        on_activity = AsyncMock()
+        on_turn_complete = AsyncMock()
+        inbox = Inbox(mock_loop, mock_store, on_activity=on_activity,
+                      on_turn_complete=on_turn_complete)
+        history = MagicMock()
+        mock_loop.forget_images = MagicMock(return_value=1)
+
+        mock_loop.run = AsyncMock(side_effect=_Malformed(
+            ".messages[124].image[0]: Failed to download image from "
+            "https://www.python.org/static/img/python-logo.png",
+        ))
+        mock_store.get_or_create.return_value = history
+
+        await inbox._process_one(self._make_msg(content="look at this"))
+
+        err = next(
+            c for c in on_activity.call_args_list if c.args[0] == "loop_error"
+        )
+        assert err.kwargs["dropped"] is False
+        assert err.kwargs["images_dropped"] == 1
+        history.pop_last_turn.assert_not_called()
+        mock_loop.forget_images.assert_called_once_with(history)
+        # The turn is saved — the save is unconditional except for a filter.
+        on_turn_complete.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_process_transient_error_keeps_the_turn(self, mock_loop, mock_store):
         """A timeout / connection failure is NOT rolled back — the message
         stays in the context and a later turn completes it, so the activity
-        must not claim it was dropped."""
+        must not claim it was dropped.  The attachments stay for the same
+        reason: they are not what failed, so nothing about them changes."""
         from slife.agent.inbox import Inbox
         on_activity = AsyncMock()
         inbox = Inbox(mock_loop, mock_store, on_activity=on_activity)
+        mock_loop.forget_images = MagicMock()
 
         mock_loop.run = AsyncMock(side_effect=TimeoutError("timed out"))
         mock_store.get_or_create.return_value = MagicMock()
@@ -681,6 +737,7 @@ class TestInboxProcessOne:
         )
         assert err.kwargs["dropped"] is False
         mock_store.get_or_create.return_value.pop_last_turn.assert_not_called()
+        mock_loop.forget_images.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_process_success_has_no_error_flag(self, mock_loop, mock_store):

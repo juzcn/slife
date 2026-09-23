@@ -111,9 +111,14 @@ def _linkify(plain: str) -> Content:
 class ChatView(VerticalScroll):
     """Scrollable container for chat messages.
 
-    can_focus is True so the ScrollView itself can receive focus and
-    process keyboard scroll bindings (PageUp/PageDown/Home/End).
-    Tab is intercepted at the Screen level to always focus the input.
+    can_focus is True so the ScrollView can receive focus and process its
+    keyboard scroll bindings (PageUp/PageDown/Home/End) — though paging does
+    not depend on it: the prompt forwards PageUp/PageDown here rather than
+    paging its own draft, so the transcript can be read while typing.
+
+    New content follows the tail only while the reader is *at* the tail
+    (:meth:`follow_tail`), so a streaming turn cannot pull a page of history
+    out from under them.
     """
 
     can_focus = True
@@ -125,10 +130,31 @@ class ChatView(VerticalScroll):
         # scrolls exactly once at the end — scrolling on every widget (the
         # normal live behaviour) is what made the restore jitter.
         self._autoscroll: bool = True
+        # Whether the *reader* is at the tail.  Following is sticky: it holds
+        # while the view sits at the end and stops the moment they move off
+        # it, so a streaming turn cannot yank a page of history out from under
+        # them — and it resumes when they come back down to the tail.
+        self._at_tail: bool = True
 
-    def _follow(self) -> None:
-        """Scroll to the end unless auto-scroll is suppressed (restore)."""
-        if self._autoscroll:
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        """Track whether the view sits at the tail — the reader's position.
+
+        Watched rather than computed at follow time because the offset is what
+        the reader controls: content growth leaves the offset where it was
+        (only ``follow_tail`` moves it), so this holds the last position they
+        asked for rather than the one the new content implies.
+        """
+        self._at_tail = new_value >= self.max_scroll_y - 1
+
+    def follow_tail(self) -> None:
+        """Follow new content unless following is off or the reader has gone
+        back to reading history.
+
+        Every streaming token and every mounted widget lands here, so the
+        guard has to be here too: without it each token scrolls back to the
+        end and paging up during a turn is impossible.
+        """
+        if self._autoscroll and self._at_tail:
             self.scroll_end(animate=False)
 
     async def _on_key(self, event: Key) -> None:
@@ -152,7 +178,7 @@ class ChatView(VerticalScroll):
         """
         msg = UserMessage(text, prefix=prefix, timestamp=timestamp)
         self.mount(msg)
-        self._follow()
+        self.follow_tail()
         return msg
 
     def add_assistant_message(
@@ -171,7 +197,7 @@ class ChatView(VerticalScroll):
         """
         msg = AssistantMessage(name_prefix=name_prefix, timestamp=timestamp)
         self.mount(msg)
-        self._follow()
+        self.follow_tail()
         return msg
 
     def add_system_message(self, text: str, color: str | None = None) -> None:
@@ -181,7 +207,7 @@ class ChatView(VerticalScroll):
             content = content.stylize(color)
         msg = Static(content, classes="system-message")
         self.mount(msg)
-        self._follow()
+        self.follow_tail()
 
 
 class UserMessage(Static):

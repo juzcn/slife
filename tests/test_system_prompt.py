@@ -70,7 +70,7 @@ class TestBuild:
         assert "_sys_trim" not in result  # trim is now internal (note, not tool)
         assert "oldest turns have been removed from context" in result
         assert '[INFO: {"turn_id"' in result  # the turn footnote is documented
-        assert "turn_recall" in result
+        assert "turn_search" in result  # the model's own way into the Turns DB
 
     def test_heartbeat_interval_rendered_from_config(self, cfg):
         """The Autonomy heartbeat window advertises the configured interval."""
@@ -426,43 +426,41 @@ class TestHelpers:
 # ── Recall discriminator instruction ─────────────────────────────────────
 
 class TestRecallInstruction:
-    """``build_recall_instruction`` renders the tool's own schema.
+    """``build_recall_instruction`` renders :data:`RECALL_PARAMS`.
 
-    There is no second copy of the parameter surface: the instruction carries
-    exactly what the registry holds for ``turn_recall``, so the discriminator is
-    asked for the tool's parameters in the tool's own words (the four retrieval
-    modes are stated in that description — see the memdb server's
-    ``TestTurnRecallSchema``).
+    The selector is an internal tool the model never sees, so there is no live
+    schema left to quote — the surface is stated once in the agent, and these
+    tests are what keep the statement and the loop's key whitelist (`query` /
+    `since` / `until`) from drifting apart.
     """
 
-    TOOL = {
-        "name": "turn_recall",
-        "description": "Recall turns into context: a query searches, no query browses.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Search text."},
-                "since": {"type": "string", "description": "Lower bound."},
-            },
-            "required": [],
-        },
-    }
-
-    def test_renders_the_schema_verbatim(self):
+    def test_renders_the_three_parameters(self):
         from slife.agent.system_prompt import build_recall_instruction
 
-        text = build_recall_instruction("查一下首经贸新闻", self.TOOL)
+        text = build_recall_instruction("查一下首经贸新闻")
 
         assert "查一下首经贸新闻" in text
-        assert "turn_recall" in text
-        assert "a query searches, no query browses" in text, "the description is the surface"
-        assert '"query"' in text and '"since"' in text
-        assert "Lower bound" in text, "parameter descriptions are how-to-use"
+        assert '"query"' in text and '"since"' in text and '"until"' in text
+
+    def test_the_surface_is_exactly_the_loops_three(self):
+        """The keys are the contract with the loop, which whitelists exactly
+        these out of the reply — and the **caps** (count, similarity, token
+        budget) are deliberately not among them: the discriminator chooses
+        *what to look for*, never how much of it to take, and naming them here
+        would invite a model to set recall's own configuration."""
+        import json
+
+        from slife.agent.system_prompt import build_recall_instruction
+
+        text = build_recall_instruction("x")
+        payload = json.loads(text[text.rindex("{"): text.rindex("}") + 1])
+
+        assert set(payload) == {"query", "since", "until"}
 
     def test_states_the_empty_object_rule(self):
         from slife.agent.system_prompt import build_recall_instruction
 
-        text = build_recall_instruction("x", self.TOOL)
+        text = build_recall_instruction("x")
 
         assert "empty object means no recall is needed" in text
 
@@ -474,7 +472,7 @@ class TestRecallInstruction:
         the input."""
         from slife.agent.system_prompt import build_recall_instruction
 
-        text = build_recall_instruction("那人工智能学院呢？", self.TOOL)
+        text = build_recall_instruction("那人工智能学院呢？")
 
         assert "the turns you name become the" in text
         assert "in place of the ones in hand" in text

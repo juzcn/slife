@@ -17,16 +17,17 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from slife.agent.message_history import TokenizerUnavailable, estimate_turn_tokens
-from slife.plugins.memdb.recall import (
-    RecallPolicy, fit_budget, gate_turns, similarity_of,
+from slife.plugins.memdb.recall import RecallPolicy, fit_budget, gate_turns
+from slife.plugins.memdb.store import SessionStore, _clamp_limit
+from slife.plugins.memdb.search import (
+    hybrid_hint, rename_rowid_to_turn_id, run_hybrid,
 )
-from slife.plugins.memdb.store import SessionStore
-from slife.plugins.memdb.search import hybrid_hint, run_hybrid
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.server_utils import create_plugin_server, warm_after_ready
 from slife.timeutil import BOUND_GRAMMAR, InvalidTimeBound
@@ -81,8 +82,8 @@ mcp, _log_path, logger = create_plugin_server(
         "slife-memdb — the Turns DB: turn-based long-term knowledge. "
         "Every turn (user question + your response) is one row, addressed by "
         "its turn id. "
-        "LLM-visible tools: turn_recall, turn_read, turn_token_usage, "
-        "turn_count, turn_summarize. "
+        "LLM-visible tools: turn_search, turn_list, turn_read, "
+        "turn_token_usage, turn_count, turn_summarize. "
         "All data is automatically scoped to the current agent."
     ),
     lifespan=_memdb_lifespan,
@@ -313,70 +314,37 @@ async def __memory_context_turns_drop(turn_ids: list[int]) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-def _recall_row(turn: dict, score: float | None) -> dict:
-    """One recalled turn as the row both callers read.
-
-    What identifies the turn and how well it matched — never the stored
-    ``messages`` (``turn_read`` is for those).  A field that carries nothing
-    is omitted rather than sent empty: ``summary`` only for a turn someone
-    summarized, ``score`` only where a similarity was measured.
-    """
-    row: dict = {
-        "turn_id": turn.get("rowid"),
-        "created_at": turn.get("created_at") or "",
-        "user_message": (turn.get("user_message") or "")[:200],
-    }
-    summary = (turn.get("summary") or "").strip()
-    if summary:
-        row["summary"] = summary
-    if score is not None:
-        row["score"] = round(float(score), 4)
-    return row
-
-
 @mcp.tool(
-    name="turn_recall",
-    description=(
-        "Recall turns into context: ranked and capped, returned as rows in "
-        "ascending turn-id order. A query searches the whole history (a time "
-        "range narrows it); a time range without a query browses that period. "
-        "With neither there is nothing to recall and the answer is empty — the "
-        "context already in hand is the context. score is the measured cosine "
-        "similarity (semantic hits only). Use turn_read for a full turn. "
-        "since/until — " + BOUND_GRAMMAR
-    ),
+    name="__memory_turn_recall",
+    description="Select the turns that form the next turn's context. Internal — called by the agent loop.",
 )
-async def turn_recall(
+async def __memory_turn_recall(
     query: str = "",
     since: str | None = None,
     until: str | None = None,
 ) -> str:
-    """Recall the turns that belong in the context — the one retrieval.
+    """Return the recalled turn ids — nothing else.
 
     Args:
         query: Search text; an empty string means no search (browse by time
             instead).
         since: Lower bound — ISO date/datetime, or a relative phrase (the
-            grammar is in the description).
+            grammar is the LLM-facing ``turn_search``'s).
         until: Upper bound — same grammar as since.
 
-    Called by the agent loop before every turn (where the answer *overrides*
-    the context, with no reconciliation against what was already there) and
-    by the model itself, which reads the same rows.  The turn ids are what
-    the rebuild reads out of it.
+    Called by the agent loop before every turn, where the answer *overrides*
+    the context with no reconciliation against what was already there.  The
+    ids are all the rebuild reads out of it; it fetches the turns themselves
+    with ``__memory_turns_by_ids``.
 
     A *query* runs the hybrid search; a time range without one browses that
     period; neither is an empty call, which recalls nothing.  Either way the
     three caps come from recall's own configuration (``agent.recall_*``), not
     from the caller — see :mod:`slife.plugins.memdb.recall`.
 
-    Returns ``{"turns": [{"turn_id", "created_at", "user_message",
-    "summary"?, "score"?}], "degraded": "<reason>"}`` — rows ascending
-    (chronological), each carrying what identifies the turn, and a non-empty
-    ``degraded`` when the semantic leg was unavailable so the caller can tell
-    a thin recall from a broken one.  ``summary`` appears when the turn has
-    one; ``score`` only when a similarity was actually measured (keyword hits
-    carry no number, and the time branch measures nothing).
+    Returns ``{"turns": [ids]}``, ascending (chronological).  A degraded
+    semantic leg does not change the answer — the selection stands either way
+    — so it is logged (``recall_degraded``) rather than returned.
 
     **There is no error return.**  The caller's only safe reading of "error"
     is "keep the context you have", while an empty selection is a legitimate
@@ -387,8 +355,8 @@ async def turn_recall(
     the startup readiness check): a plausible-looking empty list from a broken
     database is worse than no answer, because it silently wipes the context.
     A **tokenizer failure is fatal** in the same way (``TokenizerUnavailable``
-    propagates): it is an environment failure like the store's, and the rows
-    cannot be sized — let alone selected within a budget — without it.
+    propagates): it is an environment failure like the store's, and no turn
+    can be sized — let alone selected within a budget — without it.
     """
     policy = _recall_policy()
     try:
@@ -404,8 +372,7 @@ async def turn_recall(
                     # it gets here) — so reaching this means an empty call, and
                     # an empty call recalls nothing.
                     logger.info("recall_no_criteria")
-                    return json.dumps({"turns": [], "degraded": ""},
-                                      ensure_ascii=False)
+                    return json.dumps({"turns": []}, ensure_ascii=False)
                 # Time branch.  This branch MUST run before the hybrid legs:
                 # an empty query reaches FTS5 as `MATCH ''` (an OperationalError)
                 # and embeds to noise, so the legs cannot express "no query".
@@ -413,24 +380,17 @@ async def turn_recall(
                     limit=policy.limit, since=since, until=until,
                 )
                 ranked = [h["rowid"] for h in hits][: policy.limit]
-                scores: dict[int, float] = {}
-                degraded = ""
             else:
                 result = await run_hybrid(
                     store, manager, query=query, limit=policy.limit,
                     since=since, until=until, overfetch=3,
                 )
                 ranked = gate_turns(result.hits, policy=policy)
-                scores = {
-                    h["turn_id"]: s for h in result.hits
-                    if h.get("turn_id") is not None
-                    and (s := similarity_of(h)) is not None
-                }
-                degraded = "" if result.semantic_available else hybrid_hint(result)
-                if degraded:
+                if not result.semantic_available:
                     # The selection stands either way, but a degraded leg
-                    # widens the empty case — which now clears the context.
-                    logger.info("recall_degraded reason=%.120s", degraded)
+                    # widens the empty case — which clears the context.
+                    logger.info("recall_degraded reason=%.120s",
+                                hybrid_hint(result))
 
             # The token budget needs each turn's stored messages, so it is a
             # second phase over what gating kept.
@@ -438,18 +398,13 @@ async def turn_recall(
             costs = {t["rowid"]: estimate_turn_tokens(t) for t in turns}
             selected = fit_budget(ranked, costs, policy.token_budget)
 
-        by_id = {t["rowid"]: t for t in turns}
-        rows = [
-            _recall_row(by_id[tid], scores.get(tid))
-            for tid in selected if tid in by_id
-        ]
-        return json.dumps({"turns": rows, "degraded": degraded}, ensure_ascii=False)
+        return json.dumps({"turns": selected}, ensure_ascii=False)
     except InvalidTimeBound as e:
         # An unrecognized bound is an input outcome, not a defect: the phrase
         # matched no calendar period, so it selects nothing.  Answering
         # "nothing" keeps the turn running.
         logger.info("turn_recall_unusable_bound query=%.60s err=%s", query, e)
-        return json.dumps({"turns": [], "degraded": ""}, ensure_ascii=False)
+        return json.dumps({"turns": []}, ensure_ascii=False)
     except sqlite3.Error as e:
         logger.error("turn_recall_store_fatal query=%.60s err=%s", query, e)
         raise
@@ -458,15 +413,16 @@ async def turn_recall(
         # and therefore the budget the selection is fitted to — is measured by
         # the tokenizer, so without one there is no budget and no selection.
         # Falling through to the empty answer below would be the *worst* of
-        # the three shapes: the caller reads an empty selection as "clear the
-        # context", and `degraded` is empty too, so a wiped context would look
-        # exactly like a thin recall.  Raising reaches the caller as the MCP
-        # error string that makes recall_turns answer None — keep the context.
+        # the shapes: the caller reads an empty selection as "clear the
+        # context", so a wiped context would look exactly like a thin recall.
+        # Raising reaches the caller as the MCP error string that makes
+        # recall_turns answer None — keep the context.
         logger.error("turn_recall_tokenizer_fatal query=%.60s err=%s", query, e)
         raise
     except Exception:
         logger.warning("turn_recall_empty query=%.60s", query, exc_info=True)
-        return json.dumps({"turns": [], "degraded": ""}, ensure_ascii=False)
+        return json.dumps({"turns": []}, ensure_ascii=False)
+
 
 @mcp.tool(
     name="__memory_turns_by_ids",
@@ -475,7 +431,7 @@ async def turn_recall(
 async def __memory_turns_by_ids(turn_ids: list[int]) -> str:
     """Return the full turn rows for *turn_ids*, in the given order.
 
-    The companion to ``turn_recall``: recall selects *which* turns
+    The companion to ``__memory_turn_recall``: recall selects *which* turns
     (ids only, by design), this retrieves them.  Kept separate so recall's
     answer stays a plain id list.
 
@@ -541,6 +497,157 @@ async def __memory_context_turns_clear() -> str:
 # ═══════════════════════════════════════════════════════════════════════
 # LLM-visible tools
 # ═══════════════════════════════════════════════════════════════════════
+
+
+@mcp.tool(
+    name="turn_search",
+    description=(
+        "Search turns (each result carries its turn_id): mode hybrid "
+        "(default)/fts5/grep (regex). Use turn_read for a full turn, or "
+        "turn_list to browse. since/until window the search — "
+        + BOUND_GRAMMAR + "."
+    ),
+)
+async def turn_search(
+    query: str, mode: str = "hybrid", limit: int = 20,
+    since: str | None = None, until: str | None = None,
+) -> str:
+    """Search the turn history (each result = one turn).
+
+    Args:
+        query: The search text.
+        mode: hybrid (default) | fts5 | grep (regex).
+        limit: Maximum results.
+        since: Lower bound on when the turn was written — ISO date/datetime or
+            a relative phrase (today/yesterday/tomorrow/now, last|this
+            week|month|quarter|year, "<N> days|weeks|months|years ago");
+            omit for no lower bound.
+        until: Upper bound — same grammar as since.
+    """
+    # Search only READS the semantic gate — no side effects, no reindex kick.
+    store = await _ensure_store()
+    manager = _manager
+    mode = mode.lower()
+    if mode not in ("hybrid", "fts5", "grep"):
+        mode = "hybrid"
+    # Clamp before use — the store methods clamp internally, but the hybrid
+    # final slice (`hits[:limit]`) uses the raw value, so a limit of 0 (→ [])
+    # or a negative (→ slices from the tail) would slip through.
+    limit = _clamp_limit(limit)
+
+    if not query.strip():
+        # An empty query is not a search, and it must not become one: grep
+        # compiles the empty pattern, which matches EVERY string.  Browsing is
+        # what turn_list is for.
+        return json.dumps(
+            {"error": "query must not be empty — to browse instead of "
+                      "search, use turn_list"},
+            ensure_ascii=False,
+        )
+
+    try:
+        if mode == "grep":
+            try:
+                hits = await store.search_grep(
+                    pattern=query, limit=limit, since=since, until=until,
+                )
+            except re.error as e:
+                # grep is a regex: an unusable pattern is the caller's to fix,
+                # and saying so beats a silent empty result.
+                return json.dumps(
+                    {"error": f"invalid regex {query!r}: {e}"},
+                    ensure_ascii=False,
+                )
+            rename_rowid_to_turn_id(hits)
+            return json.dumps(
+                {"mode": "grep", "query": query, "results": hits,
+                 "hint": "" if hits else f"no turns contain '{query}'"},
+                ensure_ascii=False, indent=2,
+            )
+
+        if mode == "fts5":
+            hits = await store.search_keyword(
+                query=query, limit=limit, since=since, until=until,
+            )
+            rename_rowid_to_turn_id(hits)
+            return json.dumps(
+                {"mode": "fts5", "query": query, "results": hits,
+                 "hint": "" if hits else f"no turns related to '{query}'"},
+                ensure_ascii=False, indent=2,
+            )
+
+        # hybrid — the composition lives in ONE place (search.run_hybrid);
+        # this tool only formats its result.  The hits are already renamed to
+        # turn_id and carry the normalized similarity.
+        result = await run_hybrid(
+            store, manager, query=query, limit=limit,
+            since=since, until=until,
+        )
+        # Report the mode that actually RAN.  A degraded hybrid is an fts5
+        # result, and answering "hybrid" would misreport what was searched.
+        return json.dumps({
+            "mode": "hybrid" if result.semantic_available else "fts5",
+            "query": query,
+            "results": result.hits[:limit],
+            "hint": hybrid_hint(result),
+        }, ensure_ascii=False, indent=2)
+    except InvalidTimeBound as e:
+        # A bound in no known grammar is the caller's to fix: saying so beats a
+        # logged traceback, and beats the silent empty result a pass-through
+        # bound used to produce (SQLite compares the text, matches nothing, and
+        # reports it as "no matches").
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    except Exception as e:
+        logger.exception("search_failed query=%s mode=%s", query, mode)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="turn_list",
+    description=(
+        "List turns (newest first), optionally within a since/until range; "
+        "pass a higher offset to page."
+    ),
+)
+async def turn_list(
+    since: str | None = None, until: str | None = None,
+    limit: int = 50, offset: int = 0,
+) -> str:
+    """List turns, newest first — the browse to turn_search's search.
+
+    Args:
+        since: Lower bound on when the turn was written — ISO date/datetime or
+            a relative phrase (today/yesterday/tomorrow/now, last|this
+            week|month|quarter|year, "<N> days|weeks|months|years ago");
+            omit for no lower bound.
+        until: Upper bound — same grammar as since.
+        limit: Maximum entries to return.
+        offset: Skip this many entries (for paging).
+    """
+    store = await _ensure_store()
+    try:
+        data = await store.turn_list(
+            since=since, until=until, limit=limit, offset=offset,
+        )
+    except InvalidTimeBound as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    except Exception as e:
+        logger.exception("turn_list_failed limit=%s offset=%s", limit, offset)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+    entries = data["entries"]
+    rename_rowid_to_turn_id(entries)
+    for entry in entries:
+        message = entry.get("user_message") or ""
+        if len(message) > 200:
+            # The ellipsis matters: without it a cut message reads as a short
+            # one, and the caller has no reason to call turn_read.
+            entry["user_message"] = message[:200] + "…"
+    return json.dumps(
+        {"total": data["total"], "limit": len(entries),
+         "offset": max(0, offset), "entries": entries},
+        ensure_ascii=False, indent=2,
+    )
 
 
 @mcp.tool(
@@ -624,7 +731,7 @@ async def turn_read(turn_id: int) -> str:
     """Load a full turn by turn id.
 
     Args:
-        turn_id: Turn id (from turn_recall / a [INFO] footnote).
+        turn_id: Turn id (from turn_search / turn_list / a [INFO] footnote).
     """
     store = await _ensure_store()
     try:

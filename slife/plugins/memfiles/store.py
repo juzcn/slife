@@ -1090,7 +1090,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
         ``_search_like`` uses: split on whitespace, every word must appear in
         some column, ANDed.  One pattern for the whole query instead needs the
         words adjacent and in order — so ``"子agent 委托"`` missed a note holding
-        the two words in different columns, while ``turn_recall`` answered with
+        the two words in different columns, while ``turn_search`` answered with
         it.  Same query, two stores, two answers.
         """
         spec = _KIND_SPECS[kind]

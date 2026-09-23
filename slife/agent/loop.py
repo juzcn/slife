@@ -316,6 +316,7 @@ class AgentLoop:
         set_context_turns: Callable[[list[int]], Awaitable[bool]] | None = None,
         clear_context_turns: Callable[[], Awaitable[bool]] | None = None,
         recall_turns: Callable[..., Awaitable[list[int] | None]] | None = None,
+        recall_available: Callable[[], bool] | None = None,
         turns_by_ids: Callable[[list[int]], Awaitable[list[dict]]] | None = None,
         rebuild_message: bool = False,
         images_by_turn: dict[int, list[dict]] | None = None,
@@ -384,6 +385,10 @@ class AgentLoop:
         #: empty one goes through the clear tool that exists for it).
         self.clear_context_turns = clear_context_turns
         self.recall_turns = recall_turns
+        #: Whether the memory store can be asked at all.  Gates the
+        #: discriminator so a turn is not spent calling a model to decide a
+        #: recall that cannot run; ``None`` means unset, and the call is made.
+        self.recall_available = recall_available
         self.turns_by_ids = turns_by_ids
         # Per-turn context rebuild (see the recall step in run()).
         self.rebuild_message = rebuild_message
@@ -611,8 +616,9 @@ class AgentLoop:
         The reply is asked to be a bare JSON object, but a model may wrap it in
         prose or a fenced block, so the outer ``{…}`` is taken rather than the
         whole string.  Unknown keys are dropped and only string values kept —
-        the args reach ``turn_recall`` directly, bypassing the registry's
-        schema validation, so this is the only gate on what a model can inject.
+        the args reach ``__memory_turn_recall`` directly, bypassing the
+        registry's schema validation, so this is the only gate on what a model
+        can inject.
         """
         if not text:
             return None
@@ -652,12 +658,13 @@ class AgentLoop:
         if self.llm_client is None:
             logger.info("recall_discriminator_skipped reason=no_llm_client")
             return None
-        # The instruction states `turn_recall`'s own schema, so the tool must be
-        # registered to ask at all — no tool means no recall this turn (memdb
-        # down or disabled), which the caller reads as "keep the context".
-        tool = self.tool_registry.get("turn_recall") if self.tool_registry else None
-        if tool is None:
-            logger.info("recall_discriminator_skipped reason=no_turn_recall_tool")
+        # The selector is the memory plugin's *internal* tool, so nothing in
+        # the registry can prove it is reachable — this check does.  Asking a
+        # model to decide a recall that cannot run would spend a call every
+        # turn for nothing, and the caller reads the skip as "keep the
+        # context".
+        if self.recall_available is not None and not self.recall_available():
+            logger.info("recall_discriminator_skipped reason=store_unavailable")
             return None
         from slife.agent.system_prompt import build_recall_instruction
 
@@ -673,9 +680,7 @@ class AgentLoop:
         messages = MessageHistory.strip_turn_ids(history.messages)
         messages.append(
             {"role": "user",
-             "content": build_recall_instruction(
-                 user_input, tool.to_openai_function()["function"],
-             )},
+             "content": build_recall_instruction(user_input)},
         )
         # `msgs` / `prompt_chars` are the call's *shape*: what the
         # discriminator was actually asked with, which is not the same thing
@@ -717,6 +722,28 @@ class AgentLoop:
             args.get("since"), args.get("until"),
         )
         return args
+
+    def forget_images(self, history: MessageHistory) -> int:
+        """Drop every injected image block from *history* and from the store.
+
+        Called when the provider rejected a request that carried attachments
+        (:func:`slife.agent.inbox._is_bad_request`).  Clearing the live
+        message list is not enough on its own: ``_recall_and_rebuild``
+        re-attaches the blocks from ``_images_by_turn`` on the next turn, so
+        the same rejection would repeat.  Both structures go, or neither
+        does.
+
+        Returns the number of blocks removed from the live history — 0 means
+        the request carried none, so the images were not what was rejected
+        and the store is left alone.
+        """
+        removed = history.strip_images()
+        if removed:
+            # The same dict the service holds as ``_image_by_turn`` — the
+            # rebuild's source, and the only other place a block survives.
+            self._images_by_turn.clear()
+            logger.info("images_forgotten count=%d", removed)
+        return removed
 
     async def _recall_and_rebuild(
         self, history: MessageHistory, user_input: str,

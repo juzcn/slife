@@ -575,9 +575,9 @@ async def cabinet_search(
         # matches EVERY string, so it silently returned the whole window — with
         # no `total`, no paging, and no mention in any description.  That was an
         # accidental second browse path, one unrelated "reject empty patterns"
-        # fix away from vanishing.  Browsing is what the per-kind list tools are
-        # for — memdb's `turn_recall` covers both in one tool (an empty query
-        # there *is* the browse), which is exactly why this one refuses.
+        # fix away from vanishing.  Browsing is what the per-kind `*_list`
+        # tools are for — here and in memdb, whose `turn_list` does the same
+        # job for turns — so a search tool refuses to be one.
         return json.dumps(
             {"error": "query must not be empty — to browse instead of search, "
                       "use note_list / diary_list / file_list / report_list"},

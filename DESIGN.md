@@ -159,9 +159,18 @@ message posted to the inbox
   `user`/`tool` gets a closing assistant message). Two call sites only: `save_to_memory` and
   `restore_session`.
 - **The one rollback.** `pop_last_turn()` removes the last user message and everything after it. It
-  is called from exactly one place — the inbox, on a **400-class rejection** — and suppresses the
-  save. Transient failures, 5xx, rate limits and 401/403 do **not** roll back: the turn is valid, so
-  the history keeps it and a later turn can complete it.
+  is called from exactly one place — the inbox, on a **content filter** reject — and suppresses the
+  save. Everything else keeps the turn and saves it: a malformed *request* (a part the provider would
+  not read, an image it could not fetch) is not a bad history, and transient failures (5xx, rate
+  limits, timeouts, 401/403) are not even about the payload. Filtered content is recognised by name
+  rather than by status code — providers spell it differently (OpenAI/Azure `content_filter`,
+  DashScope/Qwen `data_inspection_failed`, Anthropic only in the message text).
+- **A rejected request still costs its attachments.** Any 400 drops the injected image blocks —
+  `MessageHistory.strip_images()` plus the loop's per-turn image store. A block is session-only
+  (there is no column), so it rides every later request and is rejected there; clearing the live list
+  alone is not enough, because a context rebuild re-attaches it from the store. Both go, or neither
+  does. The TUI says the attachments were removed, so the model is not blamed for not seeing an image
+  that is gone.
 
 ### 2.2 Context window management
 
@@ -240,9 +249,13 @@ conversation and nothing it says is ever shown.
 - **What the instruction states**: what the call decides (the named turns become the context, in
   place of the ones in hand), the current input, how the query is matched (against stored turns —
   their user messages, the tools they called, their answers), one rule — *name what the turn needs,
-  in the words a stored turn would contain* — and `turn_recall`'s **own tool schema**, read out of
-  the registry, so it is asked for exactly the parameters the tool takes in the tool's own words.
-  With no `turn_recall` in the registry there is no call at all: the schema *is* the instruction.
+  in the words a stored turn would contain* — and the recall parameters themselves
+  (`system_prompt.RECALL_PARAMS`), stated once in the agent. They cannot be read off a tool: the
+  selector is an **internal** tool the model never sees, so there is no LLM-facing schema to quote.
+  The loop is the only caller and it whitelists exactly the three keys, which is what keeps the two
+  ends of this contract in step. When the store cannot be reached at all there is no call either —
+  the availability check is the gate, so a turn is never spent asking a model to decide a recall
+  that cannot run.
 
   The rule is carried by five worked cases, one per shape the reply can take, each written as the
   reply itself — the JSON object the schema asks for — rather than as a shorthand for it: `{}` (the
@@ -315,14 +328,20 @@ share one builder (`messages_from_turns`) — a difference would cost a prompt-c
 **The selection overrides; it does not merge** — there is no incumbent to defend and no need to
 exclude turns already in context.
 
-**The store's answer is ids, or nothing, but never an error.** `turn_recall` returns one row per turn
-— what identifies it and how well it matched, never the stored messages. Everything that is not a
-fatal environment failure is answered as an **empty selection**: a time bound the grammar rejects, a
-query the store cannot parse, an unexpected pipeline failure. The caller's only safe reading of
-"error" would be *keep the context you have*, which would license exactly the wipe an empty
-selection performs deliberately. Two things are **fatal** instead — a store failure and an unusable
-tokenizer, since every row's cost and so the budget come from it — and both reach the harness as a
-tool *error*, which keeps the context.
+**The store's answer is ids, or nothing, but never an error.** `__memory_turn_recall` returns the
+turn ids and nothing else — a degraded semantic leg does not change the selection, so it is logged
+rather than answered with. Everything that is not a fatal environment failure is answered as an
+**empty selection**: a time bound the grammar rejects, a query the store cannot parse, an unexpected
+pipeline failure. The caller's only safe reading of "error" would be *keep the context you have*,
+which would license exactly the wipe an empty selection performs deliberately. Two things are
+**fatal** instead — a store failure and an unusable tokenizer, since every turn's cost and so the
+budget come from it — and both reach the harness as a tool *error*, which keeps the context.
+
+**The model's own way into the Turns DB is separate.** `turn_search` (hybrid / fts5 / grep) and
+`turn_list` (a time-windowed, paged browse) mirror the memfiles cabinet's `cabinet_search` and
+`*_list` tools, and they only ever *read* — neither touches the context. The selector that does
+replace the context is the harness's, and it is internal for exactly that reason: a selection
+*overriding* the conversation is not something the model asks for.
 
 **What the selection does to the context.** It replaces it, built from the stored rows by the same
 builder restore uses. An empty selection is an empty context, and the persisted list is emptied with
@@ -573,7 +592,7 @@ third-party server's schema is the server's contract to declare.
   project-specific facts it cannot infer: idempotency ("upsert — add + update in one call"),
   blocking ("BLOCKS until the model is loaded"), effect timing ("takes effect after restart").
 - **Parameter docs = how to use.** Per parameter: accepted format, where the value comes from
-  ("`turn_id` from `turn_recall`"), what the values mean, and the default.
+  ("`turn_id` from `turn_list`"), what the values mean, and the default.
 - **Mechanism.** Builtin tools carry docs in the `parameters` dict. Plugin tools (`@mcp.tool`) get
   them from a Google-style `Args:` docstring — fastmcp parses it into the input schema, so a plugin
   tool whose parameters have no `Args:` yields an undocumented schema.
@@ -720,7 +739,7 @@ Three retrieval routes, one row shape: `grep` (a real regex, so `summ.rize` matc
 pattern is reported, never a silent no-match), `keyword` (FTS5 BM25, CJK-routed to a LIKE fallback),
 and `hybrid` (keyword + semantic KNN, merged by reciprocal rank fusion). **An empty query browses**:
 with no text to match it returns the rows passing the filters, which is also how a family gets
-enumerated. Results are scored on one 0–1 scale (`similarity`), shared with `turn_recall` and
+enumerated. Results are scored on one 0–1 scale (`similarity`), shared with `turn_search` and
 `cabinet_search` so the numbers are comparable; a keyword-only hit carries no `similarity`, because
 nothing measured it and inventing a number would be a lie about the match.
 
@@ -1503,6 +1522,12 @@ Restore rebuilds the UI in three phases — reconstruct the message list (repair
 first, then mapping channel to display prefix and skipping silence), replace the history and prime the
 loop state, then rebuild the widgets inside one batched update with autoscroll suppressed and a
 single scroll at the end. Scrolling per widget is the live behaviour and it made restore jitter.
+
+**Following the tail is sticky.** The transcript scrolls to the end only while the reader is at the
+end: the scroll offset is watched, so paging up mid-turn keeps its position instead of being undone by
+the next streamed token, and coming back down to the tail resumes following. Paging does not depend on
+focus either — the prompt forwards PageUp/PageDown to the transcript instead of letting TextArea page
+its own draft, which is where those keys otherwise went while typing.
 
 ### 9.2 Config and credentials
 

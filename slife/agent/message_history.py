@@ -844,6 +844,46 @@ class MessageHistory:
                 )
                 break
 
+    def strip_images(self) -> int:
+        """Remove every injected image block; return how many were removed.
+
+        Called when the provider *rejected* a request that carried
+        attachments (:func:`slife.agent.inbox._is_bad_request`).  A block
+        lives in the session only — there is no column — so it rides every
+        later request and is re-rejected there: one failed attach turned into
+        a session that dropped every turn, from every source, until a
+        restart.  A rejected attachment is not kept.
+
+        A content list left holding only text parts collapses back to a plain
+        string, concatenated exactly as :func:`messages_from_turns` renders a
+        text-only turn (the injected footnote part carries its own leading
+        space), so an evicted turn re-renders byte-identically and costs no
+        prompt-cache miss.
+        """
+        removed = 0
+        for msg in self.messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            kept = [
+                p for p in content
+                if not (isinstance(p, dict) and p.get("type") == "image_url")
+            ]
+            if len(kept) == len(content):
+                continue
+            removed += len(content) - len(kept)
+            if not kept:
+                msg["content"] = ""
+            elif all(
+                isinstance(p, dict) and p.get("type") == "text" for p in kept
+            ):
+                msg["content"] = "".join(str(p.get("text", "")) for p in kept)
+            else:
+                msg["content"] = kept
+        if removed:
+            logger.debug("conv_strip_images removed=%d", removed)
+        return removed
+
     def to_openai_messages(
         self, thinking_enabled: bool = False,
     ) -> list[dict]:

@@ -975,7 +975,7 @@ class TestSessionStoreCountTurns:
         """Regression: the count and the search each built their own LIKE clause
         and drifted twice over.  The count LIKE'd the WHOLE query as a single
         pattern over two columns, while ``_search_like`` ANDed each word over
-        four — so ``"子agent 委托"`` matched rows in turn_recall and none in
+        four — so ``"子agent 委托"`` matched rows in turn_search and none in
         turn_count, and a hit living only in ``summary``/``tags`` was invisible
         to the count.  Both now come from ``_like_terms``."""
         store = SessionStore(Path("/tmp/test.db"))
@@ -1057,7 +1057,7 @@ class TestSessionStoreCountTurns:
     async def test_time_window_windows_both_keyword_paths(self, tmp_path):
         """A bound must narrow the keyword search on BOTH SQL paths — FTS5 for
         an ASCII query, the CJK LIKE fallback for a Chinese one — and the two
-        must agree about it.  ``turn_recall`` picks the path from the QUERY text
+        must agree about it.  ``turn_search`` picks the path from the QUERY text
         while the window comes from the bound, so a window that reached only one
         path would make one bound mean two different things.
 
@@ -1341,25 +1341,193 @@ class TestSessionStoreSearchKeyword:
         assert "%测试%" in params
 
 
-class TestSessionStoreSearchTime:
-    """Tests for search_time."""
+class TestSessionStoreTurnList:
+    """Tests for turn_list — the paged browse behind the ``turn_list`` tool."""
+
+    @staticmethod
+    def _store(count: int, rows: list[dict]):
+        """A store whose two reads (the count, then the page) are scripted."""
+        store = SessionStore(Path("/tmp/test.db"))
+        count_cursor = AsyncMock()
+        count_cursor.fetchone = AsyncMock(return_value=(count,))
+        rows_cursor = AsyncMock()
+        rows_cursor.fetchall = AsyncMock(return_value=rows)
+        conn = AsyncMock()
+        conn.execute = AsyncMock(side_effect=[count_cursor, rows_cursor])
+        store._conn = conn
+        return store, conn
 
     @pytest.mark.asyncio
-    async def test_search_time(self):
+    async def test_envelope_windows_the_page_and_the_count_alike(self):
+        store, conn = self._store(7, [
+            {"rowid": 2, "user_message": "newer"},
+            {"rowid": 1, "user_message": "older"},
+        ])
+
+        out = await store.turn_list(
+            since="2026-08-01", until="2026-08-02", limit=2,
+        )
+
+        assert out["total"] == 7
+        assert [e["rowid"] for e in out["entries"]] == [2, 1], "newest first"
+        count_sql, count_params = conn.execute.call_args_list[0].args
+        page_sql, page_params = conn.execute.call_args_list[1].args
+        # `total` must count the SAME window the page is drawn from, or the
+        # caller pages past the end of a set that was never that big.
+        assert count_sql.startswith("SELECT COUNT(*) FROM diary WHERE")
+        assert "created_at >= ?" in count_sql and "created_at <= ?" in count_sql
+        assert count_params == ["2026-08-01", "2026-08-02"]
+        # Ordered by the turn id, which is monotonic — a page boundary can
+        # never fall inside a group of turns sharing a timestamp.
+        assert "ORDER BY rowid DESC" in page_sql
+        assert page_params == ["2026-08-01", "2026-08-02", 2, 0]
+
+    @pytest.mark.asyncio
+    async def test_no_window_means_no_where(self):
+        store, conn = self._store(0, [])
+
+        out = await store.turn_list()
+
+        count_sql, count_params = conn.execute.call_args_list[0].args
+        assert "WHERE" not in count_sql
+        assert count_params == []
+        assert out == {"entries": [], "total": 0}
+
+    @pytest.mark.asyncio
+    async def test_offset_pages_and_a_negative_one_is_clamped(self):
+        store, conn = self._store(0, [])
+        await store.turn_list(limit=5, offset=10)
+        assert conn.execute.call_args_list[1].args[1] == [5, 10]
+
+        store, conn = self._store(0, [])
+        await store.turn_list(limit=5, offset=-3)
+        assert conn.execute.call_args_list[1].args[1] == [5, 0], "no negative OFFSET"
+
+    @pytest.mark.asyncio
+    async def test_an_unusable_bound_raises_for_the_caller(self):
+        """A bound in no known grammar is the caller's to report — the tool
+        layer turns it into an error payload.  The store never guesses."""
+        from slife.timeutil import InvalidTimeBound
+
+        store, _ = self._store(0, [])
+        with pytest.raises(InvalidTimeBound):
+            await store.turn_list(since="下周")
+
+
+class TestSessionStoreSearchTime:
+    """search_time — the recall selector's window, delegated to turn_list.
+
+    The selector and the browse window one axis, so there is one
+    implementation of it: a second copy is how the two would come to disagree
+    about what a bound means.
+    """
+
+    @pytest.mark.asyncio
+    async def test_it_returns_turn_list_entries(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        rows = [{"rowid": 2, "user_message": "Newer"},
+                {"rowid": 1, "user_message": "Older"}]
+        count_cursor = AsyncMock()
+        count_cursor.fetchone = AsyncMock(return_value=(2,))
+        rows_cursor = AsyncMock()
+        rows_cursor.fetchall = AsyncMock(return_value=rows)
+        conn = AsyncMock()
+        conn.execute = AsyncMock(side_effect=[count_cursor, rows_cursor])
+        store._conn = conn
+
+        result = await store.search_time(since="2024-01-01", until="2024-12-31")
+
+        assert result == rows
+        sql, params = conn.execute.call_args_list[1].args
+        assert "created_at >= ?" in sql and "created_at <= ?" in sql
+        assert params == ["2024-01-01", "2024-12-31", 20, 0], "limit default 20"
+
+
+class TestSessionStoreSearchGrep:
+    """Tests for search_grep."""
+
+    @pytest.mark.asyncio
+    async def test_search_grep(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 1, "user_message": "Old turn"},
+            {"turn_id": 1, "user_message": "Hello", "context": "Hello world"},
         ])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.search_time(
-            since="2024-01-01",
-            until="2024-12-31",
-        )
+        result = await store.search_grep(pattern="Hello")
         assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_grep_is_regex_not_like(self):
+        """``grep`` is a real grep: the pattern is a regex (``re.search``), so
+        alternation and wildcards work — and `%`/`_`, which were LIKE
+        metacharacters needing an ESCAPE clause, are simply literals now."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": 1, "user_message": "please summarize this",
+             "summary": "", "tags": "", "created_at": "x", "messages": ""},
+            {"rowid": 2, "user_message": "unrelated turn",
+             "summary": "", "tags": "", "created_at": "x", "messages": ""},
+        ])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        # `summ.rize` and alternation — the two things LIKE could not do.
+        assert [r["rowid"] for r in await store.search_grep("summ.rize")] == [1]
+        assert {r["rowid"] for r in await store.search_grep("summarize|unrelated")} == {1, 2}
+        # `%` and `_` are ordinary characters in a regex, not wildcards — the
+        # LIKE predicate and its ESCAPE clause are gone.
+        sql, _ = mock_conn.execute.call_args[0]
+        assert "LIKE" not in sql and "ESCAPE" not in sql
+        # Recency ordering is the SQL's job (the mock returns a fixed order).
+        assert "ORDER BY rowid DESC" in sql
+
+    @pytest.mark.asyncio
+    async def test_search_grep_swaps_messages_for_the_match_window(self):
+        """``_grep_scan`` needs the heavy ``messages`` column to match on, but
+        a result can only afford the text around the hit."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": 1, "user_message": "please summarize this", "summary": "",
+             "tags": "", "created_at": "x",
+             "messages": '[{"role": "tool", "content": "summarize the file"}]'},
+        ])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        (hit,) = await store.search_grep("summ.rize")
+        assert "messages" not in hit
+        assert "summarize" in hit["context"]
+
+    @pytest.mark.asyncio
+    async def test_search_grep_rejects_an_invalid_pattern(self):
+        """A bad pattern is the caller's to report — never a silent no-match."""
+        store = SessionStore(Path("/tmp/test.db"))
+        with pytest.raises(re.error):
+            await store.search_grep("a(b")
+
+    @pytest.mark.asyncio
+    async def test_search_clamps_negative_limit(self):
+        """REVIEW M6 — a negative limit is clamped (it would otherwise slice
+        from the tail)."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": i, "user_message": "hit", "summary": "", "tags": "",
+             "created_at": "x", "messages": ""} for i in range(30)
+        ])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        assert len(await store.search_grep("hit", limit=-5)) == 20
 
 
 async def _vec_store(tmp_path, dim: int = 8) -> SessionStore:

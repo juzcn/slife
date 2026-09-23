@@ -170,7 +170,7 @@ class TUIHandler:
         self._ensure_assistant()
         if self._current_assistant:
             self._current_assistant.append_thinking(chunk)
-            self._chat_view.scroll_end(animate=False)
+            self._chat_view.follow_tail()
 
     async def on_text_chunk(self, chunk: str) -> None:
         """Stream a text token to the active assistant widget.
@@ -193,7 +193,7 @@ class TUIHandler:
             # would be discarded at finalize).
             self._silent_dot = False
             self._current_assistant.append_text(chunk)
-            self._chat_view.scroll_end(animate=False)
+            self._chat_view.follow_tail()
 
     async def on_tool_call(
         self, tool_call: ToolCallInfo, iteration: int = 0, max_iterations: int = 30
@@ -214,7 +214,7 @@ class TUIHandler:
         )
         self._chat_view.mount(widget)
         widget.set_running()
-        self._chat_view.scroll_end(animate=False)
+        self._chat_view.follow_tail()
         self._app._tool_widgets[tool_call.id] = widget
 
     async def on_tool_approval(self, tool_call: ToolCallInfo) -> bool:
@@ -236,7 +236,7 @@ class TUIHandler:
         future: asyncio.Future[bool] = asyncio.Future()
         prompt = ApprovalPrompt(tool_call, future)
         self._chat_view.mount(prompt)
-        self._chat_view.scroll_end(animate=False)
+        self._chat_view.follow_tail()
         prompt.focus()
         try:
             approved = await future
@@ -264,7 +264,7 @@ class TUIHandler:
         widget = self._app._tool_widgets.get(tool_call_id)
         if widget:
             widget.set_complete(result, is_error)
-            self._chat_view.scroll_end(animate=False)
+            self._chat_view.follow_tail()
         # Signal that the next thinking/text chunk starts a new iteration
         self._iteration_needs_new_message = True
 
@@ -278,4 +278,4 @@ class TUIHandler:
         if self._current_assistant:
             self._current_assistant.set_token_usage(usage)
         self._app._update_status()
-        self._chat_view.scroll_end(animate=False)
+        self._chat_view.follow_tail()

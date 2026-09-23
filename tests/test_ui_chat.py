@@ -6,7 +6,11 @@ import pytest; pytestmark = pytest.mark.unit
 import pytest
 from unittest.mock import MagicMock, patch
 
+from textual.app import App, ComposeResult
+
 from slife.agent.llm_client import TokenUsage
+from slife.ui.app import HistoryInput
+from slife.ui.chat import ChatView
 
 
 # ── UserMessage logic ─────────────────────────────────────────────────
@@ -343,6 +347,107 @@ class TestChatView:
             from slife.ui.chat import ChatView
             view = ChatView()
             assert view.can_focus is True
+
+
+# ── Sticky auto-follow (the reported "scroll doesn't work" bug) ──────
+
+
+class Host(App):
+    """A real chat view plus the real prompt, as the app composes them."""
+
+    def compose(self) -> ComposeResult:
+        yield ChatView(id="chat-view")
+        yield HistoryInput(id="prompt")
+
+
+def _fill(view, n=30):
+    for i in range(n):
+        view.add_user_message(f"[{i}] " + "line of history text " * 6)
+
+
+class TestScrollFollowing:
+    """Following the tail must be sticky, or a streaming turn owns the view.
+
+    Every token and every mounted widget landed on an unconditional
+    ``scroll_end``, so paging up during a turn was undone by the next token —
+    the wheel and the keys both looked dead while the agent was working, and
+    worked again once it was idle.
+    """
+
+    @pytest.mark.asyncio
+    async def test_follows_while_at_the_tail(self):
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            _fill(view)
+            await pilot.pause()
+            before = view.scroll_offset.y
+            view.add_user_message("[new] while at the tail")
+            await pilot.pause()
+            assert view.scroll_offset.y > before
+
+    @pytest.mark.asyncio
+    async def test_does_not_yank_a_reader_back_to_the_tail(self):
+        """The bug: 20 streamed tokens must not move a view being read."""
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            _fill(view)
+            await pilot.pause()
+            view.scroll_to(y=0, animate=False)
+            await pilot.pause()
+
+            for _ in range(20):
+                view.add_assistant_message().append_text("token ")
+                view.follow_tail()
+            await pilot.pause()
+
+            assert view.scroll_offset.y == 0
+
+    @pytest.mark.asyncio
+    async def test_returning_to_the_tail_resumes_following(self):
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            _fill(view)
+            await pilot.pause()
+            view.scroll_to(y=0, animate=False)
+            await pilot.pause()
+            view.scroll_to(y=view.max_scroll_y, animate=False)
+            await pilot.pause()
+
+            before = view.scroll_offset.y
+            view.add_user_message("[new] after coming back")
+            await pilot.pause()
+            assert view.scroll_offset.y > before
+
+    @pytest.mark.asyncio
+    async def test_page_keys_reach_the_transcript_from_the_prompt(self):
+        """PageUp while typing pages the transcript, not the draft.
+
+        TextArea binds PageUp/PageDown to its own text and stops the event, so
+        with focus in the prompt — where it normally sits — the transcript
+        could not be paged at all.
+        """
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            _fill(view)
+            await pilot.pause()
+            view.scroll_to(y=view.max_scroll_y, animate=False)
+            app.query_one("#prompt", HistoryInput).focus()
+            await pilot.pause()
+
+            before = view.scroll_offset.y
+            await pilot.press("pageup")
+            await pilot.pause()
+            assert view.scroll_offset.y < before
+
+            await pilot.press("pagedown")
+            await pilot.pause()
+            assert view.scroll_offset.y == view.max_scroll_y
+            # The reader keeps their cursor: paging must not move focus.
+            assert isinstance(app.focused, HistoryInput)
 
 
 # ── Timestamp formatting + per-message rendering ────────────────────

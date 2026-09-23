@@ -106,6 +106,13 @@ class HistoryInput(TextArea):
         Binding("shift+enter", "insert_newline", "Insert newline", show=False),
         Binding("up", "up_or_history", show=False),
         Binding("down", "down_or_history", show=False),
+        # TextArea claims PageUp/PageDown to page through its *own* text, and
+        # for a chat prompt that is the wrong target: the draft is a few lines
+        # while the transcript above is what the reader is paging.  Forward
+        # them to the chat view — the mirror of ChatView redirecting printable
+        # keys here.
+        Binding("pageup", "scroll_transcript_up", show=False),
+        Binding("pagedown", "scroll_transcript_down", show=False),
     ]
 
     _MAX_HISTORY: int = 256
@@ -161,6 +168,30 @@ class HistoryInput(TextArea):
                 self.post_message(self.Submitted(self, value))
             return
         await super()._on_key(event)
+
+    def action_scroll_transcript_up(self) -> None:
+        """Page the transcript up — PageUp belongs to it, not to the draft."""
+        transcript = self._transcript()
+        if transcript is not None:
+            transcript.scroll_page_up(animate=False)
+
+    def action_scroll_transcript_down(self) -> None:
+        """Page the transcript down — the mirror of the up action."""
+        transcript = self._transcript()
+        if transcript is not None:
+            transcript.scroll_page_down(animate=False)
+
+    def _transcript(self) -> "ChatView | None":
+        """The chat view, or None when this input is hosted on its own.
+
+        ``HistoryInput`` is also used standalone (its widget tests), where
+        there is no transcript to page.
+        """
+        from textual.css.query import NoMatches
+        try:
+            return self.app.query_one("#chat-view", ChatView)
+        except NoMatches:
+            return None
 
     def action_up_or_history(self) -> bool:
         """Up on the first line walks history; otherwise moves the cursor."""
@@ -943,7 +974,21 @@ class SlifeApp(App):
             # removed from the context (``pop_last_turn``), so no later turn
             # will see it.  A bare error reads as "send it again" — which is
             # the one thing that will NOT help here — so say what happened.
-            key = "turn_dropped" if kwargs.get("dropped") else "loop_error"
+            # An attachment the provider refused is dropped rather than kept
+            # — a session-only block would be re-sent, and re-rejected, on
+            # every later turn — and that is a separate fact from the turn
+            # itself, which only a content filter takes away.  Say which
+            # happened, so the model is not blamed for not seeing an image
+            # that is no longer in the context.
+            if kwargs.get("dropped"):
+                key = (
+                    "turn_dropped_images" if kwargs.get("images_dropped")
+                    else "turn_dropped"
+                )
+            elif kwargs.get("images_dropped"):
+                key = "attachments_removed"
+            else:
+                key = "loop_error"
             chat_view.add_system_message(t(key, err=error), color="#f85149")
 
         elif kind == "task_completed":
