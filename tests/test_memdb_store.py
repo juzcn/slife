@@ -15,12 +15,15 @@ import pytest
 
 from slife.plugins.memdb.store import (
     SessionStore,
+    INDEX_TEXT_VERSION,
+    TOOL_ARG_CHARS,
     _char_limit_for_tokens,
     _now,
     _serialize_f32,
     _split_chunks_to_token_limit,
     _split_sql,
     _to_fts5_query,
+    _turn_text_for_embedding,
     DEFAULT_EMBEDDING_DIM,
 )
 
@@ -127,6 +130,66 @@ class TestSplitChunksToTokenLimit:
         assert _char_limit_for_tokens(8192, '{"a":1}' * 2000) <= 8192
         assert _char_limit_for_tokens(8192, "x" * 100) <= 8192
         assert _char_limit_for_tokens(8192, "中文" * 100) <= 8192
+
+
+class TestTurnTextForEmbedding:
+    """What a turn's vector is a vector OF: the conversation, not the dumps.
+
+    Tool results were 56–99% of a real turn's text, which made every turn
+    read as "an agent ran tools" and left the recall's similarity cap nothing
+    to separate a relevant turn from an irrelevant one.  They stay in
+    ``messages``, which is what the keyword leg and turn_read read.
+    """
+
+    @staticmethod
+    def _turn(user_message="查一下首经贸新闻", assistant="查到了，首经贸 70 周年校庆在 10 月 18 日。",
+              tool_calls=None, tool_content="<html>…a fetched page, 40KB of markup…</html>"):
+        messages = []
+        if tool_calls:
+            messages.append({"role": "assistant", "content": "",
+                             "tool_calls": tool_calls})
+        messages.append({"role": "assistant", "content": assistant})
+        if tool_content is not None:
+            messages.append({"role": "tool", "content": tool_content})
+        return user_message, messages
+
+    def test_tool_results_are_not_embedded(self):
+        text = _turn_text_for_embedding(*self._turn())
+        assert "40KB of markup" not in text
+
+    def test_the_conversation_is_embedded(self):
+        text = _turn_text_for_embedding(*self._turn())
+        assert "查一下首经贸新闻" in text       # what was asked
+        assert "70 周年校庆" in text            # what was answered
+
+    def test_tool_requests_are_embedded(self):
+        """The request says what the turn was about — the search string, the
+        URL, the command — so a tool-heavy turn keeps a topic even when its
+        prose is one line (or "(Turn interrupted)")."""
+        calls = [{"id": "1", "type": "function",
+                  "function": {"name": "duckduckgo-search__search",
+                               "arguments": '{"query": "首经贸 校庆"}'}}]
+        text = _turn_text_for_embedding(
+            *self._turn(assistant="(Turn interrupted)", tool_calls=calls),
+        )
+        assert "duckduckgo-search__search" in text
+        assert "首经贸 校庆" in text
+
+    def test_tool_arguments_are_bounded(self):
+        """One call's arguments cannot own the chunk: a rendered page or a
+        file body is unbounded, and the request is what carries the topic."""
+        calls = [{"id": "1", "type": "function",
+                  "function": {"name": "fetch__fetch",
+                               "arguments": "x" * (TOOL_ARG_CHARS * 5)}}]
+        text = _turn_text_for_embedding(*self._turn(tool_calls=calls))
+        assert text.count("x") == TOOL_ARG_CHARS
+
+    def test_a_turn_with_nothing_but_tool_results_has_no_text(self):
+        """No user text, no request, no prose — nothing to embed, and the
+        caller's empty-text skip is what keeps the drainer from stalling."""
+        assert _turn_text_for_embedding("", [
+            {"role": "tool", "content": "a result nobody asked for in prose"},
+        ]) == ""
 
 
 class TestToFts5Query:
@@ -1423,6 +1486,99 @@ class TestVecStoreMetric:
             assert similarity == round(self._cosine(a, b), 4)
             # …where the old L2 reading of the same pair was a clamped 0.0.
             assert similarity > 0.9
+        finally:
+            await store.close()
+
+
+class TestIndexTextContract:
+    """Vectors measure the text they were built from, so that text is half of
+    what makes them comparable — the same way the model is.  A builder change
+    that left the old vectors in place would be silently wrong: nothing in the
+    numbers says the text behind them changed.
+    """
+
+    @staticmethod
+    async def _seed_one_vector(store) -> None:
+        await store._c.execute(
+            "INSERT INTO diary_semantic(turn_embedding, diary_rowid, "
+            "chunk_index) VALUES (?, 1, 0)",
+            (_serialize_f32([0.1] * 8),),
+        )
+        await store._c.commit()
+
+    @staticmethod
+    async def _indexed_rows(store) -> int:
+        cursor = await store._c.execute("SELECT COUNT(*) FROM diary_semantic")
+        return (await cursor.fetchone())[0]
+
+    @pytest.mark.asyncio
+    async def test_a_current_text_contract_keeps_the_index(self, tmp_path):
+        """The check must not rebuild on every start — that would throw the
+        index away and re-embed the whole diary on each launch."""
+        db = tmp_path / "t.db"
+        store = await _vec_store(tmp_path)
+        try:
+            await self._seed_one_vector(store)
+            assert await self._indexed_rows(store) == 1
+        finally:
+            await store.close()
+
+        store = SessionStore(db)
+        await store.setup(embedding_dim=8)
+        try:
+            assert store._vec_available, "skip guard should have caught this"
+            assert await self._indexed_rows(store) == 1
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_an_unversioned_index_is_rebuilt(self, tmp_path):
+        """An index written before the contract was versioned has no key at
+        all, and its text predates the current builder — absent is a
+        mismatch, not an unknown."""
+        db = tmp_path / "t.db"
+        store = await _vec_store(tmp_path)
+        try:
+            await self._seed_one_vector(store)
+            await store._c.execute(
+                "DELETE FROM diary_meta WHERE key = 'embedding_text_version'",
+            )
+            await store._c.commit()
+        finally:
+            await store.close()
+
+        store = SessionStore(db)
+        await store.setup(embedding_dim=8)
+        try:
+            assert store._vec_available, "skip guard should have caught this"
+            assert await self._indexed_rows(store) == 0       # dropped
+            cursor = await store._c.execute(
+                "SELECT value FROM diary_meta "
+                "WHERE key = 'embedding_text_version'",
+            )
+            assert (await cursor.fetchone())[0] == INDEX_TEXT_VERSION
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_an_older_text_contract_is_rebuilt(self, tmp_path):
+        db = tmp_path / "t.db"
+        store = await _vec_store(tmp_path)
+        try:
+            await self._seed_one_vector(store)
+            await store._c.execute(
+                "UPDATE diary_meta SET value = 'older' "
+                "WHERE key = 'embedding_text_version'",
+            )
+            await store._c.commit()
+        finally:
+            await store.close()
+
+        store = SessionStore(db)
+        await store.setup(embedding_dim=8)
+        try:
+            assert store._vec_available, "skip guard should have caught this"
+            assert await self._indexed_rows(store) == 0
         finally:
             await store.close()
 

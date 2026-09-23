@@ -40,10 +40,24 @@ logger = logging.getLogger(__name__)
 class RecallPolicy:
     """The knobs of a recall selection."""
 
-    min_similarity: float = 0.35
+    min_similarity: float = 0.45
     """Semantic similarity a turn must reach to enter the context.  Applied
     only to hits that were actually measured — keyword-leg hits pass
-    unconditionally."""
+    unconditionally.
+
+    Calibrated by measurement, because the scale is a property of the pair
+    that produces it (the embedding model *and* the text the index holds) and
+    a floor set below the noise is worse than no floor: it admits an
+    arbitrary turn as if it had been matched, and the selection then
+    *overrides* the context with it.  On a recorded session, queries against
+    the conversation-only index put every genuinely relevant turn at
+    0.46–0.55, every irrelevant one at ≤0.45 — and an unrelated query (news
+    no earlier turn mentions) topped out at 0.33, so it now selects nothing
+    instead of the 0.37 tool-dump hit the old 0.35 floor let through.
+
+    Re-measure when the embedding model or ``_turn_text_for_embedding``
+    changes — this value does not transfer to another model's scale (the
+    reasoning is in DESIGN.md §2.3)."""
 
     token_budget: int = 0
     """Maximum estimated tokens for the selection (0 = unbounded)."""

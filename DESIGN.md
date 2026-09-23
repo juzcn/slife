@@ -263,13 +263,24 @@ silently replace the context the discriminator just judged sufficient. An empty-
 **The selection — one fusion, three caps, one order.** The hybrid legs are FTS5 (with a LIKE
 fallback for CJK, which FTS5's `unicode61` cannot segment) and sqlite-vec KNN, fused by reciprocal
 rank fusion (`k=60`). The caps are `agent.recall_limit` (40 turns), `agent.recall_min_similarity`
-(0.35), and `context_floor` (20% of the window, the selection's estimated size). The similarity cap
+(0.45), and `context_floor` (20% of the window, the selection's estimated size). The similarity cap
 gates the **measured** `similarity`, never the fused `rrf_score` — a fused score is a function of
 rank position and carries no magnitude to threshold. Keyword-leg hits have no measured similarity and
 are **exempt**: an exact match is a stronger signal than a cosine neighbourhood, and "no number" is
 not evidence against it. The caps are recall's own configuration, never the discriminator's
 arguments — it chooses *what to look for*, never how much of it to take, which is why they are
 absent from the schema it fills in.
+
+**The floor is calibrated, not chosen.** A cosine scale belongs to the pair that produces it — the
+embedding model *and* the text the index holds — so `recall_min_similarity` is a measured number, and
+it must be re-measured when either changes. It matters more than a tuning knob usually would because
+the selection *overrides* the context: a floor below the noise band does not degrade gracefully, it
+admits an arbitrary turn as though it had been matched and then discards the context it replaced.
+The value in the config was measured on a recorded session — every relevant turn at 0.46–0.55, every
+irrelevant one at ≤0.45, and a query no turn answered topping out at 0.33, selecting nothing.
+
+The semantic leg's scale depends on what the index holds, which is not the raw turn: see §7.2 for
+what `_turn_text_for_embedding` embeds and why tool *results* are absent from it.
 
 **Order is chronological even though membership is by relevance**, because the list order is the
 restore contract: a rebuilt turn must render byte-identically to the same turn restored. Both paths
@@ -1198,8 +1209,8 @@ context size at the last API call, which restore primes the first turn prompt wi
 There is **no `images` column**: image blocks live only in the in-memory user message and are never
 persisted, so restore is text-only. Supporting structures are an FTS5 external-content index (whose
 UPDATE trigger exists because the summarize tool rewrites columns and an external-content index must
-track that), a sqlite-vec table, a key/value `diary_meta` store holding the embedding model identity
-and the ordered live-context list, and a sibling `turn_channel` row per turn holding the channel's
+track that), a sqlite-vec table, a key/value `diary_meta` store holding the embedding model identity,
+the index text contract's version and the ordered live-context list, and a sibling `turn_channel` row per turn holding the channel's
 JSON payload, written atomically with the insert.
 
 **There is no migration layer.** Backward compatibility is not supported: schema changes land in
@@ -1224,11 +1235,40 @@ period's **edge**, not to today's day-of-month. A bound in no known grammar **ra
 passing through — SQLite would compare the text, match nothing, and report a bound nobody understood
 as "no results".
 
-Two hardening rules are load-bearing: **CJK queries route keyword search to a LIKE fallback**, because
-FTS5's `unicode61` cannot segment Chinese and a whole-sentence query becomes one phrase token that
-never matches; and FTS5 MATCH operator words are quoted and stray symbols stripped, so a user query
-cannot crash the MATCH parser. Without an embedding backend, hybrid degrades to FTS5-only and reports
-its degraded mode and reason.
+**What a turn's vector is a vector *of* is the conversation, not the turn.** `_turn_text_for_embedding`
+embeds the user message, the tool calls the turn made (names and arguments, bounded) and the
+assistant's prose — **not tool results**. Measured on a live session, results were 56–99% of a turn's
+text, so an index built on them describes "an agent ran tools" rather than what the turn was about:
+every turn lands in one narrow cosine band (unrelated turns at 0.55–0.92 of each other) and a
+similarity cap has nothing to separate. Nothing is lost to search — results live in `messages`, which
+is what the keyword leg and `turn_read` read. Because that text contract is half of what makes two
+vectors comparable, it is **versioned** (`INDEX_TEXT_VERSION`, recorded in `diary_meta`) and a
+version change drops the stale vectors for the drainer to rebuild, exactly as a model or dimension
+change does.
+
+Two hardening rules are load-bearing: **CJK queries route keyword search to a LIKE fallback**; and FTS5
+MATCH operator words are quoted and stray symbols stripped, so a user query cannot crash the MATCH
+parser. Without an embedding backend, hybrid degrades to FTS5-only and reports its degraded mode and
+reason.
+
+The routing's real reason is narrower than "FTS5 cannot do Chinese, LIKE can". `unicode61` makes a
+**contiguous CJK run one token**, so a Chinese query is an *exact-token* lookup: measured on a live
+diary, `MATCH '校庆'` matched the four turns where that word sits next to punctuation or a digit, and
+`MATCH '具体安排'` matched one where `LIKE '%具体安排%'` matched three — the other two hold the word
+glued inside a longer run (`校庆的具体安排有吗` is a single token), which an exact-token lookup cannot
+see. LIKE is a true substring matcher per word, which is what Chinese prose needs, so it is the leg
+CJK routes to — but it inherits the AND below, which is what limits it in practice.
+
+Both keyword legs **AND** their terms (`_to_fts5_query` and `_like_terms` share that rule, so
+`turn_count` and the search cannot disagree). The consequence is worth knowing before trusting the
+leg: it fires only on a turn containing *every* word, and for CJK that means every word literally, as
+a substring. A query of one or two words the turn would actually contain is what it rewards; a
+synonym-stuffed one matches nothing at all, which is what the discriminator's queries tend to be — so
+on Chinese turns the semantic leg is often the only one contributing, and the floor above is the
+only thing deciding the selection. Steering the query tighter (one or two words) was measured as a
+wash and not adopted: the keyword leg starts firing, but relevant hits slip on the semantic leg
+(0.53–0.55 → 0.49–0.52), which the floor cannot afford. The query's shape belongs to the
+discriminator; the schema states the parameters, not a search strategy.
 
 ### 7.3 Embeddings and the semantic gate
 

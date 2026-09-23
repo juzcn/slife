@@ -36,7 +36,11 @@ agent:
   # Cosine similarity a semantic hit must reach to enter the context; the
   # budget is context_floor (the same knob the trim compacts to), so flipping
   # rebuild_message changes how the context is chosen, never how big it is.
-  recall_min_similarity: 0.35
+  # The similarity scale belongs to the embedding model, so this value is
+  # measured against the one in the embeddings section below (bge-m3:
+  # relevant turns 0.46-0.55, irrelevant <=0.45), not carried over from
+  # another model.
+  recall_min_similarity: 0.45
   # Maximum turns in a recall selection.
   recall_limit: 40
   # Idle heartbeat period in SECONDS (1800 = 30 min): how often an otherwise

@@ -25,6 +25,16 @@ class TestGateTurns:
         hits = [_hit(1, 0.9), _hit(2, 0.4), _hit(3, 0.34), _hit(4, 0.1)]
         assert gate_turns(hits, policy=RecallPolicy(min_similarity=0.35)) == [1, 2]
 
+    def test_the_default_bar_is_the_calibrated_one(self):
+        """The floor is a measured number, not a taste: on the recorded
+        session a relevant turn scored 0.46+ and every irrelevant one ≤0.45
+        (bge-m3, conversation-only index).  A default that drifts below the
+        noise band is not a softer filter — the selection *overrides* the
+        context, so it admits an arbitrary turn as though it had matched."""
+        assert RecallPolicy().min_similarity == 0.45
+        hits = [_hit(1, 0.52), _hit(2, 0.45), _hit(3, 0.44)]
+        assert gate_turns(hits, policy=RecallPolicy()) == [1, 2]
+
     def test_keyword_hits_are_exempt(self):
         """A keyword hit carries no measured similarity — nothing weighed it,
         so there is no number to threshold.  An exact match is a stronger
@@ -79,9 +89,11 @@ class TestOverrideSemantics:
         assert gate_turns(hits, policy=RecallPolicy()) == [3, 1]
 
     def test_empty_candidates_select_nothing(self):
-        """The caller treats this as "keep the existing context" — never as
-        "empty it", which is why the harness refuses to persist an empty
-        selection."""
+        """An empty selection is the *deliberate* empty context (§2.3): the
+        persisted list is emptied with it, which is why the harness's
+        ``set_context_turns`` refuses an empty list and the loop has a separate
+        clear for this path.  A *failed* store or a `{}` reply is what keeps
+        the context instead."""
         assert gate_turns([], policy=RecallPolicy()) == []
 
     def test_the_two_phases_compose(self):

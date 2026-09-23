@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EMBEDDING_DIM = 1536
 
+#: Identity of the text contract :func:`_turn_text_for_embedding` implements.
+#: Stored vectors describe the text that was embedded, so the contract is part
+#: of what makes them comparable — the same way the embedding model is (and it
+#: is read at class-definition time, hence its place here rather than beside
+#: the builder).  **Bump it whenever the builder changes shape**; the
+#: migration then drops the stale vectors for the drainer to rebuild, and
+#: ``SessionStore._index_text_version`` carries it into that comparison.
+INDEX_TEXT_VERSION = "1"
+
 #: Bound-variable budget per statement for the ``WHERE rowid IN (…)`` reads.
 #: SQLite's ``SQLITE_MAX_VARIABLE_NUMBER`` default is 999 (32766 from 3.32),
 #: so chunk below it rather than trusting the build.
@@ -167,6 +176,12 @@ class VecStoreLifecycleMixin:
     _semantic_tables: tuple[str, ...] = ()
     #: Meta table holding the ``embedding_model`` key.
     _meta_table: str = "meta"
+    #: The text contract this store's embedded text implements, recorded in
+    #: ``_meta_table`` under ``embedding_text_version`` and compared on every
+    #: start: vectors built from text the current builder no longer produces
+    #: are stale exactly as a model change makes them stale.  Empty (the
+    #: default) opts a store out of the check — its builder is not versioned.
+    _index_text_version: str = ""
     #: Directory holding this store's ``schema.sql``.
     _schema_dir: Path
     #: Structured-log key prefix (memdb uses ``store_*``, memfiles
@@ -325,7 +340,7 @@ class VecStoreLifecycleMixin:
         """Drop + recreate the vec0 tables when they no longer match the schema.
 
         ``CREATE TABLE IF NOT EXISTS`` never touches an existing table, so
-        three things have to be compared by reading the LIVE DDL:
+        four things have to be compared by reading the LIVE DDL:
 
         - **dimension** — a change resizes the table, and old vectors are
           invalid;
@@ -337,6 +352,11 @@ class VecStoreLifecycleMixin:
           the cosine, so the numbers would be plausible and wrong rather than
           visibly broken.  Compared against the SCHEMA FILE rather than a
           constant, so the two cannot drift.
+        - **text contract** — vectors measure the text that was embedded, so
+          an index built by an older ``_turn_text_for_embedding`` is stale in
+          the same way a model change makes it stale, and is silently wrong
+          the same way too: nothing about the numbers says the text behind
+          them changed.
 
         A rebuilt table is empty, and the background drainer repopulates it —
         the same path a model switch already takes.  Skips when no embedding
@@ -355,6 +375,13 @@ class VecStoreLifecycleMixin:
         stored_model = row[0] if (row and isinstance(row[0], str)) else ""
         model_identity = self._embedding_model or ""
         schema_metric = self._schema_vec_metric()
+        stored_text = await self._stored_index_text_version()
+        # An index written before this was versioned has no key at all, and
+        # its text predates the current builder — so "absent" is a mismatch,
+        # not an unknown.  Rebuilding an already-empty table costs nothing.
+        text_changed = bool(self._index_text_version) and (
+            stored_text != self._index_text_version
+        )
 
         migrated = False
         for sem in self._semantic_tables:
@@ -377,12 +404,17 @@ class VecStoreLifecycleMixin:
                 self._vec_metric(create_sql) != schema_metric
             )
             table_missing = not create_sql
-            if dim_changed or model_changed or metric_changed or table_missing:
+            if (
+                dim_changed or model_changed or metric_changed or table_missing
+                or text_changed
+            ):
                 logger.info(
-                    "%s_vec_migrate table=%s dim=%s→%s model=%s→%s metric=%s→%s",
+                    "%s_vec_migrate table=%s dim=%s→%s model=%s→%s metric=%s→%s "
+                    "text=%s→%s",
                     self._store_log_key, sem, existing_dim,
                     self._embedding_dim, stored_model, model_identity,
                     self._vec_metric(create_sql), schema_metric,
+                    stored_text or "none", self._index_text_version or "none",
                 )
                 await self._c.execute(f"DROP TABLE IF EXISTS {sem}")
                 migrated = True
@@ -402,6 +434,27 @@ class VecStoreLifecycleMixin:
                 (model_identity,),
             )
             await self._c.commit()
+        # …and the text contract, so the NEXT builder change is detected too.
+        if self._index_text_version and self._index_text_version != stored_text:
+            await self._c.execute(
+                f"INSERT OR REPLACE INTO {self._meta_table} (key, value) "
+                "VALUES ('embedding_text_version', ?)",
+                (self._index_text_version,),
+            )
+            await self._c.commit()
+
+    async def _stored_index_text_version(self) -> str:
+        """The text contract the stored vectors were built from.
+
+        ``""`` means unrecorded — an index written before the builder was
+        versioned.
+        """
+        cursor = await self._c.execute(
+            f"SELECT value FROM {self._meta_table} "
+            "WHERE key = 'embedding_text_version'",
+        )
+        row = await cursor.fetchone()
+        return row[0] if (row and isinstance(row[0], str)) else ""
 
     @staticmethod
     def _vec_metric(create_sql: str) -> str:
@@ -451,6 +504,7 @@ class SessionStore(VecStoreLifecycleMixin):
     _semantic_tables = ("diary_semantic",)
     _meta_table = "diary_meta"
     _schema_dir = Path(__file__).parent
+    _index_text_version = INDEX_TEXT_VERSION
 
     async def _post_schema_check(self) -> None:
         """Audit the diary schema and meta for pre-list leftovers.
@@ -1438,16 +1492,49 @@ def _split_sql(sql_text: str) -> list[str]:
     return sqlparse.split(sql_text)
 
 
-def _turn_text_for_embedding(user_message: str, messages: list[dict]) -> str:
-    """Extract turn text for embedding: user message + assistant + tool results.
+#: Chars of each tool call's arguments kept in the embedded text.  The
+#: *request* is what says what the turn was about (the search string, the URL,
+#: the command); its arguments are unbounded (a file body, a rendered page),
+#: so keeping all of them would let one call own the whole chunk.
+TOOL_ARG_CHARS = 400
 
-    No truncation — the caller checks against the model's token limit
-    and skips embedding entirely if the text is too long.
+def _tool_requests(messages: list[dict]) -> list[str]:
+    """The tool calls a turn made, as ``name arguments`` lines."""
+    lines = []
+    for msg in messages:
+        for call in msg.get("tool_calls") or []:
+            fn = call.get("function") or {}
+            args = (fn.get("arguments") or "")[:TOOL_ARG_CHARS]
+            lines.append(f"{fn.get('name', '')} {args}".strip())
+    return lines
+
+
+def _turn_text_for_embedding(user_message: str, messages: list[dict]) -> str:
+    """Extract the turn's *conversation* for embedding: what was asked, what
+    was done, what was answered.
+
+    Tool **results** are deliberately absent.  Measured on a live session they
+    were 56–99% of a turn's text, so an index built on them describes "an
+    agent ran tools" rather than what the turn was about: every turn then sits
+    inside one narrow cosine band and the recall's similarity cap has nothing
+    to separate a relevant turn from an irrelevant one (a query for news that
+    no earlier turn mentions still scored 0.37 against the tool dumps of a
+    WeChat-login turn — above a 0.35 floor).  The conversation alone separates
+    the same session cleanly: relevant hits 0.46–0.55, irrelevant ≤0.45.
+
+    Nothing is lost to search: the keyword leg (`search_keyword`,
+    `turn_count`) matches the raw ``messages`` column, so an exact term
+    appearing only in tool output is still reachable, and `turn_read` returns
+    the full turn.  What the semantic leg indexes is the *meaning*, which is
+    what the conversation carries and the dumps do not.
+
+    No truncation — the caller checks against the model's token limit and
+    skips embedding entirely if the text is too long.
     """
-    parts = [user_message]
+    parts = [user_message, *_tool_requests(messages)]
     for msg in messages:
         content = msg.get("content", "")
-        if content and msg.get("role") in ("assistant", "tool"):
+        if content and msg.get("role") == "assistant":
             parts.append(content)
     return "\n".join(p for p in parts if p)
 

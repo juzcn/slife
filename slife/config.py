@@ -507,8 +507,9 @@ class Config:
     #: migration.
     rebuild_message: bool = True
     #: Cosine similarity a semantic hit must reach to enter the context.
-    #: Keyword hits are exempt (nothing measured them).
-    recall_min_similarity: float = 0.35
+    #: Keyword hits are exempt (nothing measured them).  Measured against
+    #: the active embedding model — see ``memdb/recall.RecallPolicy``.
+    recall_min_similarity: float = 0.45
     #: Maximum turns in the selection.
     recall_limit: int = 40
     # Per-tool-result char budget for PERMANENT memory (save side).  The live
@@ -1116,7 +1117,7 @@ class Config:
         context_ceiling = agent.get("context_ceiling", 0.8)
         tool_result_ceiling = agent.get("tool_result_ceiling", 0.2)
         rebuild_message = agent.get("rebuild_message", True)
-        recall_min_similarity = agent.get("recall_min_similarity", 0.35)
+        recall_min_similarity = agent.get("recall_min_similarity", 0.45)
         recall_limit = agent.get("recall_limit", 40)
         memory_tool_result_chars = agent.get("memory_tool_result_chars", 8000)
 
