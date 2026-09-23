@@ -473,9 +473,9 @@ class SessionStore(VecStoreLifecycleMixin):
             cols = [r[1] for r in await cursor.fetchall()]
             if "prompt_tokens" in cols and "context_tokens" not in cols:
                 logger.error(
-                    "diary_legacy_column prompt_tokens still present — run "
-                    "`python scripts/migrate_context_tokens.py` to rename to "
-                    "context_tokens (path=%s)", self._db_path,
+                    "diary_legacy_column prompt_tokens still present — this DB "
+                    "predates the context_tokens rename and is NOT migrated; "
+                    "delete and rebuild it (path=%s)", self._db_path,
                 )
             # ``context_turns`` is a diary_meta KEY, not a diary column.
             cursor = await self._c.execute("SELECT COUNT(*) FROM diary")

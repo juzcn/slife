@@ -135,7 +135,7 @@ class TaskStore:
         """Return filtered task records, newest first.
 
         The store's bulk-read surface (the LLM-facing ``a2a_list_tasks`` tool
-        was retired with the push-model rework — see docs/A2A-MQTT.md — but
+        was retired with the push-model rework — see DESIGN.md §8 — but
         the records stay queryable here).
         """
         result = list(self._records.values())

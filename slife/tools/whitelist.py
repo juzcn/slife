@@ -44,7 +44,7 @@ HARNESS_WHITELIST: frozenset[str] = frozenset({
 #: search/load and the unloader.  A "connect" had nothing left to
 #: establish once the modern protocol removed the session, and a server-level
 #: search lost its subject once the server registry went away — see
-#: docs/TOOL-SYSTEM.md.
+#: DESIGN.md §4.
 META_WHITELIST: frozenset[str] = frozenset({
     "mcp_set_enabled",
     "rest_api_set_enabled",

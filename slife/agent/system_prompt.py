@@ -61,7 +61,7 @@ def build_recall_instruction(user_input: str, tool_function: dict) -> str:
     it (``Tool.to_openai_function()["function"]``).
 
     The call sees the system prompt plus this instruction and nothing else —
-    the history is not sent (docs/CONTEXT_HARNESSING.md §7.1).
+    the history is not sent (DESIGN.md §2.3).
     """
     return render_template(
         "rebuild_messages.j2",

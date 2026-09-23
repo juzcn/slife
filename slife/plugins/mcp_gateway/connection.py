@@ -68,8 +68,8 @@ import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/pa
 logger = logging.getLogger(__name__)
 
 # ── Pacing ──────────────────────────────────────────────────────────────
-# Cadence, not per-await budgets, so these stay local (docs/TIMEOUT.md
-# §"What intentionally stays local"): the backoff profile of the one
+# Cadence, not per-await budgets, so these stay local (DESIGN.md §4.7): the
+# backoff profile of the one
 # background job this module has — acquiring a tool list for a server that
 # has none.  It stops the moment a list succeeds; a healthy server is never
 # polled.  Deadlines it needs are the registry's (ready.connect_startup for

@@ -14,7 +14,7 @@ Anything that must stay literal is either covered by the allowlist below or
 carries a ``# noqa-timeout`` comment on the same line (deliberate sync
 subprocess probes, desktop notifications, one-off dep bring-up).
 
-Model rules behind this gate (see docs/TIMEOUT.md):
+Model rules behind this gate (see DESIGN.md §4.7):
   * values live in ``slife/timeouts.py`` — consumers read them at call time
     via ``slife.timeouts.timeouts.<role>.<key>``;
   * the ONLY sanctioned "total" is the tool-call budget (work.tool_budget /

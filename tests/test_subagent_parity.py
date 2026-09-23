@@ -1,6 +1,6 @@
 """The two guards that keep a worker from silently becoming a different agent.
 
-``docs/SUBAGENT.md`` states the model: a subagent runs the *same* loop with the
+``DESIGN.md`` §6 states the model: a subagent runs the *same* loop with the
 same config and tools, minus the harness.  That "minus" is declared in
 ``slife/agent/roles.py`` — and a declaration nothing checks is prose, which is
 how this module's bugs used to arrive: a capability reached the main agent's

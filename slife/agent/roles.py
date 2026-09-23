@@ -1,6 +1,6 @@
 """Who owns what — the harness capabilities, and which of them a role holds.
 
-A subagent is the *same* loop wired to a different harness (``docs/SUBAGENT.md``:
+A subagent is the *same* loop wired to a different harness (``DESIGN.md`` §6:
 "the same agent loop with the same config and tools as the main agent, but
 deliberately stripped of everything that makes the main agent a *harness*").
 The stripping is real; the problem this module exists to fix is where it was

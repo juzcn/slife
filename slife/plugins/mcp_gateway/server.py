@@ -718,7 +718,7 @@ async def __check(ctx: Context | None = None) -> str:
 
     Returns ``{"servers": [...], "spawn_settled": bool}``.  Authoritative for
     server health, and deliberately fact-only — no state word, no level: the
-    harness interprets (DESIGN.md §Health; PLUGIN_CONTRACT.md §Health).
+    harness interprets (DESIGN.md §9.3).
     ``tools_ok`` is the verdict to read: a ``tools/list`` succeeded and its
     result is still held, which is also what makes this server's tools usable
     in the catalog.  ``tools_age_s`` is the age of the list being served and

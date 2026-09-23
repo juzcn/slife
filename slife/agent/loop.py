@@ -640,7 +640,7 @@ class AgentLoop:
         (``rebuild_messages.j2``) — not the conversation, which the selection
         does not need: the answer *overrides* the context, so a turn already
         in it is simply re-selected rather than having to be reported
-        (docs/CONTEXT_HARNESSING.md §7.1).  The instruction quotes the input so
+        (DESIGN.md §2.3).  The instruction quotes the input so
         the model reasons about the input rather than about the conversation it
         is about to rebuild.
 
@@ -1436,7 +1436,7 @@ class AgentLoop:
             approve_requested = bool(actual_args.pop("_approve", False))
 
             # ── Native timeout mapping ───────────────────────────
-            # Precedence (docs/TIMEOUT.md → Tool-execution precedence): the
+            # Precedence (DESIGN.md §4.7): the
             # agent's positive ``timeout`` overrides ALL defaults — it lands
             # in the tool parameter (native) or becomes the wait_for bound
             # (non-native).  Omission → the tool's own registry value (native)
@@ -1597,8 +1597,7 @@ class AgentLoop:
             else:
                 # ── Agent Loop timeout: wrap with asyncio.wait_for ──
                 # ≤0 / missing is never "no timeout" (and never an instant
-                # kill): fall back to the tool-chain default.  docs/TIMEOUT.md →
-                # Tool-execution precedence.
+                # kill): fall back to the tool-chain default.  DESIGN.md §4.7.
                 if inline_timeout is not None and inline_timeout > 0:
                     effective_timeout = inline_timeout
                 else:

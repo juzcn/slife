@@ -646,7 +646,7 @@ class MessageHistoryStore:
 class WorkerHistoryStore(MessageHistoryStore):
     """A worker's histories: one fresh history per task, nothing carried over.
 
-    A subagent's turns are ephemeral by design (``docs/SUBAGENT.md``): each task
+    A subagent's turns are ephemeral by design (``DESIGN.md`` §6): each task
     runs on its own context, seeded — when the parent sent a clone — from the
     parent's history as it stood at spawn.  The seed is read through
     *context_provider* at creation time, so a clone that arrives before the

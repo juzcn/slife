@@ -1,1028 +1,1745 @@
-# Slife Design
+# Slife — Design
 
-> Developer documentation for the Slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md). The **authoritative, exhaustive** treatment of each subsystem lives in a standalone doc — [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) (plugins), [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) (context curation: injection, markers, and the per-turn context rebuild), [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md) (the tool catalog), [TIMEOUT.md](docs/TIMEOUT.md) (timeouts), [SUBAGENT.md](docs/SUBAGENT.md) (workers), [A2A-MQTT.md](docs/A2A-MQTT.md) (the mesh) — and this document **summarizes and links rather than re-derives**: where a section names one of those docs, that doc is the reference and this text keeps only the DESIGN-level shape. Written for people who work on the code; assumes you have read the README.
+> The design of the Slife codebase in one document, for people who will change the code: what each
+> subsystem is, the mechanisms it is built from, and the invariants that must hold. Where this
+> document and the code disagree, the code wins.
+>
+> Two documents sit beside it and are deliberately **not** duplicated here: **[README.md](README.md)**
+> is the user's manual (install, configuration, the tool inventory, keyboard shortcuts);
+> **[DESIGNER_NOTES.md](DESIGNER_NOTES.md)** is the author's own notebook — the philosophy, the
+> trade-offs, the next refactor. Reference-grade detail (column lists, protocol tables, per-tool
+> inventories) lives in the code and is cited rather than copied.
 
 ## Contents
 
-* [How to read this document](#how-to-read-this-document) — the reader's map
-* [Part 1 · Orientation](#part-1--orientation) — what Slife is, the process model, core concepts
-* [Part 2 · The Agent](#part-2--the-agent) — agent loop, context management, harness vs internal tools, system prompt, heartbeat
-* [Part 3 · LLM Backends & Model Management](#part-3--llm-backends--model-management)
-* [Part 4 · The Tool System](#part-4--the-tool-system)
-* [Part 5 · Plugins & the MCP Gateway](#part-5--plugins--the-mcp-gateway) — lifecycle, built-ins, gateway, jobs, subagents
-* [Part 6 · Memory, Search & Embeddings](#part-6--memory-search--embeddings)
-* [Part 7 · A2A — Agent-to-Agent](#part-7--a2a--agent-to-agent-mesh)
-* [Part 8 · UI, Config, Credentials, Health, Logging, Paths](#part-8--ui-config-credentials-health-logging-paths)
-* [Part 9 · Project Structure](#part-9--project-structure)
-* [Appendix A · Design Decisions & Hard-Won Lessons](#appendix-a--design-decisions--hard-won-lessons)
-* [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) — the plugin system: spec, lifecycle, the gateway, health
-* [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) — context curation: channels, markers, the harness tool-pairs, and the per-turn context rebuild (§7)
-* [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md) — the unified tool catalog: tools.yaml sections, tools.db, load/unload threshold, search, injection, MCP reconcile
-* [TIMEOUT.md](docs/TIMEOUT.md) — the timeout registry model (values, ownership, gates)
-* [SUBAGENT.md](docs/SUBAGENT.md) — the agent-worker model: parity, capabilities, the one-turn task
-* [A2A-MQTT.md](docs/A2A-MQTT.md) — the A2A mesh: topics, wire, the `[A2A:…]` envelope, drain schema
-* [License](#license)
+1. [Orientation](#1-orientation) — what Slife is, the principles, the vocabulary
+2. [The agent](#2-the-agent) — the loop, context, recall, prompts, timing, roles
+3. [LLM backends](#3-llm-backends) — the router, the unified stream, the failure contract
+4. [The tool system](#4-the-tool-system) — the ABC, the catalog, load/inject/evict, discovery
+5. [Plugins](#5-plugins) — the spec, the lifecycle, the child contract, the gateway, jobs
+6. [Subagents](#6-subagents) — the agent-worker model
+7. [Memory](#7-memory) — the turns DB, search, embeddings, restore, the file cabinet
+8. [The A2A mesh](#8-the-a2a-mesh)
+9. [Surroundings](#9-surroundings) — UI, config, credentials, health, logging, paths
+10. [Project structure](#10-project-structure)
+- [Appendix A. Invariants](#appendix-a-invariants) — the rules that must not be broken
 
 ---
 
-## How to read this document
-
-The sections are layered — orientation first, then the deep mechanics, then reference/appendices. Pick the lane that matches what you're doing:
-
-| If you are… | Read |
-|---|---|
-| New to the codebase, wanting the map | **Part 1** (orientation + concepts), then skim Part 2 |
-| Working on the agent loop / context / prompts | **Part 2**, + [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) for the per-turn rebuild (§7) |
-| Adding an LLM backend or dealing with wire formats | **Part 3** |
-| Adding or changing a builtin tool | **Part 4** |
-| Working on tool load/unload, the catalog, search, or MCP reconcile | **[TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)** |
-| Writing or debugging a plugin, the MCP gateway, jobs, subagents | **Part 5** + [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) + [SUBAGENT.md](docs/SUBAGENT.md) |
-| Working on memory, search, embeddings, session restore | **Part 6** |
-| Working on the A2A mesh | **Part 7** |
-| Touching the TUI, config, credentials, health, logging, paths | **Part 8** |
-| Looking for a file or module | **Part 9** |
-| Asking "why is it designed this way?" or debugging a hard-to-see regression | **Appendix A** + the relevant part |
-
-**Authority and freshness.** Where this document and a dedicated spec disagree, the dedicated spec and the code win: [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) is the authoritative statement of the plugin system; [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) is the authoritative statement of context curation — injection (channels, markers, the harness tool-pairs) and the per-turn context rebuild that selects the turns (§7) — and the deep companion to Part 2's *Context Injection* and *Context Rebuild* sections; [SUBAGENT.md](docs/SUBAGENT.md) is the authoritative statement of the subagent (agent-worker) model and the deep companion to Part 5's *Subagents* section; [A2A-MQTT.md](docs/A2A-MQTT.md) is the authoritative statement of the A2A mesh (topics, wire, markers, drain — Part 7's deep companion); [TIMEOUT.md](docs/TIMEOUT.md) is the timeout registry model (values, ownership, gates); [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md) is the authoritative statement of the tool catalog and the deep companion to Part 4. This document is kept current with the code; if a sentence names something that no longer exists, file a fix.
-
-**Terminology** is defined where it first matters; a quick glossary of the load-bearing terms (also used in the README):
-
-| Term | Meaning |
-|---|---|
-| **Turn** | One user→assistant exchange, persisted to the diary as one row. Turn is the unit of conversation history, memory, and trimming. |
-| **Recall** | The per-turn selection of history turns that becomes the context (`agent.rebuild_message`): a discriminator call picks the parameters, the memory store answers with turn ids. Not an LLM tool — the harness calls it. Full contract: [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) §7. |
-| **Diary** | The `diary` table in `memdb` — a continuous, time-ordered log of every turn. (Not to be confused with the memfiles **Diary** records that `diary_save` writes.) |
-| **Channel** | The sender identity of a message entering the unified inbox (`human`, `wechat`, `subagent`, `heartbeat`, `system`, `a2a`), persisted with the turn. A marker never determines a channel and vice versa. |
-| **Marker** | Machine-generated notation inside a raw message (`[Heartbeat]`, `[Wechat:…]`, `[A2A:…]`, `[INFO: …]`) telling the model or the TUI something the message text alone doesn't say. |
-| **Harness tool** | A `_`-prefixed, LLM-visible-but-reserved tool the loop auto-invokes — `_turn_prompt` (per turn) and `_check_new_input` (mid-turn message injection at iteration boundaries, cut-in mode). |
-| **Internal tool** | A `__`-prefixed plugin tool that serves the main process, not the LLM — filtered out of the schema before registration. |
-| **Silence contract** | A bare `.` assistant reply is silence, never rendered, from any turn source. |
-| **Plugin** | An independent child process declared by one row in the central plugin spec, speaking the MCP contract to the main process. |
-| **The gateway / mcp-gateway** | The built-in plugin that proxies external MCP servers. Third-party capability enters only as a standard MCP server. |
-
----
-
-## Part 1 · Orientation
+## 1. Orientation
 
 ### What Slife is
 
-A single Textual TUI around a streaming function-calling loop. The LLM picks from a unified tool registry — system tools (builtin + built-in plugins), jobs, and external MCP tools are indistinguishable at the call site (all OpenAI function definitions). Every turn is persisted unconditionally to SQLite; the context the model sees is engineered explicitly (see [Part 2](#part-2--the-agent) and [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)). Plugins — including the MCP gateway to external servers — are independent child processes over Streamable HTTP, declared spec-driven and driven by one uniform lifecycle.
+A Textual TUI around a streaming function-calling loop. The model picks from one unified tool
+registry — builtin tools, built-in plugins' tools, user-written jobs and external MCP tools are
+indistinguishable at the call site, all of them OpenAI function definitions. Every turn is persisted
+unconditionally to SQLite, and the context the model sees each turn is *engineered* (§2.2–2.3)
+rather than accumulated. Capability enters only through standards: every process component is an MCP
+server, and third-party capability is an external MCP server.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  UI (Textual TUI)                                                    │
-│  slife/ui/app.py, chat.py, handler.py, tool_display.py,              │
-│  restore.py, approval_prompt.py, model_picker.py                     │
+│  UI — Textual TUI                              slife/ui/             │
 ├──────────────────────────────────────────────────────────────────────┤
-│  Agent Service                                                       │
-│  slife/agent/service.py — wires client + tools + loop + plugins      │
-│  Unified inbox serializes human + WeChat + MQTT + subagent messages  │
+│  AgentService                                  slife/agent/service.py│
+│  Unified inbox — human · wechat · heartbeat · system · a2a · subagent│
+├───────────────────────────────────┬──────────────────────────────────┤
+│  AgentLoop                        │  MCPClient                       │
+│  streaming function calling       │  Streamable HTTP                 │
+│  context rebuild · trim           │  tool proxy + adapter            │
+├───────────────────────────────────┴──────────────────────────────────┤
+│  ToolRegistry — unified OpenAI function definitions                  │
+│  system (builtin · plugin) · job · external ({server}__{tool})       │
 ├──────────────────────────────────────────────────────────────────────┤
-│  Agent Loop                              │  MCP Client                │
-│  Streaming function-calling              │  Streamable HTTP transport │
-│  Context trim (internal, after save)     │  OAuth device-code flow    │
-│  + _turn_prompt pair; concurrent tools   │  Tool proxy + adapter      │
-│  Thinking support                        │                            │
-├──────────────────────────────────────────┴───────────────────────────┤
-│  Tool Registry — unified OpenAI function definitions                 │
-│  System (builtin · plugin tools) · External MCP ({server}__{tool})   │
+│  Plugins — child processes, each an MCP server over Streamable HTTP  │
+│  mcp-gateway · memdb · memfiles · wechat · sharefile · a2a · media · │
+│  job-coding · local-embed                                            │
 ├──────────────────────────────────────────────────────────────────────┤
-│  Plugins — independent child processes (Streamable HTTP)             │
-│  mcp-gateway · memdb · wechat · a2a (MQTT) · memfiles                │
-│  sharefile · media · job-coding                                      │
-├──────────────────────────────────────────────────────────────────────┤
-│  Platform (slife/platform.py)  │  Config (YAML)  │  Health checks   │
-├──────────────────────────────────────────────────────────────────────┤
-│  Credstore — credential store + AES cryptfile backup                 │
-│  Win · Mac · Linux (keyutils) · WSL (PowerShell)                     │
+│  platform · config · health · logfmt · paths                         │
 └──────────────────────────────────────────────────────────────────────┘
 
-External to the process tree (started/owned by the user):
-  · local-embed daemon   — local GGUF/transformer embeddings at :17347 (like Mosquitto)
-  · Mosquitto (MQTT)     — the A2A transport binding
-  · external MCP servers — stdio / SSE / Streamable HTTP, via the gateway
+Outside the process tree (the user starts and owns these):
+  local-embed daemon · Mosquitto (the A2A binding) · external MCP servers
 ```
 
-Two MCP directions, deliberately uniform: the main process is an **MCP client** to its own child plugins (`client.py` builds on the MCP SDK's `client_session`); the **gateway** plugin is simultaneously an MCP client to external servers and an MCP server to the main process. Slife itself can collapse to a server: `slife/mcp/host_server.py` exposes the live tool registry as an in-process FastMCP — "slife-as-plugin".
+Two MCP directions, deliberately uniform. The main process is an **MCP client** to its own child
+plugins; the **mcp-gateway** plugin is simultaneously an MCP client to external servers and an MCP
+server to the main process. Slife can also collapse to a server: `slife/mcp/host_server.py` exposes
+the live tool registry over MCP ("slife-as-plugin"), which is how a subagent reaches its parent.
 
 ### Design principles
 
-1. **Minimum harness, maximum distance from the model.** Assume a capable model: the prompt and harness are the smallest patch that keeps it effective and safe. No prompt-engineering scaffolding; tools are described by schema, usage lives in descriptions, not instructions.
-2. **One registry, one wire.** Everything is an OpenAI function definition. Backends own their own wire conversion; the loop never branches on which backend generated a chunk.
-3. **The model never runs silently without memory.** Every turn is saved, unconditionally; a broken memory DB is a hard stop, never a limp-along. (See [Part 6](#part-6--memory-search--embeddings).)
-4. **Capability enters through standards.** Plugins are MCP servers; external capability is an external MCP server; nothing is a bespoke plugin API. (*"All are plugins"* — DESIGNER_NOTES §5.1.)
-5. **Determinism where the model is the wrong tool.** Schedules dispatch to subagent workers; deterministic jobs are code-defined functions; the model only delegates, never inlines (see [Job System](#job-system-job-coding) and [Scheduled Tasks](#scheduled-tasks-the-timing-side)).
-6. **Fail-open for what you can't control.** Subordinate dependencies (external servers, tunnels, WeChat login, brokers, embedding daemons) never gate startup; the core is core.
+1. **Minimum harness, maximum distance from the model.** Assume a capable model. The prompt and the
+   harness are the smallest patch that keeps it effective. Tools are described by schema; usage
+   lives in `description`, not in instructions.
+2. **One registry, one wire.** Everything is an OpenAI function definition. A backend owns its own
+   wire conversion; the loop never branches on which backend produced a chunk.
+3. **The model never runs silently without memory.** Every turn is saved unconditionally. A broken
+   memory DB is a hard stop, never a limp-along.
+4. **Capability enters through standards.** Plugins are MCP servers; external capability is an
+   external MCP server. There is no bespoke plugin API.
+5. **Determinism where the model is the wrong tool.** Scheduled tasks dispatch to worker processes;
+   jobs are code-defined functions. The model delegates, it never inlines.
+6. **Fail-open for what you cannot control.** Subordinate dependencies — external servers, tunnels,
+   WeChat login, brokers, embedding daemons — never gate startup. The core is core.
+7. **Use the mature, official package.** Do not reimplement what a maintained library already does;
+   adapt to a new upstream API rather than pinning an old version.
+
+### Vocabulary
+
+| Term | Meaning |
+|---|---|
+| **Turn** | One user→assistant exchange, persisted as one `diary` row. The unit of history, memory and trimming. |
+| **Channel** | The sender identity of an inbox message: `human`, `wechat`, `subagent`, `heartbeat`, `system`, or an A2A peer name. Persisted with the turn; by default not part of the LLM context. |
+| **Marker** | Machine-generated notation inside a raw message (`[Heartbeat]`, `[Schedule …]`, `[A2A:…]`, `[INFO: …]`) telling the model or the TUI what the text alone does not say. |
+| **Recall** | The per-turn selection of history turns that becomes the context. Not an LLM tool — the harness calls it before each turn. |
+| **Harness tool** | A `_`-prefixed, LLM-visible-but-reserved tool the loop auto-invokes: `_turn_prompt`, `_check_new_input`. |
+| **Internal tool** | A `__`-prefixed plugin tool serving the main process, filtered out of the schema before registration. |
+| **Plugin** | A child process declared by one row in the central plugin spec, speaking MCP over Streamable HTTP. |
+| **Worker** | A subagent: a child process running the same loop with a declared, zeroed capability set. |
+| **Silence contract** | A bare `.` assistant reply is silence — never rendered, from any turn source. |
 
 ### Language policy
 
-Two audiences, two languages. The model input reads uniformly in English; the human-facing TUI follows the OS locale.
+**Model input is uniformly English**: the system prompt, harness and plugin tool schemas (names,
+descriptions, parameter docs, result strings), job schemas and result strings, and logs. External
+tools — MCP servers, skills, third-party commands — keep the language of their source; they are
+opaque and pass through untranslated.
 
-**Model input — English (uniform):**
+**The TUI is bilingual (English / Chinese) by OS locale.** Detection happens once at import, from the
+OS itself: `GetUserDefaultUILanguage` on Windows (the C locale does not carry the UI language — an
+English Windows in Spain reports `es_ES`), else `LC_ALL` / `LC_MESSAGES` / `LANG`. `zh*` → Chinese,
+anything else → English, degrading to English on failure. `--lang en|zh` overrides it.
+`slife/ui/i18n.py` is the whole layer: one `t(key, **fmt)` accessor over an `en`/`zh` table, no
+catalogs. A missing key raises rather than rendering blank.
 
-- **System prompt** (`agent.j2` / `subagent.j2` + `slife.j2`, `turn_prompt.j2`): English.
-- **System tool schemas** — a builtin or plugin tool's `name`, `description`, parameter docs, and result strings: English.
-- **Job tool schemas and result strings**: English too (the user authors them, but they are model-visible).
-- **External tools** (MCP servers, skills, third-party commands): keep the language of the external source — do not translate. They are opaque and pass through as-is.
-- **Logs** (session file + console): English — for developers, per the [Logging Convention](#logging-convention).
-
-**TUI — bilingual (English / Chinese), by OS locale:**
-
-- Detected once at import from the OS itself, in stdlib: `GetUserDefaultUILanguage` on Windows (the UI language is not in the C locale — an English Windows in Spain reports `es_ES`), else `LC_ALL` / `LC_MESSAGES` / `LANG`. `zh*` → Chinese, everything else → English, degrading to English on detection failure.
-- `--lang en|zh` overrides detection — `python -m slife --lang zh` forces Chinese regardless of the OS locale (`parse_cli_lang` → `set_language` in `slife.ui.i18n`).
-- The translation layer is `slife/ui/i18n.py` — a single `t(key, **fmt)` accessor over an `en`/`zh` string table. No catalogs, no YAML, no Pydantic.
-- Everything the human reads is localized: system messages (plugin load results, memory health, restore outcomes), the approval prompt, the model picker, the tool-call widget labels, the status bar, thinking blocks.
-- **What stays English regardless of locale:** key caps in the status bar (`Ctrl+C`, `Esc`, `Ctrl+S`, `Home/End`) — translating a key label breaks the key→action scan and mismatches what the user actually presses; and the `notify_user` / OAuth notification *body* — that is LLM- or system-supplied text, not Slife-authored chrome.
-- Tests pin the language to `en` via an autouse fixture in `conftest.py`, so the suite's English assertions hold regardless of the dev machine's locale.
-
-### Context injection — a preview of the taxonomy
-
-The system introduces information into the context on its own initiative via three orthogonal notions, distinguished by *what* is injected and *whether it persists*: **channels** (the sender identity, by default not part of the LLM context), **markers** (machine-generated notation an injection carries), and a **harness tool-pair** (`_turn_prompt` / `_check_new_input`). Orthogonal to all three is the **per-turn context rebuild**, which injects nothing and decorates nothing — it selects which turns exist in the context at all (see *Context Rebuild* below). Each mechanism — the channel table with per-channel TUI display, the marker shapes, the harness pair, the decorations appended to existing messages, and the rebuild's discriminator and selection — is bound precisely in **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md)**; the load-bearing terms are in the glossary above.
+Key caps in the status bar (`Ctrl+C`, `Esc`, …) and notification *bodies* stay English regardless of
+locale — translating a key label breaks the key→action scan, and a notification body is LLM- or
+system-supplied text rather than Slife chrome. Tests pin the language to `en`.
 
 ---
 
-## Part 2 · The Agent
+## 2. The agent
 
-### Agent Loop
+### 2.1 The turn loop
 
-Single function-calling loop. Every tool is registered as an OpenAI function definition in one `ToolRegistry`. The LLM decides what to call and when.
-
-```
-User Input → per-turn context rebuild (recall selects the history; see Context Rebuild)
-  → MessageHistory.add_user_message()                    (secrets sanitized)
-  → loop (max_iterations):
-    → cancel check
-    → auto-invoke _turn_prompt (per-turn prompt)    (usage computed once)
-    → LLM stream → thinking/text/tool deltas → handler callbacks
-    → tool calls? → ToolRegistry.execute() concurrently (asyncio.gather)
-                    → sanitize_secrets() on each result → truncate → loop
-    → `_approve: true` on a call? → serialized ApprovalPrompt before execution
-    → no tool calls? → response text → return
-    → save turn to diary (unconditional — even on cancel/error/max-iterations)
-    → trim after save (internal, real usage)        (see Context Window Management)
-```
-
-- **Streaming**: thinking and text tokens delivered in real time via `AgentEventHandler` callbacks.
-- **Tool accumulation**: tool-call deltas accumulated across chunks, executed as a batch.
-- **Concurrent execution**: all calls in a batch run via `asyncio.gather`; approval dialogs serialize behind a lock.
-- **Tool timeout**: single enforcement point — `asyncio.wait_for()` wraps every call (default = the developer-owned registry's `work.tool_budget`, 120 s; the `agent.tool_timeout` user key is no longer read) as a **fallback** only — the LLM passes a per-call `_timeout`, and tools with a native `timeout` parameter (`execute_shell`, `subagent_send_task`) receive it directly instead of a double wrap. A bare `timeout` argument on a tool whose schema has none is also consumed and enforced (LLMs routinely append one), exactly like `_timeout`. **The agent's timeout overrides ALL defaults** — the tool's own run timeout is only a generously-sized backstop, so it never preempts the effective value (docs/TIMEOUT.md → *Tool-execution precedence*). `≤0` never means "no timeout": it falls back to the default.
-- **Background execution**: per-call `_async: true` schedules the tool as a background task and returns a task id immediately; poll with `check_async`, cancel with `cancel_async`. The async runner **sanitizes at storage time** (secrets are scrubbed the moment the task finishes, not when polled), and a **failed** async task surfaces with the `Error:` prefix — the same `is_error` contract as a synchronous call. Results are pruned past a bound (`_MAX_ASYNC_TASKS = 100`), so a very old poll can answer "Task not found".
-- **Iteration limit**: `max_iterations` (default 30) prevents infinite loops; **0 = unlimited**. The cap is checked **live each iteration** (not fixed at `run()` start), so a mid-turn `set_max_iterations` applies **immediately** to the running turn and to the next. Hitting the cap returns a cancelled result and notifies the handler via `on_max_iterations` — the TUI shows `✗ Agent exceeded maximum of N iterations`.
-- **Cancellation**: `Esc` sets a cancel event; checked before each iteration, after each stream, and before each tool batch.
-- **LLM stream failure contract (one contract, every source)**: transient transport failures — `httpx.TransportError`, the SDKs' `*APIConnectionError` / `*APITimeoutError`, and the loop's own `StreamStallError` (below) — are retried by `_process_stream` with bounded linear backoff (registry `stream.retries` = 2 ⇒ 3 attempts at `stream.retry_base_delay` × attempt), so the main agent, heartbeat, WeChat and A2A share a single resilience contract — subagents deliberately do **not**: they run `stream_max_retries=0` (fail-fast, no user to wait on), so a worker surfaces every stream error as an `Error:` result instead of retrying (see *Part 5 · Subagents* / [SUBAGENT.md](docs/SUBAGENT.md)). Bad-request / content-filter / auth errors are **not** retried here (SDK + inbox concern). Exhaustion raises `RuntimeError("LLM stream failed after N attempts: …")` with a **non-empty** detail (`str(e) or type(e).__name__`). The history is kept intact on transient failures; only content-policy / bad-request errors roll back.
-- **Stall watchdog (`stream_stall_timeout`)**: `_consume_stream` wraps every `anext()` in an `asyncio.timeout` that **resets on each chunk** — a provider that answers `200 OK` and then sends nothing (Bailian did exactly this: zero bytes for ~7 min before dropping the connection) is cut after the registry's `work.stall` (120 s) with `StreamStallError`, which the retry ladder handles like any other transient failure. A slow-but-live generation is never cut — this is an *inactivity* timer, not a *total* one (the "timer at the owner, no total" rule). The separate opt-in `stream_timeout` remains a **total** per-call cap (subagents inherit the registry's `work.task_budget`).
-- **Turn consistency**: one function — `MessageHistory._ensure_turn_consistent()` — enforces two idempotent invariants before a history is persisted (and again on load), so it is always well-formed when it next reaches the wire:
-  1. **No orphaned tool_calls** — an assistant `tool_call` whose result never arrived (an interrupted turn) gets a synthetic `(Tool execution interrupted)` result right after it.
-  2. **Alternating roles** — a history ending on a `user`/`tool` message (a tool result is a `user` role on the Anthropic wire, which rejects two consecutive users with a 400) gets a closing assistant message (`"(Turn interrupted)"`).
-  It has exactly **two call sites**: `save_to_memory` (before persisting — the save-side guarantee, which runs unconditionally after every turn) and `restore_session` (after loading — the load-side guarantee).
-- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (the last API call's actual prompt + completion tokens — the exact token count of the persisted history as the next request would re-send it — else the restore-time value primed on `_last_usage` — the latest restored turn's persisted `context_tokens` — else `0`). It drives `_turn_prompt`, the trim decision, and the TUI status bar — one value, no recompute. **It never substitutes an estimate**: a context that has not been sent has no real count, and reporting a guess as occupancy is worse than reporting zero, so `0` (honestly unknown) is the floor. Estimates appear in exactly one place — sizing a recall selection that has not been built yet (`estimate_turn_tokens`, see *Context Rebuild*) — and are never presented as usage. Usage is tracked **per history** (`_usage_by_history`, keyed by `id()`), which matters because a history is not always the main one: the main agent has exactly ONE shared context — every channel (human, WeChat, heartbeat, A2A, subagent completion) writes into it — while a worker process gets a fresh one-shot history per task, so a worker's tiny task context never drags down anything else.
-
-### Context Window Management
-
-Active history stays within `context_floor`–`context_ceiling` (default 20%–80% of `context_window`):
+One function-calling loop. Every tool is registered as an OpenAI function definition in a single
+`ToolRegistry`; the model decides what to call and when. `AgentLoop.run` (`slife/agent/loop.py`)
+drives the cycle, and `Inbox` (`slife/agent/inbox.py`) drives `run` once per queued message.
 
 ```
-                context_window
-┌──────────────────────────────────────────────────────────────┐
-│   trimmed (in diary —        │  current context  │  headroom  │
-│   recall via turn_recall)  │  floor ~ ceiling  │  1-ceiling │
-└──────────────────────────────────────────────────────────────┘
+message posted to the inbox
+  → per-turn context rebuild (recall selects the history — §2.3)
+  → add_user_message()                            (secrets sanitized at this gate)
+  → iteration loop:
+      cancel check · cut-in check · refresh the injected tool snapshot
+      → LLM stream → thinking / text / tool deltas → handler callbacks
+      → tool calls? → execute the batch concurrently → continue
+      → no tool calls? → return the reply text
+  → save the turn to the diary (unconditional — cancel, error, max-iterations alike)
+  → trim the context if it is over the ceiling         (§2.2)
 ```
 
-- **Detect**: usage is `context_tokens_for()` — the history's last API call's actual prompt + completion tokens after the first round (per-history), else the restore-time `_last_usage` (the latest restored turn's **persisted `context_tokens`**), else `0`. No estimate is ever substituted (see *Context tracking*).
-- **Trim**: happens **after a turn is saved** (`save_to_memory` → `AgentLoop._trim_after_save`) — by then the last API call's real prompt + completion tokens are known. When occupancy hits `context_ceiling` (default 80%), `extract_oldest_turns` removes the oldest **complete** turns down to `context_window × context_floor` (default 20%), always keeping the current (just-saved) turn. It is an **internal mechanism — no tool call, no LLM-visible pair**: the cut is marked with a runtime-only **`[INFO: N oldest turns have been removed from context]`** note appended to the last assistant message, mirrored in the live TUI as a dim/italic footnote. The evicted turns are then dropped from the persisted live-context list (via the memdb internal tool `__memory_context_turns_drop`, passed the **actual ids** the trim removed — each turn carries its diary rowid as a runtime-only `_turn_id` on its opening user message, set at save and re-stamped on restore), and the tracked "Context covers" time range advances by the same count. A freshly-restored history is exempt from the first-turn trim (`_just_restored_history`).
-- **Turn prompt**: once per turn the loop auto-invokes **`_turn_prompt`** (a normal tool-call pair) — it renders `turn_prompt.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), any A2A peer presence events since the last turn (drained read-once), open failed/missed scheduled runs, and the one-shot "system restarted" flag. On the first round after a restore, `context_tokens_for` falls back to `_last_usage`, primed with the latest restored turn's persisted `context_tokens` — so the first prompt reports the real exit-time occupancy.
-- **Restore**: what startup replays is the persisted **live-context id list**, verbatim and with no ceiling re-slicing. The mechanism — where the list lives and why its order is the contract, its three maintainers, the absent token cap, and what a DB predating the list does — is *Session Restore* (Part 6), stated once, there.
-#### Context Rebuild (per-turn recall)
+- **Streaming.** Thinking and text tokens are delivered in real time through `AgentEventHandler`
+  callbacks. Tool-call deltas accumulate across chunks and execute as one batch via `asyncio.gather`;
+  approval dialogs serialize behind a lock.
+- **Iteration limit.** `agent.max_iterations` (default 30; **0 = unlimited**) is checked live each
+  iteration, so a mid-turn `set_max_iterations` applies immediately. Hitting it returns a cancelled
+  result and notifies the handler.
+- **Cancellation.** `Esc` sets a cancel event, checked before each iteration, after each stream, and
+  before each tool batch.
+- **Background execution.** A per-call `_async: true` schedules the tool as a background task and
+  returns a task id; poll with `check_async`, cancel with `cancel_async`. The runner sanitizes
+  secrets **at storage time**, and a failed async task surfaces with the `Error:` prefix — the same
+  contract as a synchronous call. Results are pruned past a bound, so a very old poll can answer
+  "Task not found".
+- **Turn consistency.** `MessageHistory._ensure_turn_consistent()` enforces two idempotent
+  invariants before a history is persisted and again on load: **no orphaned tool_calls** (an
+  interrupted turn's call gets a synthetic result) and **alternating roles** (a history ending on
+  `user`/`tool` gets a closing assistant message). Two call sites only: `save_to_memory` and
+  `restore_session`.
+- **The one rollback.** `pop_last_turn()` removes the last user message and everything after it. It
+  is called from exactly one place — the inbox, on a **400-class rejection** — and suppresses the
+  save. Transient failures, 5xx, rate limits and 401/403 do **not** roll back: the turn is valid, so
+  the history keeps it and a later turn can complete it.
 
-`agent.rebuild_message` (default **true**) makes the context **selected**
-rather than accumulated: before every turn the harness asks the memory store
-which turns that turn needs, and replaces the context with the answer. With
-the flag false the previous behaviour runs instead — the context grows
-append-only and the trim bounds it — and one persisted live-context list plus
-one save-append path serve both, so the flag flips freely with no migration.
+### 2.2 Context window management
+
+Active history is kept between `context_floor` and `context_ceiling` (defaults 20% and 80% of the
+model's `context_window`).
+
+**Usage is measured, never estimated.** `context_tokens_for()` is the single source for the current
+context size, resolution order: the history's last API call's actual prompt + completion tokens →
+the restore-time value primed from the latest restored turn's persisted `context_tokens` → `0`. It
+drives the per-turn prompt, the trim decision and the status bar. Estimates appear in exactly one
+place — sizing a recall selection that has not been built yet — and are never presented as usage.
+Usage is tracked **per history**, because the main agent has one shared context that every channel
+writes into while a worker gets a fresh one-shot history per task.
+
+- **Trim** happens *after* a turn is saved, by which point the last API call's real usage is known.
+  At the ceiling, `extract_oldest_turns` removes the oldest **complete** turns down to the floor,
+  always keeping the current turn. It is internal — no tool call, no LLM-visible pair. The cut is
+  announced by a runtime-only `[INFO: N oldest turns have been removed from context]` note appended
+  to the last assistant message and mirrored in the TUI; the evicted ids are dropped from the
+  persisted live-context list (§7.4) and the tracked "Context covers" range advances by the same
+  count. A freshly restored history is exempt from the first-turn trim.
+- **There is no summarization of evicted context.** Old turns leave the *context*; they stay in the
+  diary forever. Recall is the only way to bring one back.
+- **Tool result cap (a hard limit).** One tool result is truncated at `tool_result_ceiling ×
+  context_window × 3` characters (default 20% of the window), with an explicit marker inside the
+  output. Generous enough that a large-but-real file read is never truncated; it caps only outputs
+  that could not fit the window at all.
+- **Permanent-memory compaction.** At save, any tool result over `memory_tool_result_chars` (default
+  8000) is persisted as a head+tail digest naming the original size and the tool to re-run. The live
+  history keeps the full result — compaction affects only the persisted copy.
+- **Truncation is announced inside the tool output**, never in the system prompt, so the model knows
+  re-running retrieves the full version.
+
+**Token counting is real BPE, not a heuristic.** `estimate_text_tokens` uses `tiktoken`
+(`o200k_base`), and the whole estimator family — `count_tokens`, `extract_oldest_turns`, the trim's
+stop condition, the recall budget — shares that one implementation so they cannot disagree. The
+vocabulary is provisioned at install time and pinned via `TIKTOKEN_CACHE_DIR`, because tiktoken
+fetches it over HTTP **with no timeout**: an unreachable fetch hangs the agent rather than failing.
+Slife refuses to start on a missing or partial vocabulary rather than mis-count silently.
+
+### 2.3 Recall — the context is selected
+
+`agent.rebuild_message` (default **true**) makes the context **selected** rather than accumulated:
+before every turn the harness asks the memory store which turns this turn needs, and replaces the
+context with the answer.
 
 ```
 run()
   ├─ recall step — once per turn, BEFORE the user message is added
   │    ├─ discriminator → recall parameters   (one model call; never persisted)
   │    ├─ __memory_turn_recall(…) → turn ids, [] or None
-  │    ├─ None / unfetchable → keep the existing context, log, continue
+  │    ├─ None / unfetchable / {} → keep the existing context, continue
   │    ├─ __memory_context_turns_set(ids) | __memory_context_turns_clear()
   │    └─ history.rebuild_messages(turns, images_by_turn=…)
-  ├─ add_user_message · attach_image · _turn_prompt        (unchanged)
+  ├─ add_user_message · attach_image · _turn_prompt
   └─ iteration loop
         └─ save_to_memory → the new rowid is appended to the persisted list
 ```
 
-The step sits **before** `add_user_message` deliberately: the rebuild replaces
-`messages` wholesale, so anything appended first — the user message, the
-`attach_image` blocks (memory-only, unrecoverable) — would be destroyed. It also
-stays outside the iteration loop, whose per-iteration work belongs to the turn
-in progress.
+The step sits **before** `add_user_message` because the rebuild replaces the message list wholesale,
+so anything appended first — the user message, the `attach_image` blocks — would be destroyed. It
+also stays outside the iteration loop. With the flag **false** the context grows append-only and the
+trim bounds it; one persisted list and one save-append path serve both modes, so the flag flips with
+no migration. What the flag never changes is the ceiling.
 
-DESIGN-level shape of the contract:
+**The discriminator.** `_discriminate_recall` makes exactly one model call per turn. It is not in the
+conversation and nothing it says is ever shown.
 
-- **The selection overrides, it does not merge** — so an empty selection is an
-  empty context. Four things leave the context untouched instead: an empty
-  reply (`{}` — no recall needed, the store is not even asked), no reply at
-  all, "the store could not be asked" (`None`), and a selection that cannot be
-  fetched. A rejected time bound, an unparseable query, or a pipeline failure
-  is answered as an empty selection; a **store or tokenizer failure is
-  fatal**, never a plausible-looking empty list.
-- **The discriminator is never a participant**: one model call, nothing it
-  sends or receives touches the history, the diary or the TUI, and it degrades
-  to `None` rather than retrying.
-- **Workers never rebuild** (a subagent's history is one-shot, so recall has
-  nothing to select from); **images** are re-attached from a session-scoped
-  bounded map; the **TUI** announces every rebuild — `↻ N turns recalled,
-  context's messages rebuilt`, or `↻ no turn recalled — context's messages
-  cleared`.
-- **The ceiling is untouched by the mode**: `_trim_after_save` bounds the
-  window in both (see *Context Window Management*).
+- **Sent**: the system prompt (copied, never re-rendered) plus one user message —
+  `rebuild_messages.j2`, which quotes the current input and states `turn_recall`'s **own tool
+  schema**, read out of the registry, so it is asked for exactly the parameters the tool takes in
+  the tool's own words. With no `turn_recall` in the registry there is no call at all: the schema
+  *is* the instruction.
+- **Not sent**: the history. Nothing in the selection needs it, and sending it would make a pre-turn
+  call the size of the context. (Narrower than the original design note, which wanted coreference
+  against the current context; that motivation is not served today. A deliberate, revisitable
+  choice.)
+- **It never persists and never streams** — nothing it sends or receives touches the history, the
+  diary or the TUI.
+- **It degrades, it does not retry.** A timeout, a provider failure, or a reply that is not the
+  requested JSON object all return `None`. Retrying would double the pre-turn latency of a call
+  whose fallback — keep the context — is perfectly good.
 
-The **full contract** — the discriminator's request shape and what each reply
-means, the three caps (`recall_limit` / `recall_min_similarity` /
-`context_floor`), the store's answer, and the `set`/`clear` persistence pair —
-is **[CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) §7**.
+**What a reply means.** A mode the instruction does not name is unreachable, however good the model
+is:
 
-**Token estimation is measured, not guessed.** `estimate_text_tokens` uses
-`tiktoken` (`o200k_base`), and the whole estimator family — `count_tokens`,
-`extract_turns` / `extract_oldest_turns`, the trim's stop condition, the recall
-budget — shares that one implementation, so they can never disagree. It replaced
-a per-script character heuristic (CJK ≈ 1 token/char, Latin ≈ 3 chars/token)
-that over-counted real text by **40–60%**, which made the trim evict more than
-it needed to. Two consequences: the trim now compacts to a more accurate point,
-and the same nominal budget buys materially more real conversation. The
-vocabulary is provisioned at install time (see README) and pinned via
-`TIKTOKEN_CACHE_DIR`, because tiktoken fetches it over HTTP **with no timeout** —
-an unreachable or throttled fetch hangs the agent rather than failing, and a
-truncated file would be read as a valid vocabulary. Slife refuses to start on a
-missing or partial vocabulary rather than mis-count silently.
+| Reply | Meaning |
+|---|---|
+| `{}` | **no recall needed** — the context in hand is enough. The store is not asked and the context is not touched. |
+| `since` / `until` alone | **time-only**: the turns in that range, ranked by nothing but time — no similarity cap, because there is no query to measure against. |
+| `query` alone | hybrid search over the whole diary, no time filter. |
+| `query` + a range | the same hybrid search, both legs windowed. |
 
-- **Tool result cap (HARD constraint)**: a single tool result is truncated at `tool_result_ceiling × context_window × 3` characters (default 20% of the window; ~3 chars/token heuristic) with an explicit truncation marker in the output. This is the deliberate window-safety limit — generous enough that a large-but-real file read is never truncated; only pathological outputs that could not fit the window at all are capped.
-- **Permanent-memory compaction**: the diary does **not** hoard reproducible tool output. At `save_to_memory`, any tool result exceeding `memory_tool_result_chars` (default 8000) is stored as a head+tail digest with an explicit marker — original size plus which tool to re-run (`… [compacted at save: original N chars — full output retrievable by re-running <tool>]`). Small results are stored as-is. The live history keeps the full result — compaction only affects the persisted copy.
-- **Truncation is announced in the tool output itself** (not the system prompt): both the live cap and the save-side compaction append a marker inside the result telling the model it was truncated and that re-running the tool retrieves the full version.
+An empty object is a *decision*, not a default: read as "give me the most recent turns" it would
+silently replace the context the discriminator just judged sufficient. An empty-query branch must run
+**before** the hybrid legs — they cannot express "no query": an empty query reaches FTS5 as
+`MATCH ''` (an error) and embeds to noise.
 
-### Harness vs Internal Tools — a naming distinction
+**The selection — one fusion, three caps, one order.** The hybrid legs are FTS5 (with a LIKE
+fallback for CJK, which FTS5's `unicode61` cannot segment) and sqlite-vec KNN, fused by reciprocal
+rank fusion (`k=60`). The caps are `agent.recall_limit` (40 turns), `agent.recall_min_similarity`
+(0.35), and `context_floor` (20% of the window, the selection's estimated size). The similarity cap
+gates the **measured** `similarity`, never the fused `rrf_score` — a fused score is a function of
+rank position and carries no magnitude to threshold. Keyword-leg hits have no measured similarity and
+are **exempt**: an exact match is a stronger signal than a cosine neighbourhood, and "no number" is
+not evidence against it. The caps are recall's own configuration, never the discriminator's
+arguments — it chooses *what to look for*, never how much of it to take, which is why they are
+absent from the schema it fills in.
 
-Two distinct concepts live under different prefixes. They are **not** two tiers of the same thing:
+**Order is chronological even though membership is by relevance**, because the list order is the
+restore contract: a rebuilt turn must render byte-identically to the same turn restored. Both paths
+share one builder (`messages_from_turns`) — a difference would cost a prompt-cache miss every turn.
+**The selection overrides; it does not merge** — there is no incumbent to defend and no need to
+exclude turns already in context.
 
-1. **`_` (single underscore) = harness, LLM-visible but reserved.** Harness tools are invoked by the agent loop *on the agent's behalf* — the LLM does not decide to call them. There are two, both builtin (`slife/tools/models.py`): `_turn_prompt`, injected once per turn, and `_check_new_input`, injected at iteration boundaries when cut-in mode is on. `AgentLoop._auto_invoke()` injects each as a normal `assistant(tool_calls)` + `tool` pair. They **do** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept their tool-call pairs in history — and the system prompt tells the model to *read the latest result* rather than call them (an implicit don't-call; both are side-effect free if invoked anyway). Context trimming is **not** a tool. Note: `attach_image` is auto-invoked the same way and sits in `HARNESS_WHITELIST` beside the pair, but it has no `_` prefix and is not schema-reserved, so it is not a harness tool. The per-turn contract of both harness pairs is [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) §4.
-2. **`__` (double underscore) = plugin internal tool, LLM-invisible.** This is a **plugin-spec marker**, not a harness concept. Plugin internal tools (`__memory_save_turn`, `__a2a_drain_incoming`, `__mcp_call_tool`, `__check`, …) are ordinary MCP tools that happen to serve the main process rather than the LLM. They are filtered out of the schema before registration (`is_internal_tool` in `slife/server_utils.py`, applied on every registration and reconcile path) and are called programmatically via `client.call_tool("__…")`.
+**The store's answer is ids, or nothing, but never an error.** `turn_recall` returns one row per turn
+— what identifies it and how well it matched, never the stored messages. Everything that is not a
+fatal environment failure is answered as an **empty selection**: a time bound the grammar rejects, a
+query the store cannot parse, an unexpected pipeline failure. The caller's only safe reading of
+"error" would be *keep the context you have*, which would license exactly the wipe an empty
+selection performs deliberately. Two things are **fatal** instead — a store failure and an unusable
+tokenizer, since every row's cost and so the budget come from it — and both reach the harness as a
+tool *error*, which keeps the context.
 
-| Tool | Shape | Category |
-|------|-------|----------|
-| `_turn_prompt` | Builtin tool, auto-invoked each turn | Harness — visible-but-reserved |
-| `_check_new_input` | Builtin tool, auto-invoked at iteration boundaries (cut-in mode) | Harness — visible-but-reserved |
-| `__memory_save_turn` / `__memory_reload_semantic` / `__memory_context_turns_set` / `__memory_context_turns_drop` / `__memory_context_turns_clear` / `__memory_turn_recall` / `__memory_turns_by_ids` / `__check` | memdb plugin | Internal — invisible |
-| `__wechat_drain_incoming` / `__check` | wechat plugin | Internal — invisible |
-| `__scheduled_*` (10) / `__memfiles_reload_semantic` / `__user_pref_append` / `__check` | memfiles plugin | Internal — invisible |
-| `__a2a_drain_incoming` / `__a2a_dispatch_result` / `__check` | a2a plugin | Internal — invisible |
-| `__check` / `__mcp_call_tool` | mcp-gateway plugin | Internal — invisible |
-| `__check` / `__register_file` | sharefile plugin | Internal — invisible |
-| `__check` | media plugin | Internal — invisible |
-| `__set_mcp_gateway_port` / `__check` | job-coding plugin | Internal — invisible |
+**What the selection does to the context.** It replaces it, built from the stored rows by the same
+builder restore uses. An empty selection is an empty context, and the persisted list is emptied with
+it. Four things leave the context untouched instead: the discriminator answered `{}`; no reply came
+back; the store returned `None`; or the selected turns cannot be fetched. Nothing was learned about
+what the turn needs, so a guess is not an improvement on what is already there.
 
-### System Prompt
+**Workers never rebuild** — a worker's history is one-shot per task, so there is nothing to select
+from. The role decides this, not the config.
 
-The system prompt splits **identity** from **world** so each role reads one coherent document:
+### 2.4 The system prompt
 
-- **Identity** — `slife/agent/templates/agent.j2` (main agent) / `subagent.j2` (worker): who the agent is. Role framing only — heartbeat/persistence ownership for the main agent, ephemeral/send-only constraints for a worker. The only part that carries persona.
-- **World** — `slife/agent/templates/slife.j2`, `{% include 'slife.j2' %}` by both identity templates: the runtime spec — context policy (floor/ceiling/tool-result %, the meta-parameter contract), host platform (OS, arch, shell, python), workspace paths (data/config/logs/db/skills), annotation/marker expectations, the credential resolution chain, MCP tool naming prefix, skills & jobs, subagents, and A2A broker info when configured. Byte-identical in both roles.
-- **Dynamic** — `turn_prompt.j2`, rendered by the `_turn_prompt` tool (auto-invoked once per turn): current time + UTC offset and context usage % always; context time range when set; model/CWD/shell/modalities only when changed; pending A2A peer presence events; open failed/missed scheduled runs (the "backfill or skip?" list); the one-shot "system restarted" flag.
+The prompt splits **identity** from **world** so each role reads one coherent document:
 
-Identity + world are rendered once at startup and never change → maximal prompt cache hit rate.
+- **Identity** — `agent.j2` (main agent) / `subagent.j2` (worker): who the agent is. Role framing
+  only; the one part that carries persona.
+- **World** — `slife.j2`, `{% include %}`d by both: the runtime spec — context policy, host
+  platform, workspace paths, marker expectations, the credential chain, tool naming, skills, jobs,
+  subagents, and A2A info when configured. **Byte-identical in both roles.**
+- **Dynamic** — `turn_prompt.j2`, rendered by the `_turn_prompt` tool once per turn (§2.5).
 
-Design principles:
-1. **World spec is project-specific facts only** — if the LLM can infer it from tool schemas or training data, it doesn't belong.
-2. **Tool schemas over prompts** — usage instructions live in function `description`/`parameters` (see [Schema Authoring](#schema-authoring)).
-3. **No personality in the world spec** — role identity lives in the identity templates.
-4. **No slash commands** — natural language only; the LLM interprets intent.
-5. **Static baseline + change notifications** — constants at startup, deltas per-turn.
+Identity + world are rendered once at startup and never change, so the static prefix of every request
+stays byte-identical and the prompt-cache breakpoint lands on it. That is the whole reason the
+per-turn status is a **message-stream tool pair** rather than a second system message.
 
-The system prompt additionally forbids nothing by list — it relies on scaffolding, not prohibitions: `_`, `__`, and the meta-parameters are each explained once, structurally, so the model reads the mechanism rather than a denylist.
+Two derived rules: the world spec carries **project-specific facts only** — anything the model can
+infer from tool schemas or training data does not belong; and the prompt **forbids nothing by list**.
+`_`, `__` and the meta-parameters are each explained once, structurally, so the model reads the
+mechanism rather than a denylist.
 
-### Autonomous Heartbeat
+### 2.5 Channels, markers and harness tool-pairs
 
-The agent is otherwise purely user-driven. A heartbeat gives it a periodic **autonomous window** (a precondition for emergent self-initiated behavior): while idle, every `agent.heartbeat_interval` seconds (default 1800, in code and in the shipped template) the service posts a `[Heartbeat]` message to the inbox, which runs as a **normal agent-loop turn** (own history via the heartbeat source, saved to the diary like any turn).
+Three orthogonal notions describe how Slife introduces information on its own initiative: a
+**channel** (the sender identity of an inbox message — recoverable from the message alone, persisted
+with the turn, by default **not** part of the LLM context), a **marker** (machine-generated notation
+inside a raw message, telling the model or the TUI what the text alone does not say), and a **harness
+tool-pair** (a reserved `_`-prefixed tool the loop auto-invokes, contributing an assistant
+`tool_call` plus its result to the history).
 
-- **Reply contract** (also in the system prompt): real content if the agent has something worth proactively saying, otherwise exactly `.` — never empty, satisfying the user→assistant role alternation.
-- **TUI filtering** (live + restore): heartbeat turns are recognised by the `[Heartbeat]` mark and filtered — the trigger is never shown, and a real reply renders as `⚡ 自主` (the TUI's zh-locale "autonomous" label). More generally, a bare `.` reply is **silence** from any event. The status bar shows the last beat (`●` act / `·` quiet).
-- **Main agent only**: subagents never start the heartbeat loop — they are task-driven workers.
-- The heartbeat history is separate (source `heartbeat`), so autonomous reflections persist without polluting the human history.
-- The marker vocabulary and the silence contract (`.` = silence from any source) are [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md).
+**A marker never determines a channel and a channel never forces a marker.** A scheduled task is the
+canonical example: its trigger is a `[Schedule <name>]` marker riding the **system** channel, and its
+completion arrives on the **subagent** channel carrying no `[Schedule …]` marker at all.
 
-### Scheduled Tasks (the timing side)
+| Channel | Sender | Typical marker | TUI |
+|---|---|---|---|
+| `human` | the keyboard operator | — | `You> ` |
+| `wechat` | WeChat peer | `[Wechat:json]` | `Wechat> ` |
+| `subagent` | local worker completion | `[Subagent:{"subagent_name", "task_id"}]` | `Subagent(<name>)> ` |
+| `heartbeat` | Slife — the periodic autonomous window | `[Heartbeat]` | trigger hidden; reply as `⚡ 自主` |
+| `system` | Slife — schedule / timer triggers | `[Schedule <name>]`, `[Timer]` | trigger hidden |
+| `a2a` | a mesh peer | `[A2A:json]` | `A2A(<peer>)> ` |
 
-Recurring tasks the agent runs on a cron schedule, designed as three separated concerns — **timing** (a thin main-process loop), **execution** (a subagent worker), and **record** (the memfiles DB):
+The **system** channel is never user input, and its turns are filtered from the TUI by both the
+channel and the marker text. Classification helpers match on the prefix so live rendering and session
+restore agree. Two `[INFO: …]` footnotes decorate messages that already exist rather than injecting a
+turn: the **turn footnote**, appended to a user message after the turn saves so the next call can
+reference the turn by id, and the **trim note** of §2.2. Both are runtime-only.
 
-- **Timing — `schedule_loop` (`slife/agent/schedules.py`).** Main-agent-only, started alongside the heartbeat. Every 30 s it recomputes each enabled task's next fire **from the DB, not from memory**: the anchor is the newest `due_at` across all of a task's runs (a fire is never re-detected), falling back to `created_at`. Cron parsing uses `croniter` (`slife/schedules.py` is a thin wrapper). The loop **fires only**: against a short grace window (120 s), a fire due within it is fired; anything older means slife was down (the startup sweep's concern). An in-memory pending-fire guard keeps the poll from re-firing mid-turn.
-- **Trigger → execution.** The loop injects a `[Schedule <name>]` trigger under the **system channel**; the run is recorded when the agent dispatches, not at fire time. The agent handles the trigger by delegating: `run_schedule_now` — the single dispatch tool, also used to backfill — records a `scheduled_runs` row (`pending`), spawns/reuses the subagent named after the task, and sends it a deterministic task text via `subagent_send_task_async` instructing it to call `report_save` and notify the user. Completion rides the existing subagent auto-push back to the main agent, which reports the task as finished (reworded to hide the subagent).
-- **Record.** `scheduled_tasks` (definition), `scheduled_runs` (per-fire state + report link), and `reports` live in the memfiles DB. A `report_save` bound to a task backfills the newest un-linked run's `report_id` at the store layer — pending → ran is the **only** success writeback.
-- **Failed & missed runs — settled at startup.** The one-shot `schedule_startup_sweep` reaps every surviving `pending` run to `failed`, and fires due while slife was down to `missed`. It posts no message. Both surface via `scheduled_run_list` and can be backfilled (`run_schedule_now`) or closed (`scheduled_run_skip`). Tasks fire **only while slife is running**.
+**`_turn_prompt`** (`slife/tools/models.py`) is the per-turn status prompt: current time, context
+usage, changed model / CWD / shell, A2A peer presence events since the last turn, open failed or
+missed scheduled runs, and the one-shot "system restarted" flag. It is a tool pair, deliberately, so
+it persists and restores as a normal part of the turn — it must not live in the static system prompt,
+where changing every turn would evict the cached prefix.
 
-Tools: `scheduled_task_set` / `scheduled_task_remove` / `scheduled_task_list`, `scheduled_run_list` / `scheduled_run_skip`, `run_schedule_now` — all builtin, "Schedule" category. `run_schedule_now` takes `due_at` (backfill) and `clone_context=True` (spawn the worker with a clone of the current conversation). `scheduled_task_set`'s `description` is **schema-required** — it is the worker's instruction.
+- **Injected by the loop, not chosen by the model**: `_auto_invoke` writes the pair into the history
+  unconditionally at the top of every turn, computing context usage once and sharing it with the
+  trim and the status bar.
+- It executes the tool **directly**, not through the tool-execution path: no approval gate, no
+  timeout wrap, no async wrapping.
+- It must be a **schema-declared builtin tool**, not a history-layer fabrication — Anthropic and
+  OpenAI-Responses reject a tool call in history whose name is not in the declared `tools` list.
+- The harness tools sit in `HARNESS_WHITELIST` (§4.4) — always injected, never evictable, not
+  unloadable — so the threshold squeeze cannot take away the mechanism the loop drives every turn.
 
-The **two surfaces** a task produces in the context and the TUI — the dispatch trigger, and the completion arriving over the subagent channel — are [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md) §6.
+**`_check_new_input`** is the zero-argument counterpart, auto-invoked at each *iteration boundary*
+when a queued message may cut into the running turn. It is a mode — `agent.cutin_enabled`, default
+**true**, toggled at runtime — and when false the boundary check is skipped entirely. The check asks
+the inbox whether the queue is non-empty (no channel filter) and the tool's execution pulls the
+first queued message, returning its bare text: the content already carries its marker, so no wrapper
+is needed. The extraction is gated behind the same cancel guard so a cancelled turn never drops the
+queued message. It is **main agent only**, and the injected message is a live input the model
+addresses in the same turn.
 
-### Context Injection
+### 2.6 Timing — heartbeat, schedules, timers
 
-> The authoritative description of channels, markers, the `_turn_prompt` harness tool-pair, **and the per-turn context rebuild that selects which turns are present (§7)** is [CONTEXT_HARNESSING.md](docs/CONTEXT_HARNESSING.md); the condensed overview is in [Part 1 · Context injection](#context-injection--a-preview-of-the-taxonomy). Context trimming is internal and announced by the trim note, not by a harness pair.
+The agent is otherwise purely user-driven; these three mechanisms give it time.
 
-## Part 3 · LLM Backends & Model Management
+**Heartbeat.** While idle, every `agent.heartbeat_interval` seconds (default 1800) the service posts
+a `[Heartbeat]` message, which runs as a normal turn with its own history and is saved like any
+other. The reply contract: real content if the agent has something worth saying proactively,
+otherwise exactly `.`. The loop skips a beat when the inbox is busy or has pending work, so it never
+competes with real input. **Main agent only** — a worker is task-driven.
 
-Three backends, equal citizens. The internal message format is OpenAI Chat Completions; each backend owns its own wire conversion (`to_wire_messages()` / `to_wire_tools()`), and all produce the same unified stream:
+**Scheduled tasks** are three separated concerns — *timing*, *execution*, *record*:
 
-```
-LLMClient (thin router)
-  ├── OpenAIBackend           api: "openai-completions"
-  ├── AnthropicBackend        api: "anthropic-messages"
-  └── OpenAIResponsesBackend  api: "openai-responses"
-```
+- **Timing.** `schedule_loop` runs every 30 s and recomputes each enabled task's next fire **from the
+  DB, not from memory**: the anchor is the newest `due_at` across the task's runs (a fire is never
+  re-detected), falling back to `created_at`. Cron parsing is `croniter` behind a thin wrapper. The
+  loop **fires only**: against a 120 s grace window, a fire due within it is fired; anything older
+  means slife was down, which is the startup sweep's concern. An in-memory pending-fire guard keeps
+  the poll from re-firing mid-turn.
+- **Trigger → execution.** The loop injects a `[Schedule <name>]` trigger on the **system** channel;
+  the run is recorded when the agent *dispatches*, not at fire time. The agent handles the trigger by
+  delegating: `run_schedule_now` — the single dispatch tool, also used to backfill — records a
+  `pending` run, spawns or reuses the worker named after the task, and sends it deterministic task
+  text instructing it to save a report and notify the user. Completion rides the ordinary subagent
+  auto-push (§6.3).
+- **Record.** `scheduled_tasks`, `scheduled_runs` and `reports` live in the memfiles DB. A report
+  bound to a task backfills the newest unlinked run at the store layer — `pending → ran` is the
+  **only** success writeback; everything else is failed-by-default.
+- **Failed and missed runs are settled at startup.** A one-shot sweep reaps every surviving
+  `pending` run to `failed` (a run from a dead process can never complete) and fires due while slife
+  was down to `missed`. Both surface through the per-turn prompt and can be backfilled or closed.
+  Tasks fire only while slife is running.
+
+**Timer.** `wait_minutes` pauses the current turn and resumes it later by scheduling an in-memory
+wake that posts a `[Timer]` message on the system channel. It dies with the process — anything that
+must survive a restart is a scheduled task.
+
+### 2.7 Roles — the main agent and the worker
+
+Both roles run the **identical** `AgentLoop`. What differs is the harness around it, and that
+difference is **declared once**, as capabilities in `slife/agent/roles.py`:
 
 ```python
-StreamChunk(thinking=…, content=…, tool_deltas=…, usage=…)   # one chunk type, all backends
+MAIN   = Caps()                                    # the full harness
+WORKER = Caps(**dict.fromkeys(ALL_CAPS, False))    # granted none of it
 ```
 
-Reasoning ("thinking") support is per-backend:
-
-| Backend | Thinking on | Notes |
-|---------|-------------|-------|
-| OpenAI Completions | `extra_body.thinking.type = "enabled"` (+ optional `reasoning_effort`) | DeepSeek requires explicit `"disabled"` when off; thinking streamed from `delta.reasoning_content`. **`compat.thinking`** overrides per model: `"omit"` sends no thinking field (MiniMax-M3-style gateways that 400 on the enabled shape but reason natively), `"disabled"` forces explicit off, `"enabled"` matches the default |
-| Anthropic Messages | `thinking.budget_tokens = max(max_tokens // 2, 1024)` | `compat.thinkingFormat: "openai"` (Bailian/Qwen) sends no thinking param — the model always thinks |
-| OpenAI Responses | `reasoning.effort` (default `"medium"`) | Streams both `reasoning_text` and `reasoning_summary_text` deltas |
-
-**Prompt caching (Anthropic system blocks):** `AnthropicBackend` emits each OpenAI `system` message as an Anthropic system content block and tags the **last** one with `cache_control: {type: "ephemeral"}` — the static base prompt becomes the cache breakpoint, so only the dynamic `_turn_prompt` status (a message-stream tool pair, never a second `system` message) changes per turn. Guarded by `_use_system_cache_control()`: on by default for `api.anthropic.com`, off for Anthropic-compatible providers (Bailian/Qwen) that may reject the field, overridable per model via `compat.cacheControl`.
-
-**History validation.** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_turn_prompt` is therefore a **declared builtin tool** (schema-present, auto-invoked by the loop), not a history-layer fabrication — so its pair validates. DeepSeek (Chat Completions) doesn't validate and is unaffected. Context trimming no longer needs schema validation at all — it is internal (`_trim_after_save`), not a tool call.
-
-**History wire shape.** `OpenAIResponsesBackend` emits the Responses API's native `function_call` / `function_call_output` items for tool history — not the Chat-Completions `role:"tool"` / `tool_calls` shape (unit-tested; not yet exercised against a live endpoint).
-
-**Outbound wire hardening.** `OpenAIBackend._normalize_messages` replaces empty assistant content (a reasoning-only turn, a max-tokens cut) with `"…"` — a copy, storage untouched — so openai-completions providers never 400 on an empty assistant message; Anthropic emits a single empty text block for an empty assistant turn.
-
-### Known upstream interference (not a Slife bug)
-
-An Anthropic-Messages gateway that runs LiteLLM's prompt sanitizer rewrites an empty `text` block sitting next to a `tool_use` into the literal `[System: Empty message content sanitised to satisfy protocol]` — `_EMPTY_TEXT_PLACEHOLDER` / `_sanitize_empty_text_content` in LiteLLM (issue BerriAI/litellm#24498; fix PRs #28987, #34822). An assistant turn that is `content: ""` + `tool_calls` is the ordinary shape between a tool call and its result, so Anthropic accepts it with the empty text block dropped — the substitution is a LiteLLM defect that runs **outside** the `modify_params` gate, with no config knob to disable it. Observed in slife via a `bailian_personal` provider (2026-08-21). It **poisons history**: the placeholder persists verbatim into the diary and replays into the next request. Slife stores it as ordinary assistant text — contrast with slife's own outbound hardening, which cannot see a placeholder the gateway already substituted into the **response**. If the gateway substitutes anyway, the only recourse is cleaning the persisted rows (a one-off data cleanup stripping that placeholder) before restore replays it. **Appendix A** records the incident class: a gateway defect that looks like a Slife bug.
-
-### Model Management
-
-Runtime model management via builtin tools — no config editing needed:
-
-| Tool | Description |
-|------|-------------|
-| `model_list` | All configured models grouped by provider (active marked) |
-| `model_set` | Add/update a model (creates provider if new) |
-| `model_remove` | Remove by ref; auto-switches if it was active |
-| `model_switch` | Switch active model by ref — persists to config and rebuilds the client live |
-
-`model_set` is an **upsert that merges, not replaces**: a partial update (e.g. only `max_tokens`) keeps the model's existing `reasoning`, `input`, `compat`, and other fields. It also accepts a `compat` dict, so per-model compatibility overrides can be configured without hand-editing `slife.yaml`. `model_list` surfaces the `compat` dict on each model.
-
-Model switches fire callbacks that rebuild the LLM client, update loop parameters (vision, context window, modalities), and re-render the system prompt. See [Model Switching](#model-switching) for the picker rules.
-
-## Part 4 · The Tool System
-
-### Tool ABC
-
-`Tool` (`slife/tools/base.py`) defines `name`, `description`, `parameters` (JSON Schema), `category`, and `async execute(**kwargs) -> str`. Required fields are validated at class-definition time via `__init_subclass__`. `from_config(cfg, config, ctx)` allows per-tool construction from the `tools:` overrides in `slife.yaml`; `ctx` carries runtime references (registry, config, MCP client, history) as `self._ctx`.
-
-`execute_shell` runs commands in the **detected shell** — `detect_current_shell()`: PowerShell / cmd on native Windows, `$SHELL` on POSIX incl. WSL — the **same value the system prompt reports**, so the LLM's shell syntax actually executes. Output is decoded with the system code page (GBK/cp936 on zh-CN Windows); `run_python_script` forces the child Python to UTF-8 via `-X utf8`.
-
-Three families exist by **ownership**, indistinguishable to the LLM at the call site. **System** tools are the developer's — a builtin module's tool (own name) or a built-in plugin's own tool (bare name, `[<plugin>]` description prefix). **External** tools are a third party's (`{server}__{tool}` for an MCP/REST server, discovered with `tool_search` and loaded per-tool with `func_tool_load`). A **job** (`job-<function>`) is the user's own — code *they* wrote: the job-coding plugin only exposes it. The naming rules are fixed; the load/unload machinery is [the Unified Tool Catalog](#tool-categories-the-unified-catalog--managed-surfaces).
-
-### Schema Authoring
-
-The schema is the model's only view of a tool — write it for the model, not the maintainer:
-
-- **`description` = what the tool does.** One or two sentences: what it does and what it returns. Do **not** write when-to-use ("Use when…"), and do **not** restate knowledge the LLM already has (pip, timeouts, env-var concepts). Keep project-specific facts the model cannot infer — idempotency ("upsert — add + update in one call"), blocking ("BLOCKS until the model is loaded"), effect timing ("takes effect after restart"), or that a value comes from a sibling tool.
-- **Parameter docs = how to use.** Per parameter: the accepted format, where the value comes from ("`turn_id` from `turn_recall`"), what the values mean, and the default.
-- **Mechanism.** Builtin tools carry parameter docs directly in the `parameters` dict. Plugin tools (`@mcp.tool`) get them from a Google-style `Args:` docstring — fastmcp parses it into the input schema, so a plugin tool whose parameters have no `Args:` yields an undocumented schema.
-- **Language.** Model-visible strings are English (see [Language policy](#language-policy)). Content authored by an external source keeps the source language.
-
-There is a deliberate asymmetry: tool schemas sent to the LLM carry **business parameters only**. The three meta-parameters (`_timeout`, `_async`, `_approve`), declared once in the system prompt, are popped by `_execute_tools` before dispatch — re-describing them on each of ~60 schemas would be the single biggest per-request context tax.
-
-**A schema is enforced, not advisory.** A harness-authored schema is **closed** — `Tool.__init_subclass__` (`base.py`) adds `additionalProperties: false` to every tool class that does not state its own answer — and `validate_args` (`base.py`) then checks each call against it at the one dispatch point, `ToolRegistry.execute`, before the tool runs. A required parameter that never arrived, or a name the tool does not declare, returns an `Error: …` naming the parameters that *do* exist. The failure this closes is a guessed parameter name — `prompt` for `description` — landing in the tool's `**kwargs`, being dropped without a trace, and the required parameter silently falling back to its default while the call reports success.
-
-Closure is applied at class definition rather than in `make_params` because **authoring style is not the contract**: the schemas are written three ways — the hand-written `parameters = {...}` literal (44 of the builtin tools), `make_params`, and `NO_PARAMS` — and closing only the `make_params` ones left the majority still swallowing typos. The base class sees all three. Likewise the guard is at dispatch, not per tool: 62 of 67 `execute` methods take `**kwargs`, so a per-tool check is a check every tool must remember to write.
-
-Two deliberate exceptions. A schema that states `additionalProperties` itself keeps that answer — openness is available, it just has to be said. And a **remote** schema is never touched: `MCPProxyTool` sets `parameters` per *instance* from the server's `inputSchema`, so it never passes through the class-level rule, and a third-party server's schema is the server's contract to declare. The external `mcp` rows are a mixed bag for exactly that reason (~122 of 210 servers close their own schemas, ~29 explicitly open theirs, the rest omit the key) — for those, the harness still enforces `required`, but an unknown name is the remote server's to accept or reject.
-
-`require_params` is the other half of the pair: `validate_args` checks the *call* (names present, nothing unknown), `require_params` checks *values* inside a tool that already received its arguments. Enforcement is refused, never repaired: the harness does not fill in a missing argument from a near-miss name.
-
-### Auto-Discovery
-
-`slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory` and the `_skip_auto_register` base classes `_ModelConfigTool` / `_EmbeddingsConfigTool`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides and per-model requirements enforced at **execute time** rather than load time: tools are always registered, and a tool like `attach_image` refuses at runtime when the active model has no vision (`vision=false` error) instead of being silently-missing.
-
-The current inventory — 61 builtin classes in 13 categories (60 LLM-visible with the shipped config's `install_python_package: enabled: false`), plus the built-in plugin tools by server — is enumerated in the [README](README.md#tools). It is a *reference*, not a duplicate: the mechanism lives here, the catalog lives there.
-
-### Tool Categories, the Unified Catalog & Managed Surfaces
-
-**The catalog is the load/unload model.** Every tool is a row in one shared `tools.db` — a *function tool* (builtin / job / plugin / mcp / rest-api) or a *skill* / *cli* entry, which its `category` says (there is no derived `type` column: the load-state question is a membership test, not a second thing to keep in sync). Function tools carry a `load_status` of `loaded / unloaded`; **skill and cli carry `'n/a'`** (they have no load state). A separate `status` column holds the three states a row can be in — `enabled`, `disabled` (config switched it off) and `error` (its owner is unusable right now: a server that never came up, a SKILL.md that cannot be read) — with config and runtime in two guarded lanes of that one column, so neither overwrites the other and a fixed owner returns to `enabled`. No column is nullable: "not applicable" is a value, so every read is a plain comparison. Skill and cli rows are mirrored from their own live sources — the skills dir and `tools.yaml`'s `cli` section — at boot and after every `skill_*` / `cli_*` mutation, which is how `tool_search` finds them; a skill row's `schema` is its SKILL.md, so a playbook is searchable by its own text. State never lives in the registry — `ToolRegistry` is only the execution pool of materialized instances. The system is configured by the seven category sections of `tools.yaml` (plus the `tool_load.threshold` knob) — every entry carries the two policy flags `enabled` and `autoload`, per tool where a tool has its own name (builtin / job — a plugin tool is configured in one of those two) and per server in mcp / rest-api, whose tool names are unknown until they connect. Seeding is at boot: a new row is born `loaded` only for the two autoload sources — the whitelist (system protection, not configurable) and the `autoload` entries — `unloaded` otherwise; an existing row keeps the model's decision, **except** for an `autoload` entry, which re-asserts `loaded` on every sync (the one place config wins; `load_status` has exactly four writers — autoload, `func_tool_load`, `_func_tool_unload`, eviction). **Removal is a row DELETE, never a status mark** — one statement per set (`remove_tools`), so a whole server, a category mirror or a single vanished tool drops cheaply and every removal counts as 移除 on the sync line, while a tool that is merely switched off keeps its row with `status = disabled`. The families differ only in who reports the death: `tools.yaml` for an external server leaving it, the server's own `tools/list` for one tool it stopped publishing, the source mirror for a skill / cli / job, and the **boot seed** for a builtin whose class left the code — the registry plus the `tools.yaml`-disabled set is that family's whole membership, and nothing else can ever claim a builtin row.. Injection is per-request from the catalog's `schema` column (re-read before every LLM request, so a mid-turn `func_tool_load` lands in the next call), and a threshold trims the least-recently-used tools with both autoload sources carved out. That stored `schema` **is** the injected definition — strictly the tool def (`name` + `description` + a plain JSON Schema `inputSchema`, no other keys, never docstring text) — so the catalog and the wire carry one schema, not two. Discovery is one `tool_search` (grep / keyword / hybrid across every category, filtering on the catalog's own columns — `category` / `source_id` / `status` / `load_status`, each a real SQL predicate, so a filter runs before the LIMIT); loading is one `func_tool_load`, which for `mcp`/`rest-api` rows also materializes the execution proxy. The full design — the db schema (there is no `server` table), the effective status, the per-request snapshot, the eviction order, the boot sequence, and the `_sync_mcp_proxies` reconcile — is **[docs/TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**; this section keeps only what no other document covers.
-
-**Managed categories** (Skills / CLI / REST API / Models / MCP / embeddings) support a standard **`X_list` / `X_set` / `X_remove`** surface (plus `X_set_enabled` where a toggle applies). `X_set` is an idempotent upsert — add + update in one call. Config uses the `config_env_*` prefix (no `config_list`); Models substitutes `model_switch` for `X_set_enabled`; embeddings tools are `embeddings_model_*` + `embeddings_enable`.
-
-**The registry is the execution pool.** A name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. Dynamic tools — built-in plugin tools and the MCP wrapper's own tools — are registered at runtime as `MCPProxyTool` instances under their **bare names**; external MCP server tools are named `"{server}__{tool}"`. Internal plugin tools (`__`) are filtered out before registration. **Load state governs injection, never execution**, so the only call refused is one whose name has no execution instance behind it — a row with no proxy materialized, say — and that refusal names the state from the catalog's effective status (`is not loaded` / `is disabled` / `is error`) and nothing more: a refusal that guesses at a remedy tells the caller to do what it has already done (see `not_loaded_refusal`). External MCP tools are on-demand in what they **inject**: an enabled server's proxies are registered together with its mirrored rows at reconcile time (`auto_load` gates the seed, never registration — a row the catalog calls `loaded` must have an instance behind it), and a server marked `autoload: true` has every tool it mirrors born `loaded` and never evicted.
-
-### Tool Result & Error Signaling
-
-Every tool returns a single string (`async execute(**kwargs) -> str`). The failure contract is one rule, one token: **a failed call returns a string starting with `Error:`**. The harness derives the persisted `is_error` flag from exactly that prefix at both dispatch sites, judged **before** the args-truncation marker (`⚠ Provider truncated this tool call's arguments …`) is prepended — so a failed call whose result began with `Error:` still reads as an error even when the marker leads the text. The flag is stored on the tool message, and session restore reads the stored flag rather than re-deriving it (`tool_result_is_error`). Wrappers over a plugin's JSON error envelope (`{"status": "error", "error": …}`) translate it to an `Error:`-prefixed string before returning. There is deliberately no second failure token.
-
-### Timeout Architecture
-
-**One registry model, and the values are code.** Every timeout value reads at call time from the typed dataclass defaults of **`slife/timeouts.py`** (exposed as `_timeouts.timeouts.<role>.<key>`) — developer-owned, no user-facing config section, no second seat; structurally invalid edits fail loudly at import. Enforcement is single-pointed at the Agent Loop: the `_timeout` meta-parameter, `asyncio.wait_for` around every call, and native `timeout` parameters (plus a bare schema-less `timeout` alias) map to the same bound. The only sanctioned "total" deadline in the system is the tool-call budget (`work.tool_budget`); there is no turn deadline. The five model rules, the role table, the load-time invariants, the *Tool-execution precedence*, the "no hardcoded timeout" review gate, and the rejected alternatives are documented in **[TIMEOUT.md](docs/TIMEOUT.md)**. Background (`_async`) enforcement is covered under *Agent Loop · Background execution*.
-
-### Approval Gate
-
-Approval is **model-driven** (pure model judgment). When the LLM sets `_approve: true` on a call, execution pauses and an inline `ApprovalPrompt` row is mounted in the chat stream (Claude Code style, no modal: Y = approve, N / Esc = deny). Prompts serialize behind a lock. A denied call never mounts a `ToolCallWidget`; the prompt row itself carries the rejection state. There is no hardcoded `requires_approval` flag on any tool or MCP server — the model decides per-call. Headless (subagent) contexts have no handler and auto-approve.
-
-The inline prompt declares its own `y → approve` / `n`/`escape → deny` bindings at `priority=True`; the App's `escape → cancel` is deliberately *not* priority so Textual's priority pass (which resolves the App before the focused widget) cannot steal Esc — Esc on an approval always denies.
-
-### Model Switching
-
-The active model is switched via the `model_switch` tool in normal operation. The `Ctrl+S` inline picker is an **emergency escape** for when the current model is unavailable and the LLM can't call `model_switch` itself — switching is config + runtime only, no API call. `AgentService.switch_model(ref)` validates, persists `active_model` to the config file, and rebuilds the LLM client / loop / system prompt. (`Ctrl+S` is not `ctrl+m` — Textual aliases that to enter — nor `ctrl+g`, which VSCode's goto-line steals.)
-
-Picker rules (hard-won, kept with the code):
-
-- Pure priority bindings — `↑`/`↓` move a cursor, `Enter` picks, `Esc` cancels. No `_on_key` / `on_click` overrides (they swallowed keys). The cursor opens on the active model, so a bare `Enter` re-selects it.
-- The binding action must be **sync**: binding actions run inside the key-event handler, so awaiting the picker's future there deadlocks the TUI. The await lives in a background task (`_finish_model_switch`).
-- Scroll to the picker **after layout** (`call_after_refresh(scroll_end)`) — an immediate scroll runs against the pre-mount content and pins the view above the fold.
-- Every configured model is listed (no cap); the chat scrolls if the list is taller than the viewport.
-
-## Part 5 · Plugins & the MCP Gateway
-
-Nine internal plugins run as independent child processes (local-embed, mcp-gateway, memdb, wechat, memfiles, sharefile, a2a, media, job-coding). Every plugin is declared by one row in the central plugin spec (`slife/plugins/spec.py`) and driven by one uniform lifecycle (spawn → era-negotiated readiness → watchdog → health); the authoritative contract — the spec table, the registry, readiness, the lifecycle, health, and the child-process `server.py` shape — is **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)**. There is **no `plugins.external` mechanism** — third-party capability enters only as a standard MCP server in `tools.yaml`, connected by the internal **mcp-gateway** plugin. `local-embed` **is** one of them, from its own package (a separate workspace member, also runnable standalone) serving OpenAI-compatible `/v1/embeddings`; it declares `fixed_port` because its config pins the port a static embeddings `base_url` points at. Communication is **Streamable HTTP** (MCP protocol) for all plugins; the sharefile plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`).
-
-### The spec and the uniform lifecycle
-
-Plugins are **spec-driven**: each plugin is one `PluginSpec` row in `slife/plugins/spec.py` — the single source of truth — and every plugin routes through one uniform start chain (spawn the child → era-negotiated readiness → `_after_ready_*` hook → arm the watchdog); no per-plugin start methods remain. Adding a plugin is one spec row plus a `server.py` package; auto-discovered third-party packages get a generic row and the same lifecycle. The two public names with hyphens are `mcp-gateway` and `job-coding` (packages `mcp_gateway` / `job_coding`).
-
-The **authoritative contract** — the spec table, the registry-as-runtime-truth, readiness (era negotiation), the uniform start/stop engine, the watchdog (backoff, restart cap, stable-uptime reset), required-plugin convergence, the child-environment env vars, and the `server.py` shape — is **[PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)**. The only DESIGN-level facts kept here: traffic between processes is **Streamable HTTP** (MCP protocol) everywhere except the sharefile plugin's plain-HTTP `/share/{token}` byte route; and `plugins.required` (shipped: `["memdb", "memfiles"]`) are core — a required plugin failing readiness **aborts startup**, and the service opens for input only after every plugin spawn has converged.
-
-### Localhost Never Goes Through a Proxy
-
-Every local `MCPClient` connection is loopback — the harness connects only to `http://127.0.0.1:{port}/mcp` (main process ↔ local plugins, and subagents ↔ the shared local plugin). Loopback traffic must therefore **never** consult the OS proxy. The MCP SDK's `streamable_http_client` builds a default httpx client with `trust_env=True`, which reads the OS proxy configuration (Windows system proxy, or `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`) and applies it to *every* request — `127.0.0.1` included. On any machine with a proxy configured, the plugin's connect / `tools/list` requests got routed through the proxy (typically `502` for loopback), the connect retry burned up, and plugins never appeared ready — a latent bug for any user with *any* proxy configured.
-
-**Fix (2026-08):** `MCPClient.connect` supplies its own `httpx2.AsyncClient(trust_env=False)` — the provided client is owned by `MCPClient` and closed in `_cleanup`. `trust_env=False` also drops `NO_PROXY` on these connections, deliberately: nothing a `NO_PROXY` list would legitimately exclude for loopback-only traffic.
-
-**Scope — external MCP servers are nuanced.** The gateway's `connection.py` SSE-first path keeps the SDK's proxy-reading default; the Streamable-HTTP **fallback** path explicitly builds `httpx2.AsyncClient(trust_env=False)` when the server is URL-routed. A remote server that genuinely needs the proxy should be configured deliberately; loopback-local behavior is proxy-free everywhere. Regression test: `TestMCPClientConnect::test_connect_passes_proxy_free_http_client`.
-
-### The built-in plugins (internal only)
-
-| Plugin | Transport | Role |
-|--------|-----------|------|
-| **mcp-gateway** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — a built-in plugin (`slife.plugins.mcp_gateway`). Manages the transport lifecycle, the per-server tool snapshot, OAuth and a proxy-free localhost client; the host mirrors that snapshot into the shared tool catalog ([TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)). |
-| **memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0). Turn persistence, session restore, embedding configuration. |
-| **wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages (a failed poll backs off the next poll exponentially to 30 s and resets on the next clean poll), typing indicators. Incoming messages enter the inbox as WeChat-channel turns prefixed `[Wechat:{...}]` (model-facing JSON carrying `peer_wechat_id` / `context_token`; the TUI strips the marker — the `Wechat>` bubble prefix already shows the channel). The model replies itself via `wechat_send_message` — no harness auto-dispatch. |
-| **memfiles** | Streamable HTTP | Private notes/diary/files/reports cabinet — see [Part 6 · The File Cabinet](#the-file-cabinet-memfiles). Owns the scheduled-task *data* tables; the schedule *tools* are builtin (Part 2 · Scheduled Tasks). |
-| **sharefile** | Streamable HTTP + `/share` route | Public file sharing — LLM-visible tools `share_file` / `sharefile_unshare`; internal `__check`, `__register_file`; `GET /share/{token}` serves file bytes on the same port (one port, two protocols), stat-pinned to the registered file so a share never silently serves replaced content. Shares are in-session only. Owns the pluggable tunnel (provider from `sharefile.yaml`'s `active_provider`; eager start, non-blocking). |
-| **a2a** | Streamable HTTP | A2A mesh over the official `a2a-over-mqtt` profile (aiomqtt v5, LWT; see [A2A-MQTT.md](docs/A2A-MQTT.md)). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools (see Part 7). |
-| **media** | Streamable HTTP | Non-chat AI generation (image, video, TTS, ASR) from any provider. Owns the `media:` config section (plugin-read, ignored by the main `Config` parser) and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio`. Long renders use the harness's universal `_async: true` + `check_async`. Artifacts are saved to the working directory (or a `folder` passed to the tool) — work products, never memfiles cabinet files. |
-| **job-coding** | Streamable HTTP | Deterministic Jobs as MCP tools — see [Job System](#job-system-job-coding). Tools: `job-list`, `job-write`, `job-remove`, `job-run` + one `job-<function>` tool per job. |
-
-The sharefile tunnel is **pluggable** (`sharefile.yaml` names `active_provider`): every provider presents one surface (`start`/`stop`/`is_active`/`is_reachable`/`status`/`share_url_for`/monitors) and shares one lifecycle (`_TunnelProviderBase`): single-flight start guard with stale-start supersede (45 s), 3 retries with linear backoff, the `active`/`starting`/`failed`/`idle` state machine, and a background health monitor. Providers: `ngrok` (default, official SDK, endpoint pooling, free-tier splash for browser User-Agents), `localhost.run` (`ssh -R`, no account, rotating `*.lhr.life` host), `cloudflare` (`cloudflared tunnel --url`, no account, stable-for-process URL, binary not bundled — a missing binary is a terminal `failed` state carrying an install hint, and its connector talks to the edge over **http2 rather than cloudflared's own QUIC default**: QUIC is the transport that fails behind a proxy or TUN adapter — it registers a connection, loses it repeatedly to "no recent network activity", and answers the published URL with 530 in every window between — so the provider passes `--protocol` explicitly and `sharefile.yaml` can put it back). A **missing dependency** is terminal and never retried; a **transport failure** is retried, and free-tier sessions recycle so the monitor keeps restarting the tunnel in the background. The plugin always loads — the tunnel is a subordinate dependency that never gates readiness.
-
-**A URL is published only once the transport says it is usable, and "usable" is the edge's answer, not the process's.** A provider declares when a printed URL is itself proof of readiness (`url_proves_ready`): true for `localhost.run`, whose hostname can only be printed after the forward is up, and **false for `cloudflare`**, whose banner precedes the edge connection — for that window the hostname exists and answers **HTTP 530**, so publishing on the banner hands out a dead link. There the start additionally waits for the child's own connector registration (a beat later, and bounded by the same `ready.tunnel_read_url` budget); a start that never gets one fails with a reason naming exactly that. Readiness is deliberately the *edge* signal and not a local fetch of the published URL: on a fresh Quick Tunnel a public resolver answers for the hostname the moment it is printable, while the local resolver is still negative-caching it, so a self-probe would measure this machine's lag and refuse URLs that work.
-
-**Liveness asks the transport as well, and it cannot be read off the child's stdout.** A `cloudflared` that outlives its edge connection keeps running while every published link answers 530, so "is this tunnel still usable?" has to be answered by the transport rather than inferred from the process. For `cloudflare` it is asked at the child's own metrics API — the loopback port it announces at startup, `GET /ready` → `readyConnections` — because the child's *output* does not answer it: a QUIC connection that times out is logged as `Serve tunnel error` and retried, and **no `Unregistered tunnel connection` line follows it**, so a connector set scraped from stdout still looks complete straight through the outage. That gap is not hypothetical: it is how a flapping tunnel reported itself `active` for nine minutes while its health monitor never fired once. The scraped set remains the fallback for a build that announces no metrics port, and an unanswered probe is `None`, never `False` — a probe that cannot answer must not be the thing that declares an outage.
-
-Two consequences follow. `is_alive()` feeds `is_reachable()`, which is deliberately **narrower than `is_active`**: "a URL exists" and "that URL would be served" are different facts, and `share_file` / `__register_file` refuse on the second rather than hand out a link that 530s — `system_health` reports `unreachable` rather than `ok` for the same reason, so an all-green health report no longer sits beside a link nobody can fetch. And the monitor does not respawn a tunnel the moment it goes unreachable: a child that lost the edge re-registers on its own and **keeps the hostname it was given**, while a respawn mints a new one and strands every link already handed to a person or an LLM. An unreachable transport therefore gets a grace window to heal (`ready.tunnel_heal`, 180 s), and only one still unreachable at the end of it is torn down and replaced.
-
-### The MCP gateway
-
-Three wire transports, one connection class (`MCPServerConnection`) built on the **official MCP SDK `ClientSession`** — the same SDK mechanism `client.MCPClient` uses to reach slife's own plugin children. The class supplies the lifecycle the SDK does not: OAuth device flow, transport establishment and re-establishment, stdio stderr relay, per-server connect locking, and the `needs_user_auth` pause. `MCPClient` carries no monitor — a plugin child is either up or restarted by the watchdog — so a **session it holds on purpose** (the host and subagents hold one for `tools/list_changed`, which a modern peer delivers only on a `subscriptions/listen` stream the client asked for) that dies under a still-`True` `is_connected` is rebuilt by the failing request itself: `_request_with_recovery` reconnects once and retries the call, and only for a `CONNECTION_CLOSED` failure, where the dispatcher refused a send on a transport already gone — a call the peer may be executing is never issued twice. A client with no notification handler opens no stream at all (`_ensure_watch_task`), and so holds nothing: the job-coding gateway handle builds one client per call for exactly that reason.
-
-**Health is a tool list, not a connection.** The gateway carries no probe, because there is nothing for one to ask: the 2026-07-28 revision removed `ping` outright (`mcp_types`'s per-version method maps have no `ping` at that version in either direction), so a compliant modern peer answers `-32601` — which a probe can only read as death (eight real servers torn down and respawned every 30 s, 167 spawns in 11 minutes) or as life (in which case it can never report anything). What does answer the question is `tools/list` — the very call the host's reconcile already makes to feed the catalog — so the connection keeps a per-server **tool snapshot** (`tools`, its age, the peer's `ttlMs`, the last error) instead of a connection state machine, and its live facts are exactly those: `__check` reports `tools_ok` / `tool_count` / `tools_age_s` / `last_error` and no state word of its own. The snapshot is re-read on the peer's own signals — a `tools/list_changed` event, a dead transport (which the SDK delivers to our `message_handler`; the handler records it and defers the teardown, since it runs inside the dying session's task group), and a failed call, which repairs on the failing request — never on a timer. The one background job is acquiring a list for a server that has none (down at boot): it retries with backoff and **stops the moment a list succeeds**, so a healthy server is never polled. `ping` was removed from `MCPClient` for the same reason.
-
-| Transport | Mechanism | Use |
-|-----------|-----------|-----|
-| **stdio** | SDK `stdio_client` (JSON-RPC over pipes) | Local MCP servers (npx/uvx/bunx) |
-| **http (SSE)** | SDK `sse_client` (GET with `Accept: text/event-stream`, POST to message endpoint) | Remote SSE endpoints (tried first for URLs) |
-| **http (streamable)** | SDK `streamable_http_client` (POST JSON-RPC + `mcp-session-id` header) | Remote Streamable HTTP endpoints (fallback) |
-
-For `url`-configured servers the gateway tries the SDK `sse_client` first: a non-event-stream reply makes its `enter` fail and the connection falls through to `streamable_http_client`. A Streamable response may be a single JSON body or an SSE stream — `ClientSession` parses both, delivering server-initiated `tools/list_changed` notifications to the host.
-
-**`tools/list_changed` dispatch.** Notifications to connected hosts are **coalesced and sent from a detached task** — never inside a request handler's task/cancel scope. (A slow control tool previously held the session open in its own scope while its connect emitted a ~50-message burst; the burst interleaving into that scope desynced mcp 2.1.1's cancel-scope stack and crashed the session — every later MCP call died with `Session not found`. Coalescing folds bursts into one send with trailing-edge re-sends; `_active_sessions` is bounded.) Implemented once in `SessionNotifier` (`slife.server_utils`) and used by `mcp_gateway`, `host_server`, and `job_coding`.
-
-**The catalog is shared, not gateway-local.** The gateway owns *transports* and the live tool surface — the listing tools are the live source, no wrapper-side catalog exists. Every external tool's row lives in the **shared `tools.db` catalog**, fed by the host's `_sync_mcp_proxies` reconcile whenever a server's tool surface may have changed (a list read, a change event, a dead transport): auto-load servers get their proxies and rows wholesale (`autoload: true`), on-demand servers (the default) get **row-only** mirrors so `tool_search`/`func_tool_load` can reach individual tools one at a time, and `func_tool_load` materializes the execution proxy from the row. A server whose last `tools/list` failed has its rows marked `error` — the runtime lane of the status column, so they leave the injected set while the load state the model chose stays on the row and comes back with the server — and a server configured-out has its rows purged — `mcp_remove` is the only server teardown path. `tools.yaml` is the authority for `enabled` (per server for mcp/rest-api: switching one off moves all of its tools at once, and the rows stay, reporting `disabled`), and for what exists at all — including a builtin the config switched off, which is never *registered* but still gets a row. The row model, the reconcile, and the injection chain are **[docs/TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)**.
-
-Exposed management tools: `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` (LLM-visible); `__check`, `__mcp_set`, `__mcp_set_enabled`, `__mcp_remove`, `__mcp_list_tools`, `__mcp_call_tool` (internal — the `__` prefix keeps them out of the model's tool set).  `mcp_connect` / `mcp_disconnect` were retired with the modern protocol era — a stateless peer has no session to open or close, so `mcp_set_enabled` is the single lifecycle switch (enabling reads; a later tool call re-establishes lazily). `mcp_list` is a **static config view** — what is configured, with no live state and no secrets; the internal `check_mcp_gateway` function (run by `system_health`, not callable as a tool) reads the same `__check` for the raw live state and adds health levels with remediation hints. The separation keeps "what is configured" distinct from "what is live". Each listing speaks for **its own family**: `mcp_list` returns the `mcp.servers` section, `rest_api_list` the `rest-api` section. The two families are different things — an MCP server versus an API described by an OpenAPI document — that happen to share a transport, a pool and a config shape because a REST API is currently served by an `mcp-openapi-proxy` process; that is an implementation choice, not an identity, and it is not allowed to show on the model's surface. Returning a REST API under `mcp_list` (which the pool, being family-blind, did) reported servers the `mcp_*` tools do not manage, indistinguishable from the ones they do. **All five `mcp_*` tools are gated the same way**: naming a REST API is refused with the `rest_api_*` twin that does own it (`_family_refusal`), and `mcp_list` filters its own family out of the config view. The gate reads a `category` the *caller* declares, so the implementation is written once (`_set_server` / `_set_server_enabled` / `_remove_server`) with two thin registrations each: the public tool passes `category="mcp"`, the internal `__mcp_*` twin passes `"rest-api"`. `category` is never a schema parameter — a model that could declare its own family would declare its way past the gate. The `rest_api_*` family drives its servers' lifecycle through those internal twins (`rest_api_set` → `__mcp_set`, `rest_api_remove` → `__mcp_remove`, `rest_api_set_enabled` → `__mcp_set_enabled`), so the gate costs the family it protects nothing. `system_health` splits the same two families into the `mcp_servers` / `rest-api` components.
-
-**Tool listings are capped; the catalog read is not.** A published server can carry four figures of tools (github: 1239), and a listing that prints them all spends the model's context on names it never asked for — so the LLM-visible `mcp_list_tools` (and its REST-API twin `rest_api_list_tools`) prints `mcp.tool_list_limit` of them (default 20), always reports the server's real `tool_count`, and replaces the tail with the one instruction that finds a specific tool (`tool_search`). Consumers that genuinely need every tool — the host's catalog sync, which writes a row per tool, and `rest_api_list_tools`, which applies its own cap — read the uncapped internal `__mcp_list_tools`.
-
-Server lifecycle:
+A capability is a *grant*: the process either owns the resource (the tool catalog's rows, its vector
+index, the plugin child processes, the host MCP face, the heartbeat, the scheduler, the mesh inbox
+drain) or holds the policy (turn persistence, the stream-retry ladder, the startup gate, mid-turn
+cut-in). The main agent holds all of them; a worker holds none.
+
+This is written down rather than spread around because it used to be ~two dozen `if not
+self.is_subagent` branches, which made a worker's capability set an *emergent* property of wherever a
+gate happened to be written — so a capability added to the main agent's path could silently never
+reach a worker. Because `WORKER` is derived by zeroing **every** field, a newly added capability is
+worker-denied by default. Two guards keep it honest: an AST gate that fails on any new `is_subagent`
+branch outside the table, and a parity test asserting the two roles' observable difference is exactly
+what the table declares.
+
+The config a worker inherits is lossless by construction for the same reason: `Config.to_dict` /
+`from_dict` are derived from one field list rather than hand-written, so a field cannot be dropped
+silently.
+
+---
+
+## 3. LLM backends
+
+### 3.1 The router and the unified stream
+
+Three backends, equal citizens. The internal message format is OpenAI Chat Completions; each backend
+owns its own wire conversion, and all three produce the same chunk type.
 
 ```
-disabled ──[mcp_set_enabled(name, enabled=true)]──→ enabled (connecting; the reconcile clears
-                                                      its tools' `error` mark as it comes up)
-enabled  ──[mcp_set_enabled(name, enabled=false)]─→ disabled (disconnected; its tools are marked
-                                                      `error` and leave the tool list)
-enabled  ──[mcp_set(changed config)]───────────────→ restarted with new settings
+LLMClient (thin router, slife/agent/llm_client.py)
+  ├── OpenAIBackend           api: "openai-completions"   (the default branch)
+  ├── AnthropicBackend        api: "anthropic-messages"
+  └── OpenAIResponsesBackend  api: "openai-responses"
+
+StreamChunk(thinking=…, content=…, tool_deltas=…, usage=…)
 ```
 
-All state changes persist to `tools.yaml` (self-hosted by the gateway). Servers needing OAuth use a device-code flow; tokens are stored in the credential store (`mcp_oauth_*`).
+The whole contract the loop uses is two methods: `chat()` (batch, text + usage only — **no tool-call
+support**) and `chat_stream()`. Tool calling lives exclusively on the streaming path. `tool_deltas`
+items have one uniform shape across backends.
 
-### Job System (job-coding)
+### 3.2 Per-backend notes
 
-DESIGNER_NOTES §6.7 — *"The smarter the model, the more it needs a Job System"*. A **Job** is a plain public function in `<data_dir>/jobs/*.py` (dev: `<project>/jobs/` — the repo's committed `jobs/` holds the bundled `translate`/`summarize`/`total_tokens` samples; prod: `~/.slife/jobs/`, seeded from those by the installers). Following standard MCP tool norms, the function's docstring and typed signature become the job tool's description and parameters schema; its name is the function's with the `job-` prefix (`translate` → `job-translate`), the namespace it shares with the plugin's own `job-write` / `job-list` / `job-run` / `job-remove` — and one a job may never take (`job-write` refuses a job whose exposed name would collide). **The files are the source of truth — there is no job-config file**: a restart (or the watchdog) re-scans the directory and re-registers the tools. Creating/editing a job is *coding*: the `job-coding` skill in `skills/` is the authoring guide.
+| Backend | Thinking | Notes |
+|---|---|---|
+| **OpenAI Completions** | `extra_body.thinking.type = "enabled"` (+ optional `reasoning_effort`) | `compat.thinking` overrides per model: `"omit"` sends no thinking field (gateways that 400 on the enabled shape but reason natively), `"disabled"` forces explicit off, `"enabled"` is the default. DeepSeek gets an explicit `"disabled"` when off. The usage block is handled **before** the empty-`choices` guard — the final usage chunk has no choices, so otherwise no usage would ever be emitted and context accounting would collapse to an estimate. |
+| **Anthropic Messages** | `thinking.budget_tokens = max(max_tokens // 2, 1024)` | `compat.thinkingFormat: "openai"` (Bailian/Qwen) sends no thinking param — the model always thinks. Sampling params go through `extra_body`. |
+| **OpenAI Responses** | `reasoning.effort` (default `"medium"`) | Streams both `reasoning_text` and `reasoning_summary_text` deltas; emits the Responses API's native `function_call` / `function_call_output` items for tool history, not the Chat-Completions shape. |
 
-Execution is deterministic: the tool calls the job function with exactly its declared arguments; the only LLM access is an explicit `llm.chat(system=…, user=…, model=…)` one-shot on `job_coding_model` — a **top-level** `"provider/model"` ref in slife.yaml that reuses `models.providers` and is independent of `active_model`. It should name a *different* (usually smaller/faster) model: a nested one-shot job call neither churns the agent loop's prompt-cache prefix nor competes for its quota. Jobs that call `llm` are `async def`; pure-computation jobs stay plain `def` (the runner runs sync jobs on a **daemon thread** via `slife.threads.run_daemon` — never `asyncio.to_thread`, whose default-executor workers are joined at exit and would wedge plugin shutdown on a hung blocking job; the runner captures `contextvars.copy_context()` so a sync job's `llm` client stays visible). No system prompt, no conversation history, no agent loop ever reaches a job's model — a structural guarantee.
+**Anthropic prompt caching.** Each OpenAI `system` message becomes an Anthropic system content block
+and the **last** one is tagged `cache_control: {"type": "ephemeral"}` — the static base prompt
+becomes the cache breakpoint (§2.4). On by default for `api.anthropic.com`, off for
+Anthropic-compatible providers that may reject the field, overridable per model via
+`compat.cacheControl`.
 
-**DB-locating jobs.** `jobs/total_tokens.py` reads the memdb DB agent-scoped: `$SLIFE_AGENT_NAME.db` (fallback `slife.db`) in the data dir — verified by a `diary`-table probe — then any memdb-shaped `*.db` near the data dir / cwd, newest first.
+**Anthropic alternation is mandatory.** Tool results are coalesced into one `user` message per batch
+and a following user text message is merged into that same block — two consecutive users is a 400 on
+Bedrock and Bailian/Qwen. An assistant with no text and no tool calls gets a single empty text block
+rather than an empty content array.
 
-A job that needs an **external capability** reaches it through the `mcp` handle: `from slife.plugins.job_coding import mcp`, then `await mcp.call(server, tool, args)` for ONE bare tool call (`server` a name from `tools.yaml`, `tool` without the `{server}__` prefix). The handle is a lazy proxy to the **mcp-gateway**: it forwards to the gateway's internal `__mcp_call_tool` — the same call shape the host's proxies use. Nothing external is ever spawned a second time: jobs ride the gateway's persistent connections, so a job can use **any tool on any connected server, loaded or not**. Port discovery is layered: the host pushes the port through `__set_mcp_gateway_port` at **both edges of the handshake** — the gateway's ready and every other plugin's ready — so spawn order never decides it (siblings spawn before the gateway knows its port, and a push whose job-coding client is not up yet is retried by the other edge; a job-coding watchdog restart re-pushes through the same path), and the spawn-time `SLIFE_MCP_GATEWAY_PORT` env is the fallback for a child spawned after the gateway. The handle holds **no client between calls**: a 2026-07-28 MCP connection is stateless (no session id, no standalone channel — the transport opens one only when a session id exists), so one `mcp.call` builds a short-lived client against that port, forwards the call, and tears it down. Nothing can go stale between calls, which is why the plugin has no reconnect bookkeeping and why the port is the whole live fact the health check reports. `mcp.call` returns the tool's text or a deterministic `Error: ...` string — it never raises.
+**Outbound hardening.** `OpenAIBackend._normalize_messages` replaces empty assistant content (a
+reasoning-only turn, a max-tokens cut) with `"…"` — a *copy*, storage untouched — so
+openai-completions providers never 400 on an empty assistant message. When thinking is enabled,
+`to_openai_messages` synthesizes `reasoning_content: ""` on **every** assistant message, including
+the synthetic harness one, or DeepSeek/Qwen reject the request.
 
-**Management tools** (bare names, `DirectRoute`): `job-list`, `job-write` (writes `<name>.py`; (re)registers immediately, persists across restart, rolls back to the previous code on a broken write), `job-remove` (delete file + unregister), `job-run` (generic executor by name — also the execution path before the harness resync picks up a brand-new per-job tool). After any tool-set mutation the plugin pushes `notifications/tools/list_changed`; the host's generic `_rescan_plugin_tools` re-lists and diff-registers — the same dynamic-tool mechanism the mcp wrapper uses, so per-job tools appear/disappear live. Watched by the uniform watchdog and covered by `system_health` via `check_job_coding` (probes the internal `__check`).
+### 3.3 The stream failure contract
 
-### Subagents (local workers, not A2A)
+One contract, every source. Transient transport failures — `httpx2.TransportError`, the SDKs'
+`*APIConnectionError` / `*APITimeoutError`, and the loop's own `StreamStallError` — are retried with
+bounded linear backoff (`stream.retries` = 2, so three attempts). The main agent, heartbeat, WeChat
+and A2A share it; **workers deliberately do not** (§6.4). Bad-request, content-filter and auth errors
+are not retried here. The history is kept intact on transient failures; only the 400-class rejection
+rolls back.
 
-Local child-process workers, always available — no config toggle. A subagent (agent worker) is **not** an A2A peer: no network identity, no presence, and no mesh tooling of its own. It runs the identical `AgentLoop` (including the `_turn_prompt` harness pair and internal trim) with the service layer pointed away from the TUI, persistence and scheduling.
+**The stall watchdog is an inactivity timer, not a total one.** `_consume_stream` wraps every
+`anext()` in an `asyncio.timeout` that **resets on each chunk**, so a provider that answers `200 OK`
+and then sends nothing is cut after `work.stall` (120 s) while a slow-but-live generation is never
+cut. The separate opt-in `stream_timeout` remains a total per-call cap, set only for workers.
 
-**"Pointed away from" is declared, not implied.** The two roles differ by a list of *capabilities* in `slife/agent/roles.py` — the main agent holds the whole harness (the catalog's rows and its vector index, the plugin child processes, the host MCP face, the heartbeat, the scheduler, the mesh drain, turn persistence, the retry ladder, the startup gate, cut-in), a worker holds none of them and is otherwise the same agent. This replaces ~two dozen scattered `is_subagent` branches, under which a worker's real capability set was an emergent property of wherever a gate happened to be written — so a capability added to the main agent's path could miss workers silently for weeks (the catalog's semantic search did: every subagent's `tool_search` was keyword-only against an index its parent was maintaining). A capability is added on purpose or not at all, an AST gate fails on any new `is_subagent` branch, and a parity test asserts the two roles' observable difference is exactly what the table declares. The config a worker inherits is lossless by construction for the same reason: `Config.to_dict`/`from_dict` are derived from one field list.
+**Model switching** is config + runtime only, no API call: `switch_model(ref)` validates, persists
+`active_model`, and rebuilds the client, loop parameters and system prompt. Context-usage state is
+deliberately **not** wiped — it self-corrects on the next API call. The tools are `model_list` /
+`model_set` / `model_remove` / `model_switch`; `model_set` is an **upsert that merges, not
+replaces**, so a partial update keeps the model's other fields. The `Ctrl+S` inline picker is an
+**emergency escape** for when the current model is unavailable and the model cannot call
+`model_switch` itself — see Appendix A.
 
-The **authoritative worker model** — the `headless.py` process protocol, the one-turn-per-task spawn model, serial processing plus the auto-push `/poll` delivery modes, the harness-owned result push, the failure/timeout semantics, shared parent plugins, and recursion — is **[SUBAGENT.md](docs/SUBAGENT.md)**. DESIGN-level facts kept here: a worker's **name is its identity** (explicit, never auto-generated; `max_subagents` default 5, budget = registry `work.task_budget`); workers share the parent's plugin servers by inherited port with **no isolation**; and a subagent can spawn its own descendants.
+---
 
-## Part 6 · Memory, Search & Embeddings
+## 4. The tool system
 
-> **Terminology.** The **Turns DB** is the memdb plugin's store, whose backing SQLite table is named `diary` — a codebase alias. It is distinct from the File Cabinet's **Diary** records that the memfiles plugin writes. In this part "diary" always means that table unless it names a cabinet file.
+### 4.1 The Tool ABC and schema authoring
 
-Every turn is permanently recorded as an independent row — no session concept, a continuous time-ordered log in `<data dir>/<agent>.db`.
+`Tool` (`slife/tools/base.py`) defines `name`, `description`, `parameters` (JSON Schema), `category`,
+and `async execute(**kwargs) -> str`. Required fields are validated at class-definition time via
+`__init_subclass__`. `from_config(cfg, config, ctx)` allows per-tool construction from `tools.yaml`
+overrides; `ctx` carries runtime references (registry, config, MCP client, history).
 
-**Memory is core — the agent never runs silently without it.** A fatal turn-save failure (the memdb plugin returns `{"error": …}` for a broken schema / corruption / disk error) is a hard stop, not a skip: `save_to_memory` sets the memory-broken state, **freezes the inbox** (queued turns are dropped, never run — a turn that can't be persisted isn't worth running), and the TUI shows a **persistent red banner** until the DB is fixed and the agent restarted. Transient MCP timeouts are only warned, not fatal. Restore-side failure is also fatal (startup abort — see [Session Restore](#session-restore)).
+**Auto-discovery.** `slife/tools/factory.py` imports every module in `slife.tools.*` and walks
+`Tool.__subclasses__()` recursively, so a new `.py` file is picked up automatically. Disabled tools
+are still registered and refuse **at execute time** rather than being silently absent — a tool like
+`attach_image` reports `vision=false` when the active model has no vision instead of vanishing.
 
-### Schema
+**A schema is enforced, not advisory.** `__init_subclass__` adds `additionalProperties: false` to
+every harness-authored schema that does not state its own answer, and `validate_args` checks each
+call against it at the single dispatch point before the tool runs. A required parameter that never
+arrived, or a name the tool does not declare, returns an `Error:` naming the parameters that *do*
+exist. This closes the failure where a guessed parameter name landed in `**kwargs`, was dropped
+without a trace, and the required parameter silently fell back to its default while the call reported
+success. Closure is applied at class definition because authoring style is not the contract — the
+schemas are written three ways (a literal dict, `make_params`, `NO_PARAMS`) and closing only one
+style would leave the majority swallowing typos. Two deliberate exceptions: a schema that states
+`additionalProperties` itself keeps that answer, and a **remote** schema is never touched — a
+third-party server's schema is the server's contract to declare.
 
-`diary` table (`schema.sql`):
+**How to write one.** The schema is the model's only view of the tool, so write it for the model:
 
-| Column | Purpose |
-|--------|---------|
-| `user_message` | What the user said |
-| `messages` | Assistant response as OpenAI JSON array (thinking, tool calls, results, text) |
-| `summary` | 1–2 sentence gist (LLM-written) |
-| `tags` | Comma-separated topic tags |
-| `created_at` | ISO 8601 with timezone (B-tree indexed) — user input time (Enter-press moment, threaded from the TUI) |
-| `completed_at` | ISO 8601 — assistant completion time (captured after the final turn ensure, before the MCP save) |
-| `channel` | Channel identity: `human`, `wechat`, `subagent`, `heartbeat`, `system`, or the A2A peer name |
-| `who_helped` / `what_model` | Agent identity + model used |
-| `token_count` | Cumulative billed tokens for this turn |
-| `context_tokens` | Context size at the last API call = prompt + completion tokens (the persisted history the next request would re-send; restore primes `_turn_prompt` with it) |
+- **`description` = what the tool does** — one or two sentences: what it does and what it returns.
+  Do not write when-to-use ("Use when…"), and do not restate knowledge the model already has. Keep
+  project-specific facts it cannot infer: idempotency ("upsert — add + update in one call"),
+  blocking ("BLOCKS until the model is loaded"), effect timing ("takes effect after restart").
+- **Parameter docs = how to use.** Per parameter: accepted format, where the value comes from
+  ("`turn_id` from `turn_recall`"), what the values mean, and the default.
+- **Mechanism.** Builtin tools carry docs in the `parameters` dict. Plugin tools (`@mcp.tool`) get
+  them from a Google-style `Args:` docstring — fastmcp parses it into the input schema, so a plugin
+  tool whose parameters have no `Args:` yields an undocumented schema.
+- **Language.** Model-visible strings are English (§1).
 
-There is **no `images` column** — image blocks live only in the in-memory user message and are never persisted (restore is text-only). Supporting structures: `diary_fts` (FTS5 content-sync table — the UPDATE trigger keeps `turn_summarize`'s summary/tags visible to keyword search), `diary_semantic` (sqlite-vec `vec0` table: embedding + rowid + chunk index + summary/tags/created_at), `diary_meta` (key-value store: the embedding model identity for migration detection, and the ordered `context_turns` live-context id list), and `turn_channel` (a sibling row per turn holding the channel's JSON payload, written atomically with the diary insert). Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the internal `__memory_save_turn` tool; the save-side invariant is enforced by the harness (`_ensure_turn_consistent`) before the plug in sees it.
+### 4.2 Families and naming
 
-There is **no general migration layer** — backward compatibility is not supported (schema changes land in `schema.sql` for fresh DBs; reset the DB to upgrade). The one exception is the `prompt_tokens` → `context_tokens` rename, shipped as `scripts/migrate_context_tokens.py`.
+Three families exist by **ownership** — indistinguishable to the model at the call site.
 
-Per-turn token consumption is queryable via **`turn_token_usage`** (`rowid`, `since`/`until`, `limit`) — each matching turn's `token_count` (billing) and `context_tokens` (context size) plus totals/averages.
+| Family | Owner | Categories | What it is |
+|---|---|---|---|
+| **system** | the developer | `builtin`, `plugin` | Slife ships it: a module in `slife/tools/`, or a built-in plugin's own tool |
+| **job** | the user | `job` | code the user wrote: a public function in `jobs/`, exposed as `job-<function>` |
+| **external** | a third party | `mcp`, `rest-api` | someone else's server, reached through the gateway |
 
-### Search
+`skill` and `cli` belong to none: nothing owns them, there is nothing to spawn and nothing to
+register — the row *is* the thing (a playbook file, a `tools.yaml` entry). They are tools all the
+same, reached through search and then by using them.
 
-Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN — the metric is DECLARED in the vec0 DDL, `distance_metric=cosine`, because it is what makes the raw distance readable as a 0–1 `similarity`: `1 - distance` is the cosine only when the metric is, and the backends do not all normalize — llama.cpp's raw output, served by local-embed's gguf path, is not unit-norm, so an L2 table cannot yield a cosine at all), B-tree on `created_at` (time range). All `since`/`until` bounds share one grammar via `slife.timeutil.normalize_time_bound`: an ISO datetime/date, the day words `today` / `yesterday` / `tomorrow` / `now`, the calendar periods `last|this week|month|quarter|year`, or `<N> days|weeks|months|years ago` (offset-aware inputs convert to local time). A period word anchors to the period's **edge**, not to today's day-of-month — `since=last month` is the first of last month and `until=last month` its last day, neither being `today - relativedelta(months=1)` — which is also why month arithmetic needs `python-dateutil` (stdlib's `timedelta` has no month unit). A bare-date `until` advances a day against a **timestamp** column, but not against a date-only one. Which column a bound measures is the KIND's own time axis (memfiles `_KIND_SPECS[kind]["time_col"]`): diary's date-only `date`, a note's `updated_at`, a file's or a report's `created_at` — the same column that kind's list tool orders and windows by, used by its search legs too, so `cabinet_search(kind="diary")` and `diary_list` cannot answer one range from two different columns. memdb has no per-kind axis: one `diary` table, so `turn_recall` windows `created_at` throughout. A bound in no known grammar **raises** rather than passing through: SQLite would compare the text, match nothing, and report a bound nobody understood as "no results".
+**Naming rules are fixed.** System tools are bare. A job is `job-<function>`. An external tool is
+`{server}__{tool}`. Two source-fed families are namespaced in the catalog: a skill row is
+`skill:<dir>`, a cli row `cli:<entry>`. A name is the row's identity — the primary key, the
+embeddings' foreign key, the key every search result is merged by — so two families cannot share one,
+and sharing is not a mistake to prevent: `browser-harness` is a CLI *and* the skill documenting it.
 
-| Mode | Best for |
-|------|----------|
-| `grep` | Exact strings — error messages, file paths, code |
-| `fts5` | Topic / keyword search with ranked snippets |
-| `hybrid` | Semantic recall (FTS5 + vec0 → RRF merge) |
-| `time` | Browse by date |
+**Semantic identity is not implementation.** `mcp_list` returns only the `mcp` section and
+`rest_api_list` only `rest-api`, even though a REST API is currently served by an `mcp-openapi-proxy`
+process that shares the transport, the pool and the config shape. That sharing is an implementation
+choice, not an identity, and it is not allowed to show on the model's surface: returning a REST API
+under `mcp_list` would report servers the `mcp_*` tools do not manage, indistinguishable from the
+ones they do. All five `mcp_*` tools are gated the same way — naming a REST API is refused with the
+`rest_api_*` twin that owns it. The gate reads a `category` the *caller* declares, so the
+implementation is written once with two thin registrations each — and `category` is never a schema
+parameter: a model that could declare its own family would declare its way past the gate.
 
-Hybrid mode uses Reciprocal Rank Fusion (RRF, k=60). Without an embedding backend, hybrid degrades to FTS5-only gracefully (and reports its degraded mode + reason).
+### 4.3 The catalog — `tools.db`
 
-Search hardening: every `LIKE` path escapes `%`/`_`/`\` through a shared `_like_escape` helper paired with an `ESCAPE '\'` clause; **CJK queries** route keyword search to a LIKE substring fallback (FTS5 unicode61 can't segment Chinese); FTS5 MATCH operator words are quoted and stray symbols stripped so a user query can't crash the MATCH parser; `turn_count` honors `since`/`until` in fts5 mode; the selection's own caps clamp it (count, similarity, tokens); semantic search is gated on index completeness (`SemanticManager.semantic_ready`) — hybrid degrades to FTS5 while any turn lacks an embedding, and `turn_recall` is a pure read of the gate (no reindex side effect).
+**The catalog is the load/unload model.** Every tool is a row in one shared `tools.db`, read by the
+main agent, subagents and the gateway child alike. One store class (`CatalogStore`) owns all SQL;
+policy lives in `ToolCatalogService`. The schema is `slife/tools/catalog_schema.sql`.
 
-### Embeddings & the SemanticManager
+The columns that matter conceptually (the rest are in the schema file):
 
-Embeddings are a **first-class top-level `embeddings` section** in `slife.yaml`, shared by memdb + memfiles + the mcp gateway's tool catalog (the host passes its active endpoint to the gateway via the `initialize` handshake — the single source of truth), managed by the builtin `embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` / `embeddings_model_remove` / `embeddings_enable` tools. The shape mirrors the LLM `models.providers` two-level hierarchy:
+- **`name`** — the row's identity, in the shapes of §4.2.
+- **`category`** — `builtin | job | plugin | mcp | rest-api | skill | cli`. There is no derived
+  `type` column: the load-state question is a membership test over the function categories, not a
+  second thing to write and keep in sync.
+- **`source_id`** — the owning server (mcp/rest-api) or plugin (plugin/job); `n/a` otherwise.
+- **`schema`** — the tool def `{name, description, inputSchema}` for function rows, the SKILL.md text
+  for a skill, a synthesized descriptor for a cli. This column is **both** the injected definition
+  and the semantic index's document.
+- **`status`** and **`load_status`** — see below. **`last_loaded`** is the LRU key.
 
-- **provider** = one OpenAI-compatible endpoint (`base_url` + `api_key`), with a `model` id.
-- **`active_model` is a bare provider id** (e.g. `"local_embed"` or `"siliconflow"`), configuration-authoritative; the `"provider/model"` form belongs to the LLM `models` config, not here.
-- **The dimension is deliberately not configured.** Resolution order: a known-model dimension table → the endpoint's `GET /v1/models` → a probe embed (`_probe_api_dim`).
+Two running-state columns, deliberately separate questions: `status` is what the config says (or what
+the runtime found), `load_status` is what the **model** decided. **No column is nullable** — "not
+applicable" is a value, never NULL, so every read is a plain comparison.
 
-The embedder (`EmbeddingClient`, `slife/plugins/memdb/embeddings.py`) exposes `available` / `loaded` / `dimension` / `max_tokens`; every embed is serialised on a per-client `threading.Lock` (`_embed_lock`); local-model backends (gguf/transformer, served via the local-embed daemon) run on daemon threads (`slife.threads.run_daemon`). A header-less `${VAR}` placeholder is skipped as a fake key; the API client uses a short timeout and zero retries so a blackholed endpoint degrades fast.
+**`status` is one column with three exclusive values**, because they answer one question and do not
+coexist. `enabled` is the ordinary state; `disabled` means the config switched it off (per **server**
+for mcp/rest-api — all of its tools move together, there is no per-tool enable — per entry
+otherwise); `error` means its owner is unusable right now. Two writers move that value, each owning
+one transition, and each is guarded: config writes `disabled ↔ enabled`, the runtime writes
+`enabled → error` and back. So a server switched off while it was down is `disabled` — **off is not
+down** — and coming back up does not resurrect a tool the config switched off.
 
-**Vector store.** `diary_semantic` is a sqlite-vec `vec0` table. One turn → multiple chunks (text split at paragraph boundaries, ~2000 chars ≈ 500 tokens, 1-paragraph overlap); the embedded text is the user message plus all assistant/tool contents. Semantic search dedupes by `diary_rowid`, keeping only the best (lowest-distance) chunk per turn.
+`load_status` is the db's whole reason to exist, and **no verdict is ever written into it**: writing
+the connectivity mark there would destroy the load state it landed on, so a blip would reset every
+tool the model had loaded. It has exactly four writers (§4.4).
 
-**Write path is insert-only.** `save_turn` persists the row and never embeds on the save path (a slow GGUF embed of a large turn previously tripped the save timeout — a false alarm; the row was saved anyway). Embedding is an internal plugin concern: after each insert `__memory_save_turn` calls `manager.on_saved()` — a non-blocking `event.set()` that wakes the idle drainer. `turn_summarize` writes only the `summary`/`tags` columns — a recall clue for keyword search — and never touches the semantic index. A passed `rowid` annotates that specific turn; **omitting it captures the current (in-flight) turn**, and `save_to_memory` extracts the annotation and rides it onto the new row at save (`_extract_turn_annotation`), so the model can annotate the turn it is completing mid-loop with no `latest_rowid()` race.
+**Removal is a row DELETE, never a status mark** — one statement per set, so a whole server, a
+category mirror or a single vanished tool drops cheaply, while a tool that is merely switched off
+keeps its row with `status = disabled`. The families differ only in who reports the death:
+`tools.yaml` for an external server leaving it, the server's own `tools/list` for a tool it stopped
+publishing, the source mirror for a skill/cli/job, and the boot seed for a builtin whose class left
+the code.
 
-**SemanticManager — the lifecycle actor.** `SemanticManager` (`semantic.py`) owns the binary gate, the embedder instance, and an event-driven index drainer as one object — the only place the gate is written. It is document-generic (a store contract: `count_unembedded` / `get_unembedded_docs` / `replace_embedding_chunks` / `reconfigure_for_embedding`), so memdb's `SessionStore`, memfiles' `MemfilesStore`, and the host catalog's `CatalogStore` each drive their own instance — the three gates are independent. **One implementation, one subclass**: memdb's `SemanticManager` is the base class; the **host's** shared tool catalog (`slife/tools/semantic.py`, not the gateway plugin) subclasses it, overriding the four hooks where the catalog genuinely differs — `_new_embedder` (to take the connecting host's embedding endpoint), `_start_enabled` (gate on a usable host-provided base_url), `_on_model_selected` (drop stale vectors via the gateway store's meta/drop contract), and `_unavailable_reason` (report "no embedding endpoint" clearly) — while sharing the gate, drain loop, no-progress bound and status readers verbatim (`_embed_doc` stays the base implementation; the catalog embeds each short tool schema whole via its own path). The host's tool catalog is the lighter variant: one tool = one embedding of its name + description + full schema (chunked at the model token limit for long schemas), vectors as f32 BLOBs matched by brute-force cosine in Python, and a model change drops the stored vectors before re-embedding.
+**There is no `server` table.** Which servers to bring up is decided by `tools.yaml`, what is live
+right now is answered by the gateway's pool, and the db records the RESULT on the tool rows. A server
+table would be a third copy of facts that already have owners — and one that goes stale the moment
+the gateway child dies.
 
-The gate (`semantic_ready`) opens exactly when `embedder_ready ∧ count_unembedded() == 0`; there are no intermediate states. `enable(cfg)` / `disable()` are blocking config transitions (load model, migrate vec0 in place, start/stop the drainer); `on_saved()` is a non-blocking `event.set()` wake. The drainer loops: empty → gate ON, wait on the `asyncio.Event` (no polling); else → gate OFF, embed one batch (atomic `replace_embedding_chunks`). A persistently failing embedder is bounded by a **per-session** no-progress limit → the drainer parks in `stalled` (gate OFF, keyword search only) rather than exiting: `_enabled` stays true, so the next `on_saved()` — new content, a rewritten schema — wakes it for a fresh bounded round, and failing batches are paced by the timeout registry's backoff ladder. Idle therefore costs nothing and a transient failure self-heals; only `disable()` (or shutdown) clears `_enabled`. The state machine (`disabled | loading | indexing | ready | stalled`) and a human `reason` are reported separately from the binary gate — each plugin's internal `__check` surfaces both to `system_health`.  `_set_state` is the ONE writer of `state`/`reason`, so it is also the one place a subclass can *publish* them: the tool catalog's manager writes them into `tools.db`'s `meta` table (see [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)), because that index is shared and a process running no drainer — a subagent worker — must be able to report its state rather than guess at it. While the gate is OFF, hybrid degrades to FTS5-only with a hint naming the reason — partial semantic results are never served. The embedder is owned in-process, so the `python -m` double-module hazard that once left the gate stuck is structurally impossible.
+**Effective status** is derived from the row alone, with `status` outranking `load_status`:
+`disabled` → `disabled`; `error` → `error`; a function row → its `load_status`; a skill/cli row →
+`enabled`. One label per fact. The first two never overwrite the third, which is what lets a loaded
+tool come back loaded. **Injection takes the function rows that are enabled and loaded** — that
+single predicate is both the injection query and the effective-status rule, and the two move
+together.
 
-**Model / dimension change.** The `embeddings_*` builtin tools persist the top-level `embeddings` section and then hot-reload: they call the internal `__memory_reload_semantic` / `__memfiles_reload_semantic` tools, which `await manager.enable()` — stopping the drainer, migrating the vec0 table in place (`reconfigure_for_embedding` compares the vec0 `float[N]` width and the current model identity (`backend:model`, persisted in `diary_meta.embedding_model`; the endpoint is not included, so two providers serving the same model name are not distinguished) against what the DB was built with; a mismatch drops and recreates `diary_semantic`, since old vectors live in a different vector space), and restarting the drainer. `embeddings_enable(false)` calls `manager.disable()` instead. A failed reload degrades to "takes effect on restart" (never blocks the persist).
+**Configuration — `tools.yaml`** carries one section per category (`builtin`, `plugin`, `mcp`,
+`rest-api`, `job`, `cli`, `skill`) plus `tool_load.threshold`. Every entry carries the same two
+policy flags. **`enabled`** mirrors onto the row's `status`. **`autoload`** means injected from
+session start and never evicted — per *tool* where a tool has its own name (`builtin`/`job`), per
+*server* in `mcp`/`rest-api`, because an external tool's name is not knowable before its server
+connects. It is accepted and inert for `skill`/`cli`, which have no load state to seed. Unlike every
+other mirror decision, `autoload` also **overrides** an existing row's state — the one place config
+wins over the model.
 
-**Retrieval.** One tool, `turn_recall`, and its mode follows from the arguments: a **query** runs the FTS5 keyword leg and a vec0 KNN side by side and merges them via RRF (k=60); no query takes the **time** branch (the most recent turns in the window, or unbounded). sqlite-vec forbids auxiliary-column constraints or JOINs inside a KNN query, so the KNN runs alone, time-window filtering happens in Python (with a wider fetch pool), and `user_message` is fetched in a second query.
+A `rest-api` entry *is* a standard MCP server (an `uvx mcp-openapi-proxy` instance) that lives in the
+other section. **The section is the whole fact** — nothing is tagged for it. `source` records where a
+definition was *downloaded* from, which is a different question.
 
-### Session Restore
+### 4.4 Load, inject, evict
 
-On startup, recent turns are read **directly from SQLite** — no MCP transport, no plugin dependency. The UI rebuilds the last session from the diary (user messages, assistant text, tool-call widgets — text-only, since image blocks are never persisted), and only then does the plugin spawn batch begin: restore completes before plugin startup. Restored messages carry their stored timestamps, matching live display.
+**Boot seeding.** `sync_system_tools` gives every registered tool a row. A **new** row is born
+`loaded` only from the two autoload sources — the whitelist and `autoload: true` entries — and
+`unloaded` otherwise. An **existing** row keeps whatever the model decided, with the `autoload`
+exception above. Every external row is then marked `error`, because no server is up yet.
 
-**Turn headers on restore.** Each restored user message gets a compact `[INFO: {"turn_id": N, "begin": …, "end": …}]` footnote regenerated from persisted columns (rowid + begin → end). The footnote is **runtime-only and never persisted** — the DB carries the clean original in both paths. Heartbeat turns are excluded. The current in-flight turn carries none — a missing footnote is the "current session" signal.
+**Per-request injection.** Before **every** LLM request the loop refreshes a snapshot — the rows with
+`load_status = 'loaded'` (and not config-disabled) ∪ the whitelist — and builds the request's
+function list from the catalog's `schema` column. The registry key always wins over the descriptor's
+bare name, so the injected name is exactly what `registry.execute` resolves. Per-request is what
+makes `func_tool_load` mean anything: a tool loaded in iteration *n* is in iteration *n+1*'s request.
+Because the list is in registry insertion order, a proxy materialized mid-turn **appends** — the
+request's prefix is untouched and the prompt cache survives the load. One request's own retries reuse
+the list computed for it, so every attempt sends byte-identical tools.
 
-**The id list replays the exit-time context.** `diary_meta.context_turns` — an **ordered JSON array of rowids** — names the live context: the save appends the new rowid in the diary row's own transaction, the internal trim drops the turns it evicts, and the per-turn rebuild replaces the list with its recall selection (rebuild mode — `__memory_context_turns_set` / `..._clear`, the only remaining outright empty). The list's order is authoritative and the slice need not be contiguous, so reads replay it as written and never re-sort by rowid. Turns on the list are returned **verbatim — no ceiling re-slicing**: the list already encodes the trimmed state, and it is its own bound (no token cap on this path). The just-restored history is exempt from the first-turn trim. Turn headers are re-appended to restored, non-synthetic turns; every restored turn is run through `_ensure_turn_consistent` before the UI is built. The restored turn prompt is primed with the **latest restored turn's persisted `context_tokens`** — the exact context size at exit — so the first `_turn_prompt`/status bar shows real occupancy. A missing/zero value reports `0`: an estimate is never substituted, because a chars÷3 figure would be indistinguishable from a real reading (`context_tokens_for`). A DB predating the list restores an empty context (turns stay searchable; `_post_schema_check` warns): there is **no migration layer**, so schema changes land directly in `schema.sql` and apply to fresh databases only (the one exception: `scripts/migrate_context_tokens.py` renames `prompt_tokens` → `context_tokens`).
+**Threshold eviction** runs at the turn boundary: if the loaded count exceeds `tool_load.threshold`
+(default 100), the excess is dropped least-recently-used-first, protected by the same two autoload
+sources that seed a row loaded. Two rules keep the LRU honest — seeding never touches `last_loaded`,
+and **every successful execute bumps it**, so a tool used this turn is never the next victim.
+Eviction is main-owner only; a worker inherits the curator's budget and never squeezes it.
 
-**Restore failure is fatal, never silent.** A present-but-broken memory DB raises `MemoryDatabaseError` instead of returning `[]` — the TUI shows the error and **aborts startup**. Required plugins that fail to *load* (including the bounded 60 s spawn hang-guard) likewise abort startup, stop all plugins, and exit.
+**Evicted tools stay registered and stay callable.** Eviction takes them out of the injection
+snapshot and nothing else. **Load state governs what a turn injects, never what a call may do.** What
+an evicted tool loses is its schema, and the next load restores that.
 
-### Agent Isolation
+**`load_status` has exactly four writers**: the autoload override, `func_tool_load`,
+`_func_tool_unload`, and eviction. Everything else about a row's state lives in `status`'s two lanes,
+which is what keeps a disconnect or a restart from costing the model its set.
 
-`--agent alice` uses `<data dir>/alice.db` (`~/.slife/alice.db` in production) — isolation is at the database-file level. Each agent has its own diary, FTS, and vector indexes; nothing is shared between agents (it also gets its own `alice.files` cabinet and A2A mesh name).
+**The whitelist** (`slife/tools/whitelist.py`) is the always-injected carve-out: the three harness
+tools, the five tool-system meta tools, and two pinned calls every session reaches for (`skill_use`,
+`system_health`). It never evicts and is not unloadable — a design constant, not configurable.
 
-### The File Cabinet (memfiles)
+### 4.5 Discovery — search and load
 
-A standard Streamable HTTP plugin — self-contained and replaceable exactly like memdb / media. **Four** typed knowledge stores, each **dual-written** to a human-browsable markdown file and a SQLite index (`<agent>.files/.index.db`):
+**`tool_search`** spans every category. Its filters *are* the catalog's columns — `category`,
+`source_id`, `status`, `load_status` — one parameter per column, so the surface cannot drift from the
+table. A filter the agent does not supply contributes no clause at all, and every one is a real SQL
+predicate so filtering happens before the `LIMIT`.
 
-- `note_save(subject, …)` — a note keyed by **subject**, appended to `notes/<subject>.md` (each call adds a timestamped section);
-- `diary_save(date, …)` — a day's entry keyed by **date**, appended to `diary/<YYYY-MM-DD>.md`;
-- `file_save` / `url_save` — saved attachments under `files/<category>/` (bytes stay on the filesystem), auto-filed by extension (images / documents / archives / code / audio / video / data / other) with an optional `category` override; an LLM `summary` given at save time makes them semantically searchable (one pass — no separate summarize tool);
-- `report_save` — scheduled-task reports under `reports/<slug>.md`, with FTS5 + vec0 indexes via the `_KIND_SPECS` extension.
+Three retrieval routes, one row shape: `grep` (a real regex, so `summ.rize` matches; an invalid
+pattern is reported, never a silent no-match), `keyword` (FTS5 BM25, CJK-routed to a LIKE fallback),
+and `hybrid` (keyword + semantic KNN, merged by reciprocal rank fusion). **An empty query browses**:
+with no text to match it returns the rows passing the filters, which is also how a family gets
+enumerated. Results are scored on one 0–1 scale (`similarity`), shared with `turn_recall` and
+`cabinet_search` so the numbers are comparable; a keyword-only hit carries no `similarity`, because
+nothing measured it and inventing a number would be a lie about the match.
 
-Each kind owns its FTS5 + vec0 tables. `cabinet_search(query, kind, mode)` runs hybrid (FTS5 + vec0 KNN, RRF via the shared `merge_hybrid`) or keyword search across them; `file_read(path)` re-opens a file with a path-traversal guard. Browsing by key: `note_list` / `diary_list` / `note_read` / `diary_read` / `file_list`, plus the report trio. The index mirrors memdb's design and **reuses its code**: the shared `SemanticManager` drives the drainer over all kinds, and each plugin's `__check` reports its own gate — independent because each plugin reindexes its own DB (one shared top-level `embeddings` config, independent availability).
+**`func_tool_load`** loads a function tool by full name. Refusals come from the effective status and
+name it — unknown → "see tool_search"; disabled → "enable it first"; error → "its server is not up
+right now, check it with mcp_list, then retry". On success the row flips to `loaded` and the tool is
+in the **very next** request. For external rows it also materializes the execution proxy from the
+row's schema descriptor — loading and materialization are the same step, driven by the row.
 
-`url_save` guards against SSRF **before fetching — and re-runs the guard on every redirect hop** (bounded 5 hops): every resolved address must be globally routable, so loopback / private / link-local / cloud-metadata (`169.254.169.254`) targets are refused. One deliberate exception: the documented **fake-ip pools** — Clash/sing-box `198.18.0.0/15` and sing-box's IPv6 `fdfe:dcba:9876::/48` — are accepted, because those resolvers answer real public hostnames with addresses from them; any *other* private answer is still refused.
+**What a load does not do is unlock anything.** It never gates a call. A tool with an execution
+instance is callable whether or not the model loaded it, so load-and-call in one message is
+legitimate — the load is what puts the tool's **schema** in front of the model, which is what makes
+the arguments read rather than guessed.
 
-All save tools return the saved **local path** (clickable) — they never auto-publish, so nothing is registered in any token registry as a side effect of saving. Publishing is always the LLM's explicit choice, via the separate sharefile plugin's `share_file`.
+**`_func_tool_unload`** is the spare ticket: it frees a slot in the tool list without making the tool
+uncallable, and is refused for the whitelist. One family is the exception on the execution side — an
+external proxy is unregistered along with its row, because that proxy holds a live client. That is a
+resource decision, not a gate.
 
-### Images, Vision & the @-syntax
+### 4.6 Results, errors and meta-parameters
 
-Users attach images with `@` directives — **one `@` = one image source**, any number per input, parsed independently. The user message stays verbatim (the `@` reference remains visible like any text); the extracted sources are handed to the loop, which **auto-invokes** `attach_image` once with the whole `sources` list via the harness-call machinery (`_auto_invoke`, same as `_turn_prompt`) — a single history shape (one assistant tool_use + result pair), no LLM iteration spent deciding to attach.
+Every tool returns a single string. The failure contract is one rule, one token: **a failed call
+returns a string starting with `Error:`**. The harness derives the persisted `is_error` flag from
+exactly that prefix at both dispatch sites, judged **before** the argument-truncation marker is
+prepended, so a failed call still reads as an error even when the marker leads the text. The flag is
+stored on the tool message and session restore reads the stored flag rather than re-deriving it.
+There is deliberately no second failure token.
 
-**Shapes.** Each `@` is followed by exactly one source:
+**Meta-parameters.** Tool schemas sent to the model carry **business parameters only**. Three
+meta-parameters — `_timeout`, `_async`, `_approve` — are declared once in the system prompt and
+popped before dispatch; re-describing them on each of ~60 schemas would be the single biggest
+per-request context tax.
 
-| Shape | Example |
+### 4.7 Timeouts
+
+**One registry, and the values are code.** Every timeout reads at call time from the typed dataclass
+defaults of `slife/timeouts.py`, exposed as `_timeouts.timeouts.<role>.<key>` — developer-owned, with
+no user-facing config section and no second seat. A structurally invalid edit fails loudly at import,
+and consumers do **call-time lookups**, never import-captured constants, so tests can monkeypatch a
+value. The roles are `work` (per-call execution budgets), `ready` (startup / spawn / connect /
+liveness), `grace` (teardown and kill escalation), `transport` (HTTP and wire phases), `stream` (the
+retry ladder), `storage` (bounded lock waits — DB *reads* are unbounded by design) and `deliver`
+(mesh delivery). Two gates keep it evergreen: an AST scanner that fails CI on any hardcoded numeric
+timeout unless allowlisted, and a companion that fails on a declared-but-unconsumed key.
+
+**The model, in five rules.** (1) *Owner-of-await*: every await that can block has a bound, owned by
+the layer that awaits it; a callee never sets a total for its caller. (2) **The only sanctioned
+"total" is the tool-call budget** — there is no turn deadline and no chain-decreasing budgets.
+Long-running-but-live work is bounded by *inactivity* watchdogs that reset on progress, never a wall
+clock. (3) *Slots are contracts*: some values mirror an upstream wire contract and must be replicated
+faithfully, not "improved". (4) *One semantic, one value*. (5) *No global defaults* — a process-wide
+socket timeout would silently change every third-party socket.
+
+**Tool-execution precedence — one value per tool call.**
+
+1. The agent injects a positive value (the `_timeout` meta-parameter, or the tool's own `timeout`
+   argument) → that value is `T`. **The agent's timeout overrides all system defaults.** `0`,
+   negative or missing are not overrides: they mean "use the default", never "no timeout".
+2. Otherwise the chain default applies: a tool **with** a native `timeout` parameter keeps its own
+   registry value and is the single enforcer; a tool **without** one gets `work.tool_budget` via
+   `asyncio.wait_for`.
+
+Enforcement is exactly one timer per call — native-`timeout` tools are never wrapped by the loop. A
+tool's own default is therefore a **generous backstop**, never the operative bound for a call
+carrying an effective `T`; a tight native default would preempt the injected value. If a native tool
+has an internal run-timeout, it **must** expose it as a `timeout` parameter — a hidden inner timer
+would silently clamp the injected value.
+
+**Backgrounded calls are the exception.** A background call with an injected timeout follows the same
+mapping; **without** one it is scheduled bare. The chain default is deliberately not applied:
+`_async` exists to escape the in-turn budget, so its bound must not govern background execution.
+
+### 4.8 The approval gate
+
+Approval is **model-driven** — pure model judgment. There is no `requires_approval` flag on any tool
+or MCP server; the model decides per call by setting `_approve: true`. Execution then pauses and an
+inline prompt row is mounted in the chat stream (Y = approve, N / Esc = deny, no modal). Prompts
+serialize behind a lock. A denied call never mounts a tool widget; the prompt row itself carries the
+rejection state. A headless worker has no handler and auto-approves.
+
+---
+
+## 5. Plugins
+
+Nine built-in plugins run as independent child processes: `local-embed`, `mcp-gateway`, `memdb`,
+`memfiles`, `wechat`, `sharefile`, `a2a`, `media`, `job-coding`. There is **no `plugins.external`
+mechanism** — third-party capability enters only as a standard MCP server in `tools.yaml`, connected
+by the internal gateway plugin.
+
+### 5.1 The spec — one source of truth
+
+Every child plugin is declared by one `PluginSpec` (a frozen dataclass) in the ordered table
+`PLUGIN_SPECS` (`slife/plugins/spec.py`). Nothing else in the harness hard-codes a plugin's module,
+enablement or glue: every name-keyed table that used to exist — the start `if/elif` chain, the
+connect-glue map, the health check list, the tool-adapter route set, the reserved-name list — is now
+a lookup into this one table. The fields are `name`, `module`, `ctx_field` (the `ToolContext`
+attribute receiving the live client), `gateway` / `host_params` (mcp-gateway only), `enable_method`
+and `after_ready_method` (names of `AgentService` coroutines), `health`, `fixed_port`, and
+`semantic_reload_tool`.
+
+`spec.py` is **stdlib-only on purpose**, so the MCP child, the health tools and the tool adapter can
+import it without pulling in `AgentService`. Per-plugin *behaviour* is declared as a method **name
+string**, resolved once in `AgentService.__init__` (which asserts a spec never names a missing
+method).
+
+The table normalises a few naming rules: public names are hyphenated where a package cannot be
+(`job_coding` → `job-coding`); the port env var is `SLIFE_{NAME}_PORT` with dashes → underscores; the
+health function is `check_<name>`; the `ToolContext` field names are per-plugin and the historical
+non-uniformities are kept. An external MCP server may not take a built-in plugin's name.
+
+**Adding a plugin is one spec row plus a `server.py` package.** Auto-discovery returns every declared
+plugin whose `server.py` exists, in spec order, then appends any undeclared package under
+`slife.plugins.*` that has a `server.py` — it runs through the same generic lifecycle with a default
+never-fails spec. Identity matching is by **module path**, not leaf name: matching on the leaf would
+miss `mcp_gateway` ↔ `mcp-gateway` and spawn the same server twice.
+
+### 5.2 The lifecycle
+
+`AgentService.__init__` builds one **`PluginRegistry`** from `PLUGIN_SPECS`, eagerly creating a
+`PluginLifecycle` per declared plugin before anything starts. A lifecycle owns the plugin's client,
+process, port, supervised background tasks, watchdog state, readiness and the exact set of registered
+tool names. Start, stop, watchdog, connect and health all iterate the registry — there is no
+`if name == "…"` anywhere in the lifecycle engine.
+
+**Readiness is protocol-defined, not probed.** A plugin is ready exactly when the harness's
+connect-time **era negotiation** completes (`slife/mcp/era.py`): a modern plugin answers
+`server/discover` and is adopted at the 2026-07-28 revision; a legacy one gets the `initialize`
+handshake. A plugin server answers only after its own FastMCP lifespan finished, so the completed
+negotiation *is* the ready signal. There is no readiness tool.
+
+Each plugin's own serving requirement is encoded in its lifespan — memdb and memfiles require a
+usable store, and a failure there means the port signal never fires, so the harness reports `FAILED`.
+Dependencies that are **not** required to serve are deliberately outside the lifespan and never gate
+readiness: the gateway's external servers, sharefile's tunnel, WeChat's login, media providers, the
+A2A broker, embedding backends. They surface through their own status tools instead.
+
+A **required** plugin (`plugins.required`; the shipped config names `memdb` and `memfiles`) failing to
+become ready **aborts startup** rather than limping on. The spawn hang-guard is bounded at 60 s, and
+the service opens for input only once every plugin spawn has converged, so input can never race ahead
+of plugin startup.
+
+**Start is one path for every plugin**: idempotent if already running → the spec's enable hook (first
+start only; a watchdog restart skips it — a hook returning False is an *expected* no-op, and it also
+purges the plugin's catalog rows) → the uniform start (spawn the child, set its port env, connect,
+register bare-name tool proxies, filter internal tools, mirror them into the shared catalog, clear
+any `error` mark, mark initialized) → re-point the `ToolContext` field at the live client → run the
+after-ready hook → arm the watchdog. Spawn or hook failure → `FAILED`.
+
+**The watchdog** supervises every started plugin identically. On an unexpected child exit it
+unregisters the plugin's exact registered tools (plus any registry tool bound to the dead client),
+disconnects the dead client — deliberately tearing it down rather than dropping it, so the SDK's
+background tasks cannot hammer a dead port — and restarts through the full uniform start with
+exponential backoff, up to five consecutive failures. The restart counter resets **only when the
+crashed child had stayed up past `ready.spawn`**: a fast boot-loop is deliberately not reset, so a
+crashing plugin accumulates toward the cap instead of restarting forever. The plugin's supervised
+tasks are reaped before each respawn so a restart never stacks a second poll loop. A restart tells
+every live worker sharing the plugin its new port. Subagents have no watchdog of their own.
+
+**Stop** is uniform: set the stopping flag *before* touching the process (otherwise the watchdog's
+wait races and triggers a spurious restart), cancel the watchdog, cancel the supervised tasks,
+disconnect the client, stop the child.
+
+**A plugin may spawn children of its own** — the tunnel's `cloudflared`, every external MCP server
+the gateway runs — and those are reachable only through it. So both stop ladders kill the whole tree
+rather than the child. On POSIX the descendants are read from `ps` **before** anything is signalled,
+because a dead parent's children reparent to init and become unfindable. The stop path, however, only
+runs while slife is alive to run it — a hard-killed parent unwinds no Python at all — so on Windows
+each spawned child is additionally assigned to a **kill-on-close job object** at spawn, before it can
+spawn anything of its own, and the kernel then terminates whatever is still inside when slife dies
+for any reason. The assignment lives in the uniform spawn, so no plugin carries cleanup code for it.
+
+### 5.3 The child contract
+
+A plugin's `server.py` must: bind a free port; signal the parent **once ready** — `run_plugin_server`
+wraps the lifespan and emits the port on stdout only *after* the app is ready to serve MCP, and a
+plugin must never signal early; start FastMCP on Streamable HTTP with the pre-bound socket; expose
+`@mcp.tool`s, where bare names are public and `__`-prefixed are internal; and be importable as
+`python -m <module>`. There is no base class and no SDK — the contract is that shape plus the spec
+row. Heavy post-readiness work goes through `warm_after_ready` rather than the lifespan. A public
+tool becomes a catalog row the moment the child is ready, so it is findable by `tool_search` (born
+`unloaded`: searchable, not injected, until loaded).
+
+Two mechanics worth knowing. **stdout is the port channel only** and is closed immediately after the
+signal, which is why OAuth instructions go to stderr — and one specific marked line is what the
+parent turns into a desktop notification. And **plugin servers run in SSE mode**
+(`json_response=False`): a listen stream *is* a response stream, and a single JSON body per POST has
+nowhere to carry a change notification.
+
+The parent hands the child its identity and its serving ports through the **process environment** —
+there is no other in-band channel before the first request: the session id, the agent name, the
+directory overrides, the plugin name, and `SLIFE_{NAME}_PORT` for each plugin. Workers read the port
+vars to share the parent's plugins, so the env var is also the sharing mechanism.
+
+**Everything the child logs is a diagnostic pipe, not a terminal.** The child runs stderr at DEBUG
+with its own session file; the parent relays stderr at DEBUG, masking secrets and filtering banner
+art and the child's own already-formatted lines. An uncaught exception writes the full traceback to
+the file and prints exactly one line to stderr — that line is what the host relays as the
+load-failure reason.
+
+### 5.4 The built-in plugins
+
+| Plugin | Role |
 |---|---|
-| Bare path | `@D:\photos\a.png` |
-| URL | `@https://example.com/x.png` (no extension / query / fragment OK) |
-| Data URI | `@data:image/png;base64,AAAA` |
-| Quoted (spaces OK) | `@"D:\my photo.png"` / `@'a.jpg'` |
-| Bracketed | `@[D:\a.png]` / `@{a.png}` / `@(a.png)` |
+| **mcp-gateway** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Owns the transports, the per-server tool snapshot and OAuth; the *catalog* is the host's. |
+| **memdb** | Turns database, hybrid search, turn persistence, session restore, embedding configuration. |
+| **memfiles** | Private notes / diary / files / reports cabinet (§7.5). Also owns the scheduled-task *data* tables; the schedule *tools* are builtin. |
+| **wechat** | Bidirectional WeChat messaging. A long-poll loop feeds incoming messages into the inbox as `wechat`-channel turns; the model replies itself via `wechat_send_message` — no harness auto-dispatch. |
+| **sharefile** | Public file sharing. Serves file bytes over a plain-HTTP `/share/{token}` route on the **same port** as its MCP endpoint, stat-pinned so a share never silently serves replaced content. Owns the pluggable tunnel. |
+| **a2a** | The mesh (§8). Starts only when the broker is reachable. |
+| **media** | Non-chat generation — image, video, TTS, ASR — behind a provider-agnostic adapter layer. Artifacts are work products in the working directory, never cabinet files. |
+| **job-coding** | Deterministic jobs as MCP tools (§5.6). |
+| **local-embed** | OpenAI-compatible embeddings on `/v1/embeddings`, from its own package because it is also runnable standalone. The one plugin with `fixed_port`, since its config pins the port a static embeddings `base_url` points at. |
 
-Multiple `@` may sit **adjacent without spaces** — `@a.png@b.png`, `@a.png @b.png`, and `@https://a.com/x.png和@http://b.com/y.png` each yield two sources. Quoted/bracketed forms read the inner content (spaces allowed); bare tokens run to whitespace, a quote, or the next `@`.
+**The sharefile tunnel is pluggable** (`sharefile.yaml` names `active_provider`). Every provider
+presents one surface and shares one lifecycle: a single-flight start guard, retries with backoff, an
+`active`/`starting`/`failed`/`idle` state machine, and a background health monitor. Three providers:
+`ngrok`, `localhost.run` (`ssh -R`, no account) and `cloudflare` (`cloudflared tunnel --url`, no
+account). A **missing dependency is terminal** and never retried; a **transport failure is retried**,
+and free-tier sessions recycle, so the monitor keeps restarting the tunnel in the background. The
+plugin always loads — the tunnel never gates readiness.
 
-**Shape gating.** A bare path must end in an image extension (`.png .jpg .jpeg .gif .webp .bmp .svg .ico .avif .tiff .heic`), so `@someone` (no extension) is skipped as plain text. **URLs and data URIs are self-identifying via their scheme** — no extension gate — so `@https://example.com/photo`, query strings (`?v=2`), and fragments (`#x`) are all valid. **No filesystem check here** — existence is validated downstream by `attach_image` (it reads the file or returns an error).
+Two rules shape the tunnel's liveness, and both generalise:
 
-**Boundary characters (token-end).** The extract regex ends a token at: whitespace, a quote (`"`/`'`), and `@` (universal — so adjacent directives split cleanly); **CJK characters** (a natural word boundary when typing `@a.png和@b.png`); and **comma — URLs only** (`@url,@url` separates; a URL with a comma in its query is truncated — percent-encode instead). **Data URIs keep commas** (base64 payload is `,`-heavy). A bare URL must not contain raw CJK (`@https://example.com/photo?v=我` truncates at the CJK) — percent-encode the value or wrap the whole URL in quotes.
+- **A published URL is not a working one.** A provider declares whether a printed URL is itself proof
+  of readiness; it is *not* for `cloudflare`, whose banner precedes the edge connection, so for that
+  window the hostname exists and answers HTTP 530. Readiness is deliberately the *edge* signal, not a
+  local fetch of the published URL: on a fresh tunnel a public resolver answers as soon as the
+  hostname is printable while the local resolver is still negative-caching it, so a self-probe would
+  measure this machine's lag and refuse URLs that work.
+- **Liveness cannot be read off the child's stdout.** A `cloudflared` that outlives its edge
+  connection keeps running while every published link answers 530, and a lost connection is logged as
+  a retryable error with **no** unregister line following it — so a connector set scraped from
+  stdout looks complete straight through the outage. Liveness is therefore asked of the transport.
+  An unanswered probe is `None`, never `False`: a probe that cannot answer must not be the thing that
+  declares an outage. And the monitor does not respawn a tunnel the moment it goes unreachable — a
+  child that lost the edge re-registers on its own and **keeps its hostname**, while a respawn mints
+  a new one and strands every link already handed out — so an unreachable transport gets a grace
+  window to heal first.
 
-**Parsing: two-phase regex.** `slife/ui/app.py` parses with **locate then extract**, deliberately not a single-line grammar: `_AT_RE` finds every `@`, then `_SOURCE_RE` matches a source pattern on the slice after each. Locating-then-slicing is more robust than one regex against special characters (spaces, CJK, commas) that would corrupt a single `\S+` token, and keeps the existence check in one place downstream. A non-matching `@` (e.g. `@someone`, an unclosed quote) is skipped whole — the text stays, nothing is attached.
+`is_reachable()` is deliberately **narrower than `is_active`**: "a URL exists" and "that URL would be
+served" are different facts, and `share_file` refuses on the second rather than hand out a link that
+530s. `system_health` reports `unreachable` rather than `ok` for the same reason.
 
-**Pipeline.** `include_image_urls()` (`slife/agent/multimodal.py`) turns each source into a vision content block (URLs pass through, local files base64 as `data:` URIs), returning `(blocks, failed)` — valid blocks are injected into the in-memory user message in one shot, failures are reported in the tool result. Exact duplicate sources are deduped (order-preserving). Blocks are **live-session-only**: never persisted, restore is text-only. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`). Images are never rendered in the terminal — the model reads them, and the user opens files with the OS default app or a `share_file` link.
+### 5.5 The MCP gateway
 
-## Part 7 · A2A — Agent-to-Agent (mesh)
+Three wire transports, one connection class built on the **official MCP SDK `ClientSession`** — the
+same mechanism `MCPClient` uses to reach Slife's own plugin children. The class supplies the
+lifecycle the SDK does not: OAuth device flow, transport establishment and re-establishment, stdio
+stderr relay, per-server connect locking, and the `needs_user_auth` pause. For `url`-configured
+servers the gateway tries SSE first and falls back to Streamable HTTP.
 
-The A2A protocol runs over the official **A2A-over-MQTT** profile — the `a2a-over-mqtt` SDK from EMQX — *not* a self-built binding. The **`a2a` plugin** owns the mesh: it hosts the LLM-facing `a2a_*` tools, drains inbound tasks and presence into the unified inbox, and wraps the SDK's `Responder` for out-of-band completion by the agent. The topics, wire, QoS + retry, markers, drain schema, tool surface, and the Windows selector-loop note are specified in **[A2A-MQTT.md](docs/A2A-MQTT.md)**.
+**Protocol era decides how a change reaches us.** The modern revision removed the connection-scoped
+channel: `notifications/tools/list_changed` arrives **only** on a `subscriptions/listen` stream the
+client asked for. So servers we own publish on a subscription bus and the consuming side keeps one
+stream open per link, re-listening after a drop; a modern external server gets a per-server listen
+stream inside the gateway; a legacy peer keeps the session channel. All three funnel into the same
+notification handler, so the harness-side trigger is unchanged. The subscription-bus helper also
+closes a FastMCP gap — FastMCP never registers `subscriptions/listen`, so a modern client's stream
+would otherwise get "Method not found".
 
-Only MQTT is implemented. A `transport` other than `"mqtt"` in the `a2a` config section disables A2A with a warning at config load instead of crashing startup. The LLM-facing tools are the **standard A2A operations** — async push model, no message/task split, nothing waits: `a2a_send_message`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_broadcast`. One uniform prefix. Subagents are **not** part of A2A (they are local workers; the worker model is [SUBAGENT.md](docs/SUBAGENT.md)).
+**Notifications are coalesced and sent from a detached task**, never inside a request handler's
+cancel scope — an interleaved burst desyncs the SDK's cancel-scope stack and every later call dies.
+That is implemented once and shared, not per-plugin.
 
-### MQTT Mesh
+**Health is a tool list, not a connection.** The modern protocol removed `ping` outright, so a
+compliant peer answers "method not found" — which a probe can only read as death or as life. What
+actually answers the question is `tools/list`, which is the same call the reconcile already makes, so
+the connection keeps a per-server **tool snapshot** (the tools, its age, the peer's TTL, the last
+error) instead of a connection state machine. The snapshot is re-read on the peer's own signals — a
+change event, a dead transport, a failed call, which repairs on the failing request — never on a
+timer. The one background job is acquiring a list for a server that has none; it retries with backoff
+and **stops the moment a list succeeds**, so a healthy server is never polled.
 
-- **Standard wire.** The topics (`$a2a/v1/…`), JSON-RPC 2.0 over MQTT v5 (`ResponseTopic`/`CorrelationData`), retained Agent Cards with `a2a-status` presence + LWT, per-task dedup and ack → artifact → terminal, the QoS rules (1 for discovery/request/reply, 0 for broadcast), the requester retry ladder (15 s first-reply, ≤ 3 attempts), and the one `[A2A:…]` envelope (`type` picks out task_request / task_response / message / broadcast) are specified in **[A2A-MQTT.md](docs/A2A-MQTT.md)**.
-- Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; a failed probe
-  means the a2a plugin is not started and this is reported via `system_health`.
-- The mesh connects **eagerly** when the plugin starts so presence is announced at launch; a failed
-  eager connect is tolerated and mesh tools attempt a lazy connect on demand.
-- Peer presence **transitions** (online/offline) reach the LLM context: the plugin queues them;
-  `AgentService._a2a_poll_loop` drains them, and `_turn_prompt` carries only *changes* (read-once) —
-  the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with
-  stale state.
-- Results are **always auto-delivered** (the standard push model): a peer's terminal reply is pushed
-  into the history as an `[A2A:…]` envelope with `type: "task_response"` — "Peer X completed/cancelled
-  async task (ID: …)". There is no poll mode and nothing to wait on.
+**The catalog is shared, not gateway-local.** The gateway owns transports and the live tool surface;
+every external tool's row lives in the host's `tools.db`, fed by the host's reconcile whenever a
+server's tool surface may have changed. Auto-load servers get their proxies and rows wholesale;
+on-demand servers (the default) get **row-only** mirrors so search and load can reach individual
+tools one at a time. A server whose last `tools/list` failed has its rows marked `error` — the
+runtime lane of the status column — so they leave the injected set while the load state the model
+chose stays on the row and comes back with the server.
 
-### Unified Inbox
+**The reconcile** (`_sync_mcp_proxies`) is driven by connect events, `mcp_*` mutations, change
+notifications and the gateway-ready glue, and runs in the **background** so a plugin start never
+waits on external servers. It projects the connectivity verdict onto the row status column, mirrors
+each enabled server's rows **concurrently** (each awaits a real `tools/list`) and in one batched pass,
+skips disabled servers entirely (asking for a tool list *is* connecting), unregisters proxies whose
+server left the config, and purges the rows of removed servers by comparing against `tools.yaml` —
+the authority — rather than the live pool, so a gateway restart cannot wipe a still-configured
+server's rows.
 
-All messages flow through a single `asyncio.Queue`:
+**The boot window.** Because the reconcile runs in the background, there is a window after startup
+where the registry holds the builtins but not yet the external tools; a call then fails with
+`Unknown tool` before the row exists and the "is not loaded" refusal after it. Nothing is broken —
+the pass has not finished. One line marks the moment the set is usable, emitted **once per process**
+on the first pass that has converged (and always on failure): silence therefore means *still
+syncing*. Its `total` is what is usable right now — every enabled catalog row, so skills and CLIs
+count too — deliberately not the registry, which holds registered *instances* and which the two
+registry-less families have none of. Convergence is "no enabled server is still starting": a bare
+"no list yet" means three different things, so the gateway's own `spawn_settled` flag and a
+`reachable` verdict decide whether a server is a failed spawn, a slow one still answering, or one
+whose spawn is simply still in flight and must not be judged. The reported delta counts what the
+startup **wrote to the catalog** — insert / update / delete — never a registry before-and-after,
+which would announce the entire external tool set as new on every restart.
 
-```
-Human keyboard ──→ Inbox.post() ──→ Queue ──→ Inbox.run() ──→ AgentLoop
-MQTT tasks     ──→ Inbox.post() ──→
-WeChat messages──→ Inbox.post() ──→
-Subagent results─→ Inbox.post() ──→
-```
+**Crash survival.** When the gateway child dies, every external row is marked `error` so none of them
+keeps injecting a dead transport; the restarted gateway connects every enabled server again and the
+reconcile clears each mark as its server comes up. A crash costs one reconnect, not the session's
+toolset.
 
-Messages are processed sequentially — only one AgentLoop runs at a time. Human and WeChat sources keep persistent histories; remote agents get fresh one-shot histories. Status flips to `busy`/`idle` around each turn; `on_turn_complete` fires unconditionally (in `finally`), so memory persistence survives cancellation.
+**OAuth** uses the device-code flow with tokens in the credential store. The `needs_user_auth` state
+is real: while it is set, a background retry **refuses to re-run the device flow** — a device-flow
+prompt must never be raised by a retry — and the list refresh and call paths raise immediately.
 
-### Task Store
+**External connections are proxy-free on loopback.** The SDK's Streamable HTTP client builds a
+default HTTP client that reads the OS proxy configuration and applies it to every request, loopback
+included, so on any machine with a proxy configured the gateway's connect and `tools/list` got routed
+through it, the connect retry burned up, and plugins never appeared ready. `MCPClient` therefore
+supplies its own client with `trust_env=False`. External servers are nuanced: the SSE path keeps the
+proxy-reading default, and the Streamable fallback goes proxy-free only when the server is
+URL-routed. A remote server that genuinely needs the proxy should be configured deliberately.
 
-Mesh tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap, terminal-first pruning). The store is **not persisted across restarts** — empty after restart by design (results auto-push; there is no
-task-listing tool). Worker (subagent) tasks are **not** in this store — they live in per-worker local records.
+### 5.6 Jobs
 
-## Part 8 · UI, Config, Credentials, Health, Logging, Paths
+A **Job** is a plain public function in `<data_dir>/jobs/*.py`. Its docstring and typed signature
+become the tool's description and parameter schema, following ordinary MCP tool norms; its name is
+the function's with a `job-` prefix, the namespace it shares with the plugin's own management tools —
+and one a job may never take.
 
-### UI
+**The files are the source of truth — there is no job-config file.** A restart (or the watchdog)
+re-scans the directory and re-registers the tools. Creating or editing a job is *coding*: a skill in
+`skills/` is the authoring guide.
 
-Textual TUI with minimal chrome:
+**Execution is deterministic.** The tool calls the job function with exactly its declared arguments,
+and the only LLM access is an explicit one-shot call on `job_coding_model` — a top-level
+`"provider/model"` ref that reuses `models.providers` and is independent of `active_model`. It should
+name a *different*, usually smaller model: a nested one-shot job call then neither churns the agent
+loop's prompt-cache prefix nor competes for its quota. No system prompt, no conversation history and
+no agent loop ever reaches a job's model — a structural guarantee.
 
-- **ChatView** — scrollable message container; printable keys redirect to the input.
-- **UserMessage** — dim `[HH:MM]` (user input time) + prefix-styled user text.
-- **AssistantMessage** — dim `[HH:MM]` (assistant completion time) on the response text — **not** before the thinking block, so a thinking-only message shows no time — plus streaming text with collapsible thinking blocks (Enter/Space toggle). Thinking text is truncated at 500 chars for display.
-- **ToolCallWidget** — collapsible amber headers: status icon, label, primary-arg preview, iteration counter; Ctrl+Y copies the result.
-- **StatusBar** — model name, thinking indicator, inbox state, last-call context tokens + usage % (per history, so a heartbeat turn never drags the human reading down).
-- **ApprovalPrompt** — inline approve/deny row for `_approve: true` tool calls (Y / N / Esc), no modal.
-- **ModelPicker** — the Ctrl+S emergency model switcher (binding rules in [Model Switching](#model-switching)).
-- **Auto-restore** — rebuilds last session's UI from the diary on startup (see [Session Restore](#session-restore)).
+Jobs that call the LLM are `async def`; pure-computation jobs stay plain `def`, and the runner runs
+those on a **daemon thread** (never the default executor, whose workers are joined at exit and would
+wedge shutdown on a hung job), capturing the context so a sync job's LLM client stays visible.
 
-Timestamps: user messages display `created_at`; assistant messages display `completed_at`. Both format as `HH:MM` same-day, `MM-DD HH:MM` same-year, `YYYY-MM-DD HH:MM` older. Live display and restore read the same stored values, so the rebuilt chat matches what was seen live. The status bar's token count is the **per-call** prompt tokens of the history's last API call — not the turn's cumulative sum (that sum is the assistant message footer).
+A job that needs an **external capability** reaches it through a handle that is a lazy proxy to the
+gateway, forwarding to the gateway's internal call tool — the same shape the host's proxies use.
+Nothing external is ever spawned a second time, so a job can use **any tool on any connected server,
+loaded or not**. The handle holds **no client between calls**: a connection is built, used and torn
+down per call, so nothing can go stale and the plugin needs no reconnect bookkeeping. Port discovery
+is layered — the host pushes the gateway's port at **both edges of the handshake**, so spawn order
+never decides it, with the spawn-time env var as the fallback.
 
-All user-supplied text is rendered with `markup=False` to prevent `MarkupError` injection. The end-user keymap lives in the [README](README.md#keyboard-shortcuts); the design notes for the picker and approval bindings live in Part 4.
+After any tool-set mutation the plugin pushes a change notification and the host's generic rescan
+re-lists and diff-registers, so per-job tools appear and disappear live. The plugin is watched by the
+uniform watchdog and covered by `system_health`.
 
-### Progressive Disclosure
+---
 
-Not all tools are in every request. Several categories use lightweight summaries:
+## 6. Subagents
 
-| Category | Browse | Load |
-|----------|--------|------|
-| MemDB | `turn_recall` | `turn_read` |
-| Skills | `skill_list` | `skill_use` |
-| Every function tool (builtin/job/mcp/rest-api) | `tool_search` (the unified catalog — see [TOOL-SYSTEM.md](docs/TOOL-SYSTEM.md)) | `func_tool_load` |
-
-### i18n
-
-`slife/ui/i18n.py` — the bilingual layer (English + Chinese). Every user-facing string routes through `t(key, **fmt)`; the language is resolved once at import from the OS locale and overridable via `set_language()` (tests pin `en`). See [Language policy](#language-policy).
-
-### Config & Credentials
-
-**Two-Layer Architecture**
-
-```
-┌──────────────────────────────────────────────┐
-│  Credential store (credstore)                │
-│  Encrypted at OS level + cryptfile backup.   │
-│  credstore set <KEY>    ← masked stdin       │
-└──────────────────┬───────────────────────────┘
-                   │ ${VAR} / keyring:service/key reference
-                   ▼
-┌──────────────────────────────────────────────┐
-│  slife.yaml → env: section                  │
-│  Plain config. Holds refs, not secrets.      │
-└──────────────────────────────────────────────┘
-```
-
-Secret resolution order is **shell env → credstore → literal default** — for both plain `${VAR}` and `${VAR:-default}` (the fallback form resolves the default from the shell env but still consults credstore first for the key; it is *not* "shell-only"). `keyring:service/key` URIs are accepted for `api_key` fields. Resolution is recursive over strings/lists/dicts; Slife itself never prompts and never reads credstore's cryptfile backup (see the README's three supported usage methods for keyring-less machines).
-
-**Credstore Backend Matrix** — backend selection is **deterministic by platform** (`_init_system()` dispatches `os.name`/`sys.platform`/`is_wsl()`), no keyring priority auto-discovery:
-
-| Platform | Backend | Mechanism |
-|----------|---------|-----------|
-| **WSL** | WslBackend | PowerShell bridge → advapi32.dll CredReadW/CredWriteW (C# P/Invoke) — shares the Windows CredMan store |
-| **Windows** | WinVaultKeyring | Windows Credential Manager (Vault API, via keyring) |
-| **macOS** (GUI) | macOS Keyring | Logon keychain via keyring ctypes shim |
-| **macOS** (headless) | macOS Keyring + isolated keychain | `CREDSTORE_KEYCHAIN` or `~/.credstore/credentials.keychain-db`, auto-created via `security create-keychain` |
-| **Linux** | KeyutilsBackend | Kernel persistent keyring via ctypes syscalls (zero deps) |
-
-Anything else raises a clear "unsupported platform" error. On a supported platform whose backend is unavailable (e.g. keyctl blocked by policy), credstore keeps working in **cryptfile-only** mode — but Slife's own resolution reads the system keyring only and silently falls through to env vars, so the config layer is inert on such machines by design.
-
-**Secret Sanitization** — the input and output gates are the authoritative trust boundary. A secret may appear as plaintext anywhere *inside* the process (tool internals, `conn.error`, log lines) — that is **not** a vulnerability by itself. Judge any finding by two questions: **(1)** does the secret reach the LLM context / history as plaintext? → blocked by the gates; **(2)** does it cross the machine trust boundary as plaintext (network egress, a public `/share`, anything readable outside the running user)? → a real security finding. Everything else — including plaintext in `~/.slife/logs/` (readable only by the running user) — is hygiene, not a security issue.
-
-Two gates, single pattern-masking engine (`logfmt.sanitize_secrets`):
-
-1. **Inbound** — `MessageHistory.add_user_message()` on every external message.
-2. **Outbound** — `AgentLoop._execute_tools()` runs `sanitize_secrets` on **every** tool result before it enters the history (tool-call arguments are also masked at `add_assistant_message`, and the TUI's tool-call preview is masked too).
-
-Known shapes: `sk-*`, `ghp_*`, `ya29.*`, `pypi-*`, `Authorization: Bearer` tokens, credential-named `key=value` pairs → masked as `<MASKED>`. The engine is pattern-based with bounded regexes (no catastrophic backtracking) and deliberately no generic hex/blob heuristics — an exact-match denylist from credstore remains a possible hardening. The honest boundary is "known-shaped secrets never reach the LLM".
-
-**Config Sections** — `slife.yaml` structure parsed by `Config.from_yaml`:
-
-| Section | Purpose |
-|---------|---------|
-| `env` | `${VAR}` references, applied to the environment at startup |
-| `models.providers` / `active_model` | LLM providers (api_key, base_url, api, models[]) + the active `"provider/model"` ref |
-| `job_coding_model` | Top-level provider/model ref for jobs (plugin-read, independent of `active_model`) |
-| `agent` | `max_iterations`, `context_floor`, `context_ceiling`, `tool_result_ceiling`, `memory_tool_result_chars`, `heartbeat_interval`, `cutin_enabled`, `rebuild_message`, `recall_limit`, `recall_min_similarity` |
-| `embeddings` | First-class embeddings config: `providers` (OpenAI-compatible endpoints), `active_model` (bare provider id), `enabled` — shared by memdb/memfiles + the gateway's tool catalog (host passes the active endpoint via handshake) |
-| `wechat` | `enabled` toggle |
-| `media` | Non-chat generation config (plugin-read, ignored by the main `Config` parser) |
-| `a2a` | Transport binding, broker host/port |
-| `subagent` | `max_subagents` (the timeout is developer-owned — see `timeouts` row) |
-| `timeouts` | **Not a user section.** Every timeout value is a developer-owned constant in **`slife/timeouts.py`** (the module is the registry — see [TIMEOUT.md](docs/TIMEOUT.md)); there is no `timeouts` section in `slife.yaml` and `agent.tool_timeout` / `subagent.task_timeout` are no longer read from it |
-| `plugins.required` | Required plugins (empty by default; the shipped config requires `memdb`, `memfiles`) |
-
-**Config writes preserve the file's comments.** Every writer mutates a dict and calls `write_config`; the write then **edits the existing document** rather than re-serializing the dict — the current text is loaded as a ruamel round-trip document, the delta from the incoming dict is applied to it, and the document is dumped. Comments, indentation, blank lines, key order and quote style survive because they never round-trip through a dict (the [`tomlkit`](https://github.com/sdispater/tomlkit) pattern: *modify the document, never `unwrap()` it*). This matters because these files are hand-edited documentation — `sharefile.yaml` is 76% comments, `local_embed.yaml` 65%, and a single `mcp_set` used to erase all of it. The implementation is `slife/tools/_yaml_doc.py`, and it is thin: ruamel's round-trip mode does the preservation natively, so the module is four settings (`preserve_quotes`, `allow_unicode`, `width`, `indent`) plus the delta walk that assigns into the loaded document instead of rebuilding it. It still re-parses every render before returning it, and falls back to a plain render if the edited document does not read back as the intended dict — losing comments is bad; writing a config that says something else is worse. It replaced `_json5_doc.py`, which hand-rolled a whitespace model on json-five: that library warned its own model API breaks "even in minor releases", shipped **no validation** ("no validation to ensure your model edits won't result in invalid JSON5 when dumped" — its README), and was the only comment-preserving JSON5 parser in Python. The format moved to YAML so that the preservation comes from a maintained library rather than a workaround.
-
-**`tools.yaml`** is the unified tool config with one section per tool category — `builtin` / `mcp` / `rest-api` / `job` / `cli` / `skill` — each entry setting `enabled: false` to disable (default enabled). External MCP servers live in `mcp.servers`; REST-API registrations in `rest-api` — **the same entry format**, an ordinary `uvx mcp-openapi-proxy` server that happens to sit in the other section (placement is the whole fact: `config.is_rest_api` / `rest_api_names`; nothing is tagged for it, and `source` records where a definition was *downloaded* from, not what it is); the builtin-tool overrides (`builtin`, e.g. `install_python_package`) and the CLI tool definitions (`cli`) moved here from slife.yaml; `job` / `skill` are reserved (their files are the source of truth). A legacy top-level `servers` in an old tools.yaml reads as the mcp section and is normalized on the first write. The gateway self-hosts the file. Each REST-API server is an `mcp-openapi-proxy` instance in **Low-Level Mode** (the proxy's default — one typed MCP tool per OpenAPI endpoint), configured via env only: `rest_api_set` writes `OPENAPI_SPEC_URL` / `SERVER_URL_OVERRIDE`, and for a keyed API an `API_KEY` env var holding a `${VAR}` ref (resolved env → credstore; the proxy sends it as a Bearer `Authorization` header). The gateway prefixes the resulting tools as `{name}__{endpoint}`.
-
-### Health Checks
-
-Health checks fall into two categories. `system_health` runs them all together — it is the **only** health tool registered for the LLM (the per-subsystem `check_*` functions are internal, so nothing re-calls them after the aggregate).
-
-**Static startup checks** — `check_external_deps()` in `slife/health.py` probes system tooling once at startup **on a daemon thread**, recording per-tool entries via `health.record()` (components `node` / `npm` / `bun` / `uv`); they surface through `system_health` via the startup-record merge. Missing deps are warnings, not failures — Slife still starts.
-
-**Dynamic runtime checks** — spec-derived (`_SPEC_CHECKS` maps each plugin's health-check name to its client) plus three non-plugin checks (`check_tool_catalog` reads the context's catalog service; `check_embeddings` and `check_watchdog` have no plugin client at all):
-
-| Check | What it monitors | Layer |
-|-------|-----------------|-------|
-| `check_memdb` | Database file + embedding backend (model, dimension, availability) | memdb plugin `__check` |
-| `check_wechat` | Login status, session age, QR expiry | wechat plugin `__check` |
-| `check_memfiles` | Cabinet connected? semantic index ready? | memfiles plugin `__check` |
-| `check_embeddings` | **Active** embedding endpoint online? which model does this session embed with? (probes its HTTP `GET /v1/models` — not a plugin, and not specific to the local-embed daemon: every provider, local or cloud, is one OpenAI-compatible endpoint) | embedding endpoint |
-| `check_sharefile` | Tunnel online? URL? which provider? | sharefile plugin `__check` |
-| `check_mcp_gateway` | Per-server diagnosis; reports `mcp_servers` and `rest-api` as **separate components** (optional `server` arg filters one) | gateway `__check` |
-| `check_a2a` | Mesh connection + peer status + queue backlog | a2a plugin `__check` |
-| `check_media` | Media provider config + the last call outcome per provider (a key's presence is a fact, not a verdict — an unpurchased model only shows up when called) | media plugin `__check` |
-| `check_job_coding` | Jobs dir + registered job tools + gateway link | job-coding plugin `__check` |
-| `check_tool_catalog` | `tools.db`: tool/server/loaded counts + the catalog's semantic index | host-as-plugin `__check` facts |
-| `check_watchdog` | Auto-restart status per plugin, deduplicated from health records (latest per plugin) | Process layer |
-
-Every plugin-backed check probes the plugin's internal `__check` tool, which reports only raw technical state (facts and measurements, like a physical-examination report) and **never triggers a connect**. The harness interprets those facts into health levels and remediation hints — a plugin `__check` has no levels of its own.  The facts that are about the **host** rather than about the running process — the config's provenance and counts, the active model, and the external toolchain's versions — are recorded by ONE recorder (`health.record_host_facts`) called from both entry points, the TUI and a headless worker, so the two `system_health` views list the same components: a worker reporting 14 against its parent's 20 was a difference no reader of either report could account for. The toolchain half is probed on a daemon thread, so a report read in that window states its own **scope** (which facts are not in yet) rather than letting a smaller count read as a smaller system. The watchdog only monitors processes — it does not introspect application state.
-
-**The report.** `system_health` renders **plain text, not JSON** — a truncated JSON document is unparseable, while a line-oriented report degrades to fewer whole lines (a tool result is tail-cut at the live cap, and above `memory_tool_result_chars` head+tail-cut at save, so the report is built to fit the save budget in the first place and puts the verdict first):
+A subagent is an **agent worker**: a local child process running the same agent loop with the same
+config and tools as the main agent, deliberately stripped of everything that makes the main agent a
+*harness* — no TUI, no turn persistence, no scheduler, no cut-in injection, no A2A inbound drain, no
+plugin spawn, no health or watchdog duties. It keeps no independent network identity: when it reaches
+the mesh it sends **as the main agent**.
 
 ```
-system_health: DEGRADED — 2 problems (0 errors, 2 warnings): rest-api, wechat; 16 components OK
-
-## Problems
-[WARN]  rest-api: disconnected [github, mcp-registry] — The wrapper retries in the background. …
-[WARN]  wechat  : status=session_expired (436.6h old, max 23h) — Call wechat_login to re-scan.
-
-## Components OK
-memdb: db=7.3 MB (slife.db); embedding=ready (BAAI/bge-m3, dim=1024)
+ Main agent (the harness)                     Worker child
+ ┌──────────────────────────────┐             ┌──────────────────────────────────┐
+ │ Inbox ─ one turn per message │             │ python -m slife.subagent.headless│
+ │   ▲  [Subagent:…] auto-push  │             │ AgentService(role=WORKER)        │
+ │   │                          │  JSON-RPC   │  inbox ─ worker/send = ONE turn  │
+ │ _on_subagent_done ◄──────────┼─────────────┤  one-shot history per task       │
+ │ SubagentProcess (pipes)      │  stdin/out  │  no TUI · no persistence         │
+ └──────────────────────────────┘             │  shared plugin clients           │
+                                              └──────────────────────────────────┘
 ```
 
-One rule shapes every entry a check returns: **`value` is the fact, `hint` is what to do about it** — a healthy entry carries no `hint` at all. The full entry contract (what the renderer reads, the collapse rule, the `info` semantics, and how the check list is derived from the plugin registry) is [PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md) → *Health*. Ranking puts problems first and the static environment records last, and nothing may name a `check_*` function as a remedy — they are not callable.
+Two agents, **one loop machine**. Both run the identical `AgentLoop`, including the `_turn_prompt`
+harness pair and the internal trim, driven by the identical inbox. What differs is the harness around
+it — the declared capability table of §2.7, not scattered branches. "Does not run the main agent's
+harness" is a statement about the *service layer*, not the loop.
 
-**Startup records vs live checks.** A startup record (`health.record`) is dropped when a live entry covers the same `(component, key)` — so a producer names its component after the live check that re-reports it (`mcp_servers` / `rest-api`, `watchdog`, `wechat`, `a2a`), and the live report wins in both directions. This is why `_discover_and_register_external_tools` records under `_health_component()` rather than a fixed name.
+**A subagent is not a plugin, and not an A2A peer.** A plugin is spawned and owned by the parent,
+speaks MCP over Streamable HTTP on a signalled port, and is watched. A subagent speaks JSON-RPC over
+stdin/stdout, owns nothing, and has no watchdog — it dies alone.
 
-### Logging Convention
+### 6.1 The process protocol
 
-Structured log lines: `event_name key1=value1 key2=value2 …` (see `slife/logfmt.py`).
+The wire is JSON-RPC 2.0, deliberately not A2A: the worker is *local*, not a mesh peer.
 
-- Event name: snake_case, past-tense for completions (`tool_done`), present-tense for state (`mcp_connected`).
-- Levels: `debug` = per-request detail, `info` = lifecycle milestones, `warning` = recoverable, `error`/`exception` = hard failure (use `exception()` to keep the traceback).
-- Every line that could contain user input, tool args, tool output, or subprocess stderr passes `sanitize_secrets()` before logging.
-- Plugins inherit the session id and write to per-session files via `setup_server_logging`; their stderr is relayed by the parent at DEBUG.
-- No diagnostics on stdout (reserved for the TUI and the plugin port signal).
+| Direction | Message | Purpose |
+|---|---|---|
+| child → parent | `{"result": {"ready": true}}` | startup readiness — the spawn await blocks on it |
+| parent → child | `worker/send` (`id` = rpc_id) | one task (one turn), correlated by id, never by text |
+| parent → child | `worker/cancel` | drop-if-queued / preempt-if-running |
+| parent → child | `worker/plugin_restart` | a shared plugin moved to a new port — reconnect |
+| parent → child | `context` | the cloned parent history, sent on stdin at spawn |
+| parent → child | `shutdown` | graceful stop |
+| child → parent | `{"result": "<final reply>"}` | the task's one-turn result |
+| child → parent | `worker/complete` | "the result above is final" |
+| child → parent | `worker/progress` | parsed but never emitted — a reserved notification |
 
-**Sinks: log is for developers, TUI is for the user.** Three sinks, two audiences:
+Four implementation details carry real weight:
 
-- **Session log file** (`logs/*.log`) — full truth: DEBUG+, every level keeps its real meaning. `warning`/`error` events are *never* demoted to `info` to hide them from the terminal — that corrupts the file and makes log-based diagnosis (or an LLM reading the log) see "all OK" when failures occurred.
-- **Console (stderr)** — never emits: the main harness runs its stderr handler at `CRITICAL + 1` (a no-op), so the terminal belongs entirely to the TUI. Plugin/subagent processes run stderr at DEBUG — that is a diagnostic pipe to the parent, not a user terminal.
-- **TUI** — a pure business channel, decoupled from logs. User-visible status is surfaced explicitly via `_show_system_message` / callbacks — never by leaking `logger.warning` to the terminal. The plugin never talks to the TUI: the harness owns surfacing.
+- **Pure UTF-8 on stdout.** The Windows default stdout codec is the system code page and cannot
+  encode emoji, so protocol writes go to the raw buffer, bypassing the codec.
+- **Piped stdin is read on a dedicated thread.** asyncio's pipe registration fails for a
+  parent-owned pipe on the Windows Proactor loop, so a thread does blocking reads and feeds the event
+  loop. The reader stays live while a task runs, so `worker/cancel` can preempt.
+- **Config never rides the process env.** The resolved config carries plaintext API keys, so it is
+  passed via a `0600` temp file — never the environment, which is readable through the process table.
+- **Over-long protocol lines are discarded, never fatal.** One line may legitimately be the whole
+  cloned history or a many-megabyte result; a line past even the raised cap is dropped, tail and all,
+  so a pathological line cannot kill the reader or wedge the worker.
 
-Known gaps (tracked, not fixed): several call sites log raw user/tool/task content without sanitization, a few use prose instead of `key=value`, and noisy third-party loggers are silenced at WARNING (including the anthropic SDK's DEBUG trace that once wedged a subagent relay — see [A.8](#a8-bounded-relay-and-daemon-threads-the-stderr-pipe-wedge)).
+### 6.2 One turn per task
 
-### Dev vs. Production Data Directory
+`spawn_subagent(name, clone_context=False)` starts a named worker. **A worker's name is its
+identity** — explicit, never auto-generated, and validated, because the name lands in the child's
+system prompt *and* its log filename. Reuse is explicit: spawning a running name returns the live
+worker.
 
-`slife/paths.py` decides where session data (config, `*.db`, `*.files`, `logs/`) lives. Two modes only:
+Context is chosen once, at spawn: **clean** (the default) runs each task in a bare history; **cloned**
+copies the parent's message history without the parent's system message (the worker renders its own)
+and ships it on stdin. A clone is a **spawn-time snapshot** — a cloned worker re-seeds from that
+fixed snapshot on *every* task, so it never accumulates context across tasks and never sees parent
+turns that happen after spawn.
 
-- **Production** (default): everything under `~/.slife/`.
-- **Dev**: the project root (CWD) — `pyproject.toml` beside the source tree.
+A task is one turn by construction: one `worker/send` becomes one inbox message, which becomes
+exactly one `loop.run()`. Inside that run the loop may make many LLM calls and tool calls, bounded by
+`max_iterations`, but from the task's point of view there is exactly one turn, one reply, one result.
+**The worker processes tasks serially**; extra sends to a busy worker are queued by the *parent*,
+never refused and never re-sent.
 
-`is_dev()` requires **both** conditions to hold: (1) the CWD's `pyproject.toml` declares `project.name == "slife"` (the CWD *is* the project root), and (2) the loaded `slife` package's parent directory **is the CWD** (the source `slife/` subdir of that checkout — an editable install, or `python -m slife` from the tree, both satisfy this). A production install always loads from a site-packages dir whose parent is never the CWD, so it stays production no matter where it is launched from — inside a checkout, or from the home directory (uv tools install under `~/.local` / `%LOCALAPPDATA%`). Either condition alone is ambiguous; both must hold.
+### 6.3 Identity and result delivery
 
-## Part 9 · Project Structure
+The worker renders its own system prompt from `subagent.j2`, which frames it as a headless process of
+the parent with the same capabilities, carrying **no identity of its own** — no presence, no
+personality, and in all external communication it acts as the main agent, never introducing itself.
+It is told it is ephemeral, and how it was seeded. Its completion posts back under a dedicated inbox
+source, so it is distinguishable from human turns in memory search yet routed into the human history.
+
+**The worker has no result-push tool.** Its reply goes out as an ordinary JSON-RPC result on stdout.
+The **parent harness** does all the pushing: a sync caller's future resolves; an async result is
+stored and the manager is notified; the manager posts an inbox message carrying the machine marker
+`[Subagent:{"subagent_name", "task_id"}]` so the model can attribute it, and the channel records
+whether it was a scheduled task. The TUI drops the marker and shows the `Subagent(<name>)>` bubble.
+There is deliberately no subscribe call — async results are auto-subscribed, and the `poll` mode
+suppresses only the *push*, never the retrievability.
+
+### 6.4 Failure semantics
+
+The worker has no error-handling loop of its own; every failure ends in a result coming back.
+
+| Failure | Surface |
+|---|---|
+| LLM/provider error inside the turn | the reply text is `Error: …` — the caller's future resolves *successfully* with that text |
+| protocol error frame | JSON-RPC error → the parent raises → the tool returns an error string |
+| worker died before replying | the pending future fails with "closed before task was resolved" |
+| **stall** — no reply at all | the task budget expires → `TimeoutError` → the tool reports the timeout |
+
+The stall case is the interesting one. The abandoned task is **preempted in the child** — a worker is
+serial, so a genuinely stuck task must never block later tasks. A **late** result is stored but never
+auto-pushed, because the caller was already told it timed out; a push after a reported timeout would
+double-announce a task the caller believes failed. Parent-side cancel does the same and discards the
+late reply.
+
+This is what "no error handling" means precisely: no retries, no recovery, no second attempt. The
+worker is the one agent that does **not** participate in the stream-retry ladder (§3.3) — even a
+transient transport failure is a single attempt, surfaced immediately, because there is no user to
+wait on. The per-chunk stall watchdog still applies, but in a worker a stall is surfaced, never
+retried. `max_subagents` defaults to 5; the task bound is the registry's `work.task_budget`, and a
+per-call `timeout` on the send tool is the one model-facing override.
+
+### 6.5 Sharing and recursion
+
+Every plugin the parent started is shared **by port** — a manifest loop over the discovered plugins,
+never a hard-coded subset. A plugin the parent skipped published no port and is skipped here too, so
+the two processes agree on which plugins exist without either enumerating them. A worker never spawns
+its own plugin processes, so a worker crash takes down only the worker.
+
+**There is no isolation.** Shared servers are exactly the parent's servers — same turns DB, same
+cabinet, same gateway. The worker is trusted, never fenced. The one deliberate asymmetry: the a2a
+plugin registers the send-side tools in the worker so it can act as the parent, but the **inbound**
+queue stays with the parent — a worker that could push into its own parent's inbox would confuse its
+own history.
+
+**Recursion is allowed**: a subagent can spawn its own descendants. There is intentionally no
+subagent-specific gate — trust, not enforcement.
+
+---
+
+## 7. Memory
+
+Every turn is permanently recorded as an independent row — there is **no session concept**, just a
+continuous time-ordered log in `<data dir>/<agent>.db`. Agent isolation is at the database-file
+level: `--agent alice` gives Alice her own diary, indexes, file cabinet and mesh name.
+
+**Memory is core — the agent never runs silently without it.** A fatal turn-save failure is a hard
+stop, not a skip: the memory-broken state is set, the **inbox freezes** (queued turns are dropped — a
+turn that cannot be persisted is not worth running), and the TUI shows a persistent banner until the
+DB is fixed and the agent restarted. Transient MCP timeouts are warned, not fatal. Restore-side
+failure is likewise fatal: a present-but-broken database **aborts startup**.
+
+### 7.1 The turns database (`memdb`)
+
+The backing table is `diary`; the schema is `slife/plugins/memdb/schema.sql`. Conceptually the row
+holds the user's message, the assistant side as an OpenAI JSON array (thinking, tool calls, results,
+text), an LLM-written summary and tags, the user-input and completion timestamps, the channel
+identity, the agent identity and model, the turn's billed token count, and `context_tokens` — the
+context size at the last API call, which restore primes the first turn prompt with.
+
+There is **no `images` column**: image blocks live only in the in-memory user message and are never
+persisted, so restore is text-only. Supporting structures are an FTS5 external-content index (whose
+UPDATE trigger exists because the summarize tool rewrites columns and an external-content index must
+track that), a sqlite-vec table, a key/value `diary_meta` store holding the embedding model identity
+and the ordered live-context list, and a sibling `turn_channel` row per turn holding the channel's
+JSON payload, written atomically with the insert.
+
+**There is no migration layer.** Backward compatibility is not supported: schema changes land in
+`schema.sql` for fresh databases, and an old database is deleted and rebuilt rather than upgraded.
+The data is derived, and a migration path is a permanent maintenance cost.
+
+### 7.2 Search
+
+Three indexes back the search modes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN) and a B-tree
+on `created_at`. The modes are `grep` (exact strings — error messages, paths, code), `fts5` (topic /
+keyword with ranked snippets), `hybrid` (FTS5 + vec0 merged by reciprocal rank fusion, `k=60`) and
+`time` (browse by date).
+
+The cosine metric is **declared in the vec0 DDL**, because that is what makes the raw distance
+readable as a 0–1 `similarity`: `1 - distance` is a cosine only when the metric is one, and the
+backends do not all normalize — a local gguf backend's raw output is not unit-norm, so an L2 table
+could not yield a cosine at all.
+
+All time bounds share one grammar (`slife.timeutil.normalize_time_bound`): an ISO datetime or date,
+the day words, the calendar periods (`last week`), or `<N> days ago`. A period word anchors to the
+period's **edge**, not to today's day-of-month. A bound in no known grammar **raises** rather than
+passing through — SQLite would compare the text, match nothing, and report a bound nobody understood
+as "no results".
+
+Two hardening rules are load-bearing: **CJK queries route keyword search to a LIKE fallback**, because
+FTS5's `unicode61` cannot segment Chinese and a whole-sentence query becomes one phrase token that
+never matches; and FTS5 MATCH operator words are quoted and stray symbols stripped, so a user query
+cannot crash the MATCH parser. Without an embedding backend, hybrid degrades to FTS5-only and reports
+its degraded mode and reason.
+
+### 7.3 Embeddings and the semantic gate
+
+Embeddings are a first-class top-level `embeddings` section of `slife.yaml`, shared by memdb,
+memfiles and the host's tool catalog. A **provider** is one OpenAI-compatible endpoint with a model,
+and `active_model` is a bare provider id. One rule surprises people: **the vector dimension is
+deliberately not configured.** It is resolved from a known-model table, the endpoint's `/v1/models`,
+or a probe embed.
+
+**`SemanticManager` is the lifecycle actor** — one object owning the binary gate, the embedder
+instance and an event-driven index drainer. It is document-generic, so memdb, memfiles and the host
+catalog each drive their own instance and the three gates are independent. There is **one
+implementation and one subclass**: memdb's is the base class, and the host's catalog subclasses it,
+overriding only the four hooks where the catalog genuinely differs.
+
+The gate opens exactly when `embedder_ready ∧ count_unembedded() == 0` — there are no intermediate
+states, and **partial semantic results are never served**; while the gate is off, hybrid degrades to
+FTS5-only with a hint naming the reason. A persistently failing embedder is bounded by a per-session
+no-progress limit, after which the drainer parks in `stalled` rather than exiting: enabled stays
+true, so the next save wakes it for a fresh bounded round. Idle therefore costs nothing and a
+transient failure self-heals. The state machine and a human-readable reason are reported separately
+from the binary gate.
+
+The **write path is insert-only**: saving a turn never embeds on the save path (a slow embed of a
+large turn once tripped the save timeout and raised a false alarm about a row that had in fact been
+saved). Each insert wakes the idle drainer with a non-blocking event set. **A model or dimension
+change** stops the drainer, migrates the vector table in place by comparing the declared width and
+the model identity against what the database was built with, and restarts it; a mismatch drops and
+recreates the table, because old vectors live in a different vector space.
+
+The catalog's instance publishes its state into `tools.db`'s `meta` table rather than keeping it to
+itself. That is not redundancy: the index is *shared*, so a process running no drainer — a worker —
+must be able to report it rather than guess. A reader that finds no published row reports `unknown`,
+which is a fact, where `disabled` would be a claim about a drainer that is not there.
+
+### 7.4 Session restore, and the live-context list
+
+On startup, recent turns are read **directly from SQLite** — no MCP transport, no plugin dependency.
+The UI rebuilds the last session from the diary, and only then does the plugin spawn begin. Restored
+messages carry their stored timestamps, so the rebuilt chat matches what was seen live.
+
+**The id list replays the exit-time context.** `diary_meta.context_turns` is an **ordered JSON array
+of rowids** naming the live context. Three things maintain it: the save appends the new rowid inside
+the diary row's own transaction; the internal trim drops the turns it evicts, passing the **actual**
+ids; and the per-turn rebuild replaces the list with its recall selection, with an explicit clear for
+an empty one.
+
+- **The list's order is authoritative.** Reads replay it as written and never re-sort by rowid — and
+  the slice need not be contiguous.
+- **Turns on the list are returned verbatim, with no ceiling re-slicing.** The list already encodes
+  the trimmed state and is its own bound.
+- **A set refuses an empty list by design** — its guard protects a *partial* selection, not a
+  deliberate one; clearing is a separate, explicit operation.
+- A database predating the list restores an empty context, and its turns stay searchable.
+
+The restored turn prompt is primed with the latest restored turn's persisted `context_tokens` — the
+exact context size at exit — so the first prompt and status bar show real occupancy. The
+just-restored history is also exempt from the first-turn trim.
+
+### 7.5 The file cabinet (`memfiles`)
+
+A standard plugin, self-contained and replaceable. **Four** typed knowledge stores, each
+**dual-written** to a human-browsable markdown file and a SQLite index: **note** (keyed by subject),
+**diary** (keyed by date), **file** (saved attachments under `files/<category>/`, auto-filed by
+extension with bytes staying on the filesystem, and semantically searchable from an LLM summary given
+at save time — one pass, no separate summarize tool) and **report** (scheduled-task reports).
+
+Each kind owns its FTS5 and vector tables and declares its own time axis, so a range query on a kind
+uses the same column its list tool orders by. The index mirrors memdb's design and **reuses its
+code**: the shared `SemanticManager` drives the drainer over all kinds, and each plugin reports its
+own gate.
+
+`url_save` guards against SSRF **before fetching and again on every redirect hop**: every resolved
+address must be globally routable, so loopback, private, link-local and cloud-metadata targets are
+refused. One deliberate exception — the documented **fake-ip pools** used by Clash and sing-box are
+accepted, because those resolvers answer real public hostnames with addresses from them. (The same
+pools are what sharefile's tunnel health *flags*, for the opposite reason: intercepted traffic breaks
+the tunnel's control connection.)
+
+All save tools return the saved local path and never auto-publish, so nothing is registered in any
+token registry as a side effect of saving. Publishing is always the model's explicit choice, through
+the separate sharefile plugin.
+
+### 7.6 Images and the `@` syntax
+
+Users attach images with `@` directives — **one `@` is one source**, any number per input, parsed
+independently. The user message stays verbatim; the extracted sources are handed to the loop, which
+**auto-invokes** `attach_image` once with the whole list through the harness-call machinery — a
+single history shape, no LLM iteration spent deciding to attach.
+
+A source is a bare path, a URL, a data URI, or any of those quoted or bracketed (so spaces work).
+Multiple directives may sit adjacent without spaces. A bare path must end in an image extension, so
+`@someone` is skipped as plain text; **URLs and data URIs are self-identifying by scheme** and need
+no extension gate. A token ends at whitespace, a quote, the next `@`, a CJK character (a natural word
+boundary when typing) and — for URLs only — a comma; data URIs keep their commas because base64 is
+comma-heavy. There is no filesystem check at parse time: existence is validated downstream, where a
+failure becomes a reported error rather than a silent drop.
+
+Parsing is deliberately **two-phase** — locate every `@`, then match a source pattern on the slice
+after each — rather than one regex, which is more robust against the special characters above and
+keeps the existence check in one place downstream. Blocks are **live-session only**: never persisted,
+so restore is text-only. Images are never rendered in the terminal — the model reads them, and the
+user opens the file with the OS or a share link.
+
+---
+
+## 8. The A2A mesh
+
+The A2A protocol runs over the official **A2A-over-MQTT** profile — the `a2a-over-mqtt` SDK — *not* a
+self-built binding. The wire protocol, the topics, the QoS rules and the retry ladder are the SDK's;
+Slife keeps only harness glue: the plugin, the inbox drain, the channel, task bookkeeping, presence
+display and the LLM tool surface. Interop with the rest of the ecosystem follows, and standard A2A is
+async-native — a send returns a task id immediately and the result is pushed back later, which is
+machinery the harness already had.
+
+**Layout.** `$a2a/v1/{category}/{org}/{unit}/{agent_id}` with four categories — discovery (a retained
+Agent Card, with presence carried by an MQTT user property and a last-will), request, reply, and
+event (fire-and-forget, QoS 0). Envelopes are JSON-RPC 2.0; the MQTT response-topic and
+correlation-data properties carry the requester's reply routing, and a request lacking them is
+rejected. A task flows ack → optional working updates → artifact → terminal, with per-task dedup.
+
+**Two connections, distinct client ids.** The SDK `Responder` owns all presence publishing — the
+retained card and the will — while a thin outbound driver publishes requests and subscribes to
+discovery, its own reply sessions and events; it has no will and announces no presence of its own.
+Connecting does not return until **both** are live, because without that gate an early send could be
+dropped before the responder subscribed. (The SDK publishes the card only *after* subscribing, so our
+own online card appearing on the discovery wildcard is the deterministic "inbound is live" signal.)
+
+**Inbound.** The responder classifies a message by its declared type and blocks on a per-task
+completion bridge **only** for a task request — only a request creates a task. A plain message is a
+conversation, enqueued task-less with no bridge; a task response is not a task at all and is
+acknowledged with nothing enqueued. **Completion is the model's explicit action**, whenever the task
+is truly done — a task may take many turns — at which point the bridge resolves and the SDK publishes
+the artifact and terminal state. A working keepalive keeps the stream alive while the harness thinks.
+External cancellation is detected and surfaces as a harness preempt, the equivalent of the user
+pressing Esc.
+
+A turn that fails is a **harness** failure, not an A2A one: the channel delivered the message and was
+done, so the TUI draws no A2A failure line for it.
+
+**Outbound.** Sending is typed, and only one type creates a task — one id serves as the JSON-RPC id,
+the task id, the reply correlation and the store key. A conversation type creates no store record. A
+task-response send completes an inbound task through the bridge rather than publishing a new request.
+
+Delivery retries use the profile's standard values: re-publish the same payload under a fresh
+correlation when no first reply arrives, with bounded exponential backoff and jitter, up to three
+attempts; any reply at all — including a deduplicated working replay — confirms delivery and stops
+the retries. **Every correlation a task was published under stays routed until its terminal reply
+arrives**, because the peer answers on whichever correlation it first saw, which is usually a retry
+correlation. Exhaustion plus a subsequently late reply still routes: the push model never abandons a
+result.
+
+**Presence** is online/offline only — the profile has no heartbeat, and the old timeout sweep and
+busy chip are gone. Transitions reach the model: the plugin queues them and the per-turn prompt
+carries only *changes*, read once, while the current roster stays queryable — so a missed event never
+leaves the model with stale state. A **cold retained offline card** (a peer already gone before we
+subscribed) is cached for the roster but not announced, so a dead card from a past session never
+fires a fake offline event.
+
+**The tool surface is the standard operations**, one prefix, nothing waits: `a2a_send_message`
+(typed), `a2a_cancel_task`, `a2a_list_agents`, `a2a_broadcast`. There are no async or poll variants
+and no `timeout` parameter, because nothing waits. **One envelope for every inbound message**, with
+`type` distinguishing a task to answer, an auto-delivered result, a conversation, or an event; the
+TUI strips it and shows the peer prefix instead.
+
+**Config and gating.** Only MQTT is implemented; another transport value disables A2A with a warning
+at config load rather than crashing startup. Slife only **probes** the broker — Mosquitto is started
+by the user — and a failed probe means the plugin is not started, which is reported through health.
+The mesh connects eagerly when the plugin starts so presence is announced at launch, and a failed
+eager connect is tolerated: the tools connect lazily on demand.
+
+**Subagents are not part of the mesh.** A worker is a local process with no network identity; it can
+send as the parent, but the inbound queue stays with the parent.
+
+On Windows the plugin switches its own event loop to the selector policy, because the MQTT library
+uses reader/writer callbacks the Proactor loop does not support — and deliberately inside `main()`,
+never at import, so importing the module in a test process cannot change the suite-wide policy.
+
+---
+
+## 9. Surroundings
+
+### 9.1 The UI
+
+A Textual app with no screens and no modals: a chat view, an input, and a status bar. Streaming
+thinking and text render into a message widget rebuilt per chunk; a collapsible thinking block
+toggles with Enter/Space; tool calls mount collapsible widgets with a status icon and a
+primary-argument preview; the status bar shows the model, a thinking badge, the heartbeat indicator,
+inbox state, and the last call's context tokens with a usage percentage.
+
+**Every piece of user data is rendered with markup disabled.** Strings Slife constructs may use
+markup; tool output, arguments, results, file contents and tool names never do — the wrong path
+raises a markup error on ordinary `&`, `[` and `]` in URLs and JSON. The one config-derived value the
+status bar interpolates is escaped instead.
+
+Four interaction rules are load-bearing, and each is recorded in Appendix A: the app's `Esc` binding
+must **not** be priority, the approval prompt's and model picker's bindings **must** be, a binding
+action must be **sync**, and tool widgets are cleared only at the genuine turn-end event.
+
+A bare `.` reply is silence: the widget is discarded rather than rendered. `Ctrl+Y` copies a tool
+result, going through the platform clipboard per OS — on Windows via PowerShell, because `clip.exe`
+decodes piped input with the console code page and mangles anything non-ASCII.
+
+Restore rebuilds the UI in three phases — reconstruct the message list (repairing turn consistency
+first, then mapping channel to display prefix and skipping silence), replace the history and prime the
+loop state, then rebuild the widgets inside one batched update with autoscroll suppressed and a
+single scroll at the end. Scrolling per widget is the live behaviour and it made restore jitter.
+
+### 9.2 Config and credentials
+
+**Two layers.** The credential store (`credstore`, a standalone package) holds secrets encrypted at
+the OS level; `slife.yaml` holds *references* to them, not secrets.
+
+Resolution order is **shell env → credstore → literal default**, for both `${VAR}` and
+`${VAR:-default}`. The subtlety is that the fallback form still consults credstore *before* the
+literal default — otherwise `${VAR:-default}` would resolve to the default even when the key is held
+in the store. Resolution is recursive over strings, lists and dicts. Slife never prompts and never
+reads the store's cryptfile backup. The backend is chosen **deterministically by platform**, not by a
+keyring priority search: Windows Credential Manager, macOS keychain, WSL's PowerShell bridge into the
+Windows store, and the kernel keyring on Linux. An unsupported platform raises clearly.
+
+**The sanitization boundary is the input and output gates.** A secret may appear in plaintext
+anywhere inside the process — tool internals, error strings, log lines — and that is *not* a
+vulnerability by itself. Judge a finding by two questions: does the secret reach the LLM context as
+plaintext, and does it cross the machine trust boundary as plaintext. Everything else, including
+plaintext in the session log directory, is hygiene rather than a security issue.
+
+Two gates mask with one pattern engine: **inbound**, on every external message, and **outbound**, on
+**every** tool result before it enters the history (tool-call arguments are masked too, as is the
+TUI's tool-call preview). The engine is pattern-based with bounded regexes and deliberately **no
+generic hex or blob heuristics** — the honest claim is "known-shaped secrets never reach the LLM".
+One regex detail is a performance requirement, not style: the key-name patterns bound their repeats
+rather than using `*`, because an unbounded repeat backtracked quadratically and froze the parent's
+event loop for minutes on a single large relayed line.
+
+**Config sections.** `slife.yaml` carries `env`, `models.providers` + `active_model`,
+`job_coding_model`, `agent` (the context policy and iteration knobs), `embeddings`, `wechat`,
+`media`, `a2a`, `subagent`, and `plugins.required`. `tools.yaml` is the unified tool config (§4.3)
+and its sections are the only knobs — the old `tools:` array in `slife.yaml` is retired. `media` and
+`job_coding_model` are read by their plugins rather than by the main config parser; sharefile has its
+own file. **There is no user-facing timeout section** — every timeout is a developer-owned constant
+(§4.7).
+
+**Config writes preserve the file's comments.** Every writer mutates a dict and calls `write_config`,
+which then **edits the existing YAML document** rather than re-serializing the dict: the current text
+is loaded as a round-trip document, the delta is applied to it, and the document is dumped. Comments,
+indentation, key order and quote style survive because they never round-trip through a dict. This
+matters because these files are hand-edited documentation — `sharefile.yaml` is roughly three
+quarters comments — and a single config write used to erase all of it. Lists are replaced wholesale
+rather than merged element-wise, because a wrong guess about element identity would move a comment
+onto the wrong element. The write is then **verified**: it re-parses the edited document and falls
+back to a plain render if it does not read back as the intended dict. Losing comments is bad; writing
+a config that says something else is worse. The write itself is atomic (temp file, fsync,
+`os.replace`, preserving the existing file's mode) and the whole read→mutate→write window is held
+under a **cross-process** file lock, because the main process and a plugin child can both be editing
+the same file. One rule about reading: a config parse failure **raises**, because returning an empty
+dict would let a mutating caller write that empty dict back over the whole config.
+
+### 9.3 Health
+
+`system_health` is the **only** health tool registered for the model; the per-subsystem checks are
+internal functions, so nothing re-calls them after the aggregate.
+
+There are two kinds of input. **Static records** are pushed during startup — the active model, the
+config's provenance and counts, and a daemon-thread probe of the external toolchain — and the host
+facts come from **one recorder** shared by the TUI and a headless worker, so both views list the same
+components rather than differing by counts no reader could account for. The toolchain probe runs on a
+daemon thread, so a report read in that window states its own **scope** — which facts are not in yet
+— rather than letting a smaller count read as a smaller system. **Dynamic checks** are the `check_*`
+functions, enumerated **from the plugin registry** rather than hand-listed, with three non-plugin
+checks appended for the catalog, the active embedding endpoint, and the watchdog.
+
+**Health is layered on purpose.** Every plugin-backed check probes the plugin's internal `__check`,
+which reports only raw technical state — facts and measurements, like a physical-examination report
+— and **never triggers a connect**. The harness interprets those facts into levels and remediation
+hints; a plugin's `__check` has no levels of its own. The watchdog only monitors processes; it never
+introspects application state.
+
+One rule shapes every entry: **`value` is the fact, `hint` is what to do about it**. A healthy entry
+carries no hint at all, and a remedy must name a tool that exists — never a `check_*` function, which
+is not callable. A startup record is dropped when a live entry covers the same component and key, so
+a producer names its component after the live check that re-reports it; the live entry wins in both
+directions.
+
+**The report is plain text, not JSON**, and that is a consequence of the result budgets rather than a
+style choice: a line-oriented report degrades to *fewer whole lines* when truncated, while a JSON
+document degrades to an unparseable fragment. It is built to fit the save-side budget in the first
+place, and it puts the verdict first, then problems, then one line per healthy component. Problems
+lead; identical entries collapse into one line with a key list; the static environment records come
+last.
+
+### 9.4 Logging
+
+Structured log lines: `event_name key1=value1 key2=value2 …`. Event names are snake_case — past tense
+for completions, present tense for state. Every line that could carry user input, tool arguments,
+tool output or subprocess stderr passes the secret sanitizer first. Nothing is written to stdout,
+which is reserved for the TUI and the plugin port signal.
+
+**Log is for developers; the TUI is for the user — two sinks, two audiences.**
+
+- The **session log file** is the full truth: DEBUG and above, every level keeping its real meaning.
+  A warning is *never* demoted to info to hide it from the terminal; that corrupts the file and makes
+  log-based diagnosis see "all OK" when failures occurred.
+- The **console** never emits: the main harness runs its stderr handler above every level, so the
+  terminal belongs entirely to the TUI. Plugin and worker processes run stderr at DEBUG — that is a
+  diagnostic pipe to the parent, not a user terminal.
+- The **TUI** is a pure business channel, decoupled from logs. User-visible status is surfaced
+  explicitly through callbacks; the plugin never talks to the TUI, the harness owns surfacing.
+
+**The stderr relay must never die.** An orphaned relay leaves the child's pipe to fill, the child
+blocks on its next log write, and a worker hangs mid-task with its task stuck pending forever. So an
+over-long line is discarded rather than fatal — and the discarded tail is consumed *through its
+newline*, or the next read returns that tail as if it were a fresh line and silently corrupts the
+line accounting. The relay's reader limit is raised for the same reason, and the noisiest third-party
+loggers are silenced at the source: one SDK dumps the entire request body, which with a large tool
+registry is hundreds of kilobytes per request.
+
+### 9.5 Paths
+
+`slife/paths.py` decides where session data lives, in two modes only: **production** (everything
+under `~/.slife/`) and **dev** (the project root). Dev detection requires **both** conditions to
+hold: the current directory's `pyproject.toml` declares `project.name == "slife"`, *and* the loaded
+`slife` package's parent directory **is** that directory. Either check alone misfires — a checkout
+whose `pyproject.toml` is present while the loaded package lives in site-packages would scatter data
+into the checkout, and a tool installed under a home-local directory that happens to sit under the
+current directory would falsely look like dev. A production install always loads from a site-packages
+directory whose parent is never the current directory, so it stays production wherever it is launched
+from. Agent-scoped paths resolve through the agent-name environment variable rather than a parameter
+default, so health tools do not report the default database for every agent.
+
+---
+
+## 10. Project structure
 
 ```
 slife/
-  agent/               # LLM interaction
-    loop.py            #   Function-calling loop (streaming, concurrent tools, harness auto-invoke, context trim)
-    service.py         #   Lifecycle manager (plugins, inbox, model switching, save_to_memory)
-    message_history.py #   Message storage + history (OpenAI format, sanitization, _ensure_turn_consistent, turn/trim headers)
-    llm_client.py      #   Backend router + StreamChunk
-    system_prompt.py   #   Prompt rendering (static + dynamic Jinja2)
-    roles.py           #   Harness capabilities and which role (main agent / worker) holds them
-    templates/         #   agent.j2, subagent.j2, slife.j2, turn_prompt.j2, rebuild_messages.j2, schedule.j2, schedule_trigger.j2
-    llm_backends/      #   API backends: openai.py, anthropic.py, openai_responses.py
-    inbox.py           #   Unified message queue + MessageHistoryStore
-    plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle), plugin_port_env
-    multimodal.py      #   Image encoding for vision models
-    heartbeat.py       #   Autonomous heartbeat scheduling
-    schedules.py       #   schedule_loop, run records, startup sweep, trigger markers
-    timer.py           #   [Timer] wake message helper (posted by wait_minutes)
-  tools/               # Builtin tools (auto-discovered; 61 classes / 13 categories)
-    base.py            #   Tool ABC + make_params/NO_PARAMS/require_params
-    registry.py        #   ToolRegistry
-    factory.py         #   Auto-discovery (pkgutil.iter_modules)
-    context.py         #   ToolContext — runtime refs (registry, mcp_client, config, history)
-    _config_io.py      #   YAML read/write helpers (+ cross-process config_read_modify_write lock)
-    _yaml_doc.py       #   Comment-preserving YAML writes (edit the document, never re-serialize it)
-    catalog.py         #   CatalogStore — the shared tools.db (SQL, FTS5 + semantic, effective status, evict_lru)
-    catalog_schema.sql #   The tools.db schema (fresh databases only; no migration layer)
-    catalog_service.py #   ToolCatalogService — policy: seeding, snapshot, load/unload matrix, threshold eviction
-    catalog_search.py  #   hybrid search adapter (RRF + score annotator over memdb.search)
-    semantic.py        #   Host-side semantic leg for the catalog (projection driver + write-back)
-    whitelist.py       #   3 harness tools + 5 meta tools + 2 pinned (ALWAYS_LOADED — never evicted / not unloadable)
-    meta_tools.py      #   tool_search / func_tool_load / _func_tool_unload (see TOOL-SYSTEM.md)
-    system.py          #   system_health, system_tools_list, async tasks, set_max_iterations, notify_user
-    exec.py            #   Shell, Python, package install (+ _kill_process_tree)
-    schedule.py        #   Scheduled-task tools (scheduled_task_*/scheduled_run_* + run_schedule_now)
-    skill.py           #   Skill management (SKILL.md)
-    cli.py             #   External CLI tool management
-    rest_api.py        #   REST API tool management
-    subagent.py        #   Local worker tools (spawn/list/stop + delegation + task mgmt)
-    models.py          #   Model management + attach_image (vision) + the two harness tools + _ModelConfigTool base
-    config.py          #   Config env var tools
-    credentials.py     #   Credential check/inject/uninject
-    embeddings.py      #   embeddings_model_* — first-class embeddings section config
-    timer.py           #   wait_minutes (pause the turn and resume automatically)
-    user_prefs.py      #   add_user_pref (appends to USER.md)
-  plugins/             # Built-in plugins (auto-discovered server.py packages) + the spec
-    spec.py            #   PLUGIN_SPECS — the central spec table (single source of truth)
-    memdb/             #   Turns database (server.py, store.py, search.py, recall.py, semantic.py, embeddings.py, embedding_config.py, schema.sql)
-    wechat/            #   WeChat messaging (server.py, client.py, config.py)
-    memfiles/          #   Private notes/diary/files/reports cabinet (server.py, store.py, user_prefs.py, schema.sql)
-    sharefile/         #   Public file sharing (server.py, config.py, providers.py = pluggable tunnel)
-    a2a/               #   A2A mesh (mesh.py — official a2a-over-mqtt profile binding; see docs/A2A-MQTT.md)
-    media/             #   Non-chat AI generation (server.py, config.py, adapters/ dashscope-aigc + openai-images)
-    job_coding/        #   Deterministic jobs (server.py, runner.py, registry.py)
-    mcp_gateway/       #   The MCP gateway — a built-in plugin (connections only; catalog = tools.db)
-      server.py        #   FastMCP gateway server — mcp_set/list/tools/set_enabled/remove/search, __check
-      connection.py    #   ConnectionPool / MCPServerConnection (stdio/SSE/streamable, tool snapshot)
-      client.py        #   Streamable HTTP client (used by the harness to connect ALL plugins)
-      config.py        #   tools.yaml → the merged mcp.servers/rest-api server view + resolve_server_config
-      oauth.py         #   OAuth device flow (tokens in the credential store)
-      process.py / i18n.py
-  a2a/                 # The mesh's transport-agnostic core (the plugin owns the SDK binding)
-    mesh.py            #   A2AMesh — Responder subclass, outbound driver, presence, task lifecycle
-    broker.py          #   Mosquitto broker detection (slife never spawns it)
-    card.py            #   AgentCard — slife's display/presence view of a peer
-    config.py          #   The `a2a` config section
-    identity.py        #   A2A identity types (transport-agnostic)
-    inbound_store.py   #   Persisted inbound-task record (in flight, and orphaned by a restart)
-    task_store.py      #   Shared task-lifecycle tracking
-  mcp/                 # Host-process MCP infra
-    host_server.py     #   slife-as-plugin — in-process FastMCP exposing the live ToolRegistry
-    tool_adapter.py    #   MCPProxyTool (bridges MCP → Tool ABC, ProxyRoute dispatch)
-    era.py             #   Protocol-era glue for every MCP link (the 2026-07-28 revision)
-  subagent/            # Local workers (agent workers, not A2A; see docs/SUBAGENT.md)
-    headless.py        #   Headless worker-scoped JSON-RPC process
-    identity.py        #   SUBAGENT unified-inbox source sentinel
-    process.py         #   SubagentProcess + SubagentManager
-  ui/                  # Textual TUI
-    app.py             #   Textual App, bindings, HistoryInput, StatusBar
-    chat.py            #   Chat message widgets (clickable paths/URLs, collapsible thinking)
-    handler.py         #   TUIHandler (bridges events → widgets)
-    tool_display.py    #   ToolCallWidget + display helpers
-    restore.py         #   Session restore (rebuilds UI from diary)
-    approval_prompt.py #   Inline tool approval (Y/N/Esc, no modal)
-    model_picker.py    #   Ctrl+S inline model picker
-    content.py         #   Message content model
-    i18n.py            #   t(key, **fmt) bilingual layer
-    slife.tcss         #   Textual CSS
-  config.py            #   YAML config parsing (models, env, plugins, embeddings, A2A, subagent)
-  paths.py             #   Filesystem paths (dev vs prod, data dir, DB, memfiles, jobs)
-  platform.py          #   OS detection, shell detection, process lifecycle, notifications
-  net.py               #   Network address facts shared across components (fake-ip proxy detection …)
-  timeouts.py          #   The central timeout registry — every value, owner and gate (see TIMEOUT.md)
-  logfmt.py            #   Structured logging + secret sanitization
-  timeutil.py          #   Unified since/until search-bound grammar (normalize_time_bound)
-  env.py               #   ${VAR} environment resolution
-  schedules.py         #   croniter wrapper (validation, next-run, timezone policy)
-  threads.py           #   run_daemon — daemon threads for blocking calls
-  fifoset.py           #   Bounded first-in-first-out set
-  server_utils.py      #   Plugin contract: create_plugin_server, run_plugin_server, is_internal_tool
-  health.py            #   External dependency checks (node, npm, bun, uv)
-  bootstrap.py         #   Logging setup, skill seeding, console restore
-  os_detect.py         #   OS path detection for install scripts
+  agent/                # LLM interaction
+    loop.py             #   the function-calling loop
+    service.py          #   lifecycle manager: plugins, inbox, model switching, save_to_memory
+    inbox.py            #   unified message queue + per-source history stores
+    message_history.py  #   history, sanitization, turn consistency, the turn→messages builder
+    system_prompt.py    #   prompt rendering + the per-turn status prompt
+    roles.py            #   Caps — which role holds which harness capability
+    llm_client.py       #   backend router + StreamChunk + TokenUsage
+    llm_backends/       #   openai · anthropic · openai_responses
+    templates/          #   agent.j2 · subagent.j2 · slife.j2 · turn_prompt.j2 · rebuild_messages.j2
+    plugins.py          #   PluginLifecycle / PluginRegistry + watchdog
+    heartbeat.py · schedules.py · timer.py    # the three timing mechanisms
+    multimodal.py       #   image encoding for vision models
+  tools/                # builtin tools — auto-discovered from this package
+    base.py             #   Tool ABC + make_params / NO_PARAMS / require_params / validate_args
+    registry.py         #   the execution pool
+    factory.py          #   auto-discovery
+    context.py          #   ToolContext — the runtime references every tool receives
+    catalog.py + catalog_schema.sql   # CatalogStore — tools.db
+    catalog_service.py  #   policy: seeding, snapshot, load/unload matrix, eviction
+    semantic.py         #   the host-side catalog vector index
+    whitelist.py        #   the always-loaded carve-outs
+    meta_tools.py       #   tool_search · func_tool_load · _func_tool_unload
+    models.py           #   model_* · attach_image · the two harness tools
+    exec.py · skill.py · cli.py · rest_api.py · schedule.py · subagent.py
+    system.py · config.py · credentials.py · embeddings.py · timer.py · user_prefs.py
+    _config_io.py       #   atomic, comment-preserving, cross-process-locked config writes
+  plugins/              # built-in plugins + the central spec
+    spec.py             #   PLUGIN_SPECS — the single source of truth
+    mcp_gateway/        #   server · connection · client · config · oauth
+    memdb/              #   server · store · search · recall · semantic · embeddings · schema.sql
+    memfiles/ · wechat/ · sharefile/ · a2a/ · media/ · job_coding/
+  a2a/                  # the mesh's transport-agnostic core (mesh, broker, card, task store)
+  mcp/                  # host-process MCP infrastructure
+    host_server.py      #   slife-as-plugin — exposes the live ToolRegistry
+    tool_adapter.py     #   MCPProxyTool — bridges MCP → Tool ABC
+    era.py              #   protocol-era negotiation and the listen stream
+  subagent/             # headless.py (the worker process) · process.py · identity.py
+  ui/                   # Textual TUI: app · chat · handler · tool_display · restore ·
+                        #   approval_prompt · model_picker · content · i18n · slife.tcss
+  config.py · paths.py · platform.py · net.py · timeouts.py · logfmt.py · timeutil.py
+  env.py · schedules.py · threads.py · fifoset.py · server_utils.py · health.py · bootstrap.py
 
-credstore/             # Standalone package — cross-platform credential store (system keyring + cryptfile+backup)
-cc-switch/             # Standalone package — generate ~/.claude/settings.json
-local-embed/           # Separate package — the local-embed plugin: OpenAI-compatible embeddings service (+ standalone CLI)
-skills/                # On-demand SKILL.md skills (seeded to ~/.slife/skills/)
-jobs/                  # Bundled sample jobs (seeded to ~/.slife/jobs/) — translate, summarize, total_tokens
-scripts/               # Standalone helper scripts (e.g. migrate_context_tokens.py)
+credstore/              # standalone package — cross-platform credential store
+cc-switch/              # standalone package — generates ~/.claude/settings.json
+local-embed/            # standalone package — the OpenAI-compatible embeddings service
+skills/ · jobs/         # seeded to the data dir at install
+tests/                  # the AST gates (timeouts, subagent parity) live here
 ```
 
-## Appendix A · Design Decisions & Hard-Won Lessons
+---
 
-The body of this document explains *how* things work; this appendix records *why* a few load-bearing decisions are shaped the way they are, and the incidents that forced them. Each entry is small on purpose — the detail belongs next to the code.
+## Appendix A. Invariants
 
-### A.1 The mutable vs. immutable context split is prompt-cache-driven
+The rules that must not be broken, and what each prevents. They are collected here because each was
+learned the hard way and each is silently violated by a plausible-looking change.
 
-Identity + world render once at startup and never change; the per-turn `_turn_prompt` pair is a message-stream tool pair, never a second `system` message. Both choices exist so the static prefix of every request stays byte-identical → the Anthropic prompt-cache breakpoint lands on the stable base prompt (Part 3). The harness is a *tool*, not system text, because injecting system text that changes every turn would evict the cached prefix.
+**Memory and context**
 
-### A.2 Every save path is a hard stop, not a skip
+1. **Usage is measured or it is zero.** `context_tokens_for` never returns an estimate — a guess
+   presented as occupancy is worse than an honest zero. Estimates appear in exactly one place:
+   sizing a recall selection that has not been built yet.
+2. **Every save path is a hard stop, not a skip.** A turn that cannot be persisted is not worth
+   running. The flip side is deliberate too: subordinate dependencies never gate readiness, because
+   they are uncontrollable and self-healing.
+3. **An empty recall selection is a decision, not a default**, and a *failed* discriminator keeps the
+   context — defaulting it to a recency list would replace the context on the strength of no decision
+   at all.
+4. **A store or tokenizer failure is fatal; everything else is an empty selection.** The caller's only
+   safe reading of "error" is *keep the context*, which would license exactly the wipe an empty
+   selection performs deliberately.
+5. **One turn→messages builder, shared by restore and recall**, and the rebuilt list is chronological
+   even though membership is by relevance. A rebuilt turn must render byte-identically to the same
+   turn restored, or every rebuild costs a prompt-cache miss.
+6. **The rebuild happens before the user message is added**, because it replaces the message list
+   wholesale.
 
-Memory save cannot silently fail: a turn that can't be persisted isn't worth running. `save_to_memory` runs unconditionally (finally), freezes the inbox on a broken DB, and aborts startup on a broken restore (Part 6). The flip side is equally deliberate: subordinate dependencies (external servers, tunnels, WeChat login, brokers, embedding daemons) *never* gate readiness — they are uncontrollable and self-heal.
+**Caching and the wire**
 
-### A.3 Deterministic execution is delegated, never inline
+7. **Identity and world render once and never change; the per-turn status is a message-stream tool
+   pair, never a second system message.** Both exist so the static prefix stays byte-identical and the
+   prompt-cache breakpoint lands on it.
+8. **A harness tool must be schema-declared**, because Anthropic and OpenAI-Responses reject a tool
+   call in history whose name is not in the declared tool list.
+9. **The tool list is computed once per request, outside the retry loop**, so every attempt sends
+   byte-identical tools; and a mid-turn load **appends**, leaving the request's prefix untouched.
+10. **Never emit an async notification from inside a request handler's cancel scope.** Interleaving a
+    burst into that scope desyncs the SDK's cancel-scope stack and every later call dies.
 
-Scheduled tasks dispatch to a named subagent worker — the agent both starts and finishes each task visibly. Jobs are code-defined functions with exactly their declared arguments and a separate model (`job_coding_model`). Both choices exist because the agent loop is the wrong tool for deterministic work, and because a nested job call must never churn the loop's cached prefix (Part 3 / Part 5).
+**The tool system**
 
-### A.4 Proxy-free loopback (2026-08)
+11. **Load state governs what a turn injects, never what a call may do.** The only refused call is one
+    with no execution instance behind it, and a refusal names the state and nothing more — a refusal
+    that guesses at a remedy tells the caller to do what it has already done.
+12. **`load_status` has exactly four writers**: the autoload override, `func_tool_load`,
+    `_func_tool_unload`, and eviction. No connectivity verdict is ever written into it.
+13. **Removal is a row DELETE, never a status mark**, and the row's embedding chunks go with it
+    explicitly rather than through a cascade that may be off.
+14. **Off is not down.** `disabled` and `error` are different facts: the config arm may write
+    `disabled` over either, but the runtime arm may never resurrect a tool the config switched off.
+15. **The injected schema is the catalog's `schema` column** — the stored definition and the wire
+    definition are one and the same.
+16. **A schema is enforced, not advisory**: closed by default at class definition, validated at the
+    single dispatch point. Exceptions are stated, not assumed — a schema declaring its own openness
+    keeps it, and a remote server's schema is never rewritten.
+17. **The agent's timeout overrides all defaults; a tool's own timeout is a generous backstop.** A
+    native tool with an internal run-timeout must expose it as a parameter, or a hidden inner timer
+    silently clamps the injection. `≤0` never means "no timeout".
+18. **Background calls escape the tool budget** — with no injected timeout, a background call is
+    scheduled bare, because the chain default must not govern work that exists to escape it.
+19. **Timeout values are read at call time**, never import-captured, so they stay patchable — and a
+    hardcoded timeout fails CI, which is what kills the fix-one-drift-another loop.
 
-Any OS proxy breaks local plugin connections (the SDK's `trust_env=True` routed `127.0.0.1` through the proxy → 502 → connect retry burn → plugins never ready). `MCPClient.connect` now supplies `trust_env=False`; the external-server Streamable fallback does the same (Part 5). Regression test: `TestMCPClientConnect::test_connect_passes_proxy_free_http_client`.
+**Plugins and processes**
 
-### A.5 The mcp `tools/list_changed` cancel-scope crash (mcp 2.1.1)
+20. **The spec table is the only place a plugin is declared.** Adding a plugin is one row plus a
+    `server.py` package; nothing else may hard-code a plugin's name.
+21. **Readiness is the completed protocol negotiation.** There is no readiness probe, and a dependency
+    not required to serve never gates readiness. Never signal the port early: the signal means "ready
+    to serve MCP on this port".
+22. **A capability must report "not yet" as "not yet", never as "no".** An initialization in flight
+    must be awaited by every caller, not just the one that started it — a boolean that answers "no"
+    while still loading is indistinguishable from a genuinely unavailable one.
+23. **A hard-killed parent runs no cleanup**, so the kill-on-close job object is assigned at spawn,
+    before the child can spawn anything of its own. On POSIX the process tree is read before anything
+    is signalled, and a group kill is only safe when the child leads its own group.
 
-A slow control tool held its request scope open while a ~50-message `tools/list_changed` burst interleaved into that scope → mcp 2.1.1's dispatcher desynced its cancel-scope stack and every later call died with `Session not found`. Fix: notifications are coalesced and sent from a detached task (Part 5). Escape from the pattern — never emit async notifications from inside a request handler's scope.
+**Subagents**
 
-### A.6 LiteLLM's empty-text placeholder poisoning
+24. **A worker is the same loop with a declared, zeroed capability set.** A new capability is
+    worker-denied by default and must be granted on purpose; an `is_subagent` branch outside the table
+    fails CI.
+25. **The harness pushes results; the worker never does**, and a late result is stored, never
+    auto-pushed, because the caller was already told it timed out.
+26. **A stuck task must be preempted in the child**, because a worker processes tasks serially and one
+    stuck task would block every later one.
+27. **Config is handed over by file, never by environment** — the resolved config carries plaintext
+    keys and the process environment is readable through the process table.
+28. **The config's round trip is a fixed point**, derived from the field list rather than written by
+    hand — the hand-written version silently dropped nine fields, which is how a worker came to report
+    embeddings disabled while its parent reported enabled.
 
-A gateway's prompt sanitizer rewrites `content:""` + `tool_use` into `[System: Empty message content sanitised to satisfy protocol]` in the **response** — a place Slife's outbound hardening cannot see. It persists into the diary and replays. Recognise this class: a provider-side defect that looks like a Slife bug (Part 3).
+**Process and platform**
 
-### A.7 The stall watchdog is an inactivity timer, not a total one
+29. **Unbounded blocking calls run on daemon threads, never the default executor.** Both shutdown
+    paths join every executor worker, so a blocked worker hangs the whole interpreter.
+30. **The stderr relay must never die**, and a discarded over-long line must be consumed through its
+    newline.
+31. **Blocking regexes must bound their repeats.** An unbounded repeat once froze the parent's event
+    loop for minutes on a single relayed line.
+32. **No global socket defaults**, which would silently change every third-party socket.
 
-Bailian answered `200 OK` and then sent nothing for ~7 minutes. The fix wraps every `anext()` in an `asyncio.timeout` reset per chunk — a slow-but-live generation is never cut ("timer at the owner, no total"). A total cap remains opt-in (`stream_timeout`) (Part 2).
+**The TUI**
 
-### A.8 Bounded relay and daemon threads (the stderr pipe-wedge)
+33. **The app's `Esc` is not priority; the approval prompt's and picker's bindings are.** Textual's
+    priority pass resolves the app before the focused widget, so a priority `Esc` on the app would
+    steal the key from the approval prompt and cancel the loop instead of denying, leaving the prompt
+    unresolved. The reverse is equally true: non-priority bindings on a prompt would type `y` into the
+    input bar instead.
+34. **A binding action must be sync.** Binding actions run inside the key-event handler, so awaiting
+    there blocks the message pump and deadlocks the widget that needs the next key event.
+35. **A dismissed widget must resolve its future**, or a re-entrancy flag stays stuck and the shortcut
+    is dead. The status-bar scroll happens **after layout**, or it pins the view above the fold.
+36. **All user data renders with markup disabled**, and **tool widgets are cleared only at the genuine
+    turn-end event** — never where the turn is merely *enqueued*, which wiped an in-flight turn's
+    widgets and left its rows stuck.
 
-A subagent hang traced to a single 315 KB anthropic SDK DEBUG line: it blew past the stderr-relay's buffer, the pipe filled, and the child blocked on log write — silent `LimitOverrunError` on the relay side. Fixes in `logfmt.py`: silence the SDK's noisy `_base_client` logger, cap relayed lines (and discard over-long protocol lines), and bound the sanitize regexes so they can't backtrack catastrophically. Companion rule: unbounded blocking calls (local-embed encodes, sync jobs) run on **daemon threads** via `slife.threads.run_daemon` — never `asyncio.to_thread`, whose default-executor workers are joined at exit and would wedge shutdown on a hung blocking call (Part 5).
+**Configuration**
 
-### A.9 The 60-second spawn hang-guard
-
-A 30 s cap on required-plugin spawns previously misfired on slow machines and aborted startup on a healthy install. The bounded guard is now the registry's `ready.plugin_start` = 60 s with heavyweight init deferred past handshake (Part 5). When tuning a startup timeout, the question is: *does the fast path finish on the slowest supported machine?*
-
-### A.10 Model-picker bindings: priority, sync, and post-layout scroll
-
-The Ctrl+S picker is an emergency escape, not a daily driver. Its bindings are pure priority (no `_on_key` overrides — they swallowed keys), the binding action is sync (awaiting the picker's future inside the key handler deadlocks Textual — the await lives in a background task), and the scroll happens after layout (Part 4).
-
-### A.11 One embedding journey, three independent gates
-
-Semantic availability is a binary gate, per store — `semantic_ready = embedder_ready ∧ count_unembedded() == 0`, with no intermediate states and no partial results. One `SemanticManager` implementation (memdb) is reused by memfiles and *subclassed* by the gateway (host-provided endpoint), so drift between the three is structurally impossible (Part 6).
+37. **A config parse failure raises; it never returns an empty dict**, or a mutating caller writes
+    that empty dict over the whole config.
+38. **Config writes edit the document and are verified before use.** Losing comments is bad; writing a
+    config that says something else is worse.
+39. **Credstore is consulted before a `${VAR:-default}` literal**, or the default wins over a key that
+    is actually held.
 
 ## License
 
