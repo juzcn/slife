@@ -36,6 +36,30 @@ jobs:
           uv pip install dist/slife-*.whl dist/credstore-*.whl dist/cc_switch-*.whl dist/local_embed-*.whl
           uv pip install pytest pytest-asyncio
 
+      # The one-time tokenizer vocabulary `install.sh` / `install.ps1` fetch at
+      # install time.  slife measures context size with tiktoken but never lets
+      # it download: the fetch has no timeout (so it can hang rather than fail)
+      # and a truncated file would be read as a valid vocabulary and silently
+      # mis-count.  It reads the cache dir directly and refuses to start when
+      # the file is missing or short — so a runner without it fails the suite
+      # rather than skipping.  The filename is the SHA-1 of the blob URL, which
+      # is tiktoken's cache key; see README "Tokenizer vocabulary (one-time)".
+      - name: Fetch the tokenizer vocabulary
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p ~/.cache/tiktoken
+          curl -fL --retry 3 --retry-delay 2 \
+            -o ~/.cache/tiktoken/fb374d419588a4632f3f557e76b4b70aebbca790 \
+            https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken
+
+      - name: Fetch the tokenizer vocabulary
+        if: runner.os == 'Windows'
+        run: |
+          $dir = Join-Path $env:USERPROFILE ".cache\tiktoken"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Invoke-WebRequest -Uri "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken" `
+            -OutFile (Join-Path $dir "fb374d419588a4632f3f557e76b4b70aebbca790")
+
       - name: Run tests
         run: |
           # Each package's own [tool.pytest.ini_options] / testpaths apply
