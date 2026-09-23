@@ -53,15 +53,18 @@ def render_template(template: str, **kwargs: object) -> str:
 def build_recall_instruction(user_input: str, tool_function: dict) -> str:
     """Render the discriminator's instruction (``rebuild_messages.j2``).
 
-    The pre-turn recall call's whole user turn: it quotes the current input and
+    The user turn of the pre-turn recall call: it states what the call
+    decides, quotes the current input, says how the query is matched, and
     states the parameter surface the discriminator fills in — which is
-    ``turn_recall``'s **own tool schema**, not a copy of it, so the discriminator
-    is asked for exactly the parameters the tool takes and the wording cannot
-    drift from the tool's.  *tool_function* is that schema as the registry holds
-    it (``Tool.to_openai_function()["function"]``).
+    ``turn_recall``'s **own tool schema**, not a copy of it, so the
+    discriminator is asked for exactly the parameters the tool takes and the
+    wording cannot drift from the tool's.  *tool_function* is that schema as
+    the registry holds it (``Tool.to_openai_function()["function"]``).
 
-    The call sees the system prompt plus this instruction and nothing else —
-    the history is not sent (DESIGN.md §2.3).
+    The rest of the call is the agent's **current context** — the loop sends
+    the live messages with the instruction in place of the user message, so
+    the query can be written against the conversation the input belongs to
+    (DESIGN.md §2.3).  Only the instruction is rendered here.
     """
     return render_template(
         "rebuild_messages.j2",

@@ -230,15 +230,26 @@ no migration. What the flag never changes is the ceiling.
 **The discriminator.** `_discriminate_recall` makes exactly one model call per turn. It is not in the
 conversation and nothing it says is ever shown.
 
-- **Sent**: the system prompt (copied, never re-rendered) plus one user message —
-  `rebuild_messages.j2`, which quotes the current input and states `turn_recall`'s **own tool
+- **Sent**: the agent's **current context** — the live messages, system prompt included, with
+  `rebuild_messages.j2` in place of the user message. That is the design note's shape
+  ("判别器用当前上下文，user message 替换为 …"), and it is load-bearing: the turn being recalled is
+  usually a follow-up, and a follow-up names its subject only through the conversation in hand
+  ("人工智能学院是什么时候成立的" after three turns about 首经贸). A query written from the input
+  alone drops that subject, retrieves nothing, and — because a selection *replaces* the context —
+  leaves the turn with the system prompt alone and an answer invented from nothing.
+- **What the instruction states**: what the call decides (the named turns become the context, in
+  place of the ones in hand), the current input, how the query is matched (against stored turns —
+  their user messages, the tools they called, their answers), a worked example of carrying the
+  subject over (`那人工智能学院呢？` → `首经贸 人工智能学院 成立`), and `turn_recall`'s **own tool
   schema**, read out of the registry, so it is asked for exactly the parameters the tool takes in
   the tool's own words. With no `turn_recall` in the registry there is no call at all: the schema
   *is* the instruction.
-- **Not sent**: the history. Nothing in the selection needs it, and sending it would make a pre-turn
-  call the size of the context. (Narrower than the original design note, which wanted coreference
-  against the current context; that motivation is not served today. A deliberate, revisitable
-  choice.)
+- **Cost**: one context-sized call per turn — the pre-turn call is now about as expensive as the turn
+  itself. That is what judging from the conversation costs; the log line's `msgs` / `chars` are what
+  say whether it is being paid.
+- **Not sent**: anything beyond that context. The runtime `_turn_id` on the message that opens each
+  turn is stripped (the normal wire path pops it in `to_openai_messages`; this call does not go
+  through that helper).
 - **It never persists and never streams** — nothing it sends or receives touches the history, the
   diary or the TUI.
 - **It degrades, it does not retry.** A timeout, a provider failure, or a reply that is not the

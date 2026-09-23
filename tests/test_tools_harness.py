@@ -486,28 +486,48 @@ class TestRecallDiscriminator:
         )
 
     @pytest.mark.asyncio
-    async def test_the_call_carries_the_system_prompt_and_the_instruction(self):
-        """The shape of the request, pinned: the system prompt plus the
-        instruction — which quotes the input and states the tool's **own**
-        schema, so the discriminator is asked for exactly the parameters
-        ``turn_recall`` takes.  The history is **not** sent: the discriminator
-        chooses what the turn needs from the input alone, which keeps the call
-        small (see ``prompt_chars`` in its log line)."""
+    async def test_the_call_carries_the_context_and_the_instruction(self):
+        """The shape of the request, pinned: the agent's **current context**,
+        with the instruction in place of the user message.  The discriminator
+        judges from the conversation in hand — a follow-up's query has to name
+        the subject it refers to, and that subject is in the context, not in
+        the input.  Written from the input alone the query retrieved nothing,
+        and since a selection *replaces* the context, the turn ran blind."""
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("old question")
+        conv.add_assistant_message("old reply")
         llm = self._FakeLLM(self.REPLY)
 
         await self._loop(llm)._discriminate_recall(conv, "查一下首经贸新闻")
 
         sent = llm.sent[0]
-        assert [m["role"] for m in sent] == ["system", "user"]
+        assert [m["role"] for m in sent] == ["system", "user", "assistant", "user"]
         assert sent[0]["content"] == "SYS"
-        assert "查一下首经贸新闻" in sent[1]["content"]
-        assert "turn_recall" in sent[1]["content"], "the tool's schema is the surface"
-        assert "\"query\"" in sent[1]["content"]
-        assert not any(
-            m.get("content") == "old question" for m in sent
-        ), "the context being rebuilt is not an input to the decision"
+        assert sent[1]["content"] == "old question", "the context is the decision's input"
+        assert sent[2]["content"] == "old reply"
+        assert "查一下首经贸新闻" in sent[3]["content"]
+        assert "turn_recall" in sent[3]["content"], "the tool's schema is the surface"
+        assert "\"query\"" in sent[3]["content"]
+
+    @pytest.mark.asyncio
+    async def test_the_context_goes_out_without_the_runtime_turn_ids(self):
+        """The agent's own messages go out as they are, minus ``_turn_id`` —
+        a runtime mapping for the trim, popped on the normal wire path by
+        ``to_openai_messages``.  This call does not go through that helper,
+        and ``_normalize_messages`` strips only ``is_error``, so the id would
+        otherwise reach the provider."""
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("old question")
+        conv.messages[-1]["_turn_id"] = 7          # as restore/trim stamp it
+        conv.add_assistant_message("old reply")
+        llm = self._FakeLLM(self.REPLY)
+
+        await self._loop(llm)._discriminate_recall(conv, "查一下首经贸新闻")
+
+        assert [m["role"] for m in llm.sent[0]] == ["system", "user", "assistant", "user"]
+        assert "_turn_id" not in llm.sent[0][1]
+        assert llm.sent[0][1]["content"] == "old question"
+        assert conv.messages[1].get("_turn_id") == 7, "the live context keeps its mapping"
 
     @pytest.mark.asyncio
     async def test_no_tool_means_no_call(self, caplog):

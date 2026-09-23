@@ -1,10 +1,17 @@
 ▸ Context recall
 
-The turn's context is rebuilt before it runs. Choose which history the turn
-needs.
+This call chooses the context the turn runs on: the turns you name become the
+context, in place of the ones in hand.
 
 Current user input:
 {{ user_input }}
+
+The query is matched against stored turns — their user messages, the tools
+they called, their answers. Write it with the subject the input belongs to:
+when the conversation above is about 首经贸, the follow-up 那人工智能学院呢？
+becomes the query 首经贸 人工智能学院 成立 — the subject carried over from the
+conversation, the new words from the input. Names, topics and dates are what
+carry the match.
 
 Reply with ONE JSON object holding the parameters of the tool below, and
 nothing else. An empty object means no recall is needed — the context

@@ -466,6 +466,22 @@ class TestRecallInstruction:
 
         assert "empty object means no recall is needed" in text
 
+    def test_states_what_the_call_decides(self):
+        """The instruction says what the answer does — the named turns *become*
+        the context, in place of the ones in hand — and shows the composition
+        it asks for, on the follow-up that failed: the subject comes from the
+        conversation in hand (the call's own message list), the new words from
+        the input."""
+        from slife.agent.system_prompt import build_recall_instruction
+
+        text = build_recall_instruction("那人工智能学院呢？", self.TOOL)
+
+        assert "the turns you name become the" in text
+        assert "in place of the ones in hand" in text
+        assert "subject carried over from the" in text and "conversation" in text
+        assert "becomes the query" in text
+        assert "那人工智能学院呢？" in text
+
 
 # ── Turn prompt presence events ──────────────────────────────────────────
 

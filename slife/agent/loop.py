@@ -661,7 +661,16 @@ class AgentLoop:
             return None
         from slife.agent.system_prompt import build_recall_instruction
 
-        messages = [m for m in history.messages if m.get("role") == "system"]
+        # The call is the agent's current context with the instruction in
+        # place of the user message — the discriminator judges from the
+        # conversation in hand, which is what lets a follow-up's query name
+        # the subject it refers to ("人工智能学院是什么时候成立的" after
+        # three turns about 首经贸).  Written from the input alone the query
+        # drops that subject, retrieves nothing, and — because a selection
+        # *replaces* the context — leaves the turn with nothing at all.
+        # ``_turn_id`` is a runtime mapping the model must not see; the
+        # context is otherwise sent as it stands.
+        messages = MessageHistory.strip_turn_ids(history.messages)
         messages.append(
             {"role": "user",
              "content": build_recall_instruction(
