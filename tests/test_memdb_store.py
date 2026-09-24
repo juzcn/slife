@@ -1376,11 +1376,13 @@ class TestSessionStoreTurnList:
         # caller pages past the end of a set that was never that big.
         assert count_sql.startswith("SELECT COUNT(*) FROM diary WHERE")
         assert "created_at >= ?" in count_sql and "created_at <= ?" in count_sql
-        assert count_params == ["2026-08-01", "2026-08-02"]
+        # A date-only `until` is advanced a day so records on that day are
+        # included (the same normalisation every time-filtered query uses).
+        assert count_params == ["2026-08-01", "2026-08-03"]
         # Ordered by the turn id, which is monotonic — a page boundary can
         # never fall inside a group of turns sharing a timestamp.
         assert "ORDER BY rowid DESC" in page_sql
-        assert page_params == ["2026-08-01", "2026-08-02", 2, 0]
+        assert page_params == ("2026-08-01", "2026-08-03", 2, 0)
 
     @pytest.mark.asyncio
     async def test_no_window_means_no_where(self):
@@ -1397,11 +1399,11 @@ class TestSessionStoreTurnList:
     async def test_offset_pages_and_a_negative_one_is_clamped(self):
         store, conn = self._store(0, [])
         await store.turn_list(limit=5, offset=10)
-        assert conn.execute.call_args_list[1].args[1] == [5, 10]
+        assert conn.execute.call_args_list[1].args[1] == (5, 10)
 
         store, conn = self._store(0, [])
         await store.turn_list(limit=5, offset=-3)
-        assert conn.execute.call_args_list[1].args[1] == [5, 0], "no negative OFFSET"
+        assert conn.execute.call_args_list[1].args[1] == (5, 0), "no negative OFFSET"
 
     @pytest.mark.asyncio
     async def test_an_unusable_bound_raises_for_the_caller(self):
@@ -1440,7 +1442,9 @@ class TestSessionStoreSearchTime:
         assert result == rows
         sql, params = conn.execute.call_args_list[1].args
         assert "created_at >= ?" in sql and "created_at <= ?" in sql
-        assert params == ["2024-01-01", "2024-12-31", 20, 0], "limit default 20"
+        # Date-only `until` advanced a day — the window is the shared one,
+        # which is the point of delegating to turn_list.
+        assert params == ("2024-01-01", "2025-01-01", 20, 0), "limit default 20"
 
 
 class TestSessionStoreSearchGrep:
