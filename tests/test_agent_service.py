@@ -653,6 +653,142 @@ class TestAgentServiceMCPEnrichment:
             await store.close()
 
     @pytest.mark.asyncio
+    async def test_a_mirror_that_never_answers_is_bounded_and_still_reports(
+        self, sample_config, tmp_path, monkeypatch, caplog,
+    ):
+        """One server that never answers must not hold the whole pass open.
+
+        The 2026-09-24 log is the case: 17 of 18 mirrors answered, one never
+        did (its spawn took 4m15s and its request was lost in the churn), and
+        because the branches are ``gather``ed the pass never reached its
+        ``finally`` — so the tool-set line was never emitted at all, for the
+        rest of the session.  Every gateway await in the pass is bounded now,
+        so the pass ends and the line reports exactly what the set has.
+        """
+        import logging
+
+        import slife.timeouts as _T
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+
+        # Generous enough that the healthy mirror fits inside it: the budget
+        # must be spent by the WEDGED branch, not by an ordinary db write.
+        monkeypatch.setattr(_T.timeouts.ready, "tool_sync_wait", 1.0)
+
+        store = CatalogStore(tmp_path / "tools.db")
+        await store.open()
+        store.begin_ops()
+        service = AgentService(sample_config)
+        service._catalog = ToolCatalogService(store, write_owner=True)
+        service._catalog_semantic = None
+
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def fake_call_tool(name, arguments=None):
+            if name == "__mcp_list":
+                return _json.dumps([
+                    {"name": "quick", "enabled": True, "auto_load": False},
+                    {"name": "wedged", "enabled": True, "auto_load": False},
+                ])
+            if name == "__check":
+                # Both transports are up; only one will manage a listing.
+                return _json.dumps({
+                    "servers": [
+                        {"name": "quick", "tools_ok": True, "reachable": True},
+                        {"name": "wedged", "tools_ok": False, "reachable": True},
+                    ],
+                    "spawn_settled": True,
+                })
+            if name == "__mcp_list_tools":
+                if arguments["server"] == "wedged":
+                    await asyncio.sleep(3600)   # never answers
+                return _json.dumps({
+                    "server": "quick", "connected": True,
+                    "tools": [{"server": "quick", "name": "search",
+                               "description": "Search stuff",
+                               "inputSchema": {"type": "object",
+                                               "properties": {}}}],
+                    "tool_count": 1,
+                })
+            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+        client.call_tool = fake_call_tool
+        service._plugins["mcp-gateway"].client = client
+
+        events = AsyncMock()
+        service.on_activity(events)
+        try:
+            with caplog.at_level(logging.WARNING), patch(
+                "slife.plugins.mcp_gateway.config.servers",
+                return_value={"quick": {}, "wedged": {}},
+            ), patch.object(
+                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            ):
+                # The bound, seen from outside: a pass that hangs here is the
+                # bug this test exists for.
+                await asyncio.wait_for(service._sync_mcp_proxies(), timeout=5.0)
+
+            # …and the branch that gave up says so, where a future diagnosis
+            # can read it: this is the line whose absence had to be inferred
+            # from a response that never arrived.
+            assert "mcp_sync_timeout server=wedged" in caplog.text
+            assert "mcp_sync_timeout server=quick" not in caplog.text
+
+            assert events.await_count == 1
+            kw = events.await_args.kwargs
+            assert kw["error"] == ""
+            assert kw["added"] == 1                 # the server that answered
+            assert await store.get_tool("quick__search") is not None
+            assert await store.get_tool("wedged__search") is None
+            # …and the guard is released, so the next notification gets in
+            assert service._mcp_reconcile_owner is None
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_the_reconcile_guard_is_not_a_latch(
+        self, sample_config, tmp_path,
+    ):
+        """A wedged pass must not disable the mid-session sync.
+
+        The guard coalesces passes, which is right — but as a bare latch it
+        also meant a pass that never ended blocked every later
+        ``tools/list_changed`` for the rest of the process, silently: the tool
+        set froze at whatever moment the pass wedged (2026-09-24: frozen at
+        13:14:37).  The holder is a token with an age, so the next pass takes
+        over from a stale one — and only from a stale one.
+        """
+        import time
+        import slife.timeouts as _T
+
+        service, store = await self._sync_with_catalog(sample_config, tmp_path, "svc")
+        try:
+            # A pass that took the guard and never released it, long ago.
+            service._mcp_reconcile_owner = object()
+            service._mcp_reconcile_started_at = (
+                time.monotonic() - 10 * _T.timeouts.ready.tool_sync_wait
+            )
+            with patch(
+                "slife.plugins.mcp_gateway.config.servers",
+                return_value={"svc": {}},
+            ), patch.object(
+                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            ):
+                await service._sync_mcp_proxies()
+            assert service._mcp_reconcile_owner is None   # taken over, released
+
+            # A live one still coalesces: the same pass must not run twice.
+            fresh = object()
+            service._mcp_reconcile_owner = fresh
+            service._mcp_reconcile_started_at = time.monotonic()
+            await service._sync_mcp_proxies()
+            assert service._mcp_reconcile_owner is fresh
+        finally:
+            service._mcp_reconcile_owner = None
+            await store.close()
+
+    @pytest.mark.asyncio
     async def test_sync_proxies_never_asks_a_disabled_server(self, sample_config):
         """Nothing reads a disabled server's tool list — reading is connecting.
 

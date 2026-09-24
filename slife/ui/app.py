@@ -1036,9 +1036,11 @@ class SlifeApp(App):
             # Emitted once per process, on the pass that CONVERGED (every
             # enabled server has answered), and on any failure, so silence
             # keeps meaning "still syncing" and it never becomes a heartbeat.
-            # `total` is what is REGISTERED (callable); a turn injects the
-            # load_status snapshot, a narrower set, so the line promises
-            # availability only.  The three counts are what the pass wrote to
+            # `total` is every USABLE catalog row (`count_usable` — skill/cli
+            # rows have no instance to register, so a registry count
+            # under-reported them); a turn injects the load_status snapshot, a
+            # narrower set, so the line promises availability only.  The three
+            # counts are what the pass wrote to
             # the catalog (rows added / updated / removed) and are always
             # shown, zeros included — one shape for every startup.
             err = kwargs.get("error", "")

@@ -103,6 +103,20 @@ def test_invariant_connect_startup_ge_spawn():
         _mutated(**{"ready.connect_startup": 30, "ready.spawn": 60})
 
 
+def test_invariant_tool_sync_wait_covers_the_gateway():
+    """The startup-sync budget must outlast what a mirror actually waits on.
+
+    A mirror waits on the gateway's own two bounds — bringing the server up and
+    reading one listing.  Under that, the tool-set line would announce "synced"
+    while a server is still legitimately coming up, which is what the old 75s
+    (against a 120s establishment bound) did.
+    """
+    with pytest.raises(TimeoutConfigError, match="tool_sync_wait"):
+        _mutated(**{"ready.tool_sync_wait": 130})
+    # …and the sum is the bound, not a round number near it.
+    assert validate(_mutated(**{"ready.tool_sync_wait": 140})) == []
+
+
 def test_invariant_stall_positive():
     with pytest.raises(TimeoutConfigError, match="work.stall"):
         _mutated(**{"work.stall": 0})

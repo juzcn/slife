@@ -745,6 +745,52 @@ async def test_connectivity_probe_failure_is_not_a_verdict(_isolate, sample_conf
 
 
 @pytest.mark.asyncio
+async def test_a_check_that_never_answers_is_not_a_verdict_either(
+    _isolate, sample_config, monkeypatch,
+):
+    """The probe is bounded like every other gateway await in the pass.
+
+    A ``__check`` that never answers is the same fact as one that fails — no
+    verdict, rows left alone — and it must not hold the pass open: the pass
+    only reports at its end, so an unbounded await here is another way for the
+    tool-set line to never be written (2026-09-24).
+    """
+    import asyncio
+
+    import slife.timeouts as _T
+    from slife.agent.service import AgentService
+
+    monkeypatch.setattr(_T.timeouts.ready, "tool_sync_wait", 0.02)
+
+    store = CatalogStore(_isolate / "tools.db")
+    await store.open()
+    try:
+        svc = ToolCatalogService(store, write_owner=True)
+        await _mirror_server(svc, "serper", ["search"])
+        ok, _ = await svc.load_tool("serper__search")
+        assert ok
+
+        service = AgentService(sample_config)
+        service._catalog = svc
+        client = AsyncMock()
+
+        async def _never_answers(name, arguments=None):
+            await asyncio.sleep(3600)
+
+        client.call_tool = _never_answers
+
+        pending = await asyncio.wait_for(
+            service._mark_server_connectivity(client, {"serper"}), timeout=5.0,
+        )
+
+        assert pending == set()  # no verdict, and nothing to wait on
+        assert (await store.get_tool("serper__search"))["load_status"] == "loaded"
+        assert "serper__search" in await svc.snapshot_loaded()
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_gateway_child_exit_marks_external_tools_error(_isolate):
     """The watchdog's exit hook is the crash path for the connectivity mark."""
     from types import SimpleNamespace

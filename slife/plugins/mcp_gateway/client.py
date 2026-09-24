@@ -676,14 +676,19 @@ class MCPClient:
         """Call an MCP tool.
 
         Returns the result text on success, or an ``"Error: …"`` string
-        on failure — this function NEVER raises, so a single hung MCP
-        server can't stall the entire agent loop.  The LLM sees the
-        error as a normal tool result and can retry or report it.
+        on failure — this function never RAISES, so a single failing MCP
+        server can't break the agent loop.  The LLM sees the error as a
+        normal tool result and can retry or report it.
 
-        Timeout enforcement is handled by the Agent Loop (``agent/loop.py``)
-        via ``asyncio.wait_for`` — this method does NOT apply its own
-        timeout, so per-call overrides (e.g. ``call_tool_with_timeout``)
-        propagate correctly.
+        Never raising is not the same as never BLOCKING: a peer that never
+        answers parks the caller, so every caller owes this await its own
+        bound (owner-of-await — DESIGN.md §4.7).  The model's calls get the
+        loop's tool budget; internal callers (the service's tool-set
+        reconcile) bound it themselves.
+
+        Timeout enforcement is the caller's — ``agent/loop.py`` via
+        ``asyncio.wait_for`` for the model's calls — this method does NOT
+        apply its own timeout, so a caller's bound stays the only one.
 
         A session that died under us is rebuilt once and the call retried —
         see :meth:`_request_with_recovery`.

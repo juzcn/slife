@@ -832,6 +832,16 @@ clock. (3) *Slots are contracts*: some values mirror an upstream wire contract a
 faithfully, not "improved". (4) *One semantic, one value*. (5) *No global defaults* — a process-wide
 socket timeout would silently change every third-party socket.
 
+**One bound outside that rule: the startup sync.** `ready.tool_sync_wait` is the single budget for the
+boot tool sync — it bounds each mirror's wait on the gateway, decides when the tool-set line reports what
+the set has instead of waiting, and is the age at which a wedged reconcile pass may be abandoned by the
+next one. Its invariant (`>= ready.connect_startup + ready.list_tools`) is what keeps the line honest: it
+may not claim "synced" before the gateway's own establishment and listing bounds have expired. The
+corollary is why it had to be written down: **no blocking work may run on an event loop** — a sync
+subprocess suspends every timer in that process, so one `# noqa-timeout` call that freezes the loop
+invalidates every other deadline in it (measured: 137s of frozen gateway loop, thirteen expired connect
+bounds firing at once). Blocking work goes to a daemon thread via `slife.threads.run_daemon`.
+
 **Tool-execution precedence — one value per tool call.**
 
 1. The agent injects a positive value (the `_timeout` meta-parameter, or the tool's own `timeout`

@@ -66,17 +66,22 @@ class Ready:
     connect_retry_delay: float = 0.5
     sharefile_retry_delay: float = 2.0
     list_tools: float = 20.0
-    tool_sync_wait: float = 75.0  # how long the startup tool-set line waits on a
-                                  # server that is UP but has not managed a
-                                  # tools/list yet before reporting what it has
-                                  # (its first listing can time out and succeed on
-                                  # the retry).  A server whose transport never
-                                  # came up is not waited on at all — a failed
-                                  # spawn is a settled verdict, marked
-                                  # unavailable.  Follows the gateway's re-list
-                                  # backoff (5→10→20→40, capped at 60 —
-                                  # mcp_gateway/connection.py), so the wait ends
-                                  # where that retry stops growing.
+    tool_sync_wait: float = 150.0  # THE startup-sync budget — one value, three
+                                  # consumers that are the same fact: how long
+                                  # ONE mirror may wait on the gateway, how long
+                                  # the tool-set line waits before reporting what
+                                  # the set has, and how long a wedged reconcile
+                                  # pass may hold its guard before the next pass
+                                  # abandons it.  It must outlast the gateway's
+                                  # OWN two clocks — establishment
+                                  # (connect_startup) plus one listing
+                                  # (list_tools) — or the line would announce
+                                  # "synced" while a server is still legitimately
+                                  # connecting; validate() enforces that.  The
+                                  # gateway's re-list backoff (5→10→20→40, capped
+                                  # at 60 — mcp_gateway/connection.py) is the
+                                  # second clock it covers: a first listing that
+                                  # times out can still succeed on that retry.
     watchdog_backoff_initial: float = 1.0
     watchdog_backoff_max: float = 30.0
     watchdog_backoff_multiplier: float = 2.0
@@ -179,6 +184,16 @@ def validate(ts: Timeouts) -> list[str]:
         errs.append("invariant: ready.relisten_max >= ready.relisten")
     if ts.ready.connect_startup < ts.ready.spawn:
         errs.append("invariant: ready.connect_startup >= ready.spawn")
+    if ts.ready.tool_sync_wait < ts.ready.connect_startup + ts.ready.list_tools:
+        # A mirror's wait IS the gateway's own two bounds — bringing the server
+        # up and reading one listing, which is all a stateless server needs to
+        # answer.  A smaller startup-sync budget would
+        # have the line announce "synced" while a server is still legitimately
+        # connecting (the old 75 < 120 did exactly that).
+        errs.append(
+            "invariant: ready.tool_sync_wait >= "
+            "ready.connect_startup + ready.list_tools"
+        )
     if ts.ready.tunnel_heal < ts.ready.tunnel_read_url:
         # A running child gets at least the patience a fresh start gets, or
         # the monitor would respawn one that was never given time to heal.

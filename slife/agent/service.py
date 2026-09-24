@@ -447,8 +447,13 @@ class AgentService:
         # startup glue and mcp_set callbacks.
         self._mcp_syncing: set[str] = set()
         # On-demand reconcile guard: prevents concurrent func_tool_load /
-        # tools/list_changed reconciliation from racing.
-        self._mcp_reconciling: bool = False
+        # tools/list_changed reconciliation from racing.  A token plus when it
+        # was taken — a pass still holding it after ``ready.tool_sync_wait`` is
+        # not slow (every await in it is bounded by that same value), it is
+        # wedged, and the next pass takes it over instead of queueing behind it
+        # for the rest of the process.
+        self._mcp_reconcile_owner: object | None = None
+        self._mcp_reconcile_started_at: float | None = None
         #: Whether the TUI has been told the tool set is ready yet.  The first
         #: reconcile is the slow one the user waits through; once it has
         #: converged the line is sent, and never again for this process.
@@ -1377,9 +1382,23 @@ class AgentService:
         client = lc.client if lc is not None else None
         if client is None or not client.is_connected:
             return
-        if self._mcp_reconciling:
-            return
-        self._mcp_reconciling = True
+        # One pass at a time — but not "one pass forever".  Every await below
+        # is bounded by ``ready.tool_sync_wait``, so a pass still holding the
+        # guard after that budget is not slow, it is wedged (a bound the loop
+        # never got to run — the gateway froze, or a cancellation was swallowed
+        # under it).  Abandoning it is what keeps one stuck server from
+        # disabling the mid-session sync for the rest of the process, which is
+        # exactly what a bare latch did.
+        owner = object()
+        if self._mcp_reconcile_owner is not None:
+            held = _time.monotonic() - (self._mcp_reconcile_started_at or 0.0)
+            if held < _timeouts.timeouts.ready.tool_sync_wait:
+                return
+            logger.warning(
+                "mcp_reconcile_stale_pass held=%.0fs — taking over",
+                held,
+            )
+        self._mcp_reconcile_owner = owner
         # Timing: this pass is what decides when the agent can actually call
         # things, and on a cold start it is the long wait.  The op window is
         # NOT armed here — it opened with the catalog (``_init_catalog``) so
@@ -1387,6 +1406,7 @@ class AgentService:
         # ``_report_tool_sync`` reads it out, whether or not this is the pass
         # that converges.
         started = _time.monotonic()
+        self._mcp_reconcile_started_at = started
         if self._tool_sync_started_at is None:
             self._tool_sync_started_at = started
         #: Enabled servers that have not answered a ``tools/list`` yet —
@@ -1401,8 +1421,20 @@ class AgentService:
                 # server.  Using the filtered one dropped the REST APIs from
                 # the pass — no catalog rows, so tool_search and func_tool_load
                 # could not reach 1271 endpoints that were connected all along.
-                raw = await client.call_tool("__mcp_list")
+                #
+                # Bounded at the call site, where the await is: the client
+                # deliberately sets no timer of its own (its contract pushes
+                # that to whoever awaits), and an unbounded read here is what
+                # used to hold this pass open forever.
+                async with asyncio.timeout(_timeouts.timeouts.ready.tool_sync_wait):
+                    raw = await client.call_tool("__mcp_list")
                 servers = json.loads(raw)
+            except TimeoutError:
+                logger.warning(
+                    "mcp_reconcile_list_timeout budget=%.0fs",
+                    _timeouts.timeouts.ready.tool_sync_wait,
+                )
+                servers = []
             except Exception as e:
                 logger.debug("mcp_reconcile_list_failed err=%s", e)
                 servers = []
@@ -1452,8 +1484,26 @@ class AgentService:
             # made a cold reconcile a minute-plus of pure queueing.  One
             # server's failure still never sinks the pass.
             async def _mirror(name: str, coro, tag: str) -> None:
+                """One server's mirror, bounded.
+
+                A mirror is a real ``tools/list`` on the far side — and, for a
+                peer the pool holds nothing for, the SPAWN that makes one
+                possible — so it can outlive any patience worth having.  The
+                bound is what makes the pass end (it is ``gather``ed, so the
+                slowest branch is the pass's duration), and the pass ending is
+                what makes the tool-set line reachable at all.
+                """
                 try:
-                    await coro
+                    async with asyncio.timeout(
+                        _timeouts.timeouts.ready.tool_sync_wait,
+                    ):
+                        await coro
+                except TimeoutError:
+                    # Its own line: "one server never answered" is the case the
+                    # next diagnosis should read off the log rather than infer
+                    # from a response that never shows up.  The server keeps
+                    # whatever rows it had; a later pass re-reads it.
+                    logger.warning("mcp_sync_timeout server=%s", name)
                 except Exception:
                     logger.debug("%s server=%s", tag, name, exc_info=True)
 
@@ -1516,8 +1566,16 @@ class AgentService:
             failure = str(e)
             raise
         finally:
-            self._mcp_reconciling = False
-            await self._report_tool_sync(started, pending=pending, failure=failure)
+            # Only the pass that still owns the guard reports — an abandoned
+            # one says nothing, because the pass that took over is the one that
+            # speaks for the set now.  The guard is held THROUGH the report: a
+            # pass is not done until its line is out.
+            if self._mcp_reconcile_owner is owner:
+                self._mcp_reconcile_owner = None
+                self._mcp_reconcile_started_at = None
+                await self._report_tool_sync(
+                    started, pending=pending, failure=failure,
+                )
 
     async def _report_tool_sync(
         self, started: float, *, pending: set[str], failure: str = "",
@@ -1535,8 +1593,16 @@ class AgentService:
         have not answered a ``tools/list`` yet; while one remains the set is
         still arriving, and announcing it would both lie and make the pass
         that finally carries those tools look like a change to the tool set.
-        The wait is bounded by ``ready.tool_sync_wait`` so that a server which
-        never comes up cannot keep the line away forever.
+
+        Once ``ready.tool_sync_wait`` is spent, what the set HAS is the answer:
+        the budget outlasts the gateway's own establishment and listing bounds,
+        so a server still missing after it is not still arriving — it is down
+        for now, and its rows already say so.  What makes that a real bound
+        rather than a hope is that every await in the pass is bounded by the
+        same value: the pass always ENDS, so this check is always reached.  A
+        pass that never ended (an unbounded await on a gateway that stopped
+        answering) is what used to leave this line unwritten for a whole
+        session, while silence kept claiming the sync was merely slow.
 
         ``total`` is every USABLE catalog row — not the registry, which cannot
         see the two registry-less families: ``skill`` and ``cli`` are rows
@@ -1591,19 +1657,25 @@ class AgentService:
             pass  # a notification must never break the reconcile
 
     def _tool_sync_wait_over(self) -> bool:
-        """Whether the wait for still-starting servers has run out.
+        """Whether the startup sync's budget is spent.
 
-        Follows the gateway's re-list backoff (see ``ready.tool_sync_wait``): a
-        server that has not answered ``tools/list`` by the time that retry
-        stops growing is not "still starting" but down — and the line reports
+        Two clocks a still-missing server could be running on, and this one
+        budget covers both (see ``ready.tool_sync_wait``): the gateway's
+        re-list backoff — a first listing that timed out can still succeed on
+        the retry — and its establishment bound, which is what a server that
+        has answered nothing at all is really inside.  Spent, a server still
+        missing is not "still starting" but down for now, and the line reports
         what the set has rather than waiting on a server the gateway is done
-        pacing.  Without a bound, one server that never comes up would mean the
-        startup line never arrives at all.
+        pacing.
+
+        ``>=``, not ``>``: the pass's own bounds expire on exactly this value,
+        so which side of a clock tick the pass lands on must not decide
+        whether the line is written.
         """
         if self._tool_sync_started_at is None:
             return True
         budget = _timeouts.timeouts.ready.tool_sync_wait
-        return (_time.monotonic() - self._tool_sync_started_at) > budget
+        return (_time.monotonic() - self._tool_sync_started_at) >= budget
 
     async def on_plugin_child_exit(self, name: str) -> None:
         """A plugin child exited (its watchdog is about to restart it).
@@ -1668,8 +1740,18 @@ class AgentService:
         if catalog is None:
             return set()
         try:
-            raw = await client.call_tool("__check")
+            # Bounded like every other gateway await in the pass — this one is
+            # not a mirror, but a probe that never answers holds the pass open
+            # exactly the same way.
+            async with asyncio.timeout(_timeouts.timeouts.ready.tool_sync_wait):
+                raw = await client.call_tool("__check")
             data = json.loads(raw)
+        except TimeoutError:
+            logger.warning(
+                "mcp_reconcile_check_timeout budget=%.0fs",
+                _timeouts.timeouts.ready.tool_sync_wait,
+            )
+            return set()
         except Exception as e:
             # A failed probe is NOT a verdict — leave the rows alone rather
             # than marking every server broken on a transient error.  It is
