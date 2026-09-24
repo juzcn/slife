@@ -319,7 +319,6 @@ class AgentLoop:
         recall_available: Callable[[], bool] | None = None,
         turns_by_ids: Callable[[list[int]], Awaitable[list[dict]]] | None = None,
         rebuild_message: bool = False,
-        images_by_turn: dict[int, list[dict]] | None = None,
         stream_timeout: float | None = None,
         stream_max_retries: int | None = None,
         stream_stall_timeout: float | None = None,
@@ -392,7 +391,6 @@ class AgentLoop:
         self.turns_by_ids = turns_by_ids
         # Per-turn context rebuild (see the recall step in run()).
         self.rebuild_message = rebuild_message
-        self._images_by_turn = images_by_turn if images_by_turn is not None else {}
         self.supports_vision = supports_vision
         self.model_name = model_name
         self.input_modalities = input_modalities
@@ -724,24 +722,20 @@ class AgentLoop:
         return args
 
     def forget_images(self, history: MessageHistory) -> int:
-        """Drop every injected image block from *history* and from the store.
+        """Drop every injected image block from *history*.
 
         Called when the provider rejected a request that carried attachments
-        (:func:`slife.agent.inbox._is_bad_request`).  Clearing the live
-        message list is not enough on its own: ``_recall_and_rebuild``
-        re-attaches the blocks from ``_images_by_turn`` on the next turn, so
-        the same rejection would repeat.  Both structures go, or neither
-        does.
+        (:func:`slife.agent.inbox._is_bad_request`).  A block lives in the
+        session only — it is never persisted — so it would otherwise ride
+        every later request and be rejected there: one failed attach turned
+        into a session that dropped every turn, from every source, until a
+        restart.  A rejected attachment is not kept.
 
-        Returns the number of blocks removed from the live history — 0 means
-        the request carried none, so the images were not what was rejected
-        and the store is left alone.
+        Returns the number of blocks removed — 0 means the request carried
+        none, so the images were not what was rejected.
         """
         removed = history.strip_images()
         if removed:
-            # The same dict the service holds as ``_image_by_turn`` — the
-            # rebuild's source, and the only other place a block survives.
-            self._images_by_turn.clear()
             logger.info("images_forgotten count=%d", removed)
         return removed
 
@@ -802,11 +796,7 @@ class AgentLoop:
         # announcing a clear over an already-empty one (a fresh store's first
         # turn) would report a change that did not happen.
         had_turns = len(history.messages) > 1
-        history.rebuild_messages(
-            turns,
-            images_by_turn=self._images_by_turn,
-            vision=self.supports_vision,
-        )
+        history.rebuild_messages(turns)
         # Deliberately NOT resetting the cached usage: `context_tokens_for`
         # reports the previous round's real API usage and returns 0 when there
         # is none (it never presents an estimate as real usage), so clearing it

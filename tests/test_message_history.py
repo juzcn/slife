@@ -3,6 +3,8 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
+import json
+
 import pytest
 
 from slife.agent.message_history import (
@@ -10,6 +12,7 @@ from slife.agent.message_history import (
     a2a_marker,
     a2a_message_type,
     info_footnote_span,
+    messages_from_turns,
     subagent_marker,
     unwrap_info_envelope,
     wechat_marker,
@@ -341,6 +344,63 @@ class TestStripImages:
         conv.add_assistant_message("hi")
         assert conv.strip_images() == 0
         assert conv.messages[0]["content"] == "plain"
+
+
+class TestMessagesFromTurns:
+    """messages_from_turns — the shared turn→messages builder.
+
+    A rebuilt turn carries no image blocks.  They are live-session state
+    (``inject_images_to_last_user``) and are never persisted, so a recalled
+    turn comes back as its text plus whatever the stored slice holds — the
+    ``attach_image`` call and its result, which name every source the model
+    needs to re-attach by itself.  Pinned here so the block branch cannot
+    creep back in.
+    """
+
+    def test_image_turn_rebuilds_to_text_plus_its_stored_slice(self):
+        turn = {
+            "rowid": 7,
+            "created_at": "2026-09-23 10:00:00",
+            "completed_at": "2026-09-23 10:01:00",
+            "user_message": "what is in @shot.png",
+            "messages": json.dumps([
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "_harness_attach_image_1",
+                        "type": "function",
+                        "function": {
+                            "name": "attach_image",
+                            "arguments": json.dumps({"sources": ["shot.png"]}),
+                        },
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "_harness_attach_image_1",
+                    "content": "Image included: shot.png",
+                },
+                {"role": "assistant", "content": "a red square"},
+            ]),
+        }
+
+        messages = messages_from_turns([turn])
+
+        # Plain text with the footnote — never a multimodal content list,
+        # whatever the live turn carried.
+        assert messages[0]["role"] == "user"
+        assert isinstance(messages[0]["content"], str)
+        assert messages[0]["content"].startswith("what is in @shot.png ")
+        assert "[INFO: " in messages[0]["content"]
+        # The turn's identity still rides the message for the trim.
+        assert messages[0]["_turn_id"] == 7
+        # And the source survives, in the call and in its result.
+        call = messages[1]["tool_calls"][0]["function"]
+        assert call["name"] == "attach_image"
+        assert "shot.png" in call["arguments"]
+        assert messages[2]["content"] == "Image included: shot.png"
+        assert messages[3]["content"] == "a red square"
 
 
 class TestAddAssistantMessage:

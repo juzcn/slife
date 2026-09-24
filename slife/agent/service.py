@@ -221,12 +221,6 @@ def _extract_turn_annotation(
     return summary, tags
 
 
-#: How many turns' image blocks the session keeps for a context rebuild.
-#: Bounded because the blocks are base64 data URIs (megabytes each); past
-#: this, an old turn simply rebuilds text-only.
-_MAX_TURN_IMAGES = 100
-
-
 class AgentService:
     """Wires together LLM client, tools, message history, and agent loop.
 
@@ -309,12 +303,6 @@ class AgentService:
             _timeouts.timeouts.work.task_budget
             if not self.caps.stream_retries else None
         )
-        # Session-scoped image blocks by turn id, for a context rebuild's
-        # `images_by_turn`.  Images are never persisted (there is no column),
-        # so a rebuild can only re-attach them from memory; a miss simply
-        # yields a text-only turn.  Insertion-ordered and bounded — the blocks
-        # are base64 data URIs.  Initialised before the loop, which reads it.
-        self._image_by_turn: dict[int, list[dict]] = {}
         self.agent_loop = AgentLoop(
             llm_client=self.llm_client,
             tool_registry=self.tool_registry,
@@ -343,7 +331,6 @@ class AgentService:
             rebuild_message=(
                 self.config.rebuild_message and not self.role.is_worker
             ),
-            images_by_turn=self._image_by_turn,
             stream_timeout=subagent_stream_timeout,
             stream_max_retries=None if self.caps.stream_retries else 0,
             tool_catalog=self._catalog,
@@ -2514,9 +2501,6 @@ class AgentService:
         if not (0 <= user_idx < len(msgs)) or msgs[user_idx].get("role") != "user":
             return
         msgs[user_idx]["_turn_id"] = rowid
-        # Record any image blocks for a later rebuild — they are never
-        # persisted, so memory is the only place they exist after this turn.
-        self.remember_turn_images(rowid, msgs[user_idx].get("content"))
 
         from slife.agent.schedules import is_autonomous_trigger
 
@@ -2726,20 +2710,6 @@ class AgentService:
         if not payload or payload.get("error"):
             return []
         return payload.get("turns") or []
-
-    def remember_turn_images(self, rowid: int, content) -> None:
-        """Record a saved turn's image blocks for a later rebuild."""
-        if not isinstance(content, list):
-            return
-        blocks = [
-            p for p in content
-            if isinstance(p, dict) and p.get("type") == "image_url"
-        ]
-        if not blocks:
-            return
-        self._image_by_turn[rowid] = blocks
-        while len(self._image_by_turn) > _MAX_TURN_IMAGES:
-            self._image_by_turn.pop(next(iter(self._image_by_turn)))
 
     async def set_context_turns(self, turn_ids: list[int]) -> bool:
         """Replace the persisted live-context list with *turn_ids*.

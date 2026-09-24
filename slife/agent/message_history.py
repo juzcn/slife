@@ -279,8 +279,6 @@ def messages_from_turns(
     turns: list[dict],
     *,
     system_message: dict | None = None,
-    images_by_turn: dict[int, list[dict]] | None = None,
-    vision: bool = True,
 ) -> list[dict]:
     """Build a message list from stored turn rows — the ONE turn→messages
     builder, shared by session restore and the per-turn rebuild.
@@ -291,15 +289,13 @@ def messages_from_turns(
 
     *turns* is **oldest-first**.  ``messages[0]`` is copied from
     *system_message* (never re-rendered), then each turn contributes its user
-    message — carrying the ``[INFO: {…}]`` footnote, and its re-attached image
-    blocks when *images_by_turn* has any for it — followed by its stored
+    message — carrying the ``[INFO: {…}]`` footnote — followed by its stored
     ``messages`` slice.
 
-    Image blocks are re-attached in the shape :meth:`inject_images_to_last_user`
-    produces (text first, then blocks, then the footnote as a trailing text
-    part), so a rebuilt turn matches its live form.  ``vision=False`` drops
-    them — the live path refuses to attach images a non-vision model would
-    reject, and a rebuild after a model switch must not smuggle them back.
+    A turn's image blocks are deliberately absent: they are live-session state
+    (:meth:`inject_images_to_last_user`) and are never persisted, so a rebuilt
+    turn carries the ``attach_image`` call and its result — which name every
+    source — and the model re-attaches from that when it needs the pixels.
     """
     # Function-local: this module is imported by plugin processes that only
     # want the estimators, and ``schedules`` pulls in the prompt/template
@@ -321,15 +317,10 @@ def messages_from_turns(
         header = "" if is_autonomous_trigger(user_text) else turn_header(turn)
 
         rowid = turn.get("rowid")
-        blocks = (images_by_turn or {}).get(rowid) if (vision and rowid is not None) else None
-        if blocks:
-            content: object = [{"type": "text", "text": user_text}, *blocks]
-            if header:
-                content = [*content, {"type": "text", "text": " " + header}]
-        else:
-            content = user_text + (" " + header if header else "")
-
-        user_msg: dict = {"role": "user", "content": content}
+        user_msg: dict = {
+            "role": "user",
+            "content": user_text + (" " + header if header else ""),
+        }
         # The structural turn id rides the message so the loop can map an
         # in-context turn back to its diary row.  Runtime-only: it is popped
         # before the wire and never part of a stored ``messages`` slice.
@@ -545,9 +536,6 @@ class MessageHistory:
     def rebuild_messages(
         self,
         turns: list[dict],
-        *,
-        images_by_turn: dict[int, list[dict]] | None = None,
-        vision: bool = True,
     ) -> int:
         """Replace the context with a rebuild from *turns* (oldest-first).
 
@@ -580,12 +568,7 @@ class MessageHistory:
             if self.messages and self.messages[0].get("role") == "system"
             else None
         )
-        self.messages = messages_from_turns(
-            ordered,
-            system_message=sys_msg,
-            images_by_turn=images_by_turn,
-            vision=vision,
-        )
+        self.messages = messages_from_turns(ordered, system_message=sys_msg)
         # The one invariant enforcer — a rebuild splices an arbitrary turn set,
         # so it gets the same guarantee on load that a restored history does.
         self._ensure_turn_consistent()

@@ -166,11 +166,11 @@ message posted to the inbox
   rather than by status code — providers spell it differently (OpenAI/Azure `content_filter`,
   DashScope/Qwen `data_inspection_failed`, Anthropic only in the message text).
 - **A rejected request still costs its attachments.** Any 400 drops the injected image blocks —
-  `MessageHistory.strip_images()` plus the loop's per-turn image store. A block is session-only
-  (there is no column), so it rides every later request and is rejected there; clearing the live list
-  alone is not enough, because a context rebuild re-attaches it from the store. Both go, or neither
-  does. The TUI says the attachments were removed, so the model is not blamed for not seeing an image
-  that is gone.
+  `MessageHistory.strip_images()`, which is the only place a block lives. A block is session-only
+  (there is no column), so it would otherwise ride every later request and be rejected there: one
+  failed attach turned into a session that dropped every turn, from every source, until a restart. A
+  rejected attachment is not kept. The TUI says the attachments were removed, so the model is not
+  blamed for not seeing an image that is gone.
 
 ### 2.2 Context window management
 
@@ -224,15 +224,16 @@ run()
   │    ├─ __memory_turn_recall(…) → turn ids, [] or None
   │    ├─ None / unfetchable / {} → keep the existing context, continue
   │    ├─ __memory_context_turns_set(ids) | __memory_context_turns_clear()
-  │    └─ history.rebuild_messages(turns, images_by_turn=…)
+  │    └─ history.rebuild_messages(turns)
   ├─ add_user_message · attach_image · _turn_prompt
   └─ iteration loop
         └─ save_to_memory → the new rowid is appended to the persisted list
 ```
 
 The step sits **before** `add_user_message` because the rebuild replaces the message list wholesale,
-so anything appended first — the user message, the `attach_image` blocks — would be destroyed. It
-also stays outside the iteration loop. With the flag **false** the context grows append-only and the
+so anything appended first — the user message — would be destroyed. The live image blocks of the
+turns it replaces go the same way: a rebuilt turn carries no blocks (§7.6). It also stays outside
+the iteration loop. With the flag **false** the context grows append-only and the
 trim bounds it; one persisted list and one save-append path serve both modes, so the flag flips with
 no migration. What the flag never changes is the ceiling.
 
@@ -1253,7 +1254,8 @@ identity, the agent identity and model, the turn's billed token count, and `cont
 context size at the last API call, which restore primes the first turn prompt with.
 
 There is **no `images` column**: image blocks live only in the in-memory user message and are never
-persisted, so restore is text-only. Supporting structures are an FTS5 external-content index (whose
+persisted, so restore is text-only — and so is a turn rebuilt by a recall selection, which comes back
+as its text plus the `attach_image` call and result (§7.6). Supporting structures are an FTS5 external-content index (whose
 UPDATE trigger exists because the summarize tool rewrites columns and an external-content index must
 track that), a sqlite-vec table, a key/value `diary_meta` store holding the embedding model identity,
 the index text contract's version and the ordered live-context list, and a sibling `turn_channel` row per turn holding the channel's
@@ -1416,8 +1418,11 @@ failure becomes a reported error rather than a silent drop.
 Parsing is deliberately **two-phase** — locate every `@`, then match a source pattern on the slice
 after each — rather than one regex, which is more robust against the special characters above and
 keeps the existence check in one place downstream. Blocks are **live-session only**: never persisted,
-so restore is text-only. Images are never rendered in the terminal — the model reads them, and the
-user opens the file with the OS or a share link.
+so restore is text-only, and a rebuilt turn keeps the `attach_image` call and its result — which name
+every source — but not the pixels. That is deliberate: the model re-attaches from its own history
+when the turn needs the picture again, so nothing keeps a second copy of it. Images are never
+rendered in the terminal — the model reads them, and the user opens the file with the OS or a share
+link.
 
 ---
 
