@@ -158,11 +158,21 @@ class HistoryInput(TextArea):
     async def _on_key(self, event: events.Key) -> None:
         """Enter submits the message; everything else goes to TextArea.
 
-        TextArea consumes Enter in its own ``_on_key`` (inserts a newline)
-        before any binding could fire, so submission must be intercepted here.
+        Enter never breaks a line, wherever the cursor sits in a multi-line
+        draft: a newline is Shift+Enter's job, so Enter means send and
+        nothing else.
+
+        ``prevent_default`` is the lever here, not ``stop``.  Textual
+        dispatches ``_on_key`` to *every* class in the MRO, so TextArea's
+        handler is a separate call inside this same widget — ``stop`` only
+        ends the message's trip to the parent.  Without ``prevent_default``
+        TextArea inserts its own ``"\\n"``: the box grew a blank line on an
+        empty Enter, and on a submit the line landed before the handler
+        cleared it.
         """
         if event.key == "enter":
             event.stop()
+            event.prevent_default()
             value = self.text
             if value.strip():
                 self.post_message(self.Submitted(self, value))
