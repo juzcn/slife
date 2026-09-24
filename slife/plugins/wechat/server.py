@@ -530,17 +530,17 @@ async def wechat_login() -> str:
     ),
 )
 async def wechat_send_message(
-    peer_wechat_id: str = "",
+    peer_wechat_id: str,
+    text: str,
     context_token: str = "",
-    text: str = "",
 ) -> str:
     """Send a text message to the WeChat user you are chatting with.
 
     Args:
         peer_wechat_id: The WeChat user id to message (from
             wechat_check_status.last_contact / the [Wechat:{...}] input marker).
-        context_token: Thread context token; empty for the first message.
         text: The message body.
+        context_token: Thread context token; empty for the first message.
     """
     global _client
 

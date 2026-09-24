@@ -477,7 +477,7 @@ async def share_file(path: str) -> str:
         "(the link was registered in this session)."
     ),
 )
-async def sharefile_unshare(file_id: str = "") -> str:
+async def sharefile_unshare(file_id: str) -> str:
     """Revoke a share by its file id (from a share_file URL: ``/share/{id}``).
 
     Args:

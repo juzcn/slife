@@ -32,6 +32,7 @@ import os
 import sys
 from collections import deque
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from slife.a2a.card import AgentCard
 from slife.a2a.config import A2AConfig
@@ -211,7 +212,8 @@ def _on_broadcast_event(sender: str, text: str) -> None:
 )
 async def a2a_send_message(
     agent: str, message: str,
-    message_type: str = "task_request", task_id: str = "",
+    message_type: Literal["message", "task_request", "task_response"] = "task_request",
+    task_id: str = "",
 ) -> str:
     """Send a message to *agent*.
 
