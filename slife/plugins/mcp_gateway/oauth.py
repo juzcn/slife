@@ -391,8 +391,13 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
             f"OAuth config for '{server_name}' missing token_url for refresh."
         )
 
-    # Even if expired, try to load the stored data for the refresh_token
-    raw = get_credential(_credstore_key(server_name))
+    # Even if expired, try to load the stored data for the refresh_token.
+    # Off the loop: this is a sync keyring read on the connect path, where a
+    # blocked loop is a deadline that cannot fire (see ``_ensure_oauth_token``).
+    from slife.threads import run_daemon
+    raw = await run_daemon(
+        get_credential, _credstore_key(server_name), name="mcp-oauth-token",
+    )
     if not raw:
         raise RuntimeError(
             f"No stored tokens for '{server_name}'. Re-run device code flow."

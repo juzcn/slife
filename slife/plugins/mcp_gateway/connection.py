@@ -311,12 +311,18 @@ class MCPServerConnection:
             run_device_code_flow,
             refresh_access_token,
         )
+        from slife.threads import run_daemon
 
         auth = self.config.auth
         assert auth is not None  # guarded by caller
         name = self.config.name
 
-        tokens = get_valid_token(name)
+        # The token read is a sync keyring call, and it sits INSIDE the
+        # establishment deadline — where a blocked loop means the deadline
+        # cannot fire.  Off the loop it goes, like every other sync lookup on
+        # this path (a live but locked credential store is exactly the kind of
+        # wait that has no bound of its own).
+        tokens = await run_daemon(get_valid_token, name, name="mcp-oauth-token")
         if tokens is None:
             # Try refresh first (may have expired with valid refresh_token)
             try:
@@ -355,8 +361,16 @@ class MCPServerConnection:
 
     # ── Transport selection (SDK transports → one ClientSession) ─────────
 
-    async def _connect_stdio(self) -> None:
-        """Spawn server as subprocess and connect the SDK stdio client."""
+    def _stdio_launch_params(self) -> "StdioServerParameters":
+        """Resolve the child's launch — PATH, ${VAR} secrets, allow-paths.
+
+        Every step is SYNC, and one of them is not cheap: ``resolve_command``
+        stats PATH entries, the ``${VAR}`` resolution reads the credential
+        store, and ``get_os_accessible_paths`` probes all 26 drive letters —
+        where a mapped-but-unreachable network drive blocks for seconds.  This
+        runs on a daemon thread (see :meth:`_connect_stdio`): inside the
+        establishment deadline, a blocked loop is a deadline that cannot fire.
+        """
         exe = resolve_command(self.config.command)
         env = dict(os.environ)
         if self.config.env:
@@ -374,8 +388,16 @@ class MCPServerConnection:
             for p in get_os_accessible_paths():
                 resolved_args += ["--allow-path", p]
 
-        params = StdioServerParameters(
+        return StdioServerParameters(
             command=exe, args=resolved_args, env=env or None,
+        )
+
+    async def _connect_stdio(self) -> None:
+        """Spawn server as subprocess and connect the SDK stdio client."""
+        from slife.threads import run_daemon
+
+        params = await run_daemon(
+            self._stdio_launch_params, name="mcp-stdio-launch",
         )
         if self._exit_stack is None:
             self._exit_stack = AsyncExitStack()
@@ -438,8 +460,13 @@ class MCPServerConnection:
         except asyncio.CancelledError:
             pass
 
-    async def _connect_http(self) -> None:
-        """Create HTTP client; detect SSE vs Streamable HTTP and connect the SDK transport."""
+    def _http_launch(self) -> tuple[str, dict[str, str]]:
+        """The URL + headers with their ``${VAR}`` refs resolved.
+
+        ``_resolve_embedded_refs`` reads the credential store, so this is the
+        HTTP twin of :meth:`_stdio_launch_params` — same reason to keep it off
+        the loop, and it runs on a daemon thread for the same reason.
+        """
         # Resolve ${VAR} references in URL (e.g. SSE URL with API key)
         url = _resolve_embedded_refs(self.config.url).rstrip("/")
 
@@ -449,6 +476,13 @@ class MCPServerConnection:
             headers.update(
                 {k: _resolve_embedded_refs(v) for k, v in self.config.headers.items()}
             )
+        return url, headers
+
+    async def _connect_http(self) -> None:
+        """Create HTTP client; detect SSE vs Streamable HTTP and connect the SDK transport."""
+        from slife.threads import run_daemon
+
+        url, headers = await run_daemon(self._http_launch, name="mcp-http-launch")
 
         # Detect transport: try SSE first (the SDK's sse_client handles the
         # endpoint-discovery handshake itself); fall back to Streamable HTTP.
@@ -695,48 +729,67 @@ class MCPServerConnection:
         Pre-installing the ``node_modules`` into ``readabilipy``'s
         ``javascript`` directory lets ``have_node()`` succeed without
         ever calling ``have_npm()``, sidestepping the detection bug.
+
+        **The work runs off the event loop, and that is load-bearing.**  It is
+        the one blocking subprocess this plugin has, and a blocking call on the
+        loop does not merely take its own time — it suspends every
+        ``asyncio.timeout`` in the process, so deadlines that already expired
+        fire late, all at once, on unrelated servers.  Measured on a slow
+        machine: this call froze the loop for 137s (its own 60s ``npm``
+        timeout overran by 57s while the child tree held the pipe), and the
+        thirteen connects whose 120s bound had passed meanwhile were all
+        reported failed at the same instant.  ``run_daemon``, not
+        ``asyncio.to_thread``: the default executor's non-daemon workers are
+        joined at interpreter exit, so a hung install would wedge shutdown
+        (see :mod:`slife.threads`).
         """
         if self.config.name != "fetch":
             return
 
+        from slife.threads import run_daemon
+
         try:
-            # Locate readabilipy inside the uvx-managed environment
-            result = _subprocess.run(
-                [
-                    "uvx", "--from", "mcp-server-fetch", "python", "-c",
-                    "import readabilipy, os; print(os.path.dirname(readabilipy.__file__))",
-                ],
-                capture_output=True, text=True, timeout=30,  # noqa-timeout — one-off dep bring-up (sync subprocess, not asyncio)
-            )
-            if result.returncode != 0:
-                return
-            readabilipy_dir = result.stdout.strip()
-            if not readabilipy_dir or not os.path.isdir(readabilipy_dir):
-                return
-
-            jsdir = os.path.join(readabilipy_dir, "javascript")
-            if not os.path.isdir(jsdir):
-                return
-
-            if os.path.isdir(os.path.join(jsdir, "node_modules")):
-                logger.debug("fetch_npm_skip reason=node_modules_present")
-                return
-
-            logger.info("fetch_npm_install jsdir=%s", jsdir)
-            npm_cmd = ["cmd", "/c", "npm", "install"]
-            install = _subprocess.run(
-                npm_cmd, cwd=jsdir,
-                capture_output=True, text=True, timeout=60,  # noqa-timeout — one-off dep bring-up (sync subprocess, not asyncio)
-            )
-            if install.returncode == 0:
-                logger.info("fetch_npm_installed jsdir=%s", jsdir)
-            else:
-                logger.warning(
-                    "fetch_npm_install_failed jsdir=%s err=%s",
-                    jsdir, (install.stderr or "")[-500:],
-                )
+            await run_daemon(self._install_fetch_deps, name="mcp-fetch-deps")
         except Exception:
             logger.debug("fetch_npm_setup_error", exc_info=True)
+
+    def _install_fetch_deps(self) -> None:
+        """The blocking half of :meth:`_post_connect_setup` — daemon thread."""
+        # Locate readabilipy inside the uvx-managed environment
+        result = _subprocess.run(
+            [
+                "uvx", "--from", "mcp-server-fetch", "python", "-c",
+                "import readabilipy, os; print(os.path.dirname(readabilipy.__file__))",
+            ],
+            capture_output=True, text=True, timeout=30,  # noqa-timeout — one-off dep bring-up (sync subprocess, not asyncio)
+        )
+        if result.returncode != 0:
+            return
+        readabilipy_dir = result.stdout.strip()
+        if not readabilipy_dir or not os.path.isdir(readabilipy_dir):
+            return
+
+        jsdir = os.path.join(readabilipy_dir, "javascript")
+        if not os.path.isdir(jsdir):
+            return
+
+        if os.path.isdir(os.path.join(jsdir, "node_modules")):
+            logger.debug("fetch_npm_skip reason=node_modules_present")
+            return
+
+        logger.info("fetch_npm_install jsdir=%s", jsdir)
+        npm_cmd = ["cmd", "/c", "npm", "install"]
+        install = _subprocess.run(
+            npm_cmd, cwd=jsdir,
+            capture_output=True, text=True, timeout=60,  # noqa-timeout — one-off dep bring-up (sync subprocess, not asyncio)
+        )
+        if install.returncode == 0:
+            logger.info("fetch_npm_installed jsdir=%s", jsdir)
+        else:
+            logger.warning(
+                "fetch_npm_install_failed jsdir=%s err=%s",
+                jsdir, (install.stderr or "")[-500:],
+            )
 
     # ── The tool list: the health check, and its record ─────────────────
 

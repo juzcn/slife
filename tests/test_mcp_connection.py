@@ -869,6 +869,42 @@ class TestMCPServerConnectionRefresh:
         await _stop(conn._refresh_task)
 
     @pytest.mark.asyncio
+    async def test_the_fetch_dep_bring_up_runs_off_the_loop(self, monkeypatch):
+        """The one blocking subprocess this plugin has must leave the loop.
+
+        A blocking call on the loop does not merely take its own time: it
+        suspends every ``asyncio.timeout`` in the process, so deadlines that
+        already expired fire late — and all at once, on unrelated servers.
+        Measured 2026-09-24: this call froze the gateway loop for 137s (the
+        ``npm`` child tree held the pipe past its own 60s bound), and thirteen
+        connects whose 120s bound had passed meanwhile were reported failed in
+        the same instant.
+        """
+        conn = MCPServerConnection(ServerConfig(name="fetch", command="echo"))
+        monkeypatch.setattr(conn, "_install_fetch_deps", lambda: _time.sleep(0.2))
+
+        ticks = 0
+
+        async def _ticker():
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        task = asyncio.create_task(_ticker())
+        try:
+            await conn._post_connect_setup()
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # ~20 ticks while the install slept; a loop blocked by it manages 1-2.
+        assert ticks > 5, f"the event loop was blocked (ticks={ticks})"
+
+    @pytest.mark.asyncio
     async def test_a_truncated_listing_is_reported(self, caplog):
         """We read one page — a peer that paginates must not be silent."""
         conn = MCPServerConnection(ServerConfig(name="s", command="echo"))

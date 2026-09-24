@@ -37,6 +37,19 @@ from slife.server_utils import (
 #: with no transport.  The host's sync waits on it rather than judging either.
 _spawn_settled = asyncio.Event()
 
+#: Fire-and-forget tasks — the boot connect pass, a post-enable re-read.  Held
+#: until they finish: the loop keeps tasks in a WeakSet only, so a bare
+#: ``create_task``/``ensure_future`` result awaiting its first I/O can be
+#: garbage-collected mid-flight and never complete (asyncio's own caveat).
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _background(coro, *, name: str) -> None:
+    """Run *coro* in the background, holding a reference until it is done."""
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
 
 @asynccontextmanager
 async def _mcp_lifespan(_app):
@@ -49,10 +62,15 @@ async def _mcp_lifespan(_app):
     and health-monitor tasks are closed on the same loop that created them —
     otherwise connections leak on exit.
     """
-    asyncio.ensure_future(_auto_connect_configured())
+    _background(_auto_connect_configured(), name="mcp-auto-connect")
     try:
         yield
     finally:
+        # No cancel of the background work here: there is no session state to
+        # lose, and a straggler spawn dies with the process tree anyway (the
+        # wrapper puts every child in a kill-on-close job object).  Holding the
+        # reference above is about the task not vanishing mid-flight, nothing
+        # about teardown ordering.
         try:
             await _pool.shutdown()
         except Exception as e:
@@ -594,7 +612,7 @@ async def _set_server_enabled(
             except Exception as e:
                 logger.warning("mcp_enable_connect_failed server=%s err=%s", name, e)
 
-        asyncio.create_task(_connect_async())
+        _background(_connect_async(), name=f"mcp-connect:{name}")
         return ok_json(
             status="enabling",
             server=name,
