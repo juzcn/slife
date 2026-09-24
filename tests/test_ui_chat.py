@@ -365,6 +365,17 @@ def _fill(view, n=30):
         view.add_user_message(f"[{i}] " + "line of history text " * 6)
 
 
+def _visible_lines(app) -> list[str]:
+    """The text the terminal is showing — the compositor's output.
+
+    Not ``scroll_offset``: the offset was always right, and every assertion
+    that read it passed while the screen stood still.  What the reader sees
+    is the compositor's strips, so a repaint is only testable here.
+    """
+    strips = app.screen._compositor.render_strips()
+    return ["".join(segment.text for segment in strip) for strip in strips]
+
+
 class TestScrollFollowing:
     """Following the tail must be sticky, or a streaming turn owns the view.
 
@@ -448,6 +459,29 @@ class TestScrollFollowing:
             assert view.scroll_offset.y == view.max_scroll_y
             # The reader keeps their cursor: paging must not move focus.
             assert isinstance(app.focused, HistoryInput)
+
+    @pytest.mark.asyncio
+    async def test_scrolling_moves_what_is_on_screen(self):
+        """A scroll must repaint the view, not just move the offset.
+
+        ``ChatView.watch_scroll_y`` overrides Textual's watcher, and the
+        override has to delegate: the base one is what repaints the widget at
+        the new offset.  Without it the reader scrolled an image that never
+        moved — the offset changed, the screen stood still — which is why
+        every offset assertion in this class stayed green through the bug.
+        """
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            _fill(view)
+            await pilot.pause()
+            at_tail = _visible_lines(app)
+
+            view.scroll_to(y=0, animate=False)
+            await pilot.pause()
+
+            assert view.scroll_offset.y == 0
+            assert _visible_lines(app) != at_tail
 
 
 # ── Timestamp formatting + per-message rendering ────────────────────

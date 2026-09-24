@@ -143,7 +143,12 @@ class ChatView(VerticalScroll):
         the reader controls: content growth leaves the offset where it was
         (only ``follow_tail`` moves it), so this holds the last position they
         asked for rather than the one the new content implies.
+
+        This overrides ``Widget.watch_scroll_y``, which is what repaints the
+        widget at the new offset — dropping the delegation left the reader
+        scrolling an image that never moved.
         """
+        super().watch_scroll_y(old_value, new_value)
         self._at_tail = new_value >= self.max_scroll_y - 1
 
     def follow_tail(self) -> None:
