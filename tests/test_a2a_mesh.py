@@ -557,10 +557,14 @@ class TestWorkingKeepalive:
 
 class TestCancellationPath:
     @pytest.mark.asyncio
-    async def test_peer_cancel_enqueues_preempt_unless_closing(self):
+    async def test_peer_cancel_is_delivered_unless_closing(self):
         mesh = _make_mesh()
-        preempts = []
-        mesh.on_peer_cancel = lambda t: preempts.append(t)
+        # A live link is what a peer's CancelTask can arrive on.
+        mesh._connected = True
+        delivered = []
+        # The withdrawal is a delivery to the harness — task id AND peer, so
+        # the harness can name the sender it is telling the model about.
+        mesh.on_peer_cancel = lambda t, peer: delivered.append((t, peer))
         task = self_spawn_local(mesh, "t9")
 
         async def _cancel_task(t):
@@ -573,14 +577,19 @@ class TestCancellationPath:
                 await asyncio.wait_for(task, 1)
         finally:
             await canceller
-        assert preempts == ["t9"]
+        assert delivered == [("t9", "peer-1")]
+        # A late task_response for the withdrawn id gets the truthful answer —
+        # not the typo-flavoured "unknown task_id … check the marker", which
+        # would send the model back to re-read a marker that is correct.
+        assert "withdrawn by peer-1" in mesh.complete_task("t9", "late result")
 
     @pytest.mark.asyncio
-    async def test_closing_suppresses_preempt(self):
+    async def test_closing_suppresses_delivery(self):
         mesh = _make_mesh()
+        mesh._connected = True
         mesh._closing = True
-        preempts = []
-        mesh.on_peer_cancel = lambda t: preempts.append(t)
+        delivered = []
+        mesh.on_peer_cancel = lambda t, peer: delivered.append((t, peer))
         task = self_spawn_local(mesh, "t10")
 
         async def _cancel_task(t):
@@ -593,7 +602,33 @@ class TestCancellationPath:
                 await asyncio.wait_for(task, 1)
         finally:
             await canceller
-        assert preempts == []
+        assert delivered == []
+
+    @pytest.mark.asyncio
+    async def test_link_loss_is_not_a_withdrawal(self):
+        """A dropped link must not be reported as a peer withdrawal.
+
+        The SDK cancels EVERY inflight handler when the responder's own
+        session ends, which is indistinguishable from a CancelTask by
+        exception alone — so the delivery is gated on the link being live.
+        Silence is right: the peer's requester re-sends the task.
+        """
+        mesh = _make_mesh()          # _connected stays False: the link is down
+        delivered = []
+        mesh.on_peer_cancel = lambda t, peer: delivered.append((t, peer))
+        task = self_spawn_local(mesh, "t11")
+
+        async def _cancel_task(t):
+            await asyncio.sleep(0.01)
+            t.cancel()
+
+        canceller = asyncio.create_task(_cancel_task(task))
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+        finally:
+            await canceller
+        assert delivered == []
 
     @pytest.mark.asyncio
     async def test_disconnect_cancels_tracking(self):

@@ -1939,7 +1939,6 @@ class TestAgentServiceA2A:
         posted = []
         mock_inbox = MagicMock()
         mock_inbox.post = AsyncMock(side_effect=lambda msg: posted.append(msg))
-        mock_inbox.cancel_correlation = MagicMock()
         service.inbox = mock_inbox
 
         await service._a2a_poll_loop(interval=0.001)
@@ -1993,7 +1992,6 @@ class TestAgentServiceA2A:
         posted = []
         mock_inbox = MagicMock()
         mock_inbox.post = AsyncMock(side_effect=lambda msg: posted.append(msg))
-        mock_inbox.cancel_correlation = MagicMock()
         service.inbox = mock_inbox
 
         await service._a2a_poll_loop(interval=0.001)
@@ -2002,6 +2000,112 @@ class TestAgentServiceA2A:
         assert posted[0].content == '[A2A:{"from": "Jack", "type": "broadcast"}] all hands on deck'
         assert posted[0].on_reply is None
         assert posted[0].metadata.get("a2a_kind") == "event"
+
+    @pytest.mark.asyncio
+    async def test_a2a_poll_peer_cancel_posts_message(self, sample_config):
+        """A peer's withdrawal reaches the model as an ordinary inbound
+        message of type `cancel_task`.
+
+        The harness cannot know whether the running turn is working on that
+        task, so it neither drops the message nor aborts the loop — the model
+        knows, and the model decides.  The marker names the peer and the
+        task_id, so the withdrawal is attributable where it is read.
+        """
+        import json as _json
+
+        service = AgentService(sample_config)
+        mock_a2a = MagicMock()
+        mock_a2a.is_connected = True
+        calls = [0]
+
+        async def mock_call_tool(name, _):
+            if name == "__a2a_drain_incoming":
+                calls[0] += 1
+                if calls[0] == 1:
+                    return _json.dumps({
+                        "tasks": [],
+                        "cancellations": [{
+                            "type": "cancel", "corr_id": "t-9", "peer": "Jack",
+                        }],
+                        "presence": [], "task_completions": [],
+                    })
+                service._plugins["a2a"].client = None  # end the loop
+                return _json.dumps({
+                    "tasks": [], "cancellations": [], "presence": [],
+                    "task_completions": [],
+                })
+            return "{}"
+
+        mock_a2a.call_tool = mock_call_tool
+        service._plugins["a2a"].client = mock_a2a
+
+        posted = []
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock(side_effect=lambda msg: posted.append(msg))
+        # Already past the queue (it ran, or is running): nothing to drop, so
+        # the withdrawal is handed to the model.
+        mock_inbox.drop_queued = MagicMock(return_value=False)
+        service.inbox = mock_inbox
+
+        await service._a2a_poll_loop(interval=0.001)
+
+        assert len(posted) == 1
+        assert posted[0].content == (
+            '[A2A:{"from": "Jack", "type": "cancel_task", "task_id": "t-9"}] '
+            "The sender withdrew this task — stop working on it."
+        )
+        # Task-less: nothing expects a completion (the bridge died with the
+        # withdrawal), and no harness reply rides the message.
+        assert posted[0].correlation_id is None
+        assert posted[0].on_reply is None
+        assert posted[0].metadata.get("a2a_kind") == "cancel_task"
+
+    @pytest.mark.asyncio
+    async def test_a2a_poll_peer_cancel_drops_unstarted_task(self, sample_config):
+        """A withdrawal for a task that never started ends right there.
+
+        Nothing was done, so there is nothing to judge and nothing to tell:
+        the queued message is dropped and no cancel_task message is posted —
+        the peer already got its `canceled` terminal from the SDK.
+        """
+        import json as _json
+
+        service = AgentService(sample_config)
+        mock_a2a = MagicMock()
+        mock_a2a.is_connected = True
+        calls = [0]
+
+        async def mock_call_tool(name, _):
+            if name == "__a2a_drain_incoming":
+                calls[0] += 1
+                if calls[0] == 1:
+                    return _json.dumps({
+                        "tasks": [],
+                        "cancellations": [{
+                            "type": "cancel", "corr_id": "t-4", "peer": "Jill",
+                        }],
+                        "presence": [], "task_completions": [],
+                    })
+                service._plugins["a2a"].client = None  # end the loop
+                return _json.dumps({
+                    "tasks": [], "cancellations": [], "presence": [],
+                    "task_completions": [],
+                })
+            return "{}"
+
+        mock_a2a.call_tool = mock_call_tool
+        service._plugins["a2a"].client = mock_a2a
+
+        posted = []
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock(side_effect=lambda msg: posted.append(msg))
+        mock_inbox.drop_queued = MagicMock(return_value=True)  # still queued
+        service.inbox = mock_inbox
+
+        await service._a2a_poll_loop(interval=0.001)
+
+        mock_inbox.drop_queued.assert_called_with("t-4")
+        assert posted == []
 
     @pytest.mark.asyncio
     async def test_a2a_poll_frames_completion(self, sample_config):
@@ -2042,7 +2146,6 @@ class TestAgentServiceA2A:
         posted = []
         mock_inbox = MagicMock()
         mock_inbox.post = AsyncMock(side_effect=lambda msg: posted.append(msg))
-        mock_inbox.cancel_correlation = MagicMock()
         service.inbox = mock_inbox
 
         await service._a2a_poll_loop(interval=0.001)

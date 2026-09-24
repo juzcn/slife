@@ -183,6 +183,11 @@ class AgentResult:
     text: str
     usage: TokenUsage
     cancelled: bool = False
+    #: Why the turn ended early — the token the harness's closing line
+    #: carries (``message_history.interrupted_note``): ``esc`` when the
+    #: cancel event stopped it, ``max_iterations`` when the cap did.  Empty on
+    #: a turn that ended by itself.
+    stop_reason: str = ""
 
 
 class MaxIterationsExceeded(Exception):
@@ -2023,8 +2028,12 @@ class AgentLoop:
             except AgentCancelled:
                 # Turn consistency is enforced at the single save point
                 # (save_to_memory runs unconditionally after every turn) —
-                # the history is repaired there, not here.
-                return AgentResult(text="", usage=total_usage, cancelled=True)
+                # the history is repaired there, not here.  The reason rides
+                # the result so the repair's closing line can name it.
+                return AgentResult(
+                    text="", usage=total_usage, cancelled=True,
+                    stop_reason="esc",
+                )
             except MaxIterationsExceeded:
                 logger.warning("max_iterations_exceeded max=%d", self.max_iterations)
                 # Surface the limit to the handler (e.g. the TUI) before
@@ -2038,7 +2047,10 @@ class AgentLoop:
                             await on_max(self.max_iterations)
                         except Exception:
                             pass
-                return AgentResult(text="", usage=total_usage, cancelled=True)
+                return AgentResult(
+                    text="", usage=total_usage, cancelled=True,
+                    stop_reason="max_iterations",
+                )
             except Exception:
                 # Re-raise so the caller (inbox) handles the error as before;
                 # the history is repaired at the save point.

@@ -227,8 +227,9 @@ SUBAGENT_PREFIX = "[Subagent:"
 #: names the agent's *own* identity; a receiver can then never misread
 #: the marker as telling it who it is.  ``type`` tells what the message is
 #: (``task_request`` = answer it, ``task_response`` = a pushed result,
-#: ``message`` = a conversation, ``broadcast`` = an event); ``task_id`` rides
-#: for tasks/results.  Machine-facing — the TUI shows the ``A2A(<name>)> ``
+#: ``cancel_task`` = the sender withdrew it, ``message`` = a conversation,
+#: ``broadcast`` = an event); ``task_id`` rides for tasks, results and
+#: withdrawals.  Machine-facing — the TUI shows the ``A2A(<name>)> ``
 #: bubble prefix and ``unwrap_info_envelope`` strips them for display.
 A2A_PREFIX = "[A2A:"
 #: Runtime-only trim note: ``[INFO: <N> oldest turns have been removed from
@@ -374,8 +375,11 @@ def a2a_marker(
     ``task_request`` (an inbound task to answer, via
     ``a2a_send_message(message_type="task_response", task_id=…)`` — it may
     take many turns), ``task_response`` (an auto-delivered task result),
-    ``message`` (a bare conversation), ``broadcast`` (a fire-and-forget event,
-    informational).  ``task_id`` rides for tasks and results.  The key is
+    ``cancel_task`` (the peer withdrew that task — its completion bridge died
+    with it, so a ``task_response`` for it is refused: answer with a plain
+    message or stay silent), ``message`` (a bare conversation),
+    ``broadcast`` (a fire-and-forget event, informational).  ``task_id``
+    rides for tasks, results and withdrawals.  The key is
     ``from``, not ``agent_name`` — that word in the system prompt is the
     agent's own identity, so ``from`` keeps the marker unmistakably
     directional.  The marker is machine-facing; ``unwrap_info_envelope``
@@ -391,9 +395,9 @@ def a2a_marker(
     return f"{A2A_PREFIX}{json.dumps(payload, ensure_ascii=False)}] "
 
 
-#: The A2A ``type`` values :func:`a2a_message_type` may return — the four
-#: inbound message kinds, each a distinct display label.
-A2A_TYPES = ("task_request", "task_response", "message", "broadcast")
+#: The A2A ``type`` values :func:`a2a_message_type` may return — the inbound
+#: message kinds, each a distinct display label.
+A2A_TYPES = ("task_request", "task_response", "cancel_task", "message", "broadcast")
 
 
 def a2a_message_type(text: str) -> str | None:
@@ -404,7 +408,7 @@ def a2a_message_type(text: str) -> str | None:
     so the TUI's turn-end line reads the type from here instead of threading
     a parallel field through the inbox.  Returns one of :data:`A2A_TYPES`, or
     ``None`` when *text* carries no (or a malformed) A2A marker, or a type
-    outside the four — the caller then falls back to a type-less label.
+    outside the set — the caller then falls back to a type-less label.
     """
     if not text.startswith(A2A_PREFIX):
         return None
@@ -498,6 +502,36 @@ def _unwrap_with_footnote(text: str) -> tuple[str, tuple[int, int] | None]:
     return text[:start] + payload, (start, start + len(payload))
 
 
+#: The closing assistant message for a turn that ended before the model
+#: answered — ``(Turn interrupted, reason: esc)``.  Parenthesized like every
+#: other synthetic harness line: this is the harness speaking, not the model.
+#:
+#: The reason is a SHORT TOKEN, never raw exception text — the line lands in
+#: the LLM's context and in the diary, and an error string can carry secrets:
+#:
+#:   ``esc``               the user pressed Esc / the turn was cancelled
+#:   ``parent``            a worker's parent cancelled the task it was running
+#:   ``shutdown``          the app is quitting — the process is being torn down
+#:   ``max_iterations``    the configured iteration cap was hit
+#:   ``error (400 invalid_request_error)``  the turn died on an exception —
+#:                         the HTTP status and the provider's error code when
+#:                         the SDK exposes them, else the exception's class
+#:                         name (``inbox._error_reason``).  Never the message.
+#:                         A content-filter reject never reaches this line:
+#:                         that turn is rolled back, not saved.
+#:
+#: No caller passes one yet — the repair knows only *that* the turn ended
+#: early, not why — so every repaired turn currently reads ``---``.  The slot
+#: is the contract; filling it means threading the loop's terminal state down
+#: to the save point.
+_REASON_NOT_RECORDED = "---"
+
+
+def interrupted_note(stop_reason: str = "") -> str:
+    """The standardized closing line for a turn that ended early."""
+    return f"(Turn interrupted, reason: {stop_reason or _REASON_NOT_RECORDED})"
+
+
 class MessageHistory:
     """Manages the message list for an LLM history.
 
@@ -570,7 +604,7 @@ class MessageHistory:
         self._ensure_turn_consistent()
         return len(self.messages)
 
-    def _ensure_turn_consistent(self, content: str = "") -> int:
+    def _ensure_turn_consistent(self, stop_reason: str = "") -> int:
         """Restore the history to a consistent state.
 
         Two idempotent invariants for a turn that may have ended early
@@ -580,9 +614,9 @@ class MessageHistory:
            have a matching ``tool`` result.  When a request is interrupted
            the history may end with an ``assistant(tool_calls=…)`` that
            has no follow-up tool result; the OpenAI API rejects this with a
-           400.  Missing results get a synthetic ``Error: request cancelled
-           by user`` result inserted right after the owning assistant
-           message.
+           400.  Each missing result gets a synthetic
+           ``(Tool execution interrupted)`` inserted right after the owning
+           assistant message.
         2. **Alternating roles** — a history ending on a
            ``user``/``tool`` message (a tool result is a ``user`` role on
            the Anthropic wire, which rejects two consecutive users) gets a
@@ -591,6 +625,13 @@ class MessageHistory:
         Repair runs first: a dangling call as the last message (role
         ``"assistant"``) becomes a ``"tool"`` role after repair, so the
         closing-assistant check below then fires correctly.
+
+        *stop_reason* is WHY the turn ended early, in the short-token
+        vocabulary :func:`interrupted_note` documents.  Nothing passes one
+        today: this repair is reached from the save point and from load, and
+        neither is told why the turn ended — so the closing line always reads
+        ``reason: ---``.  The parameter is the slot for a caller that has the
+        loop's terminal state in hand.
 
         Returns the number of synthetic tool results inserted.
         """
@@ -637,7 +678,7 @@ class MessageHistory:
             i -= 1
 
         if self.messages and self.messages[-1]["role"] in ("user", "tool"):
-            self.add_assistant_message(content=content or "(Turn interrupted)")
+            self.add_assistant_message(content=interrupted_note(stop_reason))
         return repaired
 
     def add_user_message(

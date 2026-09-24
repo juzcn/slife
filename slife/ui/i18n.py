@@ -319,7 +319,8 @@ _STRINGS: dict[str, dict[str, str]] = {
     # ── Activity feed (app.py) ──
     # The turn-end line for an inbound message.  {type} is the wire type off
     # the message's own [A2A:…] marker — task_request / task_response /
-    # message / broadcast — a protocol value, so it stays untranslated.
+    # cancel_task / message / broadcast — a protocol value, so it stays
+    # untranslated.
     "task_completed": {
         "en": "✓ A2A {type} from {source} handled",
         "zh": "✓ 来自 {source} 的 A2A {type} 已处理",

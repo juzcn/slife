@@ -14,6 +14,7 @@ import platform
 import sys
 from datetime import datetime
 
+from slife.a2a.card import _safe_name
 from slife.logfmt import format_turn_ts
 from slife.os_detect import is_wsl
 from pathlib import Path
@@ -231,7 +232,13 @@ def build_turn_prompt(
         for r in (schedule_status or [])
     ]
     rendered_a2a_stale: list[dict] = [
-        {"task_id": t.get("task_id", ""), "peer": t.get("peer", ""),
+        # ``task_id`` and ``peer`` are peer-supplied wire values with no
+        # validation (validate_a2a_request only checks the id is non-empty) —
+        # the same untrusted input presence lines already scrub.  This list is
+        # rendered into every turn's prompt until the peer is answered, so an
+        # unsanitized value here is a standing injection channel.
+        {"task_id": _safe_name(t.get("task_id", "")),
+         "peer": _safe_name(t.get("peer", "")),
          "since": t.get("since", "")}
         for t in (a2a_stale_tasks or [])
     ]

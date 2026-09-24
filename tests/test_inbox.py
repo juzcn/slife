@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from slife.a2a.identity import AgentName, AgentMessage, HUMAN, WECHAT
-from slife.agent.inbox import MessageHistoryStore
+from slife.agent.inbox import MessageHistoryStore, _error_reason
 
 
 # ── MessageHistoryStore ───────────────────────────────────────────────────
@@ -170,7 +170,10 @@ class TestInboxConstruction:
 
 class TestInboxCancelCorrelation:
     """cancel_correlation drops a queued task or preempts the running one
-    (Esc-equivalent) — used by A2A CancelTask and subagent worker/cancel."""
+    (Esc-equivalent) — the subagent worker cancel (``worker/cancel``).  An
+    A2A peer's cancel does NOT come through here: it is delivered to the
+    model as an inbound message (see ``Inbox.drop_queued`` for the one half
+    of it the harness keeps)."""
 
     @pytest.fixture
     def mock_loop(self):
@@ -226,6 +229,123 @@ class TestInboxCancelCorrelation:
 
         inbox.cancel_correlation("")
 
+        mock_loop.cancel.assert_not_called()
+
+
+# ── inbox._error_reason — the stop token for a turn that died ───────────
+
+
+class TestErrorReason:
+    """Structured fields only: status and/or the provider's code, else a
+    class name.  The provider's message never rides along — this token lands
+    in the LLM's context and in the diary."""
+
+    def test_status_and_code(self):
+        class Rejected(ValueError):
+            status_code = 400
+            code = "invalid_request_error"
+
+        assert _error_reason(Rejected("sk-abc123 leaked here")) == (
+            "error (400 invalid_request_error)"
+        )
+
+    def test_status_only(self):
+        class Unauthorized(ValueError):
+            status_code = 401
+
+        assert _error_reason(Unauthorized("bad key sk-xyz")) == "error (401)"
+
+    def test_code_read_off_the_body_when_the_sdk_exposes_no_attribute(self):
+        class Rejected(ValueError):
+            body = {"error": {"type": "rate_limit_exceeded"}}
+
+        assert _error_reason(Rejected("slow down")) == (
+            "error (rate_limit_exceeded)"
+        )
+
+    def test_class_name_of_the_cause_when_nothing_structured(self):
+        """The retry ladder wraps a transport failure — report the real one,
+        not the generic wrapper the ladder raised."""
+        wrapped = RuntimeError("LLM stream failed after 3 attempts")
+        wrapped.__cause__ = ValueError("transport")
+        assert _error_reason(wrapped) == "error (ValueError)"
+
+    def test_own_class_name_without_a_cause(self):
+        assert _error_reason(RuntimeError("x")) == "error (RuntimeError)"
+
+    def test_message_and_newlines_never_ride_along(self):
+        class Boom(RuntimeError):
+            status_code = 500
+
+        out = _error_reason(Boom("line one\nline two sk-verysecret123456"))
+        assert "\n" not in out
+        assert "sk-verysecret" not in out
+
+
+# ── Inbox — drop_queued (the unambiguous half of cancellation) ──────────
+
+
+class TestInboxDropQueued:
+    """``drop_queued`` removes only a message that never started.
+
+    That is the one cancellation the harness can decide on its own — nothing
+    was done, so nothing needs judging.  A *running* turn is deliberately out
+    of its reach: the A2A peer cancel hands that to the model, and the worker
+    cancel preempts it explicitly.
+    """
+
+    @pytest.fixture
+    def mock_loop(self):
+        return MagicMock()
+
+    @pytest.fixture
+    def mock_store(self):
+        return MagicMock(spec=MessageHistoryStore)
+
+    @staticmethod
+    def _drain(inbox):
+        rest = []
+        while not inbox._queue.empty():
+            rest.append(inbox._queue.get_nowait())
+        return rest
+
+    @pytest.mark.asyncio
+    async def test_drops_matching_and_reports_true(self, mock_loop, mock_store):
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+        await inbox.post(AgentMessage(source=AgentName("peer"), content="a", correlation_id="cid-a"))
+        await inbox.post(AgentMessage(source=AgentName("peer"), content="b", correlation_id="cid-b"))
+
+        assert inbox.drop_queued("cid-a") is True
+        assert [m.correlation_id for m in self._drain(inbox)] == ["cid-b"]
+        # A queued message is not a running turn — the loop is untouched.
+        mock_loop.cancel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unknown_corr_reports_false(self, mock_loop, mock_store):
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+        await inbox.post(AgentMessage(source=AgentName("peer"), content="a", correlation_id="cid-a"))
+
+        assert inbox.drop_queued("cid-zzz") is False
+        assert [m.correlation_id for m in self._drain(inbox)] == ["cid-a"]
+
+    @pytest.mark.asyncio
+    async def test_running_message_is_not_reachable(self, mock_loop, mock_store):
+        """The message being processed is the caller's call, never this one's."""
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+        inbox._current_corr = "cid-live"
+
+        assert inbox.drop_queued("cid-live") is False
+        mock_loop.cancel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_corr_reports_false(self, mock_loop, mock_store):
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+
+        assert inbox.drop_queued("") is False
         mock_loop.cancel.assert_not_called()
 
 

@@ -1094,10 +1094,21 @@ class TestConsecutiveUserFix:
         loop = _loop(reg)
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
-        # history ends on a user message → close it.
-        conv._ensure_turn_consistent("(Turn interrupted)")
+        # history ends on a user message → close it.  The standardized closing
+        # line carries the reason when the caller knows one, and the `---`
+        # placeholder when it does not.
+        conv._ensure_turn_consistent("esc")
         assert conv.messages[-1]["role"] == "assistant"
-        assert conv.messages[-1]["content"] == "(Turn interrupted)"
+        assert conv.messages[-1]["content"] == "(Turn interrupted, reason: esc)"
+
+    def test_ensure_turn_consistent_reason_unknown_without_one(self):
+        reg = _registry()
+        loop = _loop(reg)
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("hi")
+        # No reason in hand (a repair on load) — the slot is still there.
+        conv._ensure_turn_consistent()
+        assert conv.messages[-1]["content"] == "(Turn interrupted, reason: ---)"
 
     def test_ensure_turn_consistent_noop_when_assistant(self):
         reg = _registry()

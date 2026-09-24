@@ -155,7 +155,7 @@ class TestDrain:
         plugin._on_agent_change(
             MagicMock(agent_name="peer-1", status="online"), "online",
         )
-        plugin._on_peer_cancel("t-1")
+        plugin._on_peer_cancel("t-1", "jack")
         plugin._on_task_completion("c-1", "result", False, "peer-1")
         plugin._on_task_completion("c-2", "", True, "peer-2")
 
@@ -172,7 +172,9 @@ class TestDrain:
             "type": "presence", "event": "online",
             "card": {"agent_name": "peer-1", "status": "online"},
         }]
-        assert data["cancellations"] == [{"type": "cancel", "corr_id": "t-1"}]
+        assert data["cancellations"] == [
+            {"type": "cancel", "corr_id": "t-1", "peer": "jack"},
+        ]
         assert data["task_completions"] == [
             {"corr_id": "c-1", "result": "result", "cancelled": False, "peer": "peer-1", "kind": "task"},
             {"corr_id": "c-2", "result": "", "cancelled": True, "peer": "peer-2", "kind": "task"},

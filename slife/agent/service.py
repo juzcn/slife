@@ -2325,6 +2325,7 @@ class AgentService:
         channel_data: str = "{}",
         created_at: "datetime | str | None" = None,
         handler: "object | None" = None,
+        stop_reason: str = "",
     ) -> None:
         """Save the just-completed turn as a new row in memory.
 
@@ -2348,6 +2349,10 @@ class AgentService:
             handler: The turn's UI handler, if any.  Receives the captured
                 completion time via ``set_completed_at`` so the live
                 assistant message shows when the turn actually finished.
+            stop_reason: Why the turn ended early (``esc``, ``max_iterations``,
+                ``error (<Type>)``), or empty on a turn that ended by itself.
+                Labels the synthesized closing line when the repair below has
+                to close an interrupted turn.
         """
         # Accumulate turn's billed tokens into the session total.
         if token_count:
@@ -2357,8 +2362,10 @@ class AgentService:
 
         # Invariant: never persist an inconsistent turn.  Repair orphaned
         # tool_calls and close the turn if needed BEFORE extracting — the
-        # same ensure used on load and before each user message.
-        conv._ensure_turn_consistent()
+        # same ensure used on load and before each user message.  The reason
+        # the turn stopped early rides along, so the synthesized closing line
+        # says why (see message_history.interrupted_note).
+        conv._ensure_turn_consistent(stop_reason)
 
         # Completion time — captured AFTER the final ensure (the turn is
         # now definitively done) and BEFORE the (potentially slow) MCP
@@ -3413,14 +3420,6 @@ class AgentService:
                 result = await client.call_tool("__a2a_drain_incoming", {})
                 data = _json.loads(result)
 
-                # A peer cancelled a task — drop it if still queued, or stop
-                # the running loop if it is the message being processed
-                # (Esc-equivalent).
-                for cev in data.get("cancellations", []):
-                    cid = cev.get("corr_id", "")
-                    if cid:
-                        self.inbox.cancel_correlation(cid)
-
                 # Inbound tasks orphaned by a restart — state, not a queue:
                 # replaced wholesale so the turn prompt's reminder follows the
                 # mesh down to empty as peers are answered.
@@ -3465,6 +3464,51 @@ class AgentService:
                     logger.debug(
                         "a2a_in source=%s task=%.80s",
                         msg.source, ev.get("content", ""),
+                    )
+
+                # A peer withdrew an inbound task.  A task that never started
+                # is dropped outright (nothing was done, so there is nothing
+                # to judge and nothing to tell).  One that is running — or was
+                # running and is still open across turns — reaches the model
+                # as an ordinary inbound message, the road every other peer
+                # event takes, because whether work on that task is still
+                # going on is known only to the model.
+                #
+                # Placed AFTER this batch's tasks on purpose: a withdrawal
+                # always refers to a task the peer sent earlier, so by the
+                # time we look, an unstarted one is in the queue (droppable),
+                # and the queue order the model reads is the arrival order.
+                for cev in data.get("cancellations", []):
+                    # Shape-guarded like the presence loop below: a malformed
+                    # entry must not abort the drain — the plugin already
+                    # cleared its queues, so the rest of this batch (auto-
+                    # pushed completions, presence) would be lost for good.
+                    if not isinstance(cev, dict):
+                        continue
+                    task_id = cev.get("corr_id", "")
+                    if not task_id:
+                        continue
+                    if self.inbox.drop_queued(task_id):
+                        logger.info(
+                            "a2a_cancel_dropped_queued task=%s", task_id,
+                        )
+                        continue
+                    peer = cev.get("peer", "unknown")
+                    msg = AgentMessage(
+                        source=AgentName(peer),
+                        content=(
+                            f"{a2a_marker(peer, task_id, type='cancel_task')}"
+                            f"The sender withdrew this task — stop working "
+                            f"on it."
+                        ),
+                        # No correlation_id: nothing expects a completion, and
+                        # the id a *reply* would need rides the marker above.
+                        metadata={"a2a_kind": "cancel_task"},
+                        channel=Channel.a2a(peer),
+                    )
+                    await self.inbox.post(msg)
+                    logger.debug(
+                        "a2a_cancel_in source=%s task=%.80s", peer, task_id,
                     )
 
                 # Fire-and-forget broadcast events — passive, no task_id, no

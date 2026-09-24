@@ -192,9 +192,10 @@ class TestRestoreSkipsEmptyAssistantMessages:
         ])]
         await self._restore(app, conv, config, turns)
 
-        # The repair closed the history in place.
+        # The repair closed the history in place.  Restore has no reason to
+        # give (the process that knew it is gone), so the slot reads `---`.
         assert conv.messages[-1]["role"] == "assistant"
-        assert conv.messages[-1]["content"] == "(Turn interrupted)"
+        assert conv.messages[-1]["content"] == "(Turn interrupted, reason: ---)"
         # …and tagged the synthetic tool result as the interruption error.
         assert [m for m in conv.messages if m.get("role") == "tool"] \
             == [{
@@ -202,9 +203,9 @@ class TestRestoreSkipsEmptyAssistantMessages:
                 "content": "(Tool execution interrupted)", "is_error": True,
             }]
 
-        # "(Turn interrupted)" is the one rendered message widget.
+        # The closing line is the one rendered message widget.
         chat_view.add_assistant_message.assert_called_once()
-        am.append_text.assert_called_once_with("(Turn interrupted)")
+        am.append_text.assert_called_once_with("(Turn interrupted, reason: ---)")
         am.finalize.assert_called_once_with(intermediate=False)
         am.append_thinking.assert_not_called()
         # The tool iteration rendered its tool widget, not a message widget.

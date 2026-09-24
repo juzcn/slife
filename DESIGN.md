@@ -155,9 +155,19 @@ message posted to the inbox
   "Task not found".
 - **Turn consistency.** `MessageHistory._ensure_turn_consistent()` enforces two idempotent
   invariants before a history is persisted and again on load: **no orphaned tool_calls** (an
-  interrupted turn's call gets a synthetic result) and **alternating roles** (a history ending on
-  `user`/`tool` gets a closing assistant message). Two call sites only: `save_to_memory` and
-  `restore_session`.
+  interrupted turn's call gets a synthetic `(Tool execution interrupted)` result) and **alternating
+  roles** (a history ending on `user`/`tool` gets a closing assistant message). Two call sites only:
+  `save_to_memory` and `restore_session`.
+- **Why a turn stopped early** rides that closing assistant line, standardized as
+  `(Turn interrupted, reason: esc)`. The reason is a short token, never provider text — the line
+  lands in the model's context *and* in the diary, so the provider's message is never copied into
+  it. Each layer labels what only it knows: the loop puts its own terminal state on `AgentResult`
+  (`esc`, `max_iterations`), the inbox labels the failure it caught (`error (400
+  invalid_request_error)` — HTTP status and the provider's code when the SDK exposes them, else the
+  exception's class name one hop down its cause chain), and the save point forwards whatever it
+  received into the repair. A repair on **load** has no reason to give — the process that knew it is
+  gone — and reads `---`. A content-filter reject produces no closing line at all, because that
+  turn is rolled back rather than saved.
 - **The one rollback.** `pop_last_turn()` removes the last user message and everything after it. It
   is called from exactly one place — the inbox, on a **content filter** reject — and suppresses the
   save. Everything else keeps the turn and saves it: a malformed *request* (a part the provider would
@@ -1502,8 +1512,14 @@ conversation, enqueued task-less with no bridge; a task response is not a task a
 acknowledged with nothing enqueued. **Completion is the model's explicit action**, whenever the task
 is truly done — a task may take many turns — at which point the bridge resolves and the SDK publishes
 the artifact and terminal state. A working keepalive keeps the stream alive while the harness thinks.
-External cancellation is detected and surfaces as a harness preempt, the equivalent of the user
-pressing Esc.
+External cancellation is **not** turned into a harness preempt: the peer's withdrawal reaches the
+model as an inbound message (`type: "cancel_task"`, carrying the peer and the task id) and the model
+— the only party that knows whether it is still working on that task — decides what to do with it.
+The harness keeps only the unambiguous half: a task whose message has not started yet is dropped
+from the inbox outright, since nothing was done and there is nothing to judge. A withdrawal is
+surfaced only on a **live** link: the SDK cancels every inflight handler when its own session ends,
+so a dropped connection must not be reported as a peer cancel — the requester re-sends the task
+instead, and the retry arrives as a fresh request.
 
 A turn that fails is a **harness** failure, not an A2A one: the channel delivered the message and was
 done, so the TUI draws no A2A failure line for it.
@@ -1530,8 +1546,8 @@ fires a fake offline event.
 **The tool surface is the standard operations**, one prefix, nothing waits: `a2a_send_message`
 (typed), `a2a_cancel_task`, `a2a_list_agents`, `a2a_broadcast`. There are no async or poll variants
 and no `timeout` parameter, because nothing waits. **One envelope for every inbound message**, with
-`type` distinguishing a task to answer, an auto-delivered result, a conversation, or an event; the
-TUI strips it and shows the peer prefix instead.
+`type` distinguishing a task to answer, an auto-delivered result, a withdrawal, a conversation, or
+an event; the TUI strips it and shows the peer prefix instead.
 
 **Config and gating.** Only MQTT is implemented; another transport value disables A2A with a warning
 at config load rather than crashing startup. Slife only **probes** the broker — Mosquitto is started

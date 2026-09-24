@@ -49,6 +49,47 @@ def _is_bad_request(exc: BaseException) -> bool:
     return type(exc).__name__ == "ContentFilterFinishReasonError"
 
 
+def _error_reason(exc: BaseException) -> str:
+    """``error (400 invalid_request_error)`` — the stop token for a dead turn.
+
+    Structured fields only: the HTTP status and the provider's error code when
+    the SDK exposes them (the same two fields the classifiers above read),
+    else a class name — one hop down the cause chain first, so the retry
+    ladder's wrapper reports the transport failure it wrapped
+    (``RemoteProtocolError``) rather than its own generic ``RuntimeError``.
+
+    A **content-filter** reject is not among the failures this can label: that
+    turn is rolled back and never saved (:func:`_is_content_filter`), so no
+    closing line is written for it at all.
+
+    The provider's *message* never rides along: this token lands in the LLM's
+    context and in the diary, and error text can echo the request (keys
+    included).  The code itself is scrubbed and bounded for the same reason —
+    it comes off the wire.
+    """
+    from slife.logfmt import sanitize_secrets
+
+    parts: list[str] = []
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        parts.append(str(status))
+    code = getattr(exc, "code", None)
+    if not isinstance(code, str) or not code:
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            err = body.get("error")
+            err = err if isinstance(err, dict) else body
+            raw = err.get("code") or err.get("type")
+            code = raw if isinstance(raw, str) else ""
+    if code:
+        parts.append(code)
+    if not parts:
+        cause = exc.__cause__ or exc.__context__
+        parts.append(type(cause).__name__ if cause is not None else type(exc).__name__)
+    labelled = sanitize_secrets(" ".join(parts))[:60]
+    return f"error ({' '.join(labelled.split())})"
+
+
 #: Substrings that mark a rejection as a **content filter** rather than a
 #: malformed request.  Providers spell it differently and share no code:
 #: OpenAI/Azure report ``content_filter``, DashScope/Qwen (Bailian)
@@ -162,8 +203,8 @@ class Inbox:
         )
         self._runner_task: asyncio.Task | None = None
         self._processing: bool = False
-        #: correlation_id of the message currently being processed (remote
-        #: A2A/subagent tasks), used by :meth:`cancel_correlation`.
+        #: correlation_id of the message currently being processed (a
+        #: subagent worker's task), used by :meth:`cancel_correlation`.
         self._current_corr: str | None = None
         # Frozen — memory is broken.  No new turns are processed; queued
         # messages are dropped (running a turn that can't be persisted is
@@ -193,30 +234,57 @@ class Inbox:
         logger.error("inbox_frozen reason=%s", reason)
 
     def cancel_correlation(self, corr_id: str) -> None:
-        """Cancel the task carrying *corr_id* — Esc-equivalent for a remote
-        A2A / subagent task.
+        """Cancel the worker task carrying *corr_id* — the parent's control
+        signal (``worker/cancel``), Esc-equivalent.
 
         Drops the message if it is still queued (never runs); otherwise, if
         it is the message currently being processed, stops the running agent
         loop at the next safe point — the same mechanism as the TUI Esc
         binding.  Unknown corr_ids are a no-op.
+
+        A *peer's* A2A cancel does NOT come through here.  Corr-matching can
+        tell which turn a task's message *started*, but not whether the model
+        is still working on that task — a task may take many turns, and
+        cut-in can have moved the running turn on to other input — so the
+        abort would be aimed by an identity that has already drifted.  The
+        withdrawal is therefore delivered to the model as an inbound
+        ``cancel_task`` message and the model, which does know, decides.  A
+        worker is the opposite case: one task per turn, so the parent's
+        cancel has an exact target.  See ``slife.a2a.mesh.on_peer_cancel``.
         """
         if not corr_id:
             return
         # Remove a queued-but-not-yet-started message with this corr_id.
-        rest: list[AgentMessage] = []
-        while not self._queue.empty():
-            item = self._queue.get_nowait()
-            if item.correlation_id == corr_id:
-                logger.info("inbox_queued_task_cancelled corr_id=%s", corr_id)
-                continue
-            rest.append(item)
-        for item in rest:
-            self._queue.put_nowait(item)
+        if self.drop_queued(corr_id):
+            logger.info("inbox_queued_task_cancelled corr_id=%s", corr_id)
         # Stop the loop if this corr_id is the message being processed now.
         if self._current_corr == corr_id:
             logger.info("inbox_active_task_cancelled corr_id=%s", corr_id)
             self.cancel()
+
+    def drop_queued(self, corr_id: str) -> bool:
+        """Drop a not-yet-started message with *corr_id*; True when one went.
+
+        Drain-rebuild (the survivors keep their FIFO order).  This is the
+        narrow, unambiguous half of cancellation — the message never ran, so
+        no judgment about "what is the agent doing" is involved.  A message
+        already being processed is deliberately NOT touched; the caller
+        decides what a *running* turn means for it (the A2A peer cancel hands
+        that to the model instead — see :meth:`cancel_correlation`).
+        """
+        if not corr_id or self._queue.empty():
+            return False
+        dropped = False
+        rest: list[AgentMessage] = []
+        while not self._queue.empty():
+            item = self._queue.get_nowait()
+            if item.correlation_id == corr_id:
+                dropped = True
+                continue
+            rest.append(item)
+        for item in rest:
+            self._queue.put_nowait(item)
+        return dropped
 
     # ── Post ──────────────────────────────────────────────────────────
 
@@ -397,6 +465,10 @@ class Inbox:
         handler = None
         result = None
         rolled_back = False
+        #: Why this turn ended early, for the save point's closing line
+        #: (``esc`` / ``max_iterations`` from the loop, ``error (<Type>)``
+        #: here).  Empty on a turn that ended by itself.
+        stop_reason = ""
         try:
             # Reset cancel state for the new message
             self._agent_loop.reset_cancel()
@@ -423,6 +495,8 @@ class Inbox:
             )
 
             if result.cancelled:
+                # The loop is the only party that knows why it stopped.
+                stop_reason = result.stop_reason
                 logger.info("inbox_cancelled_or_max_iter source=%s", msg.source)
                 # Finalize the handler so the last assistant message is marked complete
                 if handler is not None:
@@ -460,6 +534,11 @@ class Inbox:
 
         except Exception as e:
             logger.warning("inbox_process_error source=%s err=%s", msg.source, e)
+            # The reason the turn died: status + provider code when the SDK
+            # has them, else a class name.  Never the message — the closing
+            # line lands in the LLM's context and the diary, and error text
+            # can carry secrets.
+            stop_reason = _error_reason(e)
             # Finalize the handler so the TUI spinner stops — without
             # this the chat view stays in a permanent loading state.
             if handler is not None:
@@ -570,6 +649,9 @@ class Inbox:
                         history=history,
                         channel=channel_identity,
                         channel_data=channel_data,
+                        # Why the turn ended early (empty on a clean turn) —
+                        # the save point's closing line names it.
+                        stop_reason=stop_reason,
                         # The user-input timestamp captured by the TUI
                         # handler — becomes the diary created_at so restore
                         # shows the same time as the live display.  Absent

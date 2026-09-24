@@ -237,15 +237,15 @@ async def _scenario_task_round_trip():
 
 
 async def _scenario_cancel_round_trip():
-    """b cancels an in-flight task on a: a's on_peer_cancel fires (harness
-    preempt) and b receives a cancelled completion."""
+    """b cancels an in-flight task on a: a's on_peer_cancel fires with the
+    task id AND the sender, and b receives a cancelled completion."""
     if not await probe_broker(BROKER_HOST, BROKER_PORT):
         pytest.skip("mosquitto not reachable at localhost:1883")
 
     a, b = _mesh("e2e-a"), _mesh("e2e-b")
     a_inbound, a_peer_cancels, b_completions = [], [], []
     a.on_inbound_task = lambda s, c, t, kind="task": a_inbound.append((s, c, t, kind))
-    a.on_peer_cancel = lambda t: a_peer_cancels.append(t)
+    a.on_peer_cancel = lambda t, peer: a_peer_cancels.append((t, peer))
     b.on_task_completion = (
         lambda c, r, x, p, kind="task": b_completions.append((c, r, x, p, kind))
     )
@@ -260,9 +260,9 @@ async def _scenario_cancel_round_trip():
             status = await b.cancel_task("e2e-a", task_id)
             assert status == "cancelled"
 
-            # a's responder preempts the blocked on_request...
+            # a's responder surfaces the withdrawal to the harness...
             await _wait(lambda: bool(a_peer_cancels), "e2e-a's peer-cancel hook")
-            assert a_peer_cancels == [task_id]
+            assert a_peer_cancels == [(task_id, "e2e-b")]
             # ...and b receives the cancelled completion.
             await _wait(lambda: bool(b_completions), "e2e-b to receive the cancel")
             assert b_completions[0][0] == task_id

@@ -1233,9 +1233,30 @@ class TestMidturnInjection:
         with patch.object(llm, 'chat_stream', side_effect=always_tool_call):
             result = await loop.run("test", history, handler=handler)
             assert result.cancelled is True
+            # The reason rides the result so the harness's closing line can
+            # name it (message_history.interrupted_note).
+            assert result.stop_reason == "max_iterations"
             assert result.usage.total_tokens > 0
             # The limit is surfaced via the handler, not left silent.
             handler.on_max_iterations.assert_awaited_once_with(2)
+
+    @pytest.mark.asyncio
+    async def test_run_cancel_records_esc_reason(self, sample_model_config, tool_registry, history):
+        """A cancelled turn reports WHY it stopped, not just that it did."""
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, tool_registry)
+
+        async def cancelled_stream(messages, tools, **kwargs):
+            loop.cancel()  # the user pressed Esc mid-stream
+            yield StreamChunk(content="half a sen")
+            yield StreamChunk(usage=TokenUsage(2, 1, 3))
+
+        with patch.object(llm, 'chat_stream', side_effect=cancelled_stream):
+            result = await loop.run("test", history)
+
+        assert result.cancelled is True
+        assert result.text == ""            # the partial text is not carried
+        assert result.stop_reason == "esc"
 
     @pytest.mark.asyncio
     async def test_max_iterations_zero_is_unlimited(

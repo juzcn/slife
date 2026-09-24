@@ -178,9 +178,19 @@ def _on_agent_change(card: AgentCard, event: str) -> None:
     })
 
 
-def _on_peer_cancel(task_id: str) -> None:
+def _on_peer_cancel(task_id: str, peer: str) -> None:
+    """A peer withdrew an inbound task — queue it as an inbound MESSAGE.
+
+    The withdrawal is NOT a harness control signal: it reaches the model the
+    same way every other peer event does, as an inbound message the inbox
+    gives its own turn (or cut-in injects into the turn already working on
+    that task).  Only the model knows whether it is working on the task, so
+    the model decides — answer the peer with a plain message, or stay silent.
+    The one constraint rides the [A2A:…] contract in slife.j2: the completion
+    bridge died with the task, so a ``task_response`` for it is refused.
+    """
     _enqueue(_cancellations, "cancel", {
-        "type": "cancel", "corr_id": task_id,
+        "type": "cancel", "corr_id": task_id, "peer": peer,
     })
 
 

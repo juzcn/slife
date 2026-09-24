@@ -231,11 +231,29 @@ class MeshResponder(Responder):
             try:
                 cancelled, result = await waiter.wait()
             except BaseException:
-                # The SDK cancelled this task (peer CancelTask, or shutdown).
-                # Surface a harness preempt (Esc-equivalent) only when it was
-                # an external cancel — not our own completion and not shutdown.
-                if waiter.outcome is None and not self._mesh._closing:
-                    self._mesh.on_peer_cancel(task_id)
+                # The SDK cancelled this task.  Surface the peer's withdrawal
+                # to the harness — as an inbound MESSAGE, never a control
+                # signal — only when it can actually have been one: not our
+                # own completion, not shutdown, and on a LIVE link.
+                #
+                # The link check matters: when the responder's own connection
+                # ends, the SDK's ``run()`` cancels every inflight handler the
+                # same way (``responder.py`` finally), so a dead link would
+                # otherwise report a withdrawal that never happened.  Silence
+                # is right there — the peer's requester profile re-sends the
+                # task (first reply within ``deliver.reply_first``, ≤3
+                # attempts) and the retry arrives as a fresh request that this
+                # side re-enqueues.  Residual and accepted: a responder-only
+                # session loss with the outbound link still up looks like a
+                # peer cancel.
+                if (
+                    waiter.outcome is None
+                    and not self._mesh._closing
+                    and self._mesh.is_connected
+                ):
+                    peer = request.sender or "unknown"
+                    self._mesh._note_withdrawn(task_id, peer)
+                    self._mesh.on_peer_cancel(task_id, peer)
                 raise
             if cancelled:
                 raise asyncio.CancelledError("task cancelled by harness")
@@ -351,6 +369,14 @@ class A2AMesh:
         self._tasks: list[asyncio.Task] = []
         self._peers: dict[str, _PresencePeer] = {}
         self._pending: dict[str, str] = {}  # task_id → last artifact text
+        # task_id → the peer that withdrew it.  A note, not a recovery path:
+        # the completion bridge died with the withdrawal, so this exists only
+        # so a late ``task_response`` for that id gets the truthful answer
+        # instead of the typo-flavoured "unknown id" (:meth:`_unresolvable`).
+        # FIFO-bounded like the other per-session caches.
+        self._withdrawn: FIFOCache[str, str] = FIFOCache(
+            maxsize=_MAX_TRACKED_SENDS,
+        )
         # FIFO-capacity: evicts the oldest tracked send past _MAX_TRACKED_SENDS
         # (replaces the manual ``pop(next(iter(...)))`` oldest drop).
         self._sends: FIFOCache[str, _OutboundSend] = FIFOCache(
@@ -366,7 +392,10 @@ class A2AMesh:
             lambda corr_id, result, cancelled, peer, kind="task": None
         )
         self.on_agent_change = lambda card, event: None
-        self.on_peer_cancel = lambda task_id: None
+        # A peer's CancelTask, delivered to the harness: the model is told
+        # and decides, because whether the running turn is working on that
+        # task is known only to the model.  Never a control signal.
+        self.on_peer_cancel = lambda task_id, peer: None
         self.on_broadcast_event = lambda sender, text: None
 
     # ── Connection ──────────────────────────────────────────────────────
@@ -857,6 +886,16 @@ class A2AMesh:
         """An inbound task is now in flight in this process."""
         self._inbound.add(task_id, peer)
 
+    def _note_withdrawn(self, task_id: str, peer: str) -> None:
+        """The peer withdrew this task — remember who, for the late attempt.
+
+        The harness learns of the withdrawal only as a delivered message, so
+        the model may still try a ``task_response`` for the id it was handed;
+        :meth:`_unresolvable` uses this note to answer truthfully instead of
+        blaming the marker.
+        """
+        self._withdrawn[task_id] = peer
+
     def _drop_inbound(self, task_id: str) -> None:
         """The task left the responder (answered, cancelled, or the SDK
         cancelled it) — it is no longer awaiting anything from us."""
@@ -865,14 +904,17 @@ class A2AMesh:
     def _unresolvable(self, task_id: str) -> str:
         """Why a completion attempt found no bridge to resolve.
 
-        An id this process never registered is one of two very different
+        An id this process never registered is one of three very different
         things, and they need different answers.  A *typo* means re-read the
         marker.  A task **orphaned by a restart** can never be completed by
         anyone: its bridge died with the process that held it, and so did the
         peer's reply topic — which is read off the inbound request's MQTT
         properties and is not reconstructible.  The only reply that peer can
         still receive is a plain message, so say exactly that instead of
-        leaving the model to find the fallback by trial and error.
+        leaving the model to find the fallback by trial and error.  A task
+        **withdrawn by its sender** is the third: the id is real and the model
+        was handed it, so "check the marker" would send it re-reading a marker
+        that is correct.
         """
         orphan = self._inbound.stale_entry(task_id)
         if orphan is not None:
@@ -881,6 +923,13 @@ class A2AMesh:
                 f"started — its reply path died with the previous one, so no "
                 f"result can complete it now. Answer {orphan.peer} with "
                 f"message_type='message' instead (drop this task_id)."
+            )
+        withdrawn_by = self._withdrawn.get(task_id)
+        if withdrawn_by is not None:
+            return (
+                f"Error: task_id {task_id!r} was withdrawn by {withdrawn_by} "
+                f"— its completion bridge is gone, so a task_response can no "
+                f"longer complete it."
             )
         return (
             f"Error: unknown task_id {task_id!r} — no inbound task with that "

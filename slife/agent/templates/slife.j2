@@ -60,4 +60,5 @@
    - Broker: {{ a2a_broker_host }}:{{ a2a_broker_port }} ({{ a2a_transport }})
    - Async: send now, results arrive later as `[A2A:…]` of type `task_response` — never wait or poll.
    - Answer an inbound `task_request` with a `task_response` whenever it is truly done — a task may take many turns. Peers come from `a2a_list_agents`.
+   - An inbound `[A2A:…]` of type `cancel_task` means the sender withdrew that task — stop working on it.
 {% endif %}
