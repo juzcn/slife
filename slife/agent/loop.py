@@ -607,16 +607,43 @@ class AgentLoop:
             return usage.total_tokens
         return 0  # fresh start — no previous round's usage yet
 
-    @staticmethod
-    def _parse_recall_args(text: str) -> dict | None:
-        """Extract the discriminator's parameter object from its reply.
+    #: The keys the discriminator's ``recall`` field may carry — the three the
+    #: store's internal selector takes, and nothing else.  The **caps** (count,
+    #: similarity, token budget) are not among them: they are recall's own
+    #: configuration, so a model naming one has it dropped rather than honoured.
+    _RECALL_KEYS = ("query", "since", "until")
+
+    @classmethod
+    def _parse_recall_args(cls, text: str) -> dict | None:
+        """Extract the discriminator's decision from its reply.
 
         The reply is asked to be a bare JSON object, but a model may wrap it in
         prose or a fenced block, so the outer ``{…}`` is taken rather than the
-        whole string.  Unknown keys are dropped and only string values kept —
-        the args reach ``__memory_turn_recall`` directly, bypassing the
-        registry's schema validation, so this is the only gate on what a model
-        can inject.
+        whole string.  The decision reaches the store and the context directly,
+        bypassing the registry's schema validation, so this is the only gate on
+        what a model can inject.
+
+        The shape is ``system_prompt.RECALL_REPLY`` — two independent fields.
+        Normalized to the two the caller composes with:
+
+        * ``keep`` — ``None`` for *all the turns in hand* (the default, also
+          spelled ``"keep"``), ``[]`` for *none of them* (``"clear"``), or the
+          list of turn ids to keep.
+        * ``recall`` — ``None`` when nothing was asked for, else the three
+          search keys.
+
+        A value of the wrong type in either field makes the whole reply
+        unusable rather than being dropped in place: a dropped ``keep`` would
+        leave a context the model asked to clear, and a dropped ``recall``
+        would answer a turn that asked for history out of what happens to be in
+        hand.  An unknown key is refused rather than dropped for the same
+        reason, and it is the asymmetry that makes it worth stating: at *this*
+        level the keys are the decision itself, so a model that wrote
+        ``{"context": "clear", "query": …}`` was asking for a recall it did not
+        get — and honouring the half that parsed would wipe the context with
+        nothing put back.  Inside ``recall`` an unknown key *is* dropped: there
+        the keys are parameters, and the one a model is most likely to add is
+        one of the caps, which are recall's own configuration.
         """
         if not text:
             return None
@@ -630,23 +657,52 @@ class AgentLoop:
             return None
         if not isinstance(parsed, dict):
             return None
-        return {
-            k: v for k, v in parsed.items()
-            if k in ("query", "since", "until") and isinstance(v, (str, type(None)))
-        }
+        if set(parsed) - {"context", "recall"}:
+            return None
+
+        keep: list[int] | None = None
+        if "context" in parsed:
+            raw = parsed["context"]
+            if raw is None or raw == "keep":
+                keep = None
+            elif raw == "clear":
+                keep = []
+            elif isinstance(raw, list) and all(
+                isinstance(i, int) and not isinstance(i, bool) for i in raw
+            ):
+                # De-duplicated, order irrelevant — the caller sorts by rowid.
+                keep = list(dict.fromkeys(raw))
+            else:
+                return None
+
+        recall: dict | None = None
+        if parsed.get("recall") is not None:
+            raw = parsed["recall"]
+            if not isinstance(raw, dict):
+                return None
+            if not all(
+                isinstance(raw.get(k), (str, type(None)))
+                for k in cls._RECALL_KEYS
+            ):
+                return None
+            recall = {k: raw.get(k) for k in cls._RECALL_KEYS}
+            if not any(recall.values()):
+                # Every field empty — the same thing as not asking.
+                recall = None
+        return {"keep": keep, "recall": recall}
 
     async def _discriminate_recall(
         self, history: MessageHistory, user_input: str,
     ) -> dict | None:
-        """One call deciding which history this turn needs; None on failure.
+        """One call deciding what this turn's context should be; None on failure.
 
-        What it is sent is the **system prompt plus the instruction**
-        (``rebuild_messages.j2``) — not the conversation, which the selection
-        does not need: the answer *overrides* the context, so a turn already
-        in it is simply re-selected rather than having to be reported
-        (DESIGN.md §2.3).  The instruction quotes the input so
-        the model reasons about the input rather than about the conversation it
-        is about to rebuild.
+        What it is sent is the agent's **current context with the instruction**
+        (``rebuild_messages.j2``) in place of the user message: both fields of
+        the answer are decided *from* that context — the subject a follow-up's
+        query has to carry is in it, and so are the ``[INFO: …]`` turn ids a
+        keep-list names.  The instruction quotes the input so the model reasons
+        about the input as well as about the conversation it is about to
+        rebuild (DESIGN.md §2.3).
 
         Never persisted, never streamed to the TUI.  It degrades to None rather
         than retrying: a retry would double the latency of the pre-turn path
@@ -671,8 +727,11 @@ class AgentLoop:
         # conversation in hand, which is what lets a follow-up's query name
         # the subject it refers to ("人工智能学院是什么时候成立的" after
         # three turns about 首经贸).  Written from the input alone the query
-        # drops that subject, retrieves nothing, and — because a selection
-        # *replaces* the context — leaves the turn with nothing at all.
+        # drops that subject and retrieves nothing.
+        # The context is sent for the decision's *first* field too: the turns
+        # it hands back in a keep-list are named by the ``[INFO: …]`` footnote
+        # the model can read there, and it is what tells the model what it
+        # already has and so must not ask to recall again.
         # ``_turn_id`` is a runtime mapping the model must not see; the
         # context is otherwise sent as it stands.
         messages = MessageHistory.strip_turn_ids(history.messages)
@@ -712,12 +771,15 @@ class AgentLoop:
                 took_ms, sanitize_secrets(text),
             )
             return None
+        keep = args.get("keep")
+        recall = args.get("recall") or {}
         logger.info(
             "recall_discriminated msgs=%d prompt_chars=%d took_ms=%.0f "
-            "query=%.60s since=%s until=%s",
+            "keep=%s query=%.60s since=%s until=%s",
             len(messages), prompt_chars, took_ms,
-            sanitize_secrets(str(args.get("query") or "")),
-            args.get("since"), args.get("until"),
+            "all" if keep is None else len(keep),
+            sanitize_secrets(str(recall.get("query") or "")),
+            recall.get("since"), recall.get("until"),
         )
         return args
 
@@ -739,26 +801,53 @@ class AgentLoop:
             logger.info("images_forgotten count=%d", removed)
         return removed
 
+    @staticmethod
+    def _live_turns(history: MessageHistory) -> list[dict]:
+        """The turns in the context right now, in ``extract_turns`` shape.
+
+        The same read ``_trim_after_save`` makes: each entry carries the turn's
+        diary rowid (``turn_id``) and its estimated cost (``estimated_tokens``).
+        Both are what a rebuild's *base* is built from — the ids the model
+        keeps explicitly are the very ones it read off the ``[INFO: …]``
+        footnote, and the cost is what the recall's headroom is measured
+        against.
+        """
+        messages = history.messages
+        if messages and messages[0].get("role") == "system":
+            messages = messages[1:]
+        return MessageHistory.extract_turns(messages)
+
     async def _recall_and_rebuild(
         self, history: MessageHistory, user_input: str,
         handler: object | None = None,
     ) -> bool:
-        """Rebuild the context from a recall selection — once per turn.
+        """Rebuild the context from the discriminator's decision — once per turn.
 
-        Returns True when the context was replaced.  The outcomes, and the
+        The decision names two things independently (:data:`RECALL_REPLY`):
+        which of the turns in hand to **keep**, and what to **recall** from
+        memory.  The turn runs on the two **together**, in time order — so the
+        six decisions the design note enumerates are the six combinations of
+        (keep all / keep some / keep none) and (recall / not), and the common
+        one is the empty object.
+
+        Returns True when the context changed.  The outcomes, and the
         difference is the whole contract:
 
-        * **No parameters** (``{}``) means *no recall is needed* — the
-          discriminator judged that what is already in context is enough.  The
-          turn runs on it as it stands (and the ceiling still bounds it); no
-          store call is made.
-        * **The selection** (empty or not) replaces the context.  An empty
-          selection is an *answer* — no turn qualified for this turn, so the
-          context is the system prompt and nothing else.
-        * **No selection at all** (no reply, or the store could not be asked)
-          and **a selection that cannot be fetched** leave the context
-          untouched: nothing was learned about what this turn needs, and a
-          guess is not an improvement on what is already there.
+        * **Nothing asked for** (``{}``, or a reply that is not a decision at
+          all) means *no recall is needed* — the discriminator judged that what
+          is already in context is enough.  The turn runs on it as it stands
+          (and the ceiling still bounds it); no store call is made.
+        * **A recall that answers nothing** leaves the kept turns standing.
+          Union is what makes this safe: an empty recall *adds* nothing, where
+          an overriding selection would have emptied the context on the
+          strength of a query that merely failed to match.
+        * **A selection that cannot be fetched** and **a store that cannot be
+          asked** leave the context untouched: nothing was learned about what
+          this turn needs, and a guess is not an improvement on what is already
+          there.  A *clear* is no exception — it is a decision in its own right
+          and needs no store, but the harness only reaches this step at all
+          when the store answered, so a clear never happens on a store failure
+          either.
         """
         if not self.rebuild_message or self.recall_turns is None:
             return False
@@ -768,24 +857,78 @@ class AgentLoop:
             # No reply at all — a failure the discriminator already logged.
             logger.info("recall_not_needed reason=no_discriminator_reply")
             return False
-        if not any(args.values()):
+
+        keep = args.get("keep")
+        recall = args.get("recall")
+        if keep is None and not recall:
             # `{}`: the context is judged sufficient.  Nothing to look up, so
             # the store is not asked and the context is not touched.
             logger.info("recall_not_needed reason=context_sufficient")
             return False
 
-        ids = await self.recall_turns(
-            str(args.get("query") or ""),
-            args.get("since") or None,
-            args.get("until") or None,
+        # The base: what the turn keeps.  `None` is "all of them", read off the
+        # live history — every turn in a live context carries its diary rowid
+        # as ``_turn_id`` (stamped at save, re-stamped on restore and rebuild),
+        # which is also the id the model names in a keep-list.
+        live = self._live_turns(history)
+        by_id = {
+            t["turn_id"]: t for t in live if t.get("turn_id") is not None
+        }
+        if keep is None:
+            base = list(by_id)
+        else:
+            # A keep-list is a statement about the context **in hand**, so it
+            # is read as an intersection.  An id that is not there names
+            # nothing and is not a way to pull an arbitrary row past every cap
+            # and the budget — the one path into the context that no search
+            # and no similarity floor would have gated.
+            # Every turn in hand is nameable: the ``[INFO: …]`` footnote rides
+            # the opening message of each one, autonomous turns included, so a
+            # keep-list drops exactly what it names and nothing else.
+            base = [i for i in keep if i in by_id]
+            stray = len(keep) - len(base)
+            if stray:
+                logger.info("recall_keep_list_stray ids=%d", stray)
+
+        # The recall is sized to the headroom the kept turns leave **below the
+        # ceiling** — the store's cap is the floor, so the two together stay
+        # under the bound the window enforces.  Not below the floor: the trim
+        # compacts *to* the floor, so a live context sits at or above it for
+        # most of a session, and subtracting it would leave no headroom and
+        # make "keep this and add that" unreachable exactly when it is wanted.
+        base_tokens = sum(
+            by_id[i]["estimated_tokens"] for i in base if i in by_id
         )
-        if ids is None:
-            logger.info("recall_unavailable")
+        ids = []
+        if recall:
+            ids = await self.recall_turns(
+                str(recall.get("query") or ""),
+                recall.get("since") or None,
+                recall.get("until") or None,
+                reserved_tokens=base_tokens,
+            )
+            if ids is None:
+                logger.info("recall_unavailable")
+                return False
+        if not ids and set(base) == set(by_id) and len(live) == len(by_id):
+            # The decision asks for exactly the turns already in the context —
+            # nothing added, nothing dropped.  It stands **as it is**:
+            # rendering it again from the store would cost a round-trip, the
+            # turn's live image blocks and the prompt-cache prefix, to arrive
+            # at the same list.  `len(live) == len(by_id)` is what makes the
+            # skip safe — a turn the store holds no rowid for could not be
+            # re-fetched, so a rebuild would silently lose it.
+            logger.info("recall_not_needed reason=context_unchanged")
             return False
 
-        turns = await self.turns_by_ids(ids) if (ids and self.turns_by_ids) else []
-        if ids and not turns:
-            logger.warning("recall_abandoned reason=unfetchable ids=%d", len(ids))
+        # Membership is the union; order is time (rebuild_messages sorts).
+        target = sorted(set(base) | set(ids))
+        turns = (
+            await self.turns_by_ids(target)
+            if (target and self.turns_by_ids) else []
+        )
+        if target and not turns:
+            logger.warning("recall_abandoned reason=unfetchable ids=%d", len(target))
             return False
 
         # Rebuild before persisting: if the persist fails, the turn still runs
@@ -804,7 +947,7 @@ class AgentLoop:
         # one turn behind and bounded by the same budget — a far better read
         # than nothing.  The trim is a consumer too: its ceiling applies in
         # this mode as well (see `_trim_after_save`).
-        # "Context covers" comes from the selection now, not from an
+        # "Context covers" comes from the rebuilt set now, not from an
         # incremental date list.
         stamps = [t.get("created_at") or "" for t in turns]
         stamps = [s for s in stamps if s]
@@ -813,9 +956,10 @@ class AgentLoop:
         self._last_context_time_start = ""
 
         if not turns:
-            # An empty selection is persisted by *clearing*: the restore
+            # An empty context is persisted by *clearing* — the restore
             # contract is the same list, and it must agree with the history
-            # the turn actually ran on.
+            # the turn actually ran on.  This is reached only by an explicit
+            # `"clear"`, or by one that recalled nothing.
             if self.clear_context_turns is not None:
                 if not await self.clear_context_turns():
                     logger.warning("recall_clear_failed")
@@ -847,9 +991,16 @@ class AgentLoop:
         The ceiling is the window's safety valve and applies in **both** modes
         (`rebuild_message` true or false): a turn that grew past it — tool
         results, above all — is compacted down to the floor regardless of how
-        the context was chosen.  In rebuild mode the next turn's recall
-        re-selects the context anyway, so the eviction is not a decision, only
-        a bound.
+        the context was chosen.  It is also the only *total* bound there is,
+        and the one the union of kept + recalled is sized against
+        (``_recall_and_rebuild``), so a turn starts as far under it as the
+        recall's headroom allowed.
+
+        What a trim costs the next turn depends on the mode.  Append-only, the
+        turns are gone for good.  In rebuild mode the *next* turn's recall can
+        select any of them again — but it has to select them: the kept base is
+        not re-derived on its own, so a turn evicted here is a turn the model
+        chose to keep and no longer has.
 
         Called by ``save_to_memory`` once the just-completed turn is
         persisted.  By then the last API call's real prompt + completion tokens are
@@ -884,11 +1035,11 @@ class AgentLoop:
             return
 
         # The ceiling is the window's safety valve, not a function of how the
-        # context is *chosen*: it applies in both modes.  In rebuild mode the
-        # next turn's recall re-selects anyway, so an eviction here costs
-        # nothing — while a turn whose tool results ballooned past the ceiling
-        # (and, on a smaller window, past the window itself) would otherwise
-        # have nothing bounding it at all.
+        # context is *chosen*: it applies in both modes.  A turn whose tool
+        # results ballooned past the ceiling (and, on a smaller window, past
+        # the window itself) would otherwise have nothing bounding it at all —
+        # so the eviction is a bound, and in rebuild mode the next turn can
+        # still recall what it dropped.
         # Only the just-finished turn exists / nothing to trim — the loop
         # also needs a boundary to not trim a history whose context
         # usage is unmeasurable (no API call yet → estimate fallback).

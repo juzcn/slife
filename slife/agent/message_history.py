@@ -297,11 +297,6 @@ def messages_from_turns(
     turn carries the ``attach_image`` call and its result — which name every
     source — and the model re-attaches from that when it needs the pixels.
     """
-    # Function-local: this module is imported by plugin processes that only
-    # want the estimators, and ``schedules`` pulls in the prompt/template
-    # stack.  The builder itself is only ever called harness-side.
-    from slife.agent.schedules import is_autonomous_trigger
-
     built: list[dict] = []
     if system_message:
         built.append(dict(system_message))
@@ -312,9 +307,10 @@ def messages_from_turns(
         turn_msgs: list[dict] = (
             json.loads(stored) if isinstance(stored, str) else stored
         )
-        # Autonomous turns (heartbeat / schedule) carry a synthetic trigger as
-        # their user message, not a real query — no footnote.
-        header = "" if is_autonomous_trigger(user_text) else turn_header(turn)
+        # Every turn carries the footnote, autonomous ones included — it is
+        # what makes a turn addressable, and the keep-list addresses turns by
+        # exactly this id (see ``AgentService._annotate_saved_turn``).
+        header = turn_header(turn)
 
         rowid = turn.get("rowid")
         user_msg: dict = {

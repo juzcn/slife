@@ -1,32 +1,60 @@
 ▸ Context recall
 
-This call chooses the context the turn runs on: the turns you name become the
-context, in place of the ones in hand.
+This call chooses the context the turn runs on: what to keep of the turns in
+hand, plus what to recall from memory. The turn then runs on the two together,
+in time order.
 
 Current user input:
 {{ user_input }}
 
-The query is matched against stored turns — their user messages, the tools
-they called, their answers. Name what the turn needs, in the words a stored
-turn would contain:
+{{ recall_reply }}
 
-  input 那人工智能学院呢？ — the subject is in the conversation above
-    → {"query": "首经贸 人工智能学院 成立"}
+Reply with ONE JSON object holding the fields above, and nothing else. An empty
+object means the turns in hand are enough for this turn.
 
-  input 刚才问首经贸管工学院院长是谁？ — that turn has left the context
-    → {"query": "首经贸 管理工程学院 院长"}
+The two fields are decided independently, which makes six cases. One example
+each:
 
-  input 这两天都做了些什么？ — a period, and no topic
-    → {"since": "yesterday"}
+1. Keep the turns in hand, recall nothing — this turn reads on its own.
 
-  input 上周关于校庆都说了什么？ — a topic within a period
-    → {"query": "首经贸 校庆", "since": "last week"}
-
-  input 把这段话翻成英文 — the turn reads on its own
+  input 把这段话翻成英文
     → {}
 
-Reply with ONE JSON object holding the recall parameters below, and nothing
-else. An empty object means no recall is needed — the context already in
-hand is enough for this turn.
+2. Keep part of them, recall nothing — the plan is in hand, the tool output
+around it is not.
 
-{{ recall_params }}
+  input 就按刚才那个方案来吧
+    → {"context": [31, 33]}
+
+3. Keep none of them, recall nothing.
+
+  input 忘掉前面那些
+    → {"context": "clear"}
+
+4. Keep them and recall more — a period, and no topic.
+
+  input 这两天都做了些什么？
+    → {"recall": {"since": "yesterday"}}
+
+5. Keep part and recall more — the turn that answered this has left the
+context, and the tool dumps around it are dead weight.
+
+  input 刚才问首经贸管工学院院长是谁？
+    → {"context": [27, 28], "recall": {"query": "首经贸 管理工程学院 院长"}}
+
+6. Keep none and recall — a topic within a period.
+
+  input 上周关于校庆都说了什么？
+    → {"context": "clear", "recall": {"query": "首经贸 校庆", "since": "last week"}}
+
+A query is matched against stored turns — their user messages, the tools they
+called, their answers. Name what the turn needs, in the words a stored turn
+would contain. A follow-up's subject is in the conversation above, so carry it
+into the query:
+
+  input 那人工智能学院呢？ — the subject came three turns earlier
+    → {"recall": {"query": "首经贸 人工智能学院 成立"}}
+
+The turn ids in a keep-list are the ones in the [INFO: …] footnote of the
+message that opens each turn — every turn in the context carries one. A
+keep-list names what to keep; an id that is not in the context names nothing.

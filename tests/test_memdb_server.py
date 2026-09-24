@@ -243,6 +243,160 @@ class TestRecallAnswerIsIds:
         )
 
 
+class TestRecallHeadroom:
+    """``reserved_tokens`` **narrows** the token budget — it never sets it.
+
+    The union is `kept + recalled`, so the bound has to hold on the *sum*.
+    The floor alone cannot be that bound: the trim compacts *to* the floor, so
+    a live context sits at or above it for most of a session and subtracting
+    it would grant no headroom at all — making "keep this and add that"
+    unreachable exactly when a context is worth keeping.  The headroom below
+    the **ceiling** is what is actually left to spend.
+
+    Both existing knobs keep their jobs: the floor stays the selection's own
+    size (nothing is reserved ⇒ nothing changes), and the ceiling is the
+    total's valve.
+    """
+
+    def _server(self, count: int = 5):
+        srv = _import_memdb_server()
+        rows = [
+            {"rowid": r, "created_at": f"2026-08-0{r}", "summary": "",
+             "user_message": "x" * 400, "messages": "[]"}
+            for r in range(1, count + 1)
+        ]
+        store = AsyncMock()
+        store.search_keyword = AsyncMock(return_value=[
+            {**row, "tags": "", "snippet": "…", "rank": -1.0} for row in rows
+        ])
+        store.search_semantic = AsyncMock(return_value=[])
+        store.get_turns_by_ids = AsyncMock(return_value=rows)
+        srv._store = store
+        # No embeddings: the keyword leg decides, which is enough to test the
+        # budget — the cap runs over whatever the legs kept.
+        srv._manager = _fake_manager(semantic_ready=False, reason="off")
+        return srv, store, rows
+
+    @pytest.mark.asyncio
+    async def test_nothing_reserved_is_exactly_todays_budget(
+        self, restore_root_logger,
+    ):
+        """The floor still sizes the selection when a decision keeps nothing
+        (``"clear"`` + recall) — the overriding behaviour, unchanged."""
+        import json
+
+        from slife.agent.message_history import estimate_turn_tokens
+
+        srv, store, rows = self._server()
+        cost = estimate_turn_tokens(rows[0])
+        # Room for three turns, under a ceiling with plenty of room left.
+        srv._recall_policy = lambda: RecallPolicy(
+            token_budget=cost * 3, ceiling_tokens=cost * 100,
+        )
+
+        with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
+            out = json.loads(await _recall(srv)(query="x", reserved_tokens=0))
+
+        assert out["turns"] == [1, 2, 3], (
+            "the floor caps it, and the ceiling is not the binding constraint"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_reservation_narrows_the_budget(self, restore_root_logger):
+        import json
+
+        from slife.agent.message_history import estimate_turn_tokens
+
+        srv, store, rows = self._server()
+        cost = estimate_turn_tokens(rows[0])
+        # Floor: three turns.  Ceiling: five.  A decision keeping four turns
+        # worth of context leaves room for one more.
+        srv._recall_policy = lambda: RecallPolicy(
+            token_budget=cost * 3, ceiling_tokens=cost * 5,
+        )
+
+        with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
+            narrowed = json.loads(
+                await _recall(srv)(query="x", reserved_tokens=cost * 4)
+            )
+
+        assert narrowed["turns"] == [1], (
+            "the kept context is already four turns deep, and the ceiling is "
+            "five — so one turn is all that fits, not the floor's three"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_ceiling_is_what_the_reservation_is_measured_from(
+        self, restore_root_logger,
+    ):
+        """The bug this replaced: measured against the *floor*, a context that
+        had reached it (the state a trim leaves behind, and so most of a
+        session) could recall nothing at all."""
+        import json
+
+        from slife.agent.message_history import estimate_turn_tokens
+
+        srv, store, rows = self._server()
+        cost = estimate_turn_tokens(rows[0])
+        srv._recall_policy = lambda: RecallPolicy(
+            token_budget=cost * 3, ceiling_tokens=cost * 12,
+        )
+
+        with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
+            at_floor = json.loads(
+                await _recall(srv)(query="x", reserved_tokens=cost * 3)
+            )
+
+        assert at_floor["turns"] == [1, 2, 3], (
+            "a base sitting exactly at the floor still has the floor's worth "
+            "of headroom below the ceiling to add into"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_base_at_the_ceiling_recalls_nothing(
+        self, restore_root_logger,
+    ):
+        """Headroom is never negative: at the ceiling the answer is empty
+        rather than a budget that inverts into a bigger one."""
+        import json
+
+        from slife.agent.message_history import estimate_turn_tokens
+
+        srv, store, rows = self._server()
+        cost = estimate_turn_tokens(rows[0])
+        srv._recall_policy = lambda: RecallPolicy(
+            token_budget=cost * 3, ceiling_tokens=cost * 5,
+        )
+
+        with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
+            out = json.loads(
+                await _recall(srv)(query="x", reserved_tokens=cost * 5)
+            )
+
+        assert out == {"turns": []}
+
+    @pytest.mark.asyncio
+    async def test_an_unset_ceiling_leaves_the_budget_alone(
+        self, restore_root_logger,
+    ):
+        """``ceiling_tokens = 0`` is "unset", not "no room" — a policy built by
+        hand (the default in tests) keeps its old meaning."""
+        import json
+
+        from slife.agent.message_history import estimate_turn_tokens
+
+        srv, store, rows = self._server()
+        cost = estimate_turn_tokens(rows[0])
+        srv._recall_policy = lambda: RecallPolicy(token_budget=cost * 3)
+
+        with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
+            out = json.loads(
+                await _recall(srv)(query="x", reserved_tokens=cost * 99)
+            )
+
+        assert out["turns"] == [1, 2, 3]
+
+
 class TestStoreLifecycleLocking:
     """The per-turn save holds the lifecycle lock, and wakes the drainer."""
 
@@ -553,9 +707,11 @@ class TestTurnRecallIsInternal:
     The ``__`` prefix is the whole hiding mechanism (``is_internal_tool``), so
     it never reaches the LLM's registry — the model's own reading of the Turns
     DB is ``turn_search`` / ``turn_list``, and neither of those touches the
-    context.  Its three parameters are still exactly the ones the
-    discriminator fills in — the caps are recall's configuration, and the
-    surface is stated once, in ``system_prompt.RECALL_PARAMS``.
+    context.  Three of its parameters are the ones the discriminator fills in
+    — the caps are recall's configuration, and the surface is stated once, in
+    ``system_prompt.RECALL_REPLY`` — and ``reserved_tokens`` is the harness's
+    own: the tokens the kept turns already spend, which *narrows* the token
+    budget rather than setting it.
     """
 
     @pytest.mark.asyncio
@@ -570,20 +726,25 @@ class TestTurnRecallIsInternal:
         assert "turn_recall" not in names, "the selector is not an LLM tool"
 
     @pytest.mark.asyncio
-    async def test_schema_parameters_are_the_three(self, restore_root_logger):
-        """The discriminator fills exactly these in — no caps, no mode knob."""
+    async def test_schema_parameters_are_the_three_and_the_headroom(
+        self, restore_root_logger,
+    ):
+        """The discriminator fills exactly three of these in — no caps, no mode
+        knob.  The fourth is the *caller's*: the headroom below the context
+        floor, which the harness derives from the config and the turns the
+        decision kept, and which a model can neither see nor set."""
         srv = _import_memdb_server()
 
         tools = await srv.mcp.list_tools()
         tool = next(t for t in tools if t.name == "__memory_turn_recall")
 
         props = tool.parameters["properties"]
-        assert set(props) == {"query", "since", "until"}
-        assert tool.parameters.get("required", []) == [], "all three are optional"
+        assert set(props) == {"query", "since", "until", "reserved_tokens"}
+        assert tool.parameters.get("required", []) == [], "all four are optional"
         # The per-parameter how-to-use text rides the schema (FastMCP lifts it
         # from the docstring's Args block), and the discriminator is asked for
         # the same three keys the loop whitelists.
-        for name in ("query", "since", "until"):
+        for name in ("query", "since", "until", "reserved_tokens"):
             assert props[name].get("description"), f"{name} has no description"
 
     @pytest.mark.asyncio

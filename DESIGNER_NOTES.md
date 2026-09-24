@@ -153,3 +153,21 @@ sharefile也很特殊， TUN fake-ip模式会失败。
 3、执行agentloop前，执行判别器，判别器用当前上下文，user message 替换为 根据当前用户输入 {...}，召回相关历史轮次，召回函数用
        使用 turn_recall 函数，schema 为 {...}，输出参数值。 用rebuild_messages.j2来渲染。
 
+大模型在turn recall判别器中，根据自己的上下文要做以下决策：
+
+1、保留上下文，不recall新的turns
+2、保留上下文中一部分，不recall新的turns
+3、完全不要上下文，不recal信息的turns （相当于 clear context）
+4、保留上下文，并recall新的turns
+5、保留上下文中一部分，并recall新的turns
+6、完全不要上下文，recall新的turns
+
+recall新的turns当中它又需要决策：
+
+1、仅时间条件 recall, 没有query
+2、无时间条件的, recall, 仅有query
+3、带时间的过滤的recall, 即有时间也有query
+
+怎么重构turns recall，和 slife\agent\templates\rebuild_messages.j2
+
+

@@ -426,76 +426,166 @@ class TestHelpers:
 # ── Recall discriminator instruction ─────────────────────────────────────
 
 class TestRecallInstruction:
-    """``build_recall_instruction`` renders :data:`RECALL_PARAMS`.
+    """``build_recall_instruction`` renders :data:`RECALL_REPLY`.
 
     The selector is an internal tool the model never sees, so there is no live
     schema left to quote — the surface is stated once in the agent, and these
-    tests are what keep the statement and the loop's key whitelist (`query` /
-    `since` / `until`) from drifting apart.
+    tests are what keep the statement and the loop's parser from drifting
+    apart.
     """
 
-    def test_renders_the_three_parameters(self):
+    def test_renders_the_reply_surface(self):
         from slife.agent.system_prompt import build_recall_instruction
 
         text = build_recall_instruction("查一下首经贸新闻")
 
         assert "查一下首经贸新闻" in text
-        assert '"query"' in text and '"since"' in text and '"until"' in text
+        for key in ("context", "recall", "query", "since", "until"):
+            assert f'"{key}"' in text, key
 
-    def test_the_surface_is_exactly_the_loops_three(self):
-        """The keys are the contract with the loop, which whitelists exactly
-        these out of the reply — and the **caps** (count, similarity, token
-        budget) are deliberately not among them: the discriminator chooses
-        *what to look for*, never how much of it to take, and naming them here
-        would invite a model to set recall's own configuration."""
-        import json
+    def test_the_surface_is_exactly_the_loops_two_fields(self):
+        """The fields are the contract with the loop, which reads exactly these
+        out of the reply — and the **caps** (count, similarity, token budget)
+        are deliberately not among them: the discriminator chooses *what to
+        look for*, never how much of it to take, and naming them here would
+        invite a model to set recall's own configuration."""
+        from slife.agent.system_prompt import RECALL_REPLY
 
-        from slife.agent.system_prompt import build_recall_instruction
-
-        text = build_recall_instruction("x")
-        payload = json.loads(text[text.rindex("{"): text.rindex("}") + 1])
-
-        assert set(payload) == {"query", "since", "until"}
+        assert set(RECALL_REPLY) == {"context", "recall"}
+        assert set(RECALL_REPLY["recall"]) == {"query", "since", "until"}
 
     def test_states_the_empty_object_rule(self):
         from slife.agent.system_prompt import build_recall_instruction
 
-        text = build_recall_instruction("x")
+        # Normalized: the template is wrapped prose, so a phrase can straddle
+        # a line break.
+        text = " ".join(build_recall_instruction("x").split())
 
-        assert "empty object means no recall is needed" in text
+        assert "empty object means the turns in hand are enough" in text
 
-    def test_states_what_the_call_decides(self):
-        """The instruction says what the answer does — the named turns *become*
-        the context, in place of the ones in hand — and shows the composition
-        it asks for, on the follow-up that failed: the subject comes from the
-        conversation in hand (the call's own message list), the new words from
-        the input."""
+    def test_states_the_union(self):
+        """The instruction says what the two fields compose to: the turn runs
+        on what was kept **plus** what was recalled, in time order.  Without
+        it, "keep this and add that" reads as a contradiction."""
+        from slife.agent.system_prompt import build_recall_instruction
+
+        # Normalized: the template is wrapped prose, so a phrase can straddle
+        # a line break.
+        text = " ".join(build_recall_instruction("x").split())
+
+        assert "what to keep of the turns in hand" in text
+        assert "plus what to recall from memory" in text
+        assert "the two together" in text
+        assert "in time order" in text
+
+    def test_states_what_a_query_is_matched_against(self):
+        """The rule, then the cases it covers as worked examples: the subject
+        carried over from the conversation, and the way back to a turn the
+        context has dropped.  Without the second the discriminator reads a
+        follow-up naming something it cannot see as "the turns in hand are
+        enough" and answers from what happens to be there."""
         from slife.agent.system_prompt import build_recall_instruction
 
         text = build_recall_instruction("那人工智能学院呢？")
 
-        assert "the turns you name become the" in text
-        assert "in place of the ones in hand" in text
-        # The rule, then the two cases it covers as worked examples: the
-        # subject carried over from the conversation, and the way back to a
-        # turn the context has dropped.  Without the second the discriminator
-        # reads a follow-up naming something it cannot see as "the context is
-        # sufficient" and answers from what happens to be in hand.
         assert "Name what the turn needs" in text
-        # Each case is written as the reply itself — the JSON object the schema
-        # asks for — not as a prose shorthand for it.
-        assert "the subject is in the conversation above" in text
-        assert '→ {"query": "首经贸 人工智能学院 成立"}' in text
-        assert "that turn has left the context" in text
-        assert '→ {"query": "首经贸 管理工程学院 院长"}' in text
-        # The time shapes, pure and combined, in the bound grammar.
-        assert "a period, and no topic" in text
-        assert '→ {"since": "yesterday"}' in text
-        assert "a topic within a period" in text
-        assert '→ {"query": "首经贸 校庆", "since": "last week"}' in text
-        # …and the case that needs no history at all.
-        assert "the turn reads on its own" in text
-        assert "→ {}" in text
+
+    @staticmethod
+    def _examples(text: str) -> list[str]:
+        """The reply in each worked case.
+
+        Every case is written as the reply itself — the JSON object the field
+        list asks for — on the ``→`` line, so the examples and the parser can
+        be checked against each other rather than against a second copy of the
+        spelling.
+        """
+        import re
+
+        return re.findall(r"→\s*(\{.*\})", text)
+
+    def test_every_worked_case_is_a_reply_the_loop_accepts(self):
+        """A worked case is the strongest thing in the instruction — a model
+        copies the shape before it reads the prose — so a case the parser
+        rejects would be answered as "no reply at all": a context that
+        silently never changes."""
+        from slife.agent.loop import AgentLoop
+        from slife.agent.system_prompt import build_recall_instruction
+
+        replies = self._examples(build_recall_instruction("x"))
+
+        assert len(replies) >= 6, "at least one case per decision"
+        for reply in replies:
+            assert AgentLoop._parse_recall_args(reply) is not None, (
+                f"the loop rejects the worked case {reply}"
+            )
+
+    def test_the_examples_cover_all_six_decisions(self):
+        """The reachability of all six is what this refactor is *for*, so the
+        instruction has to teach all six — and a duplicated case would leave
+        one of them untaught."""
+        from slife.agent.loop import AgentLoop
+        from slife.agent.system_prompt import build_recall_instruction
+
+        decisions = set()
+        for reply in self._examples(build_recall_instruction("x")):
+            parsed = AgentLoop._parse_recall_args(reply)
+            keep = parsed["keep"]
+            fate = "all" if keep is None else ("none" if not keep else "part")
+            decisions.add((fate, bool(parsed["recall"])))
+
+        assert decisions == {
+            ("all", False), ("part", False), ("none", False),
+            ("all", True), ("part", True), ("none", True),
+        }, "every one of the six decisions is shown, and no case repeats one"
+
+    def test_the_examples_include_the_named_subject(self):
+        """The composition rule the prose cannot carry on its own: a follow-up
+        names its subject only through the conversation in hand, so the query
+        has to carry it — written from the input alone it matches nothing."""
+        from slife.agent.system_prompt import build_recall_instruction
+
+        text = " ".join(build_recall_instruction("x").split())
+
+        assert "subject is in the conversation above" in text
+        assert "carry it into the query" in text
+        assert '{"recall": {"query": "首经贸 人工智能学院 成立"}}' in text
+
+    def test_the_examples_cover_the_three_recall_modes(self):
+        """A query, a period, and a topic within a period — the store has a
+        branch for each (``server.__memory_turn_recall``), and a mode with no
+        example is a mode the discriminator will not reach for."""
+        from slife.agent.system_prompt import build_recall_instruction
+
+        text = " ".join(build_recall_instruction("x").split())
+
+        assert '{"recall": {"since": "yesterday"}}' in text, "time only"
+        assert '{"recall": {"query": "首经贸 人工智能学院 成立"}}' in text, (
+            "query only"
+        )
+        assert '"query": "首经贸 校庆", "since": "last week"' in text, (
+            "a topic within a period"
+        )
+
+    def test_the_examples_are_shown_one_per_decision(self):
+        """The six decisions are numbered 1–6 in the instruction, so the
+        ordering *is* the documentation: a case out of order, or a decision
+        with no case, would leave the model counting on its own."""
+        from slife.agent.system_prompt import build_recall_instruction
+
+        text = build_recall_instruction("x")
+
+        for n in range(1, 7):
+            assert f"\n{n}. " in text, f"decision {n} has no case"
+        assert "\n7. " not in text, "six decisions, six numbered cases"
+
+    def test_the_time_examples_stay_in_the_bound_grammar(self):
+        """An unparseable bound is answered as "recalled nothing", so a wrong
+        example is a wasted turn — the bounds shown have to be ones
+        ``timeutil`` accepts."""
+        from slife.timeutil import normalize_time_bound
+
+        for bound in ("yesterday", "last week"):
+            assert normalize_time_bound(bound), bound
 
 
 # ── Turn prompt presence events ──────────────────────────────────────────

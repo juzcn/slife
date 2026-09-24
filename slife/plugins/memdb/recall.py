@@ -1,12 +1,12 @@
-"""Turn recall — choose the turns that become the agent's context.
+"""Turn recall — choose the turns a turn adds to its context.
 
 A query answers *"what matches this text"*.  The per-turn recall answers
-*"what should be in the context now"*, and its answer **overrides** the
-previous context: the returned list *is* the new live context, with no reconciliation
-against what was there before.  That simplicity is the point — there is
-nothing to merge, no incumbent to defend, and therefore no need to exclude
-turns that are already in context (re-selecting one is the intended outcome,
-not a duplicate).
+*"what does this turn's context need that it has not got"*, and its answer is
+**added to** the turns the turn keeps — the harness composes the two by id, so
+a turn already in context that recall names again is simply the same turn, and
+one the turn never asked to keep is not dragged in.  That is what leaves the
+selector with nothing to reconcile: it has no incumbent to defend, and no need
+to exclude turns that are already in context (re-selecting one is free).
 
 What remains is the three caps from the design note, applied to the fused
 candidates in relevance order:
@@ -16,8 +16,11 @@ candidates in relevance order:
    Keyword-leg hits are exempt: they carry no measured similarity, and an
    exact match is a stronger signal than a cosine neighbourhood (see
    ``search.py``'s note that inventing a number for them "would be a lie").
-3. **Token budget** — the selection is what the model will be sent, so it is
-   bounded in tokens, not just in rows.
+3. **Token budget** — what recall adds is what the model will be sent on top,
+   so it is bounded in tokens, not just in rows.  The bound is the headroom
+   the caller passes as ``reserved_tokens`` below the context floor
+   (``server.__memory_turn_recall``), because the turns being kept spend that
+   floor too.
 
 Membership comes from relevance; **order comes from time** — the result is
 returned chronologically, because the list order is a contract (restore reads
@@ -60,7 +63,25 @@ class RecallPolicy:
     reasoning is in DESIGN.md §2.3)."""
 
     token_budget: int = 0
-    """Maximum estimated tokens for the selection (0 = unbounded)."""
+    """Maximum estimated tokens for the selection (0 = unbounded).
+
+    Under the per-turn union this is the *selection's own* size — the context
+    floor — and it stays the cap whenever the caller reserves nothing.  What
+    the caller keeps is bounded separately, against :attr:`ceiling_tokens`."""
+
+    ceiling_tokens: int = 0
+    """Where the caller's window starts forcing the context down (0 = unset).
+
+    The bound the *total* has to respect.  A context's life runs between the
+    floor and the ceiling — the trim only fires at the ceiling and compacts
+    *to* the floor (``AgentLoop._trim_after_save``) — so the floor is the
+    wrong denominator for a caller that already has turns in hand: it grants
+    no headroom the moment the context reaches it, which is most of the time.
+    The headroom below the ceiling is what is actually left to spend.
+
+    Applied as ``min(token_budget, ceiling_tokens - reserved)``
+    (``server.__memory_turn_recall``), so it can only ever *narrow* the
+    selection's own cap, never raise it."""
 
     limit: int = 40
     """Maximum number of turns in the selection."""

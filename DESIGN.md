@@ -129,7 +129,7 @@ drives the cycle, and `Inbox` (`slife/agent/inbox.py`) drives `run` once per que
 
 ```
 message posted to the inbox
-  → per-turn context rebuild (recall selects the history — §2.3)
+  → per-turn context rebuild (keep ∪ recall — §2.3)
   → add_user_message()                            (secrets sanitized at this gate)
   → iteration loop:
       cancel check · cut-in check · refresh the injected tool snapshot
@@ -181,7 +181,8 @@ model's `context_window`).
 context size, resolution order: the history's last API call's actual prompt + completion tokens →
 the restore-time value primed from the latest restored turn's persisted `context_tokens` → `0`. It
 drives the per-turn prompt, the trim decision and the status bar. Estimates appear in exactly one
-place — sizing a recall selection that has not been built yet — and are never presented as usage.
+place — sizing what a recall may add to a context that has not been rebuilt yet — and are never
+presented as usage.
 Usage is tracked **per history**, because the main agent has one shared context that every channel
 writes into while a worker gets a fresh one-shot history per task.
 
@@ -213,18 +214,19 @@ Slife refuses to start on a missing or partial vocabulary rather than mis-count 
 
 ### 2.3 Recall — the context is selected
 
-`agent.rebuild_message` (default **true**) makes the context **selected** rather than accumulated:
-before every turn the harness asks the memory store which turns this turn needs, and replaces the
-context with the answer.
+`agent.rebuild_message` (default **true**) makes the context **decided** rather than accumulated:
+before every turn the agent says what to keep of the turns in hand and what to **recall** from
+memory, and the turn runs on the two together.
 
 ```
 run()
   ├─ recall step — once per turn, BEFORE the user message is added
-  │    ├─ discriminator → recall parameters   (one model call; never persisted)
-  │    ├─ __memory_turn_recall(…) → turn ids, [] or None
-  │    ├─ None / unfetchable / {} → keep the existing context, continue
-  │    ├─ __memory_context_turns_set(ids) | __memory_context_turns_clear()
-  │    └─ history.rebuild_messages(turns)
+  │    ├─ discriminator → {context, recall}    (one model call; never persisted)
+  │    ├─ __memory_turn_recall(…) → turn ids to add, [] or None
+  │    ├─ None / unfetchable / nothing asked → keep the existing context, continue
+  │    ├─ union = kept ∪ recalled  (chronological)
+  │    ├─ __memory_context_turns_set(union) | __memory_context_turns_clear()
+  │    └─ history.rebuild_messages(kept ∪ recalled)
   ├─ add_user_message · attach_image · _turn_prompt
   └─ iteration loop
         └─ save_to_memory → the new rowid is appended to the persisted list
@@ -242,38 +244,39 @@ conversation and nothing it says is ever shown.
 
 - **Sent**: the agent's **current context** — the live messages, system prompt included, with
   `rebuild_messages.j2` in place of the user message. That is the design note's shape
-  ("判别器用当前上下文，user message 替换为 …"), and it is load-bearing: the turn being recalled is
-  usually a follow-up, and a follow-up names its subject only through the conversation in hand
-  ("人工智能学院是什么时候成立的" after three turns about 首经贸). A query written from the input
-  alone drops that subject, retrieves nothing, and — because a selection *replaces* the context —
-  leaves the turn with the system prompt alone and an answer invented from nothing.
-- **What the instruction states**: what the call decides (the named turns become the context, in
-  place of the ones in hand), the current input, how the query is matched (against stored turns —
-  their user messages, the tools they called, their answers), one rule — *name what the turn needs,
-  in the words a stored turn would contain* — and the recall parameters themselves
-  (`system_prompt.RECALL_PARAMS`), stated once in the agent. They cannot be read off a tool: the
-  selector is an **internal** tool the model never sees, so there is no LLM-facing schema to quote.
-  The loop is the only caller and it whitelists exactly the three keys, which is what keeps the two
-  ends of this contract in step. When the store cannot be reached at all there is no call either —
-  the availability check is the gate, so a turn is never spent asking a model to decide a recall
-  that cannot run.
+  ("判别器用当前上下文，user message 替换为 …"), and it is load-bearing twice over: the turn being
+  recalled is usually a follow-up, and a follow-up names its subject only through the conversation
+  in hand ("人工智能学院是什么时候成立的" after three turns about 首经贸) — a query written from the
+  input alone drops that subject and retrieves nothing. And the decision's *first* field is answered
+  from that same context: the ids a keep-list names are the ones in the `[INFO: …]` footnotes the
+  model can read there, and it is what tells the model what it already has, so it does not ask to
+  recall it again.
+- **What the instruction states**: what the call decides (what to keep of the turns in hand, plus
+  what to recall, with the turn running on the two together), the current input, how the query is
+  matched (against stored turns — their user messages, the tools they called, their answers), one
+  rule — *name what the turn needs, in the words a stored turn would contain* — and the reply
+  surface itself (`system_prompt.RECALL_REPLY`), stated once in the agent. It cannot be read off a
+  tool: the selector is an **internal** tool the model never sees, so there is no LLM-facing schema
+  to quote. The loop is the only caller and its parser reads exactly these two fields, which is what
+  keeps the two ends of this contract in step. When the store cannot be reached at all there is no
+  call either — the availability check is the gate, so a turn is never spent asking a model to
+  decide a recall that cannot run.
 
-  The rule is carried by five worked cases, one per shape the reply can take, each written as the
-  reply itself — the JSON object the schema asks for — rather than as a shorthand for it: `{}` (the
-  turn reads on its own), a query for a subject in the conversation (`那人工智能学院呢？` →
-  `{"query": "首经贸 人工智能学院 成立"}`), a query for a turn that has left the context (`刚才问首经贸
-  管工学院院长是谁？` → `{"query": "首经贸 管理工程学院 院长"}`), a bare period (`这两天都做了些什么？`
-  → `{"since": "yesterday"}`), and a topic within a period (`上周关于校庆都说了什么？` →
-  `{"query": "首经贸 校庆", "since": "last week"}`).  Worked cases
-  rather than prose because the two composition rules — carry the subject, name what is missing —
-  are what a bare rule statement was failing to convey; every bound in them is in
-  `timeutil.BOUND_GRAMMAR`, and an unparseable bound is answered as an empty selection, so a wrong
-  example would be a context wipe.
+  The rule is carried by **one worked case per decision** — numbered 1–6, so the instruction's order
+  *is* the enumeration and no mode has to be described in prose — each written as the reply itself,
+  the JSON object the field list asks for, rather than as a shorthand for it. The three recall
+  shapes ride three of them (a bare period at 4, a query at 5, a topic within a period at 6), so all
+  six decisions and all three modes are shown without a case repeating another. A seventh case
+  carries the one composition rule a worked case is uniquely able to teach: the follow-up whose
+  subject came three turns earlier (`那人工智能学院呢？` → `{"recall": {"query": "首经贸 人工智能学院
+  成立"}}`). Every bound in them is in `timeutil.BOUND_GRAMMAR` — an unparseable bound is answered
+  as *no ids*, which no longer wipes the context but is still a wasted turn — and
+  `test_every_worked_case_is_a_reply_the_loop_accepts` runs each example through the loop's own
+  parser, so a case cannot drift from the spelling the parser accepts.
 
-  The second example covers the case `{}` cannot: a turn the context has dropped is invisible from
-  the context itself, so "the context in hand is enough" reads as correct while the referent is
-  gone.  It also widens the empty-selection path — a query for a turn that was never stored selects
-  nothing, and an empty selection clears the context.
+  Decision 5 covers the case the bare keep-all cannot: a turn the context has dropped is invisible
+  from the context itself, so "the turns in hand are enough" reads as correct while the referent is
+  gone.
 - **Cost**: one context-sized call per turn — the pre-turn call is now about as expensive as the turn
   itself. That is what judging from the conversation costs; the log line's `msgs` / `chars` are what
   say whether it is being paid.
@@ -286,39 +289,65 @@ conversation and nothing it says is ever shown.
   requested JSON object all return `None`. Retrying would double the pre-turn latency of a call
   whose fallback — keep the context — is perfectly good.
 
-**What a reply means.** A mode the instruction does not name is unreachable, however good the model
-is:
+**What a reply means — six decisions from two independent fields.** `context` is what to keep of the
+turns in hand (`None` = all of them, `[]` = none, or the ids to keep); `recall` is what to add
+(`None`, or the three search parameters). The two are decided separately, so the six decisions are
+their six combinations and no mode has to be enumerated:
 
-| Reply | Meaning |
-|---|---|
-| `{}` | **no recall needed** — the context in hand is enough. The store is not asked and the context is not touched. |
-| `since` / `until` alone | **time-only**: the turns in that range, ranked by nothing but time — no similarity cap, because there is no query to measure against. |
-| `query` alone | hybrid search over the whole diary, no time filter. |
-| `query` + a range | the same hybrid search, both legs windowed. |
+| keep | recall | new context |
+|---|---|---|
+| all | — | the turns in hand, untouched. The store is not asked. |
+| some | — | those turns. |
+| none | — | the system prompt alone. |
+| all | ✓ | base ∪ recalled |
+| some | ✓ | base ∪ recalled |
+| none | ✓ | recalled |
 
-An empty object is a *decision*, not a default: read as "give me the most recent turns" it would
-silently replace the context the discriminator just judged sufficient. An empty-query branch must run
-**before** the hybrid legs — they cannot express "no query": an empty query reaches FTS5 as
-`MATCH ''` (an error) and embeds to noise.
+`recall`'s own three shapes are the store's three branches: `since`/`until` alone is **time-only**
+(the turns in that range, ranked by nothing but time — no similarity cap, because there is no query
+to measure against); `query` alone is a hybrid search over the whole diary; `query` + a range is the
+same search with both legs windowed. An empty-query branch must run **before** the hybrid legs —
+they cannot express "no query": an empty query reaches FTS5 as `MATCH ''` (an error) and embeds to
+noise.
 
-**The selection — one fusion, three caps, one order.** The hybrid legs are FTS5 (with a LIKE
+**The union is what makes "keep this and add that" expressible** — and it is why an empty recall is
+now *harmless*. Under the overriding selection every reply but `{}` discarded the context it
+replaced, so a query that merely failed to match emptied it: the turn ran on the system prompt alone
+and answered from nothing. `base ∪ ∅` is `base`. Clearing is therefore only ever the explicit
+`"clear"`, and nothing a model gets wrong can empty the context by accident. `{"context": "clear"}` +
+a recall is exactly the old behaviour, so the union is a strict superset of it.
+
+**The recalled set — one fusion, three caps, one order.** The hybrid legs are FTS5 (with a LIKE
 fallback for CJK, which FTS5's `unicode61` cannot segment) and sqlite-vec KNN, fused by reciprocal
 rank fusion (`k=60`). The caps are `agent.recall_limit` (40 turns), `agent.recall_min_similarity`
-(0.45), and `context_floor` (20% of the window, the selection's estimated size). The similarity cap
-gates the **measured** `similarity`, never the fused `rrf_score` — a fused score is a function of
-rank position and carries no magnitude to threshold. Keyword-leg hits have no measured similarity and
-are **exempt**: an exact match is a stronger signal than a cosine neighbourhood, and "no number" is
-not evidence against it. The caps are recall's own configuration, never the discriminator's
-arguments — it chooses *what to look for*, never how much of it to take, which is why they are
-absent from the schema it fills in.
+(0.45), and a token budget: `context_floor` (20% of the window), narrowed to the headroom below
+`context_ceiling` by whatever the decision kept. The floor is the *selection's* size, so it stays the
+cap when nothing is kept — which is why the ceiling, not the floor, is the bound a kept context is
+measured against: the trim compacts *to* the floor, so a live context sits at or above it for most of
+a session, and subtracting the floor would grant no headroom and quietly make "keep this and add
+that" unreachable. The similarity cap gates the **measured** `similarity`, never the fused
+`rrf_score` — a fused score is a function of rank position and carries no magnitude to threshold.
+Keyword-leg hits have no measured similarity and are **exempt**: an exact match is a stronger signal
+than a cosine neighbourhood, and "no number" is not evidence against it. The caps are recall's own
+configuration, never the discriminator's arguments — it chooses *what to look for*, never how much of
+it to take, which is why they are absent from the schema it fills in.
+
+**A keep-list is a statement about the context in hand**, read as an intersection: an id that is not
+there names nothing, and is not a way to pull an arbitrary row into the context past every cap and
+the budget. The ids are the ones in the `[INFO: …]` footnote of the message that opens each turn —
+which is why **every** in-context turn carries one, autonomous turns included. Suppressing the
+footnote on heartbeat / schedule / timer turns (the old rule) made them unnameable, so a keep-list
+silently dropped them — including scheduled turns that did real work — with nothing in the
+conversation to say why.
 
 **The floor is calibrated, not chosen.** A cosine scale belongs to the pair that produces it — the
 embedding model *and* the text the index holds — so `recall_min_similarity` is a measured number, and
 it must be re-measured when either changes. It matters more than a tuning knob usually would because
-the selection *overrides* the context: a floor below the noise band does not degrade gracefully, it
-admits an arbitrary turn as though it had been matched and then discards the context it replaced.
-The value in the config was measured on a recorded session — every relevant turn at 0.46–0.55, every
-irrelevant one at ≤0.45, and a query no turn answered topping out at 0.33, selecting nothing.
+the recalled set joins the context rather than replacing it: a floor below the noise band does not
+degrade gracefully, it adds an arbitrary turn as though it had been matched, and the union then
+carries it. The value in the config was measured on a recorded session — every relevant turn at
+0.46–0.55, every irrelevant one at ≤0.45, and a query no turn answered topping out at 0.33, selecting
+nothing.
 
 The semantic leg's scale depends on what the index holds, which is not the raw turn: see §7.2 for
 what `_turn_text_for_embedding` embeds and why tool *results* are absent from it.
@@ -326,29 +355,38 @@ what `_turn_text_for_embedding` embeds and why tool *results* are absent from it
 **Order is chronological even though membership is by relevance**, because the list order is the
 restore contract: a rebuilt turn must render byte-identically to the same turn restored. Both paths
 share one builder (`messages_from_turns`) — a difference would cost a prompt-cache miss every turn.
-**The selection overrides; it does not merge** — there is no incumbent to defend and no need to
-exclude turns already in context.
+Which is also why the rebuild is **skipped when the decision asks for exactly what is in hand**:
+nothing was added and nothing dropped, so re-rendering the same turns from the store would cost a
+round-trip, the turn's live image blocks and the prompt-cache prefix to arrive at the identical list.
+
+**The recalled set is joined, not reconciled** — there is no incumbent to defend and no need to
+exclude turns already in context: a turn the recall names that the decision also kept is *the same
+turn*, and the union is by id.
 
 **The store's answer is ids, or nothing, but never an error.** `__memory_turn_recall` returns the
-turn ids and nothing else — a degraded semantic leg does not change the selection, so it is logged
-rather than answered with. Everything that is not a fatal environment failure is answered as an
-**empty selection**: a time bound the grammar rejects, a query the store cannot parse, an unexpected
-pipeline failure. The caller's only safe reading of "error" would be *keep the context you have*,
-which would license exactly the wipe an empty selection performs deliberately. Two things are
-**fatal** instead — a store failure and an unusable tokenizer, since every turn's cost and so the
-budget come from it — and both reach the harness as a tool *error*, which keeps the context.
+turn ids and nothing else — a degraded semantic leg does not change the recalled set, so it is
+logged rather than answered with. Everything that is not a fatal environment failure is answered as
+**no ids**: a time bound the grammar rejects, a query the store cannot parse, an unexpected pipeline
+failure. That answer is now safe by construction — no ids *adds* nothing, where under the overriding
+selection it emptied the context. Two things are **fatal** instead — a store failure and an unusable
+tokenizer, since every turn's cost and so the budget come from it — and both reach the harness as a
+tool *error*, which keeps the context. Fatalness is no longer load-bearing for safety; it is kept
+because a broken database and a missing vocabulary are real environment failures, and answering them
+with a plausible-looking empty list hides them behind a turn that quietly ran without the history it
+asked for.
 
 **The model's own way into the Turns DB is separate.** `turn_search` (hybrid / fts5 / grep) and
 `turn_list` (a time-windowed, paged browse) mirror the memfiles cabinet's `cabinet_search` and
-`*_list` tools, and they only ever *read* — neither touches the context. The selector that does
-replace the context is the harness's, and it is internal for exactly that reason: a selection
-*overriding* the conversation is not something the model asks for.
+`*_list` tools, and they only ever *read* — neither touches the context. The selector that does feed
+the context is the harness's, and it is internal for exactly that reason: changing the conversation
+under the model is not something the model asks for.
 
-**What the selection does to the context.** It replaces it, built from the stored rows by the same
-builder restore uses. An empty selection is an empty context, and the persisted list is emptied with
-it. Four things leave the context untouched instead: the discriminator answered `{}`; no reply came
-back; the store returned `None`; or the selected turns cannot be fetched. Nothing was learned about
-what the turn needs, so a guess is not an improvement on what is already there.
+**What the decision does to the context.** The rebuilt set is the union above, built from the stored
+rows by the same builder restore uses — so a context is reproducible from its id list, and a restart
+renders what the live session rendered. Clearing is the explicit `"clear"`, and the persisted list is
+emptied with it. Four things leave the context untouched instead: nothing was asked for; no reply
+came back; the store returned `None`; or the turns cannot be fetched. Nothing was learned about what
+the turn needs, so a guess is not an improvement on what is already there.
 
 **Workers never rebuild** — a worker's history is one-shot per task, so there is nothing to select
 from. The role decides this, not the config.
@@ -1254,7 +1292,7 @@ identity, the agent identity and model, the turn's billed token count, and `cont
 context size at the last API call, which restore primes the first turn prompt with.
 
 There is **no `images` column**: image blocks live only in the in-memory user message and are never
-persisted, so restore is text-only — and so is a turn rebuilt by a recall selection, which comes back
+persisted, so restore is text-only — and so is a turn rebuilt by the per-turn decision, which comes back
 as its text plus the `attach_image` call and result (§7.6). Supporting structures are an FTS5 external-content index (whose
 UPDATE trigger exists because the summarize tool rewrites columns and an external-content index must
 track that), a sqlite-vec table, a key/value `diary_meta` store holding the embedding model identity,
@@ -1361,8 +1399,8 @@ messages carry their stored timestamps, so the rebuilt chat matches what was see
 **The id list replays the exit-time context.** `diary_meta.context_turns` is an **ordered JSON array
 of rowids** naming the live context. Three things maintain it: the save appends the new rowid inside
 the diary row's own transaction; the internal trim drops the turns it evicts, passing the **actual**
-ids; and the per-turn rebuild replaces the list with its recall selection, with an explicit clear for
-an empty one.
+ids; and the per-turn rebuild replaces the list with what the turn kept plus what it recalled, with an
+explicit clear for a context that is to be empty.
 
 - **The list's order is authoritative.** Reads replay it as written and never re-sort by rowid — and
   the slice need not be contiguous.
@@ -1723,21 +1761,24 @@ learned the hard way and each is silently violated by a plausible-looking change
 
 1. **Usage is measured or it is zero.** `context_tokens_for` never returns an estimate — a guess
    presented as occupancy is worse than an honest zero. Estimates appear in exactly one place:
-   sizing a recall selection that has not been built yet.
+   sizing what a recall may add to a context that has not been rebuilt yet.
 2. **Every save path is a hard stop, not a skip.** A turn that cannot be persisted is not worth
    running. The flip side is deliberate too: subordinate dependencies never gate readiness, because
    they are uncontrollable and self-healing.
-3. **An empty recall selection is a decision, not a default**, and a *failed* discriminator keeps the
-   context — defaulting it to a recency list would replace the context on the strength of no decision
-   at all.
-4. **A store or tokenizer failure is fatal; everything else is an empty selection.** The caller's only
-   safe reading of "error" is *keep the context*, which would license exactly the wipe an empty
-   selection performs deliberately.
+3. **Nothing a model says can empty the context by accident.** A decision keeps what it names and
+   *adds* what it recalls, so a recall that answers nothing adds nothing; clearing is the explicit
+   `"clear"`. A *failed* discriminator keeps the context too — defaulting it to a recency list would
+   change the context on the strength of no decision at all.
+4. **A store or tokenizer failure is fatal; no ids is the answer for everything else.** No ids is now
+   safe by construction (see 3), so fatalness is not what protects the context — it is kept because a
+   broken database and a missing vocabulary are real environment failures, and a plausible-looking
+   empty list hides them behind a turn that ran without the history it asked for.
 5. **One turn→messages builder, shared by restore and recall**, and the rebuilt list is chronological
    even though membership is by relevance. A rebuilt turn must render byte-identically to the same
-   turn restored, or every rebuild costs a prompt-cache miss.
+   turn restored, or every rebuild costs a prompt-cache miss — which is also why a decision that asks
+   for exactly what is in hand rebuilds nothing at all.
 6. **The rebuild happens before the user message is added**, because it replaces the message list
-   wholesale.
+   wholesale. A decision that changes nothing never gets there: the context stands as it is.
 
 **Caching and the wire**
 

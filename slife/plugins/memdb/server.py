@@ -123,6 +123,11 @@ def _recall_policy() -> RecallPolicy:
             token_budget=int(
                 cfg.active_model.context_window * cfg.context_floor
             ),
+            # ...and the ceiling is where the window forces the context down,
+            # which is the bound the union of kept + recalled has to respect.
+            ceiling_tokens=int(
+                cfg.active_model.context_window * cfg.context_ceiling
+            ),
         )
     except Exception:
         logger.warning("recall_policy_defaulted", exc_info=True)
@@ -322,6 +327,7 @@ async def __memory_turn_recall(
     query: str = "",
     since: str | None = None,
     until: str | None = None,
+    reserved_tokens: int = 0,
 ) -> str:
     """Return the recalled turn ids — nothing else.
 
@@ -331,34 +337,65 @@ async def __memory_turn_recall(
         since: Lower bound — ISO date/datetime, or a relative phrase (the
             grammar is the LLM-facing ``turn_search``'s).
         until: Upper bound — same grammar as since.
+        reserved_tokens: Tokens the caller's context already spends on the
+            turns it is keeping.  A *fact* about that context, not a cap the
+            caller sets: it narrows the budget to the headroom left below the
+            ceiling, and can never widen it.
 
-    Called by the agent loop before every turn, where the answer *overrides*
-    the context with no reconciliation against what was already there.  The
-    ids are all the rebuild reads out of it; it fetches the turns themselves
-    with ``__memory_turns_by_ids``.
+    Called by the agent loop before every turn, where the answer is **added
+    to** the context the turn keeps.  The ids are all the rebuild reads out of
+    it; it fetches the turns themselves with ``__memory_turns_by_ids``.
 
     A *query* runs the hybrid search; a time range without one browses that
-    period; neither is an empty call, which recalls nothing.  Either way the
-    three caps come from recall's own configuration (``agent.recall_*``), not
-    from the caller — see :mod:`slife.plugins.memdb.recall`.
+    period; neither is an empty call, which recalls nothing.  The three caps
+    come from recall's own configuration (``agent.recall_*``) — see
+    :mod:`slife.plugins.memdb.recall` — and *reserved_tokens* narrows the
+    token budget without ever setting it, so what a caller may spend still
+    follows from the config and never from what a model asked for.
+
+    "Narrows" is meant literally: the answer is a subset of what the same
+    call would have returned with nothing reserved, so no caller can raise its
+    own budget through this argument.  A context that already fills the
+    ceiling leaves no headroom at all, and the answer is then empty.
 
     Returns ``{"turns": [ids]}``, ascending (chronological).  A degraded
-    semantic leg does not change the answer — the selection stands either way
-    — so it is logged (``recall_degraded``) rather than returned.
+    semantic leg does not change the answer — the recalled set stands either
+    way — so it is logged (``recall_degraded``) rather than returned.
 
     **There is no error return.**  The caller's only safe reading of "error"
-    is "keep the context you have", while an empty selection is a legitimate
-    answer that *overrides* the context with nothing — so anything that is
-    not a store failure is answered as an empty selection: a time bound the
-    grammar rejects, a query the store cannot parse, a pipeline bug.  A
-    **store failure is fatal** instead (``sqlite3.Error`` propagates, like
-    the startup readiness check): a plausible-looking empty list from a broken
-    database is worse than no answer, because it silently wipes the context.
-    A **tokenizer failure is fatal** in the same way (``TokenizerUnavailable``
-    propagates): it is an environment failure like the store's, and no turn
-    can be sized — let alone selected within a budget — without it.
+    is "keep the context you have", while an empty answer is legitimate and
+    means only that nothing was added — so anything that is not a store
+    failure is answered as an empty selection: a time bound the grammar
+    rejects, a query the store cannot parse, a pipeline bug.  A **store
+    failure is fatal** instead (``sqlite3.Error`` propagates, like the startup
+    readiness check): it is a real environment failure, and answering it with
+    a plausible-looking empty list would hide it behind a turn that quietly
+    ran without the history it asked for.  A **tokenizer failure is fatal** in
+    the same way (``TokenizerUnavailable`` propagates): no turn can be sized —
+    let alone selected within a budget — without it.
     """
     policy = _recall_policy()
+    budget = policy.token_budget
+    if budget > 0 and policy.ceiling_tokens > 0:
+        # What the caller kept is spending the same window, so the recalled
+        # set takes the headroom below the **ceiling** — never the floor,
+        # which a live context normally sits at or above (the trim compacts
+        # *to* the floor, so subtracting it would grant no headroom for most
+        # of a session and quietly make "keep this and add that" unreachable).
+        # `min` with the floor keeps the selection's own cap in force, so this
+        # can only narrow it.
+        headroom = policy.ceiling_tokens - max(0, reserved_tokens)
+        if headroom <= 0:
+            # The kept context already reaches the ceiling: nothing may be
+            # added.  Answered here rather than by a zero budget, because `0`
+            # means *unbounded* to ``fit_budget`` — the opposite of an
+            # exhausted window.
+            logger.info(
+                "recall_no_headroom reserved=%d ceiling=%d",
+                reserved_tokens, policy.ceiling_tokens,
+            )
+            return json.dumps({"turns": []}, ensure_ascii=False)
+        budget = min(budget, headroom)
     try:
         async with _get_init_lock():
             store = await _ensure_store_locked()
@@ -367,10 +404,10 @@ async def __memory_turn_recall(
             if not query.strip():
                 if not (since or until):
                     # No query and no range: nothing was asked for.  The caller
-                    # that means "the context is sufficient" does not call at
-                    # all (the agent loop reads an empty parameter object before
-                    # it gets here) — so reaching this means an empty call, and
-                    # an empty call recalls nothing.
+                    # that means "add nothing" does not call at all — the agent
+                    # loop reads the decision's empty `recall` before it gets
+                    # here — so reaching this means an empty call, and an empty
+                    # call recalls nothing.
                     logger.info("recall_no_criteria")
                     return json.dumps({"turns": []}, ensure_ascii=False)
                 # Time branch.  This branch MUST run before the hybrid legs:
@@ -387,8 +424,9 @@ async def __memory_turn_recall(
                 )
                 ranked = gate_turns(result.hits, policy=policy)
                 if not result.semantic_available:
-                    # The selection stands either way, but a degraded leg
-                    # widens the empty case — which clears the context.
+                    # The recalled set stands either way, but a degraded leg
+                    # widens the empty case — which adds less, and on a query
+                    # the keyword leg could not match, nothing.
                     logger.info("recall_degraded reason=%.120s",
                                 hybrid_hint(result))
 
@@ -396,7 +434,7 @@ async def __memory_turn_recall(
             # second phase over what gating kept.
             turns = await store.get_turns_by_ids(ranked)
             costs = {t["rowid"]: estimate_turn_tokens(t) for t in turns}
-            selected = fit_budget(ranked, costs, policy.token_budget)
+            selected = fit_budget(ranked, costs, budget)
 
         return json.dumps({"turns": selected}, ensure_ascii=False)
     except InvalidTimeBound as e:

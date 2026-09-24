@@ -1540,8 +1540,15 @@ class TestAgentServiceMemory:
         assert "[INFO:" not in args["user_message"]
 
     @pytest.mark.asyncio
-    async def test_heartbeat_turn_not_annotated(self, sample_config):
-        """Heartbeat turns (synthetic triggers) never get a footnote."""
+    async def test_heartbeat_turn_is_annotated_too(self, sample_config):
+        """A heartbeat turn gets the footnote like any other.
+
+        It used to be skipped — a synthetic trigger is not a turn the agent
+        had a question about.  The footnote's job is now to make a turn
+        **addressable**: the per-turn recall's keep-list names turns by this
+        id, so a turn without one cannot be kept or dropped by name, and the
+        schedule turns that *did* real work were being dropped silently.
+        """
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
@@ -1559,9 +1566,15 @@ class TestAgentServiceMemory:
             history=conv,
         )
 
-        assert conv.messages[1]["content"] == (  # [0] is the system prompt
-            "[Heartbeat] click.  Reply per your contract."
+        content = conv.messages[1]["content"]  # [0] is the system prompt
+        assert content.startswith(
+            '[Heartbeat] click.  Reply per your contract. [INFO: {"turn_id": 42'
         )
+        assert content.endswith("]")
+        # The stored user_message is still the clean original — the footnote is
+        # runtime-plus-context, never part of what the turn row holds.
+        _, args = mock_client.call_tool.await_args.args
+        assert args["user_message"] == "[Heartbeat] click.  Reply per your contract."
 
     @pytest.mark.asyncio
     async def test_no_rowid_no_footnote(self, sample_config):
@@ -2697,10 +2710,14 @@ class TestAnnotateSavedTurn:
         assert conv.messages[1]["_turn_id"] == 27
         assert '[INFO: {"turn_id": 27' in conv.messages[1]["content"]
 
-    def test_autonomous_turn_gets_the_id_but_no_footnote(self, sample_config):
-        """A heartbeat/schedule turn is in context like any other — the trim
-        must be able to drop it — but its synthetic trigger carries no
-        LLM-facing footnote."""
+    def test_autonomous_turn_gets_both_the_id_and_the_footnote(self, sample_config):
+        """A heartbeat/schedule turn is addressable exactly like any other.
+
+        The structural id is what the trim drops it by; the ``[INFO: …]``
+        footnote is what the *model* drops it by, in a recall keep-list.  A
+        turn carrying one and not the other could be evicted by the harness
+        and never by the decision.
+        """
         from datetime import datetime
         from slife.agent.service import AgentService
 
@@ -2711,7 +2728,7 @@ class TestAnnotateSavedTurn:
         srv._annotate_saved_turn(conv, 1, 31, now, now)
 
         assert conv.messages[1]["_turn_id"] == 31
-        assert "INFO" not in conv.messages[1]["content"]
+        assert '[INFO: {"turn_id": 31' in conv.messages[1]["content"]
 
     def test_no_rowid_stamps_nothing(self, sample_config):
         from datetime import datetime

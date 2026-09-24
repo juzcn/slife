@@ -284,27 +284,40 @@ class TestRestoreTurnHeader:
         )
 
     @pytest.mark.asyncio
-    async def test_heartbeat_turn_gets_no_header(self):
+    async def test_heartbeat_turn_gets_the_header_too(self):
+        """A synthetic trigger is annotated like any other turn.
+
+        The footnote is what makes a turn **addressable** — the per-turn
+        recall's keep-list names turns by this id — so leaving a heartbeat
+        without one meant the decision could not keep or drop it by name.  It
+        still renders nowhere: the header is for the model, and the TUI shows
+        the ⚡ turn-end line instead.
+        """
         app, conv, config, chat_view = self._build()
         await self._restore(app, conv, config, [
             self._turn("[Heartbeat] click.  Reply per your contract."),
         ])
 
         assert conv.messages[0]["content"] == (
-            "[Heartbeat] click.  Reply per your contract."
+            '[Heartbeat] click.  Reply per your contract. [INFO: {"turn_id": 27, '
+            '"begin": "2026-08-10 14:03", "end": "14:05"}]'
         )
-        # Heartbeat turns render nowhere in the chat.
+        # Heartbeat turns still render nowhere in the chat.
         chat_view.add_user_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_schedule_trigger_turn_gets_no_header(self):
+    async def test_schedule_trigger_turn_gets_the_header_too(self):
         app, conv, config, chat_view = self._build()
         await self._restore(app, conv, config, [
             self._turn("[Schedule daily_diary] 定时任务触发。", channel="schedule"),
         ])
 
-        # The synthetic trigger carries no turn header.
-        assert conv.messages[0]["content"] == "[Schedule daily_diary] 定时任务触发。"
+        # A scheduled turn is one that did real work — the keep-list has to be
+        # able to name it, or it is dropped without the model ever seeing it.
+        assert conv.messages[0]["content"] == (
+            '[Schedule daily_diary] 定时任务触发。 [INFO: {"turn_id": 27, '
+            '"begin": "2026-08-10 14:03", "end": "14:05"}]'
+        )
         # The trigger renders nowhere in the chat.
         chat_view.add_user_message.assert_not_called()
 

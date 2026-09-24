@@ -50,22 +50,37 @@ def render_template(template: str, **kwargs: object) -> str:
     return _env.get_template(template).render(**kwargs).strip()
 
 
-#: The parameter surface the recall discriminator fills in.  The **caps**
-#: (count / similarity / token budget) are deliberately absent — they are
-#: recall's own configuration, so the discriminator chooses *what to look
-#: for*, never how much of it to take.
+#: The reply the recall discriminator fills in — the whole surface it has.
+#:
+#: Two fields, independent of each other: ``context`` is what to keep of the
+#: turns in hand (omitted = all of them, ``"clear"`` = none of them, or the
+#: turn ids to keep), and ``recall`` is what to add from memory (omitted =
+#: nothing).  Every combination is one of the six decisions the design note
+#: names, so none of them is enumerated here — the vocabulary is two fields
+#: wide and cannot fall out of step with the parser.  ``{}`` is the first of
+#: the six (keep everything, add nothing).
+#:
+#: The **caps** (count / similarity / token budget) are deliberately absent —
+#: they are recall's own configuration, so the discriminator chooses *what to
+#: look for*, never how much of it to take.
 #:
 #: Stated here, once, because the selector is an internal tool the model never
 #: sees: there is no LLM-facing schema left to quote.  The loop is the only
-#: caller, it builds the internal call itself, and it whitelists exactly these
-#: three keys — so this text and the call site are one contract in one
-#: repository, not two copies that can drift.
-RECALL_PARAMS: dict[str, str] = {
-    "query": "Search text for the history this turn needs. Empty string "
-             "means no search — browse the time range instead.",
-    "since": "Optional lower time bound: an ISO date, or a relative phrase "
-             "such as yesterday / last week. Empty string for none.",
-    "until": "Optional upper time bound, same grammar as since.",
+#: caller, it builds the internal call itself, and it whitelists exactly this
+#: shape — so this text and the call site are one contract in one repository,
+#: not two copies that can drift.
+RECALL_REPLY: dict[str, object] = {
+    "context": "Which of the turns in hand to keep. Omit (or \"keep\") to "
+               "keep them all, \"clear\" to keep none, or name the ones to "
+               "keep by the turn_id in their [INFO: …] footnote, e.g. "
+               "[12, 15].",
+    "recall": {
+        "query": "Search text for the history this turn needs. Omit for no "
+                 "search — browse a time range instead.",
+        "since": "Lower time bound: an ISO date, or a relative phrase such "
+                 "as yesterday / last week. Omit for none.",
+        "until": "Upper time bound, same grammar as since.",
+    },
 }
 
 
@@ -73,8 +88,8 @@ def build_recall_instruction(user_input: str) -> str:
     """Render the discriminator's instruction (``rebuild_messages.j2``).
 
     The user turn of the pre-turn recall call: it states what the call
-    decides, quotes the current input, says how the query is matched, and
-    states the parameters the discriminator fills in (:data:`RECALL_PARAMS`).
+    decides, quotes the current input, says how a query is matched, and states
+    the reply the discriminator fills in (:data:`RECALL_REPLY`).
 
     The rest of the call is the agent's **current context** — the loop sends
     the live messages with the instruction in place of the user message, so
@@ -84,7 +99,7 @@ def build_recall_instruction(user_input: str) -> str:
     return render_template(
         "rebuild_messages.j2",
         user_input=user_input,
-        recall_params=json.dumps(RECALL_PARAMS, indent=2, ensure_ascii=False),
+        recall_reply=json.dumps(RECALL_REPLY, indent=2, ensure_ascii=False),
     )
 
 

@@ -14,6 +14,8 @@ Covers:
 
 import pytest; pytestmark = pytest.mark.unit
 
+import json
+
 import pytest
 
 from types import SimpleNamespace
@@ -244,15 +246,18 @@ class TestTurnPromptKwargsRestarted:
 
 
 class TestRecallRebuild:
-    """The per-turn context rebuild, and the line between its two outcomes.
+    """The per-turn context rebuild — the six decisions, and their six shapes.
 
-    The selection **is** the context, so an empty selection is an empty
-    context — the turns in it were judged irrelevant, and keeping them would
-    mean the recall never took effect.  What must never happen is a *failure*
-    wearing an empty selection's clothes: when the store cannot be asked
-    (``None``) or the selection cannot be fetched, the context stays exactly
-    as it was.  ``recall_turns`` returning ``[]`` for "could not ask" is what
-    made those two indistinguishable.
+    The decision names two things independently (``RECALL_REPLY``): which of
+    the turns in hand to **keep**, and what to **recall** from memory.  The
+    context is the two **together**, so the union is what makes "keep this and
+    add that" expressible at all — under an overriding selection, a turn the
+    decision asked to keep was simply discarded.
+
+    What must never happen is a *failure* wearing a decision's clothes: when
+    the store cannot be asked (``None``) or the turns cannot be fetched, the
+    context stays exactly as it was.  ``recall_turns`` returning ``[]`` for
+    "could not ask" is what made those two indistinguishable.
     """
 
     TURN = {
@@ -261,11 +266,10 @@ class TestRecallRebuild:
         "messages": '[{"role": "assistant", "content": "recalled reply"}]',
         "created_at": "2026-09-01T10:00:00+08:00",
     }
-
     @staticmethod
     def _loop(**kwargs):
         return AgentLoop(
-            llm_client=_ReplyLLM('{"since": "yesterday"}'),
+            llm_client=_ReplyLLM(kwargs.get("reply", '{"recall": {"since": "yesterday"}}')),
             tool_registry=_registry(),
             context_window=1000, context_ceiling=0.8, context_floor=0.2,
             rebuild_message=kwargs.get("rebuild", True),
@@ -276,15 +280,70 @@ class TestRecallRebuild:
         )
 
     @staticmethod
-    def _history():
+    def _history(with_ids: bool = False):
+        """A live context of two turns.
+
+        *with_ids* stamps the diary rowids (3, then 5) the way restore and
+        rebuild do — ``add_user_message`` leaves them off, so the default
+        history is the untracked shape a save that returned no rowid would
+        leave.  Two turns is the minimum that lets a keep-list *drop*
+        something, which is the only case that reaches a rebuild.
+        """
         conv = MessageHistory(system_prompt="SYS")
-        conv.add_user_message("old question")
-        conv.add_assistant_message("old reply")
+        for idx, text in enumerate(("old question", "older question")):
+            conv.add_user_message(text)
+            conv.add_assistant_message(f"reply {idx}")
+            if with_ids:
+                conv.messages[-2]["_turn_id"] = (3, 5)[idx]
         return conv
 
     @pytest.mark.asyncio
-    async def test_empty_recall_clears_the_context(self):
+    async def test_a_clear_empties_the_context(self):
+        """``"clear"`` — the explicit wipe.  Nothing else can do this now: it
+        is a decision in its own right, and it needs no store call to make."""
         conv = self._history()
+        persisted: list[list[int]] = []
+        cleared: list[bool] = []
+        asked: list[tuple] = []
+
+        async def recall(*a, **_k):
+            asked.append(a)
+            return []
+
+        async def save(ids):
+            persisted.append(list(ids))
+            return True
+
+        async def clear():
+            cleared.append(True)
+            return True
+
+        loop = self._loop(
+            reply='{"context": "clear"}', recall=recall, set=save, clear=clear,
+        )
+        assert await loop._recall_and_rebuild(conv, "new input") is True
+
+        assert [m["role"] for m in conv.messages] == ["system"], (
+            "the decision kept none of the turns in hand — the system prompt alone"
+        )
+        assert cleared == [True], "and the persisted list is emptied to match"
+        assert persisted == [], (
+            "set_context_turns refuses an empty list by design (it guards a "
+            "partial selection); the clear tool is the write for this case"
+        )
+        assert asked == [], "a clear asks the store for nothing"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_recall_adds_nothing_and_wipes_nothing(self):
+        """The hazard the union removes.
+
+        A query that matches no turn is a *recall that answers nothing*, not a
+        decision to run blind.  Under the overriding selection this emptied
+        the context — the turn then ran on the system prompt alone and
+        answered from nothing.
+        """
+        conv = self._history(with_ids=True)
+        before = [dict(m) for m in conv.messages]
         persisted: list[list[int]] = []
         cleared: list[bool] = []
 
@@ -300,15 +359,159 @@ class TestRecallRebuild:
             return True
 
         loop = self._loop(recall=recall, set=save, clear=clear)
+        assert await loop._recall_and_rebuild(conv, "new input") is False
+
+        assert conv.messages == before, "the turns in hand stand"
+        assert persisted == [] and cleared == [], (
+            "and the context is not even re-rendered — it already is what the "
+            "decision asked for, so a rebuild would only cost a store "
+            "round-trip, the live image blocks and a prompt-cache miss"
+        )
+
+    @staticmethod
+    def _rows_for(ids):
+        """A store row per requested id — the rebuild's fetch, stubbed.
+
+        Synthesized rather than a fixed pair so a test states the ids it
+        expects and the rows follow, including the turns it expected to be
+        dropped.
+        """
+        return [
+            {"rowid": i, "user_message": f"question {i}",
+             "messages": json.dumps([{"role": "assistant", "content": f"reply {i}"}]),
+             "created_at": "2026-09-01T10:00:00+08:00"}
+            for i in ids
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_keep_list_keeps_exactly_those(self):
+        """``{"context": [3]}`` — a part of the context, and nothing recalled."""
+        conv = self._history(with_ids=True)
+        persisted: list[list[int]] = []
+        asked: list[tuple] = []
+
+        async def recall(*a, **_k):
+            asked.append(a)
+            return []
+
+        async def turns_by_ids(ids):
+            return self._rows_for(ids)
+
+        async def save(ids):
+            persisted.append(list(ids))
+            return True
+
+        loop = self._loop(
+            reply='{"context": [3]}', recall=recall,
+            turns_by_ids=turns_by_ids, set=save,
+        )
         assert await loop._recall_and_rebuild(conv, "new input") is True
 
-        assert [m["role"] for m in conv.messages] == ["system"], (
-            "an empty selection is an empty context — the system prompt alone"
+        assert any(
+            "question 3" in str(m.get("content")) for m in conv.messages
+        ), "the turn it named is there"
+        assert not any(
+            "question 5" in str(m.get("content")) for m in conv.messages
+        ), "and the one it did not name is gone"
+        assert persisted == [[3]]
+        assert asked == [], "a keep-list with no recall asks the store for nothing"
+
+    @pytest.mark.asyncio
+    async def test_a_keep_list_that_drops_nothing_is_no_rebuild(self):
+        """The decision asks for exactly what is in hand — so nothing happens.
+
+        Claim (d) in the design, and it is not an optimisation: re-rendering
+        the same turns from the store would cost the turn's live image blocks
+        and the prompt-cache prefix to arrive at the identical list.
+        """
+        conv = self._history(with_ids=True)
+        before = [dict(m) for m in conv.messages]
+        asked: list[tuple] = []
+
+        async def recall(*a, **_k):
+            asked.append(a)
+            return []
+
+        loop = self._loop(reply='{"context": [3, 5]}', recall=recall)
+        assert await loop._recall_and_rebuild(conv, "new input") is False
+
+        assert conv.messages == before
+        assert asked == []
+
+    @pytest.mark.asyncio
+    async def test_keep_all_plus_recall_is_a_union(self):
+        """``{"recall": …}`` alone — *keep what is in hand and add to it*.
+
+        The decision the overriding selection could not express: the turns in
+        context stay, and the recalled ones join them in time order.
+        """
+        conv = self._history(with_ids=True)
+        persisted: list[list[int]] = []
+        seen: list[dict] = []
+
+        async def recall(query="", since=None, until=None, reserved_tokens=0):
+            seen.append({"since": since, "reserved_tokens": reserved_tokens})
+            return [7]
+
+        async def turns_by_ids(ids):
+            return self._rows_for(ids)
+
+        async def save(ids):
+            persisted.append(list(ids))
+            return True
+
+        loop = self._loop(recall=recall, turns_by_ids=turns_by_ids, set=save)
+        assert await loop._recall_and_rebuild(conv, "new input") is True
+
+        assert any(
+            "question 3" in str(m.get("content")) for m in conv.messages
+        ), "what the decision kept is still there"
+        assert any(
+            "question 5" in str(m.get("content")) for m in conv.messages
+        ), "all of it, not just the newest"
+        assert any(
+            "question 7" in str(m.get("content")) for m in conv.messages
+        ), "and what it recalled was added to it"
+        assert persisted == [[3, 5, 7]], "chronologically"
+        assert seen[0]["since"] == "yesterday", "the bound reaches the store"
+        assert seen[0]["reserved_tokens"] > 0, (
+            "and the recall is sized to the headroom the kept turns leave"
         )
-        assert cleared == [True], "and the persisted list is emptied to match"
-        assert persisted == [], (
-            "set_context_turns refuses an empty list by design (it guards a "
-            "partial selection); the clear tool is the write for this case"
+
+    @pytest.mark.asyncio
+    async def test_clear_plus_recall_persists_the_recall_alone(self):
+        """``{"context": "clear", "recall": …}`` — today's overriding
+        behaviour, now one decision among six rather than the only one."""
+        conv = self._history(with_ids=True)
+        persisted: list[list[int]] = []
+        seen: list[dict] = []
+
+        async def recall(query="", since=None, until=None, reserved_tokens=0):
+            seen.append({"reserved_tokens": reserved_tokens})
+            return [7]
+
+        async def turns_by_ids(ids):
+            return self._rows_for(ids)
+
+        async def save(ids):
+            persisted.append(list(ids))
+            return True
+
+        loop = self._loop(
+            reply='{"context": "clear", "recall": {"query": "x"}}',
+            recall=recall, turns_by_ids=turns_by_ids, set=save,
+        )
+        assert await loop._recall_and_rebuild(conv, "new input") is True
+
+        assert not any(
+            "question 3" in str(m.get("content")) for m in conv.messages
+        ), "the turns in hand were explicitly dropped"
+        assert any(
+            "question 7" in str(m.get("content")) for m in conv.messages
+        )
+        assert persisted == [[7]]
+        assert seen[0]["reserved_tokens"] == 0, (
+            "nothing is kept, so the recall may use the whole floor"
         )
 
     @pytest.mark.asyncio
@@ -364,11 +567,14 @@ class TestRecallRebuild:
         assert await loop._recall_and_rebuild(conv, "new input") is False
         assert conv.messages == before
         assert persisted == [] and cleared == [], (
-            "a selection that cannot be rendered is not an empty selection"
+            "turns that cannot be rendered are not an empty decision — the "
+            "context a rebuild could not build is the one it keeps"
         )
 
     @pytest.mark.asyncio
-    async def test_successful_recall_rebuilds_and_persists(self):
+    async def test_a_rebuild_preserves_the_system_prompt(self):
+        """`messages[0]` is copied, never re-rendered — the cached prefix has
+        to survive every rebuild."""
         conv = self._history()
         persisted: list[list[int]] = []
 
@@ -385,15 +591,11 @@ class TestRecallRebuild:
         loop = self._loop(recall=recall, turns_by_ids=turns_by_ids, set=save)
         assert await loop._recall_and_rebuild(conv, "new input") is True
 
-        # The context is now the selection, not the old history.
-        assert conv.messages[0]["role"] == "system", "the system prompt is preserved"
-        assert not any(
-            m.get("content") == "old question" for m in conv.messages
-        ), "the previous context was replaced, not merged"
+        assert conv.messages[0] == {"role": "system", "content": "SYS"}
         assert any(
             "recalled question" in str(m.get("content")) for m in conv.messages
         )
-        assert persisted == [[7]], "the selection is persisted for the next restart"
+        assert persisted == [[7]], "the rebuilt set is persisted for the next restart"
 
     @pytest.mark.asyncio
     async def test_disabled_flag_skips_recall_entirely(self):
@@ -417,10 +619,10 @@ class TestRecallDiscriminator:
     It is a *discriminator*: one call that decides what this turn needs, and
     nothing else.  It never writes to the history (so it can never become part
     of the conversation, the diary, the TUI, or the next request), and it
-    answers with recall parameters or nothing at all.
+    answers with a decision — what to keep, what to recall — or nothing at all.
     """
 
-    REPLY = '{"query": "首经贸 新闻", "since": null, "until": null}'
+    REPLY = '{"recall": {"query": "首经贸 新闻"}}'
 
     class _FakeLLM:
         def __init__(self, reply: str):
@@ -458,7 +660,10 @@ class TestRecallDiscriminator:
 
         args = await self._loop(llm)._discriminate_recall(conv, "查一下首经贸新闻")
 
-        assert args == {"query": "首经贸 新闻", "since": None, "until": None}
+        assert args == {
+            "keep": None,
+            "recall": {"query": "首经贸 新闻", "since": None, "until": None},
+        }
         assert conv.messages == before, (
             "the discriminator is not part of the conversation — it must not "
             "append the instruction or its own reply to the history"
@@ -470,8 +675,9 @@ class TestRecallDiscriminator:
         with the instruction in place of the user message.  The discriminator
         judges from the conversation in hand — a follow-up's query has to name
         the subject it refers to, and that subject is in the context, not in
-        the input.  Written from the input alone the query retrieved nothing,
-        and since a selection *replaces* the context, the turn ran blind."""
+        the input.  Written from the input alone the query matched nothing, so
+        the *recall* came back empty and the turn ran without the history it
+        needed."""
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("old question")
         conv.add_assistant_message("old reply")
@@ -485,10 +691,12 @@ class TestRecallDiscriminator:
         assert sent[1]["content"] == "old question", "the context is the decision's input"
         assert sent[2]["content"] == "old reply"
         assert "查一下首经贸新闻" in sent[3]["content"]
-        # The parameter surface is stated in the instruction itself
-        # (system_prompt.RECALL_PARAMS) — there is no LLM-facing tool schema to
-        # quote any more, and these three keys are the ones the loop whitelists
-        # out of the reply.
+        # The reply surface is stated in the instruction itself
+        # (system_prompt.RECALL_REPLY) — there is no LLM-facing tool schema to
+        # quote any more, and these are the two fields the loop whitelists out
+        # of the reply, with recall's own three keys nested inside.
+        assert "\"context\"" in sent[3]["content"]
+        assert "\"recall\"" in sent[3]["content"]
         assert "\"query\"" in sent[3]["content"]
         assert "\"since\"" in sent[3]["content"]
         assert "\"until\"" in sent[3]["content"]
@@ -545,7 +753,10 @@ class TestRecallDiscriminator:
 
         args = await loop._discriminate_recall(conv, "查一下首经贸新闻")
 
-        assert args == {"query": "首经贸 新闻", "since": None, "until": None}
+        assert args == {
+            "keep": None,
+            "recall": {"query": "首经贸 新闻", "since": None, "until": None},
+        }
         assert len(llm.sent) == 1
 
     @pytest.mark.asyncio
@@ -986,14 +1197,19 @@ class TestRecallNotNeeded:
         assert conv.messages == before, "the context it judged sufficient stands"
 
     @pytest.mark.asyncio
-    async def test_all_empty_parameters_read_as_no_recall(self):
-        """The schema's defaults serialized out loud — same meaning."""
+    async def test_an_empty_recall_reads_as_no_recall(self):
+        """The field's defaults serialized out loud — same meaning.
+
+        Nothing asked for *inside* ``recall`` is not a decision to recall
+        nothing; it is no decision, so the store is not even asked.  (A
+        *decision* to empty the context is ``"clear"``, and it says so.)
+        """
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("old question")
         before = [dict(m) for m in conv.messages]
 
         loop, asked, _ = self._loop(
-            '{"query": "", "since": null, "until": null}'
+            '{"recall": {"query": "", "since": null, "until": null}}'
         )
         assert await loop._recall_and_rebuild(conv, "new input") is False
 
@@ -1005,8 +1221,88 @@ class TestRecallNotNeeded:
         """A bound is a request: it goes to the store (time-only branch)."""
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("old question")
-        loop, asked, _ = self._loop('{"since": "yesterday"}')
+        loop, asked, _ = self._loop('{"recall": {"since": "yesterday"}}')
 
         await loop._recall_and_rebuild(conv, "new input")
 
         assert asked and asked[0][0][1] == "yesterday", "the bound reaches the store"
+
+
+class TestRecallReplyParsing:
+    """``_parse_recall_args`` — the only gate on what a model can inject.
+
+    The decision reaches the store and the context *directly*, bypassing the
+    registry's schema validation, so this parser is the whole of the defence.
+    It normalizes the reply's two fields to the two the caller composes with:
+    ``keep`` as ``None`` / ``[]`` / a list of ids, and ``recall`` as ``None``
+    or the three search keys.
+    """
+
+    @staticmethod
+    def _reply(text: str):
+        from slife.agent.loop import AgentLoop
+
+        return AgentLoop._parse_recall_args(text)
+
+    @pytest.mark.parametrize(
+        ("text", "keep", "recall"),
+        [
+            # the six decisions, as the prompt spells them
+            ("{}", None, None),
+            ('{"context": [3, 7]}', [3, 7], None),
+            ('{"context": "clear"}', [], None),
+            ('{"recall": {"since": "yesterday"}}', None, "yesterday"),
+            ('{"context": [3], "recall": {"query": "x"}}', [3], "x"),
+            ('{"context": "clear", "recall": {"query": "x"}}', [], "x"),
+            # "keep" is the omitted default, spelled out
+            ('{"context": "keep"}', None, None),
+            # an empty recall is not a decision to recall nothing
+            ('{"recall": {"query": "", "since": null, "until": null}}', None, None),
+            # a model's own caps are dropped, never honoured
+            ('{"recall": {"query": "x", "limit": 999}}', None, "x"),
+            # ids are de-duplicated; order is the caller's to sort
+            ('{"context": [5, 5, 3]}', [5, 3], None),
+            # prose and fences around the object are tolerated
+            ('Sure:\n```json\n{"context": [12]}\n```', [12], None),
+        ],
+    )
+    def test_the_six_decisions_and_their_spellings(self, text, keep, recall):
+        parsed = self._reply(text)
+
+        assert parsed is not None, text
+        assert parsed["keep"] == keep, text
+        got = parsed["recall"]
+        if recall is None:
+            assert got is None, text
+        else:
+            assert recall in json.dumps(got), text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "not json at all",
+            "",
+            '{"context": "nonsense"}',      # neither clear, keep, nor a list
+            '{"context": ["a"]}',           # ids that are not ids
+            '{"context": true}',            # a bool is not a list of ids
+            '{"context": 3}',               # a bare id is not a list
+            '{"recall": "x"}',              # not an object
+            '{"recall": {"query": 5}}',     # not a string
+            '{"context": 3, "recall": {"since": "today"}}',
+            # A key the reply does not document, at the level the *decision*
+            # lives.  Read as a stray and dropped, this one would honour
+            # `"clear"` — a context wiped, with the recall the model actually
+            # asked for silently gone.
+            '{"context": "clear", "query": "上次那个设计取舍"}',
+            '{"reason": "the older turns are stale", "context": [3]}',
+        ],
+    )
+    def test_a_malformed_reply_is_unusable_rather_than_half_read(self, text):
+        """A wrong type *inside* a field makes the whole reply unusable.
+
+        Dropping the bad half would silently act on the other: a dropped
+        ``context`` leaves a context the model asked to clear, and a dropped
+        ``recall`` answers a turn that asked for history out of what happens
+        to be in hand.  ``None`` keeps the context instead — the safe failure.
+        """
+        assert self._reply(text) is None, text

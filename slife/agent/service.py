@@ -2485,15 +2485,22 @@ class AgentService:
 
         Called after a successful ``__memory_save_turn`` so the rowid is
         known: the next LLM call sees ``[INFO: {"turn_id": N, …}]`` and can
-        reference the turn precisely.  Heartbeat turns are skipped (their
-        user message is a synthetic trigger).  Purely additive and
-        best-effort — a failure leaves the message unannotated.
+        reference the turn precisely.  Purely additive and best-effort — a
+        failure leaves the message unannotated.
+
+        **Every** saved turn is annotated, autonomous ones included (the
+        heartbeat / schedule / timer note here is the one thing that changed):
+        the footnote is what makes a turn *addressable*, and the per-turn
+        recall's keep-list addresses turns by exactly this id.  Leaving the
+        synthetic turns unannotated meant a keep-list silently dropped them —
+        including scheduled turns that did real work — with nothing in the
+        conversation to say why.
 
         The **structural** id (``_turn_id``) is separate from that footnote
-        and is set on every saved turn, autonomous ones included: the loop
-        maps in-context turns back to diary rows with it, so the trim can
-        hand the store the real ids to drop.  It is runtime-only and stripped
-        before the turn is persisted.
+        and is set on every saved turn too: the loop maps in-context turns
+        back to diary rows with it, so the trim can hand the store the real
+        ids to drop.  It is runtime-only and stripped before the turn is
+        persisted; the footnote is not — it rides the stored user message.
         """
         if rowid is None:
             return
@@ -2501,21 +2508,6 @@ class AgentService:
         if not (0 <= user_idx < len(msgs)) or msgs[user_idx].get("role") != "user":
             return
         msgs[user_idx]["_turn_id"] = rowid
-
-        from slife.agent.schedules import is_autonomous_trigger
-
-        content = msgs[user_idx].get("content", "")
-        if isinstance(content, str):
-            if is_autonomous_trigger(content):
-                return
-        elif isinstance(content, list):
-            joined = "".join(
-                p.get("text", "") for p in content if p.get("type") == "text"
-            )
-            if is_autonomous_trigger(joined):
-                return
-        else:
-            return
 
         def _iso(value) -> str:
             if isinstance(value, datetime):
@@ -2529,12 +2521,15 @@ class AgentService:
         })
         if not header:
             return
+        content = msgs[user_idx].get("content", "")
         if isinstance(content, str):
-            msgs[user_idx]["content"] = content + " " + header
-        else:
+            msgs[user_idx]["content"] = f"{content} {header}".strip()
+        elif isinstance(content, list):
             msgs[user_idx]["content"] = list(content) + [
                 {"type": "text", "text": " " + header}
             ]
+        else:
+            return
 
     async def get_exit_context_turns(self) -> list[dict]:
         """Load the exit-time context's turns for restore. Returns [] if none.
@@ -2654,15 +2649,21 @@ class AgentService:
 
     async def recall_turns(
         self, query: str = "", since: str | None = None,
-        until: str | None = None,
+        until: str | None = None, reserved_tokens: int = 0,
     ) -> list[int] | None:
-        """Recall the turn ids that should form the next turn's context.
+        """Recall the turn ids this turn should **add** to its context.
 
         The selector is the memory plugin's internal tool, so this is the
         harness asking its own store — the model has ``turn_search`` and
         ``turn_list`` for its own reading, and neither touches the context.
         The rebuild needs only the ids, and fetches the turns themselves with
         :meth:`turns_by_ids`.
+
+        *reserved_tokens* is what the turns being kept already spend: the
+        recalled set is sized to the headroom *below* the context floor, so a
+        kept context cannot push the turn over the window before it starts.
+        It is derived from the config and the decision's own base — never a
+        model's number — so recall's caps stay recall's configuration.
 
         ``None`` means the store could not be asked — memdb is off, the
         channel is unreachable, the store reported a failure, or the payload
@@ -2671,14 +2672,15 @@ class AgentService:
         context would be a guess.
 
         ``[]`` is an *answer*, not a failure: the store was asked and no turn
-        qualified.  The caller honours it — the selection overrides, and an
-        empty selection is an empty context.
+        qualified.  The caller adds it to what it keeps, which is to say it
+        adds nothing.
         """
         if not self.memdb_enabled:
             return None
         payload = await self._call_context_tool_payload(
             "__memory_turn_recall",
-            {"query": query, "since": since, "until": until},
+            {"query": query, "since": since, "until": until,
+             "reserved_tokens": reserved_tokens},
         )
         if not payload or payload.get("error"):
             return None

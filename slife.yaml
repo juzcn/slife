@@ -24,8 +24,9 @@ agent:
   # turn just finished is never dropped.  0.8 / 0.2 = trim at 80%, to 20%.
   context_floor: 0.2
   context_ceiling: 0.8
-  # Rebuild the context from a recall selection before every turn.
-  # true  — recall selects the context before every turn.
+  # Rebuild the context before every turn, from a per-turn decision.
+  # true  — before each turn the agent decides what to keep of its context and
+  #         what to recall from memory; the turn runs on the two together.
   # false — the context grows append-only.
   # Either way the internal trim bounds the window at context_ceiling /
   # context_floor.  The two modes are compatible — both maintain the same
@@ -33,9 +34,10 @@ agent:
   # flipped freely.
   rebuild_message: true
   # Recall caps (rebuild mode only).
-  # Cosine similarity a semantic hit must reach to enter the context; the
-  # budget is context_floor (the same knob the trim compacts to), so flipping
-  # rebuild_message changes how the context is chosen, never how big it is.
+  # Cosine similarity a semantic hit must reach to enter the context.  The
+  # token budget is context_floor — the same knob the trim compacts to — and
+  # what the turn *keeps* comes off the headroom below context_ceiling, so
+  # kept + recalled together stay under the bound the trim enforces.
   # The similarity scale belongs to the embedding model, so this value is
   # measured against the one in the embeddings section below (bge-m3:
   # relevant turns 0.46-0.55, irrelevant <=0.45), not carried over from

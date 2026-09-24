@@ -59,11 +59,14 @@ def is_schedule_trigger(text: str) -> bool:
 def is_autonomous_trigger(text: str) -> bool:
     """True when *text* is a synthetic non-user trigger: a heartbeat
     (autonomous) or a schedule trigger (scheduler-driven).  Used to filter
-    these turns from the TUI and to skip turn-footnote annotation.
+    these turns from the TUI — they show as the ⚡ / 📅 turn-end line, not as
+    a user bubble.
 
-    Covers both trigger families for the *suppression* they share (hide the
-    synthetic user message, skip the turn footnote); distinguishing them for
-    *rendering* (⚡ 自主 vs 📅 定时) uses :func:`is_schedule_trigger`."""
+    It deliberately no longer means "skip the turn footnote": the ``[INFO:
+    …]`` footnote is what makes a turn **addressable** to the per-turn
+    recall's keep-list, so every turn in context carries one.  Distinguishing
+    the families for *rendering* (⚡ 自主 vs 📅 定时) uses
+    :func:`is_schedule_trigger`."""
     from slife.agent.heartbeat import HEARTBEAT_MARK
     from slife.agent.timer import TIMER_MARK
 
