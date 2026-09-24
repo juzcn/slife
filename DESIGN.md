@@ -159,15 +159,16 @@ message posted to the inbox
   roles** (a history ending on `user`/`tool` gets a closing assistant message). Two call sites only:
   `save_to_memory` and `restore_session`.
 - **Why a turn stopped early** rides that closing assistant line, standardized as
-  `(Turn interrupted, reason: esc)`. The reason is a short token, never provider text — the line
-  lands in the model's context *and* in the diary, so the provider's message is never copied into
-  it. Each layer labels what only it knows: the loop puts its own terminal state on `AgentResult`
-  (`esc`, `max_iterations`), the inbox labels the failure it caught (`error (400
-  invalid_request_error)` — HTTP status and the provider's code when the SDK exposes them, else the
-  exception's class name one hop down its cause chain), and the save point forwards whatever it
-  received into the repair. A repair on **load** has no reason to give — the process that knew it is
-  gone — and reads `---`. A content-filter reject produces no closing line at all, because that
-  turn is rolled back rather than saved.
+  `(Turn interrupted, reason: esc)`. Each layer labels what only it knows: the loop puts its own
+  terminal state on `AgentResult` (`esc`, `max_iterations`), the inbox labels the failure it caught
+  (`error (400 invalid_request_error: model not found)` — HTTP status and the provider's code when
+  the SDK exposes them, else the exception's class name one hop down its cause chain, then the
+  message), and the save point forwards whatever it received into the repair. That label is short
+  by construction: the message passes the same secret mask as any user text, is collapsed to one
+  line, and is bounded — the line stays in the model's context *and* in the diary for the rest of
+  the session, so neither secrets nor a provider's whole JSON body may ride it. A repair on **load**
+  has no reason to give — the process that knew it is gone — and reads `---`. A content-filter
+  reject produces no closing line at all, because that turn is rolled back rather than saved.
 - **The one rollback.** `pop_last_turn()` removes the last user message and everything after it. It
   is called from exactly one place — the inbox, on a **content filter** reject — and suppresses the
   save. Everything else keeps the turn and saves it: a malformed *request* (a part the provider would

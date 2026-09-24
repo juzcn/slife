@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from slife.a2a.identity import AgentName, AgentMessage
@@ -49,25 +50,46 @@ def _is_bad_request(exc: BaseException) -> bool:
     return type(exc).__name__ == "ContentFilterFinishReasonError"
 
 
-def _error_reason(exc: BaseException) -> str:
-    """``error (400 invalid_request_error)`` — the stop token for a dead turn.
+#: Bound on the reason label.  It rides the closing assistant line, which
+#: stays in the context for every later turn — a provider answering with a
+#: whole JSON body must not be able to grow the history by it.
+_MAX_REASON_CHARS = 200
 
-    Structured fields only: the HTTP status and the provider's error code when
-    the SDK exposes them (the same two fields the classifiers above read),
-    else a class name — one hop down the cause chain first, so the retry
-    ladder's wrapper reports the transport failure it wrapped
+#: The SDKs' own prefix on a provider message ("Error code: 429 - …").
+_ERROR_CODE_PREFIX = re.compile(r"^Error code:\s*\d+\s*-\s*")
+
+
+def _error_reason(exc: BaseException) -> str:
+    """``error (400 invalid_request_error: model not found)`` — the stop token
+    for a turn that died.
+
+    Structured fields first: the HTTP status and the provider's error code
+    when the SDK exposes them (the same two fields the classifiers above
+    read), else a class name — one hop down the cause chain first, so the
+    retry ladder's wrapper reports the transport failure it wrapped
     (``RemoteProtocolError``) rather than its own generic ``RuntimeError``.
+
+    Then the **message**, which is usually the actionable part (``context
+    length exceeded``, ``model not found``) — the body's own message when the
+    SDK exposes one, else the rendered exception.  It is not copied raw: it
+    goes through :func:`sanitize_secrets` — the same gate every user message
+    and tool argument passes, because this line also lands in the diary —
+    collapsed to one line, and bounded by :data:`_MAX_REASON_CHARS`.
 
     A **content-filter** reject is not among the failures this can label: that
     turn is rolled back and never saved (:func:`_is_content_filter`), so no
     closing line is written for it at all.
-
-    The provider's *message* never rides along: this token lands in the LLM's
-    context and in the diary, and error text can echo the request (keys
-    included).  The code itself is scrubbed and bounded for the same reason —
-    it comes off the wire.
     """
     from slife.logfmt import sanitize_secrets
+
+    # The SDK's own error object, when it has one: both the code and the
+    # message live here.  ``body`` is either the error object or a wrapper
+    # carrying it under ``error`` (anthropic wraps, openai does not).
+    body = getattr(exc, "body", None)
+    err: dict = {}
+    if isinstance(body, dict):
+        inner = body.get("error")
+        err = inner if isinstance(inner, dict) else body
 
     parts: list[str] = []
     status = getattr(exc, "status_code", None)
@@ -75,19 +97,37 @@ def _error_reason(exc: BaseException) -> str:
         parts.append(str(status))
     code = getattr(exc, "code", None)
     if not isinstance(code, str) or not code:
-        body = getattr(exc, "body", None)
-        if isinstance(body, dict):
-            err = body.get("error")
-            err = err if isinstance(err, dict) else body
-            raw = err.get("code") or err.get("type")
-            code = raw if isinstance(raw, str) else ""
+        raw = err.get("code") or err.get("type")
+        code = raw if isinstance(raw, str) else ""
     if code:
         parts.append(code)
     if not parts:
         cause = exc.__cause__ or exc.__context__
         parts.append(type(cause).__name__ if cause is not None else type(exc).__name__)
-    labelled = sanitize_secrets(" ".join(parts))[:60]
-    return f"error ({' '.join(labelled.split())})"
+
+    # The body's own message first: an SDK renders the whole body into
+    # ``str(exc)`` ("Error code: 429 - {'message': …, 'type': …}"), which
+    # repeats the code and spends the bound on JSON punctuation.
+    message = err.get("message")
+    if not (isinstance(message, str) and message):
+        message = str(exc) or str(exc.__cause__ or "")
+    if isinstance(status, int):
+        # The SDKs wrap the provider's message in their own "Error code: 429 -
+        # …" line.  The status leads the label already, so strip it — but only
+        # when it IS shown: without a status the prefix is the only code.
+        message = _ERROR_CODE_PREFIX.sub("", message)
+
+    # Scrub the pieces SEPARATELY: the mask matches ``key: value`` pairs, so
+    # sanitizing the assembled label would read our own separator as one — a
+    # code like ``invalid_api_key`` would mask the first word of the message
+    # ("invalid_api_key: Incorrect…" → "<MASKED>…").
+    label = sanitize_secrets(" ".join(parts))
+    if message:
+        label = f"{label}: {sanitize_secrets(message)}"
+    label = " ".join(label.split())
+    if len(label) > _MAX_REASON_CHARS:
+        label = label[:_MAX_REASON_CHARS].rstrip() + "…"
+    return f"error ({label})"
 
 
 #: Substrings that mark a rejection as a **content filter** rather than a

@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from slife.a2a.identity import AgentName, AgentMessage, HUMAN, WECHAT
-from slife.agent.inbox import MessageHistoryStore, _error_reason
+from slife.agent.inbox import (
+    MessageHistoryStore, _MAX_REASON_CHARS, _error_reason,
+)
 
 
 # ── MessageHistoryStore ───────────────────────────────────────────────────
@@ -236,50 +238,99 @@ class TestInboxCancelCorrelation:
 
 
 class TestErrorReason:
-    """Structured fields only: status and/or the provider's code, else a
-    class name.  The provider's message never rides along — this token lands
-    in the LLM's context and in the diary."""
+    """Structured fields first (status / the provider's code / a class name),
+    then the message — scrubbed, one line, bounded.
 
-    def test_status_and_code(self):
+    The line lands in the LLM's context and in the diary, so it must not be
+    able to carry secrets out or grow the history."""
+
+    def test_status_code_and_message(self):
         class Rejected(ValueError):
             status_code = 400
             code = "invalid_request_error"
 
-        assert _error_reason(Rejected("sk-abc123 leaked here")) == (
-            "error (400 invalid_request_error)"
+        assert _error_reason(Rejected("model not found")) == (
+            "error (400 invalid_request_error: model not found)"
         )
 
-    def test_status_only(self):
+    def test_status_only_when_there_is_no_message(self):
         class Unauthorized(ValueError):
             status_code = 401
 
-        assert _error_reason(Unauthorized("bad key sk-xyz")) == "error (401)"
+            def __str__(self) -> str:
+                return ""
+
+        assert _error_reason(Unauthorized()) == "error (401)"
 
     def test_code_read_off_the_body_when_the_sdk_exposes_no_attribute(self):
         class Rejected(ValueError):
             body = {"error": {"type": "rate_limit_exceeded"}}
 
         assert _error_reason(Rejected("slow down")) == (
-            "error (rate_limit_exceeded)"
+            "error (rate_limit_exceeded: slow down)"
         )
 
     def test_class_name_of_the_cause_when_nothing_structured(self):
         """The retry ladder wraps a transport failure — report the real one,
         not the generic wrapper the ladder raised."""
-        wrapped = RuntimeError("LLM stream failed after 3 attempts")
+        wrapped = RuntimeError("LLM stream failed after 3 attempts: reset by peer")
         wrapped.__cause__ = ValueError("transport")
-        assert _error_reason(wrapped) == "error (ValueError)"
+        assert _error_reason(wrapped) == (
+            "error (ValueError: LLM stream failed after 3 attempts: reset by peer)"
+        )
 
     def test_own_class_name_without_a_cause(self):
-        assert _error_reason(RuntimeError("x")) == "error (RuntimeError)"
+        assert _error_reason(RuntimeError("boom")) == "error (RuntimeError: boom)"
 
-    def test_message_and_newlines_never_ride_along(self):
-        class Boom(RuntimeError):
+    def test_body_message_wins_over_the_rendered_body(self):
+        """An SDK renders its whole body into ``str(exc)`` — the line must
+        not repeat the code and spend its bound on JSON punctuation."""
+        class Rejected(ValueError):
+            status_code = 429
+            body = {"error": {"type": "rate_limit_error",
+                              "message": "Rate limit reached for gpt-4"}}
+
+            def __str__(self) -> str:
+                return ("Error code: 429 - {'message': 'Rate limit reached for "
+                        "gpt-4', 'type': 'rate_limit_error'}")
+
+        assert _error_reason(Rejected()) == (
+            "error (429 rate_limit_error: Rate limit reached for gpt-4)"
+        )
+
+    def test_the_sdks_own_prefix_is_not_repeated_with_the_status(self):
+        class Unauthorized(ValueError):
+            status_code = 401
+            code = "invalid_api_key"
+
+        assert _error_reason(Unauthorized("Error code: 401 - Incorrect API key")) == (
+            "error (401 invalid_api_key: Incorrect API key)"
+        )
+
+    def test_the_prefix_stays_when_it_is_the_only_code(self):
+        # No status on the exception → the SDK's prefix is the only place the
+        # code appears, so it is kept.
+        assert _error_reason(RuntimeError("Error code: 429 - nope")) == (
+            "error (RuntimeError: Error code: 429 - nope)"
+        )
+
+    def test_secrets_in_the_message_are_masked(self):
+        class Leaky(RuntimeError):
             status_code = 500
 
-        out = _error_reason(Boom("line one\nline two sk-verysecret123456"))
+        # A realistic key shape (the mask is prefix + length based, the same
+        # gate a user message passes — no generic heuristics).
+        out = _error_reason(Leaky("upstream said sk-abc123def456ghi789jkl012"))
+        assert "sk-abc123def456ghi789jkl012" not in out
+        assert out.startswith("error (500:")
+
+    def test_collapsed_to_one_line_and_bounded(self):
+        class Flood(RuntimeError):
+            status_code = 500
+
+        out = _error_reason(Flood("line one\nline two " + "x" * 500))
         assert "\n" not in out
-        assert "sk-verysecret" not in out
+        assert len(out) <= _MAX_REASON_CHARS + 10
 
 
 # ── Inbox — drop_queued (the unambiguous half of cancellation) ──────────

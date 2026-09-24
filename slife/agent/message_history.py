@@ -513,11 +513,13 @@ def _unwrap_with_footnote(text: str) -> tuple[str, tuple[int, int] | None]:
 #:   ``parent``            a worker's parent cancelled the task it was running
 #:   ``shutdown``          the app is quitting — the process is being torn down
 #:   ``max_iterations``    the configured iteration cap was hit
-#:   ``error (400 invalid_request_error)``  the turn died on an exception —
-#:                         the HTTP status and the provider's error code when
-#:                         the SDK exposes them, else the exception's class
-#:                         name (``inbox._error_reason``).  Never the message.
-#:                         A content-filter reject never reaches this line:
+#:   ``error (400 invalid_request_error: model not found)``  the turn died on
+#:                         an exception — the HTTP status and the provider's
+#:                         error code when the SDK exposes them, else the
+#:                         exception's class name, then the message (scrubbed
+#:                         by the same gate as any user text, one line,
+#:                         bounded — ``inbox._error_reason``).  A
+#:                         content-filter reject never reaches this line:
 #:                         that turn is rolled back, not saved.
 #:
 #: No caller passes one yet — the repair knows only *that* the turn ended
@@ -528,7 +530,12 @@ _REASON_NOT_RECORDED = "---"
 
 
 def interrupted_note(stop_reason: str = "") -> str:
-    """The standardized closing line for a turn that ended early."""
+    """The standardized closing line for a turn that ended early.
+
+    Only *why* it stopped — no advice.  The reader is the model itself: a 429
+    or an ``esc`` already carries what to do next, and this line stays in the
+    context for the rest of the session, so anything it can derive is ballast.
+    """
     return f"(Turn interrupted, reason: {stop_reason or _REASON_NOT_RECORDED})"
 
 
