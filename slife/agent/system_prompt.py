@@ -146,9 +146,6 @@ def _render_context(config: Config) -> dict:
         "python_cmd": sys.executable,
         "python_version": sys.version.split()[0],
         "package_manager": "uv",
-        # ── 上下文窗口策略 ──
-        "context_floor": int(config.context_floor * 100),
-        "context_ceiling": int(config.context_ceiling * 100),
         # ── 图像与多模态 ──
         "has_vision": model.supports_vision,
         # ── 工具与技能 ──

@@ -63,10 +63,9 @@ class TestBuild:
         result = build(cfg)
         assert "You are Agent testbot" in result
 
-    def test_context_window_strategy(self, cfg):
+    def test_trim_notice_and_turn_memory_documented(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "20%" in result and "80%" in result  # floor/ceiling defaults
         assert "_sys_trim" not in result  # trim is now internal (note, not tool)
         assert "oldest turns have been removed from context" in result
         assert '[INFO: {"turn_id"' in result  # the turn footnote is documented

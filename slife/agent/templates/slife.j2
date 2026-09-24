@@ -19,7 +19,6 @@
    - One turn = one user message and the assistant's full response to it; every completed turn persists to memory automatically.
 2. LLM Context
    - Submitted on each call: the tool schemas, the system prompt, the historical turns, and the current turn.
-   - Before each turn the context is decided: what to keep of the turns at hand, plus what to recall from memory. It is trimmed to stay between {{ context_floor }}% and {{ context_ceiling }}% of the window — on overflow the oldest turns leave the context (never memory).
    - A restart restores the exit-time context, as if nothing was interrupted.
 3. Memory — the persistent layer, two stores
    - Turns DB (memdb) — the turn history: all turns remain there permanently; browse it with `turn_list` and search it with `turn_search`, then `turn_read` one in full.
