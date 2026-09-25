@@ -93,7 +93,7 @@ the live tool registry over MCP ("slife-as-plugin"), which is how a subagent rea
 | **Channel** | The sender identity of an inbox message: `human`, `wechat`, `subagent`, `heartbeat`, `system`, or an A2A peer name. Persisted with the turn; by default not part of the LLM context. |
 | **Marker** | Machine-generated notation inside a raw message (`[Heartbeat]`, `[Schedule …]`, `[A2A:…]`, `[INFO: …]`) telling the model or the TUI what the text alone does not say. |
 | **Recall** | The per-turn selection of history turns that becomes the context. Not an LLM tool — the harness calls it before each turn. |
-| **Harness tool** | A `_`-prefixed, LLM-visible-but-reserved tool the loop auto-invokes: `_turn_prompt`, `_check_new_input`. |
+| **Harness tool** | An LLM-visible but reserved tool the loop **auto-invokes** rather than the model choosing it: `_turn_prompt`, `_check_new_input`, `attach_image`. The `_` prefix marks the reserved pair; `attach_image` is unprefixed because it is also a tool the model calls on its own. |
 | **Internal tool** | A `__`-prefixed plugin tool serving the main process, filtered out of the schema before registration. |
 | **Plugin** | A child process declared by one row in the central plugin spec, speaking MCP over Streamable HTTP. |
 | **Worker** | A subagent: a child process running the same loop with a declared, zeroed capability set. |
@@ -153,13 +153,12 @@ message posted to the inbox
   secrets **at storage time**, and a failed async task surfaces with the `Error:` prefix — the same
   contract as a synchronous call. Results are pruned past a bound, so a very old poll can answer
   "Task not found".
-- **Turn consistency.** `MessageHistory._ensure_turn_consistent()` enforces two idempotent
-  invariants before a history is persisted and again on load: **no orphaned tool_calls** (an
-  interrupted turn's call gets a synthetic `(Tool execution interrupted)` result) and **alternating
-  roles** (a history ending on `user`/`tool` gets a closing assistant message). Three call sites:
-  `save_to_memory`, `restore_session`, and `from_history` — which builds a subagent's clone from a
-  snapshot taken *mid-turn* (§6.2), where an orphaned `tool_calls` is guaranteed rather than
-  accidental.
+- **Turn consistency.** Two idempotent invariants are enforced before a history is persisted and
+  again on load: **no orphaned tool_calls** (an interrupted turn's call gets a synthetic
+  `(Tool execution interrupted)` result) and **alternating roles** (a history ending on
+  `user`/`tool` gets a closing assistant message). The save, the restore and a subagent's clone all
+  pass through the same repair — the clone needs it *guaranteed* rather than accidental, because its
+  snapshot ends on a `tool_calls` whose results do not exist yet (§6.2).
 - **Why a turn stopped early** rides that closing assistant line, standardized as
   `(Turn interrupted, reason: esc)`. Each layer labels what only it knows: the loop puts its own
   terminal state on `AgentResult` (`esc`, `max_iterations`), the inbox labels the failure it caught
@@ -171,15 +170,15 @@ message posted to the inbox
   the session, so neither secrets nor a provider's whole JSON body may ride it. A repair on **load**
   has no reason to give — the process that knew it is gone — and reads `---`. A content-filter
   reject produces no closing line at all, because that turn is rolled back rather than saved.
-- **The one rollback.** `pop_last_turn()` removes the last user message and everything after it. It
-  is called from exactly one place — the inbox, on a **content filter** reject — and suppresses the
+- **The one rollback.** One operation removes the last user message and everything after it. It is
+  called from exactly one place — the inbox, on a **content filter** reject — and suppresses the
   save. Everything else keeps the turn and saves it: a malformed *request* (a part the provider would
   not read, an image it could not fetch) is not a bad history, and transient failures (5xx, rate
   limits, timeouts, 401/403) are not even about the payload. Filtered content is recognised by name
   rather than by status code — providers spell it differently (OpenAI/Azure `content_filter`,
   DashScope/Qwen `data_inspection_failed`, Anthropic only in the message text).
-- **A rejected request still costs its attachments.** Any 400 drops the injected image blocks —
-  `MessageHistory.strip_images()`, which is the only place a block lives. A block is session-only
+- **A rejected request still costs its attachments.** Any 400 drops the injected image blocks — the
+  one place in a turn where they are removed. A block is session-only
   (there is no column), so it would otherwise ride every later request and be rejected there: one
   failed attach turned into a session that dropped every turn, from every source, until a restart. A
   rejected attachment is not kept. The TUI says the attachments were removed, so the model is not
@@ -260,8 +259,8 @@ no migration. What the flag never changes is the ceiling.
 **The discriminator.** `_discriminate_recall` makes exactly one model call per turn. It is not in the
 conversation and nothing it says is ever shown.
 
-- **Sent**: the agent's **current context** — the live messages, system prompt included, with
-  `rebuild_messages.j2` in place of the user message. That is the design note's shape
+- **Sent**: the agent's **current context** — the live messages, system prompt included, with a
+  placeholder standing in for the user message. That is the design note's shape
   ("判别器用当前上下文，user message 替换为 …"), and it is load-bearing twice over: the turn being
   recalled is usually a follow-up, and a follow-up names its subject only through the conversation
   in hand ("人工智能学院是什么时候成立的" after three turns about 首经贸) — a query written from the
@@ -273,24 +272,12 @@ conversation and nothing it says is ever shown.
   what to recall, with the turn running on the two together), the current input, how the query is
   matched (against stored turns — their user messages, the tools they called, their answers), one
   rule — *name what the turn needs, in the words a stored turn would contain* — and the reply
-  surface itself (`system_prompt.RECALL_REPLY`), stated once in the agent. It cannot be read off a
-  tool: the selector is an **internal** tool the model never sees, so there is no LLM-facing schema
+  surface itself, stated once in the agent. It cannot be read off a tool: the selector is an
+  **internal** tool the model never sees, so there is no LLM-facing schema
   to quote. The loop is the only caller and its parser reads exactly these two fields, which is what
   keeps the two ends of this contract in step. When the store cannot be reached at all there is no
   call either — the availability check is the gate, so a turn is never spent asking a model to
   decide a recall that cannot run.
-
-  The rule is carried by **one worked case per decision** — numbered 1–6, so the instruction's order
-  *is* the enumeration and no mode has to be described in prose — each written as the reply itself,
-  the JSON object the field list asks for, rather than as a shorthand for it. The three recall
-  shapes ride three of them (a bare period at 4, a query at 5, a topic within a period at 6), so all
-  six decisions and all three modes are shown without a case repeating another. A seventh case
-  carries the one composition rule a worked case is uniquely able to teach: the follow-up whose
-  subject came three turns earlier (`那人工智能学院呢？` → `{"recall": {"query": "首经贸 人工智能学院
-  成立"}}`). Every bound in them is in `timeutil.BOUND_GRAMMAR` — an unparseable bound is answered
-  as *no ids*, which no longer wipes the context but is still a wasted turn — and
-  `test_every_worked_case_is_a_reply_the_loop_accepts` runs each example through the loop's own
-  parser, so a case cannot drift from the spelling the parser accepts.
 
   Decision 5 covers the case the bare keep-all cannot: a turn the context has dropped is invisible
   from the context itself, so "the turns in hand are enough" reads as correct while the referent is
@@ -359,16 +346,15 @@ silently dropped them — including scheduled turns that did real work — with 
 conversation to say why.
 
 **The floor is calibrated, not chosen.** A cosine scale belongs to the pair that produces it — the
-embedding model *and* the text the index holds — so `recall_min_similarity` is a measured number, and
-it must be re-measured when either changes. It matters more than a tuning knob usually would because
-the recalled set joins the context rather than replacing it: a floor below the noise band does not
-degrade gracefully, it adds an arbitrary turn as though it had been matched, and the union then
-carries it. The value in the config was measured on a recorded session — every relevant turn at
-0.46–0.55, every irrelevant one at ≤0.45, and a query no turn answered topping out at 0.33, selecting
-nothing.
+embedding model *and* the text the index holds — so `recall_min_similarity` is a measured number,
+re-measured when either changes; the value in the config came from a recorded session, where every
+relevant turn scored 0.46–0.55 and every irrelevant one ≤0.45, and a query no turn answered topped out
+at 0.33 and selected nothing. Getting it wrong costs more than a mistuned knob would, because the
+recalled set *joins* the context: a floor below the noise band does not degrade gracefully, it adds an
+arbitrary turn as though it had been matched, and the union then carries it.
 
 The semantic leg's scale depends on what the index holds, which is not the raw turn: see §7.2 for
-what `_turn_text_for_embedding` embeds and why tool *results* are absent from it.
+what the embedded text is, and why tool *results* are absent from it.
 
 **Order is chronological even though membership is by relevance**, because the list order is the
 restore contract: a rebuilt turn must render byte-identically to the same turn restored. Both paths
@@ -420,9 +406,12 @@ The prompt splits **identity** from **world** so each role reads one coherent do
   subagents, and A2A info when configured. **Byte-identical in both roles.**
 - **Dynamic** — `turn_prompt.j2`, rendered by the `_turn_prompt` tool once per turn (§2.5).
 
-Identity + world are rendered once at startup and never change, so the static prefix of every request
-stays byte-identical and the prompt-cache breakpoint lands on it. That is the whole reason the
-per-turn status is a **message-stream tool pair** rather than a second system message.
+Identity + world change only on a model switch or an `add_user_pref` write, and **always from the
+role's own identity template** — the grant decides which — because re-rendering the main agent's
+identity for a worker replaced its framing for every later task in that process. Between those two
+events the static prefix of every request stays byte-identical and the prompt-cache breakpoint lands
+on it. That is the whole reason the per-turn status is a **message-stream tool pair** rather than a
+second system message.
 
 Two derived rules: the world spec carries **project-specific facts only** — anything the model can
 infer from tool schemas or training data does not belong; and the prompt **forbids nothing by list**.
@@ -435,7 +424,7 @@ Three orthogonal notions describe how Slife introduces information on its own in
 **channel** (the sender identity of an inbox message — recoverable from the message alone, persisted
 with the turn, by default **not** part of the LLM context), a **marker** (machine-generated notation
 inside a raw message, telling the model or the TUI what the text alone does not say), and a **harness
-tool-pair** (a reserved `_`-prefixed tool the loop auto-invokes, contributing an assistant
+tool-pair** (a harness tool the loop auto-invokes — §1's Vocabulary — contributing an assistant
 `tool_call` plus its result to the history).
 
 **A marker never determines a channel and a channel never forces a marker.** A scheduled task is the
@@ -521,25 +510,18 @@ must survive a restart is a scheduled task.
 ### 2.7 Roles — the main agent and the worker
 
 Both roles run the **identical** `AgentLoop`. What differs is the harness around it, and that
-difference is **declared once**, as capabilities in `slife/agent/roles.py`:
-
-```python
-MAIN   = Caps()                                    # the full harness
-WORKER = Caps(**dict.fromkeys(ALL_CAPS, False))    # granted none of it
-```
-
-A capability is a *grant*: the process either owns the resource (the tool catalog's rows, its vector
-index, the plugin child processes, the host MCP face, the heartbeat, the scheduler, the mesh inbox
-drain) or holds the policy (turn persistence, the per-turn recall/rebuild, the stream-retry ladder,
-the startup gate, mid-turn cut-in). The main agent holds all of them; a worker holds none.
+difference is **declared once**, as a table of capabilities in `slife/agent/roles.py`: one field per
+resource or policy, read through a single accessor for the role. A capability is a *grant* — the
+process either owns the resource or holds the policy — and the main agent holds every one of them
+while a worker holds none.
 
 This is written down rather than spread around because it used to be ~two dozen `if not
 self.is_subagent` branches, which made a worker's capability set an *emergent* property of wherever a
 gate happened to be written — so a capability added to the main agent's path could silently never
-reach a worker. Because `WORKER` is derived by zeroing **every** field, a newly added capability is
-worker-denied by default. Two guards keep it honest: an AST gate that fails on any role branch
-(`is_subagent`, `is_worker`, `is_main`) outside the table, and a parity test asserting the two roles'
-observable difference is exactly what the table declares.
+reach a worker. Because the worker's set is derived by zeroing **every** field, a newly added
+capability is worker-denied by default. Two guards keep it honest: an AST gate that fails on any role
+branch outside the table, and a parity test asserting the two roles' observable difference is exactly
+what the table declares.
 
 The config a worker inherits is lossless by construction for the same reason: `Config.to_dict` /
 `from_dict` are derived from one field list rather than hand-written, so a field cannot be dropped
@@ -571,26 +553,29 @@ items have one uniform shape across backends.
 
 | Backend | Thinking | Notes |
 |---|---|---|
-| **OpenAI Completions** | `extra_body.thinking.type = "enabled"` (+ optional `reasoning_effort`) | `compat.thinking` overrides per model: `"omit"` sends no thinking field (gateways that 400 on the enabled shape but reason natively), `"disabled"` forces explicit off, `"enabled"` is the default. DeepSeek gets an explicit `"disabled"` when off. The usage block is handled **before** the empty-`choices` guard — the final usage chunk has no choices, so otherwise no usage would ever be emitted and context accounting would collapse to an estimate. |
-| **Anthropic Messages** | `thinking.budget_tokens = max(max_tokens // 2, 1024)` | `compat.thinkingFormat: "openai"` (Bailian/Qwen) sends no thinking param — the model always thinks. Sampling params go through `extra_body`. |
-| **OpenAI Responses** | `reasoning.effort` (default `"medium"`) | Streams both `reasoning_text` and `reasoning_summary_text` deltas; emits the Responses API's native `function_call` / `function_call_output` items for tool history, not the Chat-Completions shape. |
+| **OpenAI Completions** | an `extra_body.thinking` block (+ optional `reasoning_effort`) | The usage block is handled **before** the empty-`choices` guard — the final usage chunk has no choices, so otherwise no usage would ever be emitted and context accounting would collapse to an estimate. |
+| **Anthropic Messages** | a `thinking` block whose token budget is derived from `max_tokens` | Sampling params go through `extra_body`. |
+| **OpenAI Responses** | `reasoning.effort` | Streams both reasoning deltas; emits the Responses API's native `function_call` / `function_call_output` items for tool history, not the Chat-Completions shape. |
+
+**Thinking is requested per backend, and `compat` exists for the models that cannot take the
+request.** A gateway may 400 on the enabled shape while reasoning natively, or accept only the
+OpenAI spelling of the field, so a per-model `compat` block overrides how thinking is asked for —
+including asking for it not at all.
 
 **Anthropic prompt caching.** Each OpenAI `system` message becomes an Anthropic system content block
 and the **last** one is tagged `cache_control: {"type": "ephemeral"}` — the static base prompt
 becomes the cache breakpoint (§2.4). On by default for `api.anthropic.com`, off for
-Anthropic-compatible providers that may reject the field, overridable per model via
-`compat.cacheControl`.
+Anthropic-compatible providers that may reject the field, overridable per model.
 
-**Anthropic alternation is mandatory.** Tool results are coalesced into one `user` message per batch
-and a following user text message is merged into that same block — two consecutive users is a 400 on
-Bedrock and Bailian/Qwen. An assistant with no text and no tool calls gets a single empty text block
-rather than an empty content array.
+**Anthropic alternation is mandatory.** Tool results are **coalesced** into one `user` message per
+batch and a following user text message is merged into that same block — consecutive `user` messages
+are a 400 on Bedrock and Bailian/Qwen. An assistant with no text and no tool calls gets a single empty
+text block rather than an empty content array.
 
-**Outbound hardening.** `OpenAIBackend._normalize_messages` replaces empty assistant content (a
-reasoning-only turn, a max-tokens cut) with `"…"` — a *copy*, storage untouched — so
-openai-completions providers never 400 on an empty assistant message. When thinking is enabled,
-`to_openai_messages` synthesizes `reasoning_content: ""` on **every** assistant message, including
-the synthetic harness one, or DeepSeek/Qwen reject the request.
+**Two outbound normalisations are wire requirements, not tidying.** An empty assistant message must be
+filled, and with thinking enabled every assistant message must carry a `reasoning_content` key — the
+synthetic harness one included — or openai-completions providers and DeepSeek/Qwen respectively 400.
+Both act on the outbound *copy*; storage is untouched.
 
 ### 3.3 The stream failure contract
 
@@ -610,7 +595,11 @@ cut. The separate opt-in `stream_timeout` remains a total per-call cap, set only
 `active_model`, and rebuilds the client, loop parameters and system prompt. Context-usage state is
 deliberately **not** wiped — it self-corrects on the next API call. The tools are `model_list` /
 `model_set` / `model_remove` / `model_switch`; `model_set` is an **upsert that merges, not
-replaces**, so a partial update keeps the model's other fields. The `Ctrl+S` inline picker is an
+replaces**, so a partial update keeps the model's other fields. Two model shapes are accepted from
+config — `models.providers` + `active_model`, and a flat list under `models:` — and `model_set` writes
+whichever shape the file already has, **in that shape's own idiom, never converting**: under an
+explicit provider the loader reads the id whole, so a converted flat-list id comes back
+double-prefixed, renaming every model and stranding `active_model`. The `Ctrl+S` inline picker is an
 **emergency escape** for when the current model is unavailable and the model cannot call
 `model_switch` itself — see Appendix A.
 
@@ -639,21 +628,17 @@ without a trace, and the required parameter silently fell back to its default wh
 success. Closure is applied at class definition because authoring style is not the contract — the
 schemas are written two ways (a literal dict, `make_params`) and closing only one
 style would leave the majority swallowing typos. Two deliberate exceptions: a schema that states
-`additionalProperties` itself keeps that answer, and a **remote** schema is never touched — a
-third-party server's schema is the server's contract to declare.
+`additionalProperties` itself keeps that answer, and a **remote** schema is never **closed** by
+`__init_subclass__` — a third-party server's schema is the server's contract to declare. The adapter
+does normalise one thing on the way in: a remote `inputSchema` that is not an object schema is
+rewritten to `type: object`, keeping every other key (`$defs`, `additionalProperties`), so a
+`#/$defs/…` reference cannot dangle.
 
-**How to write one.** The schema is the model's only view of the tool, so write it for the model:
-
-- **`description` = what the tool does** — one or two sentences: what it does and what it returns.
-  Do not write when-to-use ("Use when…"), and do not restate knowledge the model already has. Keep
-  project-specific facts it cannot infer: idempotency ("upsert — add + update in one call"),
-  blocking ("BLOCKS until the model is loaded"), effect timing ("takes effect after restart").
-- **Parameter docs = how to use.** Per parameter: accepted format, where the value comes from
-  ("`turn_id` from `turn_list`"), what the values mean, and the default.
-- **Mechanism.** Builtin tools carry docs in the `parameters` dict. Plugin tools (`@mcp.tool`) get
-  them from a Google-style `Args:` docstring — fastmcp parses it into the input schema, so a plugin
-  tool whose parameters have no `Args:` yields an undocumented schema.
-- **Language.** Model-visible strings are English (§1).
+**The schema is the model's only view of the tool**, so it is documentation rather than
+instructions: `description` and the per-parameter docs state what the tool does and how its arguments
+are used, and never when to call it. The mechanical half of that contract is a parser's: a plugin
+tool's parameter docs arrive as a Google-style `Args:` docstring, which fastmcp parses into the input
+schema.
 
 ### 4.2 Families and naming
 
@@ -667,7 +652,10 @@ Three families exist by **ownership** — indistinguishable to the model at the 
 
 `skill` and `cli` belong to none: nothing owns them, there is nothing to spawn and nothing to
 register — the row *is* the thing (a playbook file, a `tools.yaml` entry). They are tools all the
-same, reached through search and then by using them.
+same, reached through search and then by using them. Because a skill's row *is* its directory, a
+skill name is a path: `skill_set` and `skill_remove` reject one that resolves to the skills **root**
+(`"."`, `""`, `foo/..`), which a containment check accepts — a path is relative to itself — and a
+caller that only checked containment would replace or remove the whole directory.
 
 **Naming rules are fixed.** System tools are bare. A job is `job-<function>`. An external tool is
 `{server}__{tool}`. Two source-fed families are namespaced in the catalog: a skill row is
@@ -691,21 +679,21 @@ parameter: a model that could declare its own family would declare its way past 
 main agent, subagents and the gateway child alike. One store class (`CatalogStore`) owns all SQL;
 policy lives in `ToolCatalogService`. The schema is `slife/tools/catalog_schema.sql`.
 
-The columns that matter conceptually (the rest are in the schema file):
+**Every catalog mutator is write-owner only.** A worker's view of a source is partial, and an
+upsert-then-purge from it would delete the rows it merely could not see, so the category sync and the
+external mirror refuse a worker outright. The load/unload pair is the one write the roles share,
+because it is the model's own decision either of them may make.
 
-- **`name`** — the row's identity, in the shapes of §4.2.
-- **`category`** — `builtin | job | plugin | mcp | rest-api | skill | cli`. There is no derived
-  `type` column: the load-state question is a membership test over the function categories, not a
-  second thing to write and keep in sync.
-- **`source_id`** — the owning server (mcp/rest-api) or plugin (plugin/job); `n/a` otherwise.
-- **`schema`** — the tool def `{name, description, inputSchema}` for function rows, the SKILL.md text
-  for a skill, a synthesized descriptor for a cli. This column is **both** the injected definition
-  and the semantic index's document.
-- **`status`** and **`load_status`** — see below. **`last_loaded`** is the LRU key.
+The columns that matter conceptually are identity, owner and `schema`, plus the two running-state
+columns and the `last_loaded` LRU key; the authoritative list is `catalog_schema.sql`. Two absences
+there carry design weight. There is no derived `type` column, because the load-state question is a
+membership test over the function categories rather than a second thing to write and keep in sync.
+And the `schema` column is **both** the injected definition and the semantic index's document — a row
+whose schema text is empty has nothing to embed and is invisible to the semantic leg.
 
-Two running-state columns, deliberately separate questions: `status` is what the config says (or what
-the runtime found), `load_status` is what the **model** decided. **No column is nullable** — "not
-applicable" is a value, never NULL, so every read is a plain comparison.
+The two running-state columns answer deliberately separate questions: `status` is what the config
+says (or what the runtime found), `load_status` is what the **model** decided. **No column is
+nullable** — "not applicable" is a value, never NULL, so every read is a plain comparison.
 
 **`status` is one column with three exclusive values**, because they answer one question and do not
 coexist. `enabled` is the ordinary state; `disabled` means the config switched it off (per **server**
@@ -735,12 +723,16 @@ the gateway child dies.
 `disabled` → `disabled`; `error` → `error`; a function row → its `load_status`; a skill/cli row →
 `enabled`. One label per fact. The first two never overwrite the third, which is what lets a loaded
 tool come back loaded. **Injection takes the function rows that are enabled and loaded** — that
-single predicate is both the injection query and the effective-status rule, and the two move
-together.
+single predicate is the injection query, the effective-status rule, and the eviction budget and victim
+set alike, so a row whose owner is down or which the config switched off can neither absorb a slot nor
+be evicted, and the four move together.
 
 **Configuration — `tools.yaml`** carries one section per category (`builtin`, `plugin`, `mcp`,
 `rest-api`, `job`, `cli`, `skill`) plus `tool_load.threshold`. Every entry carries the same two
-policy flags. **`enabled`** mirrors onto the row's `status`. **`autoload`** means injected from
+policy flags. **`enabled`** mirrors onto the row's `status`; for a skill the switch is written to
+`tools.yaml` under that file's lock, with the in-memory disabled set moved alongside it, because a
+write that left the mirror stale made the switch a per-process no-op until the next restart.
+**`autoload`** means injected from
 session start and never evicted — per *tool* where a tool has its own name (`builtin`/`job`), per
 *server* in `mcp`/`rest-api`, because an external tool's name is not knowable before its server
 connects. It is accepted and inert for `skill`/`cli`, which have no load state to seed. Unlike every
@@ -769,9 +761,12 @@ the list computed for it, so every attempt sends byte-identical tools.
 
 **Threshold eviction** runs at the turn boundary: if the loaded count exceeds `tool_load.threshold`
 (default 100), the excess is dropped least-recently-used-first, protected by the same two autoload
-sources that seed a row loaded. Two rules keep the LRU honest — seeding never touches `last_loaded`,
-and **every successful execute bumps it**, so a tool used this turn is never the next victim.
-Eviction is main-owner only; a worker inherits the curator's budget and never squeezes it.
+sources that seed a row loaded. **The budget and the victim set are the one injectable predicate of
+§4.3** — function rows that are enabled and loaded — so a row whose owner is down or which the config
+switched off can neither absorb a slot nor be evicted. Two rules keep the LRU honest — seeding never
+touches `last_loaded`, and **every successful execute bumps it**, so a tool used this turn is never
+the next victim. Eviction is main-owner only; a worker inherits the curator's budget and never
+squeezes it.
 
 **Evicted tools stay registered and stay callable.** Eviction takes them out of the injection
 snapshot and nothing else. **Load state governs what a turn injects, never what a call may do.** What
@@ -825,6 +820,12 @@ prepended, so a failed call still reads as an error even when the marker leads t
 stored on the tool message and session restore reads the stored flag rather than re-deriving it.
 There is deliberately no second failure token.
 
+**`Error:` means the tool ran and failed, nothing else.** The LRU `touch` that follows a successful
+execute sits **outside** the execution `try`: the tool has already run — it may have written a config,
+sent a message, deleted a file — so a bookkeeping failure on the shared `tools.db` must not report a
+completed run as `Error executing …`, because the model's answer to that is to retry a non-idempotent
+action.
+
 **Meta-parameters.** Tool schemas sent to the model carry **business parameters only**. Three
 meta-parameters — `_timeout`, `_async`, `_approve` — are declared once in the system prompt and
 popped before dispatch; re-describing them on each of ~60 schemas would be the single biggest
@@ -848,14 +849,12 @@ declared-but-unconsumed key.
 backoff step, a session lifetime. A cadence never bounds an await and a budget never sets a cadence.
 The registry owns both: a cadence left as a module constant is a second seat for a value the next
 reader has to go find, so `pacing.schedule_poll` and `pacing.mcp_relist_initial` are looked up at call
-time exactly like a budget is. The AST scanner draws no line between them — it fires on a
-time-style name (`*_INTERVAL`, `*_TIMEOUT`, `*_LIFETIME`, `*_POLL`, `*_DELAY`, `*_DEADLINE`, …),
-on folded arithmetic (`24 * 60`), on an int or a float, on an annotated or class-level constant, on a
-call's time-style keyword (`stream_stall_timeout=0.05`), and on a literal `sleep` — with two
-deliberate exclusions: `sleep(0)` is a scheduling yield rather than a duration, and a *count* of
-retries or attempts is not a time value at all (name it `*_ATTEMPTS`, not `*_REFRESH`, so the gate can
-tell). It scans `tests/` too, where a literal is marked `# noqa-timeout` — a test's magnitude is the
-fixture, and the marker is what says so out loud.
+time exactly like a budget is. The AST scanner draws no line between them: it fires on any literal
+time value — a time-style name, folded arithmetic, a bare number, a call's time-style keyword, a
+literal `sleep` — in `tests/` too, where a deliberate magnitude is marked `# noqa-timeout`. Two
+exclusions are stated rather than inferred: `sleep(0)` is a scheduling yield rather than a duration,
+and a *count* of retries is not a time value at all (name it `*_ATTEMPTS`, not `*_REFRESH`, so the
+gate can tell).
 
 **The model, in five rules.** (1) *Owner-of-await*: every await that can block has a bound, owned by
 the layer that awaits it; a callee never sets a total for its caller. (2) **The only sanctioned
@@ -897,10 +896,19 @@ mapping; **without** one it is scheduled bare. The chain default is deliberately
 ### 4.8 The approval gate
 
 Approval is **model-driven** — pure model judgment. There is no `requires_approval` flag on any tool
-or MCP server; the model decides per call by setting `_approve: true`. Execution then pauses and an
-inline prompt row is mounted in the chat stream (Y = approve, N / Esc = deny, no modal). Prompts
-serialize behind a lock. A denied call never mounts a tool widget; the prompt row itself carries the
-rejection state. A headless worker has no handler and auto-approves.
+or MCP server; the model decides per call by setting `_approve: true`, one of the meta-parameters
+stated once in the system prompt (§4.6) rather than on any schema. Execution then pauses and an inline
+prompt row is mounted in the chat stream — a row, not a modal, so the transcript stays readable while
+the loop is blocked.
+
+The gate's guarantee is that the loop is never left waiting on a prompt nothing can answer. Prompts
+**serialize behind one lock**, so a batch's concurrent calls cannot stack two dialogs. The wait is a
+race between the user's answer and the turn's cancel, and a cancel **denies** the prompt rather than
+abandoning it — a prompt that has lost focus, to the model picker or to anything else, must not hold
+the turn open, because every later message would queue behind it. A denied call returns an `Error:`
+naming the denial, mounts no tool widget (the prompt row itself carries the rejection state), and the
+rest of the batch proceeds. A process with no handler — a headless worker — **auto-approves**: the
+decision belongs to whoever is watching, and nobody is.
 
 ---
 
@@ -917,20 +925,14 @@ Every child plugin is declared by one `PluginSpec` (a frozen dataclass) in the o
 `PLUGIN_SPECS` (`slife/plugins/spec.py`). Nothing else in the harness hard-codes a plugin's module,
 enablement or glue: every name-keyed table that used to exist — the start `if/elif` chain, the
 connect-glue map, the health check list, the tool-adapter route set, the reserved-name list — is now
-a lookup into this one table. The fields are `name`, `module`, `ctx_field` (the `ToolContext`
-attribute receiving the live client), `gateway` / `host_params` (mcp-gateway only), `enable_method`
-and `after_ready_method` (names of `AgentService` coroutines), `health`, and
-`semantic_reload_tool`.
+a lookup into this one table. A row describes one plugin: its name and module, where its live client
+lands in `ToolContext`, whether it is the gateway, the `AgentService` coroutine names for its enable
+and after-ready hooks, whether it has a health check, and its semantic-reload tool.
 
 `spec.py` is **stdlib-only on purpose**, so the MCP child, the health tools and the tool adapter can
 import it without pulling in `AgentService`. Per-plugin *behaviour* is declared as a method **name
 string**, resolved once in `AgentService.__init__` (which asserts a spec never names a missing
-method).
-
-The table normalises a few naming rules: public names are hyphenated where a package cannot be
-(`job_coding` → `job-coding`); the port env var is `SLIFE_{NAME}_PORT` with dashes → underscores; the
-health function is `check_<name>`; the `ToolContext` field names are per-plugin and the historical
-non-uniformities are kept. An external MCP server may not take a built-in plugin's name.
+method). An external MCP server may not take a built-in plugin's name.
 
 **Adding a plugin is one spec row plus a `server.py` package.** Auto-discovery returns every declared
 plugin whose `server.py` exists, in spec order, then appends any undeclared package under
@@ -965,10 +967,11 @@ of plugin startup.
 
 **Start is one path for every plugin**: idempotent if already running → the spec's enable hook (first
 start only; a watchdog restart skips it — a hook returning False is an *expected* no-op, and it also
-purges the plugin's catalog rows) → the uniform start (spawn the child, set its port env, connect,
-register bare-name tool proxies, filter internal tools, mirror them into the shared catalog, clear
-any `error` mark, mark initialized) → re-point the `ToolContext` field at the live client → run the
-after-ready hook → arm the watchdog. Spawn or hook failure → `FAILED`.
+purges the plugin's catalog rows) → the uniform start, which brings the child up and makes its tools
+real in the shared catalog → re-point the `ToolContext` field at the live client → the after-ready
+hook → arm the watchdog. The order is what lets each step assume the last: the enable hook is a
+first-start concern, and the after-ready hook is only ever reached with a live client. Spawn or hook
+failure → `FAILED`.
 
 **The watchdog** supervises every started plugin identically. On an unexpected child exit it
 unregisters the plugin's exact registered tools (plus any registry tool bound to the dead client),
@@ -1009,6 +1012,11 @@ signal, which is why OAuth instructions go to stderr — and one specific marked
 parent turns into a desktop notification. And **plugin servers run in SSE mode**
 (`json_response=False`): a listen stream *is* a response stream, and a single JSON body per POST has
 nowhere to carry a change notification.
+
+**The spawn starts draining stderr before it reads the port signal.** A child whose first log write
+fills the stderr pipe blocks in that write and never signals, so the port read then times out and
+kills it as a failed start with the true cause — a full pipe — invisible. The drain has to be reading
+before the child logs, and it is the pipe's only reader while it runs (§9.4).
 
 The parent hands the child its identity and its serving ports through the **process environment** —
 there is no other in-band channel before the first request: the session id, the agent name, the
@@ -1117,23 +1125,30 @@ where the registry holds the builtins but not yet the external tools; a call the
 `Unknown tool` before the row exists and the "is not loaded" refusal after it. Nothing is broken —
 the pass has not finished. One line marks the moment the set is usable, emitted **once per process**
 on the first pass that has converged (and always on failure): silence therefore means *still
-syncing*. Its `total` is what is usable right now — every enabled catalog row, so skills and CLIs
-count too — deliberately not the registry, which holds registered *instances* and which the two
-registry-less families have none of. Convergence is "no enabled server is still starting": a bare
-"no list yet" means three different things, so the gateway's own `spawn_settled` flag and a
-`reachable` verdict decide whether a server is a failed spawn, a slow one still answering, or one
-whose spawn is simply still in flight and must not be judged. The reported delta counts what the
-startup **wrote to the catalog** — insert / update / delete — never a registry before-and-after,
-which would announce the entire external tool set as new on every restart.
+syncing*. Its `total` counts every enabled catalog row — so skills and CLIs, which the registry holds
+no *instance* of, are included — and its delta counts what the startup **wrote to the catalog**, never
+a registry before-and-after, which would announce the whole external tool set as new on every restart.
+Convergence is "no enabled server is still starting": a bare "no list yet" means three different
+things, which the gateway's `spawn_settled` flag and a `reachable` verdict separate — a failed spawn,
+a slow one still answering, or one whose spawn is simply still in flight and must not be judged.
+`spawn_settled` is published on **every** exit of the gateway's boot pass, a config-load failure
+included, so a pass that has finished is never left reading "pending" until a budget runs out.
 
 **Crash survival.** When the gateway child dies, every external row is marked `error` so none of them
 keeps injecting a dead transport; the restarted gateway connects every enabled server again and the
 reconcile clears each mark as its server comes up. A crash costs one reconnect, not the session's
 toolset.
 
-**OAuth** uses the device-code flow with tokens in the credential store. The `needs_user_auth` state
-is real: while it is set, a background retry **refuses to re-run the device flow** — a device-flow
-prompt must never be raised by a retry — and the list refresh and call paths raise immediately.
+**OAuth** uses the device-code flow with tokens in the credential store, and the token is held
+**beside** `config.headers`, never written into it: the live config is what `mcp_set` compares for
+idempotency, so injecting the token there made an OAuth server compare unequal forever — every re-add
+reported a change, tore the transport down and re-ran the OAuth pre-check instead of answering
+`already_connected`. A metadata-only `description` / `source` edit is now **persisted** rather than
+answered and dropped: the transport comparison deliberately excludes those two fields, so without the
+write `tools.yaml` kept the old text while the caller was told nothing had changed. The
+`needs_user_auth` state is real: while it is set, a background retry **refuses to re-run the device
+flow** — a device-flow prompt must never be raised by a retry — and the list refresh and call paths
+raise immediately.
 
 **External connections are proxy-free on loopback.** The SDK's Streamable HTTP client builds a
 default HTTP client that reads the OS proxy configuration and applies it to every request, loopback
@@ -1214,7 +1229,7 @@ The wire is JSON-RPC 2.0, deliberately not A2A: the worker is *local*, not a mes
 
 | Direction | Message | Purpose |
 |---|---|---|
-| child → parent | `{"result": {"ready": true}}` | startup readiness — the spawn await blocks on it |
+| child → parent | `{"result": {"ready": true}}` | startup readiness — the spawn await wakes on it, **or on child exit** |
 | parent → child | `worker/send` (`id` = rpc_id) | one task (one turn), correlated by id, never by text |
 | parent → child | `worker/cancel` | drop-if-queued / preempt-if-running |
 | parent → child | `worker/plugin_restart` | a shared plugin moved to a new port — reconnect |
@@ -1271,9 +1286,9 @@ source, so it is distinguishable from human turns in memory search yet routed in
 
 **The worker has no result-push tool.** Its reply goes out as an ordinary JSON-RPC result on stdout.
 The **parent harness** does all the pushing: a sync caller's future resolves; an async result is
-stored and the manager is notified; the manager posts an inbox message carrying the machine marker
-`[Subagent:{"subagent_name", "task_id"}]` so the model can attribute it, and the channel records
-whether it was a scheduled task. The TUI drops the marker and shows the `Subagent(<name>)>` bubble.
+stored and the manager is notified; the manager posts an inbox message carrying the subagent marker
+of §2.5 so the model can attribute it, and the channel records whether it was a scheduled task. The
+TUI drops the marker and shows the `Subagent(<name>)>` bubble.
 There is deliberately no subscribe call — async results are auto-subscribed, and the `poll` mode
 suppresses only the *push*, never the retrievability. Retrieval is **non-consuming and states what it
 is**: a task answers `pending`, `completed`, `failed` or `cancelled` from its own record (only an id
@@ -1291,6 +1306,7 @@ The worker has no error-handling loop of its own; every failure ends in a result
 |---|---|
 | LLM/provider error inside the turn | the reply text is `Error: …` — the caller's future resolves *successfully* with that text |
 | protocol error frame | JSON-RPC error → the parent raises → the tool returns an error string |
+| worker died at boot | the spawn await wakes on **child exit**, not only on the ready line, so the spawn fails at once instead of burning the whole `ready.spawn` budget while the manager's registry lock is held — the waiter re-checks liveness, so a death still fails, promptly |
 | worker died before replying | the pending future fails with "closed before task was resolved"; every async task it still owed is announced as a failure rather than left pending |
 | **stall** — no reply at all (a caller is waiting) | the task budget expires → `TaskTimeout` (carrying the task id) → the tool reports the timeout and names what to poll |
 | **stall** — no reply at all (nobody is waiting) | the async task's lifetime backstop (`work.task_lifetime`) fires → the task is marked failed, preempted, and its failure **pushed** to the caller |
@@ -1346,19 +1362,19 @@ failure is likewise fatal: a present-but-broken database **aborts startup**.
 
 ### 7.1 The turns database (`memdb`)
 
-The backing table is `diary`; the schema is `slife/plugins/memdb/schema.sql`. Conceptually the row
-holds the user's message, the assistant side as an OpenAI JSON array (thinking, tool calls, results,
-text), an LLM-written summary and tags, the user-input and completion timestamps, the channel
-identity, the agent identity and model, the turn's billed token count, and `context_tokens` — the
-context size at the last API call, which restore primes the first turn prompt with.
+The backing table is `diary`; the schema and the supporting structures are
+`slife/plugins/memdb/schema.sql`. The row's user-message column holds the **masked** text, the same
+form the live history holds — so restore rebuilds the user turn from that column verbatim, and a
+pasted key cannot return to the model's context through a restart. Beside it sit the assistant side as
+an OpenAI JSON array, the summarize pass's summary and tags, the two timestamps, the channel and agent
+identities, the billed token count, and `context_tokens` — the context size at the last API call,
+which restore primes the first turn prompt with.
 
 There is **no `images` column**: image blocks live only in the in-memory user message and are never
-persisted, so restore is text-only — and so is a turn rebuilt by the per-turn decision, which comes back
-as its text plus the `attach_image` call and result (§7.6). Supporting structures are an FTS5 external-content index (whose
-UPDATE trigger exists because the summarize tool rewrites columns and an external-content index must
-track that), a sqlite-vec table, a key/value `diary_meta` store holding the embedding model identity,
-the index text contract's version and the ordered live-context list, and a sibling `turn_channel` row per turn holding the channel's
-JSON payload, written atomically with the insert.
+persisted, so restore is text-only — and so is a turn rebuilt by the per-turn decision, which comes
+back as its text plus the `attach_image` call and result (§7.6). The keyword index is FTS5
+external-content, and its UPDATE trigger exists because the summarize tool rewrites columns that such
+an index does not otherwise track — without it the summary stays invisible to keyword search.
 
 **There is no migration layer.** Backward compatibility is not supported: schema changes land in
 `schema.sql` for fresh databases, and an old database is deleted and rebuilt rather than upgraded.
@@ -1382,9 +1398,9 @@ period's **edge**, not to today's day-of-month. A bound in no known grammar **ra
 passing through — SQLite would compare the text, match nothing, and report a bound nobody understood
 as "no results".
 
-**What a turn's vector is a vector *of* is the conversation, not the turn.** `_turn_text_for_embedding`
-embeds the user message, the tool calls the turn made (names and arguments, bounded) and the
-assistant's prose — **not tool results**. Measured on a live session, results were 56–99% of a turn's
+**What a turn's vector is a vector *of* is the conversation, not the turn.** The embedded text is the
+user message, the tool calls the turn made (names and arguments, bounded) and the assistant's prose —
+**not tool results**. Measured on a live session, results were 56–99% of a turn's
 text, so an index built on them describes "an agent ran tools" rather than what the turn was about:
 every turn lands in one narrow cosine band (unrelated turns at 0.55–0.92 of each other) and a
 similarity cap has nothing to separate. Nothing is lost to search — results live in `messages`, which
@@ -1406,8 +1422,8 @@ glued inside a longer run (`校庆的具体安排有吗` is a single token), whi
 see. LIKE is a true substring matcher per word, which is what Chinese prose needs, so it is the leg
 CJK routes to — but it inherits the AND below, which is what limits it in practice.
 
-Both keyword legs **AND** their terms (`_to_fts5_query` and `_like_terms` share that rule, so
-`turn_count` and the search cannot disagree). The consequence is worth knowing before trusting the
+Both keyword legs **AND** their terms, and the counting route and the searching route share that one
+rule so they cannot disagree. The consequence is worth knowing before trusting the
 leg: it fires only on a turn containing *every* word, and for CJK that means every word literally, as
 a substring. A query of one or two words the turn would actually contain is what it rewards; a
 synonym-stuffed one matches nothing at all, which is what the discriminator's queries tend to be — so
@@ -1423,7 +1439,9 @@ Embeddings are a first-class top-level `embeddings` section of `slife.yaml`, sha
 memfiles and the host's tool catalog. A **provider** is one OpenAI-compatible endpoint with a model,
 and `active_model` is a bare provider id. One rule surprises people: **the vector dimension is
 deliberately not configured.** It is resolved from a known-model table, the endpoint's `/v1/models`,
-or a probe embed.
+or — whenever the width is still unknown, a listed model with no `dimension` key included — a probe
+embed. A load that cannot read the endpoint reports **not loaded**: the gate stays shut and hybrid
+degrades to keyword, instead of opening on an embedder that fails every batch.
 
 **`SemanticManager` is the lifecycle actor** — one object owning the binary gate, the embedder
 instance and an event-driven index drainer. It is document-generic, so memdb, memfiles and the host
@@ -1610,34 +1628,25 @@ never at import, so importing the module in a test process cannot change the sui
 ### 9.1 The UI
 
 A Textual app with no screens and no modals: a chat view, an input, and a status bar. Streaming
-thinking and text render into a message widget rebuilt per chunk; a collapsible thinking block
-toggles with Enter/Space; tool calls mount collapsible widgets with a status icon and a
-primary-argument preview; the status bar shows the model, a thinking badge, the heartbeat indicator,
-inbox state, and the last call's context tokens with a usage percentage.
+thinking and text render into a message widget rebuilt per chunk; tool calls mount collapsible widgets
+with a status icon and a primary-argument preview.
 
 **Every piece of user data is rendered with markup disabled.** Strings Slife constructs may use
 markup; tool output, arguments, results, file contents and tool names never do — the wrong path
-raises a markup error on ordinary `&`, `[` and `]` in URLs and JSON. The one config-derived value the
-status bar interpolates is escaped instead.
+raises a markup error on ordinary `&`, `[` and `]` in URLs and JSON.
 
-Four interaction rules are load-bearing, and each is recorded in Appendix A: the app's `Esc` binding
-must **not** be priority, the approval prompt's and model picker's bindings **must** be, a binding
-action must be **sync**, and tool widgets are cleared only at the genuine turn-end event.
+Four interaction rules are load-bearing, and Appendix A carries the canonical statement of each: the
+app's `Esc` binding must **not** be priority, the approval prompt's and model picker's **must** be, a
+binding action must be **sync**, and tool widgets are cleared only at the genuine turn-end event.
 
-A bare `.` reply is silence: the widget is discarded rather than rendered. `Ctrl+Y` copies a tool
-result, going through the platform clipboard per OS — on Windows via PowerShell, because `clip.exe`
-decodes piped input with the console code page and mangles anything non-ASCII.
+A bare `.` reply is silence: the widget is discarded rather than rendered.
 
-Restore rebuilds the UI in three phases — reconstruct the message list (repairing turn consistency
-first, then mapping channel to display prefix and skipping silence), replace the history and prime the
-loop state, then rebuild the widgets inside one batched update with autoscroll suppressed and a
-single scroll at the end. Scrolling per widget is the live behaviour and it made restore jitter.
-
-**Following the tail is sticky.** The transcript scrolls to the end only while the reader is at the
-end: the scroll offset is watched, so paging up mid-turn keeps its position instead of being undone by
-the next streamed token, and coming back down to the tail resumes following. Paging does not depend on
-focus either — the prompt forwards PageUp/PageDown to the transcript instead of letting TextArea page
-its own draft, which is where those keys otherwise went while typing.
+**Restore is quiet for two reasons.** The restored widgets go back in **one batched mount** with
+autoscroll suppressed and a single scroll at the end — rebuilding widget by widget is the live
+behaviour, and it made restore jitter. And **following the tail is sticky**: the transcript scrolls to
+the end only while the reader is already there, so a reader who paged up mid-turn keeps that position
+instead of being undone by the next streamed token, and coming back down to the tail resumes
+following.
 
 ### 9.2 Config and credentials
 
@@ -1675,20 +1684,17 @@ yet a `file_list` or a `cat` of the same text comes back `<MASKED>`. The disk th
 audited through a tool result — a masked listing and masked disk look identical from inside a turn.
 There is **no off switch**: no config key reaches the engine, and a turn cannot opt out.
 
-The shapes are `logfmt._SECRET_PATTERNS`, four kinds: well-known provider prefixes (`sk-`,
-`ghp_`/`github_pat_`, `gsk_`, `hf_`, `AIza…`, `pypi-`, …); header credentials (`Basic`, `Bearer`,
-`Token` followed by 8+ characters carrying a digit or one of `+/=._-`); `key=value` names
-(`api_key`, `token`, `password`, `*secret*`, `*access_key*`, value floor 6); and connection-string
-passwords (`scheme://user:pass@host`). Everything else passes through unchanged — a bare `hunter2`,
-an AWS key id standing alone, an email address.
+The shapes are `logfmt._SECRET_PATTERNS`, five kinds: well-known provider prefixes; header
+credentials; `key=value` names; connection-string passwords (`scheme://user:pass@host`); and the
+**JSON pair** (`{"bot_token": "…"}`), matched **first** because the `key=value` value class excludes
+`"` — a JSON body otherwise slips past it and half-matches the URL pattern, which masks only the
+value's prefix and leaves most of the secret in the line. Everything else passes through unchanged —
+a bare `hunter2`, an AWS key id standing alone, an email address.
 
-**Config sections.** `slife.yaml` carries `env`, `models.providers` + `active_model`,
-`job_coding_model`, `agent` (the context policy and iteration knobs), `embeddings`, `wechat`,
-`media`, `a2a`, `subagent`, and `plugins.required`. `tools.yaml` is the unified tool config (§4.3)
-and its sections are the only knobs — the old `tools:` array in `slife.yaml` is retired. `media` and
-`job_coding_model` are read by their plugins rather than by the main config parser; sharefile has its
-own file. **There is no user-facing timeout section** — every timeout is a developer-owned constant
-(§4.7).
+**Config sections.** `slife.yaml` and `tools.yaml` are the two files, the second being the unified
+tool config of §4.3 — the old `tools:` array in `slife.yaml` is retired — and `media`,
+`job_coding_model` and sharefile are read by their own plugins rather than by the main config parser.
+**There is no user-facing timeout section** — every timeout is a developer-owned constant (§4.7).
 
 **Config writes preserve the file's comments.** Every writer mutates a dict and calls `write_config`,
 which then **edits the existing YAML document** rather than re-serializing the dict: the current text
@@ -1702,8 +1708,17 @@ back to a plain render if it does not read back as the intended dict. Losing com
 a config that says something else is worse. The write itself is atomic (temp file, fsync,
 `os.replace`, preserving the existing file's mode) and the whole read→mutate→write window is held
 under a **cross-process** file lock, because the main process and a plugin child can both be editing
-the same file. One rule about reading: a config parse failure **raises**, because returning an empty
-dict would let a mutating caller write that empty dict back over the whole config.
+the same file. That lock is taken by **non-blocking polling from the event loop**, never a blocking
+acquire: a blocking acquire inside an `asyncio.timeout` froze the loop for the whole timeout, and that
+freeze is a deadlock rather than a stall — tool calls run concurrently on one loop, so while the first
+edit holds the lock across its own await, the second's blocking acquire stops the loop and the first
+can never resume to release it. Acquire and release stay on one thread, because the lock's reentrancy
+counter is per-thread: taking it on a helper thread and releasing it on the caller would leave the OS
+lock held. A synchronous twin of the decorator serves synchronous callers only, and an async caller
+with an await inside the block must use the polling path — the only one that keeps blocking work off
+the loop (§4.7). One rule about reading: a config parse failure **raises**,
+because returning an empty dict would let a mutating caller write that empty dict back over the whole
+config.
 
 ### 9.3 Health
 
@@ -1783,54 +1798,20 @@ default, so health tools do not report the default database for every agent.
 
 ```
 slife/
-  agent/                # LLM interaction
-    loop.py             #   the function-calling loop
-    service.py          #   lifecycle manager: plugins, inbox, model switching, save_to_memory
-    inbox.py            #   unified message queue + per-source history stores
-    message_history.py  #   history, sanitization, turn consistency, the turn→messages builder
-    system_prompt.py    #   prompt rendering + the per-turn status prompt
-    roles.py            #   Caps — which role holds which harness capability
-    llm_client.py       #   backend router + StreamChunk + TokenUsage
-    llm_backends/       #   openai · anthropic · openai_responses
-    templates/          #   agent.j2 · subagent.j2 · slife.j2 · turn_prompt.j2 · rebuild_messages.j2
-    plugins.py          #   PluginLifecycle / PluginRegistry + watchdog
-    heartbeat.py · schedules.py · timer.py    # the three timing mechanisms
-    multimodal.py       #   image encoding for vision models
-  tools/                # builtin tools — auto-discovered from this package
-    base.py             #   Tool ABC + make_params / require_params / validate_args
-    registry.py         #   the execution pool
-    factory.py          #   auto-discovery
-    context.py          #   ToolContext — the runtime references every tool receives
-    catalog.py + catalog_schema.sql   # CatalogStore — tools.db
-    catalog_service.py  #   policy: seeding, snapshot, load/unload matrix, eviction
-    semantic.py         #   the host-side catalog vector index
-    whitelist.py        #   the always-loaded carve-outs
-    meta_tools.py       #   tool_search · func_tool_load · _func_tool_unload
-    models.py           #   model_* · attach_image · the two harness tools
-    exec.py · skill.py · cli.py · rest_api.py · schedule.py · subagent.py
-    system.py · config.py · credentials.py · embeddings.py · timer.py · user_prefs.py
-    _config_io.py       #   atomic, comment-preserving, cross-process-locked config writes
-  plugins/              # built-in plugins + the central spec
-    spec.py             #   PLUGIN_SPECS — the single source of truth
-    mcp_gateway/        #   server · connection · client · config · oauth
-    memdb/              #   server · store · search · recall · semantic · embeddings · schema.sql
-    memfiles/ · wechat/ · sharefile/ · a2a/ · media/ · job_coding/
-  a2a/                  # the mesh's transport-agnostic core (mesh, broker, card, task store)
-  mcp/                  # host-process MCP infrastructure
-    host_server.py      #   slife-as-plugin — exposes the live ToolRegistry
-    tool_adapter.py     #   MCPProxyTool — bridges MCP → Tool ABC
-    era.py              #   protocol-era negotiation and the listen stream
-  subagent/             # headless.py (the worker process) · process.py · identity.py
-  ui/                   # Textual TUI: app · chat · handler · tool_display · restore ·
-                        #   approval_prompt · model_picker · content · i18n · slife.tcss
-  config.py · paths.py · platform.py · net.py · timeouts.py · logfmt.py · timeutil.py
-  env.py · schedules.py · threads.py · fifoset.py · server_utils.py · health.py · bootstrap.py
+  agent/       # the loop, the service, the inbox, history, prompts, roles, backends, timing
+  tools/       # the Tool ABC, the registry, the catalog (tools.db), discovery, the builtin tools
+  plugins/     # the plugin children and PLUGIN_SPECS — the one source of truth (§5.1)
+  mcp/         # host-process MCP: slife-as-plugin, the MCP→Tool adapter, era negotiation
+  a2a/         # the mesh's transport-agnostic core — mesh, broker, card, task store
+  subagent/    # the worker process: its spawn and pipe protocol, its identity
+  ui/          # the Textual TUI
+  *.py         # platform · config · paths · health · logfmt · timeouts · threads · timeutil · …
 
-credstore/              # standalone package — cross-platform credential store
-cc-switch/              # standalone package — generates ~/.claude/settings.json
-local-embed/            # standalone package — the OpenAI-compatible embeddings service
-skills/ · jobs/         # seeded to the data dir at install
-tests/                  # the AST gates (timeouts, subagent parity) live here
+credstore/     # standalone package — cross-platform credential store
+cc-switch/     # standalone package — generates ~/.claude/settings.json
+local-embed/   # standalone package — the OpenAI-compatible embeddings service
+skills/ · jobs/  # seeded to the data dir at install
+tests/         # the AST gates (timeouts, subagent parity) live here
 ```
 
 ---
@@ -1865,9 +1846,10 @@ learned the hard way and each is silently violated by a plausible-looking change
 
 **Caching and the wire**
 
-7. **Identity and world render once and never change; the per-turn status is a message-stream tool
-   pair, never a second system message.** Both exist so the static prefix stays byte-identical and the
-   prompt-cache breakpoint lands on it.
+7. **Identity and world change only on a model switch or an `add_user_pref` write, and always from the
+   role's own template; the per-turn status is a message-stream tool pair, never a second system
+   message.** Both rules exist so the static prefix stays byte-identical between those events and the
+   prompt-cache breakpoint lands on it — and so that a worker never renders the main agent's identity.
 8. **A harness tool must be schema-declared**, because Anthropic and OpenAI-Responses reject a tool
    call in history whose name is not in the declared tool list.
 9. **The tool list is computed once per request, outside the retry loop**, so every attempt sends
@@ -1890,7 +1872,9 @@ learned the hard way and each is silently violated by a plausible-looking change
     definition are one and the same.
 16. **A schema is enforced, not advisory**: closed by default at class definition, validated at the
     single dispatch point. Exceptions are stated, not assumed — a schema declaring its own openness
-    keeps it, and a remote server's schema is never rewritten.
+    keeps it, and a remote server's schema is never **closed**. The adapter's one edit to a remote
+    schema is the opposite direction and keeps every other key: a non-object `inputSchema` becomes
+    `type: object`, so a `#/$defs/…` reference cannot dangle.
 17. **The agent's timeout overrides all defaults; a tool's own timeout is a generous backstop.** A
     native tool with an internal run-timeout must expose it as a parameter, or a hidden inner timer
     silently clamps the injection. `≤0` never means "no timeout".
@@ -1898,71 +1882,81 @@ learned the hard way and each is silently violated by a plausible-looking change
     scheduled bare, because the chain default must not govern work that exists to escape it.
 19. **Timeout values are read at call time**, never import-captured, so they stay patchable — and a
     hardcoded timeout fails CI, which is what kills the fix-one-drift-another loop.
+20. **The run's outcome and the harness's bookkeeping are separate facts**, so the LRU touch sits
+    outside the execution `try`. A tool that has already run — a config written, a message sent, a
+    file deleted — must never be reported as `Error executing …` because a shared-database write
+    failed, since the model's answer to that is to retry a non-idempotent action.
 
 **Plugins and processes**
 
-20. **The spec table is the only place a plugin is declared.** Adding a plugin is one row plus a
+21. **The spec table is the only place a plugin is declared.** Adding a plugin is one row plus a
     `server.py` package; nothing else may hard-code a plugin's name.
-21. **Readiness is the completed protocol negotiation.** There is no readiness probe, and a dependency
+22. **Readiness is the completed protocol negotiation.** There is no readiness probe, and a dependency
     not required to serve never gates readiness. Never signal the port early: the signal means "ready
     to serve MCP on this port".
-22. **A capability must report "not yet" as "not yet", never as "no".** An initialization in flight
+23. **A capability must report "not yet" as "not yet", never as "no".** An initialization in flight
     must be awaited by every caller, not just the one that started it — a boolean that answers "no"
     while still loading is indistinguishable from a genuinely unavailable one.
-23. **A hard-killed parent runs no cleanup**, so the kill-on-close job object is assigned at spawn,
+24. **A hard-killed parent runs no cleanup**, so the kill-on-close job object is assigned at spawn,
     before the child can spawn anything of its own. On POSIX the process tree is read before anything
     is signalled, and a group kill is only safe when the child leads its own group.
 
 **Subagents**
 
-24. **A worker is the same loop with a declared, zeroed capability set.** A new capability is
+25. **A worker is the same loop with a declared, zeroed capability set.** A new capability is
     worker-denied by default and must be granted on purpose; a role branch (`is_subagent`,
     `is_worker`, `is_main`) outside the table fails CI.
-25. **The harness pushes results; the worker never does**, and a late result is stored, never
+26. **The harness pushes results; the worker never does**, and a late result is stored, never
     auto-pushed, because the caller was already told it timed out. The exception is the task nobody
     awaits: an async task's failure *is* pushed, because silence is otherwise indistinguishable from
     work in progress.
-26. **A stuck task must be preempted in the child**, because a worker processes tasks serially and one
+27. **A stuck task must be preempted in the child**, because a worker processes tasks serially and one
     stuck task would block every later one. A caller's cancel does it too — the same situation as a
     timeout.
-27. **Config is handed over by file, never by environment** — the resolved config carries plaintext
+28. **Config is handed over by file, never by environment** — the resolved config carries plaintext
     keys and the process environment is readable through the process table.
-28. **The config's round trip is a fixed point**, derived from the field list rather than written by
+29. **The config's round trip is a fixed point**, derived from the field list rather than written by
     hand — the hand-written version silently dropped nine fields, which is how a worker came to report
     embeddings disabled while its parent reported enabled.
 
 **Process and platform**
 
-29. **Unbounded blocking calls run on daemon threads, never the default executor.** Both shutdown
+30. **Unbounded blocking calls run on daemon threads, never the default executor.** Both shutdown
     paths join every executor worker, so a blocked worker hangs the whole interpreter.
-30. **The stderr relay must never die**, and a discarded over-long line must be consumed through its
+31. **The stderr relay must never die**, and a discarded over-long line must be consumed through its
     newline.
-31. **Blocking regexes must bound their repeats.** An unbounded repeat once froze the parent's event
+32. **Blocking regexes must bound their repeats.** An unbounded repeat once froze the parent's event
     loop for minutes on a single relayed line.
-32. **No global socket defaults**, which would silently change every third-party socket.
+33. **No global socket defaults**, which would silently change every third-party socket.
 
 **The TUI**
 
-33. **The app's `Esc` is not priority; the approval prompt's and picker's bindings are.** Textual's
+34. **The app's `Esc` is not priority; the approval prompt's and picker's bindings are.** Textual's
     priority pass resolves the app before the focused widget, so a priority `Esc` on the app would
     steal the key from the approval prompt and cancel the loop instead of denying, leaving the prompt
     unresolved. The reverse is equally true: non-priority bindings on a prompt would type `y` into the
     input bar instead.
-34. **A binding action must be sync.** Binding actions run inside the key-event handler, so awaiting
+35. **The approval prompt to deny or refocus is the *pending* one** — matched by type and undecided
+    state, never by its class alone, because the model picker wears that same class and a decided
+    prompt stays in the transcript as its status line. Denying the first match left the real prompt
+    mounted and unfocusable behind the picker, with only the turn-cancelling `Esc` able to resolve it.
+    The mirror direction is the same rule: a dismissed picker must not take focus back from a prompt
+    that is already mounted.
+36. **A binding action must be sync.** Binding actions run inside the key-event handler, so awaiting
     there blocks the message pump and deadlocks the widget that needs the next key event.
-35. **A dismissed widget must resolve its future**, or a re-entrancy flag stays stuck and the shortcut
+37. **A dismissed widget must resolve its future**, or a re-entrancy flag stays stuck and the shortcut
     is dead. The status-bar scroll happens **after layout**, or it pins the view above the fold.
-36. **All user data renders with markup disabled**, and **tool widgets are cleared only at the genuine
+38. **All user data renders with markup disabled**, and **tool widgets are cleared only at the genuine
     turn-end event** — never where the turn is merely *enqueued*, which wiped an in-flight turn's
     widgets and left its rows stuck.
 
 **Configuration**
 
-37. **A config parse failure raises; it never returns an empty dict**, or a mutating caller writes
+39. **A config parse failure raises; it never returns an empty dict**, or a mutating caller writes
     that empty dict over the whole config.
-38. **Config writes edit the document and are verified before use.** Losing comments is bad; writing a
+40. **Config writes edit the document and are verified before use.** Losing comments is bad; writing a
     config that says something else is worse.
-39. **Credstore is consulted before a `${VAR:-default}` literal**, or the default wins over a key that
+41. **Credstore is consulted before a `${VAR:-default}` literal**, or the default wins over a key that
     is actually held.
 
 ## License
