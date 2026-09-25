@@ -24,8 +24,7 @@
 > * **想让语义（混合）记忆搜索跑起来** → [语义记忆搜索 — 安装指南](#semantic-memory-search--installation-guide)
 > * **日常使用**（快捷键、参数、健康检查）→ [使用方法参考](#usage-reference)
 > * **要开发或调试 Slife 本身** → [从源码运行](#development)
-> * **要改 Slife 的代码** → [DESIGN.md](DESIGN.md)——子系统、机制、接口；
->   [INVARIANTS.md](INVARIANTS.md)——不可违反的规则
+> * **要改 Slife 的代码** → [DESIGN.md](DESIGN.md)——子系统、机制、不变量
 
 <a id="quick-start" name="quick-start"></a>
 

@@ -24,8 +24,7 @@ Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 > * **I want semantic (hybrid) memory search to work** → [Semantic Memory Search — Installation Guide](#semantic-memory-search--installation-guide)
 > * **Day-to-day use** (keys, flags, health) → [Usage Reference](#usage-reference)
 > * **I'm going to develop or debug Slife itself** → [Run from source](#development)
-> * **I'm changing Slife's code** → [DESIGN.md](DESIGN.md) — subsystems, mechanisms, interfaces;
->   [INVARIANTS.md](INVARIANTS.md) — the rules that must not be broken
+> * **I'm changing Slife's code** → [DESIGN.md](DESIGN.md) — subsystems, mechanisms, invariants
 
 <a id="quick-start" name="quick-start"></a>
 ## Quick Start
