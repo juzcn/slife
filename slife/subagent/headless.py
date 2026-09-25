@@ -358,7 +358,16 @@ async def run_headless(argv: list[str] | None = None) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    asyncio.run(run_headless(argv))
+    args = list(argv) if argv is not None else sys.argv
+    # `--help` answers BEFORE the worker loop starts: that loop reads stdin
+    # for JSON-RPC, so `--headless --help` would otherwise sit waiting for a
+    # parent that is never coming.
+    from slife.config import CLI_USAGE, parse_cli_help
+
+    if parse_cli_help(args):
+        print(CLI_USAGE, end="")
+        return
+    asyncio.run(run_headless(args))
 
 
 if __name__ == "__main__":

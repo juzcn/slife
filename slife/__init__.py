@@ -58,6 +58,23 @@ def main(config_path: str | None = None):
     import os as _os
     from pathlib import Path as _Path
 
+    from slife.config import CLI_USAGE, parse_cli_help, parse_cli_headless
+
+    # Both exits happen BEFORE the heavy imports below, so `--help` answers
+    # without paying for Textual, the agent loop or the plugins.
+    if parse_cli_help(sys.argv):
+        print(CLI_USAGE, end="")
+        return
+    if parse_cli_headless(sys.argv):
+        # The console script is `slife:main`, so this is the only place the
+        # flag can be honoured for it (`python -m slife` routes in
+        # ``__main__.py``): without it, `slife --headless` silently started
+        # the TUI while the README documented the flag.
+        from slife.subagent.headless import main as headless_main
+
+        headless_main([a for a in sys.argv if a != "--headless"])
+        return
+
     from slife.bootstrap import (
         restore_windows_console,
         seed_skills,

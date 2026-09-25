@@ -142,6 +142,35 @@ def parse_cli_lang(argv: list[str]) -> str | None:
     return None
 
 
+def parse_cli_headless(argv: list[str]) -> bool:
+    """Whether the worker protocol was asked for instead of the TUI."""
+    return "--headless" in argv[1:]
+
+
+def parse_cli_help(argv: list[str]) -> bool:
+    """Whether ``-h`` / ``--help`` was asked for."""
+    return any(a in ("-h", "--help") for a in argv[1:])
+
+
+#: The command line, as ``--help`` prints it.  Kept here beside the scanners
+#: that read it, and pinned by ``tests/test_main.py`` (every flag named below
+#: must be one a scanner accepts), so the help cannot describe a surface the
+#: entry points do not have.
+CLI_USAGE = """\
+Usage: slife [options] [config-path]
+
+  config-path        use a specific config file; its parent directory becomes
+                     the data dir (default: ~/.slife/slife.yaml, or the CWD in
+                     a source checkout)
+  --agent <id>       agent identity — a separate turns database and A2A mesh
+                     name (default: slife)
+  --lang <en|zh>     interface language (default: the OS locale)
+  --headless         no TUI: speak the worker protocol over stdin/stdout, the
+                     way subagent processes do
+  -h, --help         show this message and exit
+"""
+
+
 def _parse_section(raw: dict, key: str, expected_type, default):
     """Safely extract a typed section from parsed YAML, returning
     *default* if the value is missing or of the wrong type."""

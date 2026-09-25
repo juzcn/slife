@@ -590,6 +590,50 @@ class TestParseCLI:
         assert parse_cli_lang(["slife"]) is None
         assert parse_cli_lang(["slife", "--agent", "bob"]) is None
 
+    def test_parse_cli_help(self):
+        from slife.config import parse_cli_help
+        assert parse_cli_help(["slife", "--help"]) is True
+        assert parse_cli_help(["slife", "-h"]) is True
+        assert parse_cli_help(["slife", "conf.yaml", "--help"]) is True
+        assert parse_cli_help(["slife"]) is False
+        # Not a flag-value lookalike: only the bare forms count.
+        assert parse_cli_help(["slife", "--agent", "h"]) is False
+
+    def test_parse_cli_headless(self):
+        from slife.config import parse_cli_headless
+        assert parse_cli_headless(["slife", "--headless"]) is True
+        assert parse_cli_headless(["slife", "conf.yaml", "--headless"]) is True
+        assert parse_cli_headless(["slife"]) is False
+
+    def test_usage_names_only_flags_the_scanners_honour(self):
+        """`--help` must not describe a surface the entry points lack.
+
+        Every flag the usage text prints is parsed back through the scanner
+        that owns it, so a flag cannot be advertised here and ignored there
+        (or vice versa) without this failing.
+        """
+        import re
+
+        from slife.config import (
+            CLI_USAGE,
+            parse_cli_agent,
+            parse_cli_config_path,
+            parse_cli_headless,
+            parse_cli_help,
+            parse_cli_lang,
+        )
+
+        assert set(re.findall(r"--[a-z-]+", CLI_USAGE)) == {
+            "--agent", "--lang", "--headless", "--help",
+        }
+        assert parse_cli_help(["slife", "--help"])
+        assert parse_cli_headless(["slife", "--headless"])
+        assert parse_cli_agent(["slife", "--agent", "bob"]) == "bob"
+        assert parse_cli_lang(["slife", "--lang", "zh"]) == "zh"
+        # …and the positional it documents is the one the scanner reads.
+        assert parse_cli_config_path(["slife", "myconf.yaml"]) == "myconf.yaml"
+        assert "config-path" in CLI_USAGE
+
     def test_parse_cli_lang_invalid_value(self):
         from slife.config import parse_cli_lang
         with pytest.raises(SystemExit):
