@@ -53,6 +53,42 @@ class TestMainFunction:
                 mock_app_cls.assert_called_once()
                 mock_app.run.assert_called_once()
 
+    def test_main_notes_session_and_clears_it_on_exit(self, mock_config):
+        """main() records the session at startup and forgets it in teardown.
+
+        The pair is the whole mechanism: the marker only survives when the
+        teardown never runs, which is what a hard kill looks like from the
+        next start (bootstrap.previous_session_killed).
+        """
+        with patch("slife.bootstrap.previous_session_killed", return_value=None) as prev, \
+             patch("slife.bootstrap.note_session_start") as note, \
+             patch("slife.bootstrap.clear_session_marker") as clear, \
+             patch("slife.Config.from_yaml", return_value=mock_config), \
+             patch("slife.SlifeApp") as mock_app_cls:
+            mock_app_cls.return_value = MagicMock()
+
+            from slife import main
+            main()
+
+        prev.assert_called_once()
+        note.assert_called_once()
+        clear.assert_called_once()
+
+    def test_main_reports_a_killed_previous_session(self, mock_config, capsys):
+        """The user is told, on the terminal, that the last session was killed."""
+        killed = "the last session (pid 4242) was killed from outside"
+        with patch("slife.bootstrap.previous_session_killed", return_value=killed), \
+             patch("slife.bootstrap.note_session_start"), \
+             patch("slife.bootstrap.clear_session_marker"), \
+             patch("slife.Config.from_yaml", return_value=mock_config), \
+             patch("slife.SlifeApp") as mock_app_cls:
+            mock_app_cls.return_value = MagicMock()
+
+            from slife import main
+            main()
+
+        assert "killed from outside" in capsys.readouterr().err
+
     def test_main_creates_app_with_config(self, mock_config):
         """SlifeApp is created with the loaded config."""
         with patch("slife.Config.from_yaml", return_value=mock_config):

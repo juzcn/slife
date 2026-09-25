@@ -76,6 +76,9 @@ def main(config_path: str | None = None):
         return
 
     from slife.bootstrap import (
+        clear_session_marker,
+        note_session_start,
+        previous_session_killed,
         restore_windows_console,
         seed_skills,
         setup_logging,
@@ -128,6 +131,17 @@ def main(config_path: str | None = None):
         _os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
     log_path, _ = setup_logging(agent_name=agent_name)
+
+    # A session that was killed rather than stopped left its marker behind and
+    # its teardown unrun (bootstrap.previous_session_killed) — say so now, to
+    # the log and to the user.  It is the one fact that separates "the TUI was
+    # killed from outside" from every theory one can invent about a log that
+    # just stops mid-sentence.
+    killed = previous_session_killed(log_path.parent)
+    if killed:
+        logger.warning("previous_session_killed %s", killed)
+        print(f"Warning: {killed}", file=sys.stderr)
+    note_session_start(log_path, sid)
 
     logger.debug("log_path=%s", log_path)
     logger.debug("data_dir=%s", data_dir)
@@ -210,6 +224,10 @@ def main(config_path: str | None = None):
         # in raw mode (arrow keys showing ^[[A).  This is the safety net.
         if sys.platform == "win32":
             restore_windows_console()
+        # Teardown reached — the marker this session wrote at startup is no
+        # longer evidence of anything.  (Killed first?  It stays, and the next
+        # start reports it: bootstrap.previous_session_killed.)
+        clear_session_marker(log_path.parent)
         # Ensure child processes are cleaned up even on crash.
         app.service.kill_child_processes()
 
