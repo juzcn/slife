@@ -4,6 +4,8 @@
    - OS: {{ platform_name }} {{ os_version }} ({{ arch }})
    - Python interpreter: {{ python_cmd }} ({{ python_version }})
    - Package manager: {{ package_manager }}
+{% if platform_name == "Windows" %}   - Process control: enumerate with `Get-CimInstance Win32_Process`. `wmic /format:list` ends each line with CR CR LF, so a blank-line split yields ONE block and the pid parsed out of it is arbitrary; `taskkill /T` on such a pid takes a whole tree — slife's own python.exe is in it.
+{% endif %}
 2. Data directories
    - Data root: {{ data_dir }}
    - Config file: {{ config_path }}
