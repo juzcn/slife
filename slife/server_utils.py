@@ -57,11 +57,11 @@ Required plugins (core components)
   configured per instance** — named in the ``plugins.required`` list of
   ``slife.yaml`` (default: empty = every plugin optional).  A required
   plugin that fails to become ready — lifespan failure (FAILED), a raised
-  spawn, or the harness's bounded 30 s spawn hang-guard — **aborts
-  startup**: red message, all plugins stopped, non-zero exit.  The app
-  must never run without a core component.  ``memdb`` and ``memfiles``
-  are required in the standard configuration because memory is core;
-  everything else defaults to non-required (load failure warns, the
+  spawn, or the harness's bounded spawn hang-guard (``ready.plugin_start``,
+  60 s) — **aborts startup**: red message, all plugins stopped, non-zero
+  exit.  The app must never run without a core component.  ``memdb`` and
+  ``memfiles`` are required in the standard configuration because memory is
+  core; everything else defaults to non-required (load failure warns, the
   session continues, and the watchdog backs off and retries).
 
 Tool registration
