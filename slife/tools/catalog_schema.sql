@@ -124,7 +124,6 @@ CREATE TABLE IF NOT EXISTS tool_embeddings (
     name        TEXT NOT NULL REFERENCES tool(name) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL,
     embedding   BLOB NOT NULL,
-    model       TEXT NOT NULL,
     PRIMARY KEY (name, chunk_index)
 );
 

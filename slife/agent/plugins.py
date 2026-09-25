@@ -108,7 +108,6 @@ class PluginStartStatus(enum.Enum):
 #: surface via ``PluginStartStatus.FAILED``.
 READY_PENDING = "pending"
 READY_READY = "ready"
-READY_FAILED = "failed"
 
 
 @dataclass

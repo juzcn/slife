@@ -38,12 +38,8 @@ _PRIMARY_ARG_MAX = 72
 _MAX_RESULT_LINES = 2000
 
 
-def _friendly_label(tool_name: str, status: str) -> str:
-    """Return a human-readable label (name with underscores as spaces).
-
-    ``status`` is accepted for call-shape symmetry but plays no part in the
-    label — the status icon already signals running vs done.
-    """
+def _friendly_label(tool_name: str) -> str:
+    """Return a human-readable label (name with underscores as spaces)."""
     return tool_name.replace("_", " ").capitalize()
 
 
@@ -123,13 +119,11 @@ class ToolCallWidget(VerticalScroll):
         self,
         tool_name: str,
         tool_args: dict,
-        tool_call_id: str,
         iteration: int = 0,
         max_iterations: int = 30,
     ):
         self.tool_name = tool_name
         self.tool_args = tool_args
-        self.tool_call_id = tool_call_id
         self._iteration = iteration
         self._max_iterations = max_iterations
         self._is_collapsed = True
@@ -207,7 +201,12 @@ class ToolCallWidget(VerticalScroll):
         _copy_to_clipboard(text)
 
     async def action_toggle(self, attribute_name: str = "") -> None:
-        """Toggle expand/collapse via keyboard."""
+        """Toggle expand/collapse via keyboard.
+
+        ``attribute_name`` is never read here, but it is NOT dead: Textual's
+        ``DOMNode.action_toggle`` declares it, and dropping it makes this an
+        incompatible override (pyright ``reportIncompatibleMethodOverride``).
+        """
         self.toggle()
 
     # ── Rendering ──────────────────────────────────────────────────
@@ -238,7 +237,7 @@ class ToolCallWidget(VerticalScroll):
         label_key = _STATUS_LABEL_KEY.get(status, _STATUS_LABEL_KEY[_STATUS_DEFAULT])
         label_text = t(label_key)
         indicator = "▾" if not self._is_collapsed else "▸"
-        label = _friendly_label(self.tool_name, status)
+        label = _friendly_label(self.tool_name)
 
         # Indicator
         content = _lit(indicator + " ")

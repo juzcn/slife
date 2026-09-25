@@ -16,7 +16,6 @@ instance directly (in-memory transport), no socket needed.
 import pytest; pytestmark = pytest.mark.unit
 
 import asyncio
-import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

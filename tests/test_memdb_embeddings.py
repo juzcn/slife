@@ -77,29 +77,6 @@ class TestEmbeddingClientInit:
         assert client.backend == "api"
         assert client.dimension == 1536
 
-    def test_gguf_backend(self):
-        with (
-            patch("slife.plugins.memdb.embeddings.Path.exists", return_value=True),
-            patch("slife.plugins.memdb.embeddings._check_runtime", return_value=True),
-        ):
-            client = EmbeddingClient(
-                model="bge-m3",
-                gguf_path="/path/to/model.gguf",
-            )
-            assert client.available is True
-            assert client.backend == "gguf"
-            assert client.dimension == 1024
-
-    def test_gguf_path_not_exists_falls_back(self):
-        with patch("slife.plugins.memdb.embeddings.Path.exists", return_value=False):
-            client = EmbeddingClient(
-                model="bge-m3",
-                gguf_path="/nonexistent/model.gguf",
-                api_key="sk-key",
-            )
-            # Should fall through to api backend since key is provided
-            assert client.backend == "api"
-
     def test_no_backend(self):
         client = EmbeddingClient()
         assert client.available is False
@@ -108,19 +85,6 @@ class TestEmbeddingClientInit:
     def test_explicit_dim(self):
         client = EmbeddingClient(model="custom", dim=512)
         assert client.dimension == 512
-
-    def test_gguf_runtime_check_fails(self):
-        """available=False when GGUF file exists but llama-cpp isn't installed."""
-        with (
-            patch("slife.plugins.memdb.embeddings.Path.exists", return_value=True),
-            patch("slife.plugins.memdb.embeddings._check_runtime", return_value=False),
-        ):
-            client = EmbeddingClient(
-                model="bge-m3",
-                gguf_path="/path/to/model.gguf",
-            )
-            assert client.backend == "gguf"
-            assert client.available is False
 
     def test_api_runtime_check_fails(self):
         """available=False when api_key is set but openai isn't installed."""
@@ -396,120 +360,6 @@ class TestEmbeddingClientEmbedOne:
             assert result is None
 
 
-class TestEmbeddingConcurrentEmbed:
-    """Concurrent embeds on a shared local model must serialise.
-
-    llama-cpp / sentence-transformers instances are NOT safe for concurrent
-    encode calls. A burst of hybrid searches (main agent + subagents share
-    one memdb server) calls ``embed_one`` at once; without the per-client
-    ``_embed_lock`` the GGUF backend used to crash llama.cpp natively
-    (``GGML_ASSERT … tensor buffer not set`` abort)."""
-
-    @pytest.mark.asyncio
-    async def test_concurrent_gguf_embeds_serialize(self):
-        import asyncio
-        import threading
-        import time
-
-        client = EmbeddingClient.__new__(EmbeddingClient)
-        client._backend = "gguf"
-        client._available = True
-        client._model = "bge-m3"
-        client._dim = 4
-        client._client = None
-        client._loading = None
-        client._embed_lock = threading.Lock()
-
-        class FakeLlama:
-            def __init__(self):
-                self.cur = 0
-                self.peak = 0
-
-            def create_embedding(self, text):
-                self.cur += 1
-                self.peak = max(self.peak, self.cur)
-                time.sleep(0.02)
-                self.cur -= 1
-                return {"data": [{"embedding": [0.1] * 4}]}
-
-        client._client = FakeLlama()
-
-        results = await asyncio.gather(
-            *(client.embed_one(f"concurrent query {i}") for i in range(6))
-        )
-        assert all(r is not None and len(r) == 4 for r in results)
-        # Never two create_embedding calls in flight → no native crash.
-        assert client._client.peak == 1
-
-    @pytest.mark.asyncio
-    async def test_batch_embed_does_not_hold_lock_between_calls(self):
-        """A reindex batch may interleave with a search's single embed —
-        the lock is per create_embedding call, not per whole batch."""
-        import asyncio
-        import threading
-        import time
-
-        client = EmbeddingClient.__new__(EmbeddingClient)
-        client._backend = "gguf"
-        client._available = True
-        client._model = "bge-m3"
-        client._dim = 4
-        client._client = None
-        client._loading = None
-        client._embed_lock = threading.Lock()
-
-        class FakeLlama:
-            def __init__(self):
-                self.cur = 0
-                self.peak = 0
-
-            def create_embedding(self, text):
-                self.cur += 1
-                self.peak = max(self.peak, self.cur)
-                time.sleep(0.01)
-                self.cur -= 1
-                return {"data": [{"embedding": [0.1] * 4}]}
-
-        client._client = FakeLlama()
-
-        # batch (reindex-style, 3 texts) racing a single search embed
-        batch = asyncio.create_task(client.embed(["a", "b", "c"]))
-        single = asyncio.create_task(client.embed_one("s"))
-        await asyncio.gather(batch, single)
-        assert client._client.peak == 1
-
-
-class TestEmbeddingLoad:
-    """load() must materialise the local model exactly once, even under
-    concurrent callers — the semantic gate calls load() from every search,
-    so without this a burst of searches would load the GGUF model repeatedly."""
-
-    @pytest.mark.asyncio
-    async def test_concurrent_load_shares_one_materialisation(self):
-        import asyncio
-
-        client = EmbeddingClient.__new__(EmbeddingClient)
-        client._backend = "gguf"
-        client._available = True
-        client._gguf_path = "/tmp/m.gguf"
-        client._model = "bge-m3"
-        client._dim = 1024
-        client._client = None
-        client._loading = None
-        calls = 0
-
-        async def _fake_load():
-            nonlocal calls
-            calls += 1
-            await asyncio.sleep(0.01)
-            client._client = object()
-
-        client._load_gguf = _fake_load
-        await asyncio.gather(client.load(), client.load())
-        assert calls == 1
-        assert client._client is not None
-
-
 class TestDimensionKnown:
     """dimension_known distinguishes authoritative widths from bare guesses."""
 
@@ -534,45 +384,6 @@ class TestDimensionKnown:
 
 class TestDimProbe:
     """Real width is discovered from the backend, not trusted from a guess."""
-
-    @pytest.mark.asyncio
-    async def test_load_gguf_corrects_dim_from_n_embd(self):
-        import sys
-        import threading
-        from types import ModuleType
-
-        client = EmbeddingClient.__new__(EmbeddingClient)
-        client._backend = "gguf"
-        client._available = True
-        client._gguf_path = "/tmp/m.gguf"
-        client._model = "my-custom-embedder"
-        client._dim = 1024
-        client._dim_known = False
-        client._client = None
-        client._loading = None
-        client._embed_lock = threading.Lock()
-
-        class FakeLlama:
-            n_embd = 768
-
-        fake_mod = ModuleType("llama_cpp")
-        fake_mod.Llama = lambda **kw: FakeLlama()
-
-        async def _fake_run(fn, **_kw):
-            return fn()
-
-        with (
-            patch.dict(sys.modules, {"llama_cpp": fake_mod}),
-            patch(
-                "slife.threads.run_daemon",
-                new=AsyncMock(side_effect=_fake_run),
-            ),
-        ):
-            ok = await client.load()
-
-        assert ok is True
-        assert client.dimension == 768
-        assert client.dimension_known is True
 
     @pytest.mark.asyncio
     async def test_load_api_probes_dim(self):

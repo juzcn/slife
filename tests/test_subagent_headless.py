@@ -4,9 +4,8 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import json
-import sys
 from io import BytesIO
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

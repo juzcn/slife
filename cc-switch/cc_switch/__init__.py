@@ -28,7 +28,6 @@ from cc_switch._defaults import (
     DEFAULT_SETTINGS,
     MAIN_MODEL_SLOT_KEYS,
     default_value,
-    list_default_override_keys,
 )
 
 try:
@@ -46,7 +45,6 @@ __all__ = [
     "MAIN_MODEL_SLOT_KEYS",
     "add_provider",
     "default_value",
-    "list_default_override_keys",
     "list_providers",
     "load_config",
     "remove_provider",

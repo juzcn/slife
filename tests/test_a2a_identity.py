@@ -81,7 +81,6 @@ class TestAgentMessage:
         """Check all default field values."""
         msg = AgentMessage(source=AgentName("bot"), content="test")
         assert msg.images == []
-        assert msg.reply_to is None
         assert msg.correlation_id is None
         assert msg.metadata == {}
         assert msg.on_reply is None
@@ -97,7 +96,6 @@ class TestAgentMessage:
             source=AgentName("sub-1"),
             content="task result",
             images=["img1.png"],
-            reply_to="task-123",
             correlation_id="corr-456",
             metadata={"channel": "mqtt"},
             on_reply=my_reply,
@@ -106,7 +104,6 @@ class TestAgentMessage:
         assert msg.source == "sub-1"
         assert msg.content == "task result"
         assert msg.images == ["img1.png"]
-        assert msg.reply_to == "task-123"
         assert msg.correlation_id == "corr-456"
         assert msg.metadata == {"channel": "mqtt"}
         assert msg.on_reply is my_reply

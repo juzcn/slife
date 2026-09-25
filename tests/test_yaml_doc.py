@@ -11,7 +11,7 @@ import pytest; pytestmark = pytest.mark.unit
 from pathlib import Path
 
 from slife.tools._config_io import read_config, write_config
-from slife.tools._yaml_doc import new_yaml, render, render_document
+from slife.tools._yaml_doc import render, render_document
 from tests.conftest import load_config_text
 
 DOC = """\

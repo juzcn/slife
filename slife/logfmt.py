@@ -125,11 +125,8 @@ def get_session_id() -> str:
 
 
 @contextmanager
-def request_scope(label: str = ""):
+def request_scope():
     """Set a request ID for all log calls within this block.
-
-    Args:
-        label: Optional human-readable label (e.g. user message preview).
 
     Yields:
         The generated 8-char hex request ID.
@@ -140,11 +137,6 @@ def request_scope(label: str = ""):
         yield rid
     finally:
         _request_id.reset(token)
-
-
-def get_request_id() -> str:
-    """Return the current request ID, or '--------' if not in a scope."""
-    return _request_id.get() or "--------"
 
 
 # ── Formatter ───────────────────────────────────────────────────────────

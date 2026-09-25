@@ -40,15 +40,6 @@ ChatView {
     color: #e6edf3;
 }
 
-/* ── Thinking block inside assistant messages ────────────────── */
-
-.thinking-block {
-    color: #6e7681;
-    text-style: italic;
-    margin: 0 0 1 0;
-    padding: 0 1;
-}
-
 /* ── System messages ─────────────────────────────────────────── */
 
 .system-message {

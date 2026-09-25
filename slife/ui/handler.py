@@ -208,7 +208,6 @@ class TUIHandler:
         widget = ToolCallWidget(
             tool_name=tool_call.name,
             tool_args=tool_call.arguments,
-            tool_call_id=tool_call.id,
             iteration=iteration,
             max_iterations=max_iterations,
         )

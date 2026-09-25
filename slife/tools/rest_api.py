@@ -71,15 +71,6 @@ def _format_rest_apis(rest_apis: dict) -> str:
     return "\n".join(lines)
 
 
-def get_rest_apis_summary(config_path) -> str:
-    """Read rest-api entries from tools.yaml (fallback for offline use).
-
-    The config path is resolved by the gateway ($TOOLS_FILE), so
-    *config_path* is accepted for signature compatibility and ignored.
-    """
-    return _format_rest_apis(mcp_gateway_config.list_rest_apis())
-
-
 class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     name = "rest_api_set"
     category = "REST API"

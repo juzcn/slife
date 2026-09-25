@@ -170,7 +170,6 @@ class AgentMessage:
     source: AgentName
     content: str
     images: list[str] = field(default_factory=list)
-    reply_to: str | None = None
     correlation_id: str | None = None
     metadata: dict = field(default_factory=dict)
     # Text reply callback, optionally taking ``cancelled: bool = False``

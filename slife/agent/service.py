@@ -692,23 +692,6 @@ class AgentService:
         from slife.health import record_active_model
         record_active_model(model)
 
-    @property
-    def mcp_enabled(self) -> bool:
-        """Whether the MCP gateway plugin is connected (its tools active)."""
-        lc = self._gateway_lifecycle()
-        return lc is not None and lc.client is not None and lc.client.is_connected
-
-    @property
-    def a2a_enabled(self) -> bool:
-        """Whether the A2A P2P mesh is active (a2a plugin connected)."""
-        client = self._plugins["a2a"].client
-        return client is not None and client.is_connected
-
-    @property
-    def subagent_manager(self):
-        """The SubagentManager, if A2A is enabled and subagent support is active."""
-        return self._subagent_manager
-
     def clear(self) -> None:
         """Reset the message history and session usage."""
         self.message_history.clear()
@@ -2143,16 +2126,6 @@ class AgentService:
 
     # ── Stop helpers ────────────────────────────────────────────────────
 
-    async def stop_plugin(self, name: str) -> None:
-        """Shut down a plugin by name.
-
-        Disconnects its client, cancels its supervised background tasks
-        (poll / restore), and stops its child process when this agent owns
-        one.  A plugin that was never started is a no-op.
-        """
-        lc = self._registry.ensure(name)
-        await lc.stop()
-
     async def stop_all_plugins(self) -> None:
         """Stop every registered plugin.
 
@@ -3401,8 +3374,8 @@ class AgentService:
             except asyncio.CancelledError:
                 pass
             self._schedule_startup_task = None
-        for t in list(self._timer_tasks):
-            t.cancel()
+        for timer_task in list(self._timer_tasks):
+            timer_task.cancel()
         if self._timer_tasks:
             await asyncio.gather(*self._timer_tasks, return_exceptions=True)
             self._timer_tasks.clear()
@@ -3624,18 +3597,6 @@ class AgentService:
             await asyncio.sleep(interval)
 
         logger.info("a2a_poll_loop_stop")
-
-
-    def set_inbox_handler_factory(self, factory) -> None:
-        """Register a factory that creates TUI handlers for inbox messages.
-
-        Called by the TUI layer so remote A2A tasks always have a handler
-        available, even before the first human message is typed.
-        """
-        if self.inbox is not None:
-            self.inbox._histories.set_default_handler_factory(factory)
-
-        logger.info("a2a_init_done tools=%d", len(self.tool_registry.list_tools()))
 
     # ── Subagent lifecycle ─────────────────────────────────────────────
 

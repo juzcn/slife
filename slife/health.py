@@ -153,12 +153,6 @@ def get_report() -> list[dict]:
         return list(_entries)
 
 
-def clear() -> None:
-    """Clear all entries (e.g. on re-init)."""
-    with _lock:
-        _entries.clear()
-
-
 # ── External tooling availability check ─────────────────────────────────
 
 

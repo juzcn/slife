@@ -19,7 +19,6 @@ from slife.ui.i18n import t
 from slife.ui.tool_display import ToolCallWidget
 
 if TYPE_CHECKING:
-    from slife.config import Config
     from slife.agent.message_history import MessageHistory
     from slife.ui.app import SlifeApp
     from slife.ui.chat import ChatView
@@ -86,7 +85,6 @@ async def restore_session(
     app: "SlifeApp",
     turns: list[dict],
     history: "MessageHistory",
-    config: "Config",
     assistant_prefix: str,
 ) -> None:
     """Restore a previous session from turn-based memory.
@@ -369,7 +367,6 @@ async def restore_session(
                     widget = ToolCallWidget(
                         tool_name=tc["name"],
                         tool_args=tc["arguments"],
-                        tool_call_id=tcid,
                     )
                     chat_view.mount(widget)
                     widget.set_complete(result, is_error)

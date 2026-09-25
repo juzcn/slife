@@ -24,7 +24,6 @@ memdb + memfiles); ``enable`` re-reads it on every call.
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import Any
 
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
@@ -56,20 +55,9 @@ _DRAIN_STALLED_REASON = (
 def _backend_unavailable_reason(embedder: EmbeddingClient) -> str:
     """Human reason why the configured backend is unavailable."""
     backend = embedder._backend
-    if backend == "gguf":
-        if embedder._gguf_path:
-            if Path(embedder._gguf_path).exists():
-                return ("gguf backend unavailable — llama-cpp-python not installed. "
-                        "Run: uv pip install llama-cpp-python")
-            return ("gguf backend unavailable — GGUF file not found. "
-                    "Serve it via local-embed and point embeddings_model_set at it")
-        return "gguf backend unavailable — no GGUF model path configured"
     if backend == "api":
         return ("api backend unavailable — base_url/api_key is missing or an "
                 "unresolved ${VAR} placeholder. Configure it with embeddings_model_set")
-    if backend == "transformer":
-        return ("transformer backend unavailable — sentence-transformers not installed. "
-                "Run: uv pip install sentence-transformers")
     return "embedding backend not configured"
 
 

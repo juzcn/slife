@@ -76,9 +76,6 @@ agent:
 #   compat.thinkingFormat openai — on an anthropic backend: the model always
 #                         thinks, so no thinking parameter is sent
 models:
-  # Not read by the current code — providers are always merged into the model
-  # registry.  Retained for forward compatibility.
-  mode: merge
   providers:
     deepseek:
       base_url: https://api.deepseek.com

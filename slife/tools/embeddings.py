@@ -283,9 +283,6 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
             providers[pid] = {}
             created = True
         pcfg = providers[pid]
-        if not isinstance(pcfg, dict):
-            pcfg = {}
-            providers[pid] = pcfg
 
         if "base_url" in kwargs:
             pcfg["base_url"] = kwargs["base_url"]

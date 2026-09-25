@@ -215,7 +215,6 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
 
 
         source = with_fetched_at(source)
-        is_update = False
 
         ctx = getattr(self, "_ctx", None)
         config = _live_cli_config(self)
@@ -225,6 +224,9 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
             # deliberately-disabled tool.
             old = config.cli_tools.get(name)
             old_enabled = old.get("enabled") if isinstance(old, dict) else None
+            # Membership BEFORE the write: ``save_cli_tool`` upserts, so
+            # asking afterwards always answers "yes".
+            is_update = name in config.cli_tools
             config.save_cli_tool(
                 name=name, command=command, description=description,
                 install=install, source=source, enabled=old_enabled,
@@ -234,6 +236,7 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
             cli_tools, persist = _open_raw_cli(self)
             old = cli_tools.get(name)
             old_enabled = old.get("enabled") if isinstance(old, dict) else None
+            is_update = name in cli_tools
             entry: dict = {"command": command, "description": description}
             if install:
                 entry["install"] = install
@@ -245,7 +248,6 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
             persist()
             current = cli_tools
 
-        is_update = name in current
         # The catalog follows the config, so the entry is findable by
         # tool_search before the next restart.
         await sync_cli_catalog(ctx, current)

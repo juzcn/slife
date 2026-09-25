@@ -2,6 +2,7 @@
 status, LRU, search, drainer contract, WAL cross-process pragmas)."""
 
 import asyncio
+import json
 
 import pytest
 import pytest_asyncio
@@ -13,7 +14,6 @@ from slife.tools.catalog import (
     STATUS_ENABLED,
     STATUS_ERROR,
     CatalogStore,
-    _compact_schema,
     _cosine_distance,
     _deserialize_f32,
     _flatten_schema,
@@ -28,6 +28,22 @@ async def store(tmp_path):
     await s.close()
 
 
+async def count_tool_vectors(store) -> int:
+    """Distinct tools with at least one embedding row.
+
+    The store's own read surface has no count for this (production reads
+    ``count_unembedded`` / the semantic facts instead), so the tests that need
+    to observe vector presence ask the table directly.
+    """
+    cursor = await store._c.execute(
+        "SELECT COUNT(DISTINCT name) FROM tool_embeddings",
+    )
+    row = await cursor.fetchone()
+    return row[0] if row else 0
+
+
+
+
 def _tool(name, description="", schema=None):
     tool = {"name": name, "description": description}
     if schema is not None:
@@ -36,11 +52,19 @@ def _tool(name, description="", schema=None):
 
 
 def _descriptor(name, description, schema):
-    return _compact_schema(_tool(name, description, schema))
+    """Compact JSON of a tool descriptor — the catalog ``schema`` column.
+
+    Mirrors ``catalog_service.descriptor_json``, except that a ``None``
+    schema omits the key rather than emitting ``inputSchema: null`` (the
+    fixtures below use ``None`` to mean "no schema at all").
+    """
+    return json.dumps(
+        _tool(name, description, schema), ensure_ascii=False, separators=(",", ":"),
+    )
 
 
-async def _set_embedding(store, name, vec, *, model="test-model"):
-    await store.replace_embedding_chunks({"doc_id": name}, [vec], model=model)
+async def _set_embedding(store, name, vec):
+    await store.replace_embedding_chunks({"doc_id": name}, [vec])
 
 
 # ── Upserts / effective status ──────────────────────────────────────
@@ -472,7 +496,7 @@ async def test_reconcile_invalidates_only_the_tools_whose_schema_moved(store):
                                     _row("b", schema="schema-b")])
     assert result["schema_changed"] == ["a"]
     assert await store.count_unembedded() == 1
-    assert await store.count_embedded() == 1
+    assert await count_tool_vectors(store) == 1
 
 
 @pytest.mark.asyncio
@@ -503,7 +527,7 @@ async def test_the_only_embedding_trigger_is_a_schema_move(store):
     assert moved["updated"] == ["svc__t"]
     assert moved["schema_changed"] == ["svc__t"]
     assert await store.count_unembedded() == 1
-    assert await store.count_embedded() == 0
+    assert await count_tool_vectors(store) == 0
 
     # …and a NON-schema move never does: the vectors are the schema's, so a
     # switch, a description or a rename leaves them alone.
@@ -566,7 +590,7 @@ async def test_reconcile_purge_is_scoped_to_its_category(store):
     assert result["purged"] == ["keep"]
     assert await store.get_tool("keep") is None
     assert await store.get_tool("other") is not None     # another category
-    assert await store.count_embedded() == 0             # vectors went too
+    assert await count_tool_vectors(store) == 0             # vectors went too
 
 
 @pytest.mark.asyncio
@@ -670,7 +694,7 @@ async def test_the_category_is_the_only_thing_that_says_what_a_row_is(tmp_path):
 
     store = CatalogStore(path)
     await store.open()
-    from slife.health import clear, get_report
+    from slife.health import get_report
     try:
         # An extra column is a stale file, not a harmless leftover: nothing
         # maintains it any more, which is the burden dropping it removed.
@@ -679,7 +703,6 @@ async def test_the_category_is_the_only_thing_that_says_what_a_row_is(tmp_path):
         assert "Delete" in entry["hint"]
     finally:
         await store.close()
-        clear()
 
 
 @pytest.mark.asyncio
@@ -754,9 +777,8 @@ async def test_stale_category_check_is_reported_not_silently_broken(tmp_path):
     the mirror is best-effort, so the tools would just stay uncatalogued.  The
     open-time probe must say so (the file is deleted, not migrated)."""
     import aiosqlite
-    from slife.health import clear, get_report
+    from slife.health import get_report
 
-    clear()
     path = tmp_path / "tools.db"
     conn = await aiosqlite.connect(str(path))
     await conn.execute(_STALE_CATEGORY_CHECK_DDL)
@@ -780,7 +802,6 @@ async def test_stale_category_check_is_reported_not_silently_broken(tmp_path):
     # The pre-existing row is untouched and still readable.
     assert (await store.get_tool("execute_shell"))["category"] == "builtin"
     await store.close()
-    clear()
 
 
 @pytest.mark.asyncio
@@ -797,9 +818,8 @@ async def test_missing_column_is_reported_not_left_as_a_query_error(tmp_path):
     as well has its own test below.
     """
     import aiosqlite
-    from slife.health import clear, get_report
+    from slife.health import get_report
 
-    clear()
     path = tmp_path / "tools.db"
     conn = await aiosqlite.connect(str(path))
     await conn.execute(
@@ -827,7 +847,6 @@ async def test_missing_column_is_reported_not_left_as_a_query_error(tmp_path):
             await store.get_tool("anything")
     finally:
         await store.close()
-        clear()
 
 
 @pytest.mark.asyncio
@@ -1013,16 +1032,16 @@ async def test_drainer_roundtrip_and_model_meta(store):
     assert "search things" in texts["svcA__search"]        # flattened descriptor
     assert "cli-foo" not in texts
 
-    await store.replace_embedding_chunks(docs[0], [[0.1, 0.2]], model="api:bge-m3")
+    await store.replace_embedding_chunks(docs[0], [[0.1, 0.2]])
     assert await store.count_unembedded() == 1
-    assert await store.count_embedded() == 1
+    assert await count_tool_vectors(store) == 1
     # meta never written by replace — the SemanticManager writes it on model select
     assert (await store.get_meta("embedding_model")) is None
 
     # model swap contract: drop_embeddings clears the old vector space
-    await _set_embedding(store, "svcA__search", [0.5, 0.6], model="old")
+    await _set_embedding(store, "svcA__search", [0.5, 0.6])
     assert await store.drop_embeddings() == 2
-    assert await store.count_embedded() == 0
+    assert await count_tool_vectors(store) == 0
     assert await store.count_unembedded() == 2  # both need re-embedding
 
 

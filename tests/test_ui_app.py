@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from slife.config import Config, ModelConfig
 from slife.agent.llm_client import TokenUsage
-from slife.agent.loop import ToolCallInfo, AgentResult
+from slife.agent.loop import ToolCallInfo
 from slife.agent.service import AgentService
 from slife.ui.app import HistoryInput, StatusBar, _parse_images_from_input
 from slife.ui.handler import TUIHandler
@@ -32,7 +32,6 @@ class TestAgentService:
     def test_mcp_disabled_initially(self, sample_config):
         """MCP is not enabled until start_mcp is called."""
         service = AgentService(sample_config)
-        assert service.mcp_enabled is False
         assert service._plugins["mcp-gateway"].client is None
         assert service._plugins["mcp-gateway"].process is None
 
@@ -121,7 +120,7 @@ class TestAgentService:
         mock_inbox.post = AsyncMock()
         service.inbox = mock_inbox
 
-        result = await service.process_message("describe", ["img.png"], handler)
+        await service.process_message("describe", ["img.png"], handler)
 
         mock_inbox.post.assert_awaited_once()
         msg = mock_inbox.post.call_args[0][0]
@@ -382,7 +381,6 @@ class TestTUIHandler:
     async def test_on_tool_call(self):
         app = self._make_app_mock()
         app._tool_widgets = {}
-        mock_chat_view = app.query_one.return_value
 
         with patch("slife.ui.handler.ToolCallWidget") as mock_widget_cls:
             mock_widget = MagicMock()

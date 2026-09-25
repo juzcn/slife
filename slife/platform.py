@@ -356,51 +356,6 @@ def _resolve_skill_script(script_path: str) -> str:
     return script_path
 
 
-def build_python_command(input_str: str) -> str:
-    """Build a platform-correct command to run a Python script with JSON args.
-
-    input_str format: "<script_path> <json_args>"
-    Example: "skills/search.py {\"query\":\"hello\"}"
-
-    Returns a complete command with OS-appropriate quoting and UTF-8 handling.
-    """
-    # Split on first { or [ to separate script path from JSON args
-    brace = input_str.find("{")
-    bracket = input_str.find("[")
-    candidates = [i for i in (brace, bracket) if i >= 0]
-    split_at = min(candidates) if candidates else len(input_str)
-
-    if split_at == len(input_str):
-        script = input_str.strip()
-        args = ""
-    else:
-        script = input_str[:split_at].strip()
-        args = input_str[split_at:].strip()
-
-    # Resolve skills/ paths to the installed package location.
-    script = _resolve_skill_script(script)
-
-    # Use sys.executable on all platforms — the exact Python that is
-    # running slife.  On Windows this avoids the MS Store app alias
-    # ("python") and version mismatches from "py".  On macOS / Linux
-    # it avoids missing-python3 issues when Python was installed
-    # via uv (which adds python3.13 but may not create a python3
-    # symlink, especially in CI).
-    python = sys.executable
-
-    if not args:
-        return f"{python} {script}"
-
-    if IS_WINDOWS:
-        # -X utf8 forces Python to use UTF-8 for pipes/stdio — sufficient
-        # to avoid GBK encoding errors.  No chcp prefix needed (it only
-        # tempts the LLM to "simplify" the command by stripping the prefix).
-        escaped = args.replace('"', '\\"')
-        return f'{python} -X utf8 {script} "{escaped}"'
-    else:
-        return f"{python} {script} '{args}'"
-
-
 def _close_pipe_transports(process: asyncio.subprocess.Process) -> None:
     """Close stdin/stdout/stderr pipe transports on *process*.
 

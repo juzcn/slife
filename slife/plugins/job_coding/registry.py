@@ -40,7 +40,6 @@ class Job:
     name: str
     description: str
     fn: object        # the original job function (schema + logic)
-    module: str       # source file stem (the module name without prefix)
     path: Path        # absolute source file path
 
 
@@ -111,7 +110,6 @@ def collect_jobs(module: types.ModuleType) -> list[Job]:
             name=name,
             description=inspect.getdoc(obj) or "",
             fn=obj,
-            module=getattr(module, "_job_file_stem", ""),
             path=Path(getattr(module, "_job_file_path", "")),
         ))
     return jobs
@@ -131,7 +129,6 @@ def scan_jobs_dir(jobs_dir: Path) -> list[Job]:
             continue
         try:
             module = load_module(path)
-            module._job_file_stem = path.stem  # type: ignore[attr-defined]
             module._job_file_path = str(path.resolve())  # type: ignore[attr-defined]
             jobs.extend(collect_jobs(module))
         except Exception as e:

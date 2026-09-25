@@ -594,43 +594,6 @@ class ToolCatalogService:
 
     # ── Reconcile support (per-server/plugin sync helpers) ─────────
 
-    async def upsert_external_tool(
-        self,
-        name: str,
-        *,
-        server: str,
-        description: str,
-        schema: str,
-        category: str = "mcp",
-        enabled: bool | None = None,
-    ) -> bool:
-        """Upsert a server-backed tool row (schema-change detection → re-embed).
-
-        A newly seen tool lands ``unloaded`` — unless its server entry is
-        marked ``autoload: true``, which seeds the whole set loaded — while an
-        existing row keeps whatever the model decided.  For everything else
-        ``func_tool_load`` is the only way into the injection set.
-
-        An ``autoload`` server owns its tools' status (there is no per-tool
-        autoload for mcp/rest-api — the flag is on the server, so it is one
-        decision covering the whole set): ``override_status`` lets the row's
-        status be rewritten when it differs.
-
-        ``enabled`` is the server's own on/off switch (``None`` = no opinion);
-        it moves independently of the load state — see
-        :meth:`set_source_enabled`.
-        """
-        return await self._store.upsert_tool(
-            name,
-            description=description,
-            category=category,
-            source_id=server,
-            schema=schema,
-            status=config_status(enabled),
-            load_status=self.default_status(name, server=server),
-            override_status=server in self.autoload_servers,
-        )
-
     async def mirror_external_tools(
         self,
         server: str,
@@ -641,11 +604,11 @@ class ToolCatalogService:
     ) -> list[str]:
         """Mirror ONE server's whole tool set in a single reconcile.
 
-        The batch face of :meth:`upsert_external_tool`, and it exists for cost:
-        ``reconcile`` reads the catalog's rows once per call, so the per-tool
-        form pays a full-table scan PER TOOL — a server with ~1100 tools paid
-        ~1100 of them on every listing, sequentially, which is most of what a
-        cold reconcile spends its time on.  Batched, the same server costs one
+        One call per server, and that is a cost decision: ``reconcile`` reads
+        the catalog's rows once per call, so a per-tool form would pay a
+        full-table scan PER TOOL — a server with ~1100 tools paid ~1100 of
+        them on every listing, sequentially, which is most of what a cold
+        reconcile spends its time on.  Batched, the same server costs one
         read of the table, one write of the columns that moved, and one purge.
 
         *tools* are the engine's own shape (``name``, ``description``,

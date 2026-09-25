@@ -2,7 +2,6 @@
 
 import pytest; pytestmark = pytest.mark.unit
 
-
 import pytest
 
 from slife.a2a.task_store import TaskRecord, TaskStore, get_store, clear_store
@@ -15,43 +14,11 @@ class TestTaskRecord:
     """Tests for TaskRecord dataclass."""
 
     def test_default_values(self):
-        rec = TaskRecord(
-            task_id="t1",
-            agent_name="agent-1",
-            task_preview="do something",
-            status="pending",
-            transport="mqtt",
-        )
+        rec = TaskRecord(task_id="t1", agent_name="agent-1", status="pending")
         assert rec.task_id == "t1"
         assert rec.agent_name == "agent-1"
-        assert rec.task_preview == "do something"
         assert rec.status == "pending"
-        assert rec.transport == "mqtt"
         assert rec.created_at > 0
-        assert rec.completed_at is None
-        assert rec.result is None
-
-    def test_with_result(self):
-        rec = TaskRecord(
-            task_id="t2",
-            agent_name="a2",
-            task_preview="run tests",
-            status="completed",
-            transport="mqtt",
-            completed_at=100.0,
-            result="All tests passed",
-        )
-        assert rec.status == "completed"
-        assert rec.completed_at == 100.0
-        assert rec.result == "All tests passed"
-
-    def test_created_iso(self):
-        """created_iso is a wall-clock ISO-8601 timestamp (used in feeds)."""
-        rec = TaskRecord(
-            task_id="t9", agent_name="agent-1", task_preview="do thing",
-            status="pending", transport="mqtt",
-        )
-        assert rec.created_iso  # non-empty ISO-8601 string
 
 
 # ── TaskStore — writes ──────────────────────────────────────────────────
@@ -65,58 +32,38 @@ class TestTaskStoreWrites:
         return TaskStore()
 
     def test_record_send(self, store):
-        rec = store.record_send("t1", "agent-1", "do the thing", "mqtt")
+        rec = store.record_send("t1", "agent-1")
         assert rec.task_id == "t1"
         assert rec.agent_name == "agent-1"
         assert rec.status == "pending"
-        assert rec.transport == "mqtt"
-        assert rec.task_preview == "do the thing"
-
-    def test_record_send_truncates_preview(self, store):
-        long_task = "x" * 300
-        rec = store.record_send("t1", "agent-1", long_task, "subagent")
-        assert len(rec.task_preview) == store.MAX_PREVIEW_LEN
 
     def test_record_result(self, store):
-        store.record_send("t1", "agent-1", "task", "mqtt")
-        rec = store.record_result("t1", "Here is the answer")
+        store.record_send("t1", "agent-1")
+        rec = store.record_result("t1")
         assert rec.status == "completed"
-        assert rec.completed_at is not None
-        assert rec.result == "Here is the answer"
-
-    def test_record_result_truncates_long_result(self, store):
-        store.record_send("t1", "agent-1", "task", "mqtt")
-        long_result = "y" * 3000
-        rec = store.record_result("t1", long_result)
-        assert len(rec.result) == store.MAX_RESULT_LEN
 
     def test_record_result_unknown_task(self, store):
-        assert store.record_result("nonexistent", "x") is None
+        assert store.record_result("nonexistent") is None
 
     def test_record_result_does_not_overwrite_failed(self, store):
         """Regression: a late result after a timeout marked the record failed
         must not flip it back to completed (the caller was already told it
         timed out)."""
-        store.record_send("t1", "agent-1", "task", "mqtt")
-        store.record_error("t1", "timeout")
-        rec = store.record_result("t1", "late result")
+        store.record_send("t1", "agent-1")
+        store.record_error("t1")
+        rec = store.record_result("t1")
         assert rec.status == "failed"
-        assert "timeout" in rec.result  # result not overwritten by the late one
 
     def test_record_error(self, store):
-        store.record_send("t1", "agent-1", "task", "mqtt")
-        rec = store.record_error("t1", "Something broke")
-        assert rec.status == "failed"
-        assert "Error: Something broke" in rec.result
+        store.record_send("t1", "agent-1")
+        assert store.record_error("t1").status == "failed"
 
     def test_record_error_unknown_task(self, store):
-        assert store.record_error("nonexistent", "err") is None
+        assert store.record_error("nonexistent") is None
 
     def test_record_cancel(self, store):
-        store.record_send("t1", "agent-1", "task", "mqtt")
-        rec = store.record_cancel("t1")
-        assert rec.status == "cancelled"
-        assert rec.completed_at is not None
+        store.record_send("t1", "agent-1")
+        assert store.record_cancel("t1").status == "cancelled"
 
     def test_record_cancel_unknown_task(self, store):
         assert store.record_cancel("nonexistent") is None
@@ -131,11 +78,10 @@ class TestTaskStoreReads:
     @pytest.fixture
     def store(self):
         s = TaskStore()
-        s.record_send("t1", "agent-1", "task one", "mqtt")
-        s.record_send("t2", "agent-2", "task two", "mqtt")
-        s.record_send("t3", "agent-1", "task three", "mqtt")
-        s.record_result("t1", "done one")
-        s.record_error("t2", "failed two")
+        s.record_send("t1", "agent-1")
+        s.record_send("t2", "agent-2")
+        s.record_result("t1")
+        s.record_error("t2")
         return s
 
     def test_get(self, store):
@@ -146,39 +92,6 @@ class TestTaskStoreReads:
     def test_get_missing(self, store):
         assert store.get("nonexistent") is None
 
-    def test_list_tasks_all(self, store):
-        records = store.list_tasks()
-        assert len(records) == 3
-        # newest first
-        assert records[0].created_at >= records[-1].created_at
-
-    def test_list_tasks_filter_agent_name(self, store):
-        records = store.list_tasks(agent_name="agent-1")
-        assert len(records) == 2
-        assert all(r.agent_name == "agent-1" for r in records)
-
-    def test_list_tasks_filter_status(self, store):
-        records = store.list_tasks(status="pending")
-        assert len(records) == 1
-        assert records[0].task_id == "t3"
-
-    def test_list_tasks_filter_transport(self, store):
-        records = store.list_tasks(transport="mqtt")
-        assert len(records) == 3
-        assert {r.task_id for r in records} == {"t1", "t2", "t3"}
-
-    def test_list_tasks_filter_transport_no_match(self, store):
-        assert store.list_tasks(transport="nonexistent-binding") == []
-
-    def test_list_tasks_combined_filters(self, store):
-        records = store.list_tasks(agent_name="agent-1", status="completed")
-        assert len(records) == 1
-        assert records[0].task_id == "t1"
-
-    def test_list_tasks_limit(self, store):
-        records = store.list_tasks(limit=1)
-        assert len(records) == 1
-
 
 # ── TaskStore — maintenance ─────────────────────────────────────────────
 
@@ -188,29 +101,26 @@ class TestTaskStoreMaintenance:
 
     def test_clear(self):
         store = TaskStore()
-        store.record_send("t1", "agent-1", "task", "mqtt")
+        store.record_send("t1", "agent-1")
         store.clear()
-        assert store.list_tasks() == []
+        assert store.get("t1") is None
+        assert store._records == {}
 
     def test_prune_removes_terminal_entries(self):
         """When exceeding MAX_RECORDS, oldest terminal entries are pruned."""
         store = TaskStore()
-        # Fill with terminal entries
         for i in range(store.MAX_RECORDS + 10):
-            store.record_send(f"t{i}", "agent-1", f"task {i}", "mqtt")
-            store.record_result(f"t{i}", f"result {i}")
-        # Should be at or under max
-        assert len(store.list_tasks()) <= store.MAX_RECORDS
+            store.record_send(f"t{i}", "agent-1")
+            store.record_result(f"t{i}")
+        assert len(store._records) <= store.MAX_RECORDS
 
     def test_prune_keeps_pending(self):
         """Pending tasks are not pruned — only terminal ones."""
         store = TaskStore()
-        # Fill mostly terminal entries, with one pending at the end
         for i in range(store.MAX_RECORDS + 5):
-            store.record_send(f"t{i}", "agent-1", f"task {i}", "mqtt")
+            store.record_send(f"t{i}", "agent-1")
             if i < store.MAX_RECORDS + 4:
-                store.record_result(f"t{i}", f"result {i}")
-        # The last pending entry should survive
+                store.record_result(f"t{i}")
         pending_rec = store.get(f"t{store.MAX_RECORDS + 4}")
         assert pending_rec is not None
         assert pending_rec.status == "pending"
@@ -232,10 +142,9 @@ class TestStoreSingleton:
 
     def test_get_store_creates_new_after_clear(self):
         s1 = get_store()
-        s1.record_send("t1", "agent", "task", "mqtt")
+        s1.record_send("t1", "agent")
         clear_store()
-        s2 = get_store()
-        assert s2.list_tasks() == []
+        assert get_store().get("t1") is None
 
     def test_clear_store_idempotent(self):
         """Calling clear_store with no store is safe."""

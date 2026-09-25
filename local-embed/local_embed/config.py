@@ -201,7 +201,7 @@ def _to_bool(value, default: bool = False) -> bool:
     return bool(value)
 
 
-def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
+def resolve_engine_settings() -> dict:
     """Merge config file + env overrides into engine settings.
 
     Precedence: env vars (plugin spawn) > config file > defaults.  Returns
@@ -217,14 +217,11 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
 
     apply_env()  # config env: → own process env, before any model loads
     cfg = load_config()
-    overrides = overrides or {}
 
     def _pick(key: str, default):
         env_val = os.environ.get(f"LOCAL_EMBED_{key.upper()}")
         if env_val not in (None, ""):
             return env_val
-        if key in overrides and overrides[key] not in (None, ""):
-            return overrides[key]
         if key in cfg and cfg[key] not in (None, ""):
             return cfg[key]
         return default

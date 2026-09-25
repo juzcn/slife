@@ -5,7 +5,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import pytest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from slife.a2a.identity import AgentName, AgentMessage, HUMAN, WECHAT
 from slife.agent.inbox import (
@@ -49,17 +49,9 @@ class TestMessageHistoryStore:
         msgs = conv.to_openai_messages()
         assert msgs[0]["content"] == "You are helpful."
 
-    def test_register_and_get_handler(self, store):
-        handler = MagicMock()
-        store.register_handler(HUMAN, handler)
-        assert store.handler_for(HUMAN) is handler
-
-    def test_handler_for_unregistered_returns_none(self, store):
-        assert store.handler_for(AgentName("unknown")) is None
-
-    def test_register_none_handler(self, store):
-        store.register_handler(AgentName("bot"), None)
-        assert store.handler_for(AgentName("bot")) is None
+    def test_handler_for_without_a_factory_is_none(self, store):
+        """Before the startup factory is set, a turn has no handler."""
+        assert store.handler_for() is None
 
     def test_clear_resets_shared_history_in_place(self, store):
         conv = store.get_or_create(HUMAN)
@@ -85,7 +77,6 @@ class TestAgentMessage:
         assert msg.source == HUMAN
         assert msg.content == "hi"
         assert msg.images == []
-        assert msg.reply_to is None
         assert msg.correlation_id is None
 
     def test_full_message(self):
@@ -93,11 +84,9 @@ class TestAgentMessage:
             source=AgentName("agent-1"),
             content="task result",
             images=["img1.png"],
-            reply_to="Slife/human/tasks",
             correlation_id="corr-123",
         )
         assert msg.images == ["img1.png"]
-        assert msg.reply_to == "Slife/human/tasks"
         assert msg.correlation_id == "corr-123"
 
     def test_agent_name_new_type(self):
@@ -493,13 +482,12 @@ class TestInboxProcessOne:
         return store
 
     def _make_msg(self, source=None, content="hi", images=None,
-                  handler=None, reply_to=None, corr_id=None, on_reply=None):
+                  handler=None, corr_id=None, on_reply=None):
         return AgentMessage(
             source=source or HUMAN,
             content=content,
             images=images or [],
             handler=handler,
-            reply_to=reply_to,
             correlation_id=corr_id,
             on_reply=on_reply,
         )
@@ -533,7 +521,7 @@ class TestInboxProcessOne:
         mock_store.get_or_create.return_value = MagicMock()
 
         msg = self._make_msg(source=AgentName("remote-1"), content="task",
-                             reply_to="Slife/human/tasks", corr_id="corr-1",
+                             corr_id="corr-1",
                              on_reply=on_reply)
         await inbox._process_one(msg)
 
@@ -601,7 +589,7 @@ class TestInboxProcessOne:
         mock_loop.run = AsyncMock(side_effect=RuntimeError("loop crashed"))
         mock_store.get_or_create.return_value = MagicMock()
 
-        msg = self._make_msg(content="bad input", reply_to="topic/x")
+        msg = self._make_msg(content="bad input")
         # Should not raise — error is caught
         await inbox._process_one(msg)
         assert inbox.busy is False
@@ -691,7 +679,7 @@ class TestInboxProcessOne:
 
         msg = self._make_msg(
             source=AgentName("remote-1"), content="go",
-            reply_to="r", corr_id="c1", on_reply=on_reply,
+            corr_id="c1", on_reply=on_reply,
         )
         await inbox._process_one(msg)
 
@@ -791,7 +779,7 @@ class TestInboxProcessOne:
         mock_store.get_or_create.return_value = MagicMock()
 
         msg = self._make_msg(source=AgentName("remote"), content="do it",
-                             reply_to="Slife/human/tasks", corr_id="err-1",
+                             corr_id="err-1",
                              on_reply=on_reply)
         await inbox._process_one(msg)
 
@@ -812,7 +800,7 @@ class TestInboxProcessOne:
         mock_store.get_or_create.return_value = MagicMock()
 
         msg = self._make_msg(source=AgentName("remote"), content="do it",
-                             reply_to="Slife/human/tasks", corr_id="err-1")
+                             corr_id="err-1")
         await inbox._process_one(msg)
 
         done = next(
@@ -849,7 +837,7 @@ class TestInboxProcessOne:
         mock_store.get_or_create.return_value = history
 
         msg = self._make_msg(source=AgentName("remote"), content="do it",
-                             reply_to="Slife/human/tasks", corr_id="br-1")
+                             corr_id="br-1")
         await inbox._process_one(msg)
 
         err = next(
@@ -918,7 +906,7 @@ class TestInboxProcessOne:
         mock_store.get_or_create.return_value = MagicMock()
 
         msg = self._make_msg(source=AgentName("remote"), content="do it",
-                             reply_to="Slife/human/tasks", corr_id="to-1")
+                             corr_id="to-1")
         await inbox._process_one(msg)
 
         err = next(
@@ -943,7 +931,7 @@ class TestInboxProcessOne:
         mock_store.get_or_create.return_value = MagicMock()
 
         msg = self._make_msg(source=AgentName("remote"), content="do it",
-                             reply_to="Slife/human/tasks", corr_id="ok-1")
+                             corr_id="ok-1")
         await inbox._process_one(msg)
 
         done = next(
@@ -1082,8 +1070,11 @@ class TestInboxRun:
 
 
 class TestMessageHistoryStoreDefaultHandler:
-    """Tests for MessageHistoryStore.set_default_handler_factory /
-    handler_for fallback chain."""
+    """Tests for MessageHistoryStore.set_default_handler_factory / handler_for.
+
+    One factory serves every source — there is no per-source registry, so a
+    remote task and the human's own turn get the same handler.
+    """
 
     def test_set_and_use_default_factory(self):
         store = MessageHistoryStore(system_prompt="test")
@@ -1091,29 +1082,17 @@ class TestMessageHistoryStoreDefaultHandler:
         factory = MagicMock(return_value=default_handler)
         store.set_default_handler_factory(factory)
 
-        # Unknown source with no registered handler
-        result = store.handler_for(AgentName("unknown-bot"))
-        assert result is default_handler
+        assert store.handler_for() is default_handler
         factory.assert_called_once()
 
-    def test_registered_handler_takes_precedence_over_default(self):
+    def test_factory_is_called_per_turn(self):
+        """Each turn gets a fresh handler — the factory is not memoised."""
         store = MessageHistoryStore(system_prompt="test")
-        registered = MagicMock()
-        default = MagicMock()
-        store.register_handler(AgentName("bot"), registered)
-        store.set_default_handler_factory(lambda: default)
+        factory = MagicMock(side_effect=[MagicMock(), MagicMock()])
+        store.set_default_handler_factory(factory)
 
-        result = store.handler_for(AgentName("bot"))
-        assert result is registered
-
-    def test_human_handler_fallback(self):
-        store = MessageHistoryStore(system_prompt="test")
-        human_handler = MagicMock()
-        store.register_handler(HUMAN, human_handler)
-
-        # Unknown source should fall back to human handler
-        result = store.handler_for(AgentName("unknown"))
-        assert result is human_handler
+        assert store.handler_for() is not store.handler_for()
+        assert factory.call_count == 2
 
 
 # ── MessageHistoryStore — WeChat persistence ────────────────────────────

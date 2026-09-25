@@ -7,15 +7,12 @@ credential_uninject — remove secret from os.environ (credstore untouched)
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import ClassVar
 
 from slife.logfmt import mask_value as _mask_value
 from slife.tools._config_io import _ConfigPathMixin, read_config
 from slife.tools.base import Tool
-
-logger = logging.getLogger(__name__)
 
 
 def _simplify_path(path: str) -> str:

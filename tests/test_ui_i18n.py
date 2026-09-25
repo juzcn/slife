@@ -9,16 +9,16 @@ OS query that picks the initial language, since it is hand-rolled stdlib.
 import pytest; pytestmark = pytest.mark.unit
 
 from slife.ui import i18n
-from slife.ui.i18n import t, set_language, get_language
+from slife.ui.i18n import t, set_language
 
 
 @pytest.fixture(autouse=True)
 def _restore_language():
-    """Each test starts in English and restores the prior language after."""
-    prev = get_language()
+    """Each test starts in English; reset after so a test that switches
+    languages cannot leak into the next."""
     set_language("en")
     yield
-    set_language(prev)
+    set_language("en")
 
 
 class TestTranslation:
@@ -40,10 +40,11 @@ class TestTranslation:
         assert "boom" in out
 
     def test_set_language_round_trip(self):
+        """A switch takes effect immediately, in both directions."""
         set_language("zh")
-        assert get_language() == "zh"
+        assert t("interrupted") == "⏹ 已中断"
         set_language("en")
-        assert get_language() == "en"
+        assert t("interrupted") == "⏹ Interrupted"
 
     def test_unknown_key_raises(self):
         """A typo'd key must surface, not render blank."""

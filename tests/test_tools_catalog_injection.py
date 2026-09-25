@@ -221,7 +221,6 @@ async def test_load_refuses_disabled_and_error(db):
 async def test_injected_schema_comes_from_catalog_not_instance(db):
     """The loop builds the LLM tool list from the catalog's ``schema`` column
     — a db row edit is what the model sees, not the instance's own schema."""
-    import json
     from types import SimpleNamespace
 
     from slife.agent.loop import AgentLoop, _function_from_schema
@@ -277,12 +276,12 @@ async def test_autoload_server_tools_are_born_loaded_and_protected(db):
     svc = ToolCatalogService(
         db, threshold=1, write_owner=True, autoload_servers=("eager",),
     )
-    await svc.upsert_external_tool("eager__search", server="eager",
-                                   description="search",
-                                   schema=json.dumps({"name": "search", "description": "search", "inputSchema": {"type": "object", "properties": {}}}))
-    await svc.upsert_external_tool("lazy__search", server="lazy",
-                                   description="search",
-                                   schema=json.dumps({"name": "search", "description": "search", "inputSchema": {"type": "object", "properties": {}}}))
+    _tool_row = {
+        "name": "search", "description": "search",
+        "inputSchema": {"type": "object", "properties": {}},
+    }
+    await svc.mirror_external_tools("eager", [_tool_row])
+    await svc.mirror_external_tools("lazy", [_tool_row])
     await svc.sync_system_tools([_Native()])
 
     assert await db.get_effective("eager__search") == "loaded"

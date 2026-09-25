@@ -9,7 +9,6 @@ import pytest
 
 from slife.tools.config import (
     _env_section,
-    _PLACEHOLDER_PREFIX,
     ConfigEnvSetTool,
     ConfigEnvGetTool,
     ConfigEnvRemoveTool,
@@ -113,7 +112,7 @@ class TestConfigEnvSetTool:
         _mock_credstore(monkeypatch)
         tool = ConfigEnvSetTool(config_path=Path("test.yaml"))
 
-        result = await tool.execute(key="EDITOR", value="vim")
+        await tool.execute(key="EDITOR", value="vim")
         assert raw["env"]["EDITOR"] == "vim"
 
 

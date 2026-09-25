@@ -6,12 +6,10 @@ import sys
 import threading
 import traceback
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from slife.config import Config, ModelConfig
-from slife.agent.llm_client import TokenUsage
 from slife.agent.message_history import MessageHistory
 from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
@@ -255,6 +253,25 @@ def _pin_ui_language():
     set_language("en")
 
 
+# ── health-report isolation ─────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _isolate_health():
+    """Empty the health report around every test.
+
+    ``slife.health`` is process-global — a module-level list of status
+    entries.  Without this, entries one test records leak into the next, so
+    any test asserting on the report's contents would depend on file order.
+    """
+    from slife import health
+    with health._lock:
+        health._entries.clear()
+    yield
+    with health._lock:
+        health._entries.clear()
+
+
 # ── tools catalog isolation ─────────────────────────────────────────────
 
 
@@ -435,15 +452,6 @@ def empty_history():
     return MessageHistory()
 
 
-# ── Token usage fixtures ──────────────────────────────────────────────
-
-
-@pytest.fixture(scope="session")
-def zero_usage():
-    """Empty token usage."""
-    return TokenUsage()
-
-
 # ── Tool registry fixtures ────────────────────────────────────────────
 
 
@@ -566,16 +574,6 @@ class _MockUsage:
         self.total_tokens = total_tokens
 
 
-# ── Async helpers ─────────────────────────────────────────────────────
-
-
-def async_return(value):
-    """Create a coroutine that returns the given value."""
-    async def _inner():
-        return value
-    return _inner()
-
-
 def make_async_iter(items):
     """Create an async iterator from a list of items."""
     async def _gen():
@@ -596,30 +594,3 @@ def load_config_text(text: str) -> dict:
     """Parse config YAML text back to a dict — the read side of a fixture."""
     return new_yaml().load(text)
 
-
-# ── Config builders ───────────────────────────────────────────────────
-
-
-def build_yaml_config(models=None, active_model=None, tools=None, agent=None):
-    """Build a minimal YAML-serializable config dict for testing."""
-    cfg = {
-        "models": models or {
-            "providers": {
-                "deepseek": {
-                    "base_url": "https://api.deepseek.com",
-                    "api_key": "sk-test",
-                    "models": [
-                        {
-                            "model": "deepseek-v4-flash",
-                            "name": "DeepSeek V4 Flash",
-                        }
-                    ],
-                }
-            }
-        },
-        "active_model": active_model or "deepseek/deepseek-v4-flash",
-        "tools": tools or [],
-    }
-    if agent is not None:
-        cfg["agent"] = agent
-    return cfg

@@ -63,12 +63,6 @@ class Caps:
     #: query what the owner embedded.)
     catalog_drainer: bool = True
 
-    #: Spawns and owns the plugin child processes — and therefore every
-    #: singleton *inside* them: the A2A inbound drain, the WeChat poll, the
-    #: MCP gateway's watchdog.  A worker connects to these servers over HTTP by
-    #: inherited port instead, which is why it never drains the mesh inbox.
-    plugin_children: bool = True
-
     #: The slife-as-plugin MCP face — this agent exposing its live registry to
     #: external consumers.
     host_server: bool = True

@@ -40,7 +40,6 @@ from slife.paths import get_jobs_dir
 from slife.server_utils import (
     ToolsChangedNotifier,
     create_plugin_server,
-    flush_tools_changed,
     request_tools_changed,
     run_plugin_server,
     tools_changed_bus,
@@ -85,12 +84,6 @@ def _request_tools_changed() -> None:
     A listening harness re-syncs its tool registry on receipt.
     """
     request_tools_changed(_notifier)
-
-
-async def _notify_tools_changed() -> None:
-    """Eager-flush alias kept for tests/…: deterministic delivery in this
-    task.  Production paths should use :func:`_request_tools_changed`."""
-    await flush_tools_changed(_notifier)
 
 
 def _get_llm_client():
@@ -160,7 +153,6 @@ def _load_file(path: Path) -> str:
     """Import one job file and register its jobs.  Returns '' or an error."""
     try:
         module = registry.load_module(path)
-        setattr(module, "_job_file_stem", path.stem)
         setattr(module, "_job_file_path", str(path.resolve()))
     except registry.JobLoadError as e:
         return f"Error: {e}"

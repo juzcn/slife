@@ -112,9 +112,7 @@ class EmbeddingClient:
     # ── Construction from the host's active endpoint ───────────────
 
     @classmethod
-    def from_endpoint(
-        cls, ep: dict | None, quiet: bool = True,
-    ) -> "EmbeddingClient":
+    def from_endpoint(cls, ep: dict | None) -> "EmbeddingClient":
         """Build from ``get_active_endpoint()``'s dict (``base_url``/``model``/
         ``api_key``).  Missing or placeholder ``base_url`` ⇒ disabled."""
         emb = None
@@ -149,7 +147,7 @@ class EmbeddingClient:
         # exactly what makes `load()` skip `_probe_api_dim`.
         return cls(
             model=model, api_key=api_key, base_url=base_url,
-            dim=_guess_dim(model, None),
+            dim=_guess_dim(model),
             dim_known=_known_model(model) is not None,
             enabled=enabled,
         )

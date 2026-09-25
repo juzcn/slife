@@ -4,12 +4,11 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute, create_proxy_tools
-from slife.tools.base import Tool
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -243,7 +242,7 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = "file contents"
 
         tool = MCPProxyTool(client, info)
-        result = await tool.execute(path="/tmp/test.txt")
+        await tool.execute(path="/tmp/test.txt")
 
         args = client.call_tool.call_args[0]
         assert args[0] == "__mcp_call_tool"
@@ -259,7 +258,7 @@ class TestMCPProxyToolExecute:
         on_add = AsyncMock()
 
         tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add)
-        result = await tool.execute(
+        await tool.execute(
             name="myserver", command="python",
             args=["-m", "myserver"], env={"KEY": "VAL"},
             description="My server", source={"url": "http://example.com"},

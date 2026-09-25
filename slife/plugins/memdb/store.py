@@ -483,6 +483,11 @@ class SessionStore(VecStoreLifecycleMixin):
         self._conn: aiosqlite.Connection | None = None
         self._embedding_dim = DEFAULT_EMBEDDING_DIM
         self._vec_available = False  # sqlite-vec loaded? embeddings are optional
+        #: Why sqlite-vec is not usable ("" once it loads).  Initialised here,
+        #: not only in ``_load_vec_extension``: the normal startup path skips
+        #: that call, and ``__check`` reads this whenever ``_vec_available`` is
+        #: false — an unset attribute there is an AttributeError in the probe.
+        self._vec_reason = ""
         # Serializes every mutating statement on the shared connection.  All
         # writers commit on the same aiosqlite connection; without this, one
         # coroutine's commit() can land between another's multi-statement
@@ -494,10 +499,6 @@ class SessionStore(VecStoreLifecycleMixin):
     def _c(self):
         assert self._conn is not None
         return self._conn
-
-    @property
-    def db_path(self) -> Path:
-        return self._db_path
 
     # ── Lifecycle (VecStoreLifecycleMixin) ─────────────────────────
 
@@ -796,17 +797,6 @@ class SessionStore(VecStoreLifecycleMixin):
             await self._write_context_turns_locked([])
             await self._c.commit()
         logger.info("context_turns_cleared")
-
-    async def has_turns(self) -> bool:
-        """Check if there are any turns.
-
-        Test-only helper — no production callers (recounted by
-        ``count_turns`` / the unembedded queries where it matters).
-        """
-        cursor = await self._c.execute(
-            "SELECT rowid FROM diary LIMIT 1",
-        )
-        return await cursor.fetchone() is not None
 
     async def count_turns(
         self,
@@ -1329,28 +1319,6 @@ class SessionStore(VecStoreLifecycleMixin):
 
     # ── Embedding ───────────────────────────────────────────────────
 
-    async def upsert_embedding(
-        self, diary_rowid: int, chunk_index: int,
-        summary: str, tags: str, created_at: str,
-        turn_embedding: list[float],
-    ) -> None:
-        """Insert one chunk embedding for a turn.
-
-        Test-only helper — production re-indexing goes through
-        ``replace_embedding_chunks`` (delete-then-insert in ONE transaction,
-        under the write lock).  Each turn can produce multiple chunks —
-        *chunk_index* is 0-based.  Always INSERTs; the caller clears old
-        chunks.
-        """
-        vec_blob = _serialize_f32(turn_embedding)
-        await self._c.execute(
-            """INSERT INTO diary_semantic
-               (turn_embedding, diary_rowid, chunk_index, summary, tags, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (vec_blob, diary_rowid, chunk_index, summary, tags, created_at),
-        )
-        await self._c.commit()
-        logger.debug("embedding_upserted diary_rowid=%s chunk=%s", diary_rowid, chunk_index)
 
     async def replace_embedding_chunks(
         self, doc: dict, embeddings: list[list[float]],
@@ -1453,44 +1421,6 @@ class SessionStore(VecStoreLifecycleMixin):
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
-
-    async def count_embedded(self) -> int:
-        """Count distinct turns that have at least one embedding chunk.
-
-        Test-only helper — the live embedding counts come from
-        ``count_unembedded`` / the semantic facts in ``__check``.
-        """
-        if self._embedding_dim <= 0:
-            return 0
-        cursor = await self._c.execute(
-            "SELECT COUNT(DISTINCT diary_rowid) FROM diary_semantic",
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else 0
-
-    async def clear_all_embeddings(self) -> int:
-        """Delete all rows from diary_semantic. Returns count deleted.
-
-        Test-only helper — production never nukes the whole semantic table.
-        """
-        async with self._write_lock:
-            cursor = await self._c.execute("SELECT COUNT(*) FROM diary_semantic")
-            row = await cursor.fetchone()
-            count = row[0] if row else 0
-            await self._c.execute("DELETE FROM diary_semantic")
-            await self._c.commit()
-        logger.info("embeddings_cleared count=%d", count)
-        return count
-
-    async def has_embedding(self, diary_rowid: int) -> bool:
-        """Test-only helper — production checks the ``NOT IN diary_semantic``
-        unembedded query instead of per-row probes."""
-        cursor = await self._c.execute(
-            "SELECT rowid FROM diary_semantic WHERE diary_rowid = ? LIMIT 1",
-            (diary_rowid,),
-        )
-        return await cursor.fetchone() is not None
-
 
 # ── Helpers ─────────────────────────────────────────────────────────
 

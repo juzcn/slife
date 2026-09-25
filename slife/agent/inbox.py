@@ -241,7 +241,6 @@ class Inbox:
         self._queue: asyncio.Queue[AgentMessage] = asyncio.Queue(
             maxsize=1000,
         )
-        self._runner_task: asyncio.Task | None = None
         self._processing: bool = False
         #: correlation_id of the message currently being processed (a
         #: subagent worker's task), used by :meth:`cancel_correlation`.
@@ -516,13 +515,11 @@ class Inbox:
             # Get or create history for this source
             history = self._histories.get_or_create(msg.source)
 
-            # Build a handler appropriate for the source
-            # Prefer the handler attached to the message (TUI path).
-            # Fall back to the per-source registry / default factory
-            # (remote A2A messages that don't carry their own handler).
+            # Prefer the handler attached to the message (TUI path); a remote
+            # A2A message that carries none gets the startup factory's.
             handler = msg.handler
             if handler is None:
-                handler = self._histories.handler_for(msg.source)
+                handler = self._histories.handler_for()
 
             # Run the agent loop — cancelled / max-iterations are now
             # returned as AgentResult(cancelled=True) with accumulated
@@ -756,7 +753,6 @@ class MessageHistoryStore:
     def __init__(self, system_prompt: str):
         self._system_prompt = system_prompt
         self._by_source: dict[AgentName, MessageHistory] = {}
-        self._handler_factories: dict[AgentName, "AgentEventHandler | None"] = {}
         self._default_handler_factory: "Callable[[], AgentEventHandler] | None" = (
             None
         )
@@ -764,36 +760,16 @@ class MessageHistoryStore:
     def set_default_handler_factory(
         self, factory: "Callable[[], AgentEventHandler]",
     ) -> None:
-        """Set a factory that creates handlers for sources without one.
+        """Set the factory that builds the handler for a turn.
 
-        Called at startup so remote A2A tasks always have a handler
-        available, even before the first human message is typed.
+        One factory serves every source — a remote A2A task streams to the
+        TUI chat view exactly as the human's own turn does.  Called at
+        startup, so a turn always has a handler.
         """
         self._default_handler_factory = factory
 
-    def register_handler(
-        self, source: AgentName, handler: "AgentEventHandler | None",
-    ) -> None:
-        """Register a handler (or None) for a specific source agent.
-
-        The human agent gets a TUIHandler (streams to chat); remote
-        agents get ``None`` (no UI streaming, just the final result).
-        """
-        self._handler_factories[source] = handler
-
-    def handler_for(self, source: AgentName) -> "AgentEventHandler | None":
-        """Return the handler for *source*.
-
-        Falls back to the human handler, then to the default factory,
-        so remote tasks always stream to the TUI chat view.
-        """
-        from slife.a2a.identity import HUMAN
-
-        handler = self._handler_factories.get(
-            source
-        ) or self._handler_factories.get(HUMAN)
-        if handler is not None:
-            return handler
+    def handler_for(self) -> "AgentEventHandler | None":
+        """Return a handler for the turn now starting, or None before startup."""
         if self._default_handler_factory is not None:
             return self._default_handler_factory()
         return None

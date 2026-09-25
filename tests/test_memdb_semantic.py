@@ -21,7 +21,7 @@ from slife.plugins.memdb.semantic import SemanticManager
 _DEFAULT = object()  # sentinel: distinguish "no override" from "embed returns None"
 
 
-def _embedder(*, available=True, backend="gguf", model="bge-m3", dim=1024,
+def _embedder(*, available=True, backend="api", model="bge-m3", dim=1024,
               load_ok=True, embed_result=_DEFAULT, embed_sleep=0.0):
     """A fake EmbeddingClient.
 
@@ -118,7 +118,7 @@ class TestEnable:
             status = await m.enable()
 
         assert status["status"] == "ok"
-        assert status["backend"] == "gguf"
+        assert status["backend"] == "api"
         assert status["semantic_ready"] is False  # gate stays OFF until drained
         assert status["state"] == "indexing"
         emb.load.assert_awaited_once()
@@ -180,7 +180,6 @@ class TestDisable:
     @pytest.mark.asyncio
     async def test_disable_stops_drainer_keeps_embeddings(self):
         store = AsyncMock()
-        store.clear_all_embeddings = AsyncMock()
         m = SemanticManager(store)
         emb = _embedder()
         with patch("slife.plugins.memdb.semantic.EmbeddingClient.from_config",
@@ -194,7 +193,8 @@ class TestDisable:
         assert status["semantic_ready"] is False
         assert m._embedder is None
         assert m._drain_task is None
-        store.clear_all_embeddings.assert_not_awaited()  # embeddings preserved
+        # Disable stops serving; it never drops the index.
+        store.replace_embedding_chunks.assert_not_awaited()
 
 
 class TestDrainerGate:

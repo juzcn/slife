@@ -21,7 +21,6 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from slife.plugins.mcp_gateway.client import MCPClient
 
 
 def _normalize_path(p: str) -> str:

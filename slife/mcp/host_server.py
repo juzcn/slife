@@ -46,7 +46,6 @@ from slife.server_utils import (
     INTERNAL_TOOL_PREFIX,
     ToolsChangedNotifier,
     bind_free_port,
-    flush_tools_changed,
     request_tools_changed,
     tools_changed_bus,
 )
@@ -98,13 +97,6 @@ def _request_tools_changed() -> None:
     (hosts re-list on receipt, so no ordering guarantees are assumed).
     """
     request_tools_changed(_notifier)
-
-
-async def _notify_tools_changed() -> None:
-    """Eager-flush alias kept for tests/…: run one full notification round
-    now, in this task (deterministic delivery — no coalescing).  Production
-    notification paths should use :func:`_request_tools_changed`."""
-    await flush_tools_changed(_notifier)
 
 
 def build_registry_mcp(

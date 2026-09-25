@@ -8,7 +8,6 @@ from credstore._resolver import (
     is_keyring_uri,
     parse_keyring_uri,
     resolve_uri,
-    resolve_uri_recursive,
 )
 
 
@@ -65,25 +64,3 @@ class TestResolveUri:
 
     def test_non_string_passes_through(self):
         assert resolve_uri(42) == 42  # type: ignore[arg-type]
-
-
-@pytest.mark.usefixtures("cli_store")
-class TestResolveUriRecursive:
-    def test_dict(self, in_mem_store):
-        in_mem_store["slife/deepseek"] = "sk-key"
-        result = resolve_uri_recursive({
-            "api_key": "keyring:slife/deepseek",
-            "name": "plaintext",
-        })
-        assert result == {"api_key": "sk-key", "name": "plaintext"}
-
-    def test_list(self, in_mem_store):
-        in_mem_store["slife/a"] = "resolved"
-        assert resolve_uri_recursive(["keyring:slife/a", "plain"]) == ["resolved", "plain"]
-
-    def test_nested(self, in_mem_store):
-        in_mem_store["slife/k"] = "v"
-        assert resolve_uri_recursive({"outer": {"inner": "keyring:slife/k"}}) == {"outer": {"inner": "v"}}
-
-    def test_scalar_passes_through(self):
-        assert resolve_uri_recursive(42) == 42

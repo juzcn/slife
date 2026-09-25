@@ -8,13 +8,10 @@ inbox message carrying full prior context.
 
 from __future__ import annotations
 
-import logging
 from typing import ClassVar
 
 from slife.tools.base import Tool, make_params
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
-
-logger = logging.getLogger(__name__)
 
 #: Upper bound on ``wait_minutes`` is the registry bound
 #: ``pacing.timer_max_wait_minutes`` (1 day, in MINUTES).  Anything larger is

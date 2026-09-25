@@ -1178,8 +1178,6 @@ class TestConsecutiveUserFix:
         assert third.get("context_time_start") == "2026-02-01T00:00:00+08:00"
 
     def test_ensure_turn_consistent_appends_assistant(self):
-        reg = _registry()
-        loop = _loop(reg)
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         # history ends on a user message → close it.  The standardized closing
@@ -1190,8 +1188,6 @@ class TestConsecutiveUserFix:
         assert conv.messages[-1]["content"] == "(Turn interrupted, reason: esc)"
 
     def test_ensure_turn_consistent_reason_unknown_without_one(self):
-        reg = _registry()
-        loop = _loop(reg)
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         # No reason in hand (a repair on load) — the slot is still there.
@@ -1199,8 +1195,6 @@ class TestConsecutiveUserFix:
         assert conv.messages[-1]["content"] == "(Turn interrupted, reason: ---)"
 
     def test_ensure_turn_consistent_noop_when_assistant(self):
-        reg = _registry()
-        loop = _loop(reg)
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         conv.add_assistant_message("reply")
@@ -1216,8 +1210,6 @@ class TestConsecutiveUserFix:
         Anthropic wire), a closing assistant is appended too — so the turn
         is consistent and no consecutive user would reach the API.
         """
-        reg = _registry()
-        loop = _loop(reg)
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         # Turn interrupted mid-tool-call: assistant tool_call, no result.

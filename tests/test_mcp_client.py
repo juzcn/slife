@@ -236,7 +236,7 @@ class TestMCPClientCallTool:
         client._session = MagicMock()
         client._session.call_tool = AsyncMock(return_value=mock_result)
 
-        result = await client.call_tool("noop")
+        await client.call_tool("noop")
         client._session.call_tool.assert_called_once_with("noop", {})
 
 
@@ -476,7 +476,7 @@ class TestMCPClientConnect:
         mock_session.initialize = AsyncMock()
 
         with patch("slife.plugins.mcp_gateway.client.streamable_http_client") as mock_transport:
-            mock_read, mock_write, mock_info = MagicMock(), MagicMock(), MagicMock()
+            mock_read, mock_write, _ = MagicMock(), MagicMock(), MagicMock()
             mock_ctx = MagicMock()
             mock_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_ctx.__aexit__ = AsyncMock(return_value=None)

@@ -673,9 +673,9 @@ class A2AMesh:
             if state == "cancelled":
                 get_store().record_cancel(task_id)
             elif state == "completed":
-                get_store().record_result(task_id, result)
+                get_store().record_result(task_id)
             else:
-                get_store().record_error(task_id, result or "task failed")
+                get_store().record_error(task_id)
             self.on_task_completion(
                 task_id, result, cancelled, record.agent_name, "task",
             )
@@ -809,7 +809,7 @@ class A2AMesh:
             self._inbound.clear_stale_peer(agent)
         record = message_type == "task_request"
         if record:
-            get_store().record_send(task_id, agent, message, "mqtt")
+            get_store().record_send(task_id, agent)
         send = _OutboundSend(
             task_id, agent, session, request.to_json(), record=record,
         )

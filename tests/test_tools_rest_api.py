@@ -23,7 +23,6 @@ from slife.tools.rest_api import (
     RestApiRemoveTool,
     RestApiSetEnabledTool,
     RestApiSetTool,
-    get_rest_apis_summary,
 )
 
 
@@ -73,64 +72,6 @@ def _write_config(path: Path, servers: dict) -> None:
 def _entries_from_file(path: Path) -> dict:
     raw = load_config_text(path.read_text(encoding="utf-8"))
     return raw.get("rest-api", {})
-
-
-# ── get_rest_apis_summary ─────────────────────────────────────────────────
-
-
-class TestGetRestApisSummary:
-    """Tests for get_rest_apis_summary()."""
-
-    def test_no_rest_apis(self, mcp_config_path):
-        _write_config(mcp_config_path, {})
-        result = get_rest_apis_summary(mcp_config_path)
-        assert "No REST APIs registered" in result
-
-    def test_single_api(self, mcp_config_path):
-        _write_config(mcp_config_path, {
-            "github": _entry("https://api.github.com/openapi.json",
-                             "https://api.github.com", description="GitHub API"),
-        })
-        result = get_rest_apis_summary(mcp_config_path)
-        assert "github" in result
-        assert "GitHub API" in result
-        assert "api.github.com" in result
-
-    def test_multiple_apis(self, mcp_config_path):
-        _write_config(mcp_config_path, {
-            "github": _entry("https://api.github.com/openapi.json",
-                             "https://api.github.com", description="GitHub API"),
-            "slack": _entry("https://api.slack.com/openapi.json",
-                            "https://slack.com/api", description="Slack API",
-                            api_key="SLACK_TOKEN"),
-        })
-        result = get_rest_apis_summary(mcp_config_path)
-        assert "github" in result
-        assert "slack" in result
-        assert "SLACK_TOKEN" in result  # api_key shown as ${...}
-
-    def test_rest_apis_not_a_dict(self, mcp_config_path):
-        _write_config(mcp_config_path, {"bad": "not a dict"})
-        result = get_rest_apis_summary(mcp_config_path)
-        assert "No REST APIs registered" in result
-
-    def test_skips_non_dict_entries(self, mcp_config_path):
-        _write_config(mcp_config_path, {
-            "valid": _entry("https://spec.example.com/x", "https://example.com", description="d"),
-            "invalid": "not a dict",
-        })
-        result = get_rest_apis_summary(mcp_config_path)
-        assert "valid" in result
-        assert "invalid" not in result
-
-    def test_with_source_info(self, mcp_config_path):
-        entry = _entry("https://example.com/openapi.json", "https://example.com",
-                       description="My Service")
-        entry["source"] = {"type": "github", "url": "https://github.com/x/y"}
-        _write_config(mcp_config_path, {"myservice": entry})
-        result = get_rest_apis_summary(mcp_config_path)
-        assert "myservice" in result
-        assert "github" in result
 
 
 # ── RestApiSetTool ────────────────────────────────────────────────────────
@@ -301,7 +242,7 @@ class TestRestApiRemoveTool:
 
 
 class TestRestApiListTool:
-    """Tests for RestApiListTool."""
+    """Tests for RestApiListTool — the summary's only entry point."""
 
     @pytest.mark.asyncio
     async def test_list_empty(self, mcp_config_path):
@@ -321,6 +262,47 @@ class TestRestApiListTool:
         result = await tool.execute()
         assert "github" in result
         assert "GitHub API" in result
+        assert "api.github.com" in result
+
+    @pytest.mark.asyncio
+    async def test_multiple_apis(self, mcp_config_path):
+        _write_config(mcp_config_path, {
+            "github": _entry("https://api.github.com/openapi.json",
+                             "https://api.github.com", description="GitHub API"),
+            "slack": _entry("https://api.slack.com/openapi.json",
+                            "https://slack.com/api", description="Slack API",
+                            api_key="SLACK_TOKEN"),
+        })
+        result = await RestApiListTool(config_path=mcp_config_path).execute()
+        assert "github" in result
+        assert "slack" in result
+        assert "SLACK_TOKEN" in result  # api_key shown as ${...}
+
+    @pytest.mark.asyncio
+    async def test_rest_apis_not_a_dict(self, mcp_config_path):
+        _write_config(mcp_config_path, {"bad": "not a dict"})
+        result = await RestApiListTool(config_path=mcp_config_path).execute()
+        assert "No REST APIs registered" in result
+
+    @pytest.mark.asyncio
+    async def test_skips_non_dict_entries(self, mcp_config_path):
+        _write_config(mcp_config_path, {
+            "valid": _entry("https://spec.example.com/x", "https://example.com", description="d"),
+            "invalid": "not a dict",
+        })
+        result = await RestApiListTool(config_path=mcp_config_path).execute()
+        assert "valid" in result
+        assert "invalid" not in result
+
+    @pytest.mark.asyncio
+    async def test_with_source_info(self, mcp_config_path):
+        entry = _entry("https://example.com/openapi.json", "https://example.com",
+                       description="My Service")
+        entry["source"] = {"type": "github", "url": "https://github.com/x/y"}
+        _write_config(mcp_config_path, {"myservice": entry})
+        result = await RestApiListTool(config_path=mcp_config_path).execute()
+        assert "myservice" in result
+        assert "github" in result
 
 
 # ── RestApiSetEnabledTool ────────────────────────────────────────────────

@@ -9,19 +9,19 @@ from __future__ import annotations
 
 import time as _time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-
-
-def _iso_now() -> str:
-    """Current UTC time as an ISO-8601 string (official A2A timestamps)."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 # ── Task record ─────────────────────────────────────────────────────────
 
 
 @dataclass
 class TaskRecord:
-    """Full lifecycle metadata for one A2A task."""
+    """Lifecycle metadata for one A2A task — what the mesh routes on.
+
+    Deliberately narrow: the mesh reads ``agent_name`` to attribute a
+    terminal reply and ``status`` to answer cancel/status lookups, so those
+    (plus the id and the prune clock) are the whole record.  The task text
+    and the result body live on the wire and in the conversation, not here.
+    """
 
     task_id: str
     """Unique correlation / rpc id."""
@@ -29,22 +29,10 @@ class TaskRecord:
     agent_name: str
     """Target agent this task was sent to."""
 
-    task_preview: str
-    """First 200 characters of the task text."""
-
     status: str
     """One of ``"pending"``, ``"completed"``, ``"failed"``, ``"cancelled"``."""
 
-    transport: str
-    """Transport binding that produced the task (currently ``"mqtt"``)."""
-
     created_at: float = field(default_factory=_time.monotonic)
-    completed_at: float | None = None
-    result: str | None = None
-    """Result text (first 2000 chars).  ``None`` while pending."""
-
-    created_iso: str = field(default_factory=_iso_now)
-    """Wall-clock ISO-8601 creation time."""
 
 
 # ── Task store ──────────────────────────────────────────────────────────
@@ -56,8 +44,6 @@ class TaskStore:
     Module-level singleton — ``get_store()`` / ``clear_store()``.
     """
 
-    MAX_RESULT_LEN = 2000
-    MAX_PREVIEW_LEN = 200
     MAX_RECORDS = 500  # soft cap — oldest completed entries pruned first
 
     def __init__(self) -> None:
@@ -65,23 +51,19 @@ class TaskStore:
 
     # ── Write ─────────────────────────────────────────────────────────
 
-    def record_send(
-        self, task_id: str, agent_name: str, task: str, transport: str,
-    ) -> TaskRecord:
+    def record_send(self, task_id: str, agent_name: str) -> TaskRecord:
         """Record a newly-sent task (status = pending)."""
         rec = TaskRecord(
             task_id=task_id,
             agent_name=agent_name,
-            task_preview=task[: self.MAX_PREVIEW_LEN],
             status="pending",
-            transport=transport,
         )
         self._records[task_id] = rec
         self._maybe_prune()
         return rec
 
-    def record_result(self, task_id: str, result: str) -> TaskRecord | None:
-        """Mark a task as completed and store its result.
+    def record_result(self, task_id: str) -> TaskRecord | None:
+        """Mark a task as completed.
 
         A task that is already in a terminal state (cancelled or failed) stays
         there — a result arriving from a peer after the caller was told about a
@@ -96,18 +78,14 @@ class TaskStore:
         if rec.status in ("cancelled", "failed"):
             return rec
         rec.status = "completed"
-        rec.completed_at = _time.monotonic()
-        rec.result = result[: self.MAX_RESULT_LEN]
         return rec
 
-    def record_error(self, task_id: str, error: str) -> TaskRecord | None:
+    def record_error(self, task_id: str) -> TaskRecord | None:
         """Mark a task as failed."""
         rec = self._records.get(task_id)
         if rec is None:
             return None
         rec.status = "failed"
-        rec.completed_at = _time.monotonic()
-        rec.result = f"Error: {error}"[: self.MAX_RESULT_LEN]
         return rec
 
     def record_cancel(self, task_id: str) -> TaskRecord | None:
@@ -116,7 +94,6 @@ class TaskStore:
         if rec is None:
             return None
         rec.status = "cancelled"
-        rec.completed_at = _time.monotonic()
         return rec
 
     # ── Read ──────────────────────────────────────────────────────────
@@ -124,32 +101,6 @@ class TaskStore:
     def get(self, task_id: str) -> TaskRecord | None:
         """Return a task record by id, or ``None``."""
         return self._records.get(task_id)
-
-    def list_tasks(
-        self,
-        agent_name: str | None = None,
-        status: str | None = None,
-        transport: str | None = None,
-        limit: int = 50,
-    ) -> list[TaskRecord]:
-        """Return filtered task records, newest first.
-
-        The store's bulk-read surface (the LLM-facing ``a2a_list_tasks`` tool
-        was retired with the push-model rework — see DESIGN.md §8 — but
-        the records stay queryable here).
-        """
-        result = list(self._records.values())
-
-        if agent_name is not None:
-            result = [r for r in result if r.agent_name == agent_name]
-        if status is not None:
-            result = [r for r in result if r.status == status]
-        if transport is not None:
-            result = [r for r in result if r.transport == transport]
-
-        # Newest first
-        result.sort(key=lambda r: r.created_at, reverse=True)
-        return result[:limit]
 
     # ── Maintenance ───────────────────────────────────────────────────
 

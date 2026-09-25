@@ -68,11 +68,6 @@ def set_language(lang: str) -> None:
     _LANGUAGE = lang
 
 
-def get_language() -> str:
-    """Return the active language code (``"en"`` or ``"zh"``)."""
-    return _LANGUAGE
-
-
 # key → {lang: text}.  Every user-facing TUI string lives here.  Text may
 # carry {placeholders} consumed by str.format.  Emoji / status glyphs
 # (✗ ⚠ ✅ ⏹ 🔌 ⚡ 📅 ▸ ▾ ● ◌ ↑/↓) stay in the string — they are universal

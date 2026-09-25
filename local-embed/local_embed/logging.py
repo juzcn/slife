@@ -32,15 +32,16 @@ _NOISY = (
     "fastmcp",
 )
 
-#: File format mirrors slife's FILE_LOG_FORMAT (session/request correlation).
+#: File format mirrors slife's FILE_LOG_FORMAT (session correlation).
+#: No request-id field: local-embed serves one model call at a time and never
+#: opens a request scope, so the column slife carries would be a constant.
 _FILE_LOG_FORMAT = (
-    "%(asctime)s [%(levelname)-5s] %(name)-32s [s=%(sid)s] [r=%(rid)s] | %(message)s"
+    "%(asctime)s [%(levelname)-5s] %(name)-32s [s=%(sid)s] | %(message)s"
 )
 
-#: Module-level session/request ids — adopted from the host when spawned by
-#: slife, else generated at first use.
+#: Module-level session id — adopted from the host when spawned by slife,
+#: else generated at first use.
 _session_id: str = ""
-_request_id: str = ""
 
 
 def resolve_log_dir() -> Path:
@@ -56,15 +57,14 @@ def resolve_log_dir() -> Path:
 
 
 class _SessionFormatter(logging.Formatter):
-    """Formatter that injects session_id and request_id into log records.
+    """Formatter that injects session_id into log records.
 
     Reads from module-level state (process-wide, single session).  The
-    format string must include %(sid)s and %(rid)s placeholders.
+    format string must include the %(sid)s placeholder.
     """
 
     def format(self, record: logging.LogRecord) -> str:
         record.sid = _session_id or "--------"
-        record.rid = _request_id or "--------"
         return super().format(record)
 
 

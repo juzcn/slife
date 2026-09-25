@@ -58,13 +58,6 @@ def _prompt_required(prompt: str, current: str = "") -> str:
         print("(required — cannot be empty)", file=sys.stderr)
 
 
-def _prompt_optional(prompt: str, current: str = "") -> str:
-    """Prompt for an optional value; blank keeps the current / empty."""
-    hint = f" [{current}]" if current else " [blank = empty]"
-    value = input(f"{prompt}{hint}: ").strip()
-    return value or current or ""
-
-
 def _parse_models(text: str) -> list[str]:
     """Split a model list on commas, whitespace, and/or semicolons."""
     for sep in (",", ";"):
@@ -75,8 +68,8 @@ def _parse_models(text: str) -> list[str]:
 def _prompt_models(current: list[str]) -> list[str]:
     """Prompt for the models list.
 
-    Unlike ``_prompt_optional`` this does NOT back-fill the current value
-    on a blank answer: the models field is the symmetric difference
+    This does NOT back-fill the current value on a blank answer: the
+    models field is the symmetric difference
     against the stored list, so a blank (empty) answer must be a literal
     empty input — A △ ∅ = A keeps the list unchanged.  Back-filling the
     current value would instead toggle the whole list off.
@@ -217,7 +210,7 @@ def _cmd_activate(args) -> int:
 # ── list ─────────────────────────────────────────────────────────────
 
 
-def _cmd_list(args) -> int:
+def _cmd_list() -> int:
     """List providers and their models as provider/model rows.
 
     The currently active provider/model (from ``active``) is marked
@@ -249,7 +242,7 @@ def _cmd_list(args) -> int:
     return 0
 
 
-def _cmd_list_providers(args) -> int:
+def _cmd_list_providers() -> int:
     """Show providers with their metadata (base URL, API key name) for ``list``."""
     data = _api.load_config()
     providers = data.get("providers", {})
@@ -312,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command is None:
-            return _cmd_list(args)
+            return _cmd_list()
         elif args.command == "set":
             return _cmd_set(args)
         elif args.command == "remove":
@@ -320,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "activate":
             return _cmd_activate(args)
         elif args.command == "list":
-            return _cmd_list_providers(args)
+            return _cmd_list_providers()
         else:
             parser.print_help()
             return 1

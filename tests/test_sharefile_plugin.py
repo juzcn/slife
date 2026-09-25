@@ -18,7 +18,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
 import slife.plugins.sharefile.server as plugin
@@ -27,13 +27,23 @@ import slife.plugins.sharefile.server as plugin
 # ── Fixtures ────────────────────────────────────────────────────────────
 
 
+def _clear_registry() -> None:
+    """Empty the share-token registry between tests.
+
+    The registry is module-global (a token IS the share link), so a token
+    minted by one test would otherwise still resolve in the next.
+    """
+    plugin._registry.clear()
+    plugin._path_to_token.clear()
+
+
 @pytest.fixture(autouse=True)
 def _reset_state():
     """Reset registry + plugin port each test."""
-    plugin._reset_registry()
+    _clear_registry()
     plugin._PLUGIN_PORT = 12345
     yield
-    plugin._reset_registry()
+    _clear_registry()
 
 
 def _active_tunnel(url="https://slife.ngrok-free.dev"):
@@ -85,7 +95,7 @@ class TestRegistry:
 
     def test_roundtrip(self):
         tok = plugin._register_file("/data/report.pdf")
-        assert plugin._lookup_file(tok) == "/data/report.pdf"
+        assert plugin._lookup_entry(tok)["path"] == "/data/report.pdf"
 
     def test_dedup_same_path(self):
         t1 = plugin._register_file("/tmp/a.txt")
@@ -98,7 +108,7 @@ class TestRegistry:
         assert t1 != t2
 
     def test_unknown_token(self):
-        assert plugin._lookup_file("deadbeef") is None
+        assert plugin._lookup_entry("deadbeef") is None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -222,7 +232,7 @@ class TestInternalTools:
         data = json.loads(raw)
         assert len(data["file_id"]) == 30
         assert data["url"] == f"https://slife.ngrok-free.dev/share/{data['file_id']}"
-        assert plugin._lookup_file(data["file_id"]) == str(f.resolve())
+        assert plugin._lookup_entry(data["file_id"])["path"] == str(f.resolve())
 
     @pytest.mark.asyncio
     async def test_register_file_refuses_an_unreachable_tunnel(self, tmp_path):
@@ -235,7 +245,7 @@ class TestInternalTools:
         data = json.loads(raw)
         assert data["url"] == ""
         assert "530" in data["error"]
-        assert plugin._lookup_file(data["file_id"]) is None
+        assert plugin._lookup_entry(data["file_id"]) is None
 
 
 # ═══════════════════════════════════════════════════════════════════════

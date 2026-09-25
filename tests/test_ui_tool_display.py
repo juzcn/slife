@@ -20,7 +20,6 @@ def _make_widget(**kwargs):
         w = ToolCallWidget.__new__(ToolCallWidget)
         w.tool_name = kwargs.get("tool_name", "web_search")
         w.tool_args = kwargs.get("tool_args", {"query": "cats"})
-        w.tool_call_id = kwargs.get("tool_call_id", "call_abc")
         w._iteration = kwargs.get("_iteration", 1)
         w._max_iterations = kwargs.get("_max_iterations", 10)
         w._is_collapsed = kwargs.get("_is_collapsed", True)
@@ -40,7 +39,6 @@ class TestToolCallWidget:
         w = _make_widget()
         assert w.tool_name == "web_search"
         assert w.tool_args == {"query": "cats"}
-        assert w.tool_call_id == "call_abc"
         assert w._is_collapsed is True
         assert w._status == "pending"
         assert w._result == ""
@@ -276,12 +274,12 @@ class TestHelperFunctions:
 
     def test_friendly_label_from_tool_name(self):
         from slife.ui.tool_display import _friendly_label
-        assert _friendly_label("run_command", "running") == "Run command"
-        assert _friendly_label("web_search", "done") == "Web search"
+        assert _friendly_label("run_command") == "Run command"
+        assert _friendly_label("web_search") == "Web search"
 
     def test_friendly_label_unknown_tool(self):
         from slife.ui.tool_display import _friendly_label
-        label = _friendly_label("my_custom_tool", "running")
+        label = _friendly_label("my_custom_tool")
         assert "My custom tool" in label
 
     def test_primary_arg_value_returns_first_string(self):

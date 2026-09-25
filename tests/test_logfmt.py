@@ -5,7 +5,6 @@ import pytest; pytestmark = pytest.mark.unit
 
 import asyncio
 import logging
-import sys
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -16,7 +15,6 @@ from slife.logfmt import (
     set_session_id,
     get_session_id,
     request_scope,
-    get_request_id,
     SessionFormatter,
     elapsed,
     read_stderr_lines,
@@ -26,7 +24,6 @@ from slife.logfmt import (
     ok_json,
     error_json,
     resolve_log_dir,
-    FILE_LOG_FORMAT,
 )
 
 
@@ -50,13 +47,6 @@ class TestSessionId:
         assert get_session_id() == "my-custom-id"
 
     def test_get_session_id_uninitialized(self):
-        import contextvars
-        token = contextvars.ContextVar("_reset", default="").set("")
-        # Fresh contextvar without the Slife one — get_session_id returns placeholder
-        # But we can't reset the actual module-level var without affecting other tests.
-        # Instead verify the fallback behavior via direct check:
-        # get_session_id returns '' initially if never called before
-        # but conftest may have set it. Just verify it's non-empty after set.
         set_session_id("test-123")
         assert get_session_id() == "test-123"
         # Reset to empty
@@ -76,30 +66,38 @@ class TestSessionId:
 
 
 class TestRequestId:
-    """Tests for request_scope and get_request_id."""
+    """Tests for request_scope.
+
+    The active request id is read back the way production reads it — through
+    :class:`SessionFormatter`, which stamps ``%(rid)s`` on every record.
+    """
+
+    @staticmethod
+    def _rid() -> str:
+        fmt = SessionFormatter("%(asctime)s [r=%(rid)s] %(message)s")
+        record = logging.LogRecord(
+            "test", logging.INFO, "path", 42, "msg", (), None,
+        )
+        return fmt.format(record).split("[r=")[1].split("]")[0]
 
     def test_request_scope_generates_id(self):
-        with request_scope("test message") as rid:
+        with request_scope() as rid:
             assert len(rid) == 8
-            assert get_request_id() == rid
+            assert self._rid() == rid
 
     def test_request_scope_restores_previous(self):
-        prev = "previous-rid"
-        set_session_id(prev)  # Not request, but check context restoration
-        with request_scope("outer"):
-            outer_rid = get_request_id()
-            with request_scope("inner"):
-                inner_rid = get_request_id()
+        outside = self._rid()
+        with request_scope() as outer_rid:
+            assert self._rid() == outer_rid
+            with request_scope() as inner_rid:
                 assert inner_rid != outer_rid
-            assert get_request_id() == outer_rid
+                assert self._rid() == inner_rid
+            assert self._rid() == outer_rid
+        assert self._rid() == outside
 
-    def test_get_request_id_unset(self):
-        # Outside a request_scope, should return placeholder
-        assert get_request_id() == "--------"
-
-    def test_request_scope_empty_label(self):
-        with request_scope("") as rid:
-            assert len(rid) == 8
+    def test_request_id_unset_is_placeholder(self):
+        # Outside any request_scope the placeholder stands in.
+        assert self._rid() == "--------"
 
 
 # ── SessionFormatter ────────────────────────────────────────────────────────
@@ -110,7 +108,7 @@ class TestSessionFormatter:
 
     def test_format_injects_session_and_request_ids(self):
         init_session_id()
-        with request_scope("test"):
+        with request_scope():
             fmt = SessionFormatter("%(asctime)s [s=%(sid)s] [r=%(rid)s] %(message)s")
             record = logging.LogRecord(
                 "test", logging.INFO, "path", 42, "hello world", (), None,
@@ -548,9 +546,9 @@ class TestSanitizeSecrets:
 
     def test_git_style_hash_passes_through(self):
         """Short hex strings (under 32 chars) pass through — git hashes, etc."""
-        result = sanitize_secrets("commit abcdef1234567890abcdef1234567890ab")  # 40 chars
-        # 40-char lowercase hex — the hex pattern should match it
-        # But normal git output like "abc1234" (7 chars) passes through
+        # A 40-char lowercase hex string — the hex pattern should match it,
+        # but normal git output like "abc1234" (7 chars) passes through.
+        sanitize_secrets("commit abcdef1234567890abcdef1234567890ab")
         short = sanitize_secrets("commit abc1234")
         assert "abc1234" in short
 

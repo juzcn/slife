@@ -24,14 +24,11 @@ Tools:
 from __future__ import annotations
 
 import json
-import logging
 import re
 from typing import ClassVar
 
 from slife.schedules import is_valid
 from slife.tools.base import Tool, _MemfilesClientMixin, make_params, require_params
-
-logger = logging.getLogger(__name__)
 
 #: Task names double as the subagent worker name (``run_schedule_now`` spawns a
 #: worker named after the task), so they must satisfy the subagent safe-name

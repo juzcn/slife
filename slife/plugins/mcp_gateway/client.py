@@ -199,11 +199,7 @@ def _is_retryable_connect_error(exc: BaseException) -> bool:
     """
     if isinstance(exc, (ConnectionError, OSError, asyncio.TimeoutError)):
         return True
-    try:
-        import httpx2
-    except ImportError:
-        httpx2 = None
-    if httpx2 is not None and isinstance(exc, httpx2.HTTPError):
+    if isinstance(exc, httpx2.HTTPError):
         return True
     if isinstance(exc, BaseExceptionGroup):
         return any(_is_retryable_connect_error(e) for e in exc.exceptions)

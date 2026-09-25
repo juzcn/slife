@@ -302,7 +302,7 @@ class TestProcessStream:
             yield StreamChunk(usage=TokenUsage(2, 1, 3))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            result = await loop._process_stream(history, handler)
+            await loop._process_stream(history, handler)
 
         handler.on_thinking_chunk.assert_awaited_with("Hmm")
         handler.on_text_chunk.assert_awaited_with("Answer")

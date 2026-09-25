@@ -1,7 +1,6 @@
 """Tests for credstore._enumerate — credential enumeration."""
 
 import os
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest

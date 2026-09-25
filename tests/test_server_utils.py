@@ -9,7 +9,7 @@ import os
 import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

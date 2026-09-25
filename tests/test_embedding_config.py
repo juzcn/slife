@@ -14,7 +14,6 @@ from slife.plugins.memdb.embedding_config import (
     write_embedding_config,
     get_active_endpoint,
     make_check_report,
-    _active_endpoint,
 )
 
 

@@ -5,26 +5,12 @@ capability.  Adding a provider family = one adapter class + one entry
 here; nothing else in the plugin changes.
 """
 
-from slife.plugins.media.adapters.base import (
-    ArtifactSaver,
-    MediaAdapter,
-    MediaAdapterError,
-)
+from slife.plugins.media.adapters.base import MediaAdapter, MediaAdapterError
 from slife.plugins.media.adapters.dashscope_aigc import DashScopeAIGCAdapter
 from slife.plugins.media.adapters.openai_compat import OpenAICompatAdapter
 from slife.plugins.media.config import MediaConfigError, ProviderConfig
 
-__all__ = [
-    "ADAPTER_REGISTRY",
-    "create_adapter",
-    "ArtifactSaver",
-    "MediaAdapter",
-    "MediaAdapterError",
-    "DashScopeAIGCAdapter",
-    "OpenAICompatAdapter",
-    "MediaConfigError",
-    "ProviderConfig",
-]
+__all__ = ["ADAPTER_REGISTRY", "create_adapter", "MediaAdapter", "MediaAdapterError"]
 
 ADAPTER_REGISTRY: dict[str, type] = {
     "dashscope-aigc": DashScopeAIGCAdapter,

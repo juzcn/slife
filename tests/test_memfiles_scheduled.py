@@ -49,7 +49,7 @@ async def test_upsert_scheduled_task_create_and_update(tmp_path):
         assert task["enabled"] == 1
 
         # update (same name → same id)
-        r2 = await store.upsert_scheduled_task(
+        await store.upsert_scheduled_task(
             "daily_diary", "new description", "0 9 * * *",
         )
         task2 = await store.get_scheduled_task("daily_diary")

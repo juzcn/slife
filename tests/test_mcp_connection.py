@@ -969,7 +969,6 @@ class TestMCPServerConnectionRepair:
 
     @pytest.mark.asyncio
     async def test_the_retry_stops_once_a_list_succeeds(self):
-        from slife.plugins.mcp_gateway import connection as conn_mod
 
         conn = MCPServerConnection(ServerConfig(name="s", command="echo"))
         attempts = {"n": 0}

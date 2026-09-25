@@ -956,21 +956,13 @@ class TestModelConfigStrictKeys:
         })
         assert mc.compat == {"thinkingFormat": "openai"}
 
-    def test_cost_field(self):
-        mc = ModelConfig.from_dict({
-            "model": "test", "api_key": "key",
-            "cost": {"input": 0.003, "output": 0.015},
-        })
-        assert mc.cost == {"input": 0.003, "output": 0.015}
-
     def test_non_dict_compat_is_none(self):
         mc = ModelConfig.from_dict({"model": "test", "api_key": "key", "compat": "not-a-dict"})
         assert mc.compat is None
 
-    def test_missing_compat_and_cost_are_none(self):
+    def test_missing_compat_is_none(self):
         mc = ModelConfig.from_dict({"model": "test", "api_key": "key"})
         assert mc.compat is None
-        assert mc.cost is None
 
     def test_missing_model_raises(self):
         with pytest.raises(ValueError, match="missing"):
@@ -1036,7 +1028,7 @@ class TestSeedFirstRunConfig:
     def test_existing_data_dir_config_not_overwritten(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
-        home = self._home(tmp_path, monkeypatch)
+        self._home(tmp_path, monkeypatch)
         data = tmp_path / "data"
         cfg_path = data / "slife.yaml"
         cfg_path.parent.mkdir()

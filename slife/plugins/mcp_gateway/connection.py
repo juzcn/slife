@@ -144,10 +144,6 @@ class MCPServerConnection:
         self._on_tools_changed = on_tools_changed
         self._session: ClientSession | None = None
         self._exit_stack: AsyncExitStack | None = None
-        #: Protocol version negotiated at establishment (None before) — a
-        #: modern peer is session-less and pushes changes on a listen stream
-        #: only.
-        self._era: str | None = None
         #: Supervisor for that listen stream (modern peers only).
         self._watch_task: "asyncio.Task | None" = None
         self._http_client: httpx2.AsyncClient | None = None
@@ -187,10 +183,6 @@ class MCPServerConnection:
         self._needs_user_auth: bool = False
 
     # ── Published state ─────────────────────────────────────────────────
-
-    @property
-    def needs_user_auth(self) -> bool:
-        return self._needs_user_auth
 
     @property
     def error(self) -> str | None:
@@ -685,7 +677,7 @@ class MCPServerConnection:
                     # are adopted through `server/discover` (session-less,
                     # per-request `_meta`), legacy peers keep the initialize
                     # handshake.  See slife/mcp/era.py.
-                    self._era = await negotiate_era(self._session)
+                    await negotiate_era(self._session)
             except asyncio.CancelledError:
                 # A cancelled establishment must not leave a half-open
                 # transport behind for the next attempt to trip over.

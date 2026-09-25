@@ -13,12 +13,9 @@ stated; it does not author preferences on its own.
 from __future__ import annotations
 
 import json
-import logging
 from typing import ClassVar
 
 from slife.tools.base import Tool, _MemfilesClientMixin, make_params, require_params
-
-logger = logging.getLogger(__name__)
 
 
 class AddUserPrefTool(_MemfilesClientMixin, Tool):

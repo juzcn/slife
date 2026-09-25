@@ -46,14 +46,13 @@ class TestAgentServiceInit:
 
         assert service._plugins["mcp-gateway"].client is None
         assert service._plugins["mcp-gateway"].process is None
-        assert service.mcp_enabled is False
 
     def test_initial_a2a_state(self, sample_config):
         config = sample_config
         service = AgentService(config)
 
         assert service._plugins["a2a"].process is None
-        assert service.a2a_enabled is False
+        assert service._plugins["a2a"].client is None
 
 
 class TestAgentServiceProperties:
@@ -70,7 +69,7 @@ class TestAgentServiceProperties:
 
     def test_subagent_manager_none_initially(self, sample_config):
         service = AgentService(sample_config)
-        assert service.subagent_manager is None
+        assert service._subagent_manager is None
 
 
 class TestAgentServiceClear:
@@ -975,15 +974,6 @@ class TestAgentServiceMCPEnrichment:
 class TestAgentServiceMCPDiscovery:
     """External-server tool discovery — idempotent full-diff registration."""
 
-    @pytest.fixture(autouse=True)
-    def _clean_health(self):
-        """The health store is module-global — keep it clean around these
-        tests so a recovery record from one test can't leak into another."""
-        from slife.health import clear
-        clear()
-        yield
-        clear()
-
     def _client_with(self, status_servers, tools_by_server):
         client = AsyncMock()
         client.is_connected = True
@@ -1765,7 +1755,7 @@ class TestAgentServiceMemory:
     @pytest.mark.asyncio
     async def test_stop_memdb_noop_when_disabled(self, sample_config):
         service = AgentService(sample_config)
-        await service.stop_plugin("memdb")  # Should not raise
+        await service._plugins["memdb"].stop()  # Should not raise
 
 
 class TestCompactToolResults:
@@ -1901,7 +1891,7 @@ class TestAgentServiceA2A:
     @pytest.mark.asyncio
     async def test_stop_a2a_noop_when_disabled(self, sample_config):
         service = AgentService(sample_config)
-        await service.stop_plugin("a2a")  # Should not raise
+        await service._plugins["a2a"].stop()  # Should not raise
 
     @pytest.mark.asyncio
     async def test_a2a_poll_prepends_task_id(self, sample_config):
@@ -2289,13 +2279,6 @@ class TestAgentServiceCallbacks:
 
         good_cb.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_set_inbox_handler_factory_when_no_inbox(self, sample_config):
-        service = AgentService(sample_config)
-        # Should not raise — inbox is None
-        service.set_inbox_handler_factory(lambda: None)
-
-
 # ── AgentService process_message ────────────────────────────────────────────
 
 
@@ -2338,7 +2321,7 @@ class TestAgentServiceProcessMessage:
 
 
 class TestAgentServiceStopMemory:
-    """Tests for the uniform stop_plugin('memdb')."""
+    """Tests for the uniform plugin lifecycle stop (memdb)."""
 
     @pytest.mark.asyncio
     async def test_stop_memdb_with_active_client(self, sample_config):
@@ -2348,7 +2331,7 @@ class TestAgentServiceStopMemory:
         mock_client.disconnect = AsyncMock()
         service._plugins["memdb"].client = mock_client
 
-        await service.stop_plugin("memdb")
+        await service._plugins["memdb"].stop()
 
         mock_client.disconnect.assert_called_once()
         assert service._plugins["memdb"].client is None
@@ -2360,7 +2343,7 @@ class TestAgentServiceStopMemory:
         mock_process.stop = AsyncMock()
         service._plugins["memdb"].process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
 
-        await service.stop_plugin("memdb")
+        await service._plugins["memdb"].stop()
 
         mock_process.stop.assert_called_once()
         assert service._plugins["memdb"].process is None
@@ -2375,7 +2358,7 @@ class TestAgentServiceStopMemory:
         mock_client.disconnect = AsyncMock()
         service._plugins["memdb"].client = mock_client
 
-        await service.stop_plugin("memdb")
+        await service._plugins["memdb"].stop()
 
         mock_client.disconnect.assert_called_once()
 
@@ -2480,9 +2463,9 @@ class TestAgentServiceWeChat:
 
     @pytest.mark.asyncio
     async def test_stop_wechat_noop_when_disabled(self, sample_config):
-        """stop_plugin('wechat') is safe when WeChat was never started."""
+        """A lifecycle stop is safe when WeChat was never started."""
         service = AgentService(sample_config)
-        await service.stop_plugin("wechat")  # Should not raise
+        await service._plugins["wechat"].stop()  # Should not raise
 
     @pytest.mark.asyncio
     async def test_start_wechat_with_mocked_internals(self, sample_config):
@@ -2521,7 +2504,7 @@ class TestAgentServiceWeChat:
 
     @pytest.mark.asyncio
     async def test_stop_wechat_cancels_poll_and_disconnects(self, sample_config):
-        """stop_plugin('wechat') stops the poll loop and disconnects the client."""
+        """Stopping the lifecycle ends the poll loop and disconnects the client."""
         service = AgentService(sample_config)
 
         # Set up a fake poll task
@@ -2543,7 +2526,7 @@ class TestAgentServiceWeChat:
         mock_process.stop = AsyncMock()
         service._plugins["wechat"].process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
 
-        await service.stop_plugin("wechat")
+        await service._plugins["wechat"].stop()
 
         # Poll task cancelled and cleaned up
         assert service._plugins["wechat"].poll_task is None
@@ -3498,9 +3481,8 @@ class TestReloadActiveModelHealthFact:
 
     def test_switch_supersedes_the_startup_record(self):
         from slife.config import Config
-        from slife.health import clear, get_report, record_active_model
+        from slife.health import get_report, record_active_model
 
-        clear()
         service = AgentService(Config(
             models=[
                 self._model("deepseek/deepseek-v4-flash", thinking=False, vision=False),

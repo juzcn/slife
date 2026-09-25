@@ -198,12 +198,6 @@ def _lookup_entry(token: str) -> dict | None:
     return _registry.get(token)
 
 
-def _lookup_file(token: str) -> str | None:
-    """Return the local path for *token*, or ``None`` if unknown."""
-    entry = _registry.get(token)
-    return entry["path"] if entry else None
-
-
 def _unregister_file(file_id: str) -> bool:
     """Drop *file_id* (and its reverse path mapping), revoking the share link."""
     entry = _registry.pop(file_id, None)
@@ -211,12 +205,6 @@ def _unregister_file(file_id: str) -> bool:
         return False
     _path_to_token.pop(entry["path"], None)
     return True
-
-
-def _reset_registry() -> None:
-    """Clear all registered tokens (used by tests)."""
-    _registry.clear()
-    _path_to_token.clear()
 
 
 def _content_disposition(filename: str) -> str:

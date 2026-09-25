@@ -5,11 +5,9 @@ import pytest; pytestmark = pytest.mark.unit
 
 import json
 import pytest
-from pathlib import Path
 
 from tests.conftest import dump_config, load_config_text
 from slife.tools.cli import CliSetTool, CliRemoveTool, CliListToolsTool, get_cli_tools_summary
-from slife.tools._config_io import with_fetched_at
 
 
 # ── CliSetTool ─────────────────────────────────────────────────────────

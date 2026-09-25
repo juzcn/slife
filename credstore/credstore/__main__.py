@@ -880,10 +880,10 @@ def _classify_credential_row(
     and ``del``-s immediately.
     """
     if not (in_ring and in_crypt):
-        # Present in only one store — no comparison needed
-        return ("✔", "✔", "synced", "synced") if in_ring and in_crypt else \
-               ("✔", "—", "keyring only", "ring_only") if in_ring else \
-               ("—", "✔", "cryptfile only", "crypt_only")
+        # Present in only one store — no comparison needed.  Neither can be
+        # "synced" here: that verdict needs a value from both stores.
+        return (("✔", "—", "keyring only", "ring_only") if in_ring
+                else ("—", "✔", "cryptfile only", "crypt_only"))
 
     ring_val = store_mod.get_credential(key)
     crypt_val = (
@@ -978,15 +978,15 @@ def _print_list_tips(
         if cryptfile_exists:
             print()
             print(f"  Tip: run 'credstore reset-backup' to sync {ring_only} missing")
-            print(f"  credential(s) from system keyring into the cryptfile.")
+            print("  credential(s) from system keyring into the cryptfile.")
         else:
             print()
-            print(f"  Tip: run 'credstore set-password' to enable encrypted backup,")
+            print("  Tip: run 'credstore set-password' to enable encrypted backup,")
             print(f"  then 'credstore reset-backup' to sync {ring_only} credential(s).")
     elif crypt_only > 0:
         print()
         print(f"  Tip: run 'credstore reset-keyring' to restore {crypt_only}")
-        print(f"  credential(s) from cryptfile back to the system keyring.")
+        print("  credential(s) from cryptfile back to the system keyring.")
 
 
 @requires_tty

@@ -237,9 +237,6 @@ class SetModelTool(_ModelConfigTool):
                 )
             providers[pid] = {}
         pcfg = providers[pid]
-        if not isinstance(pcfg, dict):
-            pcfg = {}
-            providers[pid] = pcfg
 
         # Set provider-level defaults if provided
         if "base_url" in kwargs:
@@ -343,7 +340,7 @@ class RemoveModelTool(_ModelConfigTool):
         raw = read_config(self._config_path)
         providers = raw.get(_MODELS_KEY, {}).get("providers", {})
         if not isinstance(providers, dict):
-            return f"Error: no providers configured."
+            return "Error: no providers configured."
 
         pcfg = providers.get(pid)
         if not isinstance(pcfg, dict):
@@ -419,7 +416,7 @@ class SwitchModelTool(_ModelConfigTool):
         # Validate that the model exists
         providers = raw.get(_MODELS_KEY, {}).get("providers", {})
         if not isinstance(providers, dict):
-            return f"Error: no providers configured."
+            return "Error: no providers configured."
 
         if "/" not in ref:
             return f"Error: invalid ref '{ref}'. Use format: provider/model-name"
@@ -539,9 +536,7 @@ class AttachImageTool(Tool):
         if not blocks:
             return f"Error: cannot read image(s) — {', '.join(failed)}"
 
-        parts = []
-        if blocks:
-            parts.append(f"Image included: {', '.join(sources)}")
+        parts = [f"Image included: {', '.join(sources)}"]
         if failed:
             parts.append(f"Could not read: {', '.join(failed)}")
         return " | ".join(parts)

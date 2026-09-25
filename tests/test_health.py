@@ -8,7 +8,6 @@ import pytest
 from unittest.mock import patch
 
 from slife.health import (
-    clear,
     get_report,
     record,
     record_active_model,
@@ -18,12 +17,6 @@ from slife.health import (
 
 class TestRecord:
     """Tests for record() function."""
-
-    def setup_method(self):
-        clear()
-
-    def teardown_method(self):
-        clear()
 
     def test_record_minimal(self):
         record("test", "ok")
@@ -85,12 +78,6 @@ class TestRecord:
 class TestGetReport:
     """Tests for get_report() function."""
 
-    def setup_method(self):
-        clear()
-
-    def teardown_method(self):
-        clear()
-
     def test_empty_report(self):
         entries = get_report()
         assert entries == []
@@ -113,12 +100,6 @@ class TestGetReport:
 class TestRecordActiveModel:
     """Tests for record_active_model() — the one definition of the model fact
     both producers write (startup and a live model switch)."""
-
-    def setup_method(self):
-        clear()
-
-    def teardown_method(self):
-        clear()
 
     @staticmethod
     def _model(**overrides):
@@ -166,12 +147,6 @@ class TestRecordHostFacts:
     """The facts that are about the HOST, not this process — one recorder for
     both entry points (the TUI and a headless subagent worker)."""
 
-    def setup_method(self):
-        clear()
-
-    def teardown_method(self):
-        clear()
-
     @staticmethod
     def _config():
         from slife.config import Config, ModelConfig
@@ -209,23 +184,3 @@ class TestRecordHostFacts:
         assert cfg["value"].startswith("inherited from the main agent (")
 
 
-class TestClear:
-    """Tests for clear() function."""
-
-    def setup_method(self):
-        clear()
-
-    def teardown_method(self):
-        clear()
-
-    def test_clear_empties_entries(self):
-        record("test1", "ok")
-        record("test2", "error")
-        assert len(get_report()) == 2
-        clear()
-        assert get_report() == []
-
-    def test_clear_on_empty_is_noop(self):
-        assert get_report() == []
-        clear()
-        assert get_report() == []

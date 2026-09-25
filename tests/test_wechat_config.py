@@ -3,9 +3,7 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
-import logging
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -157,7 +155,7 @@ class TestSaveWechatConfig:
             "base_url": "https://custom.example.com",
             "saved_at": 1718400000.0,
         }
-        saved = save_wechat_config("user", session, work_dir=tmp_path)
+        save_wechat_config("user", session, work_dir=tmp_path)
         loaded = load_wechat_config("user", work_dir=tmp_path)
         assert loaded["bot_token"] == "my-bot-token"
         assert loaded["base_url"] == "https://custom.example.com"
@@ -165,7 +163,7 @@ class TestSaveWechatConfig:
 
     def test_defaults_applied_for_missing_keys(self, tmp_path):
         session = {"bot_token": "token_only"}
-        saved = save_wechat_config("user", session, work_dir=tmp_path)
+        save_wechat_config("user", session, work_dir=tmp_path)
         loaded = load_wechat_config("user", work_dir=tmp_path)
         assert loaded["bot_token"] == "token_only"
         assert loaded["base_url"] == DEFAULT_BASE_URL
@@ -178,7 +176,7 @@ class TestSaveWechatConfig:
             "ilink_user_id": "wxid_xyz",
             "saved_at": 1000.0,
         }
-        saved = save_wechat_config("user", session, work_dir=tmp_path)
+        save_wechat_config("user", session, work_dir=tmp_path)
         loaded = load_wechat_config("user", work_dir=tmp_path)
         assert loaded["ilink_user_id"] == "wxid_xyz"
 

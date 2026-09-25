@@ -422,10 +422,9 @@ def _url_name_parts(parsed, title: str) -> tuple[str, str, str, str]:
     display_title = title or url_name or "untitled"
     stem = _slugify(title or url_name.rpartition(".")[0] or url_name) or "untitled"
     if url_name and "." in url_name:
-        ext = "." + url_name.rsplit(".", 1)[-1].split("?")[0]
-        ext = re.sub(r"[^\w.]", "", ext)[:10]
-        if not ext.startswith("."):
-            ext = ""
+        # ``re.sub`` keeps ``\w`` and ``.``, so the leading dot always survives
+        # and the first character is never truncated away by ``[:10]``.
+        ext = re.sub(r"[^\w.]", "", "." + url_name.rsplit(".", 1)[-1].split("?")[0])[:10]
     else:
         ext = ""
     return url_name, display_title, stem, ext

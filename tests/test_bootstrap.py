@@ -5,7 +5,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import logging
 from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import patch
 
 import pytest
 

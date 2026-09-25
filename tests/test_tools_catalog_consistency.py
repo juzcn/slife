@@ -9,18 +9,17 @@ connects).  All deterministic — no network, no child processes.
 """
 
 import json
-import logging
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-import pytest_asyncio
 
 from slife.config import Config
 from slife.tools.base import Tool
 from slife.tools.catalog import CatalogStore, effective_from_row
 from slife.tools.catalog_service import ToolCatalogService
 from slife.tools.whitelist import ALWAYS_LOADED
+from tests.test_tools_catalog import count_tool_vectors
 
 
 class _NativeShell(Tool):
@@ -86,7 +85,7 @@ def _seeded_tools_yaml(tmp: Path) -> Path:
 
 
 def _cfg_from(tmp: Path) -> Config:
-    tools = _seeded_tools_yaml(tmp)
+    _seeded_tools_yaml(tmp)
     slife = tmp / "slife.yaml"
     slife.write_text(
         "models:\n  - ref: m\n    provider: p\n    model: m\nactive_model: m\n",
@@ -126,14 +125,18 @@ async def _mirror_server(catalog: ToolCatalogService, server: str, tools: list[s
     """
     from slife.agent.service import _server_category
 
-    for tool in tools:
-        await catalog.upsert_external_tool(
-            f"{server}__{tool}",
-            server=server,
-            description=f"{tool} desc",
-            schema=_descriptor(tool, f"{tool} desc"),
-            category=_server_category(server),
-        )
+    await catalog.mirror_external_tools(
+        server,
+        [
+            {
+                "name": tool,
+                "description": f"{tool} desc",
+                "inputSchema": {"type": "object", "properties": {}},
+            }
+            for tool in tools
+        ],
+        category=_server_category(server),
+    )
 
 
 # ── A: FRESH INSTALL — empty db + seeded config ─────────────────────────
@@ -533,8 +536,8 @@ async def test_a_tool_a_server_stopped_publishing_loses_its_row(_isolate):
             stub, "serper", listed, category="mcp")
         assert await store.get_tool("serper__scrape") is not None
         await store.replace_embedding_chunks(
-            {"doc_id": "serper__scrape"}, [[0.1, 0.2]], model="test-model")
-        assert await store.count_embedded() == 1
+            {"doc_id": "serper__scrape"}, [[0.1, 0.2]])
+        assert await count_tool_vectors(store) == 1
 
         # the server republishes only `search`
         await AgentService._upsert_external_catalog_rows(
@@ -542,7 +545,7 @@ async def test_a_tool_a_server_stopped_publishing_loses_its_row(_isolate):
 
         assert await store.get_tool("serper__scrape") is None
         assert await svc.effective_status("serper__scrape") is None
-        assert await store.count_embedded() == 0        # vectors went too
+        assert await count_tool_vectors(store) == 0        # vectors went too
         # …and the survivors are untouched: a sibling's removal is not a reason
         # to reset what the model loaded
         assert await store.get_tool("serper__search") is not None

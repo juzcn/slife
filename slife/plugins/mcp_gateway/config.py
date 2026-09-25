@@ -447,7 +447,6 @@ def build_rest_api_entry(
     base_url: str,
     api_key: str = "",
     description: str = "",
-    source: dict | None = None,
 ) -> dict:
     """Build a ``uvx mcp-openapi-proxy`` server entry for a REST API.
 
@@ -459,9 +458,8 @@ def build_rest_api_entry(
 
     No ``source`` tag: the entry lands in the ``rest-api`` section, and the
     section is the whole fact (``_servers_dict`` projects the tag in memory
-    for the readers that key on it).  ``source`` is accepted and ignored —
-    the parameter is kept for callers that still pass provenance, so the
-    entry never grows a written-back copy of what placement already says.
+    for the readers that key on it), so the entry never grows a written-back
+    copy of what placement already says.
     """
     env = {SPEC_URL_ENV: spec_url, BASE_URL_ENV: base_url}
     if api_key:
@@ -482,15 +480,12 @@ def save_rest_api(
     base_url: str = "",
     api_key: str = "",
     description: str = "",
-    source: dict | None = None,
 ) -> bool:
     """Persist a REST API as a server entry in the ``rest-api`` section.
 
     Returns True when written.
     """
-    entry = build_rest_api_entry(
-        spec_url, base_url, api_key, description, source,
-    )
+    entry = build_rest_api_entry(spec_url, base_url, api_key, description)
     add_server_entry(name, entry, section="rest-api")
     logger.info("mcp_config_save_rest_api name=%s spec=%s", name, spec_url)
     return True

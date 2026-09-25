@@ -7,14 +7,10 @@ read/write/execute permissions on every file access.
 
 Public functions:
     get_os_accessible_paths() -> list[str]
-    is_windows() -> bool
     is_wsl() -> bool
-    is_macos() -> bool
-    is_linux() -> bool
 """
 
 import os
-import platform
 import sys
 
 
@@ -36,37 +32,6 @@ def is_wsl() -> bool:
         return False
 
 
-def is_windows() -> bool:
-    """Check if running on Windows — native or WSL.
-
-    Returns True for both native Windows (``platform.system() == "Windows"``)
-    and WSL (Linux kernel on a Windows host, detected via ``is_wsl()``).
-
-    Returns:
-        True on any Windows host, False on macOS or native Linux.
-    """
-    return platform.system() == "Windows" or is_wsl()
-
-
-def is_macos() -> bool:
-    """Check if running on macOS.
-
-    Returns:
-        True when ``platform.system()`` returns ``"Darwin"``.
-    """
-    return platform.system() == "Darwin"
-
-
-def is_linux() -> bool:
-    """Check if running on native Linux (non-WSL).
-
-    Returns True only for native Linux — WSL is excluded because it runs
-    on a Windows host.  Use ``is_windows()`` when you want the host OS.
-
-    Returns:
-        True on native Linux, False on WSL / macOS / Windows.
-    """
-    return platform.system() == "Linux" and not is_wsl()
 
 
 def get_os_accessible_paths() -> list[str]:

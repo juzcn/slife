@@ -266,15 +266,6 @@ def _cosine_distance(a: list[float], b: list[float]) -> float:
 
 # ── Schema → text (semantic doc source) ─────────────────────────────
 
-def _compact_schema(value: Any) -> str:
-    """Compact JSON text of a tool's descriptor (dict/list or JSON str)."""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    return ""
-
-
 def _fold_children(spec: dict) -> str:
     """One level of nested parameter text (object properties / array items)."""
     schemas = None
@@ -1642,12 +1633,14 @@ class CatalogStore:
         ]
 
     async def replace_embedding_chunks(
-        self, doc: dict, embeddings: list[list[float]], *, model: str = "",
+        self, doc: dict, embeddings: list[list[float]],
     ) -> None:
-        """Atomically replace one tool's embedding chunks (delete+insert, one tx)."""
+        """Atomically replace one tool's embedding chunks (delete+insert, one tx).
+
+        The row carries no model tag: which model built the vectors is
+        ``meta('embedding_model')``, one fact for the whole index.
+        """
         name = doc["doc_id"]
-        if not model:
-            model = (await self.get_meta("embedding_model")) or ""
         vec_blobs = [_serialize_f32(emb) for emb in embeddings]
         async with self._write_lock:
             try:
@@ -1656,9 +1649,9 @@ class CatalogStore:
                 )
                 for idx, blob in enumerate(vec_blobs):
                     await self._c.execute(
-                        """INSERT INTO tool_embeddings(name, chunk_index, embedding, model)
-                           VALUES (?, ?, ?, ?)""",
-                        (name, idx, blob, model),
+                        """INSERT INTO tool_embeddings(name, chunk_index, embedding)
+                           VALUES (?, ?, ?)""",
+                        (name, idx, blob),
                     )
                 await self._c.commit()
             except Exception:
@@ -1676,13 +1669,6 @@ class CatalogStore:
             await self._c.commit()
         logger.info("catalog_embeddings_dropped count=%d", count)
         return count
-
-    async def count_embedded(self) -> int:
-        cursor = await self._c.execute(
-            "SELECT COUNT(DISTINCT name) FROM tool_embeddings",
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else 0
 
     # ── Meta ───────────────────────────────────────────────────────
 

@@ -1,7 +1,6 @@
 """Tests for credstore._keyutils_backend -- headless-Linux kernel keyring."""
 from __future__ import annotations
 
-import ctypes
 from unittest.mock import MagicMock
 
 import pytest
@@ -54,7 +53,7 @@ class TestCheckViable:
         monkeypatch.setattr(
             "credstore._keyutils_backend.is_wsl", lambda: False
         )
-        mock_libc = _reset_libc(monkeypatch, return_value=-126)  # -ENOKEY
+        _reset_libc(monkeypatch, return_value=-126)  # -ENOKEY
         from credstore._keyutils_backend import _check_viable
         err = _check_viable()
         assert err is not None
@@ -164,29 +163,6 @@ class TestKeyutilsGetPassword:
         # Second call: read size returns 0
         mock_libc.syscall.side_effect = [5, 0]
         assert be.get_password("svc", "usr") is None
-
-    def test_decode_failure(self, viable_backend):
-        """Payload is not valid UTF-8 → None."""
-        be, mock_libc = viable_backend
-        mock_libc.syscall.side_effect = [5, 4, 4]  # search, read-size, read-data
-        # ctypes.create_string_buffer returns a buffer — we need to mock the decode
-        import builtins
-        real_create = ctypes.create_string_buffer
-
-        def _fake_create(size):
-            buf = real_create(size)
-            buf.raw = b"\xff\xfe\x00\x00"  # invalid UTF-8
-            return buf
-
-        monkeypatch_ref = None
-        # We can't easily mock create_string_buffer for the third call only,
-        # so just verify that UnicodeDecodeError is caught.
-        # Actually, the read-size call uses (4,) so the buffer is 4 bytes.
-        # Let's check: the code creates buf = ctypes.create_string_buffer(size) where size=4.
-        # Then reads 4 bytes into buf.raw. If raw is invalid UTF-8, decode fails.
-        # But mocking this requires controlling the raw bytes, which is complex.
-        # For now, test the happy path below.
-        pass
 
     def test_success(self, viable_backend, monkeypatch):
         """Valid payload → decoded string returned."""

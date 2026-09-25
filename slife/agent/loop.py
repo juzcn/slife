@@ -105,7 +105,6 @@ class StreamStallError(TimeoutError):
     """
 
     def __init__(self, timeout: float):
-        self.stall_timeout = timeout
         super().__init__(f"LLM stream stalled — no data for {timeout:g}s")
 
 
@@ -446,7 +445,6 @@ class AgentLoop:
         self._last_cwd: str = ""
         self._last_shell: str = ""
         self._last_model_name: str = ""
-        self._last_input_modalities: str = ""
         self._context_time_start: str = ""  # earliest turn date in context; set by restore, advanced by trim
         self._last_context_time_start: str = ""  # change-detection in the turn prompt
         self._context_turn_dates: list[str] = []  # dates of restored turns, oldest-first; consumed by trim
@@ -1930,7 +1928,7 @@ class AgentLoop:
 
         logger.info("req_start msg=%.100s imgs=%d", sanitize_secrets(user_input), n_imgs)
 
-        with request_scope(user_input[:50]):
+        with request_scope():
             try:
                 # Track the context time range.  "Context covers" is shown on
                 # the first turn, then only when restore or a trim advances it.

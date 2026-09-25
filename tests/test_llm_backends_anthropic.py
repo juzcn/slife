@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from slife.config import ModelConfig
 from slife.agent.llm_backends.anthropic import AnthropicBackend
-from slife.agent.llm_client import TokenUsage, StreamChunk
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────

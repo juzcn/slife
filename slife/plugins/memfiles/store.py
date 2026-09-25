@@ -242,6 +242,11 @@ class MemfilesStore(VecStoreLifecycleMixin):
         self._embedding_dim = DEFAULT_EMBEDDING_DIM
         self._embedding_model = ""
         self._vec_available = False             # sqlite-vec loaded? embeddings optional
+        #: Why sqlite-vec is not usable ("" once it loads).  Initialised here,
+        #: not only in ``_load_vec_extension``: the normal startup path skips
+        #: that call, and ``__check`` reads this whenever ``_vec_available`` is
+        #: false — an unset attribute there is an AttributeError in the probe.
+        self._vec_reason = ""
         # Serializes multi-statement read-modify-write writes (upsert_note /
         # upsert_diary / upsert_report): aiosqlite lets coroutines interleave
         # between awaited statements, so two concurrent upserts of the same
@@ -259,10 +264,6 @@ class MemfilesStore(VecStoreLifecycleMixin):
     def _c(self):
         assert self._conn is not None
         return self._conn
-
-    @property
-    def db_path(self) -> Path:
-        return self._db_path
 
     @property
     def mem_dir(self) -> Path:

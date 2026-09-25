@@ -4,13 +4,13 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from slife.agent.plugins import PluginLifecycle, PluginRegistry, plugin_port_env
 from slife.platform import IS_WINDOWS
-from slife.plugins.spec import PLUGIN_SPECS, SPEC_ORDER
+from slife.plugins.spec import PLUGIN_SPECS
 
 
 def _real_proxy(name, description):
@@ -664,7 +664,6 @@ class TestWatchdogRestart:
     @pytest.mark.asyncio
     async def test_failed_restart_retries_with_backoff(self, lifecycle, monkeypatch):
         """A failed restart backs off and retries instead of killing the watchdog."""
-        import slife.agent.plugins as plugin_mod
 
         monkeypatch.setattr("slife.timeouts.timeouts.ready.watchdog_backoff_initial", 0.01)
         monkeypatch.setattr("slife.timeouts.timeouts.ready.watchdog_backoff_multiplier", 2.0)
@@ -706,7 +705,6 @@ class TestWatchdogRestart:
         'successful' restart — the watchdog gives up at `_max_restarts`
         instead of restarting forever (the old code reset the counter right
         after every successful spawn)."""
-        import slife.agent.plugins as plugin_mod
 
         lifecycle._max_restarts = 3
         lifecycle._module = "slife.plugins.memdb.server"  # fallback spawn path
@@ -768,7 +766,6 @@ class TestWatchdogRestart:
         restart attempt is bounded by the registry's ready.plugin_start, treated as a
         failed attempt (backoff), and the watchdog gives up at
         `_max_restarts`."""
-        import slife.agent.plugins as plugin_mod
 
         monkeypatch.setattr("slife.timeouts.timeouts.ready.plugin_start", 0.02)
         monkeypatch.setattr("slife.timeouts.timeouts.ready.watchdog_backoff_initial", 0.005)
@@ -830,13 +827,13 @@ class TestPluginRegistry:
     def test_eagerly_registers_every_declared_plugin(self, mock_service):
         reg = PluginRegistry(mock_service)
         assert set(reg.lifecycles) == set(PLUGIN_SPECS)
-        assert list(reg.lifecycles) == list(SPEC_ORDER)
+        assert list(reg.lifecycles) == list(PLUGIN_SPECS)
         # distinct lifecycle per plugin
         assert len({id(v) for v in reg.lifecycles.values()}) == len(PLUGIN_SPECS)
 
     def test_items_in_spec_order(self, mock_service):
         reg = PluginRegistry(mock_service)
-        assert [spec.name for spec, _ in reg.items()] == list(SPEC_ORDER)
+        assert [spec.name for spec, _ in reg.items()] == list(PLUGIN_SPECS)
         for spec, lc in reg.items():
             assert reg.lifecycles[spec.name] is lc
 

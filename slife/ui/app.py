@@ -1113,7 +1113,6 @@ class SlifeApp(App):
             app=self,
             turns=turns,
             history=self.service.message_history,
-            config=self.service.config,
             assistant_prefix=self._assistant_prefix,
         )
 

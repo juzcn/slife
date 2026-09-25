@@ -395,11 +395,11 @@ async def check_sharefile(client=None) -> list[dict]:
             "hint": "A local proxy in fake-ip mode (Clash / Mihomo / sing-box) "
                     "is resolving the tunnel's edge, so the control connection "
                     "is carried and cut by that proxy — the tunnel registers "
-                    f"and dies repeatedly, whatever protocol it uses. Exclude "
-                    f"the edge from fake-ip and route it direct: for "
-                    f"cloudflared add '+.argotunnel.com' to fake-ip-filter and "
-                    f"'DOMAIN-SUFFIX,argotunnel.com,DIRECT' to the proxy rules "
-                    f"(other providers: their own edge hostname).",
+                    "and dies repeatedly, whatever protocol it uses. Exclude "
+                    "the edge from fake-ip and route it direct: for "
+                    "cloudflared add '+.argotunnel.com' to fake-ip-filter and "
+                    "'DOMAIN-SUFFIX,argotunnel.com,DIRECT' to the proxy rules "
+                    "(other providers: their own edge hostname).",
         })
     return entries
 
@@ -1512,11 +1512,11 @@ class SystemToolsListTool(Tool):
 
         lines = [f"## System Tools ({len(system)} total)\n"]
         groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
-        for t in sorted(system, key=lambda t: t.name):
-            cat = _system_category(t)
-            desc = t.description.split(".")[0].strip() + "."
-            desc = _strip_server_prefix(t, desc)
-            groups[cat].append((t.name, desc))
+        for tool in sorted(system, key=lambda tool: tool.name):
+            cat = _system_category(tool)
+            desc = tool.description.split(".")[0].strip() + "."
+            desc = _strip_server_prefix(tool, desc)
+            groups[cat].append((tool.name, desc))
 
         for cat in sorted(groups):
             items = groups[cat]

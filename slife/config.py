@@ -290,8 +290,6 @@ class ModelConfig:
     thinking_enabled: bool = False
     reasoning_effort: str | None = None
     compat: dict | None = None          # compat config (e.g. {thinkingFormat: "openai"})
-    cost: dict | None = None            # cost tracking (optional)
-    supports_tool_calls: bool = True    # whether this model supports native tool/function calling
 
     @classmethod
     def from_dict(cls, data: dict) -> "ModelConfig":
@@ -334,7 +332,6 @@ class ModelConfig:
         max_tokens = data.get("max_tokens", 4096)
         base_url = data.get("base_url", "")
         compat = data.get("compat") if isinstance(data.get("compat"), dict) else None
-        cost = data.get("cost") if isinstance(data.get("cost"), dict) else None
 
         return cls(
             ref=ref,
@@ -353,7 +350,6 @@ class ModelConfig:
             thinking_enabled=bool(thinking),
             reasoning_effort=data.get("reasoning_effort"),
             compat=compat,
-            cost=cost,
         )
 
 

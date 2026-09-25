@@ -9,7 +9,6 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from slife.platform import (
-    build_python_command,
     resolve_command,
     IS_WINDOWS,
     get_os_info,
@@ -22,41 +21,6 @@ from slife.platform import (
     _descendant_pids,
     _signal_pids_sync,
 )
-
-
-# ── build_python_command ───────────────────────────────────────────────
-
-
-class TestBuildPythonCommand:
-    """Tests for build_python_command."""
-
-    def test_no_json_args(self):
-        """Script without JSON args (no braces/brackets)."""
-        result = build_python_command("script.py")
-        assert "script.py" in result
-        assert "python" in result
-        assert "{" not in result
-
-    def test_with_json_braces(self):
-        """Script with JSON args in braces."""
-        result = build_python_command('script.py {"key": "value"}')
-        assert "script.py" in result
-        assert "key" in result
-        assert "value" in result
-
-    def test_with_json_brackets(self):
-        """Script with JSON args in brackets."""
-        result = build_python_command("script.py [1, 2, 3]")
-        assert "script.py" in result
-
-    def test_empty_string(self):
-        result = build_python_command("")
-        assert "python" in result
-
-    def test_cmd_normalization(self):
-        """Direct command (not script path) works."""
-        result = build_python_command("echo hello")
-        assert "echo hello" in result
 
 
 # ── Platform detection ──────────────────────────────────────────────────
@@ -151,34 +115,6 @@ class TestGetOsInfoMocked:
     @patch("platform.system", return_value="FreeBSD")
     def test_other_fallback_mocked(self, _mock):
         assert get_os_info() == "FreeBSD"
-
-
-# ── run_python_script — edge cases ──────────────────────────────────────
-
-
-class TestRunPythonScriptEdgeCases:
-    """Edge cases for run_python_script."""
-
-    def test_script_with_braces_first_not_bracket(self):
-        """Split happens at the first { even if [ appears later."""
-        cmd = build_python_command('myscript.py {"k":[1,2]}')
-        assert "myscript.py" in cmd
-        assert "{" in cmd
-
-    def test_windows_uses_utf8_flag(self):
-        if IS_WINDOWS:
-            cmd = build_python_command('script.py {"a":1}')
-            assert "-X utf8" in cmd
-            assert '\\"a\\":1' in cmd
-
-    def test_non_windows_uses_single_quotes(self):
-        if not IS_WINDOWS:
-            cmd = build_python_command('script.py {"a":1}')
-            assert "'" in cmd
-
-    def test_whitespace_in_script_path(self):
-        cmd = build_python_command("  my script.py  ")
-        assert "my script.py" in cmd
 
 
 # ── terminate_process ────────────────────────────────────────────────
@@ -478,20 +414,6 @@ class TestResolveCommandWindows:
 
 
 # ── run_python_script cross-platform ─────────────────────────────────
-
-
-class TestRunPythonScript:
-    """Tests for run_python_script quoting on different platforms."""
-
-    def test_unix_quoting(self):
-        """Non-Windows uses single-quote wrapping for JSON args."""
-        import sys
-        from slife.platform import build_python_command
-        with patch("slife.platform.IS_WINDOWS", False):
-            # input_str format: "<script_path> <json_args>"
-            result = build_python_command('/tmp/script.py {"key": "val"}')
-            assert "'" in result
-            assert sys.executable in result
 
 
 # ── terminate_process force-kill ──────────────────────────────────────

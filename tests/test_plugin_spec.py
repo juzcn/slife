@@ -6,7 +6,6 @@ import importlib.util
 
 from slife.plugins.spec import (
     PLUGIN_SPECS,
-    SPEC_ORDER,
     health_check_name,
     mcp_child_reserved_names,
     spec_for,
@@ -33,9 +32,6 @@ class TestPluginSpecs:
     def test_every_builtin_is_present(self):
         assert list(PLUGIN_SPECS) == [n for n, _, _ in _EXPECTED]
 
-    def test_deterministic_order(self):
-        assert list(SPEC_ORDER) == [n for n, _, _ in _EXPECTED]
-
     def test_module_and_ctx_field(self):
         for name, module, ctx in _EXPECTED:
             spec = PLUGIN_SPECS[name]
@@ -49,10 +45,9 @@ class TestPluginSpecs:
                 f"{name} spec module {module} not importable"
             )
 
-    def test_only_mcp_is_gateway_and_host_params(self):
+    def test_only_mcp_is_gateway(self):
         for name, spec in PLUGIN_SPECS.items():
             assert spec.gateway == (name == "mcp-gateway")
-            assert spec.host_params == (name == "mcp-gateway")
 
     def test_ctx_field_matches_tool_context(self):
         # The declared ctx fields must exist on ToolContext.

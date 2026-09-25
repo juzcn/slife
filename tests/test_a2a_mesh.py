@@ -12,7 +12,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from a2a_over_mqtt import A2ARequest, make_artifact_event, make_status_event
 from paho.mqtt.packettypes import PacketTypes
@@ -20,7 +20,6 @@ from paho.mqtt.properties import Properties
 
 from slife.a2a.config import A2AConfig
 from slife.a2a.mesh import A2AMesh, _OutboundSend, _backoff_delay
-from slife.a2a.card import AgentCard
 from slife.a2a.identity import AgentName
 from slife.a2a.task_store import clear_store, get_store
 
@@ -129,7 +128,7 @@ class TestReplyRouting:
         completions = []
         mesh.on_task_completion = lambda c, r, x, p, k="task": completions.append((c, r, x, p, k))
         mesh._corr_to_task["corr1"] = "task-1"
-        get_store().record_send("task-1", "peer-1", "hi", "mqtt")
+        get_store().record_send("task-1", "peer-1")
         topic = "$a2a/v1/reply/default/default/self-1/s1"
 
         mesh._handle_reply(_msg(topic, make_artifact_event("r", "task-1", "the answer"), corr="corr1"))
@@ -138,7 +137,6 @@ class TestReplyRouting:
         mesh._handle_reply(_msg(topic, make_status_event("r", "task-1", "completed", "ctx"), corr="corr1"))
         rec = get_store().get("task-1")
         assert rec.status == "completed"
-        assert rec.result == "the answer"  # artifact text survived the terminal (which carries none)
         assert completions == [("task-1", "the answer", False, "peer-1", "task")]
 
     @pytest.mark.asyncio
@@ -147,7 +145,7 @@ class TestReplyRouting:
         completions = []
         mesh.on_task_completion = lambda c, r, x, p, k="task": completions.append((c, r, x, p, k))
         mesh._corr_to_task["corr2"] = "task-2"
-        get_store().record_send("task-2", "peer-2", "x", "mqtt")
+        get_store().record_send("task-2", "peer-2")
         mesh._handle_reply(
             _msg(
                 "$a2a/v1/reply/default/default/self-1/s2",
@@ -197,7 +195,7 @@ class TestReplyRouting:
         completions = []
         mesh.on_task_completion = lambda c, r, x, p, k="task": completions.append(c)
         mesh._corr_to_task["corr4"] = "task-4"
-        get_store().record_send("task-4", "p4", "x", "mqtt")
+        get_store().record_send("task-4", "p4")
         mesh._handle_reply(_msg("$a2a/v1/reply/default/default/self-1/s4",
                                make_status_event("r", "task-4", "submitted", ""), corr="corr4"))
         mesh._handle_reply(_msg("$a2a/v1/reply/default/default/self-1/s4",
@@ -217,12 +215,12 @@ class TestReplyRetryRouting:
         mesh.on_task_completion = lambda c, r, x, p, k="task": completions.append(c)
         mesh._corr_to_task["orig"] = "task-r"
         mesh._corr_to_task["retry-corr"] = "task-r"
-        get_store().record_send("task-r", "p", "x", "mqtt")
+        get_store().record_send("task-r", "p")
         mesh._handle_reply(_msg("$a2a/v1/reply/default/default/self-1/sr",
                                make_artifact_event("r", "task-r", "from retry"), corr="retry-corr"))
         mesh._handle_reply(_msg("$a2a/v1/reply/default/default/self-1/sr",
                                make_status_event("r", "task-r", "completed", ""), corr="retry-corr"))
-        assert get_store().get("task-r").result == "from retry"
+        assert get_store().get("task-r").status == "completed"
         assert completions == ["task-r"]
 
 

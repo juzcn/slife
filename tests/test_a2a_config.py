@@ -7,7 +7,6 @@ import logging
 import platform
 
 import pytest
-from unittest.mock import patch
 
 from slife.a2a.config import A2AConfig, _default_agent_name
 from slife.a2a.card import AgentCard

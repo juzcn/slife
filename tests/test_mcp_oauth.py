@@ -3,7 +3,6 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
-import asyncio
 import json
 import time as _time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -328,7 +327,7 @@ class TestDeviceCodeFlow:
         mock_http = _make_http_mock(device_data, pending, token_data)
 
         with patch("slife.plugins.mcp_gateway.oauth.httpx2.AsyncClient", return_value=mock_http), \
-             patch("slife.plugins.mcp_gateway.oauth._store_tokens") as mock_store, \
+             patch("slife.plugins.mcp_gateway.oauth._store_tokens"), \
              patch("slife.plugins.mcp_gateway.oauth.asyncio.sleep", AsyncMock()):
             result = await run_device_code_flow(AUTH, "test-server")
 
@@ -348,7 +347,7 @@ class TestDeviceCodeFlow:
         mock_http = _make_http_mock(device_data, expired)
 
         with patch("slife.plugins.mcp_gateway.oauth.httpx2.AsyncClient", return_value=mock_http), \
-             patch("slife.plugins.mcp_gateway.oauth._delete_tokens") as mock_delete, \
+             patch("slife.plugins.mcp_gateway.oauth._delete_tokens"), \
              patch("slife.plugins.mcp_gateway.oauth.asyncio.sleep", AsyncMock()):
             with pytest.raises(RuntimeError, match="expired"):
                 await run_device_code_flow(AUTH, "test-server")

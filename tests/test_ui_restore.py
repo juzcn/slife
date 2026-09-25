@@ -91,7 +91,7 @@ class TestRestoreSkipsEmptyAssistantMessages:
     async def _restore(self, app, conv, config, turns):
         await restore_session(
             app, turns,
-            conv, config, "Jack> ",
+            conv, "Jack> ",
         )
 
     @pytest.mark.asyncio
@@ -254,7 +254,7 @@ class TestRestoreTurnHeader:
     async def _restore(self, app, conv, config, turns):
         await restore_session(
             app, turns,
-            conv, config, "Jack> ",
+            conv, "Jack> ",
         )
 
     @pytest.mark.asyncio
@@ -356,7 +356,6 @@ class TestRestoreTurnHeader:
     @pytest.mark.asyncio
     async def test_a2a_turn_renders_peer_name_prefix(self):
         """A2A turns restore with the peer name from the channel payload."""
-        from slife.ui.i18n import t
 
         app, conv, config, chat_view = self._build()
         turn = self._turn("GO", channel="Jack",
@@ -373,7 +372,6 @@ class TestRestoreTurnHeader:
     @pytest.mark.asyncio
     async def test_a2a_turn_name_from_peer_identity_string(self):
         """An a2a row whose channel is the peer name (to_db format) renders."""
-        from slife.ui.i18n import t
 
         app, conv, config, chat_view = self._build()
         turn = self._turn("GO", channel="desk-01")

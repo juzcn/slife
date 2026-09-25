@@ -14,7 +14,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import pytest_asyncio
 
 from slife.plugins.mcp_gateway.connection import ServerConfig
 

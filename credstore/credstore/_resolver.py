@@ -90,17 +90,3 @@ def resolve_uri(value: str) -> str:
         )
     return result
 
-
-def resolve_uri_recursive(value):
-    """Resolve keyring: URIs recursively in strings, dicts, and lists.
-
-    Used to process entire config trees after env var resolution.
-    """
-    if isinstance(value, str):
-        return resolve_uri(value)
-    elif isinstance(value, dict):
-        return {k: resolve_uri_recursive(v) for k, v in value.items()}
-    elif isinstance(value, list):
-        return [resolve_uri_recursive(item) for item in value]
-    else:
-        return value

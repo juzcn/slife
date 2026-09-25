@@ -50,6 +50,3 @@ def default_value(key: str, main_model: str) -> str:
     return DEFAULT_ENV[key]
 
 
-def list_default_override_keys() -> list[str]:
-    """Return the env keys that ``activate --custom`` prompts for, in order."""
-    return list(DEFAULT_OVERRIDE_KEYS)

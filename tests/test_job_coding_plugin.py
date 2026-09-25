@@ -6,7 +6,6 @@ module globals monkeypatched; no child process is spawned.
 """
 
 import json
-import typing
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -109,7 +108,7 @@ def test_scan_skips_private_and_imported(tmp_path):
 def test_load_module_evicts_previous_version(tmp_path):
     path = tmp_path / "v.py"
     _write(path, "def a():\n    return 1\n")
-    mod1 = registry.load_module(path)
+    registry.load_module(path)
     _write(path, "def b():\n    return 2\n")
     mod2 = registry.load_module(path)
     assert "b" in vars(mod2)

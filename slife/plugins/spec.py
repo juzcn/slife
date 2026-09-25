@@ -45,10 +45,8 @@ class PluginSpec:
             plugin's live MCP client after (re)start and on subagent HTTP
             connect.  ``None`` = the plugin exposes no harness-side client.
         gateway: ``mcp`` only — the wrapper that proxies external MCP
-            servers: reconcile-style tool notification, host params, and the
-            WRAPPER proxy route.
-        host_params: ``mcp`` only — contributes ``client_info_extra``
-            (host parameters) on connect.
+            servers: reconcile-style tool notification and the WRAPPER
+            proxy route.
         enable_method: Optional ``AgentService`` coroutine name returning
             bool.  ``None`` = always start.  Used for config-gated plugins
             (wechat disabled, a2a without a broker).  Runs on the initial
@@ -79,7 +77,6 @@ class PluginSpec:
     module: str
     ctx_field: str | None = None
     gateway: bool = False
-    host_params: bool = False
     enable_method: str | None = None
     after_ready_method: str | None = None
     health: bool = True
@@ -102,7 +99,7 @@ _PLUGIN_DEFS: tuple[PluginSpec, ...] = (
     PluginSpec(
         "mcp-gateway", "slife.plugins.mcp_gateway.server",
         ctx_field="mcp_client",
-        gateway=True, host_params=True,
+        gateway=True,
         after_ready_method="_after_ready_mcp",
     ),
     PluginSpec(
@@ -142,11 +139,9 @@ _PLUGIN_DEFS: tuple[PluginSpec, ...] = (
     ),
 )
 
-#: Public-name → spec, insertion-ordered.
+#: Public-name → spec, insertion-ordered.  The insertion order IS the
+#: deterministic discovery / start order.
 PLUGIN_SPECS: dict[str, PluginSpec] = {s.name: s for s in _PLUGIN_DEFS}
-
-#: Spec order (deterministic discovery / start ordering).
-SPEC_ORDER: tuple[str, ...] = tuple(s.name for s in _PLUGIN_DEFS)
 
 
 def spec_for(name: str, module: str | None = None) -> PluginSpec:

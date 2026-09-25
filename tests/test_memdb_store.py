@@ -7,7 +7,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import struct
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 
@@ -24,7 +24,6 @@ from slife.plugins.memdb.store import (
     _split_sql,
     _to_fts5_query,
     _turn_text_for_embedding,
-    DEFAULT_EMBEDDING_DIM,
 )
 
 
@@ -289,7 +288,6 @@ class TestSessionStoreInit:
 
     def test_store_creation(self):
         store = SessionStore(Path("/tmp/test.db"))
-        assert store.db_path == Path("/tmp/test.db")
         assert store._conn is None
 
 
@@ -847,34 +845,6 @@ class TestSessionStoreContextTurns:
 
     
 
-class TestSessionStoreHasTurns:
-    """Tests for has_turns."""
-
-    @pytest.mark.asyncio
-    async def test_has_turns_true(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value=(1,))
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        store._conn = mock_conn
-
-        result = await store.has_turns()
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_has_turns_false(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value=None)
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        store._conn = mock_conn
-
-        result = await store.has_turns()
-        assert result is False
-
-
 class TestSessionStoreCountTurns:
     """Tests for count_turns."""
 
@@ -1176,7 +1146,6 @@ class TestSessionStoreTokenUsage:
         dump would burn tokens for nothing (the turn_id is enough to read the
         message on demand).
         """
-        import json
 
         import aiosqlite
 
@@ -1810,46 +1779,6 @@ class TestSessionStoreSearchSemantic:
         assert "user_message FROM diary" in second_sql
 
 
-class TestSessionStoreUpsertEmbedding:
-    """Tests for upsert_embedding."""
-
-    @pytest.mark.asyncio
-    async def test_upsert_insert(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value=None)  # No existing
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        mock_conn.commit = AsyncMock()
-        store._conn = mock_conn
-
-        await store.upsert_embedding(
-            diary_rowid=1, chunk_index=0,
-            summary="", tags="", created_at="2024-01-01T00:00:00",
-            turn_embedding=[0.1, 0.2, 0.3],
-        )
-        assert mock_conn.execute.call_count == 1  # INSERT only (no SELECT needed)
-        mock_conn.commit.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_upsert_update_existing(self):
-        """upsert_embedding always INSERTs — caller handles clearing old chunks."""
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock(return_value=AsyncMock())
-        mock_conn.commit = AsyncMock()
-        store._conn = mock_conn
-
-        await store.upsert_embedding(
-            diary_rowid=1, chunk_index=0,
-            summary="updated", tags="new", created_at="2024-01-01T00:00:00",
-            turn_embedding=[0.4, 0.5, 0.6],
-        )
-        # Single INSERT — _clear_chunks() is called separately by the caller
-        mock_conn.execute.assert_called_once()
-        mock_conn.commit.assert_called_once()
-
-
 class TestSessionStoreReplaceEmbeddingChunks:
     """replace_embedding_chunks — atomic per-turn chunk replace.
 
@@ -1900,60 +1829,6 @@ class TestSessionStoreReplaceEmbeddingChunks:
             )
         mock_conn.rollback.assert_awaited_once()
         mock_conn.commit.assert_not_awaited()
-
-
-class TestSessionStoreHasEmbedding:
-    """Tests for has_embedding."""
-
-    @pytest.mark.asyncio
-    async def test_has_embedding_true(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value={"rowid": 1})
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        store._conn = mock_conn
-
-        result = await store.has_embedding(diary_rowid=1)
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_has_embedding_false(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value=None)
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        store._conn = mock_conn
-
-        result = await store.has_embedding(diary_rowid=1)
-        assert result is False
-
-
-class TestSessionStoreCountEmbedded:
-    """count_embedded — distinct turns that have ≥1 embedding chunk."""
-
-    @pytest.mark.asyncio
-    async def test_counts_distinct_diary_rowids(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value=(7,))  # row[0] index access
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        store._conn = mock_conn
-
-        assert await store.count_embedded() == 7
-
-    @pytest.mark.asyncio
-    async def test_zero_when_no_rows(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value=None)
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        store._conn = mock_conn
-
-        assert await store.count_embedded() == 0
 
 
 class TestSessionStoreGetUnembeddedDocs:

@@ -8,24 +8,15 @@ and its tool surface lives in :mod:`slife.tools.subagent`.
 Public API
 ----------
 - ``SubagentProcess`` — manage a single subagent child process
+  (:mod:`slife.subagent.process`)
 - ``SubagentManager`` — manage the collection (spawn / send / stop / list)
+  (:mod:`slife.subagent.process`)
 - ``run_headless`` — headless slife entry point (no TUI, stdin/stdout IPC)
+  (:mod:`slife.subagent.headless`)
 
 The :class:`Tool` subclasses in :mod:`slife.tools.subagent` are
 auto-discovered at startup and use module-level transport references.
 """
-
-from slife.subagent.process import SubagentManager, SubagentProcess
-from slife.tools.subagent import (
-    ListSubagentsTool,
-    SpawnSubagentTool,
-    StopSubagentTool,
-    SubagentCancelTaskTool,
-    SubagentGetTaskResultTool,
-    SubagentListTasksTool,
-    SubagentSendTaskAsyncTool,
-    SubagentSendTaskTool,
-)
 
 # NOTE: run_headless is NOT imported here to avoid a RuntimeWarning
 # from Python's runpy when the module is executed via -m.
@@ -36,16 +27,3 @@ from slife.tools.subagent import (
 #   RuntimeWarning: 'slife.subagent.headless' found in sys.modules
 #   after import of package 'slife.subagent', but prior to execution
 # Import it directly instead: from slife.subagent.headless import run_headless
-
-__all__ = [
-    "SubagentManager",
-    "SubagentProcess",
-    "ListSubagentsTool",
-    "SpawnSubagentTool",
-    "StopSubagentTool",
-    "SubagentSendTaskTool",
-    "SubagentSendTaskAsyncTool",
-    "SubagentGetTaskResultTool",
-    "SubagentListTasksTool",
-    "SubagentCancelTaskTool",
-]

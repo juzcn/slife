@@ -7,17 +7,6 @@ pytestmark = pytest.mark.unit
 import cc_switch._api as api
 
 
-def make_provider(**overrides):
-    base = {
-        "base_url": "https://api.deepseek.com/anthropic",
-        "api_key_name": "DEEPSEEK_API_KEY",
-        "models": ["deepseek-chat", "deepseek-reasoner"],
-        "extra_env": {},
-    }
-    base.update(overrides)
-    return base
-
-
 class TestLoadConfig:
     def test_missing_file_yields_empty(self, config_path):
         assert api.load_config() == {"providers": {}}

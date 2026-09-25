@@ -688,7 +688,6 @@ class TestKillProcessTree:
         """On Windows the tree is killed via taskkill /T, not just the shell."""
         import os as _os
         import sys as _sys
-        from unittest.mock import AsyncMock
 
         proc = await asyncio.create_subprocess_exec(
             _sys.executable, "-c", "import time; time.sleep(300)",
@@ -704,7 +703,6 @@ class TestKillProcessTree:
         # subprocess.run call inside the threaded wrapper; intercept the run
         # the wrapper would invoke on the real subprocess module.
         import subprocess as _subprocess
-        real_run = _subprocess.run
 
         def _replacement(*args, **kwargs):
             fake_run(*args, **kwargs)

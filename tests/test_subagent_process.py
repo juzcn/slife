@@ -5,7 +5,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, Mock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -16,7 +16,6 @@ from slife.subagent.process import (
     get_manager,
     set_manager,
     clear_manager,
-    _current_manager,
 )
 import slife.timeouts as _timeouts
 

@@ -13,7 +13,6 @@ import json
 from unittest.mock import AsyncMock
 
 from slife.config import Config, ModelConfig
-from slife.plugins.memfiles import user_prefs as up
 from slife.plugins.memfiles.user_prefs import append_preference
 
 
