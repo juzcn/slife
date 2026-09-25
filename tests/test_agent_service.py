@@ -777,14 +777,110 @@ class TestAgentServiceMCPEnrichment:
                 await service._sync_mcp_proxies()
             assert service._mcp_reconcile_owner is None   # taken over, released
 
-            # A live one still coalesces: the same pass must not run twice.
+            # A live one still coalesces: the same pass must not run twice —
+            # but the trigger is REMEMBERED now, not swallowed, so the pass
+            # that holds the guard owes one more when it ends.
             fresh = object()
             service._mcp_reconcile_owner = fresh
             service._mcp_reconcile_started_at = time.monotonic()
             await service._sync_mcp_proxies()
             assert service._mcp_reconcile_owner is fresh
+            assert service._mcp_reconcile_pending is True
         finally:
             service._mcp_reconcile_owner = None
+            service._mcp_reconcile_pending = False
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_a_trigger_during_a_pass_is_redeemed_not_dropped(
+        self, sample_config, tmp_path,
+    ):
+        """A change that lands mid-pass gets its OWN pass — the 2026-09-25 case.
+
+        mcp-registry's 32 tools were published ~4s after the startup pass had
+        already read that server as empty.  The ``tools/list_changed`` carrying
+        the change was refused by the guard and vanished with it, so the
+        endpoints stayed unreachable for 3m49s — until an unrelated config
+        mutation ran a pass that happened to look again.  Deferred instead of
+        dropped, that notification is answered by one more pass at the first
+        moment a pass can see the change.
+        """
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+
+        store = CatalogStore(tmp_path / "tools.db")
+        await store.open()
+        store.begin_ops()
+        service = AgentService(sample_config)
+        service._catalog = ToolCatalogService(store, write_owner=True)
+        service._catalog_semantic = None
+
+        # The server has no tools yet: its first read is held open so the change
+        # can land *during* the pass, and it answers only from the second on.
+        held = asyncio.Event()
+        reads = {"n": 0}
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def fake_call_tool(name, arguments=None):
+            if name == "__mcp_list":
+                return _json.dumps([
+                    {"name": "svc", "enabled": True, "auto_load": False},
+                ])
+            if name == "__check":
+                return _json.dumps({
+                    "servers": [
+                        {"name": "svc", "tools_ok": True, "reachable": True},
+                    ],
+                    "spawn_settled": True,
+                })
+            if name == "__mcp_list_tools":
+                reads["n"] += 1
+                if reads["n"] == 1:
+                    await held.wait()          # still fetching the spec
+                    return _json.dumps({
+                        "server": "svc", "connected": False,
+                        "tools": [], "tool_count": 0,
+                    })
+                return _json.dumps({
+                    "server": "svc", "connected": True, "tool_count": 1,
+                    "tools": [{"server": "svc", "name": "endpoint",
+                               "description": "An endpoint",
+                               "inputSchema": {"type": "object",
+                                               "properties": {}}}],
+                })
+            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+        client.call_tool = fake_call_tool
+        service._plugins["mcp-gateway"].client = client
+        try:
+            with patch(
+                "slife.plugins.mcp_gateway.config.servers",
+                return_value={"svc": {}},
+            ), patch.object(
+                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            ):
+                first = asyncio.create_task(service._sync_mcp_proxies())
+                for _ in range(1000):
+                    if reads["n"]:
+                        break
+                    await asyncio.sleep(0)     # let it reach its tool list
+                assert reads["n"] == 1, "the pass never reached its tool list"
+
+                # The change lands mid-pass: the wrapper registers its tools
+                # and pushes the standard notification.
+                await service._on_mcp_tools_changed()
+
+                assert service._mcp_reconcile_pending is True   # remembered
+                assert await store.get_tool("svc__endpoint") is None  # not yet
+                held.set()
+                await first
+
+            # The pass that swallowed the trigger owed one more, and paid it.
+            assert reads["n"] == 2
+            assert await store.get_tool("svc__endpoint") is not None
+            assert service._mcp_reconcile_pending is False
+        finally:
             await store.close()
 
     @pytest.mark.asyncio

@@ -506,6 +506,11 @@ class AgentService:
         # for the rest of the process.
         self._mcp_reconcile_owner: object | None = None
         self._mcp_reconcile_started_at: float | None = None
+        #: A trigger that arrived while a pass was running, coalesced rather
+        #: than discarded.  The running pass has already read the tool list it
+        #: is reporting on, so it cannot answer for a change that landed after
+        #: that read — the pass holding the guard redeems this when it ends.
+        self._mcp_reconcile_pending: bool = False
         #: Whether the TUI has been told the tool set is ready yet.  The first
         #: reconcile is the slow one the user waits through; once it has
         #: converged the line is sent, and never again for this process.
@@ -1431,17 +1436,32 @@ class AgentService:
         client = lc.client if lc is not None else None
         if client is None or not client.is_connected:
             return
-        # One pass at a time — but not "one pass forever".  Every await below
-        # is bounded by ``ready.tool_sync_wait``, so a pass still holding the
-        # guard after that budget is not slow, it is wedged (a bound the loop
-        # never got to run — the gateway froze, or a cancellation was swallowed
-        # under it).  Abandoning it is what keeps one stuck server from
-        # disabling the mid-session sync for the rest of the process, which is
-        # exactly what a bare latch did.
+        # One pass at a time — but not "one pass forever", and not "one pass for
+        # a change that arrived mid-pass".  Every await below is bounded by
+        # ``ready.tool_sync_wait``, so a pass still holding the guard after that
+        # budget is not slow, it is wedged (a bound the loop never got to run —
+        # the gateway froze, or a cancellation was swallowed under it).
+        # Abandoning it is what keeps one stuck server from disabling the
+        # mid-session sync for the rest of the process, which is exactly what a
+        # bare latch did.
         owner = object()
         if self._mcp_reconcile_owner is not None:
             held = _time.monotonic() - (self._mcp_reconcile_started_at or 0.0)
             if held < _timeouts.timeouts.ready.tool_sync_wait:
+                # Coalesced, NOT discarded.  Folding this trigger into the pass
+                # already running would answer with a stale set: that pass read
+                # each tool list once, at its own moment, and the change this
+                # trigger carries landed after the read it would have to
+                # contradict.  2026-09-25 is the case — the startup pass read
+                # mcp-registry as empty at 19:40:08, the wrapper registered its
+                # 32 tools at 19:40:12 and pushed the standard notification, and
+                # the guard swallowed it: the endpoints stayed unreachable for
+                # 3m49s, until an unrelated config mutation ran a pass that
+                # happened to look again.  The flag is the promise that the pass
+                # running now is not the last one; the ``finally`` below redeems
+                # it with one more.
+                self._mcp_reconcile_pending = True
+                logger.debug("mcp_reconcile_coalesced held=%.1fs", held)
                 return
             logger.warning(
                 "mcp_reconcile_stale_pass held=%.0fs — taking over",
@@ -1625,6 +1645,32 @@ class AgentService:
                 await self._report_tool_sync(
                     started, pending=pending, failure=failure,
                 )
+                # …and only now, with the guard released, the pass a coalesced
+                # trigger asked for (see the guard above).  A pass that finds
+                # the flag clear is the last one of the burst.
+                await self._drain_reconcile_triggers()
+
+    async def _drain_reconcile_triggers(self) -> None:
+        """Run the one pass a coalesced trigger is owed, if one is queued.
+
+        Called from the pass that held the guard, with it already RELEASED: a
+        trigger that arrived mid-pass was not dropped, it was deferred to here
+        — the earliest moment a pass can see the change it carries.
+
+        One extra pass per burst, not one per notification: the flag is a
+        single bit, so N notifications arriving during a pass cost one more
+        pass.  The recursion is the point and is self-limiting — the deferred
+        pass clears the flag before it starts, and only a real change (the
+        gateway's own ``tools/list_changed``) can set it again.
+        """
+        if not self._mcp_reconcile_pending:
+            return
+        self._mcp_reconcile_pending = False
+        logger.debug("mcp_reconcile_deferred")
+        try:
+            await self._sync_mcp_proxies()
+        except Exception:
+            logger.debug("mcp_reconcile_deferred_failed", exc_info=True)
 
     async def _report_tool_sync(
         self, started: float, *, pending: set[str], failure: str = "",
