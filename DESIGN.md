@@ -1620,6 +1620,17 @@ to the end only while the reader is already there, so a reader who paged up mid-
 position instead of being undone by the next streamed token, and coming back down to the tail resumes
 following.
 
+**The console belongs to the app only while the app runs.** Textual takes raw input and the alternate
+screen, and the teardown is what gives them back. A session that is *killed* rather than stopped —
+`taskkill`, End Task, a closed window, all of them `TerminateProcess` — runs no Python at all, so the
+terminal is left in raw mode (keystrokes echo as mojibake, `Ctrl+C` is no longer a signal) and even
+the session log stops mid-sentence. Nothing in-process can undo that, and **no supervisor is added to
+do it instead**: a third always-on process that breaks away from the job object and attaches to
+someone else's console buys less than the accident costs. What a killed session *can* still do is
+leave evidence — a **per-pid session marker** written at startup and removed by the teardown, which
+the next start reads to report that the previous session was killed from outside and where its log
+is. A killed process reports nothing itself; the marker is read by the only process that can.
+
 ### 9.2 Config and credentials
 
 **Two layers.** The credential store holds secrets encrypted at the OS level; the main config file
@@ -1872,7 +1883,10 @@ is wrong. The numbers are stable and may be cited.
     while still loading is indistinguishable from a genuinely unavailable one.
 24. **A hard-killed parent runs no cleanup**, so the kill-on-close job object is assigned at spawn,
     before the child can spawn anything of its own. On POSIX the process tree is read before anything
-    is signalled, and a group kill is only safe when the child leads its own group.
+    is signalled, and a group kill is only safe when the child leads its own group. Its death is
+    therefore knowable only *afterwards*: the per-pid session marker a session writes at startup and
+    its teardown removes is what the next start reads to report a kill from outside, and the console
+    stays in raw mode, because the process that would have restored it never ran again.
 
 **Subagents**
 
