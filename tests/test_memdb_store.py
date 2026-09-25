@@ -1197,13 +1197,16 @@ class TestSessionStoreTokenUsage:
         store._conn = await aiosqlite.connect(str(db_path))
         store._conn.row_factory = aiosqlite.Row
 
-        result = await store.token_usage(limit=10)
-        assert len(result["turns"]) == 1
-        turn = result["turns"][0]
-        assert "user_message" not in turn
-        assert turn["context_tokens"] == 200
-        assert turn["token_count"] == 100
-        assert "created_at" in turn
+        try:
+            result = await store.token_usage(limit=10)
+            assert len(result["turns"]) == 1
+            turn = result["turns"][0]
+            assert "user_message" not in turn
+            assert turn["context_tokens"] == 200
+            assert turn["token_count"] == 100
+            assert "created_at" in turn
+        finally:
+            await store._conn.close()
 
     @pytest.mark.asyncio
     async def test_time_window_filters(self):

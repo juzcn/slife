@@ -376,6 +376,27 @@ def _visible_lines(app) -> list[str]:
     return ["".join(segment.text for segment in strip) for strip in strips]
 
 
+async def _repainted(app, pilot, previous: list[str], tries: int = 20) -> list[str]:
+    """The screen once it differs from ``previous`` — a repaint, waited for.
+
+    The offset moves synchronously; the screen does not.  A scroll repaints
+    through ``Widget._refresh_scroll`` → ``check_idle`` → that widget's Idle
+    handler, and the compositor re-arranges the scrolled-to layout only in
+    that pass — so a read taken the moment ``scroll_to`` returns still shows
+    the *previous* screen.  One ``pilot.pause`` usually covers the pass, but
+    not always: on a loaded runner the pause returns first and the caller ends
+    up comparing the old screen with itself.  Bounded, so a scroll that never
+    repaints — the bug this class exists for — still fails rather than waits.
+    """
+    lines = _visible_lines(app)
+    for _ in range(tries):
+        if lines != previous:
+            break
+        await pilot.pause()
+        lines = _visible_lines(app)
+    return lines
+
+
 class TestScrollFollowing:
     """Following the tail must be sticky, or a streaming turn owns the view.
 
@@ -478,10 +499,10 @@ class TestScrollFollowing:
             at_tail = _visible_lines(app)
 
             view.scroll_to(y=0, animate=False)
-            await pilot.pause()
+            shown = await _repainted(app, pilot, at_tail)
 
             assert view.scroll_offset.y == 0
-            assert _visible_lines(app) != at_tail
+            assert shown != at_tail
 
 
 # ── Timestamp formatting + per-message rendering ────────────────────
