@@ -2947,13 +2947,17 @@ class AgentService:
                 pass
 
     async def surface_autonomous_reply(
-        self, text: str, cancelled: bool = False
+        self, text: str, cancelled: bool = False, stop_reason: str = "",
     ) -> None:
         """``on_reply`` for heartbeat turns — surface only real content.
 
         The quiet reply is exactly ``.`` (checked in, nothing to do); any
         other non-empty text is an autonomous act worth surfacing.  Both
         outcomes are notified as a heartbeat (status-bar pulse).
+
+        *cancelled* / *stop_reason* complete the ``on_reply`` contract; a
+        heartbeat turn is surfaced or silent, never labelled with why it
+        stopped.
         """
         t = (text or "").strip()
         if t and t != ".":
@@ -3008,12 +3012,17 @@ class AgentService:
         self._timer_tasks.add(task)
         task.add_done_callback(self._timer_tasks.discard)
 
-    async def _surface_timer_reply(self, text: str, cancelled: bool = False) -> None:
+    async def _surface_timer_reply(
+        self, text: str, cancelled: bool = False, stop_reason: str = "",
+    ) -> None:
         """``on_reply`` for timer turns — surface non-silent replies.
 
         A bare ``.`` or empty reply is suppressed (mirrors the heartbeat/schedule
         silence contract); anything else is the resumed work's answer, surfaced
         as ⏰ timer.
+
+        *cancelled* / *stop_reason* complete the ``on_reply`` contract; a
+        cancelled turn's reply is empty and suppressed, so neither is read.
         """
         t = (text or "").strip()
         if t and t != ".":

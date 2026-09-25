@@ -61,7 +61,7 @@ def _notify(method: str, params: dict | None = None) -> None:
     sys.stdout.buffer.flush()
 
 
-def cancelled_reply_text(reply_text: str) -> str:
+def cancelled_reply_text(reply_text: str, stop_reason: str = "") -> str:
     """Label a preempted task's reply as partial output.
 
     The loop can stop mid-task (the parent's ``worker/cancel``, or its own task
@@ -69,13 +69,20 @@ def cancelled_reply_text(reply_text: str) -> str:
     usually discards such a reply — it cancelled the task itself — but for a
     task that timed out the parent stores it as that task's late result (§6.4),
     where an unlabelled truncated answer would read as the whole one.
+
+    *stop_reason* is the loop's terminal state — one of ``message_history``'s
+    short tokens (``esc``, ``parent``, ``max_iterations``, …) — and the label
+    names it.  The reply is the only thing the parent ever sees of this task,
+    so without the reason a task that hit its own ceiling is indistinguishable
+    from one the caller pulled.
     """
+    why = f" (reason: {stop_reason})" if stop_reason else ""
     if reply_text.strip():
         return (
             f"{reply_text}\n\n[interrupted — the task was cancelled before "
-            f"completion; the text above is partial]"
+            f"completion{why}; the text above is partial]"
         )
-    return "Error: task cancelled before completion"
+    return f"Error: task cancelled before completion{why}"
 
 
 async def run_headless(argv: list[str] | None = None) -> None:
@@ -304,12 +311,14 @@ async def run_headless(argv: list[str] | None = None) -> None:
                     continue
 
                 async def _reply(
-                    reply_text: str, cancelled: bool = False, rid=rpc_id,
+                    reply_text: str, cancelled: bool = False,
+                    stop_reason: str = "", rid=rpc_id,
                 ) -> None:
                     if cancelled:
-                        # The loop was preempted mid-task — say so rather than
-                        # letting a partial answer pass for a whole one.
-                        reply_text = cancelled_reply_text(reply_text)
+                        # The loop was preempted mid-task — say so, and say
+                        # why, rather than letting a partial answer pass for a
+                        # whole one.
+                        reply_text = cancelled_reply_text(reply_text, stop_reason)
                     # The parent may already have discarded this task (it
                     # cancelled it) — writing the late result is harmless.
                     _write(result=reply_text, rpc_id=rid)

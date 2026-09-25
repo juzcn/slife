@@ -522,11 +522,11 @@ def _unwrap_with_footnote(text: str) -> tuple[str, tuple[int, int] | None]:
 #:                         content-filter reject never reaches this line:
 #:                         that turn is rolled back, not saved.
 #:
-#: No caller passes one yet — the repair knows only *that* the turn ended
-#: early, not why — so every repaired turn currently reads ``---``.  The slot
-#: is the contract; filling it means threading the loop's terminal state down
-#: to the save point.
-_REASON_NOT_RECORDED = "---"
+#: Stands in when a turn ended early with no reason recorded, so a repaired
+#: turn reads ``---`` rather than an empty slot that looks like a formatting
+#: bug.  The reason itself is the inbox's to supply, from the loop's own
+#: terminal state — the same value the reply channel is handed.
+REASON_NOT_RECORDED = "---"
 
 
 def interrupted_note(stop_reason: str = "") -> str:
@@ -536,7 +536,7 @@ def interrupted_note(stop_reason: str = "") -> str:
     or an ``esc`` already carries what to do next, and this line stays in the
     context for the rest of the session, so anything it can derive is ballast.
     """
-    return f"(Turn interrupted, reason: {stop_reason or _REASON_NOT_RECORDED})"
+    return f"(Turn interrupted, reason: {stop_reason or REASON_NOT_RECORDED})"
 
 
 class MessageHistory:

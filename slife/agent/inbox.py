@@ -15,7 +15,7 @@ import re
 from typing import TYPE_CHECKING
 
 from slife.a2a.identity import AgentName, AgentMessage
-from slife.agent.message_history import MessageHistory
+from slife.agent.message_history import MessageHistory, REASON_NOT_RECORDED
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -537,7 +537,10 @@ class Inbox:
             if result.cancelled:
                 # The loop is the only party that knows why it stopped.
                 stop_reason = result.stop_reason
-                logger.info("inbox_cancelled_or_max_iter source=%s", msg.source)
+                logger.info(
+                    "inbox_cancelled_or_max_iter source=%s reason=%s",
+                    msg.source, stop_reason or REASON_NOT_RECORDED,
+                )
                 # Finalize the handler so the last assistant message is marked complete
                 if handler is not None:
                     try:
@@ -559,13 +562,17 @@ class Inbox:
 
             # Route reply to originating channel (WeChat, etc.).  Pass the
             # cancelled flag so the channel can signal cancellation to the
-            # sender ; callbacks with the older text-only
-            # signature fall back gracefully.
+            # sender, and the reason with it: for a subagent the reply text IS
+            # the only thing the parent sees of that task, so a bare
+            # "cancelled" leaves a ceiling and a withdraw indistinguishable.
+            # Callbacks with the older text-only signature fall back
+            # gracefully.
             if msg.on_reply is not None:
                 reply_text = result.text if hasattr(result, "text") else str(result)
                 cancelled = bool(getattr(result, "cancelled", False))
                 try:
-                    await msg.on_reply(reply_text, cancelled=cancelled)
+                    await msg.on_reply(reply_text, cancelled=cancelled,
+                                       stop_reason=stop_reason)
                 except TypeError:
                     await msg.on_reply(reply_text)
                 except Exception as e:

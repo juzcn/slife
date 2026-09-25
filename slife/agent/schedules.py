@@ -278,8 +278,14 @@ async def _fire(service, task: dict) -> None:
 
 
 def _surface_reply(service):
-    """``on_reply`` for schedule turns — route the real reply to the TUI."""
-    async def _reply(text: str, cancelled: bool = False) -> None:
+    """``on_reply`` for schedule turns — route the real reply to the TUI.
+
+    *cancelled* / *stop_reason* complete the ``on_reply`` contract; a
+    cancelled turn's reply is empty and suppressed, so neither is read.
+    """
+    async def _reply(
+        text: str, cancelled: bool = False, stop_reason: str = "",
+    ) -> None:
         t = (text or "").strip()
         if t and t != ".":
             await service.surface_schedule(t)

@@ -239,3 +239,22 @@ class TestCancelledReplyText:
         out = cancelled_reply_text("   ")
         assert out.startswith("Error:")
         assert "cancelled" in out
+
+    def test_the_reason_is_named(self):
+        """A ceiling and a withdraw must not read alike.
+
+        The reply is the only thing the parent ever sees of a task it did not
+        cancel itself, so the label carries the loop's terminal state —
+        ``max_iterations`` when the task hit its own ceiling, ``esc`` when the
+        caller pulled it.
+        """
+        out = cancelled_reply_text("", "max_iterations")
+        assert out == "Error: task cancelled before completion (reason: max_iterations)"
+        assert "reason: esc" in cancelled_reply_text("half a sentence", "esc")
+
+    def test_no_reason_leaves_the_label_as_it_was(self):
+        """A caller that knows only *that* the task was preempted still gets
+        the plain label — never an empty ``reason:`` slot."""
+        assert cancelled_reply_text("", "") == (
+            "Error: task cancelled before completion"
+        )

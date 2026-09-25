@@ -725,12 +725,23 @@ class TestInboxProcessOne:
         msg = self._make_msg(content="question", on_reply=on_reply)
         await inbox._process_one(msg)
 
-        on_reply.assert_awaited_once_with("Here is the answer.", cancelled=False)
+        on_reply.assert_awaited_once_with(
+            "Here is the answer.", cancelled=False, stop_reason="",
+        )
 
     @pytest.mark.asyncio
-    async def test_process_passes_cancelled_flag_to_on_reply(self, mock_loop, mock_store):
+    async def test_process_passes_cancelled_flag_to_on_reply(
+        self, mock_loop, mock_store, caplog,
+    ):
         """REVIEW C5 — a cancelled run tells the channel so it can signal the
-        sender (e.g. A2A CancelTask)."""
+        sender (e.g. A2A CancelTask), and hands it the loop's own reason.
+
+        The reason is the whole point of the flag on a reply channel: a
+        subagent's reply text is all the parent ever sees of that task, and
+        ``esc`` (the caller withdrew) and ``max_iterations`` (the task hit its
+        own ceiling) are otherwise the same sentence.
+        """
+        import logging
         from slife.agent.inbox import Inbox
         on_reply = AsyncMock()
         inbox = Inbox(mock_loop, mock_store)
@@ -739,13 +750,20 @@ class TestInboxProcessOne:
         mock_result.text = "partial"
         mock_result.usage.total_tokens = 5
         mock_result.cancelled = True
+        mock_result.stop_reason = "max_iterations"
         mock_loop.run = AsyncMock(return_value=mock_result)
         mock_store.get_or_create.return_value = MagicMock()
 
         msg = self._make_msg(content="question", on_reply=on_reply)
-        await inbox._process_one(msg)
+        with caplog.at_level(logging.INFO):
+            await inbox._process_one(msg)
 
-        on_reply.assert_awaited_once_with("partial", cancelled=True)
+        on_reply.assert_awaited_once_with(
+            "partial", cancelled=True, stop_reason="max_iterations",
+        )
+        # The parent-side line names it too — this is what an operator reads
+        # when a lane ends without a report.
+        assert "inbox_cancelled_or_max_iter source=human reason=max_iterations" in caplog.text
 
     @pytest.mark.asyncio
     async def test_process_on_reply_error_swallowed(self, mock_loop, mock_store):

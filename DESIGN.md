@@ -1278,8 +1278,10 @@ There is deliberately no subscribe call — async results are auto-subscribed, a
 suppresses only the *push*, never the retrievability. Retrieval is **non-consuming and states what it
 is**: a task answers `pending`, `completed`, `failed` or `cancelled` from its own record (only an id
 that was never sent reads `unknown`), so a completed task cannot report "pending" the second time it
-is polled. A cancelled task's reply is marked as partial — the worker tells the parent it was
-preempted, because for a *timed-out* task that text is what the late-result store hands back.
+is polled. A cancelled task's reply is marked as partial **and names the reason** (`esc`, `parent`,
+`max_iterations`, … — the short tokens of §2.1), because for a *timed-out* task that text is what
+the late-result store hands back, and a task that hit its own ceiling would otherwise read exactly
+like one its caller withdrew.
 
 ### 6.4 Failure semantics
 
