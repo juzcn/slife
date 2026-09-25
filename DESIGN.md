@@ -1666,6 +1666,22 @@ One regex detail is a performance requirement, not style: the key-name patterns 
 rather than using `*`, because an unbounded repeat backtracked quadratically and froze the parent's
 event loop for minutes on a single large relayed line.
 
+**The gate is the model boundary, not the tool boundary.** A tool receives its arguments exactly as
+the model emitted them, and what it writes — a cabinet file, an index row — keeps them in
+plaintext; the mask applies on the way *back*, to the argument copy that rides into the history and
+to the result the tool returns. So a secret is storable and searchable while staying unreadable
+through the model: `cabinet_search` and the cabinet index are built from what the tool received,
+yet a `file_list` or a `cat` of the same text comes back `<MASKED>`. The disk therefore cannot be
+audited through a tool result — a masked listing and masked disk look identical from inside a turn.
+There is **no off switch**: no config key reaches the engine, and a turn cannot opt out.
+
+The shapes are `logfmt._SECRET_PATTERNS`, four kinds: well-known provider prefixes (`sk-`,
+`ghp_`/`github_pat_`, `gsk_`, `hf_`, `AIza…`, `pypi-`, …); header credentials (`Basic`, `Bearer`,
+`Token` followed by 8+ characters carrying a digit or one of `+/=._-`); `key=value` names
+(`api_key`, `token`, `password`, `*secret*`, `*access_key*`, value floor 6); and connection-string
+passwords (`scheme://user:pass@host`). Everything else passes through unchanged — a bare `hunter2`,
+an AWS key id standing alone, an email address.
+
 **Config sections.** `slife.yaml` carries `env`, `models.providers` + `active_model`,
 `job_coding_model`, `agent` (the context policy and iteration knobs), `embeddings`, `wechat`,
 `media`, `a2a`, `subagent`, and `plugins.required`. `tools.yaml` is the unified tool config (§4.3)
