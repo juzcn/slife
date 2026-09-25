@@ -113,17 +113,8 @@ class Role(Enum):
     WORKER = "worker"
 
     @property
-    def caps(self) -> Caps:
-        """This role's grants."""
-        return _CAPS[self]
-
-    @property
     def is_worker(self) -> bool:
         return self is Role.WORKER
-
-    @property
-    def is_main(self) -> bool:
-        return self is Role.MAIN
 
 
 #: The main agent holds the full harness…

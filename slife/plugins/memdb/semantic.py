@@ -96,6 +96,30 @@ class SemanticManager:
         """Build the embedder for this plugin's config shape."""
         return EmbeddingClient.from_config(config_path=self._config_path)
 
+    async def _swap_embedder(self, embedder: Any) -> None:
+        """Adopt *embedder* (``None`` to drop the current one), closing it.
+
+        The embedder owns a lazily-built HTTP client, and an enable (the boot
+        path and ``reload()`` alike) or a disable is exactly where the old one
+        stops being reachable: dropping the last reference left its connection
+        pool open until the GC got to it, so a reload stacked a second pool
+        beside the first.  Closing is safe for anything still holding the old
+        embedder — the client is rebuilt lazily on the next call.  Only the
+        catalog's host-side embedder exposes ``close()`` (the memdb/gateway
+        ones own an SDK client with no such method), so a missing one is
+        nothing to close.
+        """
+        previous, self._embedder = self._embedder, embedder
+        if previous is None:
+            return
+        close = getattr(previous, "close", None)
+        if close is None:
+            return
+        try:
+            await close()
+        except Exception as e:
+            logger.debug("embedder_close_error err=%s", e)
+
     def _start_enabled(self) -> bool:
         """Whether :meth:`start` should enable (True) or disable (False)."""
         cfg = read_embedding_config()
@@ -148,8 +172,6 @@ class SemanticManager:
                 logger.debug("reindex_skip_no_vector doc_id=%s", doc.get("doc_id"))
                 return False
             embeddings.append(vec[0])
-        if len(embeddings) != len(chunks):
-            return False
         async with self._write_lock:
             await self._store.replace_embedding_chunks(doc, embeddings)
         return True
@@ -196,7 +218,7 @@ class SemanticManager:
                     message="Embedding backend unavailable — keyword search still works.",
                 )
 
-            self._embedder = embedder
+            await self._swap_embedder(embedder)
             if not await embedder.load():
                 await self._set_state("stalled", "embedding model failed to load")
                 return self._status(
@@ -231,7 +253,7 @@ class SemanticManager:
                 "disabled",
                 "semantic search disabled — keyword (fts5/grep/time) search still works",
             )
-            self._embedder = None
+            await self._swap_embedder(None)
             logger.info("semantic_disabled")
             return self._status(
                 status="ok", message="Semantic search disabled. Keyword search still available.",

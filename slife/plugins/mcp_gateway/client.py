@@ -226,8 +226,7 @@ def _is_external_cancel() -> bool:
 class MCPClient:
     """MCP client for connecting to Slife plugin servers via Streamable HTTP."""
 
-    def __init__(self, tool_timeout: float | None = None,
-                 client_info_extra: dict | None = None):
+    def __init__(self, tool_timeout: float | None = None):
         if tool_timeout is None:
             tool_timeout = _timeouts.timeouts.work.tool_budget  # call-time lookup
         self._session: ClientSession | None = None
@@ -253,11 +252,6 @@ class MCPClient:
         # so a long session's image tool results don't accumulate.  Per-client
         # (not module-global) so one client's disconnect can't clear another's.
         self._temp_image_files: set[str] = set()
-        # Extra host params the server should see: carried on the standard
-        # ``initialize`` request in ``capabilities.extensions`` (mcp ≥2.0;
-        # the ``clientInfo.other`` slot was dropped) — e.g. the host's active
-        # embedding endpoint when connecting to the mcp-gateway wrapper.
-        self._client_info_extra = client_info_extra
         # Optional async callback(method, params) invoked for server-initiated
         # notifications (e.g. ``notifications/tools/list_changed``).  Must
         # return quickly — it runs on the SDK's receive loop; a handler that
@@ -358,25 +352,20 @@ class MCPClient:
                     read_stream, write_stream = await self._exit_stack.enter_async_context(
                         streamable_http_client(url, http_client=self._http_client),
                     )
-                    # mcp ≥2.0: host extras ride in the standard
+                    # No host extras are passed: the one consumer was the mcp
+                    # gateway's in-memory catalog (an embedding handshake),
+                    # retired — embedding lives in the host's shared catalog
+                    # now.  (They would ride in the standard
                     # ``capabilities.extensions`` map (identifier → settings)
-                    # on the connect exchange — modern peers get them in the
-                    # ``server/discover`` ``_meta`` (the SDK builds the same
-                    # capability ad for both eras), legacy peers on
-                    # ``initialize``.  The old ``clientInfo.other`` smuggling
-                    # was dropped from the wire models.  The mcp gateway's
-                    # ``_client_info_extra`` is exactly that shape
-                    # (``{"embeddings": {...}}``), so pass it as session
-                    # extensions; the gateway reads the same map back.
+                    # on the connect exchange: modern peers get them in the
+                    # ``server/discover`` ``_meta`` — the SDK builds the same
+                    # capability ad for both eras — and legacy peers on
+                    # ``initialize``.)
                     self._session = await self._exit_stack.enter_async_context(
                         ClientSession(
                             read_stream, write_stream,
                             message_handler=self._handle_server_message,
                             client_info=Implementation(name="slife", version=__version__),
-                            extensions=(
-                                dict(self._client_info_extra)
-                                if self._client_info_extra else None
-                            ),
                         ),
                     )
                     # Era negotiation, not a handshake: our own plugin servers

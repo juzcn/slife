@@ -17,9 +17,10 @@ import logging
 import os
 import sys
 import time as _time
+import weakref
 from collections import deque
 from datetime import datetime
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -65,10 +66,50 @@ class MemoryDatabaseError(Exception):
     """
 
 
+class _ModelSwitchCallbacks:
+    """The runtime model-switch callbacks, held WEAKLY.
+
+    Every callback is a bound method of one ``AgentService``.  A plain list of
+    strong references therefore kept every service ever constructed in the
+    process alive, and each ``model_switch`` reloaded the active model on all
+    of them — rebuilding a fresh SDK client, re-rendering prompts and
+    re-recording health for services that had long since stopped running.
+    ``WeakMethod`` ties the registration to the service's own lifetime: the
+    entry dies with the instance, so a registration cannot outlive its owner.
+
+    Iterating yields the live bound methods — dead entries are pruned as they
+    are noticed — so a caller stays a plain loop:
+    ``for cb in _on_model_switched: cb(ref)``.
+    """
+
+    def __init__(self) -> None:
+        self._refs: list[weakref.WeakMethod] = []
+
+    def append(self, callback: Callable[[str], None]) -> None:
+        self._refs.append(weakref.WeakMethod(callback))
+
+    def __iter__(self) -> Iterator[Callable[[str], None]]:
+        live: list[Callable[[str], None]] = []
+        gone: list[weakref.WeakMethod] = []
+        for ref in self._refs:
+            # Narrowed in the branch, so what is yielded is never ``None``: a
+            # ref that died between the check and the call used to reach the
+            # caller's loop as a null callable.
+            callback = ref()
+            if callback is None:
+                gone.append(ref)
+            else:
+                live.append(callback)
+        for ref in gone:
+            self._refs.remove(ref)  # drop the services that have gone
+        return iter(live)
+
+
 # Module-level callbacks invoked when the active model is switched at
 # runtime (e.g. by the model_switch tool).  Each callback receives the
-# new model ref string (e.g. "deepseek/deepseek-v4-flash").
-_on_model_switched: list[Callable[[str], None]] = []
+# new model ref string (e.g. "deepseek/deepseek-v4-flash") while its
+# service is alive — see :class:`_ModelSwitchCallbacks`.
+_on_model_switched = _ModelSwitchCallbacks()
 
 # ── Sharefile tunnel readiness watch ─────────────────────────────────────
 # The sharefile plugin eager-starts its tunnel on a background task, so the
@@ -255,8 +296,7 @@ class AgentService:
         from slife.tools.context import ToolContext
         self._tool_ctx = ToolContext(config=config)
         self.tool_registry = create_tools_from_config(
-            config.tools, config=config, is_subagent=role.is_worker,
-            ctx=self._tool_ctx,
+            config.tools, config=config, ctx=self._tool_ctx,
         )
         # Backfill the registry reference (created by the factory)
         self._tool_ctx.registry = self.tool_registry
@@ -344,7 +384,6 @@ class AgentService:
             stream_timeout=subagent_stream_timeout,
             stream_max_retries=None if self.caps.stream_retries else 0,
             tool_catalog=self._catalog,
-            load_threshold=self._tool_load_threshold,
         )
         self.message_history = MessageHistory(
             system_prompt=build_system_prompt(self.config),
@@ -434,9 +473,8 @@ class AgentService:
 
         # ── Memory health ──────────────────────────────────────────
         # Memory is core.  A fatal turn-save failure (broken schema,
-        # corruption, disk error) sets _memory_broken and freezes the
-        # inbox — the agent must not keep running turns it can't persist.
-        self._memory_broken = False
+        # corruption, disk error) is recorded in _memory_error and freezes
+        # the inbox — the agent must not keep running turns it can't persist.
         self._memory_error = ""
         # TUI callback (set by the app) → persistent red banner.
         self._on_memory_broken: "Callable[[str], None] | None" = None
@@ -492,6 +530,8 @@ class AgentService:
 
         # Register for runtime model-switch notifications so the
         # LLM client and agent loop stay in sync with the active model.
+        # Weakly: the registration dies with this service (see
+        # _ModelSwitchCallbacks) rather than pinning it forever.
         _on_model_switched.append(self.reload_active_model)
 
     # ── Plugin contract binding ─────────────────────────────────────────
@@ -562,10 +602,24 @@ class AgentService:
         """
         if not self.caps.turn_persistence:
             return WorkerHistoryStore(
-                build_system_prompt(self.config, is_subagent=True),
+                self._role_system_prompt(),
                 context_provider=lambda: self.inherited_context,
             )
-        return MessageHistoryStore(system_prompt=build_system_prompt(self.config))
+        return MessageHistoryStore(system_prompt=self._role_system_prompt())
+
+    def _role_system_prompt(self) -> str:
+        """The identity prompt for THIS role — the one rule both callers use.
+
+        A worker renders the subagent template, the main agent its own; the
+        grant decides, since the role whose context is continuous is the main
+        one.  ``refresh_system_prompt`` used the main-agent form
+        unconditionally, so a single ``add_user_pref`` (or model switch) inside
+        a worker replaced its identity with the main agent's — heartbeat and
+        autonomy framing included — for every later task in that process.
+        """
+        return build_system_prompt(
+            self.config, is_subagent=not self.caps.turn_persistence,
+        )
 
     @property
     def context_window(self) -> int:
@@ -789,7 +843,7 @@ class AgentService:
         """Spawn *spec*'s child, register its tools, apply the ctx re-point,
         run the after-ready glue and arm the watchdog — the single path every
         plugin's initial start and watchdog restart go through."""
-        lc.cancel_tasks()  # a restart never stacks a stale poll/drain loop
+        await lc.cancel_tasks()  # a restart never stacks a stale poll/drain loop
         started = await self._spawn_plugin_generic(spec.name, spec.module)
         if not started:
             return PluginStartStatus.FAILED
@@ -1157,10 +1211,8 @@ class AgentService:
         )
         try:
             await process.start()
-            from slife.agent.plugins import client_info_extra_for
             client = await process.create_client(
                 tool_timeout=self.config.tool_timeout,
-                client_info_extra=client_info_extra_for(name),
             )
 
             # Discover tools — retry once on a timeout.  A Streamable HTTP
@@ -1176,7 +1228,6 @@ class AgentService:
                 await client.disconnect()
                 client = await process.create_client(
                     tool_timeout=self.config.tool_timeout,
-                    client_info_extra=client_info_extra_for(name),
                 )
                 plugin_tools = await client.list_tools()
             logger.debug("plugin_tools name=%s count=%d names=%s",
@@ -2451,7 +2502,13 @@ class AgentService:
             raise MemorySaveError(t("memory_save_no_channel"))
         assert self._plugins["memdb"].client is not None  # guarded above
         save_args = {
-            "user_message": user_message,
+            # The MASKED text, the same form the live history holds (see
+            # add_user_message): this column is the diary, and restore rebuilds
+            # the user turn from it verbatim — persisting the raw text put a
+            # pasted API key back into the model's context after a restart,
+            # which is the one thing the sanitizer exists to prevent.  `target`
+            # was already computed for the match above.
+            "user_message": target,
             "messages": turn_messages,
             "token_count": token_count or 0,
             "context_tokens": context_tokens or 0,
@@ -2506,7 +2563,6 @@ class AgentService:
             except Exception:
                 parsed = None
             if isinstance(parsed, dict) and parsed.get("error"):
-                self._memory_broken = True
                 self._memory_error = parsed["error"]
                 logger.error("memory_save_fatal err=%s", self._memory_error)
                 if self.inbox is not None:
@@ -3009,7 +3065,7 @@ class AgentService:
         ``add_user_pref`` write (the USER.md section changed).  The byte
         change touches the prompt cache — accepted, both events are rare.
         """
-        new_system = build_system_prompt(self.config)
+        new_system = self._role_system_prompt()
         if self.message_history.messages and self.message_history.messages[0]["role"] == "system":
             self.message_history.messages[0]["content"] = new_system
         self.inbox._histories.update_system_prompt(new_system)
@@ -3126,7 +3182,6 @@ class AgentService:
                 await self._sync_catalog_from_config()
             # The loop was built in __init__ before the catalog existed.
             self.agent_loop.tool_catalog = svc
-            self.agent_loop.load_threshold = self._tool_load_threshold
             # The catalog's semantic surface, by grant.  ONE process maintains
             # the index — the drainer, and the only writer of its vectors.
             # Every process may QUERY it, because the vectors and the index's

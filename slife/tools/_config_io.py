@@ -4,6 +4,7 @@ Used by config_env.py and cli.py to avoid duplicating the same
 YAML read/write logic across tool modules.
 """
 
+import asyncio
 import functools
 import logging
 import os
@@ -147,15 +148,72 @@ def config_write_locked(fn):
     decorated method must take the config path from ``self._config_path``
     (the :class:`_ConfigPathMixin` convention).  Early returns (validation
     errors) happen inside the lock and write nothing — harmless.
+
+    The lock is HELD across the tool body (that is the point — the read and
+    the write it protects are on either side of the await), but it is TAKEN by
+    non-blocking polling rather than a blocking acquire, which would freeze
+    the loop for the whole timeout.  That freeze is a real deadlock, not just
+    a stall: tool calls run concurrently on one loop, so while call A holds
+    the lock waiting on its inner await, call B's blocking acquire would stop
+    the loop and A could never resume to release it — nor could any heartbeat
+    or timer.  See :func:`_acquire_config_lock`.
     """
     @functools.wraps(fn)
     async def _wrapped(self, **kwargs):
         path = getattr(self, "_config_path", None)
-        if path is not None:
-            with config_read_modify_write(path):
-                return await fn(self, **kwargs)
-        return await fn(self, **kwargs)
+        if path is None:
+            return await fn(self, **kwargs)
+        lock = _file_lock_for(path)
+        await _acquire_config_lock(lock, path)
+        try:
+            return await fn(self, **kwargs)
+        finally:
+            try:
+                lock.release()
+            except Exception:  # noqa: BLE001 — a release failure must not fail the edit
+                logger.debug("config_lock_release_failed path=%s", path, exc_info=True)
     return _wrapped
+
+
+async def _acquire_config_lock(lock: filelock.FileLock, path: Path) -> None:
+    """Take *lock* without blocking the event loop, or raise ConfigLockTimeout.
+
+    Polls with *non-blocking* attempts, from the loop thread — deliberately
+    NOT one blocking ``acquire()`` on a worker thread.  filelock keeps its
+    reentrancy counter PER THREAD, so a lock acquired on one thread must be
+    released on that thread: acquiring via ``run_daemon`` and then releasing
+    from the caller's ``finally`` leaves the OS lock held, and the next waiter
+    burns the full timeout and fails even though the first call finished
+    immediately (measured: two concurrent calls that should serialize in
+    0.6s took 10.0s with one ConfigLockTimeout).  A non-blocking attempt
+    cannot stall the loop, and acquire/release stay on the same thread.
+    """
+    try:
+        async with asyncio.timeout(_timeouts.timeouts.storage.filelock):
+            while True:
+                try:
+                    lock.acquire(blocking=False)
+                    return
+                except filelock.Timeout:
+                    # Held elsewhere (another process, or a concurrent tool
+                    # call in this one) — wait a poll interval and try again.
+                    # filelock's own interval, so there is no second pacing
+                    # constant to keep in sync with the registry.
+                    await asyncio.sleep(lock.poll_interval)
+    except TimeoutError as e:
+        raise ConfigLockTimeout(
+            f"Could not acquire config lock for {path} within "
+            f"{_timeouts.timeouts.storage.filelock:g}s"
+        ) from e
+
+
+def _file_lock_for(path: Path) -> filelock.FileLock:
+    """The cross-process lock guarding one config file's read→mutate→write."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return filelock.FileLock(
+        path.with_suffix(path.suffix + ".lock"),
+        timeout=_timeouts.timeouts.storage.filelock,  # bounded (was blocking forever)
+    )
 
 
 @contextmanager
@@ -169,12 +227,14 @@ def config_read_modify_write(path: Path):
     both mutate, both ``os.replace``: the second clobbers the first's change.
     This wraps that window in a cross-process lock on ``<path>.lock`` so the
     write that follows the read is the only one in flight (F8).
+
+    SYNCHRONOUS, for the callers that are synchronous functions
+    (``switch_model``, the gateway's config helpers, ``write_embedding_config``).
+    An ``async def`` caller with an await inside the block must use
+    :func:`config_write_locked` instead — that path acquires off the event
+    loop, which this one cannot do.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock = filelock.FileLock(
-        path.with_suffix(path.suffix + ".lock"),
-        timeout=_timeouts.timeouts.storage.filelock,  # bounded (was blocking forever)
-    )
+    lock = _file_lock_for(path)
     try:
         with lock:
             yield

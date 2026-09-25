@@ -25,7 +25,6 @@ from slife.logfmt import error_json, ok_json
 from slife.server_utils import (
     ToolsChangedNotifier,
     create_plugin_server,
-    flush_tools_changed,
     request_tools_changed,
     tools_changed_bus,
 )
@@ -90,67 +89,70 @@ async def _auto_connect_configured() -> None:
     never delay the ready port signal.
     """
     try:
-        raw = plugin_config.load_config()
-    except Exception as e:
-        logger.warning("mcp_config_load_failed err=%s", e)
-        return
-    # servers live in the mcp.servers / rest-api sections (tools.yaml) —
-    # use the merged view with the legacy top-level fallback, never the
-    # raw ``servers`` key (gone since the section restructure).
-    servers = plugin_config._servers_dict(raw)
-    if not isinstance(servers, dict):
-        return
-    configured = [
-        (name, entry) for name, entry in servers.items()
-        if isinstance(entry, dict)
-    ]
-    logger.info("mcp_configured count=%d (connecting the enabled ones)", len(configured))
-
-    # Which of these are REST APIs — the SECTION decides (one read, not one
-    # per server), and it rides into the pool so ``__check`` can report the
-    # category without any tag being written into the entry itself.
-    rest_api_names = plugin_config.rest_api_names()
-
-    async def _register_one(name: str, entry: dict) -> None:
         try:
-            cfg = plugin_config.resolve_server_config(
-                name, entry, rest_api=name in rest_api_names,
-            )
-            if not cfg.enabled:
-                await _pool.add_server(cfg, connect=False)
-                return
-            # Spawn-only: boot brings the transport up and leaves the tool LIST
-            # to the first reader (the host's reconcile asks every server for
-            # one as it mirrors the catalog).  Reading it here made boot the
-            # sum of every server's tools/list — a slow peer delayed the whole
-            # set, for a list no one had asked for yet.
-            await _pool.add_server(cfg, read_tools=False)
-            # NO usability verdict here.  "Usable" means "its ``tools/list``
-            # succeeds" — that is this module's whole premise (health is a tool
-            # list, not a connection) — and this pass deliberately does not
-            # read one: the list belongs to the first reader, the host's
-            # reconcile.  A spawn-only boot therefore has nothing to judge
-            # with, and the old ``if not conn.tools_ok`` warned for EVERY
-            # configured server (nobody had asked yet) with a message about a
-            # connect the modern era does not have.  A transport that really
-            # failed says so where it failed (``mcp_connect_failed``, carrying
-            # the error), and the verdict the host acts on arrives from
-            # ``__check`` once a read has run.
-            #
-            # Nor does it nudge per server: the host's sync starts when the
-            # WHOLE boot pass is done (one nudge after the gather), because a
-            # pass woken mid-spawn would judge servers whose transports are
-            # still being established.
+            raw = plugin_config.load_config()
         except Exception as e:
-            logger.warning("mcp_server_setup_failed server=%s err=%s", name, e)
+            logger.warning("mcp_config_load_failed err=%s", e)
+            return
+        # servers live in the mcp.servers / rest-api sections (tools.yaml) —
+        # use the merged view with the legacy top-level fallback, never the
+        # raw ``servers`` key (gone since the section restructure).
+        servers = plugin_config._servers_dict(raw)
+        configured = [
+            (name, entry) for name, entry in servers.items()
+            if isinstance(entry, dict)
+        ]
+        logger.info("mcp_configured count=%d (connecting the enabled ones)", len(configured))
 
-    await asyncio.gather(*(_register_one(n, e) for n, e in configured))
-    # The boot pass is over: every configured server has had its transport
-    # attempt, so "no transport" now means "could not come up" rather than
-    # "not asked yet".  Published first, then nudged — the host's sync must see
-    # the settled fact when it wakes.
-    _spawn_settled.set()
-    _request_tools_changed()
+        # Which of these are REST APIs — the SECTION decides (one read, not one
+        # per server), and it rides into the pool so ``__check`` can report the
+        # category without any tag being written into the entry itself.
+        rest_api_names = plugin_config.rest_api_names()
+
+        async def _register_one(name: str, entry: dict) -> None:
+            try:
+                cfg = plugin_config.resolve_server_config(
+                    name, entry, rest_api=name in rest_api_names,
+                )
+                if not cfg.enabled:
+                    await _pool.add_server(cfg, connect=False)
+                    return
+                # Spawn-only: boot brings the transport up and leaves the tool LIST
+                # to the first reader (the host's reconcile asks every server for
+                # one as it mirrors the catalog).  Reading it here made boot the
+                # sum of every server's tools/list — a slow peer delayed the whole
+                # set, for a list no one had asked for yet.
+                await _pool.add_server(cfg, read_tools=False)
+                # NO usability verdict here.  "Usable" means "its ``tools/list``
+                # succeeds" — that is this module's whole premise (health is a tool
+                # list, not a connection) — and this pass deliberately does not
+                # read one: the list belongs to the first reader, the host's
+                # reconcile.  A spawn-only boot therefore has nothing to judge
+                # with, and the old ``if not conn.tools_ok`` warned for EVERY
+                # configured server (nobody had asked yet) with a message about a
+                # connect the modern era does not have.  A transport that really
+                # failed says so where it failed (``mcp_connect_failed``, carrying
+                # the error), and the verdict the host acts on arrives from
+                # ``__check`` once a read has run.
+                #
+                # Nor does it nudge per server: the host's sync starts when the
+                # WHOLE boot pass is done (one nudge after the gather), because a
+                # pass woken mid-spawn would judge servers whose transports are
+                # still being established.
+            except Exception as e:
+                logger.warning("mcp_server_setup_failed server=%s err=%s", name, e)
+
+        await asyncio.gather(*(_register_one(n, e) for n, e in configured))
+    finally:
+        # The boot pass is over on EVERY exit, the failed ones included — a
+        # tools.yaml that cannot be read made its (zero) transport attempts and
+        # is done just the same.  Settling only on the happy path left every
+        # configured server reading "pending" until the host's
+        # ready.tool_sync_wait budget ran out, for a pass that had already
+        # finished.  Published first, then nudged — the host's sync must see the
+        # settled fact when it wakes.
+        _spawn_settled.set()
+        _request_tools_changed()
 
 
 mcp, _log_path, logger = create_plugin_server(
@@ -182,12 +184,6 @@ def _request_tools_changed() -> None:
     Fire-and-forget — see :func:`slife.server_utils.request_tools_changed`.
     """
     request_tools_changed(_notifier)
-
-
-async def _notify_tools_changed() -> None:
-    """Eager-flush alias kept for tests/…: deterministic delivery in this
-    task.  Production paths should use :func:`_request_tools_changed`."""
-    await flush_tools_changed(_notifier)
 
 
 # ── Connection → host notification ──────────────────────────────────────
@@ -417,6 +413,27 @@ async def _set_server(
     try:
         if existing is not None and _server_config_equal(existing.config, config):
             if existing.tools_ok:
+                # description/source are deliberately outside the comparison — a
+                # metadata edit must not restart the transport — but that also
+                # meant a metadata-ONLY edit was never written anywhere: mcp_set
+                # answered "already_connected" and tools.yaml kept the old text
+                # while the caller was told nothing had changed.  Persist it
+                # here instead, leaving the live connection alone.
+                #
+                # An empty description is the tool's default, so it reads as
+                # "not supplied" rather than "clear it" — otherwise every
+                # idempotent re-run would blank a description it never mentioned.
+                # source needs no such rule: the built config already resolved a
+                # missing one to the existing value, so a difference is real.
+                meta_changed = (
+                    (description != "" and description != existing.config.description)
+                    or config.source != existing.config.source
+                )
+                if meta_changed:
+                    _persist_entry(
+                        name, command, args, env, url, headers,
+                        description, config.source, auth, enabled,
+                    )
                 tools = existing.list_tools()
                 return ok_json(
                     status="already_connected",
@@ -424,7 +441,9 @@ async def _set_server(
                     transport=config.transport,
                     tool_count=len(tools),
                     tools=[t["name"] for t in tools],
-                    note="Server config unchanged — no restart needed.",
+                    note=("Server config unchanged — metadata updated, no restart needed."
+                          if meta_changed else
+                          "Server config unchanged — no restart needed."),
                 )
 
         conn = await _pool.add_server(config)

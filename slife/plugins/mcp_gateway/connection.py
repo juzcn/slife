@@ -81,6 +81,20 @@ logger = logging.getLogger(__name__)
 _STDERR_BUFFER_LIMIT = 500
 
 
+def _is_transport_failure(err: BaseException) -> bool:
+    """True when *err* says the LINK died, not that the call itself failed.
+
+    A closed transport is reported by the SDK's dispatcher as
+    ``MCPError(code=CONNECTION_CLOSED)`` — which subclasses only ``Exception``,
+    so it is neither a ``ConnectionError`` nor an ``OSError``.  Matching the
+    builtin types alone left the rebuild-and-retry in ``call_tool`` unreachable
+    for the one case it was written for (``refresh_tools`` already asked
+    :func:`client._is_link_down`).  A peer-reported MCP error — an unknown tool,
+    bad arguments — is NOT a transport failure and must not trigger a rebuild.
+    """
+    return isinstance(err, (ConnectionError, OSError)) or _is_link_down(err)
+
+
 class NeedsUserAuthError(RuntimeError):
     """OAuth needs a human (device flow) — not a retriable transport failure.
 
@@ -147,7 +161,6 @@ class MCPServerConnection:
         #: Supervisor for that listen stream (modern peers only).
         self._watch_task: "asyncio.Task | None" = None
         self._http_client: httpx2.AsyncClient | None = None
-        self._sse_mode: bool = False
         # stdio stderr capture: a real temp file passed as the SDK's errlog
         # (the child writes straight to disk), drained by _drain_stderr into
         # the ring buffer below.  The file handle is the capture's source of
@@ -181,6 +194,11 @@ class MCPServerConnection:
         # device-flow prompt must never be raised by a background retry, F5).
         # Cleared by a fresh mcp_set / mcp_remove.
         self._needs_user_auth: bool = False
+
+        #: The OAuth ``Authorization`` value, kept OUT of ``self.config.headers``
+        #: on purpose — see :meth:`_ensure_oauth_token`.  Merged into the
+        #: transport headers by :meth:`_http_launch`.
+        self._oauth_header: str = ""
 
     # ── Published state ─────────────────────────────────────────────────
 
@@ -283,11 +301,13 @@ class MCPServerConnection:
     # ── OAuth ──────────────────────────────────────────────────────────
 
     async def _ensure_oauth_token(self) -> None:
-        """Obtain or refresh an OAuth token and inject it into connection headers.
+        """Obtain or refresh an OAuth token for the transport headers.
 
         Called before transport connect when ``config.auth.type == "oauth"``.
-        Mutates ``self.config.headers`` in place — the transport layer
-        picks up the token automatically.
+        Stores the token in :attr:`_oauth_header`; :meth:`_http_launch` merges
+        it into the headers the transport is built with, so ``config.headers``
+        keeps exactly what the user configured (a comparison key for
+        ``mcp_set``'s idempotency).
 
         When the token is gone AND the refresh failed, the ONLY way forward is
         the interactive device flow.  That needs a human at the desktop — it
@@ -340,12 +360,14 @@ class MCPServerConnection:
                     ) from e
                 self._needs_user_auth = False
 
-        # Inject token into headers
-        if self.config.headers is None:
-            self.config.headers = {}
-        self.config.headers["Authorization"] = (
-            f"{tokens.token_type} {tokens.access_token}"
-        )
+        # Held SEPARATELY from ``config.headers``, never written into it.  The
+        # live config object is what ``mcp_set`` compares a caller's fresh
+        # config against (_server_config_equal includes headers), so injecting
+        # the token there made an OAuth server compare unequal forever: every
+        # re-add reported a change, tore the transport down and re-ran the
+        # OAuth pre-check instead of answering already_connected.  The
+        # transport merges this in :meth:`_http_launch`.
+        self._oauth_header = f"{tokens.token_type} {tokens.access_token}"
         logger.info("oauth_token_injected server=%s", name)
 
     # ── Transport selection (SDK transports → one ClientSession) ─────────
@@ -465,6 +487,10 @@ class MCPServerConnection:
             headers.update(
                 {k: _resolve_embedded_refs(v) for k, v in self.config.headers.items()}
             )
+        # The OAuth token overrides a config-supplied Authorization — the same
+        # precedence the in-place injection had, now without dirtying config.
+        if self._oauth_header:
+            headers["Authorization"] = self._oauth_header
         return url, headers
 
     async def _connect_http(self) -> None:
@@ -483,7 +509,6 @@ class MCPServerConnection:
             read_stream, write_stream = await stack.enter_async_context(
                 sse_client(url, headers=headers),
             )
-            self._sse_mode = True
             logger.info("mcp_sse_connected server=%s url=%s", self.config.name, url)
         except asyncio.TimeoutError:
             # The OUTER establishment asyncio.timeout has already fired — every
@@ -518,7 +543,6 @@ class MCPServerConnection:
             read_stream, write_stream = await self._exit_stack.enter_async_context(
                 streamable_http_client(url, http_client=self._http_client),
             )
-            self._sse_mode = False
             logger.debug("mcp_streamable_http server=%s url=%s", self.config.name, url)
 
         self._session = await self._exit_stack.enter_async_context(
@@ -966,9 +990,15 @@ class MCPServerConnection:
 
         try:
             result = await self._call_on_session(tool_name, arguments)
-        except (ConnectionError, OSError):
+        except Exception as call_err:
+            if not _is_transport_failure(call_err):
+                raise
             # The link died under the call.  Rebuild once and retry — the
             # failure is a transport one, so the peer cannot have run it.
+            # Matched through _is_transport_failure, not a bare
+            # `except (ConnectionError, OSError)`: the SDK refuses a send on a
+            # closed transport with MCPError(-32000), so the rebuild existed on
+            # the LIST path (refresh_tools) and never fired here.
             logger.warning(
                 "mcp_tool_call_transport_error server=%s tool=%s action=rebuild",
                 self.config.name, tool_name,
@@ -1000,14 +1030,14 @@ class MCPServerConnection:
         # CallToolResult carries ``is_error`` (snake_case, mcp-types ≥2.1).
         if getattr(result, "is_error", False):
             parts = [b.text for b in result.content if isinstance(b, TextContent)]
-            return "Error: " + "\n".join(parts) or "Error"
+            return "Error: " + "\n".join(parts)
 
         parts: list[str] = []
         for block in result.content:
             if isinstance(block, TextContent):
                 parts.append(block.text)
             elif isinstance(block, ImageContent):
-                parts.append(f"[image: {getattr(block, 'mimeType', '')} {len(block.data)} bytes]")
+                parts.append(f"[image: {getattr(block, 'mime_type', '')} {len(block.data)} bytes]")
             else:
                 try:
                     parts.append(block.model_dump_json())
@@ -1084,7 +1114,6 @@ class MCPServerConnection:
                 pass
             self._stderr_dump = None
             self._stderr_buffer.clear()
-        self._sse_mode = False
         if self._http_client is not None:
             try:
                 await self._http_client.aclose()

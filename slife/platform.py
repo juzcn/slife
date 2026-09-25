@@ -387,21 +387,19 @@ def _close_pipe_transports(process: asyncio.subprocess.Process) -> None:
 async def terminate_process(
     process: asyncio.subprocess.Process,
     *,
-    graceful_timeout: float | None = None,
-    force_timeout: float | None = None,
     label: str = "",
 ) -> None:
     """Gracefully terminate an asyncio subprocess with escalating force.
 
-    ``graceful_timeout`` / ``force_timeout`` default to the registry's
-    grace.gentle / grace.force (call-time lookup).
+    The two waits are the registry's ``grace.gentle`` / ``grace.force``
+    (call-time lookup).
 
     1. Close stdin to signal EOF.
     2. Read the child's descendants (POSIX — done here, while the tree is
        still intact), then send SIGTERM / ``taskkill /T`` on Windows.
-    3. Wait *graceful_timeout* seconds for graceful exit.
+    3. Wait ``grace.gentle`` seconds for graceful exit.
     4. Force-kill if still running.
-    5. Wait *force_timeout* seconds for kill to take effect.
+    5. Wait ``grace.force`` seconds for kill to take effect.
     6. Sweep any descendant the child left behind (POSIX).
     7. Close remaining pipe transports (prevents ``ResourceWarning``
        on Windows ProactorEventLoop where the pipe handle is already
@@ -409,10 +407,6 @@ async def terminate_process(
 
     Swallows ``ProcessLookupError`` (already exited) and logs otherwise.
     """
-    if graceful_timeout is None:
-        graceful_timeout = _timeouts.timeouts.grace.gentle
-    if force_timeout is None:
-        force_timeout = _timeouts.timeouts.grace.force
     if process is None:
         return
     try:
@@ -442,13 +436,17 @@ async def terminate_process(
 
             # Wait for graceful exit
             try:
-                await asyncio.wait_for(process.wait(), timeout=graceful_timeout)
+                await asyncio.wait_for(
+                    process.wait(), timeout=_timeouts.timeouts.grace.gentle,
+                )
                 logger.debug("process_exited pid=%s label=%s", process.pid, label)
             except asyncio.TimeoutError:
                 logger.warning("process_force_kill pid=%s label=%s", process.pid, label)
                 process.kill()
                 try:
-                    await asyncio.wait_for(process.wait(), timeout=force_timeout)
+                    await asyncio.wait_for(
+                        process.wait(), timeout=_timeouts.timeouts.grace.force,
+                    )
                 except asyncio.TimeoutError:
                     pass  # Best effort
             if descendants:
@@ -532,10 +530,14 @@ def terminate_process_sync(
         deadline = time.monotonic() + timeout
         while True:
             try:
-                _, status = os.waitpid(pid, os.WNOHANG)  # type: ignore[attr-defined]
+                reaped, _ = os.waitpid(pid, os.WNOHANG)  # type: ignore[attr-defined]
             except OSError:
                 return  # Already reaped / exited — nothing more to do.
-            if status != 0:
+            if reaped != 0:
+                # Liveness comes from the PID, not the exit status: waitpid
+                # answers (0, 0) while the child runs, and the discarded element
+                # used to be the status, so a child that exited with code 0
+                # (status == 0) read as "still running".
                 return  # Exited.
             if time.monotonic() >= deadline:
                 break

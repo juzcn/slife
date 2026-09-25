@@ -23,7 +23,7 @@ def _make_widget(**kwargs):
         w._iteration = kwargs.get("_iteration", 1)
         w._max_iterations = kwargs.get("_max_iterations", 10)
         w._is_collapsed = kwargs.get("_is_collapsed", True)
-        w._status = kwargs.get("_status", "pending")
+        w._status = kwargs.get("_status", "running")
         w._result = kwargs.get("_result", "")
         w._result_is_error = kwargs.get("_result_is_error", False)
         w._suffix = kwargs.get("_suffix", "42")
@@ -40,7 +40,7 @@ class TestToolCallWidget:
         assert w.tool_name == "web_search"
         assert w.tool_args == {"query": "cats"}
         assert w._is_collapsed is True
-        assert w._status == "pending"
+        assert w._status == "running"
         assert w._result == ""
         assert w._result_is_error is False
 
@@ -115,7 +115,7 @@ class TestToolCallWidget:
 
     # ── Header line ───────────────────────────────────────────────
 
-    def test_header_line_pending_shows_friendly_label(self):
+    def test_header_line_collapsed_shows_friendly_label(self):
         w = _make_widget()
         content = w._header_line()
         text = content.plain

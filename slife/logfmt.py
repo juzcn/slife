@@ -438,9 +438,11 @@ _SECRET_PATTERNS: list[re.Pattern] = [
     # key=value pairs — whole words (api_key, token, password, …) and
     # compound names (AWS_SECRET_ACCESS_KEY, STRIPE_SECRET_KEY,
     # aws_access_key_id).  Value floor 6 chars so short secrets mask too.
-    # The value class excludes quotes/braces/brackets so JSON like
-    # {"api_key": "sk-…"} masks just the value instead of swallowing the
-    # closing braces and corrupting the line.
+    # The value class excludes quotes/braces/brackets so masking cannot
+    # swallow the closing brace of an enclosing structure and corrupt the
+    # line.  It also means this pattern cannot see a JSON value — the `"`
+    # before it stops the match — which is what _JSON_SECRET_PATTERN below is
+    # for.
     # The key-name sandwiches bound their repeats ({0,64}, not *): with an
     # unbounded "[A-Za-z0-9_]*secret…" the engine backtracks O(n) per start
     # position on lines without a match — quadratic overall, which froze the
@@ -457,6 +459,25 @@ _SECRET_PATTERNS: list[re.Pattern] = [
 
 _MASKED = "<MASKED>"
 
+# JSON-shaped pairs: {"bot_token": "…"}.  The value is wrapped in quotes, so
+# the key=value pattern above — whose value class excludes `"` — can never
+# match it, and a secret shipped inside a JSON response body (the WeChat
+# get_qrcode_status envelope carries a live bot_token this way) reached the
+# log in cleartext.  The surrounding quotes are captured so masking replaces
+# the value alone and the JSON stays parseable.
+# One bounded sandwich around the union of the key WORDS, so compound names
+# (`bot_token`, `AWS_SECRET_ACCESS_KEY`) match exactly as they do in the plain
+# pattern above — `"bot_token"` is not `"token"`, so an alternation anchored
+# directly against the quote would miss it.  Same 6-char value floor, and the
+# same `{0,64}` bound (an unbounded repeat here is the quadratic-backtracking
+# hazard documented above).
+_JSON_SECRET_PATTERN = re.compile(
+    r"(\"[A-Za-z0-9_]{0,64}(?:api[_-]?key|apikey|token|password|"
+    r"auth[_-]?token|secret|access[_-]?key)[A-Za-z0-9_]{0,64}\"\s*:\s*\")"
+    r"([^\"]{6,})(\")",
+    re.IGNORECASE,
+)
+
 # Connection-string credentials: scheme://user:password@host — mask just the
 # password, keeping the rest of the URL readable.  The password class excludes
 # `/` so "https://host:8080/user@domain" (a port + path, NOT credentials) is
@@ -470,7 +491,8 @@ def sanitize_secrets(text: str) -> str:
     Catches well-known API key prefixes (``sk-``, ``ghp_``, ``ya29.``,
     ``pypi-``), ``Authorization: Bearer`` tokens, and key=value pairs
     with credential-like names (``api_key``, ``secret``, ``token``,
-    ``password``, ``auth_token``).
+    ``password``, ``auth_token``) — in plain ``key=value`` form and inside a
+    JSON object (``{"bot_token": "…"}``).
 
     No generic hex/blob heuristics — secrets belong in the credential store.
 
@@ -478,9 +500,18 @@ def sanitize_secrets(text: str) -> str:
     'Authorization: <MASKED>'
     >>> sanitize_secrets("DEEPSEEK_API_KEY=sk-abc123...")
     '<MASKED>'
+    >>> sanitize_secrets('{"bot_token": "2a115a8044e7@im.bot:0600"}')
+    '{"bot_token": "<MASKED>"}'
     """
     if not text or not isinstance(text, str):
         return text
+
+    # JSON first: a body like {"bot_token":"…"} also looks like a
+    # connection string to the URL pattern below (`://host","bot_token":"value@`)
+    # which would then mask only the value's prefix and leave the rest of the
+    # secret in the line.  Masking the JSON value here removes the `@` the URL
+    # pattern keys on, so the two cannot fight.
+    text = _JSON_SECRET_PATTERN.sub(r"\1" + _MASKED + r"\3", text)
 
     for pat in _SECRET_PATTERNS:
         text = pat.sub(_MASKED, text)

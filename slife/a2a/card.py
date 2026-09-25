@@ -20,7 +20,7 @@ from slife.a2a.identity import AgentName
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def _safe_name(value: object, limit: int = 128) -> str:
+def _safe_name(value: object) -> str:
     """Display-safe form of a remote, untrusted peer value.
 
     Presence fields (``agent_name``, ``status``) come from the MQTT wire with
@@ -29,7 +29,7 @@ def _safe_name(value: object, limit: int = 128) -> str:
     length so a name cannot bloat the context.
     """
     s = _CONTROL_RE.sub(" ", str(value))
-    return " ".join(s.split())[:limit]
+    return " ".join(s.split())[:128]
 
 
 @dataclass
@@ -61,6 +61,4 @@ def format_presence_line(card: "AgentCard", event: str) -> str | None:
         return f"⚡ {name} online [{status}]"
     if event == "offline":
         return f"✗ {name} offline"
-    if event == "timeout":
-        return f"⏱ {name} timed out"
     return None

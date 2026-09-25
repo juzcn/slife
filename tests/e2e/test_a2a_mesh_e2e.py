@@ -28,7 +28,7 @@ from paho.mqtt.properties import Properties
 from slife.a2a.broker import probe_broker
 from slife.a2a.config import A2AConfig
 from slife.a2a.mesh import A2AMesh
-from slife.a2a.task_store import clear_store
+import slife.a2a.task_store as task_store
 import slife.timeouts as _timeouts
 
 pytestmark = pytest.mark.e2e
@@ -149,11 +149,20 @@ async def _wait(pred, what: str, timeout: float = 6.0) -> None:  # noqa-timeout
     raise AssertionError(f"timed out waiting for {what}")
 
 
+def _reset_task_store() -> None:
+    """Drop the task-store singleton so the next ``get_store()`` is empty.
+
+    The store is process-global; nothing in production resets it, so a
+    scenario that wants a clean one clears the module global itself.
+    """
+    task_store._store = None
+
+
 @pytest.fixture(autouse=True)
 def _fresh_store():
-    clear_store()
+    _reset_task_store()
     yield
-    clear_store()
+    _reset_task_store()
 
 
 def _clear_retained_sync(agent: str) -> None:
@@ -233,7 +242,7 @@ async def _scenario_task_round_trip():
         finally:
             await _finish_meshes(a, b)
     finally:
-        clear_store()
+        _reset_task_store()
 
 
 async def _scenario_cancel_round_trip():
@@ -270,7 +279,7 @@ async def _scenario_cancel_round_trip():
         finally:
             await _finish_meshes(a, b)
     finally:
-        clear_store()
+        _reset_task_store()
 
 
 def test_task_round_trip_and_presence():

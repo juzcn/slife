@@ -556,17 +556,32 @@ class CatalogStore:
         """Open the file db with the WAL cross-process pragmas + schema."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         conn = await aiosqlite.connect(str(self._path))
-        conn.row_factory = aiosqlite.Row
-        await conn.execute("PRAGMA journal_mode=WAL")
-        await conn.execute("PRAGMA synchronous=NORMAL")
-        busy_ms = int(_timeouts.timeouts.storage.sqlite_busy * 1000)
-        await conn.execute(f"PRAGMA busy_timeout={busy_ms}")
-        await conn.execute("PRAGMA foreign_keys=ON")
+        # Assigned before the pragmas so the failure path below can release it
+        # through the class's own close() — ``None`` is the not-open state.
         self._conn = conn
-        await self._migrate()
-        await self._run_schema()
-        await self._check_categories()
-        await self._check_columns()
+        try:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA synchronous=NORMAL")
+            busy_ms = int(_timeouts.timeouts.storage.sqlite_busy * 1000)
+            await conn.execute(f"PRAGMA busy_timeout={busy_ms}")
+            await conn.execute("PRAGMA foreign_keys=ON")
+            await self._migrate()
+            await self._run_schema()
+            await self._check_categories()
+            await self._check_columns()
+        except BaseException:
+            # Release what was opened: aiosqlite drives a NON-daemon worker
+            # thread, and the only caller logs and carries on without a catalog
+            # ("continuing without catalog"), so nothing else would ever close
+            # this handle — the thread would outlive the failure.  close() also
+            # returns _conn to its documented not-open state, so a later call
+            # reports "not open" rather than querying a half-built database.
+            try:
+                await self.close()
+            except Exception:
+                logger.debug("catalog_close_failed path=%s", self._path, exc_info=True)
+            raise
         logger.info("catalog_ready path=%s", self._path)
 
     async def _check_categories(self) -> None:
@@ -1389,6 +1404,14 @@ class CatalogStore:
         excess).  ``protected`` (the meta whitelist) is never evicted.  Rows
         with a NULL ``last_loaded`` sort oldest (evict first).  Returns the
         evicted names (they now have ``load_status='unloaded'``).
+
+        The victims are the INJECTABLE rows (:data:`_INJECTABLE_SQL`) — the
+        same predicate :meth:`count_loaded` budgets with, so the budget and the
+        victims describe one set.  Selecting on ``load_status`` alone let a row
+        whose owner is down (``status='error'``) or switched off absorb the
+        budget while being evictable: the count stayed over threshold after a
+        pass and the load state :meth:`mark_source_error` promises survives the
+        owner's return was rewritten to ``unloaded``.
         """
         limit = max(0, limit)
         if limit == 0:
@@ -1401,7 +1424,7 @@ class CatalogStore:
         async with self._write_lock:
             cursor = await self._c.execute(
                 f"""SELECT name FROM tool
-                    WHERE load_status = 'loaded'{protected_expr}
+                    WHERE {_INJECTABLE_SQL}{protected_expr}
                     ORDER BY last_loaded ASC, name
                     LIMIT ?""",
                 params,

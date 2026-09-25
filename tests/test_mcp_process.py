@@ -41,22 +41,6 @@ class TestMCPWrapperProcessInit:
 class TestMCPWrapperProcessProperties:
     """Tests for MCPWrapperProcess properties."""
 
-    def test_is_running_false_initially(self):
-        wp = MCPWrapperProcess()
-        assert wp.is_running is False
-
-    def test_is_running_true_when_set(self):
-        wp = MCPWrapperProcess()
-        wp._running = True
-        wp._process = MagicMock(spec=asyncio.subprocess.Process)
-        assert wp.is_running is True
-
-    def test_is_running_false_when_running_but_no_process(self):
-        wp = MCPWrapperProcess()
-        wp._running = True
-        wp._process = None
-        assert wp.is_running is False
-
     def test_pid_none_when_no_process(self):
         wp = MCPWrapperProcess()
         assert wp.pid is None

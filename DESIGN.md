@@ -637,7 +637,7 @@ arrived, or a name the tool does not declare, returns an `Error:` naming the par
 exist. This closes the failure where a guessed parameter name landed in `**kwargs`, was dropped
 without a trace, and the required parameter silently fell back to its default while the call reported
 success. Closure is applied at class definition because authoring style is not the contract — the
-schemas are written three ways (a literal dict, `make_params`, `NO_PARAMS`) and closing only one
+schemas are written two ways (a literal dict, `make_params`) and closing only one
 style would leave the majority swallowing typos. Two deliberate exceptions: a schema that states
 `additionalProperties` itself keeps that answer, and a **remote** schema is never touched — a
 third-party server's schema is the server's contract to declare.
@@ -919,7 +919,7 @@ enablement or glue: every name-keyed table that used to exist — the start `if/
 connect-glue map, the health check list, the tool-adapter route set, the reserved-name list — is now
 a lookup into this one table. The fields are `name`, `module`, `ctx_field` (the `ToolContext`
 attribute receiving the live client), `gateway` / `host_params` (mcp-gateway only), `enable_method`
-and `after_ready_method` (names of `AgentService` coroutines), `health`, `fixed_port`, and
+and `after_ready_method` (names of `AgentService` coroutines), `health`, and
 `semantic_reload_tool`.
 
 `spec.py` is **stdlib-only on purpose**, so the MCP child, the health tools and the tool adapter can
@@ -1033,7 +1033,7 @@ load-failure reason.
 | **a2a** | The mesh (§8). Starts only when the broker is reachable. |
 | **media** | Non-chat generation — image, video, TTS, ASR — behind a provider-agnostic adapter layer. Artifacts are work products in the working directory, never cabinet files. |
 | **job-coding** | Deterministic jobs as MCP tools (§5.6). |
-| **local-embed** | OpenAI-compatible embeddings on `/v1/embeddings`, from its own package because it is also runnable standalone. The one plugin with `fixed_port`, since its config pins the port a static embeddings `base_url` points at. |
+| **local-embed** | OpenAI-compatible embeddings on `/v1/embeddings`, from its own package because it is also runnable standalone. Its config pins the port a static embeddings `base_url` points at, so it pre-binds its socket. |
 
 **The sharefile tunnel is pluggable** (`sharefile.yaml` names `active_provider`). Every provider
 presents one surface and shares one lifecycle: a single-flight start guard, retries with backoff, an
@@ -1797,7 +1797,7 @@ slife/
     heartbeat.py · schedules.py · timer.py    # the three timing mechanisms
     multimodal.py       #   image encoding for vision models
   tools/                # builtin tools — auto-discovered from this package
-    base.py             #   Tool ABC + make_params / NO_PARAMS / require_params / validate_args
+    base.py             #   Tool ABC + make_params / require_params / validate_args
     registry.py         #   the execution pool
     factory.py          #   auto-discovery
     context.py          #   ToolContext — the runtime references every tool receives

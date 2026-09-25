@@ -4,7 +4,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import pytest
 
-from slife.a2a.task_store import TaskRecord, TaskStore, get_store, clear_store
+from slife.a2a.task_store import TaskRecord, TaskStore, get_store
 
 
 # ── TaskRecord ──────────────────────────────────────────────────────────
@@ -99,13 +99,6 @@ class TestTaskStoreReads:
 class TestTaskStoreMaintenance:
     """Tests for TaskStore maintenance operations."""
 
-    def test_clear(self):
-        store = TaskStore()
-        store.record_send("t1", "agent-1")
-        store.clear()
-        assert store.get("t1") is None
-        assert store._records == {}
-
     def test_prune_removes_terminal_entries(self):
         """When exceeding MAX_RECORDS, oldest terminal entries are pruned."""
         store = TaskStore()
@@ -130,23 +123,9 @@ class TestTaskStoreMaintenance:
 
 
 class TestStoreSingleton:
-    """Tests for get_store / clear_store module-level singleton."""
-
-    def teardown_method(self):
-        clear_store()
+    """Tests for the get_store module-level singleton."""
 
     def test_get_store_returns_singleton(self):
         s1 = get_store()
         s2 = get_store()
         assert s1 is s2
-
-    def test_get_store_creates_new_after_clear(self):
-        s1 = get_store()
-        s1.record_send("t1", "agent")
-        clear_store()
-        assert get_store().get("t1") is None
-
-    def test_clear_store_idempotent(self):
-        """Calling clear_store with no store is safe."""
-        clear_store()
-        clear_store()  # Should not raise

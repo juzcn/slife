@@ -8,8 +8,8 @@ by test_memfiles_plugin.py.
 
 Mocks the ngrok tunnel (no network) and exercises the MCP tool functions
 directly, following the test_mqtt_plugin.py pattern.  Covers the token
-registry, ``share_file`` (with a mocked tunnel), the internal tools
-(``__check`` / ``__register_file``), and the ``GET /share/{file_id}``
+registry, ``share_file`` (with a mocked tunnel), the internal tool
+(``__check``), and the ``GET /share/{file_id}``
 HTTP route including the SSRF-adjacent filename encoding (RFC 5987).
 The ngrok tunnel lifecycle itself is covered in test_sharefile_tunnel.py.
 """
@@ -222,30 +222,6 @@ class TestInternalTools:
         data = json.loads(raw)
         assert data["active"] is False
         assert data["state"] == "starting"
-
-    @pytest.mark.asyncio
-    async def test_register_file(self, tmp_path):
-        f = tmp_path / "a.png"
-        f.write_bytes(b"x")
-        with _active_tunnel():
-            raw = await getattr(plugin, "__register_file")(str(f))
-        data = json.loads(raw)
-        assert len(data["file_id"]) == 30
-        assert data["url"] == f"https://slife.ngrok-free.dev/share/{data['file_id']}"
-        assert plugin._lookup_entry(data["file_id"])["path"] == str(f.resolve())
-
-    @pytest.mark.asyncio
-    async def test_register_file_refuses_an_unreachable_tunnel(self, tmp_path):
-        """The sibling of share_file carries the same guard — an unreachable
-        tunnel has no URL to hand out, and no token is minted for one."""
-        f = tmp_path / "a.png"
-        f.write_bytes(b"x")
-        with _unreachable_tunnel():
-            raw = await getattr(plugin, "__register_file")(str(f))
-        data = json.loads(raw)
-        assert data["url"] == ""
-        assert "530" in data["error"]
-        assert plugin._lookup_entry(data["file_id"]) is None
 
 
 # ═══════════════════════════════════════════════════════════════════════

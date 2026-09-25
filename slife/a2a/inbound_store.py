@@ -109,7 +109,8 @@ class InboundStore:
         holding is orphaned by definition.  Anything already stale stays stale
         — a task orphaned by a restart two restarts ago is no more completable
         than one orphaned by the last, and dropping it here would silently
-        forgive a reply the peer is still owed.
+        forgive a reply the peer is still owed — but the section is still held
+        to :data:`_MAX_ENTRIES` like the live one.
         """
         try:
             raw = new_yaml().load(self._path.read_text(encoding="utf-8"))
@@ -125,6 +126,11 @@ class InboundStore:
         self._stale = self._parse(raw.get("stale"))
         for task_id, task in self._parse(raw.get("pending")).items():
             self._stale.setdefault(task_id, task)
+        # ``_trim`` runs on ``pending`` at every add, but ``stale`` is only ever
+        # filled HERE — so without this the section was exempt from the cap the
+        # class documents, growing across restarts without limit, and the whole
+        # list is rendered into every turn's prompt.
+        self._trim(self._stale)
         if self._stale:
             logger.info("a2a_inbound_orphaned count=%d", len(self._stale))
 

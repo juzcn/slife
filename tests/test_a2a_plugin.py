@@ -18,14 +18,11 @@ from slife.a2a.config import A2AConfig
 
 @pytest.fixture(autouse=True)
 def _fresh_plugin_state():
-    """Module-level singletons (the mesh + task store) are shared across test
-    files — isolate them per test."""
-    from slife.a2a.task_store import clear_store
+    """The mesh client is a module-level singleton shared across test files —
+    isolate it per test."""
     plugin._client = None
-    clear_store()
     yield
     plugin._client = None
-    clear_store()
 
 
 def _config(enabled: bool = True) -> A2AConfig:

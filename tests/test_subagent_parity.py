@@ -50,16 +50,10 @@ SOURCE_ROOT = REPO / "slife"
 GATE_NAMES = ("is_subagent", "is_worker", "is_main")
 
 #: Role reads that are the agent's IDENTITY, not a capability: which
-#: system-prompt template to render, and the factory parameter that exists to be
-#: deliberately ignored (``tools/factory.py`` — "there is intentionally no
-#: subagent-specific gate"; it logs the flag and acts on nothing).  Named per
-#: file so a new one cannot hide.
+#: system-prompt template to render.  Named per file so a new one cannot hide.
 IDENTITY_USES = {
     # name = "subagent.j2" if is_subagent else "agent.j2"
     "agent/system_prompt.py": "which identity template to render",
-    # logger.info("tools_loaded …", …, is_subagent) — states the identity it was
-    # handed; the value is never branched on.
-    "tools/factory.py": "the factory records the identity it was told",
 }
 
 
@@ -212,7 +206,7 @@ def test_the_two_roles_differ_by_exactly_the_declared_capabilities(sample_config
     assert worker._tool_ctx.extract_injectable is None
 
     # …and the things that are NOT the role's: the registry is identical, by
-    # design (the factory is told the role and deliberately ignores it).
+    # design (the factory builds both roles' tools from the one config).
     main_tools = {t.name for t in main.tool_registry.list_tools()}
     worker_tools = {t.name for t in worker.tool_registry.list_tools()}
     assert main_tools == worker_tools != set()

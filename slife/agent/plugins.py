@@ -49,31 +49,6 @@ logger = logging.getLogger(__name__)
 #: Restart-count bound (a count, not a duration — stays local).
 _WATCHDOG_MAX_RESTARTS: int = 5
 
-#: Hang guard for a plugin spawn — NOT a readiness mechanism.  It only
-#: bounds a genuinely hung child (a Streamable HTTP session stuck before
-#: the lifespan finishes serving), so startup convergence still fires and
-#: the user gets a failure message instead of a dead TUI.  On timeout the
-#: spawn coroutine keeps running in the background (matching the
-#: pre-existing memdb behaviour).
-#:
-#: Deliberately generous (60s): a child's cold-import of its heavy deps
-#: (fastmcp/mcp/openai) plus the harness's connect + tools discovery can
-#: reach ~35s even on a healthy machine while 8 children spawn at once
-#: (contention doubles the import wall-clock), and a slow disk / AV scan
-#: triple it.  The guard exists for a *hung* child, not a *slow* one —
-#: a 30s cap misfired on a slow machine and aborted a required plugin
-#: (memdb/memfiles) that was still making progress.
-#: Value is developer-owned (registry timeouts.ready.plugin_start).
-
-#: A restarted child is only considered *stable* once it has stayed up this
-#: long.  The watchdog resets its consecutive-failure counter / backoff only
-#: when the child that just exited ran for at least this window — otherwise a
-#: child that comes up, passes readiness and dies a second later would
-#: reset the counter every cycle and restart forever (a ~1s boot-loop that
-#: `_max_restarts` never trips).  Equal to the spawn hang-guard: a child
-#: dying within the spawn window never "stabilised".  Value is the registry's
-#: ready.spawn (dev-owned).
-
 
 def plugin_port_env(name: str) -> str:
     """Return the canonical ``SLIFE_{NAME}_PORT`` env key for a plugin.
@@ -102,14 +77,6 @@ class PluginStartStatus(enum.Enum):
     FAILED = "failed"
 
 
-#: Readiness states.  ``READY_PENDING`` → ``READY_READY`` once the
-#: connect-time era negotiation completes (the plugin can serve) — see the
-#: module docstring.  ``SKIPPED`` plugins stay PENDING; failed startups
-#: surface via ``PluginStartStatus.FAILED``.
-READY_PENDING = "pending"
-READY_READY = "ready"
-
-
 @dataclass
 class PluginBehavior:
     """Optional per-plugin harness behavior, bound once by
@@ -123,18 +90,6 @@ class PluginBehavior:
 
     enable: Callable[[], Awaitable[bool]] | None = None
     after_ready: Callable[["PluginLifecycle"], Awaitable[None]] | None = None
-
-
-def client_info_extra_for(name: str) -> dict | None:
-    """Initialize host extras passed to a plugin connection.
-
-    Retired with the mcp gateway's in-memory catalog: the wrapper no longer
-    consumes host params (the embedding-handshake producer was its only
-    consumer; embedding moved to the host's shared catalog).  Kept as a
-    return-None hook so a future plugin can reintroduce a per-plugin entry
-    without re-wiring the generic ``client_info_extra`` plumbing.
-    """
-    return None
 
 
 class PluginLifecycle:
@@ -178,14 +133,6 @@ class PluginLifecycle:
         self._max_restarts: int = _WATCHDOG_MAX_RESTARTS
         self._restart_count: int = 0
 
-        # ── Readiness (MCP plugin contract) ─────────────────────────
-        # Filled by mark_initialized() once the spawn's connect-time era
-        # negotiation completed; terminal state is READY_READY (SKIPPED
-        # stays PENDING; spawn failure → FAILED via PluginStartStatus).
-        self.ready: bool = False
-        self.ready_state: str = READY_PENDING
-        self.ready_detail: str = ""
-
     # ── readiness (plugin contract) ─────────────────────────────────────
 
     def mark_initialized(self) -> None:
@@ -197,17 +144,10 @@ class PluginLifecycle:
         modern era (``server/discover`` + ``adopt``); the ``initialize``
         handshake is the legacy fallback for a third-party peer.  The
         per-plugin serving requirement is encoded server-side in the
-        lifespan, never probed here.  Called once the client connected;
-        informational in itself, made explicit so the readiness state shows
-        in logs and the TUI.
+        lifespan, never probed here.  Called once the client connected; the
+        log line is the whole record of it.
         """
-        self.ready = True
-        self.ready_state = READY_READY
-        self.ready_detail = "ready (era negotiated)"
-        logger.info(
-            "%s_ready ready=%s state=%s detail=%s",
-            self.name, self.ready, self.ready_state, self.ready_detail,
-        )
+        logger.info("%s_ready", self.name)
 
     # ── watchdog ────────────────────────────────────────────────────────
 
@@ -494,7 +434,6 @@ class PluginLifecycle:
                 )
         client = MCPClient(
             tool_timeout=self._service.config.tool_timeout,
-            client_info_extra=client_info_extra_for(self.name),
         )
         await client.connect(f"http://127.0.0.1:{port}/mcp")
         self.client = client

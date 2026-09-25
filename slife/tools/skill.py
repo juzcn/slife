@@ -12,8 +12,9 @@ import os
 import time
 import zipfile
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
+from slife.paths import get_tools_config_path
 from slife.tools._config_io import (
     config_write_locked,
     format_source_info,
@@ -22,6 +23,9 @@ from slife.tools._config_io import (
 )
 from slife.tools.base import Tool
 from slife.tools.catalog import STATUS_ERROR, config_status
+
+if TYPE_CHECKING:
+    from slife.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +68,8 @@ def _parse_frontmatter(content: str) -> tuple[dict, str]:
     return fm, body
 
 
-def _iter_skills(skills_dir: Path) -> list[tuple[Path, dict, str]]:
-    """Scan skills_dir and return (directory, frontmatter, body) for each skill.
+def _iter_skills(skills_dir: Path) -> list[tuple[Path, dict]]:
+    """Scan skills_dir and return (directory, frontmatter) for each skill.
 
     Only directories containing a SKILL.md are considered valid skills.
     Returns empty list if skills_dir does not exist.
@@ -93,10 +97,10 @@ def _iter_skills(skills_dir: Path) -> list[tuple[Path, dict, str]]:
             content = md.read_text(encoding="utf-8")
         except OSError as e:
             logger.warning("skill_md_unreadable dir=%s err=%s", d, e)
-            result.append((d, {}, ""))
+            result.append((d, {}))
             continue
-        fm, body = _parse_frontmatter(content)
-        result.append((d, fm, body))
+        fm, _body = _parse_frontmatter(content)
+        result.append((d, fm))
     return result
 
 
@@ -110,6 +114,22 @@ def _ensure_within(base: Path, candidate: Path) -> Path:
     resolved = candidate.resolve()
     if not resolved.is_relative_to(base.resolve()):
         raise ValueError(f"Path escapes '{base}': {candidate}")
+    return resolved
+
+
+def _skill_dir_for(base: Path, name: str) -> Path:
+    """Resolve a skill *name* to its own directory under *base*.
+
+    Raises ``ValueError`` for a traversal attempt AND for a name that names no
+    directory of its own — ``"."``, ``""`` and ``"foo/.."`` all resolve to
+    *base* itself, which :func:`_ensure_within` accepts (a path IS relative to
+    itself).  A caller that then deleted or replaced the result would take the
+    whole skills root with it, so the caller must validate through here and use
+    the returned path rather than re-joining the raw name.
+    """
+    resolved = _ensure_within(base, base / name)
+    if resolved == base.resolve():
+        raise ValueError(f"'{name}' names no skill directory of its own")
     return resolved
 
 
@@ -195,7 +215,7 @@ def get_skills_summary(
     disabled = disabled or set()
 
     lines = [f"> **Skills root:** `{Path(skills_dir).resolve()}` — use this path for skill scripts.\n"]
-    for d, fm, _body in skills:
+    for d, fm in skills:
         name = fm.get("name", d.name)
         if name in disabled:
             continue
@@ -225,7 +245,7 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
     if not skills:
         return f"Skills directory not found: {skills_dir}"
 
-    for d, fm, _body in skills:
+    for d, fm in skills:
         if fm.get("name") == skill_name or d.name == skill_name:
             try:
                 content = (d / "SKILL.md").read_text(encoding="utf-8")
@@ -244,7 +264,7 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
             )
 
     # Build hint with available names
-    available = [f"  - {fm.get('name', d.name)}" for d, fm, _body in skills]
+    available = [f"  - {fm.get('name', d.name)}" for d, fm in skills]
     hint = "\n".join(available) if available else "  (none)"
     return f"Skill '{skill_name}' not found.\n\nAvailable skills:\n{hint}"
 
@@ -266,7 +286,7 @@ def skill_catalog_rows(
     """
     disabled = disabled or set()
     rows: dict[str, dict] = {}
-    for d, fm, _body in _iter_skills(Path(skills_dir)):
+    for d, fm in _iter_skills(Path(skills_dir)):
         name = fm.get("name", d.name)
         try:
             content: str | None = (d / "SKILL.md").read_text(encoding="utf-8")
@@ -450,11 +470,11 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
         if files and archive_b64:
             return "Error: provide 'files' or 'archive', not both."
 
-        skill_dir = self.skills_dir / name
         # Reject path traversal in the skill name (e.g. "../../foo") before
-        # creating any directory.
+        # creating any directory — and a name that would resolve to the skills
+        # root itself, which the swap below would replace wholesale.
         try:
-            skill_dir = _ensure_within(self.skills_dir, skill_dir)
+            skill_dir = _skill_dir_for(self.skills_dir, name)
         except ValueError:
             return f"Error: invalid skill name: {name!r}"
         is_update = skill_dir.exists()
@@ -637,15 +657,17 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
     async def execute(self, **kwargs) -> str:
         skill_name: str = kwargs["skill_name"]
 
-        # Reject path traversal in the skill name before touching the FS.
+        # Reject path traversal in the skill name before touching the FS, and
+        # resolve it once: step 2 below acts on THIS path, never on a fresh
+        # join of the raw name (which is how "." once reached the root).
         try:
-            _ensure_within(self.skills_dir, self.skills_dir / skill_name)
+            direct = _skill_dir_for(self.skills_dir, skill_name)
         except ValueError:
             return f"Error: invalid skill name: {skill_name!r}"
 
         # 1) Try matching via _iter_skills (directories with SKILL.md)
         skills = _iter_skills(self.skills_dir)
-        for d, fm, _body in skills:
+        for d, fm in skills:
             if fm.get("name") == skill_name or d.name == skill_name:
                 import shutil
                 shutil.rmtree(d)
@@ -655,7 +677,6 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
 
         # 2) Try matching by directory name directly (handles git clones
         #    or archives that lack SKILL.md)
-        direct = self.skills_dir / skill_name
         if direct.exists() and direct.is_dir():
             import shutil
             shutil.rmtree(direct)
@@ -667,7 +688,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
             )
 
         # 3) Not found — list what's available
-        available = [f"  - {fm.get('name', d.name)}" for d, fm, _body in skills]
+        available = [f"  - {fm.get('name', d.name)}" for d, fm in skills]
         # Also list directories without SKILL.md
         if self.skills_dir.exists():
             for item in sorted(self.skills_dir.iterdir()):
@@ -695,6 +716,23 @@ class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompati
         "required": ["name", "enabled"],
     }
 
+    def __init__(self, skills_dir: str = "", config_path: Path | None = None):
+        super().__init__(skills_dir=skills_dir)
+        # The toggle is written to tools.yaml (``Config.save_skill_enabled``),
+        # so the cross-process lock ``@config_write_locked`` takes must be THAT
+        # file's lock.  ``_SkillDirMixin`` alone leaves ``_config_path`` unset,
+        # and the decorator then runs the read→mutate→write unlocked — a silent
+        # no-op of the documented protection (same wiring as ``_CliConfigMixin``).
+        self._config_path = config_path or get_tools_config_path()
+
+    @classmethod
+    def from_config(cls, cfg: dict, config: "Config | None", ctx=None):  # pyright: ignore[reportIncompatibleMethodOverride]
+        path = config._tools_config_path() if config is not None else get_tools_config_path()
+        tool = cls(skills_dir=cfg.get("skills_dir", ""), config_path=path)
+        if ctx is not None:
+            object.__setattr__(tool, "_ctx", ctx)
+        return tool
+
     @config_write_locked
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
@@ -705,7 +743,7 @@ class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompati
         # skill_list / skill_use read.
         exists = any(
             fm.get("name") == name or d.name == name
-            for d, fm, _ in _iter_skills(self.skills_dir)
+            for d, fm in _iter_skills(self.skills_dir)
         )
         if not exists:
             return f"'{name}' not found. skill_list shows available skills."

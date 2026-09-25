@@ -463,7 +463,13 @@ class ToolCatalogService:
         CLI and the skill that documents it.  Qualifying here keeps ``name``
         unique by construction, and the prefix is self-evident to a reader —
         the tool to call is the part after the colon.
+
+        Main-owner only, like every other mutator: a worker's view of a source
+        is partial, and an upsert-then-purge from it would delete the rows it
+        simply could not see (the race ``catalog_owner`` exists to prevent).
         """
+        if not self.write_owner:
+            return []
         result = await self._store.reconcile(
             [
                 {
@@ -621,7 +627,14 @@ class ToolCatalogService:
         EMPTY *tools* is "not ready yet", never "owns nothing": it mirrors
         nothing and purges nothing, so a transient empty listing cannot wipe a
         server's rows.
+
+        Main-owner only, like every other mutator (``sync_system_tools``): this
+        upserts then purges, and a worker's view of a server's tool set is
+        partial — a listing it did not fetch is not a listing the server
+        stopped publishing.
         """
+        if not self.write_owner:
+            return []
         rows: list[dict] = []
         for t in tools:
             tname = t.get("name")
@@ -750,20 +763,6 @@ class ToolCatalogService:
         if purged:
             logger.info("catalog_purged_config_removed servers=%r", sorted(purged))
         return purged
-
-    async def purge_source_except(self, source: str, keep: "set[str]") -> list[str]:
-        """Drop one owner's rows for tools it no longer publishes (main-owner only).
-
-        The per-tool counterpart of :meth:`purge_source`: the owner is still
-        configured and still connected — it just stopped offering one of its
-        tools.  Every other family gets this from its own mirror (a plugin's
-        source-scoped ``sync_system_tools``, a skill/cli ``sync_category``);
-        this is how the external families get the same "a vanished tool loses
-        its row" contract.
-        """
-        if not self.write_owner:
-            return []
-        return await self._store.purge_source_except(source, keep)
 
 
 def _tool_name(tool: "Tool") -> str:

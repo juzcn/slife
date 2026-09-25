@@ -24,8 +24,7 @@ deliberately absent — it is not spawned and never enters the registry.
 (it ships as a separate workspace member and is also runnable standalone): it
 speaks the same contract — ``create_plugin_server`` port signal, an internal
 ``__check``, a ``main()`` spawn target — so it gets the same spawn, readiness,
-watchdog and health as everything else.  Its ``fixed_port`` is the one thing
-that differs, and it is declared, not special-cased.
+watchdog and health as everything else.
 """
 
 from __future__ import annotations
@@ -57,13 +56,6 @@ class PluginSpec:
             watch, or the mcp enrichment glue.  Re-run on every restart.
         health: Whether ``system_health`` enumerates this plugin via its
             ``check_<name>`` function.
-        fixed_port: The port is one the plugin must KNOW before it serves,
-            not an OS-assigned one.  local-embed is the case: its config
-            pins a port so a host can point a static embeddings ``base_url``
-            at it.  Such a child pre-binds in ``main()`` and hands the socket
-            to ``run_plugin_server(sockets=[...])``; every other plugin lets
-            the OS assign one and signals it.  Declared here so the loader
-            states the contract instead of a docstring claiming an exception.
         semantic_reload_tool: Internal tool that rebuilds (or drops) this
             plugin's semantic index after the ``embeddings`` section changes.
             Declared so the hot-reload loop is a manifest over the specs, not a
@@ -80,7 +72,6 @@ class PluginSpec:
     enable_method: str | None = None
     after_ready_method: str | None = None
     health: bool = True
-    fixed_port: bool = False
     semantic_reload_tool: str | None = None
 
 
@@ -94,7 +85,6 @@ _PLUGIN_DEFS: tuple[PluginSpec, ...] = (
     PluginSpec(
         "local-embed", "local_embed.server",
         ctx_field="local_embed_client",
-        fixed_port=True,
     ),
     PluginSpec(
         "mcp-gateway", "slife.plugins.mcp_gateway.server",

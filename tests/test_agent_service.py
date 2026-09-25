@@ -1337,9 +1337,8 @@ class TestAgentServiceMemory:
                 user_message="hi", token_count=10, history=conv,
             )
 
-        # Not the DB-hard-stop path: no frozen inbox / memory-broken flag.
+        # Not the DB-hard-stop path: no frozen inbox.
         assert service.inbox._frozen is False
-        assert service._memory_broken is False
 
     @pytest.mark.asyncio
     async def test_save_to_memory_no_user_message(self, sample_config):
@@ -1443,7 +1442,7 @@ class TestAgentServiceMemory:
     @pytest.mark.asyncio
     async def test_save_to_memory_fatal_error_freezes_inbox(self, sample_config):
         """A persistent memory-save failure (plugin returns {"error": ...})
-        must NOT be silent — it sets memory-broken, freezes the inbox, and
+        must NOT be silent — it records the error, freezes the inbox, and
         fires the on_memory_broken callback (TUI red banner)."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
@@ -1464,7 +1463,6 @@ class TestAgentServiceMemory:
             user_message="hi", token_count=10, history=conv,
         )
 
-        assert service._memory_broken is True
         assert "database is locked" in service._memory_error
         assert surfaced == ["database is locked"]
         # Inbox frozen — new turns are dropped, not run without memory.
@@ -1478,7 +1476,7 @@ class TestAgentServiceMemory:
         (non-JSON text, or JSON that isn't an object) must NOT be silently
         swallowed — memory writes are mandatory, so the save raises
         MemorySaveError (the inbox reports it like an LLM API error).  Not the
-        DB-hard-stop path: no freeze, no memory-broken flag."""
+        DB-hard-stop path: no freeze."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
@@ -1497,7 +1495,6 @@ class TestAgentServiceMemory:
             )
 
         assert service.inbox._frozen is False
-        assert service._memory_broken is False
         user_msg = next(m for m in conv.messages if m.get("role") == "user")
         assert user_msg["content"] == "hi"
 
@@ -1505,8 +1502,7 @@ class TestAgentServiceMemory:
     async def test_save_to_memory_timeout_raises(self, sample_config):
         """A 10s timeout on the save call raises MemorySaveError — the row may
         or may not be written server-side, so the user is told it's
-        unconfirmed, not silently skipped.  Not the DB-hard-stop: no freeze,
-        no memory-broken flag."""
+        unconfirmed, not silently skipped.  Not the DB-hard-stop: no freeze."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
@@ -1523,13 +1519,12 @@ class TestAgentServiceMemory:
             )
 
         assert service.inbox._frozen is False
-        assert service._memory_broken is False
 
     @pytest.mark.asyncio
     async def test_save_to_memory_channel_error_raises(self, sample_config):
         """A raised call_tool (transient MCP/channel failure) raises
         MemorySaveError instead of being silently logged or warn-only.  Not
-        the DB-hard-stop: no freeze, no memory-broken flag."""
+        the DB-hard-stop: no freeze."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
@@ -1548,7 +1543,6 @@ class TestAgentServiceMemory:
             )
 
         assert service.inbox._frozen is False
-        assert service._memory_broken is False
 
     @pytest.mark.asyncio
     async def test_save_to_memory_compacts_oversized_tool_result(self, sample_config):

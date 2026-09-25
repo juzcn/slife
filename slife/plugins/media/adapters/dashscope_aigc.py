@@ -1,6 +1,6 @@
 """DashScope AIGC adapter — Aliyun Bailian / Token Plan native API.
 
-One envelope ``{"model", "input", "parameters"}`` covers three shapes:
+One envelope ``{"model", "input", "parameters"}`` covers two shapes:
 
 - **Sync generation** — ``POST /services/aigc/multimodal-generation/generation``
   (image generation, HTTP TTS, ASR).  Result lives in
@@ -9,10 +9,6 @@ One envelope ``{"model", "input", "parameters"}`` covers three shapes:
 - **Async tasks** — ``POST /services/aigc/video-generation/video-synthesis``
   with header ``X-DashScope-Async: enable`` returns a ``task_id``; poll
   ``GET /tasks/{task_id}`` until ``task_status`` is SUCCEEDED/FAILED.
-- **Local-file input** — two-step upload: ``GET /uploads?action=getPolicy``
-  for OSS credentials, multipart POST to ``upload_host``, then reference
-  the file as ``oss://{upload_dir}/{filename}`` with request header
-  ``X-DashScope-OssResourceResolve: enable``.
 """
 
 from __future__ import annotations
@@ -218,76 +214,6 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
                 )
             await asyncio.sleep(_timeouts.timeouts.pacing.media_poll)
 
-    # ── Local-file upload (two-step OSS) ─────────────────────────────
-
-    async def upload_file(self, *, model: str, file_path: Path) -> str:
-        """Upload a local file; returns an ``oss://`` URL for model input."""
-        if not file_path.is_file():
-            raise FileNotFoundError(f"File not found: '{file_path}'")
-        policy = await self._get_upload_policy(model)
-        data = policy.get("data") or {}
-        upload_host = data.get("upload_host")
-        upload_dir = data.get("upload_dir")
-        if not upload_host or not upload_dir:
-            raise MediaAdapterError(
-                f"Upload policy missing upload_host/upload_dir: "
-                f"{str(policy)[:300]}"
-            )
-        object_key = f"{upload_dir}/{file_path.name}"
-        form = {
-            "key": object_key,
-            "OSSAccessKeyId": str(data.get("oss_access_key_id", "")),
-            "policy": str(data.get("policy", "")),
-            "Signature": str(data.get("signature", "")),
-            "success_action_status": "200",
-        }
-        for src, dst in (
-            ("x_oss_forbid_overwrite", "x-oss-forbid-overwrite"),
-            ("x_oss_object_acl", "x-oss-object-acl"),
-        ):
-            if data.get(src):
-                form[dst] = str(data[src])
-        try:
-            async with httpx2.AsyncClient(
-                timeout=httpx2.Timeout(
-                    _timeouts.timeouts.transport.media_download,
-                    connect=_timeouts.timeouts.transport.media_connect,
-                ),
-            ) as upload_client:
-                with open(file_path, "rb") as f:
-                    resp = await upload_client.post(
-                        upload_host, data=form,
-                        files={"file": (file_path.name, f)},
-                    )
-                    resp.raise_for_status()
-        except httpx2.HTTPError as e:
-            raise MediaAdapterError(
-                f"Failed to upload file '{file_path.name}': {e}"
-            ) from e
-        oss_url = f"oss://{object_key}"
-        logger.info(
-            "media_file_uploaded file=%s oss=%s", file_path.name, oss_url,
-        )
-        return oss_url
-
-    async def _get_upload_policy(self, model: str) -> dict:
-        client = await self._ensure_client()
-        url = f"{self._config.base_url}/uploads"
-        try:
-            resp = await client.get(
-                url, params={"action": "getPolicy", "model": model},
-            )
-        except httpx2.HTTPError as e:
-            raise MediaAdapterError(
-                f"Upload policy request failed: {e}"
-            ) from e
-        if resp.status_code >= 400:
-            raise MediaAdapterError(
-                f"Upload policy error ({resp.status_code}): {resp.text[:300]}",
-                status_code=resp.status_code,
-            )
-        return resp.json()
-
     # ── Capabilities ─────────────────────────────────────────────────
 
     async def generate_image(
@@ -384,9 +310,7 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
         extra_params: dict | None = None,
     ) -> str:
         # qwen-audio-3.0-asr-flash / fun-asr-flash use the multimodal
-        # generation endpoint with an input_audio Data URI — NOT the
-        # two-step OSS upload (that path is for local-file image/video
-        # input and returns 404 here).
+        # generation endpoint with an input_audio Data URI.
         import base64
 
         if not audio_path.is_file():

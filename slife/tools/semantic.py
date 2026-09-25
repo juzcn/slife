@@ -215,6 +215,12 @@ class EmbeddingClient:
         return self._client
 
     async def close(self) -> None:
+        """Release the HTTP client — closing the pool, not waiting for the GC.
+
+        Called by ``SemanticManager`` where the embedder is swapped out (an
+        enable / ``reload()``) or dropped (a ``disable()``); a later request
+        rebuilds the client lazily.
+        """
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -258,6 +264,12 @@ class EmbeddingClient:
         the losers of the race silently degrading to keyword-only.  Same shape
         as the memdb client's ``load``, which the semantic gate calls from every
         search and check for the same reason.
+
+        An endpoint that cannot be read — unreachable, or listing nothing —
+        reports ``False``: the model and the vector width are the ENDPOINT's
+        facts, and a client that claims to be loaded without them is a client
+        whose every embed fails, so the caller must degrade to keyword search
+        instead of opening a gate on it.
         """
         if not self.available:
             return False
@@ -269,14 +281,31 @@ class EmbeddingClient:
         ok = False
         try:
             if not await self._discover_model():
+                # The endpoint could not be read (unreachable, or it listed
+                # nothing): there is no model to embed with and no known
+                # width, so reporting "loaded" here handed the gate an
+                # embedder that fails on every batch.  The memdb client
+                # returns False in exactly this case, with this same line, and
+                # the semantic gate reads that verdict the same way — degrade
+                # to keyword search instead of opening the gate.
+                logger.warning(
+                    "embedding_api_unavailable model=%s base_url=%s "
+                    "(backend not ready — keyword search only)",
+                    self._model, self._base_url,
+                )
+            else:
+                # Probe whenever the width is still unknown — the listed model
+                # that carries no ``dimension`` key included, not only the
+                # configured-model-not-listed case: a wrong width silently
+                # drops every vec0 insert of a different size.
                 if not self._dim_known:
                     await self._probe_api_dim()
-            self._loaded = True
-            ok = True
-            logger.info(
-                "embedding_loaded backend=api model=%s dim=%d base_url=%s",
-                self._model, self._dim, self._base_url,
-            )
+                self._loaded = True
+                ok = True
+                logger.info(
+                    "embedding_loaded backend=api model=%s dim=%d base_url=%s",
+                    self._model, self._dim, self._base_url,
+                )
         except Exception as e:
             logger.warning("embedding_load_failed err=%s", e)
         finally:

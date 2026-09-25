@@ -94,6 +94,16 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "⏹ Interrupted",
         "zh": "⏹ 已中断",
     },
+    # The recall notice was the one user-facing string built by hand in
+    # handler.py, so a zh session still read English.  Text is unchanged.
+    "recall_notice": {
+        "en": "↻ {count} turns recalled, context's messages rebuilt",
+        "zh": "↻ 已召回 {count} 轮，上下文消息已重建",
+    },
+    "recall_none": {
+        "en": "↻ no turn recalled — context's messages cleared",
+        "zh": "↻ 未召回任何轮 — 上下文消息已清空",
+    },
     "restore_failed": {
         "en": "✗ Restore failed: {err}",
         "zh": "✗ 恢复失败: {err}",
@@ -264,10 +274,6 @@ _STRINGS: dict[str, dict[str, str]] = {
     "td_error_label": {
         "en": "error",
         "zh": "错误",
-    },
-    "td_pending": {
-        "en": "pending",
-        "zh": "等待",
     },
 
     # ── chat.py ──

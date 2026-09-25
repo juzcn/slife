@@ -72,19 +72,6 @@ KNOWN_PROVIDERS = frozenset({"ngrok", "localhost.run", "cloudflare"})
 _TUNNEL_URL_ENV = "SLIFE_SHAREFILE_URL"
 
 _MAX_RETRIES = 3
-#: Liveness-probe cadence is the registry cadence ``pacing.sharefile_health``.
-
-#: A start attempt stuck longer than this is considered dead (its daemon thread
-#: is hung in credstore/forward) — a fresh attempt may supersede it.  The stale
-#: thread is harmless: daemon threads die with the process.
-#: (developer-owned — registry ready.tunnel_start).
-#: How long to wait for a CLI child to print its public URL.  cloudflared in
-#: particular can take a while to negotiate and print its banner.
-#: (developer-owned — registry ready.tunnel_read_url).
-#: How long a published tunnel may stay unreachable before the monitor
-#: respawns it (developer-owned — registry ready.tunnel_heal; see
-#: :meth:`_TunnelProviderBase._run_monitor`).
-#: Retry pacing between start attempts (registry ready.sharefile_retry_delay).
 
 #: Output lines kept for the failure message when a CLI child dies early.
 _TAIL_LINES = 20
@@ -196,7 +183,7 @@ class TunnelProvider(Protocol):
 
     def share_url_for(self, file_id: str) -> str | None: ...
 
-    def start_monitor(self, port: int, on_tunnel_up=None) -> None: ...
+    def start_monitor(self, port: int) -> None: ...
 
     def stop_monitor(self) -> None: ...
 
@@ -456,17 +443,11 @@ class _TunnelProviderBase:
 
     # ── Health monitor ─────────────────────────────────────────────
 
-    def start_monitor(self, port: int, on_tunnel_up=None) -> None:
-        """Spawn a background monitor that restarts the tunnel on failure.
-
-        When *on_tunnel_up* is provided, it is called (no arguments) if the
-        monitor successfully starts the tunnel after a retry.
-        """
+    def start_monitor(self, port: int) -> None:
+        """Spawn a background monitor that restarts the tunnel on failure."""
         if self._monitor_task is not None and not self._monitor_task.done():
             self._monitor_task.cancel()
-        self._monitor_task = asyncio.ensure_future(
-            self._run_monitor(port, on_tunnel_up)
-        )
+        self._monitor_task = asyncio.ensure_future(self._run_monitor(port))
         logger.debug("tunnel_monitor_started provider=%s port=%s", self.label, port)
 
     def stop_monitor(self) -> None:
@@ -475,7 +456,7 @@ class _TunnelProviderBase:
             self._monitor_task.cancel()
             self._monitor_task = None
 
-    async def _run_monitor(self, port: int, on_tunnel_up=None) -> None:
+    async def _run_monitor(self, port: int) -> None:
         """Background health loop: keep the tunnel up, restarting if it drops.
 
         A tunnel failure is temporary — free tiers recycle sessions and the
@@ -552,8 +533,6 @@ class _TunnelProviderBase:
                 continue
             if self._public_url is not None:
                 self._monitor_retries = 0
-                if on_tunnel_up is not None:
-                    on_tunnel_up()
             await asyncio.sleep(_timeouts.timeouts.pacing.sharefile_health)
 
 

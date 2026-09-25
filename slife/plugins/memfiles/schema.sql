@@ -89,7 +89,6 @@ CREATE TABLE IF NOT EXISTS scheduled_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_reports_task ON reports(task_id);
-CREATE INDEX IF NOT EXISTS idx_runs_task_due ON scheduled_runs(task_id, due_at);
 
 
 -- ── 关键词搜索 ────────────────────────────────────────────────

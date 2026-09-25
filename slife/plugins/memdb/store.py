@@ -548,7 +548,13 @@ class SessionStore(VecStoreLifecycleMixin):
                     "(path=%s)", turns, self._db_path,
                 )
         except Exception:
-            pass
+            # These checks ARE the diagnostics: the one-time migration warnings
+            # above live inside this block, so swallowing the failure silently
+            # makes a broken or half-migrated DB look clean.  A failure here
+            # must not break open() — it is logged, not raised.
+            logger.warning(
+                "post_schema_check_failed path=%s", self._db_path, exc_info=True,
+            )
 
     async def close(self) -> None:
         if self._conn:
@@ -1619,26 +1625,22 @@ def _split_chunks_to_token_limit(chunks: list[str], max_tokens: int) -> list[str
 
 
 def _char_limit_for_tokens(max_tokens: int, text: str) -> int:
-    """Chars that fit in *max_tokens* for a mixed CJK/Latin string.
+    """Chars that fit in *max_tokens*, at the 1 char/token floor.
 
-    CJK is ~1 char/token; Latin ~4 chars/token in prose — but that density
-    is a ceiling, not a floor.  Punctuation- and escape-dense runs (escaped
-    JSON, tool dumps) tokenize at 1-2 chars/token, so relying on it let a
-    30k-char newline-free JSON line ride as one "fits" chunk, the provider
-    rejected it (bge-m3's 8192-token cap), and the drainer stalled on that
-    turn forever.  Floor the density at **1 char/token** — the densest any
-    BPE gets — so an oversized chunk always hard-splits into pieces that
-    fit by construction.  Normal text never pays for this: ``_chunk_text``
-    already caps paragraphs at ``CHUNK_SIZE_CHARS`` (well under any limit),
-    so this budget only governs pathological single lines.
+    The densest any BPE gets is ~1 char/token; a Latin run is ~4 chars/token
+    in prose, but punctuation- and escape-dense runs (escaped JSON, tool
+    dumps) tokenize at 1-2, so relying on a density *estimate* let a 30k-char
+    newline-free JSON line ride as one "fits" chunk, the provider rejected it
+    (bge-m3's 8192-token cap), and the drainer stalled on that turn forever.
+    Flooring the density at **1 char/token** — the densest any BPE gets —
+    means an oversized chunk always hard-splits into pieces that fit by
+    construction.  Normal text never pays for this: ``_chunk_text`` already
+    caps paragraphs at ``CHUNK_SIZE_CHARS`` (well under any limit), so this
+    budget only governs pathological single lines.
     """
     if not text:
         return max_tokens
-    cjk = sum(1 for ch in text if _contains_cjk(ch))
-    other = len(text) - cjk
-    est_tokens = cjk + other / 4
-    per_char = est_tokens / len(text)
-    return max(1, int(max_tokens / max(per_char, 1.0)))
+    return max(1, max_tokens)
 
 
 def _contains_cjk(text: str) -> bool:

@@ -762,10 +762,6 @@ class TestFormatPresenceLine:
         from slife.a2a.card import format_presence_line
         assert format_presence_line(self._card(), "offline") == "✗ desk-02 offline"
 
-    def test_timeout(self):
-        from slife.a2a.card import format_presence_line
-        assert format_presence_line(self._card(), "timeout") == "⏱ desk-02 timed out"
-
     def test_status_change_filtered(self):
         """Heartbeat-driven status_change is not a user-visible transition."""
         from slife.a2a.card import format_presence_line

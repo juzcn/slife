@@ -15,8 +15,7 @@ as a public HTTPS URL that multimodal LLM APIs can fetch directly
 choice; the file cabinet (memfiles) never auto-publishes.
 
 LLM-visible tools: ``share_file``.
-Internal tools (``__`` prefix, never LLM-visible): ``__check``,
-``__register_file``.
+Internal tools (``__`` prefix, never LLM-visible): ``__check``.
 
 Usage::
     uv run python -m slife.plugins.sharefile.server
@@ -369,32 +368,6 @@ def _credential_error(path: Path) -> str | None:
             "publish it publicly."
         )
     return None
-
-
-@mcp.tool(name="__register_file", description="Register a file and return its share URL.")
-async def __register_file(path: str) -> str:
-    """Register *path* and return ``{file_id, url}`` for the harness."""
-    p = Path(path).resolve()
-    err = _credential_error(p)
-    if err:
-        return json.dumps({"file_id": "", "url": "", "error": err}, ensure_ascii=False)
-    await _ensure_tunnel()
-    # Same guard as share_file, for the same reason: a URL the edge answers
-    # with HTTP 530 is not a share.  An empty url is the caller's signal.
-    if not _tunnel.is_reachable():
-        return json.dumps(
-            {
-                "file_id": "", "url": "",
-                "error": (
-                    "the tunnel is published but not reachable from the public "
-                    "internet right now — the URL would answer HTTP 530"
-                ),
-            },
-            ensure_ascii=False,
-        )
-    file_id = _register_file(str(p))
-    url = _tunnel.share_url_for(file_id) or ""
-    return json.dumps({"file_id": file_id, "url": url}, ensure_ascii=False)
 
 
 # ═══════════════════════════════════════════════════════════════════════

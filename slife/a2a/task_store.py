@@ -41,7 +41,7 @@ class TaskRecord:
 class TaskStore:
     """Thread-safe task-lifecycle store shared by both transports.
 
-    Module-level singleton — ``get_store()`` / ``clear_store()``.
+    Module-level singleton — see :func:`get_store`.
     """
 
     MAX_RECORDS = 500  # soft cap — oldest completed entries pruned first
@@ -104,10 +104,6 @@ class TaskStore:
 
     # ── Maintenance ───────────────────────────────────────────────────
 
-    def clear(self) -> None:
-        """Remove all records."""
-        self._records.clear()
-
     def _maybe_prune(self) -> None:
         """Drop oldest entries when over max — terminal status first, then the
         oldest pending so a burst of async sends to slow/hung peers can't grow
@@ -142,11 +138,3 @@ def get_store() -> TaskStore:
     if _store is None:
         _store = TaskStore()
     return _store
-
-
-def clear_store() -> None:
-    """Remove all task records (called on A2A shutdown)."""
-    global _store
-    if _store is not None:
-        _store.clear()
-    _store = None

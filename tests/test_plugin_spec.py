@@ -89,7 +89,6 @@ class TestSpecFor:
         spec = spec_for("local-embed")
         assert spec is PLUGIN_SPECS["local-embed"]
         assert spec.module == "local_embed.server"
-        assert spec.fixed_port is True
 
     def test_unknown_returns_generic_default(self):
         # A package under slife.plugins.* with no spec row still gets the

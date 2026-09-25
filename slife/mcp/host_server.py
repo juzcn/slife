@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from fastmcp import FastMCP
@@ -350,12 +351,19 @@ def start_host_server(
                 # The failed run may have closed the pre-bound socket — reusing
                 # it would fail every retry identically and the "self-heal"
                 # would spin forever, permanently dead.  Bind a fresh socket
-                # each retry (the new port is re-published by the caller's
-                # healthy-port path, so holdouts on the old port were already
-                # pointed at a dead server).
+                # each retry, and re-publish the port: ONLY this coroutine
+                # learns the new one, while the caller's tuple, its log line
+                # and the advertised ``SLIFE_HOST_PORT`` still name the dead
+                # socket.  A consumer that connects later reads the env var, so
+                # it is the one that has to be corrected here — there is no
+                # "healthy-port path" upstream re-publishing it.  A consumer
+                # already connected to the old port is NOT re-pointed; it
+                # discovers the loss on its own next call.
                 if sockets is not None:
                     sock, port = bind_free_port(host)
                     sockets = [sock]
+                    os.environ["SLIFE_HOST_PORT"] = str(port)
+                    logger.warning("host_server_rebound port=%s", port)
 
     task = asyncio.create_task(_serve())
     sid = id(server)

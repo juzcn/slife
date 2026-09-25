@@ -13,11 +13,6 @@ from typing import ClassVar
 from slife.tools.base import Tool, make_params
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
-#: Upper bound on ``wait_minutes`` is the registry bound
-#: ``pacing.timer_max_wait_minutes`` (1 day, in MINUTES).  Anything larger is
-#: almost certainly a misplaced argument (``minutes`` vs ``hours``), and an
-#: unbounded value schedules a bogus multi-year timer the agent can't revoke.
-
 
 class WaitMinutesTool(Tool):
     """Schedule a one-shot wake-up N minutes from now."""

@@ -21,7 +21,6 @@ from slife.ui.tool_display import ToolCallWidget
 if TYPE_CHECKING:
     from slife.agent.message_history import MessageHistory
     from slife.ui.app import SlifeApp
-    from slife.ui.chat import ChatView
 
 
 # ── Turn header (restore-time annotation) ────────────────────────────

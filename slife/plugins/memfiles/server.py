@@ -370,7 +370,10 @@ async def file_save(
             if not src.is_file():
                 results.append(f"Error: not a file — {p}")
                 continue
-            stem = _slugify(title) if title else src.stem
+            # A title that slugifies to nothing ("---", "!!!", "。，") must not
+            # become an extension-only dotfile — the store guards this exact
+            # case on its own writes (_slugify(subject) or "note").
+            stem = (_slugify(title) if title else "") or src.stem or "file"
             display_title = title or src.name
             cat_dir = files_dir / _detect_category(src.name, category)
             cat_dir.mkdir(parents=True, exist_ok=True)

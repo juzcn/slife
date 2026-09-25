@@ -732,7 +732,9 @@ class Config:
         The section is the authority for the disable — one section per
         category, the same per-entry ``{name, enabled}`` shape as ``builtin`` /
         ``plugin`` / ``job`` / ``cli`` (``_disabled_names`` reads it into
-        ``Config.disabled_skills``).  Returns True if persisted.
+        ``Config.disabled_skills``).  Returns True if persisted, and the
+        in-memory ``disabled_skills`` set is updated with the write so the
+        switch takes effect in this process too.
         """
         if not self._path:
             logger.debug("config_no_path — skill %s in memory only", name)
@@ -752,6 +754,14 @@ class Config:
         else:
             section.append({"name": name, "enabled": enabled})
         self._write_tools_config(raw)
+        # The in-memory mirror moves with the file, exactly as ``save_cli_tool``
+        # moves its own snapshot.  Every reader of this switch — ``skill_list``,
+        # ``skill_use`` and the catalog mirror, through ``_disabled_skill_names``
+        # — resolves the disable from ``disabled_skills``, so a write that left
+        # it stale made the disable a per-process no-op: ``skill_set_enabled``
+        # answered "[OK] disabled" while the skill stayed listed and usable
+        # until the next restart.
+        self.disabled_skills = _disabled_names(section)
         logger.info("config_save_skill_enabled name=%s enabled=%s", name, enabled)
         return True
 
@@ -857,14 +867,31 @@ class Config:
                     m.setdefault(key, value)
                 m.setdefault("provider", provider_id)
 
-                local_id = m["model"].split("/", 1)[-1]
-                if local_id in seen_ids:
+                # Keyed on the model ID AS THE LOADER READS IT.  The provider
+                # is explicit here (set just above), and ``from_dict`` then
+                # keeps the id whole — ``local_id = api_model`` — so the ref is
+                # "<provider>/<id>" and two entries collide exactly when their
+                # ids do.
+                #
+                # Keying on the segment after "/" instead was a different
+                # derivation from the loader's, and it refused configs the
+                # loader loads fine: "meta-llama/llama-3-70b" and
+                # "nousresearch/llama-3-70b" from one gateway are two distinct
+                # models (distinct refs) that a last-segment test called
+                # duplicates.  A genuine repeat — the same id twice — is still
+                # caught, and only that.
+                api_model = m.get("model")
+                if not api_model:
+                    # The refusal the flat-list path already raises, instead of
+                    # a bare KeyError out of startup.
+                    raise ValueError("Model entry missing 'model' field")
+                if api_model in seen_ids:
                     raise ValueError(
-                        f"Duplicate model '{local_id}' in provider "
+                        f"Duplicate model '{api_model}' in provider "
                         f"'{provider_id}'. Model names must be unique "
                         f"within a provider."
                     )
-                seen_ids.add(local_id)
+                seen_ids.add(api_model)
                 all_models.append(ModelConfig.from_dict(m))
 
         return all_models, len(providers)

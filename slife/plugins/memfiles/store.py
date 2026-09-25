@@ -195,16 +195,15 @@ _KIND_NAMES = ("note", "diary", "file", "report")
 
 
 def _time_clause(
-    since: str | None, until: str | None, column: str = "t.created_at",
+    since: str | None, until: str | None, column: str,
 ) -> tuple[str, list[str]]:
     """The window a search runs inside, as ``(sql, params)``.
 
     *column* is the kind's time axis, qualified with the table alias these paths
     use — ``spec["time_col"]``, so a diary search windows ``date`` and a note
-    search ``updated_at``.  The default keeps ``created_at`` for a caller with no
-    kind in hand.  Built in ONE place for the three SQL paths (FTS5 / LIKE /
-    regex): a window that meant different things in different modes would be the
-    same class of bug as two LIKE clauses drifting apart.
+    search ``updated_at``.  Built in ONE place for the three SQL paths (FTS5 /
+    LIKE / regex): a window that meant different things in different modes would
+    be the same class of bug as two LIKE clauses drifting apart.
 
     Returns a leading-``AND`` suffix, so a caller with no WHERE yet writes
     ``WHERE 1=1{sql}`` (memdb's ``_grep_scan`` does the same).  The ``*_list``
@@ -976,21 +975,29 @@ class MemfilesStore(VecStoreLifecycleMixin):
         tags = doc.get("tags", "")
         created_at = doc.get("created_at", "")
         vec_blobs = [_serialize_f32(emb) for emb in embeddings]
-        try:
-            await self._c.execute(
-                f"DELETE FROM {spec['semantic']} WHERE doc_id = ?", (doc_id,),
-            )
-            for idx, blob in enumerate(vec_blobs):
+        # The store's write lock, as memdb's twin takes it: the DELETE and the
+        # INSERTs below share ONE connection with every other writer here, so
+        # an interleaved commit from a concurrent write could land between them
+        # — leaving the document half-indexed exactly as the rollback below
+        # exists to prevent.  The rollback stays INSIDE the lock: releasing it
+        # first would let the next writer commit the very statements this path
+        # is undoing.
+        async with self._write_lock:
+            try:
                 await self._c.execute(
-                    f"INSERT INTO {spec['semantic']} "
-                    "(doc_embedding, doc_id, chunk_index, summary, tags, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (blob, doc_id, idx, summary, tags, created_at),
+                    f"DELETE FROM {spec['semantic']} WHERE doc_id = ?", (doc_id,),
                 )
-            await self._c.commit()
-        except Exception:
-            await self._c.rollback()
-            raise
+                for idx, blob in enumerate(vec_blobs):
+                    await self._c.execute(
+                        f"INSERT INTO {spec['semantic']} "
+                        "(doc_embedding, doc_id, chunk_index, summary, tags, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (blob, doc_id, idx, summary, tags, created_at),
+                    )
+                await self._c.commit()
+            except Exception:
+                await self._c.rollback()
+                raise
 
     # ── search ─────────────────────────────────────────────────────
 

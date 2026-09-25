@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from slife.tools.base import Tool, NO_PARAMS
+from slife.tools.base import Tool
 from slife.mcp.tool_adapter import MCPProxyTool, create_proxy_tools
 from slife.agent.loop import AgentLoop, AgentEventHandler, ToolCallInfo
 
@@ -79,7 +79,7 @@ class _TrackingTool(Tool):
 
     name = "approval_test_tool"
     description = "A test tool"
-    parameters = NO_PARAMS
+    parameters = {"type": "object", "properties": {}, "required": []}
 
     def __init__(self):
         self.executed = False

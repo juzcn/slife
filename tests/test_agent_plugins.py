@@ -4,6 +4,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -110,7 +111,7 @@ class TestPluginLifecycleSpawn:
         return client
 
     @pytest.mark.asyncio
-    async def test_spawn_sets_port_env_var(self, sample_config):
+    async def test_spawn_sets_port_env_var(self, sample_config, caplog):
         """The generic spawn sets SLIFE_{NAME}_PORT env var and marks ready."""
         from slife.agent.service import AgentService
 
@@ -122,6 +123,7 @@ class TestPluginLifecycleSpawn:
             return_value=self._client_with([{"name": "my_tool", "description": "A tool."}]),
         )
 
+        caplog.set_level(logging.INFO, logger="slife.agent.plugins")
         with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
              patch("slife.mcp.tool_adapter.create_proxy_tools") as mock_create:
             MockProc.return_value = mock_process
@@ -136,10 +138,10 @@ class TestPluginLifecycleSpawn:
         assert os.environ.get("SLIFE_TEST_PLUGIN_PORT") == "9999"
         os.environ.pop("SLIFE_TEST_PLUGIN_PORT", None)
 
-        # Readiness: create_client() completed the MCP initialize handshake,
-        # which IS the ready declaration (no __ready probe).
-        assert service._plugins["test_plugin"].ready is True
-        assert service._plugins["test_plugin"].ready_state == "ready"
+        # Readiness: create_client() completed the connect-time era
+        # negotiation, which IS the ready declaration (no __ready probe) —
+        # its log line is the whole record of it.
+        assert "test_plugin_ready" in caplog.text
 
     @pytest.mark.asyncio
     async def test_spawn_dash_name_writes_normalised_env_key(self, sample_config):
@@ -396,26 +398,28 @@ class TestPluginLifecycleSpawn:
         os.environ.pop("SLIFE_TEST_PLUGIN_PORT", None)
 
 
-# ── mark_initialized (readiness = MCP initialize handshake) ──────────────
+# ── mark_initialized (readiness = era negotiation) ──────────────────────
 
 
 class TestPluginLifecycleMarkInitialized:
     """Readiness (MCP plugin contract): mark_initialized() records that the
     connect-time era negotiation completed — there is no __ready probe
-    anymore, and no ``initialize`` handshake for our own modern plugins."""
+    anymore, and no ``initialize`` handshake for our own modern plugins.
+    The announcement is the whole record, so the log line is what a test
+    (and a reader of the session log) observes."""
 
-    def test_marks_ready(self, lifecycle):
+    def test_marks_ready(self, lifecycle, caplog):
         lifecycle.client = MagicMock()  # connect()/era negotiation done by spawn
-        lifecycle.mark_initialized()
-        assert lifecycle.ready is True
-        assert lifecycle.ready_state == "ready"
-        assert "ready" in lifecycle.ready_detail
+        with caplog.at_level(logging.INFO, logger="slife.agent.plugins"):
+            lifecycle.mark_initialized()
+        assert "test_plugin_ready" in caplog.text
 
-    def test_idempotent(self, lifecycle):
-        lifecycle.mark_initialized()
-        lifecycle.mark_initialized()
-        assert lifecycle.ready is True
-        assert lifecycle.ready_state == "ready"
+    def test_idempotent(self, lifecycle, caplog):
+        """A second mark (a watchdog-restarted connect) is harmless."""
+        with caplog.at_level(logging.INFO, logger="slife.agent.plugins"):
+            lifecycle.mark_initialized()
+            lifecycle.mark_initialized()
+        assert caplog.text.count("test_plugin_ready") == 2
 
 
 # ── connect_http ──────────────────────────────────────────────────────────

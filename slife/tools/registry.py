@@ -200,17 +200,25 @@ class ToolRegistry:
             t0 = _time.monotonic()
             logger.debug("tool_start name=%s", tool_name)
             result = await tool.execute(**kwargs)
+        except Exception as e:
+            logger.warning("tool_error name=%s err=%s", tool_name, e)
+            return f"Error executing {tool_name}: {e}"
+        # Bookkeeping sits OUTSIDE that try on purpose: the tool has already
+        # RUN — it may have written a config, sent a message, deleted a file.
+        # A failure here (the catalog is a shared sqlite db) must not be
+        # reported as an execution failure, because the model's response to
+        # "Error executing …" is to retry a non-idempotent action.
+        try:
             # Bump LRU recency on a real, completed use — the eviction policy
             # orders by last_loaded, so without this a just-used tool can be
             # the next eviction victim (alphabetical-NULL sort).
             if self._catalog is not None:
                 await self._catalog.touch(tool_name)
-            elapsed = (_time.monotonic() - t0) * 1000
-            logger.debug(
-                "tool_done name=%s took_ms=%.0f result_len=%d",
-                tool_name, elapsed, len(result),
-            )
-            return result
-        except Exception as e:
-            logger.warning("tool_error name=%s err=%s", tool_name, e)
-            return f"Error executing {tool_name}: {e}"
+        except Exception:
+            logger.debug("tool_touch_failed name=%s", tool_name, exc_info=True)
+        elapsed = (_time.monotonic() - t0) * 1000
+        logger.debug(
+            "tool_done name=%s took_ms=%.0f result_len=%d",
+            tool_name, elapsed, len(result),
+        )
+        return result

@@ -21,7 +21,8 @@ from paho.mqtt.properties import Properties
 from slife.a2a.config import A2AConfig
 from slife.a2a.mesh import A2AMesh, _OutboundSend, _backoff_delay
 from slife.a2a.identity import AgentName
-from slife.a2a.task_store import clear_store, get_store
+from slife.a2a.task_store import get_store
+import slife.a2a.task_store as task_store
 
 
 def _config(agent: str = "self-1") -> A2AConfig:
@@ -31,11 +32,21 @@ def _config(agent: str = "self-1") -> A2AConfig:
     )
 
 
+def _reset_task_store() -> None:
+    """Drop the task-store singleton so the next ``get_store()`` is empty.
+
+    The store is process-global and shared across test files; nothing in
+    production resets it, so a test that wants isolation clears the module
+    global itself.
+    """
+    task_store._store = None
+
+
 @pytest.fixture(autouse=True)
 def _fresh_store():
-    clear_store()
+    _reset_task_store()
     yield
-    clear_store()
+    _reset_task_store()
 
 
 def _msg(topic: str, payload: bytes | str, *, corr: str | None = None,
@@ -239,14 +250,14 @@ class TestPresence:
         mesh._handle_discovery(_msg(topic, b'{"name":"peer-1"}', status="online"))
         assert len(events) == 1  # no transition, no event
 
-    def test_offline_and_lwt(self):
+    def test_offline(self):
         mesh = _make_mesh()
         events = []
         mesh.on_agent_change = lambda card, e: events.append((card, e))
         topic = "$a2a/v1/discovery/default/default/peer-1"
         mesh._handle_discovery(_msg(topic, b"x", status="online"))
         events.clear()
-        mesh._handle_discovery(_msg(topic, b"x", status="lwt"))
+        mesh._handle_discovery(_msg(topic, b"x", status="offline"))
         assert events[-1][1] == "offline"
         assert events[-1][0].status == "offline"
 

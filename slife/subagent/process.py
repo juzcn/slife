@@ -253,7 +253,6 @@ class SubagentProcess:
         ready_spawn = _timeouts.timeouts.ready.spawn  # call-time lookup
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=ready_spawn)
-            logger.info("ready name=%s", self._name)
         except asyncio.TimeoutError:
             await self._stop_process()
             raise RuntimeError(
@@ -262,6 +261,16 @@ class SubagentProcess:
         except Exception:
             await self._stop_process()
             raise
+        # The reader sets the same event when the child exits, so a death
+        # BEFORE the ready line wakes this wait instead of letting it stall out
+        # the whole spawn budget while the manager's registry lock is held.
+        # That is a wake-up, not an all-clear: a child that is gone never
+        # signalled ready, so it still fails — just at once, and truthfully.
+        if not self._running:
+            raise RuntimeError(
+                f"Subagent '{self._name}' exited before signalling ready"
+            )
+        logger.info("ready name=%s", self._name)
 
     async def stop(self) -> None:
         await self._stop_process()
@@ -291,7 +300,19 @@ class SubagentProcess:
         for t in (stdout_task, stderr_task):
             if t and not t.done():
                 try: await t
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
+                    # We cancelled these two a few lines up, so their own
+                    # cancellation is expected here and swallowed.  An OUTER
+                    # cancellation (a cancelled stop()/stop_all()) is not: it
+                    # must propagate, or a cancelled teardown reports success —
+                    # the readers themselves raise it for the same reason.
+                    # `cancelling()` counts the requests on THIS task, and the
+                    # readers' cancellation was requested on theirs.
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise
+                    logger.debug("reader_cancel name=%s", self._name, exc_info=True)
+                except Exception:
                     logger.debug("reader_cancel name=%s", self._name, exc_info=True)
         self._cleanup_config_file()
 
@@ -318,7 +339,13 @@ class SubagentProcess:
             text = f"Error: {reason}"
             self._record_update(rpc_id, "failed", text)
             rec = self._task_records.get(rpc_id) or {}
-            if rec.get("mode") != "async-poll":
+            # ONLY the "async" mode gets the push: it is the one that promised
+            # an auto-delivered result, so its failure has to be announced.
+            # "async-poll" is retrieved by the caller, and "sync" already got
+            # this failure from its own future (the reader's finally resolves
+            # it just above) — pushing there duplicated one failure as two
+            # contradictory messages in the model's inbox.
+            if rec.get("mode") == "async":
                 self._notify_manager_task_done(rpc_id, text)
         self._awaiting.clear()
         for t in self._watchdogs.values():
@@ -507,7 +534,13 @@ class SubagentProcess:
             self._watchdogs.pop(rpc_id, None)
         rec = self._task_records.get(rpc_id)
         if rec is None or rec.get("status") != "pending":
-            return  # answered (or cancelled) while the watchdog slept
+            # Answered while the watchdog slept — or its record was evicted by
+            # the 500-record cap.  Either way nothing is in flight for this id,
+            # so release the slot it holds: a stranded id keeps ``is_busy``
+            # true forever, which auto-queues every later sync send and stops
+            # the idle-recycle from ever touching this worker.
+            self._awaiting.discard(rpc_id)
+            return
         text = f"Error: task timed out after {lifetime:g}s without a reply"
         self._late_results.add(rpc_id)
         self._late_results.evict_to(_MAX_RECENT_IDS)
@@ -711,6 +744,13 @@ class SubagentProcess:
             # api_keys — would outlive it on disk, and the registry entry would
             # read as a live worker to everything that only checks the dict.
             self._running = False
+            # Wake a boot-time waiter: start() blocks on _ready, and a child
+            # that dies before its ready line would otherwise make that wait
+            # burn the entire ready.spawn budget — with the manager's registry
+            # lock held, stalling every other spawn/stop.  The waiter
+            # re-checks liveness, so this fails the start promptly instead of
+            # passing it.
+            self._ready.set()
             self._cleanup_config_file()
 
     def _dispatch_message(self, msg: dict) -> None:

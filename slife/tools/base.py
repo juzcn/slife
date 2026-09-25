@@ -26,16 +26,15 @@ Class contract
 Convenience helpers
   :func:`make_params` — build a JSON Schema from keyword field defs.
   :func:`require_params` — validate that named kwargs are non-empty.
-  ``NO_PARAMS`` — ready-to-use schema for tools with no arguments.
 
 Minimal example::
 
-      from slife.tools.base import Tool, NO_PARAMS
+      from slife.tools.base import Tool
 
       class PingTool(Tool):
           name = "ping"
           description = "Return pong."
-          parameters = NO_PARAMS
+          parameters = {"type": "object", "properties": {}, "required": []}
 
           async def execute(self, **kwargs) -> str:
               return "pong"
@@ -115,14 +114,6 @@ class _MemfilesClientMixin:
 
 
 # ── JSON Schema helpers ────────────────────────────────────────────
-
-
-#: Ready-to-use parameter schema for tools that take no arguments.
-NO_PARAMS: dict = {
-    "type": "object",
-    "properties": {},
-    "required": [],
-}
 
 
 def make_params(**fields: dict) -> dict:
@@ -284,9 +275,9 @@ class Tool(ABC):
         # A harness-authored schema is CLOSED: a parameter the tool does not
         # declare is a mistake, not something for the tool's ``**kwargs`` to
         # swallow.  Applied here, at the one place every tool class passes
-        # through, so it holds for all three authoring styles — the hand-
-        # written ``parameters = {...}`` literal, ``make_params``, and the
-        # ``NO_PARAMS`` postcard — instead of only the ones that remembered.
+        # through, so it holds for every authoring style — the hand-written
+        # ``parameters = {...}`` literal and ``make_params`` alike — instead
+        # of only the ones that remembered.
         #
         # Own-dict only (``cls.__dict__``): a schema inherited from a parent
         # class belongs to that parent, and closing it twice is a no-op the

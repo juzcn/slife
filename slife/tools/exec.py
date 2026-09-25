@@ -63,7 +63,8 @@ def _merge_text(
     """Decode a bounded head+tail pair into one output string, marking the
     dropped middle explicitly inside the tool result (the tool-result policy
     requires truncation to be visible, not silent).  *codec* ``None`` picks
-    the shell output codec (OEM on Windows); script streams pass ``"utf-8"``.
+    the codec the launcher's shell actually emits (see
+    :func:`_shell_output_codec`); script streams pass ``"utf-8"``.
     """
     if codec is None:
         codec = _shell_output_codec()
@@ -188,14 +189,18 @@ def _shell_argv(command: str) -> list[str]:
 def _shell_output_codec() -> str:
     """Codec for decoding shell output bytes.
 
-    On Windows, cmd.exe writes the console/OEM code page to a pipe (GBK/cp936
-    on a zh-CN locale) — decoding as UTF-8 produces mojibake.
-    ``locale.getpreferredencoding(False)`` returns the right codec for that
-    path.  The PowerShell invocation in :func:`_shell_argv` pins its child to
-    UTF-8 output, so the shell that launches here is never a PowerShell;
-    POSIX shells emit UTF-8.
+    On Windows the two launcher branches of :func:`_shell_argv` encode
+    differently, so this must follow the SAME branch rather than assume one:
+    cmd.exe writes the console/OEM code page to a pipe (GBK/cp936 on a zh-CN
+    locale), while the PowerShell invocation pins ``[Console]::OutputEncoding``
+    and ``$OutputEncoding`` to UTF-8 precisely so the caller can decode UTF-8.
+    Decoding PowerShell output with the locale codec turned every non-ASCII
+    result into mojibake.  POSIX shells emit UTF-8.
     """
     if os.name == "nt":
+        from slife.platform import detect_current_shell
+        if detect_current_shell() == "powershell":
+            return "utf-8"  # pinned by _shell_argv's -EncodedCommand preamble
         return locale.getpreferredencoding(False) or "utf-8"
     return "utf-8"
 
@@ -260,8 +265,9 @@ class ShellTool(Tool):
         argv = _shell_argv(command)
         try:
             # Shared spine: spawn in its own group, bounded stream read, and
-            # tree-kill on timeout/cancel (see _run_captured).  Shell output
-            # keeps the OEM codec — the default when no codec is passed.
+            # tree-kill on timeout/cancel (see _run_captured).  The default
+            # codec decodes per launcher branch — OEM for cmd.exe, UTF-8 for
+            # the PowerShell branch, which pins its child's encoding.
             run = await _run_captured(argv, timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("shell_timeout timeout=%ds cmd=%.200s", timeout, sanitize_secrets(command))

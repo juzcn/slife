@@ -32,7 +32,13 @@ _ACTIVE_KEY = "active_model"
 
 
 def _providers_section(raw: dict) -> dict:
-    """Get or create the models.providers: section."""
+    """Get or create the models.providers: section.
+
+    Provider shape only — the flat-list ``models:`` the loader also accepts is
+    written by :meth:`SetModelTool._set_in_flat_list`, which never reaches this
+    helper (it returns first).  A ``models`` value that is neither shape is
+    treated as absent, which is what the provider path has always done.
+    """
     models = raw.setdefault(_MODELS_KEY, {})
     if not isinstance(models, dict):
         models = {}
@@ -42,6 +48,24 @@ def _providers_section(raw: dict) -> dict:
         providers = {}
         models["providers"] = providers
     return providers
+
+
+def _flat_entry_ref(entry: dict) -> str:
+    """The ref the loader derives for a flat-list ``models:`` entry.
+
+    Mirrors ``ModelConfig.from_dict``'s provider/local-id rule WITHOUT building
+    a ModelConfig — that constructor resolves the api_key (a keyring read) and
+    raises on a malformed ref, neither of which belongs in a lookup.
+    """
+    api_model = entry.get("model")
+    if not isinstance(api_model, str) or not api_model:
+        return ""
+    explicit = entry.get("provider")
+    if explicit:
+        return f"{explicit}/{api_model}"
+    if "/" in api_model:
+        return api_model
+    return f"unknown/{api_model}"
 
 
 def _sync_in_memory_models(config, raw: dict) -> None:
@@ -108,7 +132,16 @@ class ListModelsTool(_ConfigPathMixin, Tool):
         if err := self._require_config():
             return err
         raw = read_config(self._config_path)
-        providers = raw.get(_MODELS_KEY, {}).get("providers", {})
+        # Shape first: a flat-list ``models:`` (a shape the loader supports)
+        # has no ``providers`` to read, and calling ``.get`` on the list raised
+        # ``AttributeError: 'CommentedSeq' object has no attribute 'get'``
+        # instead of reaching the guard written for it.  ``None`` for the
+        # non-dict case is what puts it back in front of that guard.
+        models_section = raw.get(_MODELS_KEY, {})
+        providers = (
+            models_section.get("providers", {})
+            if isinstance(models_section, dict) else None
+        )
         if not isinstance(providers, dict) or not providers:
             return "No models configured. Add a provider with models in slife.yaml."
 
@@ -222,11 +255,23 @@ class SetModelTool(_ModelConfigTool):
             return err
 
         raw = read_config(self._config_path)
-        providers = _providers_section(raw)
-
         pid = kwargs["provider"]
         model_id = kwargs["model"]
         name = kwargs["name"]
+
+        # A flat-list ``models:`` is a shape the loader supports, and it is
+        # written in ITS OWN idiom rather than converted to the provider shape:
+        # conversion cannot round-trip.  A provider block makes the provider
+        # explicit, and the loader then reads the id WHOLE (`api_model` doubles
+        # as the local id), so "openai/gpt-4o" comes back as
+        # "openai/openai/gpt-4o" — every existing model would be silently
+        # renamed and `active_model` would go stale.  The pre-fix code instead
+        # replaced the list outright, dropping every model this call did not
+        # name.  Neither is acceptable for a config the loader accepts.
+        if isinstance(raw.get(_MODELS_KEY), list):
+            return self._set_in_flat_list(raw, pid, model_id, name, kwargs)
+
+        providers = _providers_section(raw)
 
         # Provider: get or create
         if pid not in providers or not isinstance(providers[pid], dict):
@@ -303,6 +348,51 @@ class SetModelTool(_ModelConfigTool):
         logger.info("model_%s ref=%s", action.lower(), ref)
         return f"[OK] {action} model `{ref}` ({name})"
 
+    def _set_in_flat_list(
+        self, raw: dict, pid: str, model_id: str, name: str, kwargs: dict,
+    ) -> str:
+        """Add or update one model inside a flat-list ``models:`` section.
+
+        The entry's ``model`` carries the provider prefix — that prefix IS how
+        the loader derives the provider — so the ref comes out
+        ``<pid>/<model_id>``, the same ref the provider shape yields for the
+        same arguments, and the reported ref is the truth.  ``base_url`` /
+        ``api_key`` / ``api`` land on the ENTRY here: a flat list has no
+        provider block to hold them (``_parse_models_section`` applies provider
+        defaults only to the provider shape).
+        """
+        flat = raw[_MODELS_KEY]
+        target = f"{pid}/{model_id}"
+        updates: dict = {"name": name}
+        for key in ("reasoning", "input", "context_window", "max_tokens",
+                    "compat", "base_url", "api_key", "api"):
+            if key in kwargs:
+                updates[key] = kwargs[key]
+
+        replaced = False
+        for i, entry in enumerate(flat):
+            # Match on the derived ref, not the raw id: the file may spell the
+            # same model with a provider field instead of a prefixed id.
+            if isinstance(entry, dict) and _flat_entry_ref(entry) == target:
+                # Merge, so a partial update keeps the fields it did not name
+                # (the same rule the provider path follows) and the entry's own
+                # id spelling survives.
+                flat[i] = {**entry, **updates}
+                replaced = True
+                break
+        if not replaced:
+            new_entry = {"model": model_id if pid == "unknown" else target}
+            new_entry.update(updates)
+            flat.append(new_entry)
+
+        write_config(self._config_path, raw)
+        action = "Updated" if replaced else "Added"
+        # Keep the running session's model registry in sync (as-if re-read),
+        # so the new/updated model is immediately available to model_switch.
+        _sync_in_memory_models(self._config, raw)
+        logger.info("model_%s ref=%s", action.lower(), target)
+        return f"[OK] {action} model `{target}` ({name})"
+
 
 # ── Remove Model ─────────────────────────────────────────────────────
 
@@ -338,7 +428,13 @@ class RemoveModelTool(_ModelConfigTool):
 
         pid, model_id = ref.split("/", 1)
         raw = read_config(self._config_path)
-        providers = raw.get(_MODELS_KEY, {}).get("providers", {})
+        # Shape first — see ListModelsTool.execute: ``.get`` on a flat-list
+        # ``models:`` raised ``AttributeError`` past the guard below.
+        models_section = raw.get(_MODELS_KEY, {})
+        providers = (
+            models_section.get("providers", {})
+            if isinstance(models_section, dict) else None
+        )
         if not isinstance(providers, dict):
             return "Error: no providers configured."
 
@@ -414,7 +510,13 @@ class SwitchModelTool(_ModelConfigTool):
         raw = read_config(self._config_path)
 
         # Validate that the model exists
-        providers = raw.get(_MODELS_KEY, {}).get("providers", {})
+        # Shape first — see ListModelsTool.execute: ``.get`` on a flat-list
+        # ``models:`` raised ``AttributeError`` past the guard below.
+        models_section = raw.get(_MODELS_KEY, {})
+        providers = (
+            models_section.get("providers", {})
+            if isinstance(models_section, dict) else None
+        )
         if not isinstance(providers, dict):
             return "Error: no providers configured."
 
@@ -648,11 +750,11 @@ class TurnPromptTool(Tool):
     parameters = _TURN_PROMPT_PARAMS
 
     async def execute(self, **kwargs) -> str:
-        # Strip harness meta params (_timeout/_async/_approve) the schema
-        # injects on every tool — they are not build_turn_prompt params.
-        clean = {k: v for k, v in kwargs.items() if k not in ("_timeout", "_async", "_approve")}
+        # No harness meta params to strip: the dispatchers pop
+        # _timeout/_async/_approve before dispatch, and the loop's own
+        # auto-invoke passes only build_turn_prompt's kwargs.
         from slife.agent.system_prompt import build_turn_prompt
-        return build_turn_prompt(**clean)
+        return build_turn_prompt(**kwargs)
 
 
 class CheckNewInputTool(Tool):

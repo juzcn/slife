@@ -229,14 +229,6 @@ class ToolsChangedNotifier:
         except Exception:
             logger.debug("tools_changed_publish_failed", exc_info=True)
 
-    async def flush(self) -> None:
-        """Eager alias (tests/deterministic paths): publish in this task.
-
-        Kept so fixtures can await the round-trip deterministically; the
-        production paths use :meth:`request_tools_changed`.
-        """
-        await self.publish()
-
 
 def tools_changed_bus(server) -> "SubscriptionBus":
     """The change-notification bus of *server*, serving ``subscriptions/listen``.
@@ -284,15 +276,6 @@ def request_tools_changed(notifier: "ToolsChangedNotifier") -> None:
     Callers MUST NOT rely on delivery ordering; hosts re-list on receipt.
     """
     notifier.request_tools_changed()
-
-
-async def flush_tools_changed(notifier: "ToolsChangedNotifier") -> None:
-    """Eager-flush via *notifier*: publish in this task, deterministically.
-
-    The deterministic alias tests use (await the full round-trip); production
-    paths should fire-and-forget with :func:`request_tools_changed`.
-    """
-    await notifier.flush()
 
 
 class _WarmAfterReady(Middleware):
@@ -460,7 +443,7 @@ def install_uncaught_exception_cleanup() -> None:
     _uncaught_cleanup_installed = True
 
 
-def shutdown_server_logging(extra_logger_names: tuple[str, ...] = ()) -> None:
+def shutdown_server_logging() -> None:
     """Close and remove all root handlers, releasing Windows file locks.
 
     Call this before process exit to ensure the log file can be rotated
@@ -476,17 +459,6 @@ def shutdown_server_logging(extra_logger_names: tuple[str, ...] = ()) -> None:
         except Exception:
             pass
     _root.handlers.clear()
-
-    # Also silence any named loggers whose handlers weren't on root
-    for name in extra_logger_names:
-        child = logging.getLogger(name)
-        for handler in list(child.handlers):
-            try:
-                handler.flush()
-                handler.close()
-            except Exception:
-                pass
-        child.handlers.clear()
 
 
 # ── Port binding ──────────────────────────────────────────────────────

@@ -204,15 +204,6 @@ class TestShutdownServerLogging:
         shutdown_server_logging()
         assert len(root.handlers) == 0
 
-    def test_extra_logger_names_cleaned(self):
-        """Child loggers with their own handlers are also cleaned."""
-        child = logging.getLogger("test_extra_cleanup")
-        child.handlers.clear()
-        child.addHandler(logging.StreamHandler())
-
-        shutdown_server_logging(extra_logger_names=("test_extra_cleanup",))
-        assert len(child.handlers) == 0
-
 
 # ── Plugin loading contract: signal AFTER the app is ready ──────────────
 

@@ -9,6 +9,7 @@ not *processing* logic.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json as _json
 import logging
 import re
@@ -23,6 +24,25 @@ if TYPE_CHECKING:
     from slife.agent.loop import AgentLoop, AgentEventHandler
 
 logger = logging.getLogger(__name__)
+
+
+def _accepts_reply_kwargs(fn) -> bool:
+    """Whether *fn* can take the ``cancelled`` / ``stop_reason`` keywords.
+
+    The ``on_reply`` contract grew those two keywords, and text-only callbacks
+    are still accepted.  Which one *fn* is must come from its SIGNATURE: the
+    previous code tried the full call and fell back on ``TypeError``, so a
+    TypeError raised from inside a correctly-signed callback (a bug in a
+    channel sender, say) re-ran the callback — duplicating whatever it had
+    already done.  A callback taking ``**kwargs`` also qualifies.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return True
+    return "cancelled" in params and "stop_reason" in params
 
 
 def _is_bad_request(exc: BaseException) -> bool:
@@ -568,10 +588,16 @@ class Inbox:
                 reply_text = result.text if hasattr(result, "text") else str(result)
                 cancelled = bool(getattr(result, "cancelled", False))
                 try:
-                    await msg.on_reply(reply_text, cancelled=cancelled,
-                                       stop_reason=stop_reason)
-                except TypeError:
-                    await msg.on_reply(reply_text)
+                    # Dispatch on the SIGNATURE, never by catching TypeError: a
+                    # TypeError raised inside a correctly-signed callback is
+                    # indistinguishable from a signature mismatch, and the
+                    # fallback would run the callback a second time — a second
+                    # WeChat message, or a duplicate completion push.
+                    if _accepts_reply_kwargs(msg.on_reply):
+                        await msg.on_reply(reply_text, cancelled=cancelled,
+                                           stop_reason=stop_reason)
+                    else:
+                        await msg.on_reply(reply_text)
                 except Exception as e:
                     logger.debug("on_reply_error channel=%s err=%s",
                                  msg.metadata.get("channel", "?"), e)

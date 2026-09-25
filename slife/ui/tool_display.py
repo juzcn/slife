@@ -17,6 +17,7 @@ from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 from slife.platform import IS_WINDOWS
+from slife.threads import run_daemon
 from slife.ui.content import lit as _lit
 from slife.ui.content import mc as _mc
 from slife.ui.i18n import t
@@ -57,14 +58,12 @@ _STATUS_ICON: dict[str, str] = {
     "running": "◌",
     "done":    "●",
     "error":   "●",
-    "pending": "◌",
 }
 
 _STATUS_COLOR: dict[str, str] = {
     "running": "#d29922",
     "done":    "#3fb950",
     "error":   "#f85149",
-    "pending": "#484f58",
 }
 
 # Status → i18n key.  Resolved through t() at render time so the label
@@ -75,10 +74,7 @@ _STATUS_LABEL_KEY: dict[str, str] = {
     "running": "td_running",
     "done":    "td_done",
     "error":   "td_error_label",
-    "pending": "td_pending",
 }
-
-_STATUS_DEFAULT = "pending"
 
 
 # ── Widget ───────────────────────────────────────────────────────────
@@ -198,7 +194,18 @@ class ToolCallWidget(VerticalScroll):
         text = self._result if self._result else str(self.tool_args)
         if not text:
             return
-        _copy_to_clipboard(text)
+        # OFF the event loop: the clipboard write is a blocking subprocess
+        # (up to ``grace.force`` on Windows, unbounded on the pbcopy /
+        # clip.exe / wl-copy paths), and running it in the key handler froze
+        # the TUI — no key handling, no repaint — for its whole duration.
+        # Fire-and-forget, as before: ``_copy_to_clipboard`` swallows its own
+        # failures, so nothing escapes.  ``run_daemon`` needs a running loop
+        # (a TUI action always has one); a synchronous caller without one gets
+        # the plain call rather than a RuntimeError out of the key handler.
+        try:
+            run_daemon(_copy_to_clipboard, text, name="clipboard-copy")
+        except RuntimeError:
+            _copy_to_clipboard(text)
 
     async def action_toggle(self, attribute_name: str = "") -> None:
         """Toggle expand/collapse via keyboard.
@@ -232,9 +239,9 @@ class ToolCallWidget(VerticalScroll):
     def _header_line(self) -> Content:
         """Build the one-line header with status icon, label, and arg preview."""
         status = self._status
-        color = _STATUS_COLOR.get(status, _STATUS_COLOR[_STATUS_DEFAULT])
-        icon = _STATUS_ICON.get(status, _STATUS_ICON[_STATUS_DEFAULT])
-        label_key = _STATUS_LABEL_KEY.get(status, _STATUS_LABEL_KEY[_STATUS_DEFAULT])
+        color = _STATUS_COLOR[status]
+        icon = _STATUS_ICON[status]
+        label_key = _STATUS_LABEL_KEY[status]
         label_text = t(label_key)
         indicator = "▾" if not self._is_collapsed else "▸"
         label = _friendly_label(self.tool_name)

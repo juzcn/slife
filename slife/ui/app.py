@@ -18,6 +18,7 @@ from slife.agent.service import AgentService, MemoryDatabaseError
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.agent.plugins import PluginStartStatus
 from slife.ui.chat import ChatView
+from slife.ui.approval_prompt import ApprovalPrompt
 from slife.ui.handler import TUIHandler
 from slife.ui.i18n import t
 from slife.ui.restore import restore_session
@@ -460,6 +461,15 @@ class SlifeApp(App):
             # memory-less session.  Surface the error and abort startup.
             await self._fatal_exit(t("memdb_unavailable", err=e))
         except Exception as e:
+            # A restore that dies part-way leaves the transcript mid-rebuild, and
+            # `_restore_session` suppresses ChatView auto-scroll for its mount
+            # loop — the flag is cleared on its success path only.  Put it back
+            # here, or the one path that raises also stops the transcript
+            # following the conversation for the rest of the session.
+            try:
+                self.query_one("#chat-view", ChatView)._autoscroll = True
+            except Exception:
+                logger.debug("restore_autoscroll_reset_failed", exc_info=True)
             logger.debug("session_restore_skip err=%s", e)
 
         # ── Step 2: Start all plugins in parallel (auto-discovered) ──────
@@ -652,18 +662,23 @@ class SlifeApp(App):
         """
         if self._model_picker_open:
             return  # a picker is already showing — ignore re-entrant Ctrl+S
-        import asyncio
 
         from slife.ui.model_picker import ModelPicker
 
         # A pending approval prompt must not be left blocking the agent loop
         # while the picker takes focus (its Esc would now hit the picker, and
         # the loop would hang on the approval future forever).  Deny it first.
+        #
+        # Scan EVERY match rather than query_one(".approval-prompt"): that
+        # class is worn for styling by ModelPicker too, and a decided prompt
+        # stays in the transcript as its status line, so the first match is
+        # routinely a settled row from an earlier approval.  Denying that one
+        # is a no-op (`_decide` ignores a repeat) and left the real prompt
+        # pending — mounted, then unfocusable behind the picker.
         try:
-            prompt = self.query_one(".approval-prompt")
-            decide = getattr(prompt, "_decide", None)
-            if decide is not None:
-                decide(approved=False)
+            for row in self.query(".approval-prompt"):
+                if isinstance(row, ApprovalPrompt) and row.pending:
+                    row.action_deny()
         except Exception:
             pass
 
@@ -721,13 +736,37 @@ class SlifeApp(App):
         self._model_picker_future = None
         self._model_picker_widget = None
 
+    def _approval_prompt_pending(self) -> bool:
+        """Whether an undecided approval prompt is on screen.
+
+        Scans EVERY ``.approval-prompt`` match rather than ``query_one``: that
+        class is worn for styling by ModelPicker too, and a decided prompt
+        stays in the transcript as its status line — so the first match is
+        routinely a settled row from an earlier approval.
+        """
+        try:
+            return any(
+                isinstance(row, ApprovalPrompt) and row.pending
+                for row in self.query(".approval-prompt")
+            )
+        except Exception:
+            return False
+
     async def _finish_model_switch(self, chat_view, future) -> None:
         """Apply the picker's decision off the key-event handler."""
         model = await future
         self._model_picker_open = False
         self._model_picker_future = None
         self._model_picker_widget = None
-        self.query_one("#user-input").focus()
+        # The picker is gone, but the input is not necessarily the focus's
+        # owner: `_dismiss_model_picker` resolves this future while the
+        # approval handler is still mounting and focussing its
+        # ApprovalPrompt, so an unconditional refocus here lands AFTERWARDS
+        # and leaves that prompt mounted but unfocusable — Y/N dead, and only
+        # Esc (which cancels the turn) resolving it.  The prompt keeps the
+        # focus it took.
+        if not self._approval_prompt_pending():
+            self.query_one("#user-input").focus()
         if model is None:
             return  # canceled — the picker already shows the status
         try:
@@ -945,7 +984,7 @@ class SlifeApp(App):
             line = format_presence_line(card, event)
             if line is None:
                 return  # status_change (heartbeat) etc. — not user-visible
-            color = {"online": "#7c3aed", "offline": "#6e7681", "timeout": "#d29922"}.get(
+            color = {"online": "#7c3aed", "offline": "#6e7681"}.get(
                 event, "#6e7681"
             )
             chat_view.add_system_message(line, color=color)

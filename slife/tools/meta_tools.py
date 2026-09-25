@@ -58,9 +58,20 @@ def _schema_bytes(schema) -> int:
     ``len()`` would report 3 bytes for every cli row — a size for something
     that has no size.
     """
-    if not schema or schema == NA:
+    if not _has_schema(schema):
         return 0
     return len(schema)
+
+
+def _has_schema(schema: str | None) -> bool:
+    """True when a catalog row carries real schema text.
+
+    "No schema" is stored as the ``'n/a'`` sentinel in a NOT NULL column, so a
+    bare truthiness test reads the sentinel as a schema and hands ``'n/a'`` to
+    ``json.loads`` — a loaded row then gets downgraded to "unloaded" with an
+    "Expecting value" error.  Both readers here go through this one predicate.
+    """
+    return bool(schema) and schema != NA
 
 
 class ToolSearchTool(Tool):
@@ -248,7 +259,7 @@ class FuncToolLoadTool(Tool):
             if registry is None or mcp is None:
                 await catalog.store.set_load_status(full_name, "unloaded")
                 return f"Error: '{full_name}' loaded but the MCP client is unavailable — no execution route."
-            if not row.get("schema"):
+            if not _has_schema(row.get("schema")):
                 await catalog.store.set_load_status(full_name, "unloaded")
                 return (
                     f"Error: '{full_name}' schema isn't synced yet — ensure its "

@@ -431,7 +431,7 @@ class TestConfigFromYAML:
         assert config.tools[1] == {"name": "run_python_script"}
 
     def test_duplicate_model_in_provider_raises(self, tmp_path, monkeypatch):
-        """Duplicate model names within a provider raise ValueError."""
+        """The same model ID listed twice in one provider raises ValueError."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
         cfg_path.write_text(dump_config({
@@ -441,7 +441,7 @@ class TestConfigFromYAML:
                         "api_key": "${KEY}",
                         "models": [
                             {"model": "same-name", "name": "First"},
-                            {"model": "deepseek/same-name", "name": "Second"},
+                            {"model": "same-name", "name": "Second"},
                         ],
                     }
                 }
@@ -449,6 +449,35 @@ class TestConfigFromYAML:
         }))
         with pytest.raises(ValueError, match="Duplicate model"):
             Config.from_yaml(str(cfg_path))
+
+    def test_org_prefixed_ids_in_one_provider_are_distinct(self, tmp_path, monkeypatch):
+        """Two third-party catalog ids that share a last segment are two models.
+
+        The provider block makes the provider explicit, and ``from_dict`` then
+        keeps the id whole, so these refs are "gw/meta-llama/llama-3-70b" and
+        "gw/nousresearch/llama-3-70b".  A last-segment uniqueness test called
+        them duplicates and refused a config the loader loads fine.
+        """
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.yaml"
+        cfg_path.write_text(dump_config({
+            "models": {
+                "providers": {
+                    "gw": {
+                        "api_key": "${KEY}",
+                        "models": [
+                            {"model": "meta-llama/llama-3-70b"},
+                            {"model": "nousresearch/llama-3-70b"},
+                        ],
+                    }
+                }
+            },
+        }))
+        config = Config.from_yaml(str(cfg_path))
+        assert [m.ref for m in config.models] == [
+            "gw/meta-llama/llama-3-70b",
+            "gw/nousresearch/llama-3-70b",
+        ]
 
     def test_provider_defaults_inherited(self, tmp_path, monkeypatch):
         """Models inherit base_url and api_key from provider."""

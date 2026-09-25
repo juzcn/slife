@@ -32,7 +32,7 @@ async def _redirect_printable_to_input(widget, event: Key) -> bool:
     """
     if not event.is_printable:
         return False
-    inp = widget.screen.query_one("#user-input")
+    inp = widget.screen.query_one_optional("#user-input")
     if inp is None or inp.has_focus:
         return False
     inp.focus()

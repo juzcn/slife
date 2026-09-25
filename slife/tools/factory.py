@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 def create_tools_from_config(
     overrides: list[dict] | None = None,
     config: "Config | None" = None,
-    is_subagent: bool = False,
     ctx: "ToolContext | None" = None,
 ) -> ToolRegistry:
     """Build a ToolRegistry by auto-discovering all Tool subclasses.
@@ -66,7 +65,7 @@ def create_tools_from_config(
 
         registry.register(tool)
 
-    logger.info("tools_loaded count=%d subagent=%s", len(registry.list_tools()), is_subagent)
+    logger.info("tools_loaded count=%d", len(registry.list_tools()))
     return registry
 
 

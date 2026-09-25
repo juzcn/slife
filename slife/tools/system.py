@@ -496,7 +496,7 @@ async def check_local_embed(client=None) -> list[dict]:
     return out
 
 
-async def check_embeddings(base_url: str = "") -> list[dict]:
+async def check_embeddings() -> list[dict]:
     """Probe the ACTIVE embedding endpoint.
 
     Every configured embeddings provider — the local-embed daemon or a cloud
@@ -518,12 +518,12 @@ async def check_embeddings(base_url: str = "") -> list[dict]:
     because it is a plugin slife starts and supervises.
     """
     provider = "endpoint"
-    base_url = base_url.strip()
+    base_url = ""
     try:
         from slife.plugins.memdb.embedding_config import get_active_endpoint
         ep = get_active_endpoint()
         provider = (ep.get("provider") or "").strip() or provider
-        base_url = (base_url or ep.get("base_url") or "").strip()
+        base_url = (ep.get("base_url") or "").strip()
         if not base_url:
             return [_entry(
                 "embeddings", "warning", provider, "offline (no base_url)",

@@ -302,13 +302,12 @@ def _user_property(props, key: str) -> str:
 def _presence_status(props) -> str:
     """Map the standard ``a2a-status`` presence property to online/offline.
 
-    Absent property (a card without presence stamping) defaults to online;
-    ``lwt`` (LWT offline card) maps to offline.
+    Absent property (a card without presence stamping) defaults to online.
     """
     status = _user_property(props, "a2a-status")
     if not status:
         return "online"
-    return "offline" if status == "offline" or status == "lwt" else "online"
+    return "offline" if status == "offline" else "online"
 
 
 def _reply_state(data: dict) -> str:

@@ -312,10 +312,9 @@ class TestNgrokTunnelStartMonitor:
         mock_coro.assert_not_called()  # not called yet — it's scheduled
 
     @pytest.mark.asyncio
-    async def test_callback_called_on_retry_success(self):
-        """_run_monitor restarts a missing tunnel and calls on_tunnel_up."""
+    async def test_starts_a_missing_tunnel(self):
+        """_run_monitor restarts a missing tunnel."""
         tunnel = NgrokTunnel()
-        callback = MagicMock()
 
         real_sleep = asyncio.sleep
 
@@ -329,13 +328,13 @@ class TestNgrokTunnelStartMonitor:
         with patch("asyncio.sleep", side_effect=fast_sleep), \
              patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive", return_value=True), \
              patch.object(tunnel, "start", side_effect=fake_start):
-            task = asyncio.create_task(tunnel._run_monitor(8080, on_tunnel_up=callback))
+            task = asyncio.create_task(tunnel._run_monitor(8080))
             try:
                 for _ in range(200):
                     await real_sleep(0.02)
-                    if callback.called:
+                    if tunnel._public_url is not None:
                         break
-                callback.assert_called_once()
+                assert tunnel._public_url == "https://monitor.ngrok.io"
             finally:
                 task.cancel()
                 try:
@@ -345,10 +344,9 @@ class TestNgrokTunnelStartMonitor:
 
     @pytest.mark.asyncio
     async def test_skips_when_already_connected(self):
-        """_run_monitor does NOT restart a live tunnel (callback not fired)."""
+        """_run_monitor does NOT restart a live tunnel."""
         tunnel = NgrokTunnel()
         tunnel._public_url = "https://already-up.ngrok.io"
-        callback = MagicMock()
 
         real_sleep = asyncio.sleep
 
@@ -357,12 +355,12 @@ class TestNgrokTunnelStartMonitor:
 
         with patch("asyncio.sleep", side_effect=fast_sleep), \
              patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive", return_value=True), \
-             patch.object(tunnel, "start", return_value="https://already-up.ngrok.io"):
-            task = asyncio.create_task(tunnel._run_monitor(8080, on_tunnel_up=callback))
+             patch.object(tunnel, "start", return_value="https://already-up.ngrok.io") as fake_start:
+            task = asyncio.create_task(tunnel._run_monitor(8080))
             try:
                 for _ in range(20):
                     await real_sleep(0.02)
-                callback.assert_not_called()
+                fake_start.assert_not_called()
             finally:
                 task.cancel()
                 try:

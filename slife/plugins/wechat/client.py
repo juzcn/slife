@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 import aiohttp
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.logfmt import sanitize_secrets
 
 logger = logging.getLogger("slife_wechat")
 
@@ -416,7 +417,10 @@ class WechatClawbotClient:
                 url, headers=_make_headers(self._bot_token),
             ) as res:
                 text = await res.text()
-                logger.debug("http_request method=GET url=%s status=%s body=%.200s", path, res.status, text)
+                # Masked: get_qrcode_status carries the live bot_token in this
+                # body, and the log file is plaintext on disk.
+                logger.debug("http_request method=GET url=%s status=%s body=%.200s",
+                             path, res.status, sanitize_secrets(text))
                 try:
                     return json.loads(text)
                 except Exception:
@@ -434,7 +438,8 @@ class WechatClawbotClient:
                 url, json=body, headers=_make_headers(self._bot_token),
             ) as res:
                 text = await res.text()
-                logger.debug("http_request method=POST url=%s status=%s body=%.200s", path, res.status, text)
+                logger.debug("http_request method=POST url=%s status=%s body=%.200s",
+                             path, res.status, sanitize_secrets(text))
                 try:
                     return json.loads(text)
                 except Exception:

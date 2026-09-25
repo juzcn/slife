@@ -68,6 +68,17 @@ class ApprovalPrompt(Static):
         """Deny the tool call (N or Esc)."""
         self._decide(approved=False)
 
+    @property
+    def pending(self) -> bool:
+        """True while this row is still waiting for the user's answer.
+
+        A decided row stays in the transcript as its status line, so callers
+        looking for "the approval that is blocking the loop" must select on
+        this rather than on the ``approval-prompt`` class alone — which
+        :class:`~slife.ui.model_picker.ModelPicker` also wears, for styling.
+        """
+        return self._decided is None
+
     def _decide(self, approved: bool) -> None:
         """Resolve the future once; ignore any repeat keypress."""
         if self._decided is not None:

@@ -536,35 +536,6 @@ class TestDashScopeAdapter:
         assert body["parameters"] == {"format": "wav", "sample_rate": "16000"}
 
     @pytest.mark.asyncio
-    async def test_upload_file_two_step(self, monkeypatch, tmp_path):
-        adapter = _ds_adapter()
-        f = tmp_path / "pic.png"
-        f.write_bytes(b"img")
-        monkeypatch.setattr(adapter, "_get_upload_policy", AsyncMock(
-            return_value={"data": {
-                "oss_access_key_id": "AK", "policy": "POL",
-                "signature": "SIG", "upload_dir": "dir/sub",
-                "upload_host": "https://oss.example.com",
-                "x_oss_forbid_overwrite": "true",
-                "x_oss_object_acl": "private",
-            }}))
-        fake_client = MagicMock()
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
-        fake_client.post = AsyncMock(return_value=resp)
-        fake_client.__aenter__ = AsyncMock(return_value=fake_client)
-        fake_client.__aexit__ = AsyncMock(return_value=False)
-        monkeypatch.setattr(
-            dashscope_aigc.httpx2, "AsyncClient",
-            lambda **kw: fake_client)
-        result = await adapter.upload_file(model="m", file_path=f)
-        assert result == "oss://dir/sub/pic.png"
-        form = fake_client.post.call_args.kwargs["data"]
-        assert form["key"] == "dir/sub/pic.png"
-        assert form["OSSAccessKeyId"] == "AK"
-        assert form["x-oss-forbid-overwrite"] == "true"
-
-    @pytest.mark.asyncio
     async def test_error_body_raises(self, monkeypatch):
         adapter = _ds_adapter()
         fake_client = MagicMock()

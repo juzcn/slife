@@ -120,16 +120,17 @@ class MCPProxyTool(Tool):
         # non-dict inputSchema (None, a list) must degrade to an empty object
         # schema — NOT crash the proxy constructor with AttributeError on
         # schema.get (defensive: the gateway always sends a dict today).
+        #
+        # The rewrite forces the TYPE and keeps every other key: dropping them
+        # left a schema that referenced `#/$defs/...` with the `$defs` block
+        # gone (dangling refs), and silently discarded `additionalProperties`
+        # and friends.
         if not isinstance(schema, dict) or schema.get("type") != "object":
-            schema = {
-                "type": "object",
-                "properties": (
-                    schema.get("properties", {}) if isinstance(schema, dict) else {}
-                ),
-                "required": (
-                    schema.get("required", []) if isinstance(schema, dict) else []
-                ),
-            }
+            rewritten = dict(schema) if isinstance(schema, dict) else {}
+            rewritten["type"] = "object"
+            rewritten.setdefault("properties", {})
+            rewritten.setdefault("required", [])
+            schema = rewritten
         object.__setattr__(self, "parameters", schema)
 
     @property

@@ -328,7 +328,6 @@ class AgentLoop:
         stream_max_retries: int | None = None,
         stream_stall_timeout: float | None = None,
         tool_catalog: "ToolCatalogService | None" = None,
-        load_threshold: int = 100,
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -336,7 +335,6 @@ class AgentLoop:
         #: eviction consult it.  None (no catalog) keeps the historical
         #: all-registered injection with no eviction.
         self.tool_catalog = tool_catalog
-        self.load_threshold = load_threshold if load_threshold and load_threshold > 0 else 100
         #: Tool names injectable by the NEXT LLM request (re-read before every
         #: request — see :meth:`_refresh_inject_snapshot`).
         #: None ⇒ fall back to the whole registry (no catalog).

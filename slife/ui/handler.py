@@ -121,9 +121,7 @@ class TUIHandler:
         saying.
         """
         self._chat_view.add_system_message(
-            f"↻ {count} turns recalled, context's messages rebuilt"
-            if count else
-            "↻ no turn recalled — context's messages cleared",
+            t("recall_notice", count=count) if count else t("recall_none"),
         )
 
     def on_trim(self, count: int) -> None:

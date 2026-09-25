@@ -366,7 +366,7 @@ class TestWrapperNotifyToolsChanged:
         bus = MagicMock()
         bus.publish = AsyncMock()
         with patch.object(srv._notifier, "_bus", bus):
-            await srv._notify_tools_changed()
+            await srv._notifier.publish()
 
         bus.publish.assert_awaited_once()
         event = bus.publish.await_args.args[0]
@@ -376,7 +376,7 @@ class TestWrapperNotifyToolsChanged:
     async def test_publish_without_a_bus_is_a_noop(self, restore_root_logger):
         srv = _import_mcp_server()
         with patch.object(srv._notifier, "_bus", None):
-            await srv._notify_tools_changed()  # must not raise
+            await srv._notifier.publish()  # must not raise
 
     @pytest.mark.asyncio
     async def test_publish_failure_never_propagates(self, restore_root_logger):
@@ -385,7 +385,7 @@ class TestWrapperNotifyToolsChanged:
         bus = MagicMock()
         bus.publish = AsyncMock(side_effect=RuntimeError("bus gone"))
         with patch.object(srv._notifier, "_bus", bus):
-            await srv._notify_tools_changed()  # must not raise
+            await srv._notifier.publish()  # must not raise
 
     def test_listen_handler_is_registered_on_import(self, restore_root_logger):
         """fastmcp never registers `subscriptions/listen` — this module does,
@@ -727,7 +727,7 @@ class TestNotifyReachesEveryListenStream:
         bus.subscribe(lambda event: seen.append(event))
 
         notifier = ToolsChangedNotifier(bus)
-        await notifier.flush()
+        await notifier.publish()
 
         assert len(seen) == 2
         assert all(type(e).__name__ == "ToolsListChanged" for e in seen)

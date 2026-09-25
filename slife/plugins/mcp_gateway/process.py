@@ -83,10 +83,6 @@ class MCPWrapperProcess:
         self._stderr_task: "asyncio.Task | None" = None
 
     @property
-    def is_running(self) -> bool:
-        return self._running and self._process is not None
-
-    @property
     def pid(self) -> int | None:
         if self._process:
             return self._process.pid
@@ -138,11 +134,17 @@ class MCPWrapperProcess:
             # the plugin already spawned would be missed.
             assign_to_job_object(self._process.pid, label=self._command)
 
+            # Start background stderr draining BEFORE waiting for the port
+            # signal.  A child whose very first log write exceeds the stderr
+            # pipe buffer blocks in that write and never reaches the signal:
+            # the port read then times out, the child is killed as a failed
+            # start, and the cause (a full pipe) never surfaces — the wedge
+            # slife/logfmt.py documents ("pipe fills").  The drain has to
+            # already be reading when the child starts logging.
+            self._stderr_task = asyncio.create_task(self._log_stderr())
+
             # Read the port signal from stdout (single JSON line)
             await self._read_port_signal()
-
-            # Start background stderr draining
-            self._stderr_task = asyncio.create_task(self._log_stderr())
 
         except FileNotFoundError as e:
             logger.error("wrapper_exec_not_found cmd=%s err=%s", self._command, e)
@@ -202,6 +204,7 @@ class MCPWrapperProcess:
                 self._process.stdout.readline(), timeout=signal_timeout,
             )
         except asyncio.TimeoutError:
+            await self._stop_stderr_drain()
             stderr_tail = await self._read_stderr_tail()
             raise RuntimeError(
                 f"Plugin process (pid={self._process.pid}) did not send "
@@ -210,6 +213,7 @@ class MCPWrapperProcess:
             )
 
         if not line:
+            await self._stop_stderr_drain()
             stderr_tail = await self._read_stderr_tail()
             raise RuntimeError(
                 f"Plugin process (pid={self._process.pid}) exited before "
@@ -228,13 +232,9 @@ class MCPWrapperProcess:
 
     async def create_client(
         self, tool_timeout: float | None = None,
-        client_info_extra: dict | None = None,
     ) -> "MCPClient":
         """Create an MCPClient connected to the plugin's Streamable HTTP endpoint.
 
-        ``client_info_extra`` is carried in the initialize handshake's
-        standard ``clientInfo`` (see ``MCPClient``) — used by a host to pass
-        its own params (e.g. the active embedding endpoint) to the server.
         Disconnecting the client does NOT stop the process — call stop()
         separately to terminate the plugin.
 
@@ -269,12 +269,27 @@ class MCPWrapperProcess:
             )
 
         url = f"http://127.0.0.1:{self._port}/mcp"
-        client = MCPClient(
-            tool_timeout=tool_timeout,
-            client_info_extra=client_info_extra,
-        )
+        client = MCPClient(tool_timeout=tool_timeout)
         await client.connect(url)
         return client
+
+    async def _stop_stderr_drain(self) -> None:
+        """Cancel and await the stderr drain, if one is running.  Idempotent.
+
+        The drain is the child stderr pipe's ONLY reader while it runs (two
+        concurrent ``readline`` calls on one StreamReader raise), and it is
+        started ahead of the port signal — so it is stopped before a stderr
+        tail is read for an error message, and again on the failed-start
+        cleanup, which must not leave it reading a killed child's pipe.
+        """
+        task = self._stderr_task
+        self._stderr_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     async def _cleanup_failed_start(self) -> None:
         """Terminate the child process after a failed start attempt.
@@ -286,6 +301,7 @@ class MCPWrapperProcess:
         if not self._process:
             return
         logger.debug("wrapper_cleanup_failed pid=%s", self._process.pid)
+        await self._stop_stderr_drain()
         try:
             self._process.kill()
         except Exception:

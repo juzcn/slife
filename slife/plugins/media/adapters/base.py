@@ -106,20 +106,20 @@ class ArtifactSaver:
 
     Generated media are work products — they live in the user's working
     directory, NOT in the memfiles cabinet (which only stores files saved
-    explicitly via the save tools).  The ``kind`` argument is retained for
-    filename context only; no subdirectory is created.
+    explicitly via the save tools).  ``kind`` names the artifact in the log
+    line and error messages only; no subdirectory is created.
     """
 
-    def base_dir(self, kind: str, outputs_dir: str = "") -> Path:
+    def base_dir(self, outputs_dir: str = "") -> Path:
         base = Path(outputs_dir).expanduser() if outputs_dir else Path.cwd()
         base.mkdir(parents=True, exist_ok=True)
         return base
 
-    def _unique_path(self, kind: str, ext: str, outputs_dir: str = "") -> Path:
+    def _unique_path(self, ext: str, outputs_dir: str = "") -> Path:
         from slife.logfmt import log_stamp
 
         name = f"{log_stamp()}_{secrets.token_hex(4)}.{ext.lstrip('.')}"
-        return self.base_dir(kind, outputs_dir) / name
+        return self.base_dir(outputs_dir) / name
 
     async def save_url(
         self, url: str, kind: str, ext: str = "", outputs_dir: str = "",
@@ -147,7 +147,7 @@ class ArtifactSaver:
     def save_bytes(
         self, data: bytes, kind: str, ext: str, outputs_dir: str = "",
     ) -> Path:
-        path = self._unique_path(kind, ext, outputs_dir)
+        path = self._unique_path(ext, outputs_dir)
         path.write_bytes(data)
         logger.info(
             "media_artifact_saved kind=%s path=%s bytes=%d",

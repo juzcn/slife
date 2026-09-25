@@ -267,12 +267,27 @@ class TestShellArgv:
 
 
 class TestShellOutputCodec:
-    """Tests for _shell_output_codec — GBK/cp936 on zh-CN Windows, UTF-8 on POSIX."""
+    """Tests for _shell_output_codec — the codec the LAUNCHED shell emits.
 
-    def test_windows_uses_locale_codec(self, monkeypatch):
+    The Windows answer depends on which branch _shell_argv took, so each case
+    pins the detected shell instead of inheriting the environment's: a suite
+    run from PowerShell must not assert the cmd.exe codec.
+    """
+
+    def test_windows_cmd_uses_locale_codec(self, monkeypatch):
         monkeypatch.setattr("os.name", "nt")
         monkeypatch.setattr("locale.getpreferredencoding", lambda _: "cp936")
-        assert _shell_output_codec() == "cp936"
+        with patch("slife.platform.detect_current_shell", return_value="cmd"):
+            assert _shell_output_codec() == "cp936"
+
+    def test_windows_powershell_uses_utf8(self, monkeypatch):
+        """Regression: the PS branch pins [Console]::OutputEncoding to UTF-8
+        in _shell_argv, so decoding its output with the locale codec turned
+        every non-ASCII result into mojibake."""
+        monkeypatch.setattr("os.name", "nt")
+        monkeypatch.setattr("locale.getpreferredencoding", lambda _: "cp936")
+        with patch("slife.platform.detect_current_shell", return_value="powershell"):
+            assert _shell_output_codec() == "utf-8"
 
     def test_posix_uses_utf8(self, monkeypatch):
         monkeypatch.setattr("os.name", "posix")

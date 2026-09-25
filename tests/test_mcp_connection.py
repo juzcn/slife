@@ -726,7 +726,6 @@ class TestMCPServerConnectionHTTP:
             await conn._connect_http()
 
         assert entered["url"] == "http://remote:8080/mcp"
-        assert conn._sse_mode is True
         assert conn._session is not None
 
     @pytest.mark.asyncio
@@ -1108,7 +1107,15 @@ class TestMCPServerConnectionRepair:
             flow_ok["token"] = object()
             await conn._ensure_oauth_token()
             assert conn._needs_user_auth is False
-            assert conn.config.headers["Authorization"] == "Bearer tok"
+            # The token lives beside the config, not inside it: the live config
+            # object is what mcp_set compares a caller's fresh config against
+            # (_server_config_equal includes headers), so writing the token into
+            # config.headers made an OAuth server compare unequal forever and
+            # every re-add tore the transport down.  It still rides the
+            # transport — merged by _http_launch.
+            assert conn._oauth_header == "Bearer tok"
+            assert "Authorization" not in (conn.config.headers or {})
+            assert conn._http_launch()[1]["Authorization"] == "Bearer tok"
 
 
 class TestMCPServerConnectionLazyReconnect:
