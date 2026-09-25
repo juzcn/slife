@@ -355,19 +355,19 @@ def _os_name() -> str:
 def _os_version() -> str:
     """Human-readable OS version (not the raw kernel build string).
 
-    On Windows ``platform.uname().release`` is the NT build number
-    (e.g. ``"10.0.26200"``), which is meaningless to a model.  Map it to
-    the marketing name; on macOS use the product version; elsewhere fall
-    back to the kernel release.
+    On Windows the NT build decides the marketing name (22000 is the Windows 11
+    floor).  Read it from ``sys.getwindowsversion().build``, NOT from
+    ``platform.uname().release``: that reports the *marketing* version on
+    current Pythons (``"11"``), so comparing it against 22000 as a build number
+    announced Windows 10 to a Windows 11 agent.  On macOS use the product
+    version; elsewhere fall back to the kernel release.
     """
     system = platform.system()
     if system == "Windows":
-        release = platform.uname().release  # e.g. "10.0.26200"
-        try:
-            build = int(release.split(".")[-1])
-        except (ValueError, IndexError):
-            return release
-        return "11" if build >= 22000 else "10"
+        get_windows_version = getattr(sys, "getwindowsversion", None)
+        if get_windows_version is None:  # pragma: no cover - Windows sys always has it
+            return platform.uname().release
+        return "11" if get_windows_version().build >= 22000 else "10"
     if system == "Darwin":
         return platform.mac_ver()[0] or platform.uname().release
     return platform.uname().release

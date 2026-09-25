@@ -124,11 +124,11 @@ class TestBuild:
         assert "func_tool_load" in result
         assert "{server}__{tool}" in result
         assert "adds a `func` tool to your list from the next request" in result
-        assert "`tool_load` (default 100)" in result
+        assert "`tool_load.threshold` (default 100)" in result
         assert "least-recently-used" in result
-        assert "Always injected: the whitelist" in result
+        assert "Always injected: the harness tools" in result
         assert "`skill_use`, `system_health`" in result
-        assert "`_`-prefixed tools are harness-invoked" in result
+        assert "`_`-prefixed tools are invoked by the harness" in result
 
     def test_data_dirs_in_prompt(self, cfg):
         from slife.agent.system_prompt import build
@@ -202,8 +202,8 @@ class TestBuild:
         result = build(cfg, is_subagent=True)
         assert "You are sub-7, an agent worker of testbot" in result
         assert "with the same capabilities" in result
-        assert "you act as testbot" in result
-        assert "NEVER introduce yourself by name" in result
+        assert "goes out as testbot" in result
+        assert "peers see testbot as the sender" in result
         assert "nothing you do outlives this process" in result
 
     def test_subagent_nameentity_includes_name(self, cfg, monkeypatch):
@@ -224,7 +224,7 @@ class TestBuild:
         result = build(cfg, is_subagent=True)
         assert "no identity of your own" in result
         assert "no personality" in result
-        assert "NEVER introduce yourself by name" in result
+        assert "peers see testbot as the sender" in result
 
     def test_subagent_context_clean_by_default(self, cfg, monkeypatch):
         """Context defaults to clean when SLIFE_SUBAGENT_CONTEXT unset."""
