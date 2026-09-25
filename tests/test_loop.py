@@ -1589,12 +1589,12 @@ class TestSameMessageLoadAndCall:
                 m["tool_call_id"]: m["content"]
                 for m in history.messages if m.get("role") == "tool"
             }
-            # The load states its own timing — the one fact the model cannot
-            # observe about a tool it just loaded.
-            assert results["c1"] == (
-                "[OK] Loaded 'target_tool' — it is in the tool list from the "
-                "next request."
-            )
+            # The load states no timing at all: injection is what a load
+            # changes, and the sibling call below proves that injection is not
+            # what makes a call possible. A timing claim reads as "wait for the
+            # next request", which is how a model ends its turn instead of
+            # calling what it just loaded.
+            assert results["c1"] == "[OK] Loaded 'target_tool'."
             # The sibling call RAN: its instance was already registered, and
             # load state does not gate a call — the two writes no longer race
             # for the outcome.

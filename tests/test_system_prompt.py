@@ -123,7 +123,10 @@ class TestBuild:
         assert "tool_search" in result
         assert "func_tool_load" in result
         assert "{server}__{tool}" in result
-        assert "adds a `func` tool to your list from the next request" in result
+        # No timing claim: a load is not what gates a call, so "from the next
+        # iteration" would only tell the model to wait for one.
+        assert "adds a `func` tool to your tools list" in result
+        assert "next iteration" not in result
         assert "`tool_load.threshold` (default 100)" in result
         assert "least-recently-used" in result
         assert "Always injected: the harness tools" in result

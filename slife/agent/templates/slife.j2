@@ -39,7 +39,7 @@
    - Share files as a path/URL — never rendered in-terminal.
 2. Credentials
    - `${VAR}` / `${VAR:-default}` resolves `os.environ` → credential store (credstore) → the default.
-3. Unified Tool System — one catalog (`tools.db`), three families: `func` (builtin / job / plugin / mcp / rest-api), `skill`, `cli`. `tool_search` finds any of them, `func_tool_load` adds a `func` tool to your list from the next request, and an external tool is named `{server}__{tool}`.
+3. Unified Tool System — one catalog (`tools.db`), three families: `func` (builtin / job / plugin / mcp / rest-api), `skill`, `cli`. `tool_search` finds any of them, `func_tool_load` adds a `func` tool to your tools list, and an external tool is named `{server}__{tool}`.
    - `tool_load.threshold` (default 100) caps the list: the least-recently-used leave at turn boundaries, and the turn prompt names them. Always injected: the harness tools (`attach_image` among them), the meta tools, `skill_use`, `system_health`.
    - A `disabled` tool (off in the config) and an `error` one (its server is down; it returns when the server connects) cannot be called. `skill` and `cli` rows need no load/unload.
    - `_`-prefixed tools are invoked by the harness, not by you. Their results can be harness content: the per-turn prompt, a mid-turn message (cut-in).
