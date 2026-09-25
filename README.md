@@ -423,6 +423,7 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 
 * **`system_health`** reports live status for every subsystem in one call — problems first with what to do about them, then one line per healthy component. Ask the agent to run it any time something seems off.
 * **Logs** live in `~/.slife/logs/` (one per session, `event_name key=value` lines, DEBUG+; plugins inherit the session id). The terminal is reserved for the TUI — nothing prints to it but the chat.
+* **A session that was killed is reported by the next one.** A hard kill (`taskkill`, End Task, a closed window) runs no Python, so the victim writes nothing itself — instead every session leaves a marker file (`logs/.session.<pid>.state`) that only a clean exit removes. Finding one whose process is gone, slife warns `the last session … was killed from outside` and names its log. The same kill leaves that terminal in raw mode — keystrokes echo as garbage and `Ctrl+C` does nothing; close that window to recover.
 
 ## License
 
