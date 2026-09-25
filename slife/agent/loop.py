@@ -324,6 +324,7 @@ class AgentLoop:
         recall_available: Callable[[], bool] | None = None,
         turns_by_ids: Callable[[list[int]], Awaitable[list[dict]]] | None = None,
         rebuild_message: bool = False,
+        persist_turns: bool = True,
         stream_timeout: float | None = None,
         stream_max_retries: int | None = None,
         stream_stall_timeout: float | None = None,
@@ -396,6 +397,11 @@ class AgentLoop:
         self.turns_by_ids = turns_by_ids
         # Per-turn context rebuild (see the recall step in run()).
         self.rebuild_message = rebuild_message
+        #: Whether this process's turns reach memory.  It decides *where* the
+        #: window ceiling is enforced, not whether it exists: a persisted
+        #: history is trimmed at the save point (real usage known), and a
+        #: worker — which has no save point — at the request boundary instead.
+        self.persist_turns = persist_turns
         self.supports_vision = supports_vision
         self.model_name = model_name
         self.input_modalities = input_modalities
@@ -590,7 +596,7 @@ class AgentLoop:
         is auto-invoked before the current turn's first API call, so the
         current round's usage is unknowable by construction; the last
         completed call is the previous round's.  Single source for
-        ``_turn_prompt``, the trim decision (``_trim_after_save``), and the
+        ``_turn_prompt``, the trim decision (``_trim_context``), and the
         TUI status bar — one value, no recompute.  Resolution order:
 
         1. This history's last API call's actual prompt + completion tokens
@@ -810,7 +816,7 @@ class AgentLoop:
     def _live_turns(history: MessageHistory) -> list[dict]:
         """The turns in the context right now, in ``extract_turns`` shape.
 
-        The same read ``_trim_after_save`` makes: each entry carries the turn's
+        The same read ``_trim_context`` makes: each entry carries the turn's
         diary rowid (``turn_id``) and its estimated cost (``estimated_tokens``).
         Both are what a rebuild's *base* is built from — the ids the model
         keeps explicitly are the very ones it read off the ``[INFO: …]``
@@ -951,7 +957,7 @@ class AgentLoop:
         # would make every turn prompt read 0%.  The previous round's number is
         # one turn behind and bounded by the same budget — a far better read
         # than nothing.  The trim is a consumer too: its ceiling applies in
-        # this mode as well (see `_trim_after_save`).
+        # this mode as well (see `_trim_context`).
         # "Context covers" comes from the rebuilt set now, not from an
         # incremental date list.
         stamps = [t.get("created_at") or "" for t in turns]
@@ -988,10 +994,11 @@ class AgentLoop:
         logger.info("recall_rebuilt turns=%d", len(turns))
         return True
 
-    async def _trim_after_save(
+    async def _trim_context(
         self, history: MessageHistory, handler: object | None = None,
+        *, estimate_fallback: bool = False,
     ) -> None:
-        """Trim the oldest turns after a turn is saved to memory.
+        """Trim the oldest turns when the context is at/over the ceiling.
 
         The ceiling is the window's safety valve and applies in **both** modes
         (`rebuild_message` true or false): a turn that grew past it — tool
@@ -1007,11 +1014,21 @@ class AgentLoop:
         not re-derived on its own, so a turn evicted here is a turn the model
         chose to keep and no longer has.
 
-        Called by ``save_to_memory`` once the just-completed turn is
-        persisted.  By then the last API call's real prompt + completion tokens are
-        known (``context_tokens_for`` reads ``_usage_by_history``), so the
-        ceiling check uses the true context occupancy — not the estimate
-        the loop had at the turn's start.
+        Two callers, and the pair is the whole bound:
+
+        * ``save_to_memory``, once the just-completed turn is persisted — the
+          main agent's.  By then the last API call's real prompt + completion
+          tokens are known (``context_tokens_for`` reads ``_usage_by_history``),
+          so the ceiling check uses the true context occupancy — not the
+          estimate the loop had at the turn's start.
+        * :meth:`run`, at the request boundary, **only** when
+          ``persist_turns`` is false (a worker).  That process has no save
+          point, so relying on the first call site alone would leave a
+          worker's context unbounded: a cloned context starts at the parent's
+          whole history, and a tool-heavy task keeps growing it.  The bound
+          cannot move there for the main agent — its save point is where the
+          real occupancy is known — but a worker has no such reading, so it
+          passes *estimate_fallback* to let the token estimate stand in.
 
         *handler* (optional) receives ``on_trim(count)`` so the live TUI
         can show the trim note on the turn's last assistant message —
@@ -1049,6 +1066,14 @@ class AgentLoop:
         # also needs a boundary to not trim a history whose context
         # usage is unmeasurable (no API call yet → estimate fallback).
         current = self.context_tokens_for(history)
+        if current <= 0 and estimate_fallback:
+            # No API call has measured this history yet, so the request about
+            # to be sent is sized by the estimate alone.  Without this the
+            # worker bound would not exist for the FIRST request of a task —
+            # exactly the one a cloned context arrives oversized for.  The
+            # estimate is generous (chars/3), so the risk is trimming early,
+            # never sending a context the window cannot hold.
+            current = history.count_tokens()
         if current < int(self.context_window * self.context_ceiling):
             return
 
@@ -1094,7 +1119,7 @@ class AgentLoop:
             self._context_time_start = getattr(
                 self, "_current_turn_start", "") or format_turn_ts()
         logger.info(
-            "context_trimmed_after_save turns=%d ids=%d tokens_freed=%d time_start=%s",
+            "context_trimmed turns=%d ids=%d tokens_freed=%d time_start=%s",
             removed, len(evicted), tokens_freed, self._context_time_start,
         )
 
@@ -1120,9 +1145,9 @@ class AgentLoop:
         Time + token always shown; model/CWD/shell only when they
         changed since the last turn.  *current* is the context token
         count — computed once in :meth:`run` for the prompt (the trim
-        decision later uses its own reading in ``_trim_after_save``).
+        decision later uses its own reading in ``_trim_context``).
         The ``restarted`` flag rides the restore marker (consumed by
-        ``_trim_after_save``, not here) so only the very first prompt
+        ``_trim_context``, not here) so only the very first prompt
         after a restart reports it.
         """
         cwd_now = os.getcwd()
@@ -1940,11 +1965,12 @@ class AgentLoop:
                 await self._auto_invoke(
                     "_turn_prompt", self._turn_prompt_kwargs(history, current), history,
                 )
-                # Context trimming no longer happens here — it moved to
-                # _trim_after_save (after each turn is persisted), where the
-                # real API usage is known.  The _turn_prompt percentage and the
-                # trim decision now come from the same context_tokens_for
-                # reading at their respective times.
+                # Trimming is not a turn-start decision: it moved to
+                # _trim_context (after each turn is persisted), where the real
+                # API usage is known.  The _turn_prompt percentage and the trim
+                # decision now come from the same context_tokens_for reading at
+                # their respective times.  (A worker, which has no save point,
+                # trims per iteration — see the call below.)
                 # max_iterations = 0 means no cap.  The cap is checked live
                 # each iteration, so a mid-turn set_max_iterations applies
                 # immediately (and to the next turn too).
@@ -1968,6 +1994,20 @@ class AgentLoop:
                         and self.pending_input_has()
                     ):
                         await self._auto_invoke("_check_new_input", {}, history)
+
+                    # The window ceiling, for a process with no save point.
+                    # A worker persists no turns, so ``save_to_memory`` — the
+                    # only other caller — never runs, and its context would be
+                    # unbounded: a cloned context arrives at the parent's full
+                    # size, and a tool-heavy task keeps growing it.  Same check,
+                    # same eviction, at the last point before the request is
+                    # built.  (A turn that fits inside one user message has no
+                    # complete older turn to drop; there the per-result cap and
+                    # max_iterations are what bound it.)
+                    if not self.persist_turns:
+                        await self._trim_context(
+                            history, handler, estimate_fallback=True,
+                        )
 
                     # The injected tool list is rebuilt for EVERY request from
                     # the catalog's loaded set, so a load that landed during the

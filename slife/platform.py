@@ -584,7 +584,7 @@ def terminate_process_sync(
                 return  # Exited.
             if time.monotonic() >= deadline:
                 break
-            time.sleep(0.05)
+            time.sleep(_timeouts.timeouts.pacing.reap_poll)
         logger.warning("terminate_process_sync_force_kill %spid=%s", tag, pid)
         try:
             os.kill(pid, signal.SIGKILL)  # type: ignore[attr-defined]

@@ -562,12 +562,21 @@ class MessageHistory:
         agent's history (any system message is dropped), and the
         subagent's own system prompt is prepended.  Messages are copied so
         the source history is never mutated.
+
+        The copy gets the guarantee a rebuild and a restore get
+        (:meth:`_ensure_turn_consistent`), because of when a snapshot is
+        taken: the parent is *inside* the tool call that spawned this
+        worker, so its last message is the ``assistant(tool_calls=…)``
+        whose results do not exist yet.  Sent as-is, every provider rejects
+        it ("tool_calls must be followed by tool messages") — and a worker
+        fails fast, so it would reject every cloned task.
         """
         conv = cls(system_prompt=system_prompt)
         for msg in messages:
             if msg.get("role") == "system":
                 continue
             conv.messages.append(dict(msg))
+        conv._ensure_turn_consistent()
         return conv
 
     def rebuild_messages(

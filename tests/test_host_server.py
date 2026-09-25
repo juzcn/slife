@@ -280,7 +280,7 @@ class TestBuildRegistryMcp:
              ), \
              patch.object(_timeouts.timeouts.ready, "watchdog_backoff_initial", 0.0):
             _, task, _stop, port = start_host_server(reg)
-            await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(task, timeout=5)  # noqa-timeout
             assert calls["n"] == 2
             assert port == 9876
 

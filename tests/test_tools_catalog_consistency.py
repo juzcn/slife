@@ -780,7 +780,7 @@ async def test_a_check_that_never_answers_is_not_a_verdict_either(
         client.call_tool = _never_answers
 
         pending = await asyncio.wait_for(
-            service._mark_server_connectivity(client, {"serper"}), timeout=5.0,
+            service._mark_server_connectivity(client, {"serper"}), timeout=5.0,  # noqa-timeout
         )
 
         assert pending == set()  # no verdict, and nothing to wait on

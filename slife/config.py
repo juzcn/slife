@@ -525,7 +525,9 @@ class Config:
     # ``None`` resolves to the registry's work.tool_budget at construction
     # (call-time lookup, see __post_init__ — no def-time value capture).
     tool_timeout: float | None = None
-    heartbeat_interval: int = 1800  # seconds — autonomous idle heartbeat period
+    heartbeat_interval: int | None = None  # seconds — autonomous idle heartbeat
+    # period; None resolves to the registry cadence pacing.heartbeat (the user
+    # key ``agent.heartbeat_interval`` is the only override)
     # Mid-turn input preemption: when True (default) a new inbound message may
     # cut into the running turn at the next safe iteration boundary; when
     # False it waits in the queue until the turn ends (the original behavior).
@@ -575,6 +577,11 @@ class Config:
         # so a patched registry is honored by bare Config() too.
         if self.tool_timeout is None:
             self.tool_timeout = _timeouts.timeouts.work.tool_budget
+        if self.heartbeat_interval is None:
+            # The cadence default is developer-owned (registry), the key is the
+            # user's override — resolved here, never captured as a def-time
+            # literal, so a patched registry is honored by a bare Config().
+            self.heartbeat_interval = int(_timeouts.timeouts.pacing.heartbeat)
         if self.memdb_config is None:
             self.memdb_config = MemdbConfig()
         if self.embeddings_config is None:
@@ -1111,7 +1118,10 @@ class Config:
         # This is the ONE sanctioned "total" deadline in the system (the
         # tool-call budget), tuned by developers.
         tool_timeout = None
-        heartbeat_interval = agent.get("heartbeat_interval", 1800)
+        # The heartbeat cadence is user-overridable, but its DEFAULT is the
+        # registry's (pacing.heartbeat) — an absent key resolves in
+        # __post_init__, so the value has one seat.
+        heartbeat_interval = agent.get("heartbeat_interval")
         cutin_enabled = agent.get("cutin_enabled", True)
         context_floor = agent.get("context_floor", 0.2)
         context_ceiling = agent.get("context_ceiling", 0.8)

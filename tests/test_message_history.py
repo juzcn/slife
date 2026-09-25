@@ -227,6 +227,50 @@ class TestMessageHistoryConstruction:
         # inherited system message is dropped; source not mutated
         assert conv.messages[1]["content"] == "a"
 
+    def test_from_history_repairs_a_snapshot_taken_mid_turn(self):
+        """The clone is repaired — a snapshot taken mid-turn is not API-valid.
+
+        A subagent's clone is taken *inside* the tool call that spawned it, so
+        the parent's last message is the ``assistant(tool_calls=…)`` whose
+        results do not exist yet.  Sent as-is, every provider rejects it
+        ("tool_calls must be followed by tool messages") and a worker — which
+        fails fast, with no retry — would reject every cloned task.
+        """
+        source = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "spawn_subagent", "arguments": "{}"}},
+            ]},
+        ]
+        conv = MessageHistory.from_history("SUB_SYS", source)
+
+        assert [m["role"] for m in conv.messages] == [
+            "system", "user", "assistant", "tool", "assistant",
+        ]
+        assert conv.messages[3]["tool_call_id"] == "c1"
+        assert conv.messages[3]["is_error"] is True
+        # On the wire every tool_call has its result — the shape a provider
+        # validates (this is the assertion that would have caught the clone).
+        wire = conv.to_openai_messages()
+        called = [tc["id"] for m in wire for tc in (m.get("tool_calls") or [])]
+        answered = [m["tool_call_id"] for m in wire if m.get("role") == "tool"]
+        assert called and set(called) <= set(answered)
+        # The snapshot's own dicts are untouched — the parent's history must not
+        # grow a synthetic tool result from someone else's clone.
+        assert source[1]["tool_calls"][0]["id"] == "c1"
+        assert len(source) == 2
+
+    def test_from_history_leaves_a_complete_history_alone(self):
+        """A clone of a settled history is copied, not rewritten."""
+        source = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+        ]
+        conv = MessageHistory.from_history("SUB_SYS", source)
+        assert [m["role"] for m in conv.messages] == ["system", "user", "assistant"]
+        assert conv.messages[2]["content"] == "b"
+
     def test_none_system_prompt(self):
         """None system prompt results in empty list."""
         conv = MessageHistory(system_prompt=None)

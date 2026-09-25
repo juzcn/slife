@@ -68,19 +68,16 @@ import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/pa
 logger = logging.getLogger(__name__)
 
 # ── Pacing ──────────────────────────────────────────────────────────────
-# Cadence, not per-await budgets, so these stay local (DESIGN.md §4.7): the
-# backoff profile of the one
-# background job this module has — acquiring a tool list for a server that
-# has none.  It stops the moment a list succeeds; a healthy server is never
-# polled.  Deadlines it needs are the registry's (ready.connect_startup for
-# establishment, ready.list_tools for one listing).
-_REFRESH_RETRY_INITIAL = 5.0    # first retry delay (s)
-_REFRESH_RETRY_MAX = 60.0       # cap on the exponential backoff (s)
-_REFRESH_RETRY_MULTIPLIER = 2.0
+# The backoff profile of the one background job this module has — acquiring a
+# tool list for a server that has none — is the registry's
+# (pacing.mcp_relist_initial / _max / _multiplier).  It stops the moment a
+# list succeeds; a healthy server is never polled.  The deadlines it needs are
+# the registry's too (ready.connect_startup for establishment, ready.list_tools
+# for one listing).
 
-# stdio stderr capture: poll interval for the errlog-file drain task, and how
-# many lines of the tail an error path may read back.
-_STDERR_POLL_INTERVAL = 0.05
+# stdio stderr capture: the errlog-file drain cadence is the registry's
+# (pacing.mcp_stderr_poll); this is how many lines of the tail an error path
+# may read back.
 _STDERR_BUFFER_LIMIT = 500
 
 
@@ -437,7 +434,7 @@ class MCPServerConnection:
         from slife.logfmt import sanitize_secrets
         try:
             while True:
-                await asyncio.sleep(_STDERR_POLL_INTERVAL)
+                await asyncio.sleep(_timeouts.timeouts.pacing.mcp_stderr_poll)
                 try:
                     raw.seek(position)
                     chunk = raw.read()
@@ -928,7 +925,7 @@ class MCPServerConnection:
 
         A healthy server is never polled — the loop's own success ends it.
         """
-        wait = _REFRESH_RETRY_INITIAL
+        wait = _timeouts.timeouts.pacing.mcp_relist_initial
         try:
             while True:
                 if self._disconnecting or not self.config.enabled or self._needs_user_auth:
@@ -939,7 +936,10 @@ class MCPServerConnection:
                     "mcp_refresh_retry server=%s in=%.1fs", self.config.name, wait,
                 )
                 await asyncio.sleep(wait)
-                wait = min(wait * _REFRESH_RETRY_MULTIPLIER, _REFRESH_RETRY_MAX)
+                wait = min(
+                    wait * _timeouts.timeouts.pacing.mcp_relist_multiplier,
+                    _timeouts.timeouts.pacing.mcp_relist_max,
+                )
         except NeedsUserAuthError:
             # The first attempt can discover that this server needs a human
             # (a device flow that did not complete).  The flag is set, nothing

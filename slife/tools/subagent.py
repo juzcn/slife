@@ -48,9 +48,13 @@ def _serialize_cloned_context(ctx) -> list[dict] | None:
     """Return the parent history messages for a cloned subagent.
 
     The parent's messages are cloned as-is (the subagent rebuilds its own
-    system prompt).  No upfront trimming: context overflow is handled by
-    the loop's internal trim (``_trim_after_save``) once real usage is
-    known.  Returns None when no history is available.
+    system prompt) and repaired on arrival — the snapshot is taken *inside* the
+    tool call that spawns the worker, so its last message is the
+    ``assistant(tool_calls=…)`` whose results do not exist yet
+    (``MessageHistory.from_history`` is the one place that invariant is
+    restored).  No upfront trimming either: the worker's own window bound
+    (``AgentLoop._trim_context`` at the request boundary) compacts the clone
+    once it is over the ceiling.  Returns None when no history is available.
     """
     history = getattr(ctx, "message_history", None)
     if history is None:
@@ -168,10 +172,22 @@ class SpawnSubagentTool(Tool):
                 context_messages=context_messages,
             )
             action = "already running — reused" if existed else "spawned"
+            # A reused worker keeps the context it was STARTED with: the spawn
+            # request is not applied to it.  Report the live value, never the
+            # requested one — "Context: cloned" for a clean worker is worse
+            # than useless, it is a fact the caller would act on.
+            proc = manager.get(spawned)
+            actual = proc.context_source if proc is not None else context_source
+            reused_note = (
+                f"  Context: {actual} (kept from its original spawn — a running "
+                f"worker is not re-contexted)\n"
+                if existed and actual != context_source
+                else f"  Context: {actual}\n"
+            )
             return (
                 f"Subagent {action}.\n"
                 f"  Subagent Name: {spawned}\n"
-                f"  Context: {context_source}\n"
+                f"{reused_note}"
                 f"  Use list_subagents to see all local workers.\n"
                 f'  Use subagent_send_task with subagent_name="{spawned}" to delegate work.'
             )
@@ -186,14 +202,15 @@ class StopSubagentTool(Tool):
     name = "stop_subagent"
     category = "Subagent"
     description = (
-        "Stop a locally-spawned subagent worker process. id from list_subagents."
+        "Stop a locally-spawned subagent worker process, dropping any task it "
+        "still holds."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "subagent_name": {
                 "type": "string",
-                "description": "The subagent_name of the subagent to stop.",
+                "description": "subagent_name of the worker to stop, from list_subagents.",
             },
         },
         "required": ["subagent_name"],
@@ -278,7 +295,24 @@ class SubagentSendTaskTool(Tool):
 
         try:
             return await manager.send_task(subagent_name, task, timeout=timeout_override)
-        except TimeoutError:
+        except TimeoutError as e:
+            # The worker's TaskTimeout carries the task id (imported here, like
+            # the manager: this module must not import the subagent package at
+            # module level — the package's __init__ imports these tools).
+            from slife.subagent.process import TaskTimeout
+
+            if isinstance(e, TaskTimeout):
+                # The id is what makes the timeout survivable: the worker was
+                # preempted, so a reply may still arrive — and this is the only
+                # place the caller is told which task to poll for it.
+                return (
+                    f"Timed out waiting for task to '{subagent_name}' after the "
+                    "worker timeout. The task was preempted on the worker so it "
+                    "does not block later tasks; its result, if one arrives, is "
+                    "NOT pushed automatically — poll it with "
+                    "subagent_get_task_result "
+                    f"(subagent_name={subagent_name}, task_id={e.task_id})."
+                )
             return (
                 f"Timed out waiting for task to '{subagent_name}' after the worker "
                 "timeout. The task was preempted on the worker so it does not "
@@ -347,17 +381,17 @@ class SubagentSendTaskAsyncTool(Tool):
 
 
 class SubagentGetTaskResultTool(Tool):
-    """Return the result of an async subagent task, or 'pending'."""
+    """Return the result of a worker task, or 'pending' while it runs."""
 
     name = "subagent_get_task_result"
     category = "Subagent"
     description = (
-        "Return an async subagent task's result, or 'pending' if not ready. "
-        "task_id from subagent_send_task_async."
+        "Return a worker task's result. Reading does not consume it: the "
+        "result stays retrievable for as long as the task is recorded."
     )
     parameters: ClassVar[dict] = make_params(
         subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
-        task_id={"type": "string", "description": "task_id from subagent_send_task_async."},
+        task_id={"type": "string", "description": "task_id from subagent_send_task_async (or from a timed-out subagent_send_task)."},
     )
 
     async def execute(self, subagent_name: str = "", task_id: str = "", **kwargs) -> str:
@@ -366,8 +400,18 @@ class SubagentGetTaskResultTool(Tool):
         manager, hint = _manager_or_hint()
         if manager is None:
             return hint
-        result = manager.get_task_result(subagent_name, task_id)
-        return result if result is not None else "pending"
+        state, result = manager.get_task_result(subagent_name, task_id)
+        if state == "unknown":
+            # Never "pending": a task that does not exist is not a task that is
+            # still running, and the difference is what the caller acts on
+            # (wait versus fix the id).
+            return (
+                f"No task '{task_id}' on subagent '{subagent_name}' — unknown id "
+                "(check it, or list with subagent_list_tasks)."
+            )
+        if state == "pending":
+            return "pending"
+        return result or f"Task {state} (no result text recorded)."
 
 
 class SubagentListTasksTool(Tool):
@@ -377,23 +421,26 @@ class SubagentListTasksTool(Tool):
     category = "Subagent"
     description = (
         "List worker task records across local subagents (task_id, worker, "
-        "status, preview, result)."
+        "status, preview)."
     )
     parameters: ClassVar[dict] = make_params(
         subagent_name={"type": "string", "description": "Filter by worker name (omitted = all).", "default": ""},
-        status={"type": "string", "description": "pending/completed/failed", "default": ""},
+        status={"type": "string", "description": "pending/completed/failed/cancelled", "default": ""},
     )
 
     async def execute(self, subagent_name: str = "", status: str = "", **kwargs) -> str:
         manager, hint = _manager_or_hint()
         if manager is None:
             return hint
-        records = manager.list_tasks(
+        records, total = manager.list_tasks(
             agent_name=subagent_name or None, status=status or None,
         )
         if not records:
             return "No subagent task records found."
-        lines = [f"Subagent tasks ({len(records)}):"]
+        # Say how many are NOT shown — a truncated list presented as the total
+        # is a fact the caller cannot check.
+        shown = f"{len(records)}" if total == len(records) else f"{len(records)} of {total}"
+        lines = [f"Subagent tasks ({shown}):"]
         for r in records:
             mode = r.get("mode", "sync")
             lines.append(

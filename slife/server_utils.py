@@ -146,6 +146,7 @@ from slife.logfmt import (
     silence_noisy_loggers,
 )
 from slife.paths import agent_name
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -322,7 +323,7 @@ def warm_after_ready(
     mcp,
     factory: "Callable[[], Awaitable[None]]",
     *,
-    delay: float = 5.0,
+    delay: float | None = None,
     name: str = "warmup",
 ) -> None:
     """Run a heavyweight coroutine AFTER the first MCP ``tools/list``.
@@ -334,8 +335,9 @@ def warm_after_ready(
     connects) must NOT run in the lifespan.  Use this to warm up such
     resources in the background.
 
-    ``factory`` is awaited once (plus *delay* seconds' grace) on an
-    event-loop task; an exception is logged, never fatal.
+    ``factory`` is awaited once (plus the grace period) on an event-loop task;
+    an exception is logged, never fatal.  *delay* defaults to the registry
+    cadence ``pacing.warm_delay``.
 
     The grace period exists so the wrapper's first ``tools/list`` response
     is ALWAYS flushed before the warm-up starts: the first embedding
@@ -343,8 +345,10 @@ def warm_after_ready(
     import that blocks this loop).  If the warm-up began inside that window
     the response would be delayed by the import and the harness's spawn
     guard could time out a perfectly healthy plugin on a slow machine, so
-    the default delay is generous (5s) rather than a tight 0.25s.
+    the registry default is generous rather than a tight 0.25s.
     """
+    if delay is None:
+        delay = _timeouts.timeouts.pacing.warm_delay
     mcp.add_middleware(_WarmAfterReady(factory, delay, name))
 
 

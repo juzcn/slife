@@ -138,7 +138,7 @@ def _mesh(name: str) -> A2AMesh:
     ))
 
 
-async def _wait(pred, what: str, timeout: float = 6.0) -> None:
+async def _wait(pred, what: str, timeout: float = 6.0) -> None:  # noqa-timeout
     """Poll up to *timeout* s for *pred* to hold."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout

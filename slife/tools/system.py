@@ -1698,7 +1698,14 @@ class SetMidturnInputTool(Tool):
         if setter is not None:
             setter = setter.set_midturn_input
         if setter is None:
-            return "Error: agent service is not available yet — call this after the agent service has started."
+            # Two processes have no cut-in at all: one whose service is not up
+            # yet, and a worker — which runs one task per turn, so there is
+            # nothing to cut into.  Saying so beats the old silent success: the
+            # toggle landed in a process where it could never apply.
+            return (
+                "Error: mid-turn cut-in is unavailable in this process — a "
+                "worker runs one task per turn and never cuts into it."
+            )
         return setter(enabled)
 
 

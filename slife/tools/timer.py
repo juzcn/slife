@@ -12,13 +12,14 @@ import logging
 from typing import ClassVar
 
 from slife.tools.base import Tool, make_params
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
-#: Upper bound on ``wait_minutes`` — 1 day.  Anything larger is almost
-#: certainly a misplaced argument (``minutes`` vs ``hours``), and an unbounded
-#: value schedules a bogus multi-year timer the agent can't easily revoke.
-MAX_WAIT_MINUTES = 24 * 60
+#: Upper bound on ``wait_minutes`` is the registry bound
+#: ``pacing.timer_max_wait_minutes`` (1 day, in MINUTES).  Anything larger is
+#: almost certainly a misplaced argument (``minutes`` vs ``hours``), and an
+#: unbounded value schedules a bogus multi-year timer the agent can't revoke.
 
 
 class WaitMinutesTool(Tool):
@@ -48,10 +49,13 @@ class WaitMinutesTool(Tool):
             return "Error: minutes must be a whole number of minutes."
         if minutes < 1:
             return "Error: minutes must be at least 1."
-        if minutes > MAX_WAIT_MINUTES:
+        max_wait_minutes = _timeouts.timeouts.pacing.timer_max_wait_minutes
+        if minutes > max_wait_minutes:
+            hours = max_wait_minutes / 60
+            hours_text = f"{hours:.0f}h" if hours == int(hours) else f"{hours:.1f}h"
             return (
-                f"Error: minutes cannot exceed {MAX_WAIT_MINUTES} (24h). "
-                "Did you mean hours?"
+                f"Error: minutes cannot exceed {max_wait_minutes:.0f} "
+                f"({hours_text}). Did you mean hours?"
             )
         ctx = getattr(self, "_ctx", None)
         schedule_wakeup = (

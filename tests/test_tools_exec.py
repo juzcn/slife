@@ -128,7 +128,7 @@ class TestShellToolConstruction:
         assert tool.timeout == _timeouts.timeouts.work.shell
 
     def test_custom_timeout(self):
-        tool = ShellTool(timeout=60)
+        tool = ShellTool(timeout=60)  # noqa-timeout
         assert tool.timeout == 60
 
 
@@ -142,7 +142,7 @@ class TestShellToolExecute:
 
     @pytest.mark.asyncio
     async def test_successful_command(self):
-        tool = ShellTool(timeout=10)
+        tool = ShellTool(timeout=10)  # noqa-timeout
         mock_process = MagicMock()
         mock_process.stdout = _MockStream(b"hello world")
         mock_process.stderr = _MockStream(b"")
@@ -156,7 +156,7 @@ class TestShellToolExecute:
     @pytest.mark.asyncio
     async def test_command_not_found_error(self):
         """Non-existent command returns stderr, no crash."""
-        tool = ShellTool(timeout=10)
+        tool = ShellTool(timeout=10)  # noqa-timeout
         mock_process = MagicMock()
         mock_process.stdout = _MockStream(b"")
         mock_process.stderr = _MockStream(b"notfound: command not found")
@@ -170,7 +170,7 @@ class TestShellToolExecute:
 
     @pytest.mark.asyncio
     async def test_timeout_error(self):
-        tool = ShellTool(timeout=5)
+        tool = ShellTool(timeout=5)  # noqa-timeout
         mock_process = MagicMock()
         mock_process.stdout = _HangingStream()
         mock_process.stderr = _HangingStream()
@@ -190,7 +190,7 @@ class TestShellToolExecute:
     @pytest.mark.asyncio
     async def test_stderr_capture(self):
         """Stderr output is appended after stdout with a [stderr] label."""
-        tool = ShellTool(timeout=10)
+        tool = ShellTool(timeout=10)  # noqa-timeout
         mock_process = MagicMock()
         mock_process.stdout = _MockStream(b"stdout line")
         mock_process.stderr = _MockStream(b"stderr line")
@@ -206,7 +206,7 @@ class TestShellToolExecute:
     @pytest.mark.asyncio
     async def test_env_var_setting(self):
         """Environment variables set via shell syntax are visible to the command."""
-        tool = ShellTool(timeout=10)
+        tool = ShellTool(timeout=10)  # noqa-timeout
         mock_process = MagicMock()
         mock_process.stdout = _MockStream(b"my_value")
         mock_process.stderr = _MockStream(b"")
@@ -579,7 +579,7 @@ class TestErrorFormat:
 
     @pytest.mark.asyncio
     async def test_timeout_error_starts_with_error(self):
-        tool = ShellTool(timeout=1)
+        tool = ShellTool(timeout=1)  # noqa-timeout
         mock_process = MagicMock()
         mock_process.stdout = _HangingStream()
         mock_process.stderr = _HangingStream()

@@ -1,10 +1,24 @@
-"""Central registry for every timeout value in slife.
+"""Central registry for every time value in slife.
 
-All timeout values live HERE as typed dataclass defaults — this module is the
+All time values live HERE as typed dataclass defaults — this module is the
 single source of truth.  There is no external YAML/config file and no second
 seat for the same value: a developer tunes a value by editing the dataclass
 default and its comment, and a structurally invalid edit fails loudly at
 import (:func:`validate`).
+
+Two kinds of value share the file, because one file answering "what is this
+number and who owns it" beats two:
+
+- **budgets** (``work`` / ``ready`` / ``grace`` / ``transport`` / ``stream`` /
+  ``storage`` / ``deliver``) bound a single await — the owner-of-await rule.
+- **cadences** (``pacing``) are how OFTEN something runs — a poll period, a
+  heartbeat, a backoff step, a session lifetime.  A cadence never bounds an
+  await and a budget never sets a cadence; the role keeps that visible.
+
+Both are registry-owned.  A cadence left as a module constant is a second seat
+for a value the next reader has to go find, so the gate
+(``tests/test_no_magic_timeouts.py``) scans for time-valued literals and names
+alike, in ``slife/`` and in ``tests/``.
 
 CONVENTION (enforced by tests/test_no_magic_timeouts.py):
 
@@ -33,6 +47,14 @@ class TimeoutConfigError(ValueError):
 class Work:
     tool_budget: float = 120.0    # loop wait_for wrap for tools w/o native `timeout`/`_timeout`
     task_budget: float = 120.0    # subagent task bound + subagent stream cap
+    task_lifetime: float = 3600.0  # async worker task: a wedge backstop, not a
+                                  # caller's budget.  Nobody awaits an async
+                                  # task, so no await owns it — but a task
+                                  # that never ends wedges a serial worker and
+                                  # everything queued behind it, and nothing
+                                  # else would ever notice.  Deliberately far
+                                  # above task_budget: honest work is never
+                                  # meant to reach it.
     stall: float = 120.0          # LLM stream inactivity watchdog (resets per chunk)
     shell: float = 120.0          # execute_shell default timeout — generous backstop: the agent's injected timeout overrides it, so this base must not preempt longer work
     pip_install: float = 120.0    # pip_install tool deadline
@@ -103,6 +125,9 @@ class Transport:
     read: float | None = None      # DELEGATED — owned by the loop's tool budget
     write: float | None = None     # DELEGATED — owned by the loop's tool budget
     oauth: float = 30.0
+    oauth_refresh_skew: float = 60.0   # a token expiring within this counts as
+                                       # expired — refreshing after the wire
+                                       # deadline is a guaranteed 401
     poll_oauth: float = 300.0
     embed: float = 60.0
     embed_api: float = 10.0
@@ -136,6 +161,55 @@ class Deliver:
 
 
 @dataclass
+class Pacing:
+    """Cadences — how often something runs, never how long an await may block.
+
+    Every value here is a period between two events (a poll, a heartbeat, a
+    backoff step) or a lifetime after which a cached thing is stale.  They are
+    registry-owned like the budgets above: a cadence is a developer decision
+    about how the system breathes, and it needs the same one-seat answer.
+    """
+
+    heartbeat: float = 1800.0        # autonomous idle heartbeat period
+                                     # (``agent.heartbeat_interval`` overrides it)
+    schedule_poll: float = 30.0      # cron due-task poll — cron's unit is a
+                                     # minute, so a 30 s poll fires within half
+                                     # a minute of the due time
+    miss_grace: float = 120.0        # a fire whose due time is within this of
+                                     # "now" is freshly due; older, it was
+                                     # missed while slife was down
+    tunnel_probe: float = 1.0        # cadence between sharefile ``__check``
+                                     # probes while waiting for a terminal state
+    wechat_drain: float = 5.0        # harness → wechat plugin inbox drain
+    a2a_drain: float = 1.0           # harness → a2a plugin inbox drain
+    mcp_relist_initial: float = 5.0  # first delay before re-listing a server
+                                     # that reported no tools
+    mcp_relist_max: float = 60.0     # cap on that exponential backoff
+    mcp_relist_multiplier: float = 2.0
+    mcp_stderr_poll: float = 0.05    # stdio stderr drain cadence
+    oauth_poll: float = 5.0          # device-flow token-endpoint poll
+    oauth_poll_min: float = 1.0      # floor for that poll — a server answering
+                                     # ``interval=0`` must not spin the loop
+    media_poll: float = 15.0         # media async-task poll (the providers' own
+                                     # examples use 15 s)
+    sharefile_health: float = 30.0   # tunnel liveness probe cadence
+    typing_refresh: float = 8.0      # wechat typing-indicator refresh
+    typing_max_lifetime: float = 300.0  # bound on that keepalive — it must stop
+                                     # if the agent never replies
+    qr_poll: float = 2.0             # wechat QR status check
+    wechat_upstream_poll: float = 3.0   # wechat plugin → WeChat backend poll
+    wechat_session_max_age: float = 82800.0  # 23 h — past this the saved
+                                     # session is re-logged-in rather than used
+    reap_poll: float = 0.05          # process-reap poll between SIGTERM and
+                                     # SIGKILL (inside the caller's own deadline)
+    warm_delay: float = 5.0          # plugin warm-up grace after the readiness
+                                     # handshake, so the first ``tools/list``
+                                     # response is flushed first
+    timer_max_wait_minutes: float = 1440.0  # ``wait_minutes`` product bound —
+                                     # MINUTES, not seconds (24 h)
+
+
+@dataclass
 class Timeouts:
     work: Work = field(default_factory=Work)
     ready: Ready = field(default_factory=Ready)
@@ -144,6 +218,7 @@ class Timeouts:
     stream: Stream = field(default_factory=Stream)
     storage: Storage = field(default_factory=Storage)
     deliver: Deliver = field(default_factory=Deliver)
+    pacing: Pacing = field(default_factory=Pacing)
 
 
 # ── Validation ──────────────────────────────────────────────────────────
@@ -160,6 +235,7 @@ def validate(ts: Timeouts) -> list[str]:
         ("work", ts.work), ("ready", ts.ready), ("grace", ts.grace),
         ("transport", ts.transport), ("stream", ts.stream),
         ("storage", ts.storage), ("deliver", ts.deliver),
+        ("pacing", ts.pacing),
     ):
         for f in fields(obj):
             v = getattr(obj, f.name)
@@ -200,6 +276,30 @@ def validate(ts: Timeouts) -> list[str]:
         errs.append("invariant: ready.tunnel_heal >= ready.tunnel_read_url")
     if ts.work.stall <= 0:
         errs.append("invariant: work.stall must be > 0")
+    if ts.work.task_lifetime < ts.work.task_budget:
+        # A task nobody waits on must get at least the patience a task someone
+        # waits on gets; a shorter lifetime would abort async work that the
+        # synchronous path would still be waiting for.
+        errs.append(
+            "invariant: work.task_lifetime >= work.task_budget "
+            "(an async task must not expire before a waited one would)"
+        )
+    # Cadences: a period of zero is a busy loop, a backoff whose cap sits below
+    # its first step never grows, and a keepalive bound shorter than the
+    # refresh it bounds is not a bound.
+    for f in fields(ts.pacing):
+        if getattr(ts.pacing, f.name) <= 0:
+            errs.append(
+                f"invariant: pacing.{f.name} must be > 0 — a zero cadence spins"
+            )
+    if ts.pacing.mcp_relist_max < ts.pacing.mcp_relist_initial:
+        errs.append("invariant: pacing.mcp_relist_max >= pacing.mcp_relist_initial")
+    if ts.pacing.mcp_relist_multiplier < 1:
+        errs.append("invariant: pacing.mcp_relist_multiplier >= 1 (a backoff must grow)")
+    if ts.pacing.oauth_poll < ts.pacing.oauth_poll_min:
+        errs.append("invariant: pacing.oauth_poll >= pacing.oauth_poll_min")
+    if ts.pacing.typing_max_lifetime < ts.pacing.typing_refresh:
+        errs.append("invariant: pacing.typing_max_lifetime >= pacing.typing_refresh")
     return errs
 
 

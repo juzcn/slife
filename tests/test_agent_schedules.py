@@ -14,6 +14,12 @@ import pytest
 pytestmark = pytest.mark.unit
 
 from slife.agent import schedules as S
+import slife.timeouts as _timeouts
+
+
+def _pacing():
+    """The live cadence registry — a test patches HERE, never a module constant."""
+    return _timeouts.timeouts.pacing
 
 
 def _aware(y, mo, d, h=0, mi=0, s=0):
@@ -174,9 +180,9 @@ def test_classify_grace_boundary():
     # exactly at GRACE → still fire (<=)
     task = _task(last_run_due=_iso(_aware(2026, 8, 24, 9, 0)))
     due_time = _aware(2026, 8, 25, 9, 0)
-    at_grace = due_time + timedelta(seconds=S.MISS_GRACE)
+    at_grace = due_time + timedelta(seconds=_pacing().miss_grace)
     assert S._classify(task, at_grace)[0] == "fire"
-    just_past = due_time + timedelta(seconds=S.MISS_GRACE + 1)
+    just_past = due_time + timedelta(seconds=_pacing().miss_grace + 1)
     assert S._classify(task, just_past)[0] == "missed"
 
 
@@ -214,9 +220,13 @@ async def test_fire_task_now_dispatches_directly(monkeypatch):
     service.inbox = MagicMock()
     service.inbox.post = AsyncMock()
 
-    manager = AsyncMock()
+    manager = MagicMock()
     manager.spawn = AsyncMock(return_value="daily")
     manager.send_task_async = AsyncMock(return_value="rpc-1")
+    # get() is synchronous — it hands back the live process object, whose
+    # context_source is what the dispatch reports (the requested one is not
+    # necessarily the one a reused worker has).
+    manager.get = MagicMock(return_value=MagicMock(context_source="clean"))
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     result = await S.fire_task_now(service, "daily")
@@ -259,9 +269,13 @@ async def test_fire_task_now_clones_context_when_requested(monkeypatch):
     service = MagicMock()
     service._tool_ctx = ctx
 
-    manager = AsyncMock()
+    manager = MagicMock()
     manager.spawn = AsyncMock(return_value="daily")
     manager.send_task_async = AsyncMock(return_value="rpc-1")
+    # get() is synchronous and hands back the live process object, whose
+    # context_source is what the dispatch reports — a fresh spawn got the
+    # clone it asked for.
+    manager.get = MagicMock(return_value=MagicMock(context_source="cloned"))
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     result = await S.fire_task_now(service, "daily", clone_context=True)
@@ -271,6 +285,45 @@ async def test_fire_task_now_clones_context_when_requested(monkeypatch):
         context_messages=[{"role": "user", "content": "u1"},
                           {"role": "assistant", "content": "a1"}],
     )
+
+
+@pytest.mark.asyncio
+async def test_fire_task_now_reports_the_context_the_worker_really_has(monkeypatch):
+    """A reused worker keeps its own context — the note must not claim the
+    requested one (a "cloned" label on a clean worker is a lie the caller
+    would act on)."""
+    S._SCHEDULE_WORKERS.clear()
+    client = AsyncMock()
+
+    async def fake_call_tool(name, arguments=None):
+        if name == "__scheduled_task_by_name":
+            return ('{"id": 7, "name": "daily", "description": "d", '
+                    '"schedule": "0 9 * * *", "timezone": "", '
+                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+        if name == "__scheduled_record_run":
+            return "{}"
+        return "null"
+
+    client.call_tool = fake_call_tool
+    ctx = MagicMock()
+    ctx.memfiles_client = client
+    ctx.message_history = MagicMock(
+        messages=[{"role": "user", "content": "u1"}],
+    )
+    service = MagicMock()
+    service._tool_ctx = ctx
+
+    manager = MagicMock()
+    manager.spawn = AsyncMock(return_value="daily")
+    manager.send_task_async = AsyncMock(return_value="rpc-1")
+    manager.get = MagicMock(return_value=MagicMock(context_source="clean"))
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
+
+    result = await S.fire_task_now(service, "daily", clone_context=True)
+
+    assert "context: clean" in result
+    # The spawn was still ASKED for the clone (a fresh worker would get it).
+    assert manager.spawn.call_args.kwargs["context_source"] == "cloned"
 
 
 @pytest.mark.asyncio
@@ -296,9 +349,13 @@ async def test_fire_task_now_clone_falls_back_to_clean(monkeypatch):
     service = MagicMock()
     service._tool_ctx = ctx
 
-    manager = AsyncMock()
+    manager = MagicMock()
     manager.spawn = AsyncMock(return_value="daily")
     manager.send_task_async = AsyncMock(return_value="rpc-1")
+    # get() is synchronous — it hands back the live process object, whose
+    # context_source is what the dispatch reports (the requested one is not
+    # necessarily the one a reused worker has).
+    manager.get = MagicMock(return_value=MagicMock(context_source="clean"))
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     result = await S.fire_task_now(service, "daily", clone_context=True)
@@ -359,9 +416,13 @@ async def test_fire_task_now_backfill_transitions_given_due_at(monkeypatch):
     service = MagicMock()
     service._tool_ctx = ctx
 
-    manager = AsyncMock()
+    manager = MagicMock()
     manager.spawn = AsyncMock(return_value="daily")
     manager.send_task_async = AsyncMock(return_value="rpc-1")
+    # get() is synchronous — it hands back the live process object, whose
+    # context_source is what the dispatch reports (the requested one is not
+    # necessarily the one a reused worker has).
+    manager.get = MagicMock(return_value=MagicMock(context_source="clean"))
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     due = "2026-08-27T10:55:00+08:00"
@@ -446,9 +507,13 @@ async def test_fire_marks_pending_guard_then_clears_on_dispatch(monkeypatch):
     ctx.memfiles_client = client
     service._tool_ctx = ctx
 
-    manager = AsyncMock()
+    manager = MagicMock()
     manager.spawn = AsyncMock(return_value="daily")
     manager.send_task_async = AsyncMock(return_value="rpc-1")
+    # get() is synchronous — it hands back the live process object, whose
+    # context_source is what the dispatch reports (the requested one is not
+    # necessarily the one a reused worker has).
+    manager.get = MagicMock(return_value=MagicMock(context_source="clean"))
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     await S.fire_task_now(service, "daily")
@@ -647,7 +712,7 @@ async def test_schedule_loop_never_announces_missed_or_stale(monkeypatch):
     # The timed loop fires only — even with unconfirmed runs around, it must
     # never call the sweep nor post a missed notice.  Regression: the notice
     # used to be posted on every poll while a failed run stayed unresolved.
-    monkeypatch.setattr(S, "POLL_INTERVAL", 0.02)
+    monkeypatch.setattr(_pacing(), "schedule_poll", 0.02)
     calls: list[str] = []
 
     async def fake_call_tool(name, arguments=None):

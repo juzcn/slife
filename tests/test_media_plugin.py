@@ -469,7 +469,7 @@ class TestDashScopeAdapter:
         monkeypatch.setattr(dashscope_aigc.asyncio, "sleep", AsyncMock())
         with pytest.raises(MediaAdapterError, match="t-3"):
             await adapter.generate_video(
-                model="hh", prompt="x", deadline_s=0)
+                model="hh", prompt="x", deadline_s=0)  # noqa-timeout
 
     @pytest.mark.asyncio
     async def test_tts_flat_input_and_audio_url(self, monkeypatch):

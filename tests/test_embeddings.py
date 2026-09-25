@@ -191,7 +191,7 @@ async def test_probe_available_false_when_endpoint_unreachable():
         model="bge-m3", base_url="http://127.0.0.1:1/v1",
     )
     try:
-        assert await c.probe_available(timeout=1.0) is False
+        assert await c.probe_available(timeout=1.0) is False  # noqa-timeout
     finally:
         await c.close()
 

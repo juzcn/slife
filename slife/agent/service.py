@@ -76,8 +76,8 @@ _on_model_switched: list[Callable[[str], None]] = []
 # start retries up to 3× with 2s/4s backoff (~9s before it concludes).  The
 # harness probes __check until the plugin reports a terminal state, bounded
 # by the registry's ready.tunnel_settle (dev-owned), and surfaces "tunnel
-# down" only once.
-_TUNNEL_PROBE_INTERVAL = 1.0  # seconds — cadence between __check probes (not a budget)
+# down" only once.  The probe cadence between __check attempts is the registry
+# cadence ``pacing.tunnel_probe``.
 
 
 def _server_category(name: str) -> str:
@@ -309,7 +309,7 @@ class AgentService:
             max_iterations=config.max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             tool_timeout=config.tool_timeout,
-            cutin_enabled=config.cutin_enabled,
+            cutin_enabled=config.cutin_enabled and self.caps.cutin,
             context_window=config.active_model.context_window,
             context_ceiling=config.context_ceiling,
             context_floor=config.context_floor,
@@ -319,7 +319,13 @@ class AgentService:
             presence_provider=self._drain_presence_events,
             schedule_provider=self._schedule_pending_provider,
             a2a_stale_provider=self._a2a_stale_provider,
-            drop_context_turns=self.drop_context_turns,
+            # The persisted live-context list has ONE owner — the process whose
+            # turns are the thing it describes.  A worker's trim compacts its
+            # own in-memory history and must not evict turns from its parent's
+            # context, so the hook is the grant, not the role.
+            drop_context_turns=(
+                self.drop_context_turns if self.caps.turn_persistence else None
+            ),
             set_context_turns=self.set_context_turns,
             clear_context_turns=self.clear_context_turns,
             recall_turns=self.recall_turns,
@@ -329,8 +335,12 @@ class AgentService:
             # select from — and it would cost a discriminator call per task.
             # The role decides, not the config.
             rebuild_message=(
-                self.config.rebuild_message and not self.role.is_worker
+                self.config.rebuild_message and self.caps.recall
             ),
+            # Where the window ceiling is enforced, not whether it is: a
+            # persisted history is trimmed at the save point, a worker's at the
+            # request boundary (it has no save point).
+            persist_turns=self.caps.turn_persistence,
             stream_timeout=subagent_stream_timeout,
             stream_max_retries=None if self.caps.stream_retries else 0,
             tool_catalog=self._catalog,
@@ -342,8 +352,12 @@ class AgentService:
         self._tool_ctx.message_history = self.message_history
         # Runtime iteration-cap hook for the set_max_iterations tool.
         self._tool_ctx.set_max_iterations = self.agent_loop.set_max_iterations
-        # Runtime mid-turn preemption hook for the set_midturn_input tool.
-        self._tool_ctx.set_midturn_input = self.set_midturn_input
+        # Mid-turn preemption is a grant, and its hook follows the grant: a
+        # worker never cuts into its own task (one task per turn, nothing to
+        # cut in with), so the tool that toggles the policy is absent for it
+        # rather than present-and-inert.
+        if self.caps.cutin:
+            self._tool_ctx.set_midturn_input = self.set_midturn_input
         # USER.md write hook for the add_user_pref tool — re-render the
         # system prompt (re-reads USER.md) so the new preference is live
         # from the next call.  Populated for the main agent and subagents.
@@ -537,15 +551,16 @@ class AgentService:
     def _build_histories(self) -> MessageHistoryStore:
         """The inbox's history store for this role — built here, not by a boot.
 
-        The main agent has ONE context that persists for the session.  A worker
-        gets a fresh one-shot history per task, seeded from the clone its parent
-        sent at spawn — and a worker's system prompt is the subagent one, so the
-        store is built from the role rather than replaced afterwards.  (The
-        worker's boot used to swap ``inbox._histories`` and clear
-        ``_on_turn_complete`` after the service had wired itself; the
-        differences belong where the role is known.)
+        One grant, seen from the other side: the process that persists its
+        turns is the one whose context is continuous for the session.  A
+        process that does not gets a fresh one-shot history per task, seeded
+        from the clone its parent sent at spawn — and a worker's system prompt
+        is the subagent one, so the store is built from the grant rather than
+        replaced afterwards.  (The worker's boot used to swap
+        ``inbox._histories`` and clear ``_on_turn_complete`` after the service
+        had wired itself; the differences belong where the role is known.)
         """
-        if self.role.is_worker:
+        if not self.caps.turn_persistence:
             return WorkerHistoryStore(
                 build_system_prompt(self.config, is_subagent=True),
                 context_provider=lambda: self.inherited_context,
@@ -1103,7 +1118,7 @@ class AgentService:
                 return
             if _time.monotonic() >= deadline:
                 return  # never reached a terminal state — stay silent
-            await asyncio.sleep(_TUNNEL_PROBE_INTERVAL)
+            await asyncio.sleep(_timeouts.timeouts.pacing.tunnel_probe)
 
     def _report_tunnel_down(self, detail: str, provider: str = "") -> None:
         """Log the failure and surface a one-line warning to the TUI.
@@ -2234,7 +2249,7 @@ class AgentService:
     # behavior methods (_gate_wechat / _after_ready_wechat / the wechat poll
     # loop below) — the uniform engine drives them, there is no start_wechat.
 
-    async def _wechat_poll_loop(self, interval: float = 5.0) -> None:
+    async def _wechat_poll_loop(self, interval: float | None = None) -> None:
         """Poll the wechat plugin for new messages and inject them into the inbox.
 
         Uses the internal wechat_drain_incoming tool so all wechat-specific
@@ -2242,11 +2257,16 @@ class AgentService:
         process.  The main process only sees generic WeChat-channel messages.
         Replying to the peer is the model's job (wechat_send_message); the
         harness no longer auto-dispatches the assistant's text back out.
+
+        *interval* defaults to the registry cadence ``pacing.wechat_drain``;
+        tests pass a small value to drive the loop fast.
         """
         import json as _json
         from slife.a2a.identity import AgentMessage, Channel, WECHAT
         from slife.agent.message_history import wechat_marker
 
+        if interval is None:
+            interval = _timeouts.timeouts.pacing.wechat_drain
         logger.info("wechat_poll_loop_start interval=%.1fs", interval)
 
         while self.wechat_enabled:
@@ -2421,7 +2441,7 @@ class AgentService:
             return
 
         # Context trimming happens after this save, in
-        # AgentLoop._trim_after_save (invoked below once the row is written)
+        # AgentLoop._trim_context (invoked below once the row is written)
         # — it uses this turn's real API usage and appends a runtime
         # trim note.  Each turn is saved here via
         # memory_save_turn, so trimmed turns remain searchable.
@@ -2550,9 +2570,9 @@ class AgentService:
                 loop = getattr(self, "agent_loop", None)
                 if loop is not None:
                     try:
-                        await loop._trim_after_save(conv, handler)
+                        await loop._trim_context(conv, handler)
                     except Exception:
-                        logger.exception("trim_after_save_failed")
+                        logger.exception("trim_context_failed")
             else:
                 # The channel returned something that is neither a save
                 # ack nor an error object (non-JSON text, or JSON that
@@ -2630,7 +2650,7 @@ class AgentService:
 
         Restores the **exit-time context** verbatim: it reads the persisted
         ordered live-context id list (:meth:`SessionStore.get_context_turns`,
-        maintained by the save / ``_trim_after_save`` / the per-turn rebuild)
+        maintained by the save / ``_trim_context`` / the per-turn rebuild)
         and returns exactly those turns **in the list's order** — the slice the
         agent was working with when it exited.  No re-slicing against the
         ceiling: the list already encodes the trimmed state, so restore simply
@@ -2679,7 +2699,7 @@ class AgentService:
     async def drop_context_turns(self, turn_ids: list[int]) -> bool:
         """Persist the live context after the internal trim evicted turns.
 
-        Called by ``AgentLoop._trim_after_save`` with the ids it removed, so
+        Called by ``AgentLoop._trim_context`` with the ids it removed, so
         a restart rebuilds the exit-time context from exactly where the live
         one stood.  Best-effort — if the memdb channel is unreachable the
         list just stays longer than it should, which makes the next restore a
@@ -3394,7 +3414,7 @@ class AgentService:
     # methods (_gate_a2a / _after_ready_a2a / the a2a poll loop below) — the
     # uniform engine drives them, there is no start_a2a.
 
-    async def _a2a_poll_loop(self, interval: float = 1.0) -> None:
+    async def _a2a_poll_loop(self, interval: float | None = None) -> None:
         """Drain inbound a2a tasks/presence from the plugin into the inbox.
 
         The harness stays a thin client: it only drains the plugin's
@@ -3404,12 +3424,17 @@ class AgentService:
         ``message_type="task_response"`` message with the task_id — never a
         one-turn harness dispatch, because a task may need many turns.  The
         harness no longer auto-dispatches the turn's final text out.
+
+        *interval* defaults to the registry cadence ``pacing.a2a_drain``;
+        tests pass a small value to drive the loop fast.
         """
         import json as _json
         from slife.a2a.identity import AgentName, AgentMessage, Channel
         from slife.a2a.card import AgentCard, format_presence_line
         from slife.agent.message_history import a2a_marker
 
+        if interval is None:
+            interval = _timeouts.timeouts.pacing.a2a_drain
         logger.info("a2a_poll_loop_start interval=%.1fs", interval)
 
         while True:

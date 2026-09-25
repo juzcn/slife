@@ -33,8 +33,8 @@ _SYNC_PATH = "/services/aigc/multimodal-generation/generation"
 _VIDEO_PATH = "/services/aigc/video-generation/video-synthesis"
 _TTS_PATH = "/services/audio/tts/SpeechSynthesizer"
 
-#: Poll cadence for async tasks (Aliyun's own examples use 15 s).
-_POLL_INTERVAL = 15.0
+#: Poll cadence for async tasks is the registry cadence ``pacing.media_poll``
+#: (Aliyun's own examples use 15 s).
 
 #: Model params may carry this key to override the input field name that
 #: carries the reference image (dashscope i2v models vary: image_url /
@@ -216,7 +216,7 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
                     f"Generation task failed (status={status}): "
                     f"{output.get('message') or output.get('code') or 'no detail'}"
                 )
-            await asyncio.sleep(_POLL_INTERVAL)
+            await asyncio.sleep(_timeouts.timeouts.pacing.media_poll)
 
     # ── Local-file upload (two-step OSS) ─────────────────────────────
 

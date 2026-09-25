@@ -61,6 +61,23 @@ def _notify(method: str, params: dict | None = None) -> None:
     sys.stdout.buffer.flush()
 
 
+def cancelled_reply_text(reply_text: str) -> str:
+    """Label a preempted task's reply as partial output.
+
+    The loop can stop mid-task (the parent's ``worker/cancel``, or its own task
+    bound), and what it produced is then an *interrupted* answer.  The parent
+    usually discards such a reply — it cancelled the task itself — but for a
+    task that timed out the parent stores it as that task's late result (§6.4),
+    where an unlabelled truncated answer would read as the whole one.
+    """
+    if reply_text.strip():
+        return (
+            f"{reply_text}\n\n[interrupted — the task was cancelled before "
+            f"completion; the text above is partial]"
+        )
+    return "Error: task cancelled before completion"
+
+
 async def run_headless(argv: list[str] | None = None) -> None:
     # ``argv`` carries the FULL command line (program name included) — the
     # shared CLI scanner (``parse_cli_config_path``) slices ``argv[1:]``
@@ -289,6 +306,10 @@ async def run_headless(argv: list[str] | None = None) -> None:
                 async def _reply(
                     reply_text: str, cancelled: bool = False, rid=rpc_id,
                 ) -> None:
+                    if cancelled:
+                        # The loop was preempted mid-task — say so rather than
+                        # letting a partial answer pass for a whole one.
+                        reply_text = cancelled_reply_text(reply_text)
                     # The parent may already have discarded this task (it
                     # cancelled it) — writing the late result is harmless.
                     _write(result=reply_text, rpc_id=rid)

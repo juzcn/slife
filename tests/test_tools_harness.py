@@ -5,7 +5,7 @@ Covers:
   history tool names against the declared tools list).
 - _turn_prompt execute output.
 - The loop's auto-invoke producing normal tool-call pairs.
-- _trim_after_save: internal trim (after a turn is saved) uses real usage,
+- _trim_context: internal trim (after a turn is saved) uses real usage,
   appends a runtime trim note, and respects the restore exemption.
 - The _ensure_turn_consistent guarantee: an interrupted turn is restored to
   a consistent state — no orphaned tool_calls, and no consecutive user
@@ -19,6 +19,7 @@ import json
 import pytest
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from slife.agent.message_history import MessageHistory
 from slife.agent.loop import AgentLoop
@@ -227,7 +228,7 @@ class TestTurnPromptKwargsRestarted:
 
         kwargs = loop._turn_prompt_kwargs(conv, conv.count_tokens())
         assert kwargs.get("restarted") is True
-        # The restore marker is consumed by _trim_after_save, not the prompt.
+        # The restore marker is consumed by _trim_context, not the prompt.
         assert loop._just_restored_history == id(conv)
 
     def test_no_flag_for_other_histories(self):
@@ -242,7 +243,7 @@ class TestTurnPromptKwargsRestarted:
         assert "restarted" not in kwargs
 
 
-# ── Internal trim after save (_trim_after_save) ──────────────────────────
+# ── Internal trim after save (_trim_context) ──────────────────────────
 
 
 class TestRecallRebuild:
@@ -799,7 +800,7 @@ class TestRecallDiscriminator:
 
 
 class TestTrimAfterSave:
-    """_trim_after_save: called after a turn is saved, uses real usage,
+    """_trim_context: called after a turn is saved, uses real usage,
     appends a runtime trim note, and never shreds a restored context.
 
     The ceiling is the window's safety valve, so it holds in both modes —
@@ -851,7 +852,7 @@ class TestTrimAfterSave:
         await self._prime_usage(loop, conv)
         assert conv.count_tokens() > 160  # over 0.8 × 200 ceiling
 
-        await loop._trim_after_save(conv)
+        await loop._trim_context(conv)
 
         # oldest turns removed (each turn carries one user message)
         assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
@@ -871,7 +872,7 @@ class TestTrimAfterSave:
         await self._prime_usage(loop, conv)
         assert conv.count_tokens() > 160  # over 0.8 × 200 ceiling
 
-        await loop._trim_after_save(conv)
+        await loop._trim_context(conv)
 
         assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
         assert "oldest turns have been removed from context" in conv.messages[-1].get("content", "")
@@ -883,7 +884,7 @@ class TestTrimAfterSave:
         await self._prime_usage(loop, conv)
         assert conv.count_tokens() <= 160
 
-        await loop._trim_after_save(conv)
+        await loop._trim_context(conv)
 
         assert len([m for m in conv.messages if m.get("role") == "user"]) == 1
         assert not any("oldest turns have been removed from context" in (m.get("content") or "") for m in conv.messages)
@@ -899,7 +900,7 @@ class TestTrimAfterSave:
 
         loop = self._loop(conv, self._cfg(), drop=drop)
         await self._prime_usage(loop, conv)
-        await loop._trim_after_save(conv)
+        await loop._trim_context(conv)
 
         assert dropped, "drop_context_turns should be called with the evicted ids"
         survivors = [m for m in conv.messages if m.get("role") == "user"]
@@ -919,7 +920,7 @@ class TestTrimAfterSave:
         await self._prime_usage(loop, conv)
         assert conv.count_tokens() > 160
 
-        await loop._trim_after_save(conv)
+        await loop._trim_context(conv)
 
         # The marker is consumed and nothing was trimmed.
         assert loop._just_restored_history is None
@@ -934,11 +935,11 @@ class TestTrimAfterSave:
         loop._just_restored_history = id(conv)
         await self._prime_usage(loop, conv)
         # First save consumes the marker without trimming...
-        await loop._trim_after_save(conv)
+        await loop._trim_context(conv)
         assert loop._just_restored_history is None
         # ...but the second save trims (real usage still over ceiling).
         await self._prime_usage(loop, conv)
-        await loop._trim_after_save(conv)
+        await loop._trim_context(conv)
         assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
         assert "oldest turns have been removed from context" in conv.messages[-1].get("content", "")
 
@@ -954,12 +955,99 @@ class TestTrimAfterSave:
         loop._context_turn_dates = ["2026-08-01 10:05:00"]
         await self._prime_usage(loop, conv)
 
-        await loop._trim_after_save(conv)
+        await loop._trim_context(conv)
 
         # The single tracked date was popped; the range must not point at it.
         assert loop._context_turn_dates == []
         assert loop._context_time_start != "2026-08-01 10:05:00"
         assert loop._context_time_start  # reset to a fresh current-turn stamp
+
+
+class TestTheWorkerWindowBound:
+    """A worker has no save point, so its ceiling lives at the request boundary.
+
+    The bound is not the role's — only its owner is.  A worker's context is
+    where the growth is worst (a clone starts at the parent's whole history) and
+    ``save_to_memory`` — the other caller — never runs for it.
+    """
+
+    @staticmethod
+    def _cfg():
+        from slife.config import Config, ModelConfig
+        return Config(
+            models=[ModelConfig(ref="t/m", provider="t", api_model="m",
+                                display_name="M", api_key="k",
+                                context_window=200, supports_vision=False)],
+            active_model_ref="t/m", tools=[], agent_name="test",
+        )
+
+    @staticmethod
+    def _conv(turns):
+        conv = MessageHistory(system_prompt="SYS")
+        for i in range(turns):
+            conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大Context usage估计。")
+            conv.add_assistant_message(f"这是第{i}轮的回复，也需要一定长度以参与 token 估算。")
+        return conv
+
+    @staticmethod
+    def _loop(cfg, **kwargs):
+        from slife.agent.llm_client import LLMClient
+        return AgentLoop(
+            llm_client=LLMClient(cfg.active_model),
+            tool_registry=create_tools_from_config(),
+            context_window=200, context_ceiling=0.8, context_floor=0.2,
+            persist_turns=kwargs.get("persist_turns", True),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_worker_compacts_an_unmeasured_request_it_is_about_to_send(self):
+        """The first request of a task is the one a clone arrives oversized for.
+
+        No API call has measured the history yet, so the real-usage reading is
+        0 — without the estimate standing in, the ceiling would simply not
+        apply to the request that most needs it.
+        """
+        from slife.agent.llm_client import StreamChunk, TokenUsage
+
+        conv = self._conv(12)
+        loop = self._loop(self._cfg(), persist_turns=False)
+        assert conv.count_tokens() > 160  # over 0.8 × 200
+        sent: list[int] = []
+
+        async def mock_stream(messages, tools, **kwargs):
+            sent.append(len(messages))
+            yield StreamChunk(content="done")
+            yield StreamChunk(usage=TokenUsage(5, 2, 7))
+
+        with patch.object(loop.llm_client, "chat_stream", side_effect=mock_stream):
+            result = await loop.run("do the task", conv)
+
+        assert result.text == "done"
+        assert sent and sent[0] < 12, "the request went out untrimmed"
+
+    @pytest.mark.asyncio
+    async def test_a_persisted_loop_leaves_its_first_request_to_the_save_point(self):
+        """The main agent's ceiling is the save point's — unchanged by this.
+
+        Its trim uses the *real* usage of the just-finished call; moving the
+        check to the request boundary for it would replace that with an
+        estimate and change when the main context is compacted.
+        """
+        from slife.agent.llm_client import StreamChunk, TokenUsage
+
+        conv = self._conv(12)
+        loop = self._loop(self._cfg())
+        sent: list[int] = []
+
+        async def mock_stream(messages, tools, **kwargs):
+            sent.append(len(messages))
+            yield StreamChunk(content="done")
+            yield StreamChunk(usage=TokenUsage(5, 2, 7))
+
+        with patch.object(loop.llm_client, "chat_stream", side_effect=mock_stream):
+            await loop.run("do the task", conv)
+
+        assert sent and sent[0] > 12, "a persisted loop must not trim before the save"
 
 
 # ── Auto-invoke + consecutive-user fix ───────────────────────────────────

@@ -92,7 +92,16 @@ class Caps:
 
     #: Saving turns to memory.  A worker's turns are ephemeral by design; its
     #: *result* reaches the parent's history through the parent's own turn.
+    #: The persisted *live-context list* belongs to the same owner: its ids are
+    #: written by a rebuild and dropped by a trim, so a second process editing
+    #: them would have a worker evicting turns from its parent's context.
     turn_persistence: bool = True
+
+    #: The per-turn context rebuild — the discriminator call that selects which
+    #: history turns and which memory entries the turn runs on.  A worker's
+    #: history is one-shot per task, so there is nothing to select from, and the
+    #: call would cost a model round-trip per task to decide nothing.
+    recall: bool = True
 
     #: The inbox's startup gate — no turn runs until every plugin spawn has
     #: converged.  A worker spawns none, so nothing would ever open the gate.

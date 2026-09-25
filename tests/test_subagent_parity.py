@@ -41,42 +41,56 @@ from slife.tools.semantic import SemanticManager, SemanticReader
 REPO = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO / "slife"
 
-#: ``is_subagent`` uses that are the agent's IDENTITY, not a capability: which
-#: system-prompt template to render, and a factory parameter that exists to be
+#: The spellings a role difference used to be written in.  ``is_subagent`` was
+#: the original one; when the roles gained a name the branches moved to
+#: ``is_worker``/``is_main`` — and the guard, which only knew the first, went on
+#: passing while ``service.py`` gated a capability with ``not
+#: self.role.is_worker``.  A guard that only recognises the retired synonym is
+#: prose, so all three are scanned.
+GATE_NAMES = ("is_subagent", "is_worker", "is_main")
+
+#: Role reads that are the agent's IDENTITY, not a capability: which
+#: system-prompt template to render, and the factory parameter that exists to be
 #: deliberately ignored (``tools/factory.py`` — "there is intentionally no
-#: subagent-specific gate").  Named per file so a new one cannot hide.
+#: subagent-specific gate"; it logs the flag and acts on nothing).  Named per
+#: file so a new one cannot hide.
 IDENTITY_USES = {
     # name = "subagent.j2" if is_subagent else "agent.j2"
     "agent/system_prompt.py": "which identity template to render",
+    # logger.info("tools_loaded …", …, is_subagent) — states the identity it was
+    # handed; the value is never branched on.
+    "tools/factory.py": "the factory records the identity it was told",
 }
 
 
 def _role_gates() -> list[str]:
-    """Every ``is_subagent`` *branch* or attribute read in the tree.
+    """Every role *read* in the tree that is not an identity statement.
 
-    A keyword argument (``is_subagent=True``) and a function parameter are not
-    gates — they are how a caller states its identity.  What this looks for is
-    the pattern that made the worker's capability set emergent: a conditional
-    hanging off the boolean, an attribute consulted as if it were a capability.
+    A keyword argument (``is_subagent=role.is_worker``) is not a gate — it is
+    how a caller states its identity.  What this looks for is the pattern that
+    made the worker's capability set emergent: the boolean consulted as if it
+    were a capability — a condition, an assignment, a returned value — instead
+    of a declared grant read through ``self.caps``.
     """
     found: list[str] = []
     for path in sorted(SOURCE_ROOT.rglob("*.py")):
         rel = path.relative_to(SOURCE_ROOT).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        # Values of keyword arguments: the one place a role read is a statement
+        # of identity rather than a decision made from it.
+        keyword_values = {
+            id(kw.value) for kw in ast.walk(tree) if isinstance(kw, ast.keyword)
+        }
         for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr == "is_subagent":
-                found.append(f"{rel}:{node.lineno}: attribute is_subagent")
+            if isinstance(node, ast.Attribute):
+                name = node.attr
+            elif isinstance(node, ast.Name):
+                name = node.id
+            else:
                 continue
-            if not isinstance(node, ast.Name) or node.id != "is_subagent":
+            if name not in GATE_NAMES or id(node) in keyword_values:
                 continue
-            # A Name inside a condition — ``if not self.is_subagent``,
-            # ``X if is_subagent else Y``, ``while is_subagent``.
-            for parent in ast.walk(tree):
-                if not isinstance(parent, (ast.If, ast.IfExp, ast.While)):
-                    continue
-                if any(child is node for child in ast.walk(parent.test)):
-                    found.append(f"{rel}:{node.lineno}: is_subagent branch")
-                    break
+            found.append(f"{rel}:{node.lineno}: {name}")
     return found
 
 
@@ -98,6 +112,36 @@ def test_no_role_gate_outside_the_table():
         "role gate(s) outside slife/agent/roles.py — declare a capability in "
         "Caps and read `self.caps.<name>` instead:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_the_guard_recognises_every_role_spelling():
+    """The scan is not allowed to go blind again.
+
+    The guard can only fail on the spellings it knows, so this pins the set: a
+    branch on any of them is reported, and a keyword argument (an identity
+    statement) is not.  Without this, renaming the role property would quietly
+    retire the whole check — which is exactly what happened once.
+    """
+    assert set(GATE_NAMES) == {"is_subagent", "is_worker", "is_main"}
+    for spelling in GATE_NAMES:
+        tree = ast.parse(
+            f"if x.{spelling}:\n    pass\n"
+            f"if not x.{spelling}:\n    pass\n"
+            f"y = x.{spelling}\n"
+            f"f({spelling}=x.{spelling})\n"
+        )
+        keyword_values = {
+            id(kw.value) for kw in ast.walk(tree) if isinstance(kw, ast.keyword)
+        }
+        reads = [
+            node for node in ast.walk(tree)
+            if (isinstance(node, ast.Attribute) and node.attr == spelling)
+            and id(node) not in keyword_values
+        ]
+        assert len(reads) == 3, (
+            f"{spelling}: a branch or a value read must be caught, a keyword "
+            f"argument must not"
+        )
 
 
 def test_the_worker_is_granted_nothing_by_default():
@@ -149,11 +193,21 @@ def test_the_two_roles_differ_by_exactly_the_declared_capabilities(sample_config
     assert not isinstance(main.inbox._histories, WorkerHistoryStore)
     assert isinstance(worker.inbox._histories, WorkerHistoryStore)
 
+    # The window bound is not the role's — only *where* it is enforced is.  A
+    # worker has no save point, so it enforces it at the request boundary; and
+    # it must not hold the hook that edits the parent's persisted context list.
+    assert main.agent_loop.persist_turns is True
+    assert worker.agent_loop.persist_turns is False
+    assert main.agent_loop.drop_context_turns is not None
+    assert worker.agent_loop.drop_context_turns is None
+
     # The hooks the scheduling / cut-in capabilities wire onto the tool ctx.
     assert main._tool_ctx.fire_schedule_now is not None
     assert worker._tool_ctx.fire_schedule_now is None
     assert main._tool_ctx.schedule_wakeup is not None
     assert worker._tool_ctx.schedule_wakeup is None
+    assert main._tool_ctx.set_midturn_input is not None
+    assert worker._tool_ctx.set_midturn_input is None
     assert main._tool_ctx.extract_injectable is not None
     assert worker._tool_ctx.extract_injectable is None
 
@@ -164,13 +218,48 @@ def test_the_two_roles_differ_by_exactly_the_declared_capabilities(sample_config
     assert main_tools == worker_tools != set()
 
 
+def test_a_worker_never_rebuilds_its_context(sample_config):
+    """The per-turn rebuild is the main agent's policy — a worker runs it off.
+
+    A worker's history is one-shot per task, so recall has nothing to select
+    from and the discriminator call would be a model round-trip per task spent
+    deciding nothing.  It has to hold whatever the config says: the yaml's
+    ``rebuild_message`` is a *policy* switch, and the grant (``recall``) is what
+    decides who holds it.
+    """
+    import dataclasses
+
+    cfg = dataclasses.replace(sample_config, rebuild_message=True)
+    main = AgentService(cfg, role=Role.MAIN)
+    worker = AgentService(cfg, role=Role.WORKER)
+    assert main.agent_loop.rebuild_message is True
+    assert worker.agent_loop.rebuild_message is False
+
+
+def test_a_worker_never_cuts_into_its_own_turn(sample_config):
+    """Mid-turn preemption is the main agent's — a worker runs one task per
+    turn, so there is nothing to cut in with.
+
+    Like the rebuild, it is the *grant* that decides: the yaml's
+    ``cutin_enabled`` is a policy switch the main agent's user can flip, and a
+    worker holds the capability that would let the switch apply to it at all.
+    """
+    import dataclasses
+
+    cfg = dataclasses.replace(sample_config, cutin_enabled=True)
+    main = AgentService(cfg, role=Role.MAIN)
+    worker = AgentService(cfg, role=Role.WORKER)
+    assert main.agent_loop.cutin_enabled is True
+    assert worker.agent_loop.cutin_enabled is False
+
+
 def test_a_worker_history_is_one_shot_and_seeded_by_the_clone(sample_config):
     """A worker's context is per-task: the clone seeds it, nothing carries over.
 
     The parent's history is sent once, at spawn; each task then runs on its own
-    history so a subagent cannot accumulate context across tasks (``docs/
-    SUBAGENT.md``).  Turn persistence is off for the same reason — the result
-    reaches the parent's history as the parent's own turn.
+    history so a subagent cannot accumulate context across tasks (``DESIGN.md``
+    §6.2).  Turn persistence is off for the same reason — the result reaches the
+    parent's history as the parent's own turn.
     """
     _main, worker = _services(sample_config)
     from slife.a2a.identity import AgentName
@@ -185,7 +274,11 @@ def test_a_worker_history_is_one_shot_and_seeded_by_the_clone(sample_config):
         {"role": "user", "content": "earlier"},
     ]
     second = store.get_or_create(AgentName("worker"))
-    assert [m["role"] for m in second.messages] == ["system", "user"]
+    # The clone is seeded, then repaired to a consistent history: it ends on a
+    # user message, so a closing assistant line is added (the same invariant
+    # restore and a rebuild enforce — a provider rejects a history whose roles
+    # do not alternate).
+    assert [m["role"] for m in second.messages] == ["system", "user", "assistant"]
     assert second.messages[1]["content"] == "earlier"
     # A later task gets its own history, not the one already handed out.
     third = store.get_or_create(AgentName("worker"))

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from slife.subagent.headless import _write, _notify, main
+from slife.subagent.headless import _write, _notify, cancelled_reply_text, main
 
 
 class TestWrite:
@@ -220,3 +220,22 @@ class TestMain:
                 main(["prog", "somefile.yaml", "--debug"])
                 mock_run.assert_called_once()
                 mock_rh.assert_called_once_with(["prog", "somefile.yaml", "--debug"])
+
+
+class TestCancelledReplyText:
+    """A preempted task's reply says it was preempted.
+
+    The parent discards a cancelled reply when it cancelled the task itself —
+    but a task that TIMED OUT has its late reply stored as the task's result,
+    and there a truncated answer must not read as the whole one.
+    """
+
+    def test_partial_output_is_labelled(self):
+        out = cancelled_reply_text("half a sentence")
+        assert out.startswith("half a sentence")
+        assert "cancelled" in out and "partial" in out
+
+    def test_no_output_becomes_an_error_not_an_empty_success(self):
+        out = cancelled_reply_text("   ")
+        assert out.startswith("Error:")
+        assert "cancelled" in out

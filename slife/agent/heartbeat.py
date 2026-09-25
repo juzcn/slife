@@ -20,15 +20,16 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+
 if TYPE_CHECKING:
     from slife.agent.loop import TokenUsage, ToolCallInfo
     from slife.agent.service import AgentService
 
 logger = logging.getLogger(__name__)
 
-#: Default idle heartbeat interval (seconds) — overridable via
-#: ``agent.heartbeat_interval`` in slife.yaml.
-HEARTBEAT_INTERVAL = 1800
+#: The default idle interval is the registry cadence ``pacing.heartbeat``,
+#: overridable per user via ``agent.heartbeat_interval`` in slife.yaml.
 
 # The "[Heartbeat]" prefix is the TUI filter mark — restore / live both
 # recognise heartbeat turns by it.  The reply contract lives in the
@@ -95,13 +96,15 @@ async def heartbeat_loop(service: "AgentService") -> None:
     from slife.a2a.identity import HEARTBEAT, AgentMessage, Channel
 
     try:
-        interval = float(getattr(service.config, "heartbeat_interval", HEARTBEAT_INTERVAL))
+        interval = float(getattr(
+            service.config, "heartbeat_interval", _timeouts.timeouts.pacing.heartbeat,
+        ))
     except (TypeError, ValueError):
-        interval = HEARTBEAT_INTERVAL
+        interval = _timeouts.timeouts.pacing.heartbeat
     if interval <= 0:
         # A non-positive interval (e.g. a bad config value) would either
         # raise in asyncio.sleep or spin the loop — fall back to default.
-        interval = HEARTBEAT_INTERVAL
+        interval = _timeouts.timeouts.pacing.heartbeat
     while True:
         await asyncio.sleep(interval)
         try:

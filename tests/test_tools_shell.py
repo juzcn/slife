@@ -72,7 +72,7 @@ class TestShellConstruction:
         assert tool.timeout == _timeouts.timeouts.work.shell
 
     def test_custom_timeout(self):
-        tool = ShellTool(timeout=60)
+        tool = ShellTool(timeout=60)  # noqa-timeout
         assert tool.timeout == 60
 
 
@@ -85,7 +85,7 @@ class TestShellExecute:
     @pytest.mark.asyncio
     async def test_successful_command(self):
         """Command runs and returns stdout."""
-        tool = ShellTool(timeout=10)
+        tool = ShellTool(timeout=10)  # noqa-timeout
 
         mock_process = MagicMock()
         mock_process.stdout = _MockStream(b"hello world")
@@ -102,7 +102,7 @@ class TestShellExecute:
         """execute spawns the detected shell (not COMSPEC=cmd.exe) — so a
         powershell-detected Windows runs ``powershell …``, and the argv is
         passed through create_subprocess_exec."""
-        tool = ShellTool(timeout=10)
+        tool = ShellTool(timeout=10)  # noqa-timeout
 
         mock_process = MagicMock()
         mock_process.stdout = _MockStream(b"ok")
@@ -118,7 +118,7 @@ class TestShellExecute:
     @pytest.mark.asyncio
     async def test_command_with_stderr(self):
         """Command returns combined stdout and stderr."""
-        tool = ShellTool(timeout=10)
+        tool = ShellTool(timeout=10)  # noqa-timeout
 
         mock_process = MagicMock()
         mock_process.stdout = _MockStream(b"output")
@@ -135,7 +135,7 @@ class TestShellExecute:
     @pytest.mark.asyncio
     async def test_command_timeout(self):
         """Command times out."""
-        tool = ShellTool(timeout=1)
+        tool = ShellTool(timeout=1)  # noqa-timeout
 
         mock_process = MagicMock()
         mock_process.stdout = _HangingStream()
@@ -157,7 +157,7 @@ class TestShellExecute:
         """B2 regression (tool level) — a `timeout: 0`/negative is treated
         as the tool default, never forwarded into `wait_for(..., timeout=0)`
         which would fire instantly and kill the command on arrival."""
-        tool = ShellTool(timeout=10)
+        tool = ShellTool(timeout=10)  # noqa-timeout
 
         for bad in (0, -5):
             mock_process = MagicMock()  # fresh pipes — _MockStream is one-shot
@@ -175,7 +175,7 @@ class TestShellExecute:
     @pytest.mark.asyncio
     async def test_empty_output(self):
         """Commands with no output return exit code info."""
-        tool = ShellTool(timeout=10)
+        tool = ShellTool(timeout=10)  # noqa-timeout
 
         mock_process = MagicMock()
         mock_process.stdout = _MockStream(b"")
@@ -191,7 +191,7 @@ class TestShellExecute:
     @pytest.mark.asyncio
     async def test_empty_output_with_whitespace(self):
         """Whitespace-only output is treated as empty."""
-        tool = ShellTool(timeout=10)
+        tool = ShellTool(timeout=10)  # noqa-timeout
 
         mock_process = MagicMock()
         mock_process.stdout = _MockStream(b"   \n  ")
@@ -206,7 +206,7 @@ class TestShellExecute:
     @pytest.mark.asyncio
     async def test_unicode_decode_errors(self):
         """Non-decodable output is handled with replacement chars."""
-        tool = ShellTool(timeout=10)
+        tool = ShellTool(timeout=10)  # noqa-timeout
 
         mock_process = MagicMock()
         mock_process.stdout = _MockStream(b"\xff\xfeinvalid")

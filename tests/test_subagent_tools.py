@@ -152,6 +152,44 @@ class TestSpawnSubagentTool:
             assert "reused" in result.lower()
 
     @pytest.mark.asyncio
+    async def test_a_reused_worker_reports_the_context_it_really_has(self):
+        """spawn() does not re-context a running worker — say what it has.
+
+        Reporting the requested context would be a fact the caller acts on (a
+        "cloned" worker that is in fact clean answers from an empty history).
+        """
+        from slife.agent.message_history import MessageHistory
+        from slife.config import Config, ModelConfig
+        from slife.tools.context import ToolContext
+
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("t1")
+        conv.add_assistant_message("r1")
+        mc = ModelConfig(
+            ref="t/m", provider="t", api_model="m", display_name="M",
+            api_key="k", context_window=1000,
+        )
+        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
+
+        mock_mgr = MagicMock()
+        mock_mgr.spawn = AsyncMock(return_value="worker")
+        mock_mgr.spawned_running = MagicMock(return_value=True)
+        existing = MagicMock()
+        existing.context_source = "clean"
+        mock_mgr.get = MagicMock(return_value=existing)
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = SpawnSubagentTool()
+            object.__setattr__(tool, "_ctx", ToolContext(message_history=conv, config=cfg))
+            result = await tool.execute(subagent_name="worker", clone_context=True)
+
+        # It asked for a clone; the live worker is clean, and that is what the
+        # caller is told (the request was not applied to it).
+        assert mock_mgr.spawn.call_args.kwargs["context_source"] == "cloned"
+        assert "Context: clean" in result
+        assert "kept from its original spawn" in result
+
+    @pytest.mark.asyncio
     async def test_spawn_requires_name(self):
         """No auto-generated id — subagent_name is required."""
         mock_mgr = MagicMock()
@@ -323,6 +361,28 @@ class TestSubagentSendTaskTool:
         assert "NOT delivered automatically" in result
 
     @pytest.mark.asyncio
+    async def test_a_worker_timeout_hands_back_the_task_id(self):
+        """The preempted task's id is the caller's only way to its late result.
+
+        Without it the timeout is a dead end: the result is stored, and the
+        caller has nothing to poll with.
+        """
+        from slife.subagent.process import TaskTimeout
+
+        mock_mgr = MagicMock()
+        mock_mgr.is_busy = MagicMock(return_value=False)
+        mock_mgr.send_task = AsyncMock(
+            side_effect=TaskTimeout("timed out", "rpc-42"),
+        )
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = SubagentSendTaskTool()
+            result = await tool.execute(subagent_name="sub-1", task="do X")
+
+        assert "rpc-42" in result
+        assert "subagent_get_task_result" in result
+
+    @pytest.mark.asyncio
     async def test_send_busy_converts_to_async(self):
         """A sync send to a busy worker queues the task as async — no resend."""
         mock_mgr = MagicMock()
@@ -413,7 +473,7 @@ class TestSubagentGetTaskResultTool:
     @pytest.mark.asyncio
     async def test_result_pending(self):
         mock_mgr = MagicMock()
-        mock_mgr.get_task_result = MagicMock(return_value=None)
+        mock_mgr.get_task_result = MagicMock(return_value=("pending", None))
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentGetTaskResultTool()
@@ -423,12 +483,36 @@ class TestSubagentGetTaskResultTool:
     @pytest.mark.asyncio
     async def test_result_ready(self):
         mock_mgr = MagicMock()
-        mock_mgr.get_task_result = MagicMock(return_value="the result")
+        mock_mgr.get_task_result = MagicMock(return_value=("completed", "the result"))
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentGetTaskResultTool()
             result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
         assert result == "the result"
+
+    @pytest.mark.asyncio
+    async def test_unknown_task_id_says_so(self):
+        """An unknown id is not "pending" — waiting is the wrong response."""
+        mock_mgr = MagicMock()
+        mock_mgr.get_task_result = MagicMock(return_value=("unknown", None))
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = SubagentGetTaskResultTool()
+            result = await tool.execute(subagent_name="sub-1", task_id="typo")
+        assert "Unknown" in result or "unknown" in result
+        assert result != "pending"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_task_reports_its_state(self):
+        mock_mgr = MagicMock()
+        mock_mgr.get_task_result = MagicMock(
+            return_value=("cancelled", "Cancelled by parent"),
+        )
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = SubagentGetTaskResultTool()
+            result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
+        assert result == "Cancelled by parent"
 
 
 class TestSubagentListTasksTool:
@@ -442,7 +526,7 @@ class TestSubagentListTasksTool:
     @pytest.mark.asyncio
     async def test_no_records(self):
         mock_mgr = MagicMock()
-        mock_mgr.list_tasks = MagicMock(return_value=[])
+        mock_mgr.list_tasks = MagicMock(return_value=([], 0))
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentListTasksTool()
             result = await tool.execute()
@@ -451,7 +535,7 @@ class TestSubagentListTasksTool:
     @pytest.mark.asyncio
     async def test_lists_records(self):
         mock_mgr = MagicMock()
-        mock_mgr.list_tasks = MagicMock(return_value=[
+        mock_mgr.list_tasks = MagicMock(return_value=([
             {
                 "task_id": "rpc-1", "agent_name": "sub-1", "status": "pending",
                 "preview": "do X", "result": None,
@@ -460,7 +544,7 @@ class TestSubagentListTasksTool:
                 "task_id": "rpc-2", "agent_name": "sub-2", "status": "completed",
                 "preview": "do Y", "result": "done",
             },
-        ])
+        ], 2))
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentListTasksTool()
             result = await tool.execute()
@@ -468,11 +552,27 @@ class TestSubagentListTasksTool:
         assert "rpc-2" in result
         assert "pending" in result
         assert "completed" in result
+        assert "2" in result
+
+    @pytest.mark.asyncio
+    async def test_a_truncated_list_says_how_many_are_hidden(self):
+        """A capped list must not present itself as the whole of it."""
+        mock_mgr = MagicMock()
+        mock_mgr.list_tasks = MagicMock(return_value=([
+            {
+                "task_id": "rpc-1", "agent_name": "sub-1", "status": "pending",
+                "preview": "do X", "result": None,
+            },
+        ], 137))
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = SubagentListTasksTool()
+            result = await tool.execute()
+        assert "1 of 137" in result
 
     @pytest.mark.asyncio
     async def test_filters_passed_through(self):
         mock_mgr = MagicMock()
-        mock_mgr.list_tasks = MagicMock(return_value=[])
+        mock_mgr.list_tasks = MagicMock(return_value=([], 0))
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentListTasksTool()
             await tool.execute(subagent_name="sub-1", status="pending")

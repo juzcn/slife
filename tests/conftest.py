@@ -144,7 +144,7 @@ def _track_aiosqlite_creations() -> None:
     aiosqlite.Connection._slife_tracked = True
 
 
-def _reap_leaked_connections(deadline_s: float = 10.0) -> list[str]:
+def _reap_leaked_connections(deadline_s: float = 10.0) -> list[str]:  # noqa-timeout
     """Stop every still-running aiosqlite worker; return one line per leak.
 
     Bounded in aggregate, not per connection: one wedged worker must not cost

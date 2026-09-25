@@ -74,7 +74,7 @@ class RecallPolicy:
 
     The bound the *total* has to respect.  A context's life runs between the
     floor and the ceiling — the trim only fires at the ceiling and compacts
-    *to* the floor (``AgentLoop._trim_after_save``) — so the floor is the
+    *to* the floor (``AgentLoop._trim_context``) — so the floor is the
     wrong denominator for a caller that already has turns in hand: it grants
     no headroom the moment the context reaches it, which is most of the time.
     The headroom below the ceiling is what is actually left to spend.

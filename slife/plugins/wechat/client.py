@@ -98,8 +98,6 @@ class WechatClawbotClient:
         await client.stop()
     """
 
-    SESSION_MAX_AGE = 23 * 3600  # re-login if older than 23 hours
-
     def __init__(self) -> None:
         self._bot_token: str = ""
         self._base_url: str = BASE_URL
@@ -202,8 +200,9 @@ class WechatClawbotClient:
             return False
 
         saved_at = saved.get("saved_at", 0)
-        if time.time() - saved_at > self.SESSION_MAX_AGE:
-            logger.debug("session_expired age_hours=%s", self.SESSION_MAX_AGE // 3600)
+        if time.time() - saved_at > _timeouts.timeouts.pacing.wechat_session_max_age:
+            logger.debug("session_expired age_hours=%s",
+                         _timeouts.timeouts.pacing.wechat_session_max_age // 3600)
             return False
 
         bot_token = saved.get("bot_token")

@@ -432,7 +432,7 @@ class TestKillOnCloseJob:
             assert assign_to_job_object(proc.pid, label="test-child") is True
         finally:
             proc.kill()
-            proc.wait(timeout=10)
+            proc.wait(timeout=10)  # noqa-timeout
 
     @pytest.mark.skipif(not IS_WINDOWS, reason="Windows only")
     def test_unopenable_pid_is_not_a_failure(self):

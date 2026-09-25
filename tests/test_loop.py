@@ -468,7 +468,7 @@ class TestProcessStream:
         """A silent provider stall (no chunk, no error) is cut by
         ``stream_timeout`` into a catchable TimeoutError instead of hanging."""
         llm = LLMClient(sample_model_config)
-        loop = AgentLoop(llm, empty_registry, stream_timeout=0.05)
+        loop = AgentLoop(llm, empty_registry, stream_timeout=0.05)  # noqa-timeout
 
         async def stalled_stream(messages, tools, **kwargs):
             # Never yields, never raises — a provider that accepted the
@@ -551,7 +551,7 @@ class TestProcessStream:
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(
             llm, empty_registry,
-            stream_stall_timeout=0.05, stream_max_retries=0,
+            stream_stall_timeout=0.05, stream_max_retries=0,  # noqa-timeout
         )
         calls: list[int] = []
 
@@ -574,7 +574,7 @@ class TestProcessStream:
     ):
         """A stall is retryable — a second attempt that streams recovers."""
         llm = LLMClient(sample_model_config)
-        loop = AgentLoop(llm, empty_registry, stream_stall_timeout=0.05)
+        loop = AgentLoop(llm, empty_registry, stream_stall_timeout=0.05)  # noqa-timeout
         calls: list[int] = []
 
         async def silent_then_clean(messages, tools, **kwargs):
@@ -603,7 +603,7 @@ class TestProcessStream:
         cap of the same size would kill it)."""
         llm = LLMClient(sample_model_config)
         # 2 chunks 100ms apart = 200ms total, but each gap < 150ms stall.
-        loop = AgentLoop(llm, empty_registry, stream_stall_timeout=0.15)
+        loop = AgentLoop(llm, empty_registry, stream_stall_timeout=0.15)  # noqa-timeout
 
         async def slow_but_alive(messages, tools, **kwargs):
             for text in ("a", "b"):
@@ -929,7 +929,7 @@ async def test_async_without_timeout_escapes_chain_bound(
     registry = ToolRegistry()
     registry.register(_HungTool())
     llm = LLMClient(sample_model_config)
-    loop = AgentLoop(llm, registry, tool_timeout=0.2)
+    loop = AgentLoop(llm, registry, tool_timeout=0.2)  # noqa-timeout
 
     before = set(async_tasks.values())
     tcs = [ToolCallInfo(id="c1", name="hung", arguments={"_async": True})]
@@ -968,7 +968,7 @@ async def test_async_with_explicit_timeout_bounds(
     registry = ToolRegistry()
     registry.register(_HungTool())
     llm = LLMClient(sample_model_config)
-    loop = AgentLoop(llm, registry, tool_timeout=0.2)
+    loop = AgentLoop(llm, registry, tool_timeout=0.2)  # noqa-timeout
 
     tcs = [ToolCallInfo(
         id="c1", name="hung",

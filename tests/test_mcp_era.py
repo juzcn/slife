@@ -104,7 +104,7 @@ def _ready(relisten: float = 0, relisten_max: float = 0) -> MagicMock:
     """A stand-in timeout registry with the two knobs the supervisor reads."""
     return MagicMock(ready=MagicMock(
         relisten=relisten, relisten_max=relisten_max,
-        watchdog_backoff_multiplier=2.0,
+        watchdog_backoff_multiplier=2.0,  # noqa-timeout
     ))
 
 
@@ -125,7 +125,7 @@ class TestWatchToolsChanged:
         ):
             # The supervisor ends on its own once the peer refuses a stream.
             await asyncio.wait_for(
-                era.watch_tools_changed(MagicMock(), handler, link="test"), 1)
+                era.watch_tools_changed(MagicMock(), handler, link="test"), 1)  # noqa-timeout
 
         # 2 events + 1 event, across a drop and a re-listen.  The drop fires
         # the handler once more (4 total): an event may have gone down with
@@ -184,7 +184,7 @@ class TestWatchToolsChanged:
             patch("slife.timeouts.timeouts", _ready(relisten=0, relisten_max=0)),
         ):
             await asyncio.wait_for(
-                era.watch_tools_changed(MagicMock(), handler, link="test"), 1)
+                era.watch_tools_changed(MagicMock(), handler, link="test"), 1)  # noqa-timeout
 
         assert calls == 1, "a permanent refusal must not be retried"
         handler.assert_not_awaited()

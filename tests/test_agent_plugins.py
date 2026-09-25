@@ -722,7 +722,7 @@ class TestWatchdogRestart:
         with patch.object(lifecycle._service, "_spawn_plugin_generic", new=dead_spawn):
             task = asyncio.create_task(lifecycle._watchdog_loop())
             try:
-                await asyncio.wait_for(task, timeout=2.0)
+                await asyncio.wait_for(task, timeout=2.0)  # noqa-timeout
             except asyncio.TimeoutError:
                 pytest.fail("boot-loop watchdog never gave up (B2)")
         assert lifecycle._restart_count == 3
@@ -755,7 +755,7 @@ class TestWatchdogRestart:
         reg.register(proxy)
 
         task = asyncio.create_task(lifecycle._watchdog_loop())
-        await asyncio.wait_for(task, timeout=2.0)
+        await asyncio.wait_for(task, timeout=2.0)  # noqa-timeout
 
         assert reg.get("ext__tool") is None
         client.disconnect.assert_awaited_once()
@@ -781,7 +781,7 @@ class TestWatchdogRestart:
 
         task = asyncio.create_task(lifecycle._watchdog_loop())
         try:
-            await asyncio.wait_for(task, timeout=2.0)
+            await asyncio.wait_for(task, timeout=2.0)  # noqa-timeout
         except asyncio.TimeoutError:
             pytest.fail("watchdog blocked forever on a hung restart (B1)")
         assert lifecycle._restart_count == 3

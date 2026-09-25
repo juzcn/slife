@@ -156,8 +156,10 @@ message posted to the inbox
 - **Turn consistency.** `MessageHistory._ensure_turn_consistent()` enforces two idempotent
   invariants before a history is persisted and again on load: **no orphaned tool_calls** (an
   interrupted turn's call gets a synthetic `(Tool execution interrupted)` result) and **alternating
-  roles** (a history ending on `user`/`tool` gets a closing assistant message). Two call sites only:
-  `save_to_memory` and `restore_session`.
+  roles** (a history ending on `user`/`tool` gets a closing assistant message). Three call sites:
+  `save_to_memory`, `restore_session`, and `from_history` — which builds a subagent's clone from a
+  snapshot taken *mid-turn* (§6.2), where an orphaned `tool_calls` is guaranteed rather than
+  accidental.
 - **Why a turn stopped early** rides that closing assistant line, standardized as
   `(Turn interrupted, reason: esc)`. Each layer labels what only it knows: the loop puts its own
   terminal state on `AgentResult` (`esc`, `max_iterations`), the inbox labels the failure it caught
@@ -204,6 +206,11 @@ writes into while a worker gets a fresh one-shot history per task.
   to the last assistant message and mirrored in the TUI; the evicted ids are dropped from the
   persisted live-context list (§7.4) and the tracked "Context covers" range advances by the same
   count. A freshly restored history is exempt from the first-turn trim.
+  **Where the check runs is the persistence grant, not the role** (§2.7): a process whose turns are
+  not saved has no save point, so its loop runs the same check at the request boundary instead — once
+  per iteration, with the token estimate standing in for a usage reading that will never exist. That
+  is what bounds a worker's context (§6.2). The hook that maintains the persisted live-context list
+  is withheld from it for the same reason: those ids are the parent's turns.
 - **There is no summarization of evicted context.** Old turns leave the *context*; they stay in the
   diary forever. Recall is the only way to bring one back.
 - **Tool result cap (a hard limit).** One tool result is truncated at `tool_result_ceiling ×
@@ -523,16 +530,16 @@ WORKER = Caps(**dict.fromkeys(ALL_CAPS, False))    # granted none of it
 
 A capability is a *grant*: the process either owns the resource (the tool catalog's rows, its vector
 index, the plugin child processes, the host MCP face, the heartbeat, the scheduler, the mesh inbox
-drain) or holds the policy (turn persistence, the stream-retry ladder, the startup gate, mid-turn
-cut-in). The main agent holds all of them; a worker holds none.
+drain) or holds the policy (turn persistence, the per-turn recall/rebuild, the stream-retry ladder,
+the startup gate, mid-turn cut-in). The main agent holds all of them; a worker holds none.
 
 This is written down rather than spread around because it used to be ~two dozen `if not
 self.is_subagent` branches, which made a worker's capability set an *emergent* property of wherever a
 gate happened to be written — so a capability added to the main agent's path could silently never
 reach a worker. Because `WORKER` is derived by zeroing **every** field, a newly added capability is
-worker-denied by default. Two guards keep it honest: an AST gate that fails on any new `is_subagent`
-branch outside the table, and a parity test asserting the two roles' observable difference is exactly
-what the table declares.
+worker-denied by default. Two guards keep it honest: an AST gate that fails on any role branch
+(`is_subagent`, `is_worker`, `is_main`) outside the table, and a parity test asserting the two roles'
+observable difference is exactly what the table declares.
 
 The config a worker inherits is lossless by construction for the same reason: `Config.to_dict` /
 `from_dict` are derived from one field list rather than hand-written, so a field cannot be dropped
@@ -823,17 +830,32 @@ meta-parameters — `_timeout`, `_async`, `_approve` — are declared once in th
 popped before dispatch; re-describing them on each of ~60 schemas would be the single biggest
 per-request context tax.
 
-### 4.7 Timeouts
+### 4.7 Timeouts and cadences
 
-**One registry, and the values are code.** Every timeout reads at call time from the typed dataclass
-defaults of `slife/timeouts.py`, exposed as `_timeouts.timeouts.<role>.<key>` — developer-owned, with
-no user-facing config section and no second seat. A structurally invalid edit fails loudly at import,
-and consumers do **call-time lookups**, never import-captured constants, so tests can monkeypatch a
-value. The roles are `work` (per-call execution budgets), `ready` (startup / spawn / connect /
-liveness), `grace` (teardown and kill escalation), `transport` (HTTP and wire phases), `stream` (the
-retry ladder), `storage` (bounded lock waits — DB *reads* are unbounded by design) and `deliver`
-(mesh delivery). Two gates keep it evergreen: an AST scanner that fails CI on any hardcoded numeric
-timeout unless allowlisted, and a companion that fails on a declared-but-unconsumed key.
+**One registry, and the values are code.** Every time value reads at call time from the typed
+dataclass defaults of `slife/timeouts.py`, exposed as `_timeouts.timeouts.<role>.<key>` —
+developer-owned, with no user-facing config section and no second seat. A structurally invalid edit
+fails loudly at import, and consumers do **call-time lookups**, never import-captured constants, so
+tests can monkeypatch a value. The roles are `work` (per-call execution budgets), `ready` (startup /
+spawn / connect / liveness), `grace` (teardown and kill escalation), `transport` (HTTP and wire
+phases), `stream` (the retry ladder), `storage` (bounded lock waits — DB *reads* are unbounded by
+design), `deliver` (mesh delivery) and `pacing` (cadences — see below). Two gates keep it evergreen:
+an AST scanner that fails CI on any hardcoded time value, and a companion that fails on a
+declared-but-unconsumed key.
+
+**Budgets and cadences share the file, and the split is the role.** A *budget* bounds a single await
+(owner-of-await); a *cadence* (`pacing`) sets how often something runs — a poll period, a heartbeat, a
+backoff step, a session lifetime. A cadence never bounds an await and a budget never sets a cadence.
+The registry owns both: a cadence left as a module constant is a second seat for a value the next
+reader has to go find, so `pacing.schedule_poll` and `pacing.mcp_relist_initial` are looked up at call
+time exactly like a budget is. The AST scanner draws no line between them — it fires on a
+time-style name (`*_INTERVAL`, `*_TIMEOUT`, `*_LIFETIME`, `*_POLL`, `*_DELAY`, `*_DEADLINE`, …),
+on folded arithmetic (`24 * 60`), on an int or a float, on an annotated or class-level constant, on a
+call's time-style keyword (`stream_stall_timeout=0.05`), and on a literal `sleep` — with two
+deliberate exclusions: `sleep(0)` is a scheduling yield rather than a duration, and a *count* of
+retries or attempts is not a time value at all (name it `*_ATTEMPTS`, not `*_REFRESH`, so the gate can
+tell). It scans `tests/` too, where a literal is marked `# noqa-timeout` — a test's magnitude is the
+fixture, and the marker is what says so out loud.
 
 **The model, in five rules.** (1) *Owner-of-await*: every await that can block has a bound, owned by
 the layer that awaits it; a callee never sets a total for its caller. (2) **The only sanctioned
@@ -1220,19 +1242,24 @@ Four implementation details carry real weight:
 `spawn_subagent(name, clone_context=False)` starts a named worker. **A worker's name is its
 identity** — explicit, never auto-generated, and validated, because the name lands in the child's
 system prompt *and* its log filename. Reuse is explicit: spawning a running name returns the live
-worker.
+worker, **keeping the context that worker was started with** — a spawn request is not applied to an
+existing process, so what a caller reports back is the worker's live `context_source`, never the one
+it asked for.
 
 Context is chosen once, at spawn: **clean** (the default) runs each task in a bare history; **cloned**
 copies the parent's message history without the parent's system message (the worker renders its own)
 and ships it on stdin. A clone is a **spawn-time snapshot** — a cloned worker re-seeds from that
 fixed snapshot on *every* task, so it never accumulates context across tasks and never sees parent
-turns that happen after spawn.
+turns that happen after spawn. The snapshot is taken *inside* the tool call that spawns the worker, so
+it ends on an `assistant(tool_calls=…)` whose results do not exist yet; the worker's history is
+repaired on arrival (§2.1's turn-consistency invariant) rather than sent as-is, which every provider
+would reject.
 
 A task is one turn by construction: one `worker/send` becomes one inbox message, which becomes
 exactly one `loop.run()`. Inside that run the loop may make many LLM calls and tool calls, bounded by
-`max_iterations`, but from the task's point of view there is exactly one turn, one reply, one result.
-**The worker processes tasks serially**; extra sends to a busy worker are queued by the *parent*,
-never refused and never re-sent.
+`max_iterations` **and by the window ceiling** — a worker has no save point (§2.2's other trim site),
+so the loop enforces it at the request boundary. **The worker processes tasks serially**; extra sends
+to a busy worker are queued by the *parent*, never refused and never re-sent.
 
 ### 6.3 Identity and result delivery
 
@@ -1248,7 +1275,11 @@ stored and the manager is notified; the manager posts an inbox message carrying 
 `[Subagent:{"subagent_name", "task_id"}]` so the model can attribute it, and the channel records
 whether it was a scheduled task. The TUI drops the marker and shows the `Subagent(<name>)>` bubble.
 There is deliberately no subscribe call — async results are auto-subscribed, and the `poll` mode
-suppresses only the *push*, never the retrievability.
+suppresses only the *push*, never the retrievability. Retrieval is **non-consuming and states what it
+is**: a task answers `pending`, `completed`, `failed` or `cancelled` from its own record (only an id
+that was never sent reads `unknown`), so a completed task cannot report "pending" the second time it
+is polled. A cancelled task's reply is marked as partial — the worker tells the parent it was
+preempted, because for a *timed-out* task that text is what the late-result store hands back.
 
 ### 6.4 Failure semantics
 
@@ -1258,21 +1289,28 @@ The worker has no error-handling loop of its own; every failure ends in a result
 |---|---|
 | LLM/provider error inside the turn | the reply text is `Error: …` — the caller's future resolves *successfully* with that text |
 | protocol error frame | JSON-RPC error → the parent raises → the tool returns an error string |
-| worker died before replying | the pending future fails with "closed before task was resolved" |
-| **stall** — no reply at all | the task budget expires → `TimeoutError` → the tool reports the timeout |
+| worker died before replying | the pending future fails with "closed before task was resolved"; every async task it still owed is announced as a failure rather than left pending |
+| **stall** — no reply at all (a caller is waiting) | the task budget expires → `TaskTimeout` (carrying the task id) → the tool reports the timeout and names what to poll |
+| **stall** — no reply at all (nobody is waiting) | the async task's lifetime backstop (`work.task_lifetime`) fires → the task is marked failed, preempted, and its failure **pushed** to the caller |
 
 The stall case is the interesting one. The abandoned task is **preempted in the child** — a worker is
-serial, so a genuinely stuck task must never block later tasks. A **late** result is stored but never
-auto-pushed, because the caller was already told it timed out; a push after a reported timeout would
-double-announce a task the caller believes failed. Parent-side cancel does the same and discards the
-late reply.
+serial, so a genuinely stuck task must never block later tasks. A **late** result is stored (and
+reconciles the record it timed out on) but never auto-pushed, because the caller was already told it
+timed out; a push after a reported timeout would double-announce a task the caller believes failed.
+Parent-side cancel does the same, discards the late reply, and preempts the child too — a cancelled
+turn is the same situation as a timeout.
+
+An async task is the one case where the parent *is* the one to tell: nobody awaits it, so no caller
+owns its bound, and silence would look exactly like work in progress. Its lifetime is therefore a
+wedge backstop rather than a budget — deliberately far above `work.task_budget` (validate() enforces
+the ordering), because honest work is never meant to reach it.
 
 This is what "no error handling" means precisely: no retries, no recovery, no second attempt. The
 worker is the one agent that does **not** participate in the stream-retry ladder (§3.3) — even a
 transient transport failure is a single attempt, surfaced immediately, because there is no user to
 wait on. The per-chunk stall watchdog still applies, but in a worker a stall is surfaced, never
-retried. `max_subagents` defaults to 5; the task bound is the registry's `work.task_budget`, and a
-per-call `timeout` on the send tool is the one model-facing override.
+retried. `max_subagents` defaults to 5; a waited task's bound is the registry's `work.task_budget`,
+and a per-call `timeout` on the send tool is the one model-facing override.
 
 ### 6.5 Sharing and recursion
 
@@ -1860,12 +1898,15 @@ learned the hard way and each is silently violated by a plausible-looking change
 **Subagents**
 
 24. **A worker is the same loop with a declared, zeroed capability set.** A new capability is
-    worker-denied by default and must be granted on purpose; an `is_subagent` branch outside the table
-    fails CI.
+    worker-denied by default and must be granted on purpose; a role branch (`is_subagent`,
+    `is_worker`, `is_main`) outside the table fails CI.
 25. **The harness pushes results; the worker never does**, and a late result is stored, never
-    auto-pushed, because the caller was already told it timed out.
+    auto-pushed, because the caller was already told it timed out. The exception is the task nobody
+    awaits: an async task's failure *is* pushed, because silence is otherwise indistinguishable from
+    work in progress.
 26. **A stuck task must be preempted in the child**, because a worker processes tasks serially and one
-    stuck task would block every later one.
+    stuck task would block every later one. A caller's cancel does it too — the same situation as a
+    timeout.
 27. **Config is handed over by file, never by environment** — the resolved config carries plaintext
     keys and the process environment is readable through the process table.
 28. **The config's round trip is a fixed point**, derived from the field list rather than written by

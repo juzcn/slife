@@ -12,11 +12,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import slife.timeouts as _timeouts
 from slife.plugins.mcp_gateway.connection import (
     ServerConfig,
     MCPServerConnection,
     ConnectionPool,
 )
+
+
+def _pacing():
+    """The live cadence registry — a test patches HERE, never a module constant."""
+    return _timeouts.timeouts.pacing
+
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -44,7 +51,7 @@ def _mock_session(tools=(), *, ttl_ms=0, next_cursor=None):
     return session
 
 
-def _listed(conn, tools=(), *, ttl_ms=0, age_s=0.0):
+def _listed(conn, tools=(), *, ttl_ms=0, age_s=0.0):  # noqa-timeout
     """Give *conn* a tool snapshot as if ``tools/list`` had just answered."""
     conn._tools = [
         {"name": t, "description": "", "inputSchema": {"type": "object"}}
@@ -148,7 +155,7 @@ class TestMCPServerConnectionSnapshot:
     def test_facts_of_a_listed_server(self):
         conn = _listed(
             MCPServerConnection(ServerConfig(name="s", command="echo")),
-            ["a", "b"], ttl_ms=60000, age_s=3.0,
+            ["a", "b"], ttl_ms=60000, age_s=3.0,  # noqa-timeout
         )
         conn._session = object()   # a transport had to be up to read that list
         snap = conn.snapshot()
@@ -817,7 +824,7 @@ class TestMCPServerConnectionRefresh:
     async def test_an_expired_list_is_re_read(self):
         conn = _listed(
             MCPServerConnection(ServerConfig(name="s", command="echo")),
-            ["t1"], ttl_ms=500, age_s=5.0,
+            ["t1"], ttl_ms=500, age_s=5.0,  # noqa-timeout
         )
         session = _mock_session()
         conn._session = session
@@ -977,7 +984,7 @@ class TestMCPServerConnectionRepair:
             return True
 
         conn.refresh_tools = _flaky
-        with patch.object(conn_mod, "_REFRESH_RETRY_INITIAL", 0.01):
+        with patch.object(_pacing(), "mcp_relist_initial", 0.01):
             await conn._refresh_until_listed()
 
         assert attempts["n"] == 2      # failed once, succeeded, stopped

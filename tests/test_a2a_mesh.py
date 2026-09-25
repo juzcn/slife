@@ -397,7 +397,7 @@ class TestCompleteTaskBridge:
         await asyncio.sleep(0)
         assert inbound == [("peer-1", "do it", "t1", "task")]
         assert mesh.complete_task("t1", "the answer") == "ok"
-        assert await asyncio.wait_for(task, 1) == "the answer"
+        assert await asyncio.wait_for(task, 1) == "the answer"  # noqa-timeout
 
     @pytest.mark.asyncio
     async def test_message_type_enqueues_conversation_not_task(self):
@@ -409,7 +409,7 @@ class TestCompleteTaskBridge:
             (s, c, t, kind),
         )
         task = _spawn_inbound(mesh, "m1", variables={"message_type": "message"})
-        assert await asyncio.wait_for(task, 1) is None
+        assert await asyncio.wait_for(task, 1) is None  # noqa-timeout
         assert inbound == [("peer-1", "do it", "", "message")]
 
     @pytest.mark.asyncio
@@ -421,7 +421,7 @@ class TestCompleteTaskBridge:
         task = _spawn_inbound(
             mesh, "tr1", variables={"message_type": "task_response"},
         )
-        assert await asyncio.wait_for(task, 1) is None
+        assert await asyncio.wait_for(task, 1) is None  # noqa-timeout
         assert inbound == []
 
     @pytest.mark.asyncio
@@ -431,7 +431,7 @@ class TestCompleteTaskBridge:
         await asyncio.sleep(0)
         assert mesh.complete_task("t2", "", cancelled=True) == "ok"
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 1)
+            await asyncio.wait_for(task, 1)  # noqa-timeout
 
     @pytest.mark.asyncio
     async def test_unknown_and_duplicate_refused(self):
@@ -441,7 +441,7 @@ class TestCompleteTaskBridge:
         await asyncio.sleep(0)
         assert mesh.complete_task("t3", "once") == "ok"
         assert mesh.complete_task("t3", "twice").startswith("Error")
-        await asyncio.wait_for(task, 1)
+        await asyncio.wait_for(task, 1)  # noqa-timeout
 
     @pytest.mark.asyncio
     async def test_an_answered_task_is_not_orphaned(self):
@@ -451,7 +451,7 @@ class TestCompleteTaskBridge:
         task = _spawn_inbound(mesh, "t-done")
         await asyncio.sleep(0)
         assert mesh.complete_task("t-done", "the answer") == "ok"
-        await asyncio.wait_for(task, 1)
+        await asyncio.wait_for(task, 1)  # noqa-timeout
         assert _make_mesh().stale_inbound() == []
 
 
@@ -519,7 +519,7 @@ class TestOrphanedTaskReporting:
         await asyncio.sleep(0)
         assert mesh.stale_inbound() == []
         assert mesh.complete_task("ec604319", "late but fine") == "ok"
-        await asyncio.wait_for(task, 1)
+        await asyncio.wait_for(task, 1)  # noqa-timeout
 
     @pytest.mark.asyncio
     async def test_a_message_conversation_is_never_tracked(self):
@@ -527,7 +527,7 @@ class TestOrphanedTaskReporting:
         ever complete it, so tracking it would report it stale forever."""
         mesh = _make_mesh()
         task = _spawn_inbound(mesh, "m1", variables={"message_type": "message"})
-        await asyncio.wait_for(task, 1)
+        await asyncio.wait_for(task, 1)  # noqa-timeout
         assert _make_mesh().stale_inbound() == []
 
 
@@ -548,7 +548,7 @@ class TestWorkingKeepalive:
         await asyncio.sleep(0.05)
         assert stream.await_count >= 1  # pings flowed while unresolved
         assert mesh.complete_task("t-k", "the answer") == "ok"
-        assert await asyncio.wait_for(task, 1) == "the answer"
+        assert await asyncio.wait_for(task, 1) == "the answer"  # noqa-timeout
         count_at_resolve = stream.await_count
         await asyncio.sleep(0.05)
         # The pinger stopped after resolution — no further stream calls.
@@ -574,7 +574,7 @@ class TestCancellationPath:
         canceller = asyncio.create_task(_cancel_task(task))
         try:
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 1)
+                await asyncio.wait_for(task, 1)  # noqa-timeout
         finally:
             await canceller
         assert delivered == [("t9", "peer-1")]
@@ -599,7 +599,7 @@ class TestCancellationPath:
         canceller = asyncio.create_task(_cancel_task(task))
         try:
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 1)
+                await asyncio.wait_for(task, 1)  # noqa-timeout
         finally:
             await canceller
         assert delivered == []
@@ -625,7 +625,7 @@ class TestCancellationPath:
         canceller = asyncio.create_task(_cancel_task(task))
         try:
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 1)
+                await asyncio.wait_for(task, 1)  # noqa-timeout
         finally:
             await canceller
         assert delivered == []

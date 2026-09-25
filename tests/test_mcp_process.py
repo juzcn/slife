@@ -269,7 +269,7 @@ class TestMCPWrapperProcessStderrTail:
         wp._process = proc
         try:
             # Must return quickly (well under 5s) — not hang.
-            tail = await asyncio.wait_for(wp._read_stderr_tail(), timeout=5.0)
+            tail = await asyncio.wait_for(wp._read_stderr_tail(), timeout=5.0)  # noqa-timeout
             assert tail == "(empty)"
         finally:
             proc.kill()
@@ -291,7 +291,7 @@ class TestMCPWrapperProcessStderrTail:
         wp = MCPWrapperProcess()
         wp._process = proc
         try:
-            tail = await asyncio.wait_for(wp._read_stderr_tail(), timeout=5.0)
+            tail = await asyncio.wait_for(wp._read_stderr_tail(), timeout=5.0)  # noqa-timeout
             assert "boom line" in tail
         finally:
             proc.kill()

@@ -40,8 +40,8 @@ def test_registry_is_defaults_no_external_file():
 def test_every_role_has_exactly_its_known_fields():
     """Field inventory is stable — a rename breaks the consumers loudly."""
     assert {f.name for f in fields(Timeouts().work)} == {
-        "tool_budget", "task_budget", "stall", "shell", "pip_install", "save_memory",
-        "recall_discriminator",
+        "tool_budget", "task_budget", "task_lifetime", "stall", "shell",
+        "pip_install", "save_memory", "recall_discriminator",
     }
     assert {f.name for f in fields(Timeouts().ready)} >= {
         "plugin_start", "spawn", "connect_attempt", "connect_startup",

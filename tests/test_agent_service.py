@@ -727,7 +727,7 @@ class TestAgentServiceMCPEnrichment:
             ):
                 # The bound, seen from outside: a pass that hangs here is the
                 # bug this test exists for.
-                await asyncio.wait_for(service._sync_mcp_proxies(), timeout=5.0)
+                await asyncio.wait_for(service._sync_mcp_proxies(), timeout=5.0)  # noqa-timeout
 
             # …and the branch that gave up says so, where a future diagnosis
             # can read it: this is the line whose absence had to be inferred
@@ -1941,7 +1941,7 @@ class TestAgentServiceA2A:
         mock_inbox.post = AsyncMock(side_effect=lambda msg: posted.append(msg))
         service.inbox = mock_inbox
 
-        await service._a2a_poll_loop(interval=0.001)
+        await service._a2a_poll_loop(interval=0.001)  # noqa-timeout
 
         assert len(posted) == 1
         assert posted[0].content == (
@@ -1994,7 +1994,7 @@ class TestAgentServiceA2A:
         mock_inbox.post = AsyncMock(side_effect=lambda msg: posted.append(msg))
         service.inbox = mock_inbox
 
-        await service._a2a_poll_loop(interval=0.001)
+        await service._a2a_poll_loop(interval=0.001)  # noqa-timeout
 
         assert len(posted) == 1
         assert posted[0].content == '[A2A:{"from": "Jack", "type": "broadcast"}] all hands on deck'
@@ -2047,7 +2047,7 @@ class TestAgentServiceA2A:
         mock_inbox.drop_queued = MagicMock(return_value=False)
         service.inbox = mock_inbox
 
-        await service._a2a_poll_loop(interval=0.001)
+        await service._a2a_poll_loop(interval=0.001)  # noqa-timeout
 
         assert len(posted) == 1
         assert posted[0].content == (
@@ -2102,7 +2102,7 @@ class TestAgentServiceA2A:
         mock_inbox.drop_queued = MagicMock(return_value=True)  # still queued
         service.inbox = mock_inbox
 
-        await service._a2a_poll_loop(interval=0.001)
+        await service._a2a_poll_loop(interval=0.001)  # noqa-timeout
 
         mock_inbox.drop_queued.assert_called_with("t-4")
         assert posted == []
@@ -2148,7 +2148,7 @@ class TestAgentServiceA2A:
         mock_inbox.post = AsyncMock(side_effect=lambda msg: posted.append(msg))
         service.inbox = mock_inbox
 
-        await service._a2a_poll_loop(interval=0.001)
+        await service._a2a_poll_loop(interval=0.001)  # noqa-timeout
 
         contents = [m.content for m in posted]
         assert len(contents) == 2
@@ -2585,7 +2585,7 @@ class TestAgentServiceWeChat:
         mock_inbox.post = AsyncMock()
         service.inbox = mock_inbox
 
-        await service._wechat_poll_loop(interval=0.001)
+        await service._wechat_poll_loop(interval=0.001)  # noqa-timeout
 
         # Message posted to inbox
         mock_inbox.post.assert_called_once()
@@ -2634,7 +2634,7 @@ class TestAgentServiceWeChat:
         mock_inbox.post = AsyncMock()
         service.inbox = mock_inbox
 
-        await service._wechat_poll_loop(interval=0.001)
+        await service._wechat_poll_loop(interval=0.001)  # noqa-timeout
 
         seen = [c.kwargs["logged_in"] for c in events.await_args_list
                 if c.args[0] == "wechat_status"]
@@ -2671,7 +2671,7 @@ class TestAgentServiceWeChat:
         mock_inbox.post = AsyncMock()
         service.inbox = mock_inbox
 
-        await service._wechat_poll_loop(interval=0.001)
+        await service._wechat_poll_loop(interval=0.001)  # noqa-timeout
 
         # The two "not_logged_in" drains are silent; only the login is news.
         seen = [c.kwargs["logged_in"] for c in events.await_args_list
@@ -2702,7 +2702,7 @@ class TestAgentServiceWeChat:
         mock_inbox.post = AsyncMock()
         service.inbox = mock_inbox
 
-        await service._wechat_poll_loop(interval=0.001)
+        await service._wechat_poll_loop(interval=0.001)  # noqa-timeout
 
         assert service._wechat_logged_in is None
         assert [c for c in events.await_args_list
@@ -2737,7 +2737,7 @@ class TestAgentServiceWeChat:
         mock_inbox.post = AsyncMock()
         service.inbox = mock_inbox
 
-        await service._wechat_poll_loop(interval=0.001)
+        await service._wechat_poll_loop(interval=0.001)  # noqa-timeout
 
         # Only the non-empty message is posted, with the channel marker.
         assert mock_inbox.post.call_count == 1
@@ -2781,7 +2781,7 @@ class TestAgentServiceWeChat:
         mock_inbox.post = AsyncMock()
         service.inbox = mock_inbox
 
-        await service._wechat_poll_loop(interval=0.001)
+        await service._wechat_poll_loop(interval=0.001)  # noqa-timeout
 
         msg = mock_inbox.post.call_args[0][0]
         assert msg.source == WECHAT
@@ -2823,7 +2823,7 @@ class TestAgentServiceWeChat:
         mock_inbox.post = AsyncMock()
         service.inbox = mock_inbox
 
-        await service._wechat_poll_loop(interval=0.001)
+        await service._wechat_poll_loop(interval=0.001)  # noqa-timeout
 
         # After refactor: typing is managed server-side by the plugin.
         # The harness only calls wechat_drain_incoming; the plugin internally
@@ -2863,7 +2863,7 @@ class TestAgentServiceWeChat:
         service.inbox = mock_inbox
 
         # Should not raise
-        await service._wechat_poll_loop(interval=0.001)
+        await service._wechat_poll_loop(interval=0.001)  # noqa-timeout
 
         # Error on first poll, second poll should still run
         assert call_count[0] == 2

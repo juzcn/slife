@@ -72,7 +72,7 @@ KNOWN_PROVIDERS = frozenset({"ngrok", "localhost.run", "cloudflare"})
 _TUNNEL_URL_ENV = "SLIFE_SHAREFILE_URL"
 
 _MAX_RETRIES = 3
-_HEALTH_INTERVAL = 30.0  # seconds between liveness probes (cadence, stays local)
+#: Liveness-probe cadence is the registry cadence ``pacing.sharefile_health``.
 
 #: A start attempt stuck longer than this is considered dead (its daemon thread
 #: is hung in credstore/forward) — a fresh attempt may supersede it.  The stale
@@ -500,7 +500,7 @@ class _TunnelProviderBase:
                             self.label, self._public_url, time.monotonic() - down_since,
                         )
                         down_since = None
-                    await asyncio.sleep(_HEALTH_INTERVAL)
+                    await asyncio.sleep(_timeouts.timeouts.pacing.sharefile_health)
                     continue
 
                 # Unreachable, but not necessarily lost — and the difference
@@ -519,7 +519,7 @@ class _TunnelProviderBase:
                     )
                 elapsed = time.monotonic() - down_since
                 if elapsed < _timeouts.timeouts.ready.tunnel_heal:
-                    await asyncio.sleep(_HEALTH_INTERVAL)
+                    await asyncio.sleep(_timeouts.timeouts.pacing.sharefile_health)
                     continue
                 logger.warning(
                     "tunnel_lost provider=%s url=%s elapsed=%.0fs — restarting",
@@ -554,7 +554,7 @@ class _TunnelProviderBase:
                 self._monitor_retries = 0
                 if on_tunnel_up is not None:
                     on_tunnel_up()
-            await asyncio.sleep(_HEALTH_INTERVAL)
+            await asyncio.sleep(_timeouts.timeouts.pacing.sharefile_health)
 
 
 # ═══════════════════════════════════════════════════════════════════════

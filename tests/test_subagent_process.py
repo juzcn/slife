@@ -12,11 +12,13 @@ import pytest
 from slife.subagent.process import (
     SubagentProcess,
     SubagentManager,
+    TaskTimeout,
     get_manager,
     set_manager,
     clear_manager,
     _current_manager,
 )
+import slife.timeouts as _timeouts
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -37,6 +39,42 @@ def _mock_config(**overrides):
     for k, v in overrides.items():
         setattr(cfg, k, v)
     return cfg
+
+
+def _running_proc(name: str = "test") -> SubagentProcess:
+    """A SubagentProcess that looks spawned, ready and writable.
+
+    ``is_running`` needs a real ``returncode is None``, so a bare Mock process
+    is not enough — the send paths check it before every write.
+    """
+    proc = SubagentProcess(name, _mock_config())
+    proc._running = True
+    proc._ready.set()
+    proc._process = Mock()
+    proc._process.returncode = None
+    proc._process.stdin = Mock()
+    proc._process.stdin.drain = AsyncMock()
+    return proc
+
+
+async def _spin_until(predicate, spins: int = 50) -> None:
+    """Yield to the loop until *predicate* holds (bounded — never hang a test)."""
+    for _ in range(spins):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+
+
+async def _wait_for(predicate, timeout: float | None = None) -> bool:  # noqa-timeout
+    """Wait real time for *predicate* — for conditions behind a timer."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + (2.0 if timeout is None else timeout)  # noqa-timeout
+    while True:
+        if predicate():
+            return True
+        if loop.time() >= deadline:
+            return False
+        await asyncio.sleep(0.005)  # noqa-timeout
 
 
 # ── Module-level manager refs ───────────────────────────────────────────────
@@ -143,12 +181,12 @@ class TestSubagentProcessCancelTask:
     async def test_cancel_pending_async_task(self):
         proc = self._proc()
         proc._record_send("rpc-1", "do X", mode="async")
-        proc._inflight = 1
+        proc._awaiting.add("rpc-1")
         proc._async_results["rpc-1"] = "old"
 
         assert await proc.cancel_task("rpc-1") is True
         assert proc._task_records["rpc-1"]["status"] == "cancelled"
-        assert proc._inflight == 0
+        assert proc._awaiting == set()
         assert "rpc-1" in proc._cancelled
         # Async result dropped.
         assert "rpc-1" not in proc._async_results
@@ -195,13 +233,13 @@ class TestSubagentProcessReadStdout:
         proc._record_send("rpc-1", "do X", mode="sync")
         fut = asyncio.get_event_loop().create_future()
         proc._pending["rpc-1"] = fut
-        proc._inflight = 1
+        proc._awaiting.add("rpc-1")
 
         proc._dispatch_message({"id": "rpc-1", "result": "the answer"})
 
         assert fut.done()
         assert fut.result() == "the answer"
-        assert proc._inflight == 0
+        assert proc._awaiting == set()
         assert proc._task_records["rpc-1"]["status"] == "completed"
         assert "rpc-1" not in proc._pending
 
@@ -209,13 +247,13 @@ class TestSubagentProcessReadStdout:
     async def test_dispatch_stores_async_result(self):
         proc = self._proc()
         proc._record_send("rpc-1", "do X", mode="async")
-        proc._inflight = 1
+        proc._awaiting.add("rpc-1")
 
         proc._dispatch_message({"id": "rpc-1", "result": "done"})
 
         assert proc._async_results["rpc-1"] == "done"
         assert proc._task_records["rpc-1"]["status"] == "completed"
-        assert proc._inflight == 0
+        assert proc._awaiting == set()
 
     @pytest.mark.asyncio
     async def test_dispatch_auto_mode_notifies_manager(self):
@@ -245,7 +283,7 @@ class TestSubagentProcessReadStdout:
             proc._dispatch_message({"id": "rpc-1", "result": "done"})
             await asyncio.sleep(0)
             manager.on_task_complete.assert_awaited_once_with("test", "rpc-1", "done")
-            assert proc.get_task_result("rpc-1") == "done"
+            assert proc.get_task_result("rpc-1") == ("completed", "done")
         finally:
             clear_manager()
 
@@ -280,7 +318,7 @@ class TestSubagentProcessReadStdout:
             await asyncio.sleep(0)
             manager.on_task_complete.assert_not_awaited()
             assert proc._async_results["rpc-1"] == "done"
-            assert proc.get_task_result("rpc-1") == "done"
+            assert proc.get_task_result("rpc-1") == ("completed", "done")
         finally:
             clear_manager()
 
@@ -339,7 +377,7 @@ class TestSubagentProcessReadStdout:
         proc._record_send("rpc-1", "do X", mode="sync")
         fut = asyncio.get_event_loop().create_future()
         proc._pending["rpc-1"] = fut
-        proc._inflight = 1
+        proc._awaiting.add("rpc-1")
         proc._process = MagicMock()
 
         # readline sequence: [overlong-line head -> ValueError, its tail, a
@@ -498,7 +536,7 @@ class TestSubagentManagerSendTask:
         mock_proc.is_running = True
         manager._subagents = {"sub-1": mock_proc}
 
-        await manager.send_task("sub-1", "task", timeout=60)
+        await manager.send_task("sub-1", "task", timeout=60)  # noqa-timeout
         mock_proc.send_task.assert_called_once_with("task", 60)
 
     @pytest.mark.asyncio
@@ -535,12 +573,318 @@ class TestSubagentManagerGetTaskResult:
     def test_result_from_proc(self):
         manager = SubagentManager(_mock_config())
         mock_proc = Mock()
-        mock_proc.get_task_result = Mock(return_value="done")
+        mock_proc.get_task_result = Mock(return_value=("completed", "done"))
         mock_proc.is_running = True
         manager._subagents = {"sub-1": mock_proc}
 
-        assert manager.get_task_result("sub-1", "rpc-1") == "done"
+        assert manager.get_task_result("sub-1", "rpc-1") == ("completed", "done")
 
-    def test_unknown_agent_returns_none(self):
+    def test_unknown_agent_is_unknown_not_pending(self):
+        """An unknown worker cannot be answered — and that is not "not ready"."""
         manager = SubagentManager(_mock_config())
-        assert manager.get_task_result("ghost", "rpc-1") is None
+        assert manager.get_task_result("ghost", "rpc-1") == ("unknown", None)
+
+
+# ── Task lifecycle: bounds, preemption, and honest bookkeeping ────────────
+
+
+class TestSendRequestLifecycle:
+    """One place sends a task, so one place unwinds it when the write fails."""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_leaves_no_ghost_task(self):
+        """A closed pipe must not leave a pending record and a busy worker.
+
+        The record would read "pending" forever and the await-slot would keep
+        ``is_busy`` true with nothing in flight — so every later send would
+        auto-queue as async against an idle child.
+        """
+        proc = _running_proc()
+        proc._process.stdin.write = Mock(side_effect=OSError("pipe closed"))
+
+        with pytest.raises(OSError):
+            await proc.send_task("do X")
+
+        assert proc._awaiting == set()
+        assert proc._pending == {}
+        assert proc.is_busy is False
+        rec = next(iter(proc._task_records.values()))
+        assert rec["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_a_sync_timeout_names_the_task_it_gave_up_on(self, monkeypatch):
+        """The raised timeout carries the id, so the late result is reachable."""
+        monkeypatch.setattr(_timeouts.timeouts.work, "task_budget", 0.01)
+        proc = _running_proc()
+        written: list[dict] = []
+        proc._process.stdin.write = lambda b: written.append(json.loads(b))
+
+        with pytest.raises(TaskTimeout) as err:
+            await proc.send_task("do X")
+
+        task_id = err.value.task_id
+        assert task_id in proc._task_records
+        assert proc.get_task_result(task_id)[0] == "failed"
+        assert proc._awaiting == set()
+        # The abandoned task was preempted in the child (a serial worker must
+        # not be wedged by it).
+        assert [m["method"] for m in written] == ["worker/send", "worker/cancel"]
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_wait_preempts_the_child_too(self):
+        """An Esc under a sync send is the same situation as a timeout."""
+        proc = _running_proc()
+        written: list[dict] = []
+        proc._process.stdin.write = lambda b: written.append(json.loads(b))
+
+        task = asyncio.create_task(proc.send_task("do X"))
+        await _spin_until(lambda: bool(proc._pending))
+        assert proc._pending
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert "worker/cancel" in [m["method"] for m in written]
+        assert proc._awaiting == set()
+        assert proc.is_busy is False
+
+
+class TestAsyncTaskExpiry:
+    """An async task has no waiting caller — the watchdog is its only bound."""
+
+    @pytest.mark.asyncio
+    async def test_a_task_that_never_answers_expires_and_says_so(self, monkeypatch):
+        monkeypatch.setattr(_timeouts.timeouts.work, "task_lifetime", 0.01)
+        proc = _running_proc()
+        written: list[dict] = []
+        proc._process.stdin.write = lambda b: written.append(json.loads(b))
+        manager = Mock(spec=SubagentManager)
+        manager.on_task_complete = AsyncMock()
+        set_manager(manager)
+        try:
+            rpc_id = await proc.send_task_async("do X")
+            assert await _wait_for(lambda: proc._watchdogs == {})
+            await asyncio.sleep(0)
+            state, result = proc.get_task_result(rpc_id)
+            assert state == "failed"
+            assert "timed out" in (result or "")
+            assert proc._awaiting == set()
+            # Nobody else would ever tell the caller: the auto-push is the only
+            # channel an async task has.
+            manager.on_task_complete.assert_awaited_once()
+            assert manager.on_task_complete.await_args.args[1] == rpc_id
+            assert "worker/cancel" in [m["method"] for m in written]
+        finally:
+            clear_manager()
+
+    @pytest.mark.asyncio
+    async def test_a_poll_mode_task_expires_without_a_push(self, monkeypatch):
+        monkeypatch.setattr(_timeouts.timeouts.work, "task_lifetime", 0.01)
+        proc = _running_proc()
+        manager = Mock(spec=SubagentManager)
+        manager.on_task_complete = AsyncMock()
+        set_manager(manager)
+        try:
+            rpc_id = await proc.send_task_async("do X", mode="poll")
+            assert await _wait_for(lambda: proc.get_task_result(rpc_id)[0] != "pending")
+            assert proc.get_task_result(rpc_id)[0] == "failed"
+            manager.on_task_complete.assert_not_awaited()
+        finally:
+            clear_manager()
+
+    @pytest.mark.asyncio
+    async def test_a_watched_task_that_answers_stops_its_watchdog(self, monkeypatch):
+        """A completed task must not expire later and rewrite its own record."""
+        monkeypatch.setattr(_timeouts.timeouts.work, "task_lifetime", 0.05)
+        proc = _running_proc()
+        proc._process.stdin.write = Mock()
+        rpc_id = await proc.send_task_async("do X")
+        proc._dispatch_message({"id": rpc_id, "result": "the answer"})
+
+        assert proc._watchdogs == {}
+        assert proc.get_task_result(rpc_id) == ("completed", "the answer")
+        await asyncio.sleep(0.08)  # past the (patched) lifetime
+        assert proc.get_task_result(rpc_id) == ("completed", "the answer")
+
+
+class TestGetTaskResultStates:
+    """Every state is reported as itself — "pending" is not a catch-all."""
+
+    def _proc(self) -> SubagentProcess:
+        return SubagentProcess("test", _mock_config())
+
+    def test_unknown_id(self):
+        assert self._proc().get_task_result("nope") == ("unknown", None)
+
+    def test_pending(self):
+        proc = self._proc()
+        proc._record_send("rpc-1", "do X", mode="async")
+        assert proc.get_task_result("rpc-1") == ("pending", None)
+
+    def test_cancelled_reports_its_own_state(self):
+        proc = self._proc()
+        proc._record_send("rpc-1", "do X", mode="async")
+        proc._record_update("rpc-1", "cancelled", "Cancelled by parent")
+        assert proc.get_task_result("rpc-1") == ("cancelled", "Cancelled by parent")
+
+    def test_reading_does_not_consume_the_result(self):
+        """An auto-pushed result stays pollable — the tool promises it."""
+        proc = self._proc()
+        proc._record_send("rpc-1", "do X", mode="async")
+        proc._dispatch_message({"id": "rpc-1", "result": "done"})
+        assert proc.get_task_result("rpc-1") == ("completed", "done")
+        assert proc.get_task_result("rpc-1") == ("completed", "done")
+
+    def test_a_record_outliving_its_stored_result_still_answers(self):
+        proc = self._proc()
+        proc._record_send("rpc-1", "do X", mode="async")
+        proc._record_update("rpc-1", "completed", "the text")
+        proc._async_results.clear()  # e.g. evicted by newer results
+        assert proc.get_task_result("rpc-1") == ("completed", "the text")
+
+    def test_a_result_outliving_its_evicted_record_still_answers(self):
+        proc = self._proc()
+        proc._async_results["rpc-1"] = "the text"
+        assert proc.get_task_result("rpc-1") == ("completed", "the text")
+
+
+class TestAbandonedTasks:
+    """A worker that is gone must not leave work pending in the parent."""
+
+    @pytest.mark.asyncio
+    async def test_the_reader_closing_announces_the_tasks_it_cannot_answer(self):
+        proc = _running_proc()
+        manager = Mock(spec=SubagentManager)
+        manager.on_task_complete = AsyncMock()
+        set_manager(manager)
+        try:
+            proc._record_send("rpc-1", "do X", mode="async")
+            proc._awaiting.add("rpc-1")
+
+            async def _eof():
+                return b""
+
+            proc._process.stdout = Mock()
+            proc._process.stdout.readline = _eof
+            await proc._read_stdout()
+
+            rec = proc._task_records["rpc-1"]
+            assert rec["status"] == "failed"
+            assert "exited" in rec["result"]
+            assert proc._awaiting == set()
+            assert proc.is_running is False
+            await asyncio.sleep(0)
+            manager.on_task_complete.assert_awaited_once()
+        finally:
+            clear_manager()
+
+    @pytest.mark.asyncio
+    async def test_a_dead_child_takes_its_config_file_with_it(self, tmp_path):
+        """The 0600 file carries the parent's plaintext api keys."""
+        secret = tmp_path / "slife_subagent_x.json"
+        secret.write_text('{"api_key": "sk-live"}', encoding="utf-8")
+        proc = _running_proc()
+        proc._config_file = str(secret)
+
+        async def _eof():
+            return b""
+
+        proc._process.stdout = Mock()
+        proc._process.stdout.readline = _eof
+        await proc._read_stdout()
+
+        assert not secret.exists()
+        assert proc._config_file is None
+
+    @pytest.mark.asyncio
+    async def test_abandoning_twice_is_a_no_op(self):
+        """The reader's finally can race an explicit stop — one notice each."""
+        proc = _running_proc()
+        manager = Mock(spec=SubagentManager)
+        manager.on_task_complete = AsyncMock()
+        set_manager(manager)
+        try:
+            proc._record_send("rpc-1", "do X", mode="async")
+            proc._awaiting.add("rpc-1")
+            proc._abandon_pending("worker stopped")
+            proc._abandon_pending("worker exited before replying")
+            await asyncio.sleep(0)
+            assert manager.on_task_complete.await_count == 1
+            assert proc._task_records["rpc-1"]["result"] == "Error: worker stopped"
+        finally:
+            clear_manager()
+
+
+class TestLateResultReconcilesTheRecord:
+    """One task, one story: a late reply un-does the timeout verdict."""
+
+    def test_a_late_result_flips_the_record_to_completed(self):
+        proc = SubagentProcess("test", _mock_config())
+        proc._record_send("rpc-1", "do X", mode="sync")
+        proc._record_update("rpc-1", "failed", "Error: timed out")
+        proc._late_results.add("rpc-1")
+
+        proc._dispatch_message({"id": "rpc-1", "result": "the answer"})
+
+        assert proc._task_records["rpc-1"]["status"] == "completed"
+        assert proc.get_task_result("rpc-1") == ("completed", "the answer")
+
+
+class TestSpawnRegistry:
+    """The registry is the lifetime — and only one spawn may own a name."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_spawn_of_one_name_starts_one_worker(self):
+        """Two spawn calls in ONE tool batch: the loop runs them concurrently.
+
+        Without the registry lock both pass the reuse check and the cap check,
+        both start a child, and the second overwrites the first's entry — a
+        live process nothing can list, send to, or stop.
+        """
+        manager = SubagentManager(_mock_config())
+        started: list[str] = []
+
+        async def fake_start(self):  # a patched method
+            started.append(self.name)
+            self._running = True
+            self._process = Mock()
+            self._process.returncode = None
+            self._ready.set()
+            await asyncio.sleep(0.01)  # a real boot takes time
+
+        with patch.object(SubagentProcess, "start", fake_start):
+            names = await asyncio.gather(manager.spawn("w"), manager.spawn("w"))
+
+        assert names == ["w", "w"]
+        assert started == ["w"]
+        assert list(manager._subagents) == ["w"]
+
+    def test_a_worker_that_died_on_its_own_is_swept(self):
+        """Nothing else deletes it: stop() is for live workers, by name."""
+        manager = SubagentManager(_mock_config())
+        dead = Mock()
+        dead.is_running = False
+        live = Mock()
+        live.is_running = True
+        manager._subagents = {"dead": dead, "live": live}
+
+        assert manager._prune_dead() == ["dead"]
+        assert list(manager._subagents) == ["live"]
+
+    @pytest.mark.asyncio
+    async def test_spawn_sweeps_the_dead_before_it_registers(self):
+        manager = SubagentManager(_mock_config())
+        dead = Mock()
+        dead.is_running = False
+        manager._subagents = {"dead": dead}
+
+        async def fake_start(self):  # a patched method
+            self._running = True
+            self._process = Mock()
+            self._process.returncode = None
+            self._ready.set()
+
+        with patch.object(SubagentProcess, "start", fake_start):
+            await manager.spawn("fresh")
+
+        assert list(manager._subagents) == ["fresh"]

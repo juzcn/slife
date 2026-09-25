@@ -64,7 +64,7 @@ class TestPollLoopDedup:
         try:
             with patch.object(ws, "_flush_logs", lambda: None):
                 # Run until is_logged_in flips False.
-                await ws._poll_loop(poll_interval=0.01)
+                await ws._poll_loop(poll_interval=0.01)  # noqa-timeout
         finally:
             ws._client = original
 
@@ -159,7 +159,7 @@ class TestPollLoopBackoff:
             patch.object(ws, "_flush_logs", lambda: None),
             patch.object(_asyncio, "sleep", AsyncMock(side_effect=_sleep)),
         ):
-            await ws._poll_loop(poll_interval=3.0)
+            await ws._poll_loop(poll_interval=3.0)  # noqa-timeout
 
         # First sleep (after the failed poll) must be the enlarged backoff
         # (3.0 * 1.5 = 4.5), NOT the base interval — that is the bug: the

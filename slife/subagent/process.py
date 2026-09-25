@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -36,12 +37,44 @@ _SAFE_SUBAGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 # not grow these without bound.
 _MAX_TASK_RECORDS = 500
 _MAX_ASYNC_RESULTS = 200
-_MAX_CANCELLED = 500
+#: Bound on the two FIFO id sets (cancelled ids, ids whose late reply is still
+#: expected).  They are different facts with the same magnitude — "how many
+#: recently-finished tasks might still speak" — so they share one cap.
+_MAX_RECENT_IDS = 500
 
 if TYPE_CHECKING:
     from slife.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def _log_notify_failure(task: asyncio.Task) -> None:
+    """Report a failed completion push — the notice would otherwise vanish.
+
+    An async task's result reaches its caller through exactly one channel (the
+    manager's push), so a push that dies silently is a task that never reports.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("subagent_notify_failed err=%s", exc, exc_info=exc)
+
+
+class TaskTimeout(TimeoutError):
+    """A worker task did not answer inside its bound.
+
+    It carries the task id because the task is not discarded: the worker is
+    preempted (it is serial — a stuck task must not block later ones), and a
+    reply that arrives afterwards is stored for ``get_task_result``.  Without
+    the id on the exception the caller could not ask for what it was told it
+    would not get.
+    """
+
+    def __init__(self, message: str, task_id: str):
+        super().__init__(message)
+        self.task_id = task_id
+
 
 # ── Module-level current-manager reference ───────────────────────────
 # Set by AgentService.start_subagent() / stop_subagent() so that builtin
@@ -96,9 +129,18 @@ class SubagentProcess:
         # status, result}.  Kept separate from the A2A task store: worker
         # tasks are not mesh tasks.
         self._task_records: dict[str, dict] = {}
-        # In-flight worker tasks (sent but not yet resolved).  The child
-        # processes tasks serially, so this is both "busy" and "queued".
-        self._inflight = 0
+        # Tasks whose id the parent is still tracking as unresolved — "sent to
+        # the child, no reply accounted for yet".  This single set IS the
+        # busy/queued count (see :attr:`is_busy`): it used to be a hand-kept
+        # integer incremented in two places and decremented in six, and the two
+        # disagreed as soon as one path forgot (an evicted record, a failed
+        # stdin write) — a worker that stayed "busy" forever, so every later
+        # send auto-queued as async against an idle child.
+        self._awaiting: set[str] = set()
+        # Expiry watchdogs for async tasks, rpc_id → task.  An async task has
+        # no waiting caller, so ``send_task``'s own timeout does not apply and
+        # nothing else would ever notice a task that never finishes.
+        self._watchdogs: dict[str, asyncio.Task] = {}
         # task_ids the parent has cancelled — the child skips them if still
         # queued; any late response is ignored.  Over-cap eviction drops the
         # OLDEST id (FIFO), not an arbitrary set member (F10).
@@ -119,11 +161,11 @@ class SubagentProcess:
     @property
     def is_busy(self) -> bool:
         """True while a task is in flight (the child processes tasks serially)."""
-        return self._inflight > 0
+        return bool(self._awaiting)
     @property
     def queued(self) -> int:
         """Number of tasks sent but not yet resolved (in-flight + queued)."""
-        return self._inflight
+        return len(self._awaiting)
     @property
     def context_source(self) -> str:
         """How this worker's context was built: ``"clean"`` or ``"cloned"``."""
@@ -231,11 +273,7 @@ class SubagentProcess:
             if not f.done(): f.set_exception(RuntimeError(f"Subagent '{self._name}' stopped"))
         self._pending.clear()
         self._async_results.clear()
-        # Mark any in-flight worker tasks as failed and reset the counter.
-        for rpc_id in list(self._task_records):
-            if self._task_records[rpc_id].get("status") == "pending":
-                self._record_update(rpc_id, "failed", "Error: worker stopped")
-        self._inflight = 0
+        self._abandon_pending("worker stopped")
         stdout_task = self._stdout_task
         stderr_task = self._stderr_task
         for t in (stdout_task, stderr_task):
@@ -256,6 +294,41 @@ class SubagentProcess:
                 except (asyncio.CancelledError, Exception):
                     logger.debug("reader_cancel name=%s", self._name, exc_info=True)
         self._cleanup_config_file()
+
+    def _abandon_pending(self, reason: str) -> None:
+        """Close out every task this worker will never answer.
+
+        Called when the child is gone — a deliberate stop, or a reader that hit
+        EOF because the child died on its own.  Two things must not be left
+        behind.  Each still-pending record would read "pending" forever, so it
+        is marked failed.  And each *async* task promised an auto-push ("the
+        result will be delivered automatically") that can now never arrive, so
+        the notice is sent as a failure instead of the caller waiting on
+        silence — exactly the silence the design forbids for a reported task.
+
+        Idempotent: a record is only touched while it is still ``pending``, so
+        the second caller (the reader's ``finally`` racing an explicit stop)
+        does nothing.
+        """
+        abandoned = [
+            rpc_id for rpc_id, rec in self._task_records.items()
+            if rec.get("status") == "pending"
+        ]
+        for rpc_id in abandoned:
+            text = f"Error: {reason}"
+            self._record_update(rpc_id, "failed", text)
+            rec = self._task_records.get(rpc_id) or {}
+            if rec.get("mode") != "async-poll":
+                self._notify_manager_task_done(rpc_id, text)
+        self._awaiting.clear()
+        for t in self._watchdogs.values():
+            if not t.done(): t.cancel()
+        self._watchdogs.clear()
+        if abandoned:
+            logger.info(
+                "subagent_tasks_abandoned name=%s count=%d reason=%s",
+                self._name, len(abandoned), reason,
+            )
 
     def _cleanup_config_file(self) -> None:
         """Delete the 0600 temp config file handed to the child."""
@@ -306,50 +379,91 @@ class SubagentProcess:
                 self._name, method, exc_info=True,
             )
 
-    async def send_task(self, task: str, timeout: float | None = None) -> str:
-        if timeout is None:
-            timeout = _timeouts.timeouts.work.task_budget  # call-time lookup
+    async def _send_request(
+        self, task: str, mode: str,
+    ) -> tuple[str, asyncio.Future[str] | None]:
+        """Record one task, write ``worker/send``, and return ``(rpc_id, future)``.
+
+        The one place a task leaves for the child, so the bookkeeping a task's
+        life depends on — the record, the await-slot, the future — is registered
+        *before* the write and unwound if the write fails.  The registration is
+        also why the write is last: the child can answer during ``drain()``, and
+        a reply that arrives before the parent knows what it sent would be
+        dropped as unknown.
+
+        *mode* is the record's vocabulary — ``"sync"``, ``"async"`` or
+        ``"async-poll"``.  A future comes back only for ``"sync"``.
+        """
         if not self.is_running or not self._process or not self._process.stdin:
             raise RuntimeError(f"Subagent '{self._name}' not running")
         if not self.is_ready:
             raise RuntimeError(f"Subagent '{self._name}' not ready")
         rpc_id = uuid.uuid4().hex[:12]
-
-        self._record_send(rpc_id, task)
-        self._inflight += 1
-        future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
-        self._pending[rpc_id] = future
-        req = json.dumps({"jsonrpc":"2.0","method":"worker/send","params":{"task":task},"id":rpc_id}, ensure_ascii=False)
-        async with self._stdin_lock:
-            self._process.stdin.write((req + "\n").encode()); await self._process.stdin.drain()
+        self._record_send(rpc_id, task, mode=mode)
+        self._awaiting.add(rpc_id)
+        future: asyncio.Future[str] | None = None
+        if mode == "sync":
+            future = asyncio.get_running_loop().create_future()
+            self._pending[rpc_id] = future
+        req = json.dumps(
+            {"jsonrpc": "2.0", "method": "worker/send",
+             "params": {"task": task}, "id": rpc_id},
+            ensure_ascii=False,
+        )
         try:
-            result = await asyncio.wait_for(future, timeout=timeout)
-            return result
+            async with self._stdin_lock:
+                self._process.stdin.write((req + "\n").encode())
+                await self._process.stdin.drain()
+        except BaseException:
+            # A dead/closed pipe must not leave the task behind: the record
+            # would read "pending" forever and the await-slot would keep the
+            # worker looking busy with nothing in flight.
+            self._pending.pop(rpc_id, None)
+            self._awaiting.discard(rpc_id)
+            self._record_update(rpc_id, "failed", "Error: send failed")
+            raise
+        return rpc_id, future
+
+    async def send_task(self, task: str, timeout: float | None = None) -> str:
+        """Send a task and wait for its result, up to *timeout*.
+
+        On timeout the task is **preempted** in the child (a serial worker
+        cannot afford to be wedged by one task) and the late reply is kept for
+        :meth:`get_task_result` — the raised :class:`TaskTimeout` carries the id
+        that lookup needs.
+        """
+        if timeout is None:
+            timeout = _timeouts.timeouts.work.task_budget  # call-time lookup
+        rpc_id, future = await self._send_request(task, "sync")
+        assert future is not None
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             self._pending.pop(rpc_id, None)
-            # Release the in-flight slot and mark the record failed — otherwise
-            # a worker whose task never resolves stays busy forever, every
-            # later send auto-queues async, and records pile up.
-            # Mark it late-arriving: the child keeps processing it serially,
-            # and its eventual response is STORED for get_task_result rather
-            # than discarded (the tool promises the result stays retrievable)
-            # or mis-routed as a fresh async completion.
+            # Release the await-slot — otherwise a worker whose task never
+            # resolves stays busy forever, every later send auto-queues async,
+            # and records pile up.  Mark it late-arriving: the child keeps
+            # processing it serially, and its eventual response is STORED for
+            # get_task_result rather than discarded (the tool promises the
+            # result stays retrievable) or mis-routed as a fresh completion.
             self._late_results.add(rpc_id)
-            self._late_results.evict_to(_MAX_CANCELLED)
-            if self._inflight > 0:
-                self._inflight -= 1
+            self._late_results.evict_to(_MAX_RECENT_IDS)
+            self._awaiting.discard(rpc_id)
             self._record_update(rpc_id, "failed", "Error: timed out")
-            # Preempt the abandoned task in the child — the worker processes
-            # tasks serially, so without this a genuinely stuck task blocks
-            # every subsequent one forever (no timeout-driven recovery).
             await self._send_child_cancel(rpc_id)
-            raise TimeoutError(f"Task to '{self._name}' timed out after {timeout}s")
+            raise TaskTimeout(
+                f"Task to '{self._name}' timed out after {timeout}s", rpc_id,
+            ) from None
         except asyncio.CancelledError:
             self._pending.pop(rpc_id, None)
             self._cancelled.add(rpc_id)
-            self._cancelled.evict_to(_MAX_CANCELLED)
-            if self._inflight > 0:
-                self._inflight -= 1
+            self._cancelled.evict_to(_MAX_RECENT_IDS)
+            self._awaiting.discard(rpc_id)
+            # Preempt it here too.  The caller is gone (the turn was cancelled
+            # under it — an Esc), which is the same situation as a timeout: the
+            # child would otherwise keep working on a task nobody wants, and
+            # being serial it would hold every later task behind it.
+            await self._send_child_cancel(rpc_id)
             raise
 
     async def send_task_async(self, task: str, mode: str = "auto") -> str:
@@ -359,31 +473,86 @@ class SubagentProcess:
         when the worker completes — it ALSO stays retrievable via
         :meth:`get_task_result`; ``"poll"`` suppresses the push — the
         caller retrieves the result via :meth:`get_task_result`.
-        """
-        if not self.is_running or not self._process or not self._process.stdin:
-            raise RuntimeError(f"Subagent '{self._name}' not running")
-        if not self.is_ready:
-            raise RuntimeError(f"Subagent '{self._name}' not ready")
-        rpc_id = uuid.uuid4().hex[:12]
 
-        self._record_send(
-            rpc_id, task, mode="async-poll" if mode == "poll" else "async",
+        Nobody awaits an async task, so ``send_task``'s timeout cannot apply;
+        the expiry watchdog started here is what keeps "no caller" from meaning
+        "no bound at all".  It is a wedge backstop, not a caller's budget (see
+        ``work.task_lifetime``): honest work is never meant to reach it.
+        """
+        rpc_id, _ = await self._send_request(
+            task, "async-poll" if mode == "poll" else "async",
         )
-        self._inflight += 1
-        req = json.dumps(
-            {"jsonrpc": "2.0", "method": "worker/send",
-             "params": {"task": task}, "id": rpc_id},
-            ensure_ascii=False,
-        )
-        async with self._stdin_lock:
-            self._process.stdin.write((req + "\n").encode())
-            await self._process.stdin.drain()
+        self._watchdogs[rpc_id] = asyncio.create_task(self._expire(rpc_id))
         logger.debug("subagent_async_send name=%s rpc_id=%s", self._name, rpc_id)
         return rpc_id
 
-    def get_task_result(self, rpc_id: str) -> str | None:
-        """Return the result of an async task, or ``None`` if not yet complete."""
-        return self._async_results.pop(rpc_id, None)
+    async def _expire(self, rpc_id: str) -> None:
+        """Watchdog for one async task: give up on it, and say so.
+
+        Runs the same remedy the sync path runs on timeout — mark the task
+        failed, preempt it in the child, and expect the reply as a late result
+        (stored, not re-pushed) — plus the one thing only an async task needs:
+        the caller is *told*, because nothing else ever would.  A pushed failure
+        is the difference between "this task cannot finish" and a caller waiting
+        forever on an auto-push that will not come.
+        """
+        lifetime = _timeouts.timeouts.work.task_lifetime  # call-time lookup
+        try:
+            await asyncio.sleep(lifetime)
+        except asyncio.CancelledError:
+            raise  # resolved (or stopped) — the task answered after all
+        finally:
+            # This watchdog is finished either way; when the task answered
+            # first, the resolver had already forgotten it.
+            self._watchdogs.pop(rpc_id, None)
+        rec = self._task_records.get(rpc_id)
+        if rec is None or rec.get("status") != "pending":
+            return  # answered (or cancelled) while the watchdog slept
+        text = f"Error: task timed out after {lifetime:g}s without a reply"
+        self._late_results.add(rpc_id)
+        self._late_results.evict_to(_MAX_RECENT_IDS)
+        self._awaiting.discard(rpc_id)
+        self._record_update(rpc_id, "failed", text)
+        if rec.get("mode") != "async-poll":
+            self._notify_manager_task_done(rpc_id, text)
+        await self._send_child_cancel(rpc_id)
+        logger.warning(
+            "subagent_async_task_expired name=%s task=%s lifetime=%g",
+            self._name, rpc_id, lifetime,
+        )
+
+    def _resolve_watchdog(self, rpc_id: str) -> None:
+        """Stop watching a task that has resolved, one way or another."""
+        task = self._watchdogs.pop(rpc_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def get_task_result(self, rpc_id: str) -> tuple[str, str | None]:
+        """Return ``(state, result)`` for a worker task.
+
+        *state* is the task record's status — ``pending``, ``completed``,
+        ``failed`` or ``cancelled`` — or ``unknown`` when no record was ever
+        made for *rpc_id* (a mistyped id, or one the 500-record cap evicted).
+        Keeping the two apart is the point: the previous contract returned
+        ``None`` for every one of those cases and the caller rendered them all
+        as "pending", so a completed task reported "pending" the second time it
+        was polled, a cancelled one reported it forever, and a typo looked like
+        work in progress.
+
+        Reading does not consume: the result stays retrievable for the task's
+        whole record lifetime, so an auto-pushed result can still be polled
+        afterwards (which the tool's own description promises).
+        """
+        rec = self._task_records.get(rpc_id)
+        stored = self._async_results.get(rpc_id)
+        if rec is None:
+            # No record: either it was evicted (a result may outlive it) or the
+            # id was never ours.
+            return ("completed", stored) if stored is not None else ("unknown", None)
+        status = rec.get("status", "unknown")
+        if status == "pending":
+            return "pending", None
+        return status, stored if stored is not None else (rec.get("result") or "")
 
     async def cancel_task(self, task_id: str) -> bool:
         """Cancel a worker task — drops it if queued, preempts it if running.
@@ -407,13 +576,13 @@ class SubagentProcess:
             fut.set_exception(RuntimeError(f"Task '{task_id}' cancelled"))
         # Drop any stored async result.
         self._async_results.pop(task_id, None)
+        self._resolve_watchdog(task_id)
 
         rec["status"] = "cancelled"
         rec["result"] = "Cancelled by parent"
         self._cancelled.add(task_id)
-        self._cancelled.evict_to(_MAX_CANCELLED)
-        if self._inflight > 0:
-            self._inflight -= 1
+        self._cancelled.evict_to(_MAX_RECENT_IDS)
+        self._awaiting.discard(task_id)
 
         # Notify the child so it skips a still-queued task (best-effort).
         await self._send_child_cancel(task_id)
@@ -428,8 +597,8 @@ class SubagentProcess:
     def _record_send(self, rpc_id: str, task: str, mode: str = "sync") -> None:
         """Record a newly-sent worker task (status pending).
 
-        *mode* is ``"sync"`` (a caller waits) or ``"async"`` (fire-and-forget,
-        result auto-pushed).
+        *mode* is ``"sync"`` (a caller waits), ``"async"`` (fire-and-forget,
+        result auto-pushed) or ``"async-poll"`` (fire-and-forget, no push).
         """
         self._task_records[rpc_id] = {
             "task_id": rpc_id,
@@ -438,7 +607,11 @@ class SubagentProcess:
             "status": "pending",
             "mode": mode,
             "result": None,
-            "created_at": asyncio.get_event_loop().time(),
+            # Monotonic wall time, not the loop's clock: a record is written
+            # from the send path only, but keeping the ordering clock free of
+            # the event loop means a record can also be made (or inspected)
+            # outside one.
+            "created_at": time.monotonic(),
         }
         if len(self._task_records) > _MAX_TASK_RECORDS:
             # Drop the oldest record — a long-lived worker with many tasks
@@ -518,10 +691,10 @@ class SubagentProcess:
         finally:
             # The reader is done (stop / EOF / error) — resolve any leftover
             # sync waiters so send_task fails fast instead of hanging until
-            # its own timeout.  Also zero the in-flight count: a dead reader
-            # means no task can ever resolve, so is_busy would otherwise stay
-            # True forever and every later send would be auto-queued async
-            # against a worker that can never reply.
+            # its own timeout, and abandon everything else this worker will
+            # never answer (a silent pending record is the same defect as a
+            # silent pending future: a caller waiting on a promise nobody can
+            # keep).
             for rpc_id, f in list(self._pending.items()):
                 if not f.done():
                     f.set_exception(RuntimeError(
@@ -529,7 +702,16 @@ class SubagentProcess:
                         f"'{rpc_id}' was resolved"
                     ))
             self._pending.clear()
-            self._inflight = 0
+            self._abandon_pending("worker exited before replying")
+            # The reader ends when the child's stdout closes — i.e. the child is
+            # gone: an orderly stop, or (the case nothing else covers) a crash
+            # of its own.  Mark it and drop the temp config file HERE, not only
+            # in _stop_process: a worker that dies on its own is never stopped
+            # by anyone, so its 0600 file — carrying the parent's plaintext
+            # api_keys — would outlive it on disk, and the registry entry would
+            # read as a live worker to everything that only checks the dict.
+            self._running = False
+            self._cleanup_config_file()
 
     def _dispatch_message(self, msg: dict) -> None:
         """Handle one decoded JSON-RPC line from the worker's stdout.
@@ -541,17 +723,22 @@ class SubagentProcess:
         """
         rpc_id = msg.get("id")
         # Late response for a timed-out sync task — store it for retrieval via
-        # get_task_result, but do NOT auto-push or flip the record: the caller
-        # was already told it timed out.  _inflight was already decremented at
-        # the timeout, so don't decrement again.
+        # get_task_result, but do NOT auto-push: the caller was already told it
+        # timed out, and a push would double-announce a task it believes failed.
+        # The record IS un-failed: the task did finish, and a log that still
+        # says "timed out" while the result sits retrievable makes the two
+        # accounts of one task contradict each other.
         if rpc_id and rpc_id in self._late_results:
             self._late_results.discard(rpc_id)
+            self._resolve_watchdog(rpc_id)
             if "error" in msg:
-                self._store_async_result(
-                    rpc_id, f"Error: {msg['error'].get('message', 'Unknown')}",
-                )
+                err = msg["error"].get("message", "Unknown")
+                self._store_async_result(rpc_id, f"Error: {err}")
+                self._record_update(rpc_id, "failed", f"Error: {err}")
             else:
-                self._store_async_result(rpc_id, str(msg.get("result", "")))
+                result_text = str(msg.get("result", ""))
+                self._store_async_result(rpc_id, result_text)
+                self._record_update(rpc_id, "completed", result_text)
             logger.debug(
                 "subagent_late_result_stored task=%s", rpc_id,
             )
@@ -560,6 +747,7 @@ class SubagentProcess:
         # was already cleaned up by cancel_task).
         if rpc_id and rpc_id in self._cancelled:
             self._cancelled.discard(rpc_id)
+            self._resolve_watchdog(rpc_id)
             logger.debug(
                 "subagent_cancelled_result_discarded task=%s", rpc_id,
             )
@@ -567,7 +755,7 @@ class SubagentProcess:
         if rpc_id and rpc_id in self._pending:
             # Sync waiter — resolve the pending future
             f = self._pending.pop(rpc_id, None)
-            if self._inflight > 0: self._inflight -= 1
+            self._awaiting.discard(rpc_id)
             if not f or f.done(): return
             if "error" in msg:
                 err = msg["error"].get("message", "Unknown")
@@ -580,9 +768,13 @@ class SubagentProcess:
         elif rpc_id:
             # No synchronous waiter — store for async retrieval IF the task
             # is one we sent and have not resolved yet.  A response for an
-            # unknown id (a buggy/duplicate worker line) must not mutate
-            # counters, records, or the auto-push channel: it would resurrect
-            # a cancelled/completed record and double-push into the inbox.
+            # unknown id (a buggy/duplicate worker line, or a record the
+            # 500-record cap evicted) must not mutate records or the auto-push
+            # channel: it would resurrect a cancelled/completed record and
+            # double-push into the inbox.  It IS booked as answered, though —
+            # that is a fact about the id, not about the record.
+            self._resolve_watchdog(rpc_id)
+            self._awaiting.discard(rpc_id)
             rec = self._task_records.get(rpc_id)
             if rec is None or rec.get("status") != "pending":
                 logger.warning(
@@ -591,7 +783,6 @@ class SubagentProcess:
                     rpc_id, (rec or {}).get("status", "unknown"), self._name,
                 )
                 return
-            if self._inflight > 0: self._inflight -= 1
             if "error" in msg:
                 err = msg["error"].get("message", "Unknown")
                 result_text = f"Error: {err}"
@@ -642,35 +833,55 @@ class SubagentProcess:
         )
 
     def _notify_manager_task_done(self, task_id: str, result_text: str) -> None:
-        """Signal the manager that an async task has completed.
+        """Signal the manager that an async task has settled.
 
-        *result_text* is passed in directly (captured when the result was
-        stored) rather than re-read from :attr:`_async_results`: a
-        ``mode="auto"`` task's result stays retrievable via
-        :meth:`get_task_result`, and a poll POPS the stored entry — the
-        scheduled push must still deliver the real text, never an empty
-        string for a completed task.
+        *result_text* (the result, or the failure text) is passed in directly
+        rather than re-read from :attr:`_async_results`: reading the store no
+        longer consumes it, but the push must deliver what *this* transition
+        decided — a task that just failed must not push a stale success.
+
+        Fire-and-forget: the push is a notice, and the caller of this method is
+        the stdout reader, which must never block on the manager's inbox.
         """
         mgr = get_manager()
-        if mgr is not None and mgr.on_task_complete is not None:
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                return  # no event loop running
-            loop.create_task(
-                mgr.on_task_complete(self._name, task_id, result_text)
+        if mgr is None or mgr.on_task_complete is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug(
+                "subagent_notify_no_loop name=%s task=%s", self._name, task_id,
             )
+            return
+        task = loop.create_task(
+            mgr.on_task_complete(self._name, task_id, result_text)
+        )
+        # A notice nobody sent is worse than a noise line: the manager's push
+        # is the only way an async task is ever heard from, so its failure is
+        # logged rather than left to asyncio's "never retrieved" silence.
+        task.add_done_callback(_log_notify_failure)
 
 
 class SubagentManager:
-    """Manages a collection of SubagentProcess instances."""
+    """Manages a collection of SubagentProcess instances.
+
+    The registry is the object graph AND the lifetime: a worker that leaves it
+    is stopped, and one that dies on its own is swept (see :meth:`_prune_dead`).
+    ``spawn``/``stop``/``stop_all`` all mutate it under one lock — a spawn and a
+    stop of the same name can otherwise interleave and leave two children for
+    one name, one of them unreachable.
+    """
 
     def __init__(self, config: "Config"):
         self._subagents: dict[str, SubagentProcess] = {}
         self._config = config
         sc = config.subagent_config or {}
         self._max = sc.get("max_subagents", 5)
+        #: Serialises registry mutation.  Held across ``SubagentProcess.start``
+        #: (and a stop's teardown), so a burst of parallel spawns boots one
+        #: worker at a time — the price of the cap being an exact count and of
+        #: "reuse a running name" meaning what it says.
+        self._registry_lock = asyncio.Lock()
         # Callback invoked when a subagent task completes:
         #   async def cb(agent_name: str, task_id: str, result: str) -> None
         self.on_task_complete: "Callable | None" = None
@@ -683,6 +894,22 @@ class SubagentManager:
         reuse it rather than create a new one).  Lets tools report reuse."""
         proc = self._subagents.get(name)
         return proc is not None and proc.is_running
+
+    def _prune_dead(self) -> list[str]:
+        """Drop workers that exited on their own; return their names.
+
+        ``stop()`` is the only other deleter, and nothing calls it for a worker
+        that died by itself (a crash, an OOM kill, a provider client that took
+        the process down) — so without this the entry, and the task store it
+        carries, outlive the process for the life of the parent.  ``spawn`` is
+        the growth vector and therefore where the sweep runs.
+        """
+        dead = [n for n, p in self._subagents.items() if not p.is_running]
+        for n in dead:
+            self._subagents.pop(n, None)
+        if dead:
+            logger.info("subagent_registry_pruned_dead names=%s", ",".join(dead))
+        return dead
 
     async def spawn(
         self, name: str | None = None,
@@ -701,19 +928,30 @@ class SubagentManager:
                 "(letters/digits/_/. with a letter/digit start, max 64 chars) — "
                 f"got {name!r}"
             )
-        # Reuse a running worker BEFORE the cap check — spawn() is idempotent
-        # (the spawned_running() contract), so re-invoking a name that is
-        # already running at the cap must hand back the worker, not raise.
-        if name in self._subagents and self._subagents[name].is_running:
+        # Everything from here to registration is atomic.  The model may emit
+        # two spawn calls for one name in a single assistant message and the
+        # loop runs tool calls concurrently (`asyncio.gather`), so without this
+        # both would pass the reuse check and the cap check, both would start a
+        # child, and the second would overwrite the first's registry entry —
+        # leaving a live worker that nothing can list, send to, or stop.
+        async with self._registry_lock:
+            self._prune_dead()
+            # Reuse a running worker BEFORE the cap check — spawn() is
+            # idempotent (the spawned_running() contract), so re-invoking a
+            # name that is already running at the cap must hand back the
+            # worker, not raise.  The worker keeps the context it was started
+            # with; callers report that, never what they asked for.
+            if name in self._subagents and self._subagents[name].is_running:
+                return name
+            if self.count >= self._max:
+                raise RuntimeError(f"Max {self._max} subagents reached")
+            proc = SubagentProcess(
+                name, self._config,
+                context_source=context_source, context_messages=context_messages,
+            )
+            await proc.start()
+            self._subagents[name] = proc
             return name
-        if self.count >= self._max:
-            raise RuntimeError(f"Max {self._max} subagents reached")
-        proc = SubagentProcess(
-            name, self._config,
-            context_source=context_source, context_messages=context_messages,
-        )
-        await proc.start(); self._subagents[name] = proc
-        return name
 
     async def send_task(self, agent_name: str, task: str, timeout: float | None = None) -> str:
         if (proc := self._subagents.get(agent_name)) is None:
@@ -733,16 +971,26 @@ class SubagentManager:
             raise ValueError(f"Subagent '{agent_name}' not found")
         return await proc.send_task_async(task, mode=mode)
 
-    def get_task_result(self, agent_name: str, rpc_id: str) -> str | None:
-        """Return the result of an async task, or ``None`` if not yet ready."""
+    def get_task_result(self, agent_name: str, rpc_id: str) -> tuple[str, str | None]:
+        """Return ``(state, result)`` for a task — see
+        :meth:`SubagentProcess.get_task_result`.
+
+        ``("unknown", None)`` covers an unknown worker as well as an unknown
+        task id: neither can be answered, and neither is "not ready yet".
+        """
         if (proc := self._subagents.get(agent_name)) is None:
-            return None
+            return "unknown", None
         return proc.get_task_result(rpc_id)
 
     def list_tasks(
         self, agent_name: str | None = None, status: str | None = None,
-    ) -> list[dict]:
+        limit: int = 50,
+    ) -> tuple[list[dict], int]:
         """List worker task records across all subagents (local store).
+
+        Returns ``(records, total)`` — *total* is the pre-limit count, so a
+        caller can say how much it is not showing instead of presenting a
+        truncated list as the whole of it.
 
         Not an A2A listing — worker tasks are tracked locally in each
         :class:`SubagentProcess`, independent of the mesh task store.
@@ -755,17 +1003,30 @@ class SubagentManager:
         if status is not None:
             records = [r for r in records if r.get("status") == status]
         records.sort(key=lambda r: r.get("created_at", 0), reverse=True)
-        return records[:50]
+        return records[:limit], len(records)
 
     async def stop(self, agent_name: str) -> bool:
-        if (proc := self._subagents.get(agent_name)) is None: return False
-        await proc.stop(); del self._subagents[agent_name]
-        return True
+        async with self._registry_lock:
+            proc = self._subagents.get(agent_name)
+            if proc is None:
+                return False
+            await proc.stop()
+            del self._subagents[agent_name]
+            return True
 
     async def stop_all(self) -> None:
-        if not self._subagents: return
-        await asyncio.gather(*(s.stop() for s in list(self._subagents.values())))
-        self._subagents.clear()
+        """Stop every worker, concurrently.
+
+        Each name goes through :meth:`stop`, so an entry leaves the registry
+        only once its process is gone — the registry stays the list of workers
+        that might still be alive, which is what the crash-path sweep
+        (``kill_child_processes``) reads to find children to kill.
+        """
+        if not self._subagents:
+            return
+        await asyncio.gather(
+            *(self.stop(name) for name in list(self._subagents))
+        )
 
     async def broadcast(
         self, method: str, params: dict | None = None,

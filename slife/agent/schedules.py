@@ -42,6 +42,7 @@ from datetime import datetime
 
 from slife.agent.system_prompt import render_template
 from slife.timeutil import now_local_seconds
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -76,13 +77,11 @@ def is_autonomous_trigger(text: str) -> bool:
         or text.startswith(TIMER_MARK)
     )
 
-#: Loop cadence (seconds).  Cron's smallest unit is a minute, so a 30 s poll
-#: fires tasks within half a minute of their due time.
-POLL_INTERVAL = 30
-
-#: A fire whose due time is within this many seconds of "now" is treated as
-#: freshly due (fire it); older than this it was missed while slife was down.
-MISS_GRACE = 120
+#: Loop cadence and the missed-fire grace window are registry cadences —
+#: ``pacing.schedule_poll`` (cron's smallest unit is a minute, so a 30 s poll
+#: fires tasks within half a minute of their due time) and ``pacing.miss_grace``
+#: (a fire whose due time is within it of "now" is freshly due; older, it was
+#: missed while slife was down).
 
 #: Scheduled-task worker names dispatched this session — used to reword the
 #: completion notification (hide the subagent) and to target recycling.
@@ -246,7 +245,7 @@ def _classify(task: dict, now: datetime):
     latest = _latest_fire_at_or_before(schedule, anchor, now, tz)
     if latest is None:
         return None
-    if (now - latest).total_seconds() <= MISS_GRACE:
+    if (now - latest).total_seconds() <= _timeouts.timeouts.pacing.miss_grace:
         return ("fire", latest)
     return ("missed", latest)
 
@@ -480,7 +479,7 @@ async def schedule_loop(service) -> None:
     Also reaps idle schedule workers whose task has settled.
     """
     while True:
-        await asyncio.sleep(POLL_INTERVAL)
+        await asyncio.sleep(_timeouts.timeouts.pacing.schedule_poll)
         try:
             client = _memfiles_client(service)
             if client is None:
@@ -499,7 +498,7 @@ async def schedule_loop(service) -> None:
             # trigger queued past the grace window but not yet processed must
             # not re-fire (a second trigger → a second worker → double run).
             stale = [n for n, t in _pending_fires.items()
-                     if _time.monotonic() - t > MISS_GRACE]
+                     if _time.monotonic() - t > _timeouts.timeouts.pacing.miss_grace]
             inbox = getattr(service, "inbox", None)
             for n in stale:
                 still_queued = bool(
@@ -599,7 +598,13 @@ async def fire_task_now(service, name: str, due_at: str = "",
 
     _SCHEDULE_WORKERS.add(worker)
     _pending_fires.pop(worker, None)
-    context_note = " (context: cloned)" if spawn_kw else ""
+    # The context the worker actually has, not the one this dispatch asked for:
+    # a reused worker keeps whatever it was started with (spawn is idempotent
+    # by name), so announcing the request would state a fact that is not true.
+    proc = manager.get(worker)
+    context_note = (
+        f" (context: {proc.context_source})" if proc is not None else ""
+    )
     return (
         f"Scheduled task '{name}' dispatched now to worker "
         f"'{worker}'{context_note} (task_id: {rpc_id})."

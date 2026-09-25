@@ -33,8 +33,6 @@ from slife.server_utils import create_plugin_server
 from slife.logfmt import error_json
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
-SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
-
 @asynccontextmanager
 async def _wechat_lifespan(_app):
     """Graceful shutdown: stop the poll / QR / typing background tasks
@@ -140,18 +138,19 @@ def _persist_updates_buf(buf: str) -> None:
     except Exception:
         logger.debug("wechat_cursor_persist_failed", exc_info=True)
 
-# Typing indicator keep-alive — per-conversation tasks managed by the server
+# Typing indicator keep-alive — per-conversation tasks managed by the server.
+# Its refresh cadence and keepalive bound are the registry cadences
+# pacing.typing_refresh / pacing.typing_max_lifetime.
 _typing_tasks: dict[str, asyncio.Task] = {}
-_TYPING_REFRESH = 8.0  # seconds between typing indicator refreshes
-_TYPING_MAX_LIFETIME = 300.0  # keepalive bound — stops if the agent never replies
 
 # QR login state (non-blocking)
 _qr_task: asyncio.Task | None = None
 _qr_status: str = ""  # "" | "waiting" | "scanned" | "confirmed" | "expired" | "error"
 _qr_content: str = ""
 _qr_error: str = ""
-_QR_POLL_INTERVAL = 2.0  # seconds between QR status checks
-_QR_MAX_REFRESH = 3
+#: QR status-check cadence is the registry cadence pacing.qr_poll.  This is
+#: an attempt COUNT, not a time value — hence ATTEMPTS, not REFRESH.
+_QR_MAX_ATTEMPTS = 3
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Background polling
@@ -171,9 +170,16 @@ def _msg_key(msg: dict, text: str) -> str:
     )
 
 
-async def _poll_loop(poll_interval: float = 3.0) -> None:
-    """Continuously poll WeChat for new messages, queueing them for the LLM."""
+async def _poll_loop(poll_interval: float | None = None) -> None:
+    """Continuously poll WeChat for new messages, queueing them for the LLM.
+
+    *poll_interval* defaults to the registry cadence
+    ``pacing.wechat_upstream_poll``.
+    """
     global _pending, _seen_keys
+
+    if poll_interval is None:
+        poll_interval = _timeouts.timeouts.pacing.wechat_upstream_poll
 
     # Flush after every log so we can debug poll activity in real time
     logger.info("poll_loop_start interval=%.1fs", poll_interval)
@@ -310,10 +316,11 @@ def _start_typing_keepalive(from_id: str, ctx_token: str) -> None:
         # Bound the keepalive: the reply dispatch stops it for a normal turn,
         # but if the agent never replies (crash, or the stop is missed) it must
         # not loop forever.
-        deadline = asyncio.get_event_loop().time() + _TYPING_MAX_LIFETIME
+        deadline = (asyncio.get_event_loop().time()
+                    + _timeouts.timeouts.pacing.typing_max_lifetime)
         while asyncio.get_event_loop().time() < deadline:
             try:
-                await asyncio.sleep(_TYPING_REFRESH)
+                await asyncio.sleep(_timeouts.timeouts.pacing.typing_refresh)
                 await _client.send_typing(uid, tok, status=1)
             except asyncio.CancelledError:
                 break
@@ -387,7 +394,7 @@ async def __wechat_drain_incoming() -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> None:
+async def _qr_poll_loop(qrcode: str, base_url: str, attempts: int = 0) -> None:
     """Background task: poll QR status until scanned, expired, or error."""
     global _client, _qr_status, _qr_content, _qr_error
 
@@ -399,7 +406,7 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
             data = await _client._poll_login_status(qrcode, base_url)
         except Exception as e:
             logger.debug("qr_poll_error err=%s", e)
-            await asyncio.sleep(_QR_POLL_INTERVAL)
+            await asyncio.sleep(_timeouts.timeouts.pacing.qr_poll)
             continue
 
         if data.get("redirect_base"):
@@ -409,7 +416,7 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
             # the login never completes.
             base_url = data["redirect_base"]
             logger.debug("qr_poll_node_switch url=%s", base_url)
-            await asyncio.sleep(_QR_POLL_INTERVAL)
+            await asyncio.sleep(_timeouts.timeouts.pacing.qr_poll)
             continue
 
         if data.get("bot_token"):
@@ -439,8 +446,8 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
             return
 
         if data.get("expired"):
-            if refresh_count < _QR_MAX_REFRESH:
-                logger.info("qr_expired refreshing %d/%d", refresh_count + 1, _QR_MAX_REFRESH)
+            if attempts < _QR_MAX_ATTEMPTS:
+                logger.info("qr_expired refreshing %d/%d", attempts + 1, _QR_MAX_ATTEMPTS)
                 try:
                     new_data = await _client._fetch_qrcode(base_url)
                     new_qr = new_data.get("qrcode", "")
@@ -448,10 +455,10 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
                     _qr_content = str(img or new_qr)
                     _qr_status = "waiting"
                     # Recurse with refreshed QR
-                    await _qr_poll_loop(new_qr, base_url, refresh_count + 1)
+                    await _qr_poll_loop(new_qr, base_url, attempts + 1)
                     return
                 except Exception as e:
-                    logger.exception("qr_refresh_failed refresh_count=%d", refresh_count)
+                    logger.exception("qr_refresh_failed attempts=%d", attempts)
                     _qr_status = "error"
                     _qr_error = f"QR refresh failed: {e}"
                     return
@@ -468,7 +475,7 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
             _qr_error = "Verify code blocked. Call wechat_login again."
             return
 
-        await asyncio.sleep(_QR_POLL_INTERVAL)
+        await asyncio.sleep(_timeouts.timeouts.pacing.qr_poll)
 
     _qr_status = "error"
     _qr_error = "Login timed out (10 min). Call wechat_login again."
@@ -602,7 +609,7 @@ async def __check() -> str:
         "saved": False,
         "saved_at": 0.0,
         "age_h": 0.0,
-        "max_age_h": round(SESSION_MAX_AGE / 3600, 1),
+        "max_age_h": round(_timeouts.timeouts.pacing.wechat_session_max_age / 3600, 1),
     }
     if _client.is_logged_in:
         s = _client.get_session_dict()
@@ -720,7 +727,7 @@ async def wechat_check_status() -> str:
                     _start_polling()
                     session = _client.get_session_dict()
                     age = time.time() - session.get("saved_at", time.time())
-                    remaining = max(0, SESSION_MAX_AGE - age)
+                    remaining = max(0, _timeouts.timeouts.pacing.wechat_session_max_age - age)
                     return json.dumps({
                         "status": "restored",
                         "remaining_hours": round(remaining / 3600, 1),
@@ -743,7 +750,7 @@ async def wechat_check_status() -> str:
 
     session = _client.get_session_dict()
     age = time.time() - session.get("saved_at", time.time())
-    remaining = max(0, SESSION_MAX_AGE - age)
+    remaining = max(0, _timeouts.timeouts.pacing.wechat_session_max_age - age)
 
     # Tell the LLM the truth when the link is broken: a revoked token needs
     # a fresh login, a network failure is transient.  A stale ``logged_in``
