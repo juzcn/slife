@@ -486,11 +486,11 @@ addresses in the same turn.
 
 The agent is otherwise purely user-driven; these three mechanisms give it time.
 
-**Heartbeat.** While idle, every `agent.heartbeat_interval` seconds (default 1800) the service posts
-a `[Heartbeat]` message, which runs as a normal turn with its own history and is saved like any
-other. The reply contract: real content if the agent has something worth saying proactively,
-otherwise exactly `.`. The loop skips a beat when the inbox is busy or has pending work, so it never
-competes with real input. **Main agent only** — a worker is task-driven.
+**Heartbeat.** While idle, every `agent.heartbeat_interval` seconds (default 1800; `0` disables it)
+the service posts a `[Heartbeat]` message, which runs as a normal turn with its own history and is
+saved like any other. The reply contract: real content if the agent has something worth saying
+proactively, otherwise exactly `.`. The loop skips a beat when the inbox is busy or has pending
+work, so it never competes with real input. **Main agent only** — a worker is task-driven.
 
 **Scheduled tasks** are three separated concerns — *timing*, *execution*, *record*:
 

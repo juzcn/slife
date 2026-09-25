@@ -3313,12 +3313,14 @@ class AgentService:
                 self._host_server = None
 
         # Autonomous heartbeat — idle turns the agent gives itself (period
-        # configurable via agent.heartbeat_interval).  A worker is task-driven
-        # and never receives a heartbeat trigger.
+        # configurable via agent.heartbeat_interval; 0 turns it off).  A worker
+        # is task-driven and never receives a heartbeat trigger.
         if self.caps.heartbeat:
-            from slife.agent.heartbeat import heartbeat_loop
+            from slife.agent.heartbeat import heartbeat_loop, heartbeat_period
 
-            if self._heartbeat_task is None or self._heartbeat_task.done():
+            if heartbeat_period(self.config) <= 0:
+                logger.info("heartbeat_off")
+            elif self._heartbeat_task is None or self._heartbeat_task.done():
                 self._heartbeat_task = asyncio.create_task(heartbeat_loop(self))
                 logger.info("heartbeat_started")
 

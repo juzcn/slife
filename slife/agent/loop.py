@@ -1525,9 +1525,9 @@ class AgentLoop:
         # inbox message runs against the main agent's one context.
         if stream_usage.total_tokens > 0:
             # The cache is FIFO-capacity: one entry per history (id), evicting
-            # the oldest past _MAX_USAGE_CACHE.  A heartbeat fires every 60s and
-            # each A2A remote turn uses a fresh one-shot history, so without the
-            # cap the cache grows without bound; evicting also makes an
+            # the oldest past _MAX_USAGE_CACHE.  A heartbeat fires periodically
+            # and each A2A remote turn uses a fresh one-shot history, so without
+            # the cap the cache grows without bound; evicting also makes an
             # id()-reused history miss (fresh estimate) instead of reading a
             # stale unrelated usage.
             self._usage_by_history[id(history)] = stream_usage

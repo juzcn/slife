@@ -79,6 +79,18 @@ class TestBuild:
         assert "every 30 seconds" in build(cfg)
         assert "every 1800 seconds" not in build(cfg)
 
+    def test_heartbeat_off_is_not_advertised(self, cfg):
+        """`heartbeat_interval: 0` — no heartbeat to describe, and the rest of
+        the Autonomy block stays, renumbered."""
+        from slife.agent.system_prompt import build
+        cfg.heartbeat_interval = 0
+        result = build(cfg)
+        assert "human-like heartbeat" not in result
+        assert "[Heartbeat] click arrives" not in result
+        assert "every 0 seconds" not in result
+        assert "1. Timer" in result
+        assert "2. Silence output" in result
+
     def test_vision_disabled(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)

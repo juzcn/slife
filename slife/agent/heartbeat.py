@@ -25,11 +25,13 @@ import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/pa
 if TYPE_CHECKING:
     from slife.agent.loop import TokenUsage, ToolCallInfo
     from slife.agent.service import AgentService
+    from slife.config import Config
 
 logger = logging.getLogger(__name__)
 
 #: The default idle interval is the registry cadence ``pacing.heartbeat``,
-#: overridable per user via ``agent.heartbeat_interval`` in slife.yaml.
+#: overridable per user via ``agent.heartbeat_interval`` in slife.yaml — where
+#: an explicit ``0`` turns the heartbeat off (see ``heartbeat_period``).
 
 # The "[Heartbeat]" prefix is the TUI filter mark — restore / live both
 # recognise heartbeat turns by it.  The reply contract lives in the
@@ -85,6 +87,22 @@ class _SilentHandler:
         pass
 
 
+def heartbeat_period(config: "Config") -> float:
+    """The configured idle interval in seconds.
+
+    ``0`` or less means the heartbeat is OFF — an explicit ``0`` disables it
+    rather than falling back to the default.  The default applies only when the
+    key is absent (``None``) or unparseable.
+    """
+    raw = config.heartbeat_interval
+    if raw is None:
+        return float(_timeouts.timeouts.pacing.heartbeat)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(_timeouts.timeouts.pacing.heartbeat)
+
+
 async def heartbeat_loop(service: "AgentService") -> None:
     """Periodically post a heartbeat message while the agent is idle.
 
@@ -95,16 +113,9 @@ async def heartbeat_loop(service: "AgentService") -> None:
     """
     from slife.a2a.identity import HEARTBEAT, AgentMessage, Channel
 
-    try:
-        interval = float(getattr(
-            service.config, "heartbeat_interval", _timeouts.timeouts.pacing.heartbeat,
-        ))
-    except (TypeError, ValueError):
-        interval = _timeouts.timeouts.pacing.heartbeat
+    interval = heartbeat_period(service.config)
     if interval <= 0:
-        # A non-positive interval (e.g. a bad config value) would either
-        # raise in asyncio.sleep or spin the loop — fall back to default.
-        interval = _timeouts.timeouts.pacing.heartbeat
+        return  # off — no beat, and nothing to sleep on either
     while True:
         await asyncio.sleep(interval)
         try:

@@ -46,7 +46,7 @@ agent:
   # Maximum turns in a recall selection.
   recall_limit: 40
   # Idle heartbeat period in SECONDS (1800 = 30 min): how often an otherwise
-  # idle agent may wake itself for a scheduled turn.
+  # idle agent may wake itself for a scheduled turn.  0 disables it.
   heartbeat_interval: 0
   # Mid-turn input preemption.  true — a message arriving while a turn runs
   # cuts in at the next safe iteration boundary.  false — it waits in the

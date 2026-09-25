@@ -2,9 +2,97 @@
 
 import pytest; pytestmark = pytest.mark.unit
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
-from slife.agent.heartbeat import HEARTBEAT_MARK, HEARTBEAT_PROMPT
+from slife.agent.heartbeat import HEARTBEAT_MARK, HEARTBEAT_PROMPT, heartbeat_period
+
+
+class TestHeartbeatPeriod:
+    """``0`` is OFF — it never falls back to the registry default."""
+
+    def test_configured_value_wins(self):
+        assert heartbeat_period(
+            SimpleNamespace(heartbeat_interval=90)  # noqa-timeout
+        ) == 90.0
+
+    def test_zero_is_off(self):
+        assert heartbeat_period(
+            SimpleNamespace(heartbeat_interval=0)  # noqa-timeout
+        ) == 0.0
+
+    def test_negative_is_off(self):
+        assert heartbeat_period(SimpleNamespace(heartbeat_interval=-5)) <= 0
+
+    def test_absent_resolves_to_registry(self):
+        import slife.timeouts as timeouts
+
+        assert heartbeat_period(SimpleNamespace(heartbeat_interval=None)) == float(
+            timeouts.timeouts.pacing.heartbeat
+        )
+
+    def test_unparseable_resolves_to_registry(self):
+        import slife.timeouts as timeouts
+
+        assert heartbeat_period(SimpleNamespace(heartbeat_interval="soon")) == float(
+            timeouts.timeouts.pacing.heartbeat
+        )
+
+
+class TestHeartbeatLoop:
+    """The loop's own gate: off means no beat, and no sleeping either."""
+
+    def _service(self, interval):
+        posted: list = []
+
+        class _Inbox:
+            busy = False
+            pending = False
+
+            async def post(self, msg):
+                posted.append(msg)
+
+        return (
+            SimpleNamespace(
+                config=SimpleNamespace(heartbeat_interval=interval),
+                inbox=_Inbox(),
+                surface_autonomous_reply=None,
+            ),
+            posted,
+        )
+
+    @pytest.mark.asyncio
+    async def test_zero_posts_nothing(self):
+        from slife.agent.heartbeat import heartbeat_loop
+
+        svc, posted = self._service(0)
+        await asyncio.wait_for(heartbeat_loop(svc), timeout=1)  # noqa-timeout
+        assert posted == []
+
+    @pytest.mark.asyncio
+    async def test_enabled_interval_posts_a_beat(self, monkeypatch):
+        """Positive interval → sleeps that long, then posts one heartbeat."""
+        from slife.agent import heartbeat as hb
+
+        slept: list[float] = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+            if len(slept) > 1:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(
+            hb,
+            "asyncio",
+            SimpleNamespace(sleep=fake_sleep, CancelledError=asyncio.CancelledError),
+        )
+        svc, posted = self._service(7)
+        with pytest.raises(asyncio.CancelledError):
+            await hb.heartbeat_loop(svc)
+        assert slept == [7.0, 7.0]
+        assert len(posted) == 1
 
 
 class TestHeartbeatPrompt:

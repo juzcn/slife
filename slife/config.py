@@ -523,7 +523,8 @@ class Config:
     tool_timeout: float | None = None
     heartbeat_interval: int | None = None  # seconds — autonomous idle heartbeat
     # period; None resolves to the registry cadence pacing.heartbeat (the user
-    # key ``agent.heartbeat_interval`` is the only override)
+    # key ``agent.heartbeat_interval`` is the only override), and 0 disables
+    # the heartbeat — see heartbeat_period()
     # Mid-turn input preemption: when True (default) a new inbound message may
     # cut into the running turn at the next safe iteration boundary; when
     # False it waits in the queue until the turn ends (the original behavior).

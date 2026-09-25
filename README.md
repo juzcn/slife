@@ -326,7 +326,7 @@ Every turn also preserves its **source channel** — `human`, `wechat`, a subage
 
 ### Autonomous heartbeat
 
-While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_interval` seconds; default 1800). It runs as a normal turn (own turn, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.`. A bare `.` reply is **silence** — never rendered in the chat or session restore, from any event (heartbeat, A2A async-completion notification, etc.); the `[Heartbeat]` trigger is filtered, and a real autonomous reply renders as `⚡ 自主`. This is the precondition for emergent self-initiated behavior.
+While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_interval` seconds; default 1800, `0` disables the heartbeat). It runs as a normal turn (own turn, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.`. A bare `.` reply is **silence** — never rendered in the chat or session restore, from any event (heartbeat, A2A async-completion notification, etc.); the `[Heartbeat]` trigger is filtered, and a real autonomous reply renders as `⚡ 自主`. This is the precondition for emergent self-initiated behavior.
 
 ### Scheduled tasks
 
