@@ -11,7 +11,7 @@ from slife.config import Config, ModelConfig
 from slife.agent.llm_client import TokenUsage
 from slife.agent.loop import ToolCallInfo, AgentResult
 from slife.agent.service import AgentService
-from slife.ui.app import StatusBar, _parse_images_from_input
+from slife.ui.app import HistoryInput, StatusBar, _parse_images_from_input
 from slife.ui.handler import TUIHandler
 
 
@@ -772,6 +772,43 @@ class TestStatusBar:
         bar.update = MagicMock()
         bar.update_info(model="Test")
         assert "Ctrl+S model" in bar.update.call_args[0][0]
+
+
+# ── Submitting from the prompt ─────────────────────────────────────────
+
+
+class TestSubmitOwnsTheView:
+    """Enter on the prompt: the reader's own message takes the view with it.
+
+    The bubble goes in through the helper the incoming channels (A2A, WeChat,
+    subagent) share, which follows the tail only while the reader is already
+    at it.  Sending is the reader leaving history themselves, so the jump is a
+    separate, deliberate call at the human's own entry point — the one place
+    that must not inherit a reader's position.
+    """
+
+    def _app(self):
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+        app.run_worker = MagicMock()
+        return app, chat_view
+
+    def test_sending_jumps_the_transcript(self):
+        app, chat_view = self._app()
+        inp = HistoryInput(placeholder="…")
+
+        app.on_history_input_submitted(
+            HistoryInput.Submitted(input=inp, value="hello"),
+        )
+        app.run_worker.call_args.args[0].close()  # never awaited in this test
+
+        names = [call[0] for call in chat_view.mock_calls]
+        assert "add_user_message" in names
+        # After the add, so the jump covers the widget just mounted.
+        assert names.index("jump_to_tail") > names.index("add_user_message")
 
 
 # ── Model switching (Ctrl+S) ────────────────────────────────────────────

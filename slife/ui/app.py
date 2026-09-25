@@ -911,6 +911,12 @@ class SlifeApp(App):
         chat_view.add_user_message(
             raw, prefix="You> ", timestamp=now,
         )
+        # The reader's own message owns the view: sending it goes to the end
+        # and re-arms following, however far up they had read.  The helper
+        # above is the one the incoming channels (A2A, WeChat, subagent) use
+        # too, and there the reader's position stands — hence the separate,
+        # deliberate call here.
+        chat_view.jump_to_tail()
 
         # _process_message just enqueues and returns immediately
         # (handler is attached to the message, inbox streams later).

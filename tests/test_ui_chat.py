@@ -437,6 +437,62 @@ class TestScrollFollowing:
             assert view.scroll_offset.y == 0
 
     @pytest.mark.asyncio
+    async def test_sending_a_message_returns_to_the_tail(self):
+        """The reader's own send goes to the end, wherever they had read to.
+
+        Sticky following is what keeps streamed content from pulling the page
+        out from under a reader in history — but sending a message is that
+        reader leaving history themselves.  Sent through the guarded follow
+        alone, Enter did nothing at all: the view stayed where it was, and the
+        message just sent sat below the fold.
+        """
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            _fill(view)
+            await pilot.pause()
+            view.scroll_to(y=0, animate=False)
+            await pilot.pause()
+            assert view._at_tail is False
+
+            view.add_user_message("You> hello from up here")
+            view.jump_to_tail()
+            await pilot.pause()
+
+            assert view._at_tail is True
+            assert view.scroll_offset.y == view.max_scroll_y
+            assert any("hello from up here" in line
+                       for line in _visible_lines(app))
+
+    @pytest.mark.asyncio
+    async def test_following_resumes_after_a_send(self):
+        """The reply follows the message that took the reader back down.
+
+        Re-arming is the half that is easy to lose: a jump that only scrolls
+        leaves following disarmed where it was, so the reply to the message
+        the reader just sent streams in below the fold.
+        """
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            _fill(view)
+            await pilot.pause()
+            view.scroll_to(y=0, animate=False)
+            await pilot.pause()
+
+            view.add_user_message("You> hello")
+            view.jump_to_tail()
+            await pilot.pause()
+            before = view.scroll_offset.y
+
+            # exactly what on_text_chunk does for every streamed token
+            view.add_assistant_message().append_text("token ")
+            view.follow_tail()
+            await pilot.pause()
+
+            assert view.scroll_offset.y > before
+
+    @pytest.mark.asyncio
     async def test_returning_to_the_tail_resumes_following(self):
         app = Host()
         async with app.run_test(size=(80, 24)) as pilot:

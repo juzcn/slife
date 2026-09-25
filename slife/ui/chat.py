@@ -162,6 +162,22 @@ class ChatView(VerticalScroll):
         if self._autoscroll and self._at_tail:
             self.scroll_end(animate=False)
 
+    def jump_to_tail(self) -> None:
+        """Return to the tail and follow from there — the reader's own send.
+
+        Sticky following holds streamed content back so a turn cannot pull the
+        page out from under a reader in history.  Sending a message is that
+        reader *leaving* history, so their own message is not held back with
+        it: the view goes to the end — where the message they just sent is —
+        and following resumes from there.
+
+        The re-arm is stated here rather than left to the watcher, because
+        ``scroll_end`` lands a refresh later: a token streamed in between
+        would find following still off.
+        """
+        self._at_tail = True
+        self.scroll_end(animate=False)
+
     async def _on_key(self, event: Key) -> None:
         """Redirect printable keys to the input field."""
         if not await _redirect_printable_to_input(self, event):
