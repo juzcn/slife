@@ -1567,9 +1567,9 @@ counterpart of `turn_summarize`: it writes a saved row's summary and/or tags so 
 findable after the fact. A summary is read by **keyword search**, on either side — a turn's vector is
 built from the conversation and not from its summary, so an abstract is how a row is *described* in
 words rather than what it is *nearest* to. One kind is the exception the turns database does not
-have: a **file** has no text of its own, so its summary *is* the text its vector is built from. That
-is why writing one re-queues that row's embedding (the stored vector was built from the old text) and
-why it is the one annotation that puts a file saved without a summary into semantic search at all.
+have: a **file** has no text of its own, so its summary is *part of* the text its vector is built
+from. That is why writing one re-queues that row's embedding — the stored vector was built from the
+old text.
 
 **Which leg reads which column is memdb's logic applied to a row that has more columns.** A turn has
 no title and no path: it is a conversation, so "what it says" and "what it is called" are the same
@@ -1586,10 +1586,14 @@ you grep for:
 | **semantic** | the `body` alone |
 
 So an identity is reachable by pattern and by word, a meaning by meaning, and the **summary** by word
-alone — which is what a summary is for. A file is where this earns its keep: it has no text of its
-own, so its summary is its `body` and therefore what its vector is built from, while its name and its
-source path are what make it findable *before* anyone writes one. The vector's text contract is
-**versioned**
+alone — which is what a summary is for.
+
+A file is where this earns its keep, and it is the one kind whose `body` is not simply its text: it
+has none, so its body is what it **is** — title, source path, saved path — plus the summary once one
+is written. The summary alone would not do, because it is empty until a model writes it: a file would
+have no text to search, nothing to embed, and no way into semantic search at all until someone
+described it. With the identity in the body, a file is searchable and embedded from the moment it is
+saved. The vector's text contract is **versioned**
 (`memfiles.store.INDEX_TEXT_VERSION`, compared in the meta table), so changing it drops the stale
 vectors for the drainer to rebuild exactly as a model change does.
 

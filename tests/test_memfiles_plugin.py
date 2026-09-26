@@ -922,18 +922,19 @@ class TestMemfilesStore:
             memo = await store.add_file(title="memo", original_path="/x/m.txt",
                                         saved_path="m.txt", mime="text", size=2,
                                         tags="", summary="")
-            # 3 embeddable docs: the vector is built from the row's own text,
-            # and a file's text IS its summary — so the summary-less memo has
-            # nothing to embed.  It is not lost: keyword and grep both read a
-            # row's name and path, so the memo is findable by "memo" or by
-            # "/x/m.txt" without a summary ever being written.
-            assert await store.count_unembedded() == 3
+            # 4 embeddable docs, the summary-less memo among them: a file has
+            # no content of its own, so its body — what every leg reads and the
+            # drainer embeds — is what it IS (title, source path, saved path)
+            # plus its summary.  The summary alone would not do: it is empty by
+            # default, so a file would have nothing to embed or search until a
+            # model described it.
+            assert await store.count_unembedded() == 4
             docs = await store.get_unembedded_docs(10)
             assert {d["kind"] for d in docs} == {"note", "diary", "file"}
             assert all(d["text"] for d in docs)
-            assert memo["doc_id"] not in {d["doc_id"] for d in docs}
-            assert [h["id"] for h in await store.keyword_hits(
-                query="memo", kind="file", limit=20)] == ["file:2"]
+            memo_doc = next(d for d in docs if d["kind"] == "file"
+                            and d["doc_id"] == memo["doc_id"])
+            assert memo_doc["text"] == "memo /x/m.txt m.txt"
         finally:
             await store.close()
 
@@ -1360,13 +1361,13 @@ class TestCabinetSummarize:
                                  saved_path="files/documents/paper.pdf",
                                  mime="application/pdf", size=10, tags="",
                                  summary="")
-            # No summary yet, so there is nothing to embed — and "survey"
-            # appears nowhere in the row, so the keyword leg has nothing either.
-            assert await store.count_unembedded() == 0
+            # No summary yet, so "survey" matches nothing — but the file is
+            # not a blank: its identity is already its text, in the vector and
+            # in the keyword index both.
             assert await store.keyword_hits(
                 query="survey", kind="file", limit=20) == []
-            # Its identity is searchable all the same: that is what the other
-            # two legs are for.
+            assert (await store.get_unembedded_docs(10))[0]["text"] == (
+                "paper /dl/paper.pdf files/documents/paper.pdf")
             assert [h["id"] for h in await store.keyword_hits(
                 query="paper", kind="file", limit=20)] == ["file:1"]
             assert [h["id"] for h in await store.regex_hits(
@@ -1380,7 +1381,9 @@ class TestCabinetSummarize:
             # …and it is now the drainer's to embed.
             assert await store.count_unembedded() == 1
             docs = await store.get_unembedded_docs(10)
-            assert docs[0]["text"] == "a survey of retrieval", "the file's text"
+            assert docs[0]["text"] == (
+                "paper /dl/paper.pdf files/documents/paper.pdf "
+                "a survey of retrieval"), "identity, then the summary"
             assert docs[0]["kind"] == "file"
         finally:
             await store.close()
@@ -1401,7 +1404,8 @@ class TestCabinetSummarize:
 
             await store.summarize("file", "p.pdf", summary="second text")
             assert await store.count_unembedded() == 1, "chunks must be cleared"
-            assert (await store.get_unembedded_docs(10))[0]["text"] == "second text"
+            assert (await store.get_unembedded_docs(10))[0]["text"] == (
+                "paper /dl/paper.pdf p.pdf second text")
         finally:
             await store.close()
 

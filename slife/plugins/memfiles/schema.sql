@@ -103,11 +103,20 @@ CREATE INDEX IF NOT EXISTS idx_reports_task ON reports(task_id);
 --
 -- Each kind's searchable columns normalize into the same four:
 --   title  — what the row is called
---   body   — its text (a file's summary IS its text: that is what is embedded)
+--   body   — its text.  A file has none of its own, so its body is what it IS
+--            — title, source path, saved path — plus the summary once one is
+--            written.  The summary alone would not do: it is empty by default,
+--            so a file would have no text to search or embed until a model
+--            described it.
 --   tags   — comma-separated tags
 --   source — where it came from (a file's original_path; '' for the rest)
 -- (kind, doc_id) ride along UNINDEXED so a hit names its own row and every
 -- detail column is one join away (see the cabinet_docs view below).
+--
+-- The file kind's ``body`` expression appears here AND in the view — the
+-- trigger writes the index's copy, the view reads the table's, and the two
+-- must be the same text or the keyword leg would search something the semantic
+-- leg does not embed.  SQL has nowhere to share it, so both spell it out.
 --
 -- The rowid is the KIND'S OFFSET plus the row id — note 1e12,
 -- diary 2e12, file 3e12, report 4e12 (ids never
@@ -151,7 +160,9 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
     INSERT INTO cabinet_fts(rowid, kind, doc_id, title, body, tags, source, summary)
-    VALUES (3000000000000 + new.id, 'file', new.id, new.title, new.summary, new.tags, new.original_path, new.summary);
+    VALUES (3000000000000 + new.id, 'file', new.id, new.title,
+            TRIM(new.title || ' ' || new.original_path || ' ' || new.saved_path || ' ' || new.summary),
+            new.tags, new.original_path, new.summary);
 END;
 
 CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
@@ -161,7 +172,9 @@ END;
 CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
     DELETE FROM cabinet_fts WHERE rowid = 3000000000000 + old.id;
     INSERT INTO cabinet_fts(rowid, kind, doc_id, title, body, tags, source, summary)
-    VALUES (3000000000000 + new.id, 'file', new.id, new.title, new.summary, new.tags, new.original_path, new.summary);
+    VALUES (3000000000000 + new.id, 'file', new.id, new.title,
+            TRIM(new.title || ' ' || new.original_path || ' ' || new.saved_path || ' ' || new.summary),
+            new.tags, new.original_path, new.summary);
 END;
 
 CREATE TRIGGER IF NOT EXISTS reports_ai AFTER INSERT ON reports BEGIN
@@ -218,8 +231,9 @@ CREATE VIEW IF NOT EXISTS cabinet_docs AS
            date || ' 00:00:00', 'diary' || ':' || id, summary
       FROM diary
     UNION ALL
-    SELECT 'file', id, saved_path, title, summary, tags, original_path,
-           saved_path, created_at, 'file' || ':' || id, summary
+    SELECT 'file', id, saved_path, title,
+           TRIM(title || ' ' || original_path || ' ' || saved_path || ' ' || summary),
+           tags, original_path, saved_path, created_at, 'file' || ':' || id, summary
       FROM files
     UNION ALL
     SELECT 'report', id, title, title, content, tags, '', file_path,
