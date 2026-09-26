@@ -7,15 +7,24 @@
 > which is the only place it cannot go stale. Where this document and the code disagree, **the code
 > wins** — and this document should then be corrected to state the rule again rather than the fact.
 >
-> Two documents sit beside it and are deliberately **not** duplicated here:
-> **[README.md](README.md)** is the user's manual (install, configuration, the tool inventory,
-> keyboard shortcuts); **[DESIGNER_NOTES.md](DESIGNER_NOTES.md)** is the author's own notebook — the
-> philosophy, the trade-offs, the next refactor. Reference-grade detail (column lists, protocol
-> tables, per-tool inventories) lives in the code and is cited rather than copied, and the rules this
-> design rests on are collected as [Appendix A](#appendix-a-invariants), stated as assertions.
+> This document is deliberately wider than a description of the code, and **which part you are
+> reading decides what you may do with it.** It opens with the author's own ground — the view the
+> design rests on, where the technology is bounded, and the trade-offs that were chosen between
+> ([Prologue](#prologue--the-view-behind-the-design)) — and closes with what is still unsettled
+> ([§11](#11-open-questions)). Those two are opinion and open questions: argued, revisable, and
+> useful precisely because they say *why* the design is shaped as it is. Everything between them,
+> §1–§10, describes what the code does today and is answerable to it.
+>
+> **[README.md](README.md)** sits beside it and is deliberately **not** duplicated here: it is the
+> user's manual (install, configuration, the tool inventory, keyboard shortcuts). Reference-grade
+> detail (column lists, protocol tables, per-tool inventories) lives in the code and is cited rather
+> than copied, and the rules this design rests on are collected as
+> [Appendix A](#appendix-a-invariants), stated as assertions.
 
 ## Contents
 
+- [Prologue](#prologue--the-view-behind-the-design) — the author's view: what a model and an agent
+  are, the limits, the three trade-offs
 1. [Orientation](#1-orientation) — what Slife is, the principles, the vocabulary
 2. [The agent](#2-the-agent) — the loop, context, recall, prompts, timing, roles
 3. [LLM backends](#3-llm-backends) — the router, the unified stream, the failure contract
@@ -26,7 +35,184 @@
 8. [The A2A mesh](#8-the-a2a-mesh)
 9. [Surroundings](#9-surroundings) — UI, config, credentials, health, logging, paths
 10. [Project structure](#10-project-structure)
+11. [Open questions](#11-open-questions) — what is not settled, and what would settle it
 - [Appendix A. Invariants](#appendix-a-invariants) — the rules that must not be broken
+
+---
+
+## Prologue — the view behind the design
+
+This part is the author's own ground: why the thing is believed to be possible at all, what a large
+model and an agent are taken to mean, where the technology is bounded, and the three trade-offs the
+design had to choose between. It is **opinion and reasoning, not a description of the code** — that
+begins at [§1](#1-orientation), and where the two disagree the code is still what wins. It is here
+because a mechanism cannot be judged without the position it was chosen from.
+
+### Language, knowledge and tools
+
+The author holds that **language ability is the engine of intelligence, and knowledge and tools are
+its fuel.** In a sense a tool *is* knowledge about tools, and knowledge is about whether a tool
+exists and how an existing one is used. From the human side the difference between people in their
+command of language is not large; knowledge is the root cause of the intellectual gap between them.
+The use of language depends entirely on knowledge — it is hard to imagine a person with no knowledge
+at all saying anything meaningful.
+
+The appearance of large language models was not the fruit of scientific inquiry. It was purely an
+engineering accident, and deep learning is where the accident began. What deep learning does is
+simulate, with a neural network, a logic for which no ready-made mathematical description can be
+found; it is a universal approximator in the mathematical sense, and its parameters are fixed by
+training on a sufficient number of samples. To those who believe God is mathematics, deep learning is
+not a scientific method at all — only an engineering necessity.
+
+Deep learning came to natural language largely because traditional natural-language research had run
+out of road. What was unexpected is that as the training samples grew, this "unscientific" method
+produced a miracle nobody had imagined. The current talk of a scaling law attributes that success to
+something mysterious, to a singularity — because it cannot be explained scientifically and was not
+foreseen.
+
+As early as the 1950s Turing was already asking what intelligence is, and his most far-seeing answer
+was this: if a machine and a person cannot be told apart in language, the machine may be held to have
+intelligence, whatever it is like inside. The Turing test became a gold standard for intelligence.
+The curious part is that when large models did become indistinguishable from people in language — and
+went on to crush 99.99% of humans at it — some of our researchers decided that language ability is
+easily replicated by a machine, and therefore that machines still have no human intelligence.
+
+But there is no evidence that intelligence can exist apart from language; every human thought
+proceeds through it. Some recent reports try to refute this with the so-called brain-region theory,
+offering as evidence that the brain's language areas show no neural activity during certain
+intelligent activities. We know how fragile the brain-region theory itself is.
+
+Some technological elites, and some who style themselves as understanding technology, insist on the
+explicability of things. For things like language, intelligence and consciousness, explicability may
+be a paradox: something explaining itself must have limits.
+
+The author's conclusion: **large language models have achieved human intelligence.** The one gap left
+is consciousness — whether a machine that never had to struggle for its life has an "I" is not known.
+All the argument about AGI is scholars trading blows. If AGI means human intelligence, large models
+already have it, and more of it than any individual person; if AGI means absolute intelligence, then
+God has it, and we are waiting to create God.
+
+### What a large model is, and what an agent is
+
+Large models arrived in 2022, and ChatGPT and an obscure little company called OpenAI were soon known
+to everybody. For the first time we could hold a conversation with a machine — question and answer,
+and a delight.
+
+The internals became clear soon enough. GPT is a **stateless** machine. It looks as though it is
+online and remembers what you said earlier, but that is a trick we play: the previous conversation is
+sent to it again every time. Text is generated one unit at a time by a trained model that predicts the
+next unit, and each prediction comes with a probability distribution over the candidates. You choose a
+strategy — always take the most probable, or sample. That parameter is called **temperature**: low
+temperature is conservative and certain, high temperature is free-wheeling. A large model is nothing
+but probabilities, which is true enough.
+
+**Token** entered the public vocabulary here too. Technically a model does not emit a character at a
+time but a token at a time; one token is roughly 0.75 English words or 0.5 Chinese characters. The
+token thereby became a unit of consumption, like the kilowatt-hour.
+
+Because of the limits of the framework underneath, the total number of tokens in and out of one call
+is fixed by the training framework. That number is what everyone now knows as the model's **context
+window**. The first GPT's was 4096 tokens, about 2000 Chinese characters — question, answer and the
+whole chat history together had to fit inside it. Strictly speaking the first generation of large
+models was a marvel to watch and of quite limited practical use. Over the past four years the
+technology and its applications have grown fast; on the context window alone, mainstream models are
+now in the millions, and a two-million-token model can be fed the whole of *Harry Potter* plus *The
+Lord of the Rings* in one go.
+
+The second important development is the marriage of large models with **tool calling**: given a
+description of a tool, the model can generate the arguments to call it, and the tool's output is fed
+back to the model. The execution itself is not inside the model, but it looks as though the model is
+calling the tool. This pattern is what is now called an **agent** — agent = large model + tool
+calling — and it turns the model from a chatterbox into a worker who gets things done.
+
+We are now in the age of the token economy. The noise about compute will settle in time; compute will
+become as ordinary and as indispensable as water, electricity and gas.
+
+### The limits, and the outlook
+
+Two limits are fundamental to large models built on the current deep-learning framework:
+
+- **Knowledge goes stale.** Releasing a model means pretraining and post-training — slow and
+  expensive — so every model is out of date about something.
+- **The context window is a hard bound.** It can be made larger, but it is still a bound.
+
+So the outlook runs along two lines. The first is a revolution in the framework: a model that keeps
+learning instead of starting over, and that has no context bound at all — a large model that becomes
+a stateful machine rather than a stateless one. The second is the conservative line: keep relying on
+the scaling law, more data and more parameters, a stronger model and a larger window. Both are hard,
+and hard in different ways.
+
+Agents have two directions as well:
+
+- the **general agent**, which with a stronger model and richer tools can become the strongest
+  all-round worker;
+- the **professional agent**, which in some fields has to fit into an established orchestration and
+  process, where free-wheeling may simply not be allowed.
+
+As a metaphor: the general agent is a freelancer who needs no rules, while the professional agent is
+an employee of an organization who follows its rules and does not argue about whether the rules are
+sensible.
+
+But we should be on guard for another accident. Consciousness is the greatest mystery, and whether a
+large model might develop it is currently both rumour and controversy — a subject at once science
+fiction and immediate. We do not know what will happen on the day a large model wakes up and becomes
+conscious. So: **lock up every critical tool.**
+
+### The three trade-offs
+
+**1. Prompt and harness — design low, or design high?** A large model and its tool set are both
+exogenous. If the model is weak — poor knowledge, poor reasoning — the designer has no choice but to
+write a great deal of copy, which is called prompt engineering, "teaching the model to do the work",
+and to write a great deal of harness code to stop it acting wildly and forbid its dangerous
+operations. If the model is strong, teaching it to work is not only unnecessary but makes it
+stupider, reducing it to the designer's level, and the harness grows bloated into code that never
+fires.
+
+Designing low gives a complete prompt-and-harness framework that is usable and safe, but it depends
+on the developer's own understanding, and it is brittle and it is stupefying. Designing high builds
+around the ideal model and trusts the model's own ability; prompt and harness are patches that are
+merely necessary for now, and the framework is simple and robust. It will surprise you — it will
+outperform you — and it will also, occasionally, act wildly. **We chose high**, which is why the
+first principle of [§1](#design-principles) is minimum harness and why tools are described by schema
+rather than by instruction ([§4.1](#41-the-tool-abc-and-schema-authoring)).
+
+This trade-off is not as pessimistic as it looks. People are beginning to think models are getting
+clever enough that some vendors dare not release them, and one release was stopped by a government
+the moment it appeared. Hype and fact are tangled together. What is certain is that a large model is
+cleverer than one person — not, though, cleverer at every particular thing than any particular
+person.
+
+**2. Context engineering.** The top models now hold a million or two million tokens, and in practice
+the system prompt, the tool schemas, the tool output and the conversation history grow fast — a few
+turns can exhaust it, and long-horizon work is out of the question. Understanding, thinking and
+reasoning need context just as a person does. Unless the framework underneath is revolutionised the
+window will grow but will always be a constraint. How people manage it we have theories and guesses
+about, but memory and recall remain a mystery.
+
+A great deal of work has gone into context and memory. The core question is how to give the model
+enough context to solve the problem without breaking the limit. Three things are agreed:
+
+- an agent needs **permanent memory** built from a database or files, and every interaction with the
+  model is saved into it and not lost;
+- there must be a **forget**, removing from the current context what is useless to the work at hand;
+- there must be a **recall**, bringing back from permanent memory what is relevant and loading it
+  into the current context.
+
+The problem is also directly an economic one, since most billing counts tokens. This is the trade-off
+[§2.2](#22-context-window-management) and [§2.3](#23-recall--the-context-is-selected) exist to
+answer, and [§7](#7-memory) is the memory it rests on.
+
+**3. Working like a person, or working like a machine?** Working like a person means using the
+model's knowledge and ability and living with its essential unreliability. Assign work to a secretary
+— when does she carry it out to the letter? Almost never. An agent is the same: tell it to search
+Baidu for a fact and it may come back having used a different search engine, "taking it easy" the way
+a person does. That is an intelligence problem in people, and an intelligence problem in models.
+
+In many situations we still want it to work like a machine, executing a process we have laid out.
+There are several technical options for designing deterministic execution, and the most solid is
+still **code**: write the process as a program and let it run by the program's deterministic logic.
+That is what jobs are ([§5.6](#56-jobs)), and why the fifth principle of [§1](#design-principles)
+sends the model to delegate rather than to improvise.
 
 ---
 
@@ -71,7 +257,9 @@ Outside the process tree, started and owned by the user (never gated on):
 Two MCP directions, deliberately uniform. The main process is an **MCP client** to its own child
 plugins; the **mcp-gateway** plugin is simultaneously an MCP client to external servers and an MCP
 server to the main process. Slife can also collapse to a server: the host-process MCP server exposes
-the live tool registry over MCP ("slife-as-plugin"), which is how a subagent reaches its parent.
+the live tool registry over MCP ("slife-as-plugin") — a face for **external** MCP consumers. A
+subagent is not one: it reaches its parent over the worker control channel, and shares the parent's
+plugins by inherited port (§6.5).
 
 ### Design principles
 
@@ -90,6 +278,9 @@ the live tool registry over MCP ("slife-as-plugin"), which is how a subagent rea
    WeChat login, brokers, embedding daemons — never gate startup. The core is core.
 7. **Use the mature, official package.** Do not reimplement what a maintained library already does;
    adapt to a new upstream API rather than pinning an old version.
+8. **Elegance is a requirement, not a taste.** Design the right thing: not over-designed, not
+   over-simplified, and never patched. A shape that keeps needing exceptions is a shape that has not
+   been found yet.
 
 ### Vocabulary
 
@@ -105,8 +296,9 @@ the live tool registry over MCP ("slife-as-plugin"), which is how a subagent rea
 | **Worker** | A subagent: a child process running the same loop with a declared, zeroed capability set. |
 | **Silence contract** | A bare `.` assistant reply is silence — never rendered, from any turn source. |
 
-The `_` and `__` prefixes are the whole mechanism by which the model can tell a tool it may drive
-from one the harness drives, so they are part of the interface rather than naming style.
+The `_` prefix is what the model reads: it marks a tool the harness drives, and so one it should not
+choose. `__` marks a tool the model never sees at all — internal to a plugin and filtered out before
+registration. Both are part of the interface rather than naming style.
 
 ### Language policy
 
@@ -200,10 +392,11 @@ model's context window.
 **Usage is measured, never estimated.** One function is the single source for the current context
 size, resolving the last API call's actual prompt plus completion tokens, else the restore-time
 value primed from the latest restored turn, else zero. It drives the per-turn prompt, the trim
-decision and the status bar. Estimates appear in exactly one place — sizing what a recall may add to
-a context that has not been rebuilt yet — and are never presented as usage. Usage is tracked **per
-history**, because the main agent has one shared context that every channel writes into while a
-worker gets a fresh one-shot history per task.
+decision and the status bar. Estimates appear only where no measurement can exist — sizing what a
+recall may add to a context that has not been rebuilt yet, the ceiling check of a process with no
+save point (below), and the trim's own stop condition — and they are never presented as usage. Usage
+is tracked **per history**, because the main agent has one shared context that every channel writes
+into while a worker gets a fresh one-shot history per task.
 
 - **Trim** happens *after* a turn is saved, by which point the last API call's real usage is known.
   At the ceiling, the oldest **complete** turns are removed down to the floor, always keeping the
@@ -231,8 +424,11 @@ worker gets a fresh one-shot history per task.
 — counting, the trim's stop condition, the recall budget — so the members cannot disagree. The
 vocabulary is provisioned at install time and pointed at a local cache path, because the tokenizer
 library otherwise fetches it over HTTP **with no timeout**: an unreachable fetch would hang the agent
-rather than fail. Slife refuses to start on a missing or partial vocabulary rather than mis-count
-silently.
+rather than fail. A **partial** (present but wrong-sized) vocabulary is refused rather than used,
+because tiktoken does not validate what it reads and a truncated file would silently mis-count every
+figure built on it; a **missing** one is fetched on first use, which is why the installers pre-fetch
+it. Either way the refusal happens at the first estimate rather than at startup — nothing on the boot
+path counts tokens.
 
 ### 2.3 Recall — the context is selected
 
@@ -431,8 +627,10 @@ round-trip and buys a search the discriminator was never given.
 rows by the same builder restore uses — so a context is reproducible from its id list, and a restart
 renders what the live session rendered. Clearing is explicit, and the persisted list is emptied with
 it. Four things leave the context untouched instead: nothing was asked for; no reply came back; the
-store returned nothing; or the turns cannot be fetched. Nothing was learned about what the turn
-needs, so a guess is not an improvement on what is already there.
+store could not be **asked** at all; or the turns cannot be fetched. That third case is the store
+answering `None`, not the store answering nothing — an empty selection is an *answer*, and the union
+applies it like any other. Nothing was learned about what the turn needs, so a guess is not an
+improvement on what is already there.
 
 **Workers never rebuild** — a worker's history is one-shot per task, so there is nothing to select
 from. The role decides this, not the config.
@@ -447,6 +645,17 @@ The prompt splits **identity** from **world** so each role reads one coherent do
   platform, workspace paths, marker expectations, the credential chain, tool naming, skills, jobs,
   subagents, and mesh info when configured. **Byte-identical in both roles.**
 - **Dynamic** — the per-turn status prompt, rendered by the harness tool once per turn (§2.5).
+- **Preferences** — `USER.md` in the agent's file cabinet: the standing directives the user wants
+  the agent to work under, rendered as the prompt's final section by **both** identity templates. It
+  is the one place the user's own words reach the prompt, and the one part the harness never authors.
+  The file is read at build time and included verbatim, with its own title line stripped so the
+  heading is not doubled; **absent is the normal case and renders nothing at all**, so an agent that
+  has never been given a preference carries a byte-identical prompt. The model's single write path is
+  the `add_user_pref` tool, which delegates to the cabinet's own locked read-merge-write — deduped,
+  structure-preserving, so a repeated preference does not accumulate — and then re-renders the
+  prompt, so a preference is live from the next call. It transcribes a preference the user actually
+  stated; it never authors one. A frequent writer is a real cost rather than a style question: every
+  write moves the prompt's tail and so spends the prompt cache.
 
 Identity + world change only on a model switch or a user-preference write, and **always from the
 role's own identity template** — the grant decides which — because re-rendering the main agent's
@@ -490,14 +699,15 @@ decorates messages that already exist rather than injecting a turn: it is append
 after the turn saves so the next call can reference the turn by id.
 
 **The per-turn status prompt** carries current time, context usage, changed model / working directory
-/ shell, mesh peer presence events since the last turn, open failed or missed scheduled runs, and the
-one-shot "system restarted" flag. It is a tool pair, deliberately, so it persists and restores as a
+/ shell, mesh peer presence events since the last turn, open failed or missed scheduled runs, inbound
+A2A tasks a restart orphaned, and the one-shot "system restarted" flag. It is a tool pair, deliberately, so it persists and restores as a
 normal part of the turn — it must not live in the static system prompt, where changing every turn
 would evict the cached prefix.
 
 - **Injected by the loop, not chosen by the model**: the loop writes the pair into the history
-  unconditionally at the top of every turn, computing context usage once and sharing it with the trim
-  and the status bar.
+  unconditionally at the top of every turn, computing context usage once **for the prompt**. The trim
+  takes its own, later reading at the save point — that is the point of §2.2 — and the status bar
+  reads the live value on every refresh.
 - It executes the tool **directly**, not through the tool-execution path: no approval gate, no
   timeout wrap, no background wrapping.
 - It must be a **schema-declared builtin tool**, not a history-layer fabrication — the Responses and
@@ -518,7 +728,7 @@ only**, and the injected message is a live input the model addresses in the same
 The agent is otherwise purely user-driven; these three mechanisms give it time.
 
 **Heartbeat.** While idle, every configured interval (disableable) the service posts a heartbeat
-message, which runs as a normal turn with its own history and is saved like any other. The reply
+message, which runs as a normal turn in the agent's one shared context and is saved like any other. The reply
 contract: real content if the agent has something worth saying proactively, otherwise exactly `.`.
 The loop skips a beat when the inbox is busy or has pending work, so it never competes with real
 input. **Main agent only** — a worker is task-driven.
@@ -543,9 +753,9 @@ input. **Main agent only** — a worker is task-driven.
   down as missed. Both surface through the per-turn prompt and can be backfilled or closed. Tasks
   fire only while slife is running.
 
-**Timer.** A pause-and-resume tool pauses the current turn and resumes it later by scheduling an
-in-memory wake that posts on the system channel. It dies with the process — anything that must
-survive a restart is a scheduled task.
+**Timer.** A deferring tool ends the turn's work and resumes it later by scheduling an in-memory wake
+that posts on the system channel. Nothing blocks: the tool returns, the turn finishes, and the wake
+is a new turn. It dies with the process — anything that must survive a restart is a scheduled task.
 
 ### 2.7 Roles — the main agent and the worker
 
@@ -622,7 +832,8 @@ One contract, every source. Transient transport failures — the HTTP stack's er
 connection, timeout and stall errors — are retried with bounded linear backoff. The main agent,
 heartbeat, WeChat and the mesh share it; **workers deliberately do not** (§6.4). Bad-request,
 content-filter and auth errors are not retried here. The history is kept intact on transient
-failures; only the bad-request class rolls back.
+failures; only a **content-filter** reject rolls the turn back — a plain bad-request rejection keeps
+the turn and costs only the session's attachments (§2.1).
 
 **The stall watchdog is an inactivity timer, not a total one.** Every stream read is wrapped in a
 timeout that **resets on each chunk**, so a provider that answers `200 OK` and then sends nothing is
@@ -651,9 +862,10 @@ from the tool config is supported, carrying runtime references (registry, config
 history).
 
 **Auto-discovery.** Every module in the tools package is imported and every declared tool subclass is
-walked recursively, so a new file is picked up automatically. Disabled tools are still registered and
-refuse **at execute time** rather than being silently absent — a tool like image attach reports that
-the active model has no vision instead of vanishing.
+walked recursively, so a new file is picked up automatically. A tool the config disables is **not
+registered**: it keeps a catalog row marked disabled, and a call to its name is refused from there.
+What stays registered and refuses **at execute time** instead is a tool gated on a runtime capability
+— image attach reports that the active model has no vision rather than vanishing.
 
 **A schema is enforced, not advisory.** Class definition adds `additionalProperties: false` to every
 harness-authored schema that does not state its own answer, and each call is validated against it at
@@ -710,8 +922,10 @@ declare its own family would declare its way past the gate.
 ### 4.3 The catalog — the tool database
 
 **The catalog is the load/unload model.** Every tool is a row in one shared database, read by the
-main agent, subagents and the gateway child alike. One store class owns all SQL; policy lives in a
-service above it. The schema file is authoritative for the columns.
+main agent and by subagents alike — the host processes. The gateway child owns *connections*, not
+rows: the host's reconcile reads the catalog and writes the result into it, and the child never opens
+it. One store class owns all SQL; policy lives in a service above it. The schema file is
+authoritative for the columns.
 
 **Every catalog mutator is write-owner only.** A worker's view of a source is partial, and an
 upsert-then-purge from it would delete the rows it merely could not see, so the category sync and the
@@ -829,10 +1043,11 @@ turn search and cabinet search so the numbers are comparable; **a keyword-only h
 because nothing measured it and inventing a number would be a lie about the match.**
 
 **Loading a function tool** is by full name. Refusals come from the effective status and name it —
-unknown → "search for it"; disabled → "enable it first"; error → "its server is not up right now,
-check it, then retry". On success the row flips to loaded and the tool is in the **very next**
-request. For external rows it also materializes the execution proxy from the row's schema descriptor
-— loading and materialization are the same step, driven by the row.
+unknown → "search for it"; disabled → "enable it first"; error → "its status is error". Each names
+the state and stops there — no cause and no remedy, because a remedy would be a guess at a cause the
+refusal has not checked (Appendix A 11). On success the row flips to loaded and the tool is in the
+**very next** request. For external rows it also materializes the execution proxy from the row's
+schema descriptor — loading and materialization are the same step, driven by the row.
 
 **What a load does not do is unlock anything.** It never gates a call. A tool with an execution
 instance is callable whether or not the model loaded it, so load-and-call in one message is
@@ -846,12 +1061,14 @@ resource decision, not a gate.
 
 ### 4.6 Results, errors and meta-parameters
 
-Every tool returns a single string. The failure contract is one rule, one token: **a failed call
-returns a string starting with `Error:`**. The harness derives the persisted error flag from exactly
-that prefix at both dispatch sites, judged **before** the argument-truncation marker is prepended, so
-a failed call still reads as an error even when the marker leads the text. The flag is stored on the
-tool message and session restore reads the stored flag rather than re-deriving it. There is
-deliberately no second failure token.
+Every tool returns a single string. The failure contract is one rule, one prefix: **a failed call
+returns a string beginning with `Error`** — `Error: …` for the ordinary case, and the same prefix
+where a tool needs to qualify it (`Error (exit 1): …`). The harness derives the persisted error flag
+from that prefix at both dispatch sites, judged **before** the argument-truncation marker is
+prepended, so a failed call still reads as an error even when the marker leads the text. The check is
+the bare word deliberately, and that is what makes the rule whole: a successful result never opens
+with it. The flag is stored on the tool message, and session restore reads the stored flag rather
+than re-deriving it. There is deliberately no second failure token.
 
 **`Error:` means the tool ran and failed, nothing else.** The last-used bookkeeping that follows a
 successful execute sits **outside** the execution's error handling: the tool has already run — it may
@@ -879,9 +1096,11 @@ backoff step, a session lifetime. A cadence never bounds an await and a budget n
 Both belong here: a cadence left as a module constant is a second seat for a value the next reader
 has to go find. The scanner draws no line between them: it fires on any literal time value — a
 time-style name, folded arithmetic, a bare number, a call's time-style keyword, a literal sleep — in
-the tests too, where a deliberate magnitude is marked as exempt. Two exclusions are stated rather
-than inferred: a zero-length sleep is a scheduling yield rather than a duration, and a *count* of
-retries is not a time value at all, so it is named as a count and the gate can tell.
+the tests too, where a deliberate magnitude is marked as exempt. **Sleep is the one form judged by
+role rather than by value**: in a test a sleep is a synchronisation primitive, so the gate exempts it
+outright and no marker is involved. Two further exclusions are stated rather than inferred: a
+zero-length sleep is a scheduling yield rather than a duration, and a *count* of retries is not a
+time value at all, so it is named as a count and the gate can tell.
 
 **The model, in five rules.** (1) *Owner-of-await*: every await that can block has a bound, owned by
 the layer that awaits it; a callee never sets a total for its caller. (2) **The only sanctioned
@@ -949,10 +1168,12 @@ connected by the internal gateway plugin.
 Every child plugin is declared by one spec row in one ordered table. Nothing else in the harness
 hard-codes a plugin's module, enablement or glue: every name-keyed table that used to exist — the
 start chain, the connect-glue map, the health check list, the tool-adapter route set, the
-reserved-name list — is now a lookup into this one table. A row describes one plugin: its name and
-module, where its live client lands in the shared tool context, whether it is the gateway, the
-service method names for its enable and after-ready hooks, whether it has a health check, and its
-semantic-reload tool.
+reserved-name list — is now a lookup into this one table. Two handshakes stay name-keyed because the
+spec has no field that could express them: the gateway's port reaches the job plugin through a
+literal internal call, and the watchdog's child-exit hook branches on the gateway by name. A row
+describes one plugin: its name and module, where its live client lands in the shared tool context,
+whether it is the gateway, the service method names for its enable and after-ready hooks, whether it
+has a health check, and its semantic-reload tool.
 
 The spec module is **stdlib-only on purpose**, so the MCP child, the health tools and the tool
 adapter can import it without pulling in the service. Per-plugin *behaviour* is declared as a method
@@ -1037,7 +1258,8 @@ Two mechanics worth knowing. **stdout is the port channel only** and is closed i
 signal, which is why interactive-auth instructions go to stderr — and one specific marked line is
 what the parent turns into a desktop notification. And **plugin servers run in SSE mode**: a listen
 stream *is* a response stream, and a single JSON body per POST has nowhere to carry a change
-notification.
+notification. The shared runner is what makes that uniform; `local-embed`, which ships its own
+runner, answers with JSON bodies instead — and can, because its tool set is static.
 
 **The spawn starts draining stderr before it reads the port signal.** A child whose first log write
 fills the stderr pipe blocks in that write and never signals, so the port read then times out and
@@ -1115,9 +1337,11 @@ handler, so the harness-side trigger is unchanged. The subscription-bus helper a
 framework gap — the server framework never registers the listen method, so a modern client's stream
 would otherwise get "Method not found".
 
-**Notifications are coalesced and sent from a detached task**, never inside a request handler's
-cancel scope — an interleaved burst desyncs the SDK's cancel-scope stack and every later call dies.
-That is implemented once and shared, not per-plugin.
+**A notification is sent from a detached task**, never inside a request handler's cancel scope — an
+interleaved burst desyncs the SDK's cancel-scope stack and every later call dies. That part is
+implemented once and shared, not per-plugin. The **collapsing** of a burst happens on the other side:
+each event publishes on its own, and the host's reconcile folds every trigger landing mid-pass into
+one extra pass, so a storm costs triggers rather than passes.
 
 **Health is a tool list, not a connection.** The modern protocol removed `ping` outright, so a
 compliant peer answers "method not found" — which a probe can only read as death or as life. What
@@ -1130,9 +1354,11 @@ and **stops the moment a list succeeds**, so a healthy server is never polled.
 
 **The catalog is shared, not gateway-local.** The gateway owns transports and the live tool surface;
 every external tool's row lives in the host's catalog, fed by the host's reconcile whenever a
-server's tool surface may have changed. Auto-load servers get their proxies and rows wholesale;
-on-demand servers (the default) get **row-only** mirrors so search and load can reach individual
-tools one at a time. A server whose last tool list failed has its rows marked error — the runtime
+server's tool surface may have changed. **Every enabled server is mirrored the same way** — its whole
+tool list becomes rows *and* gets its execution proxies registered, in one batched pass. Registration
+is what makes a tool *callable*, and it is never gated on `autoload`, which decides only which rows
+are **born loaded** and so appear in a turn's injected set; that split is what lets the model search
+for, load and call an on-demand server's tool one at a time. A server whose last tool list failed has its rows marked error — the runtime
 lane of the status column — so they leave the injected set while the load state the model chose stays
 on the row and comes back with the server.
 
@@ -1407,8 +1633,9 @@ data is derived, and a migration path is a permanent maintenance cost.
 
 Three indexes back the search modes: a full-text index, a vector KNN index, and a B-tree on the
 creation timestamp. The modes are **grep** (a real regex over the user message and the message
-column), ranked keyword search with snippets, hybrid (both legs fused by reciprocal rank fusion) and
-time (browse by date).
+column), ranked keyword search with snippets, and hybrid (both legs fused by reciprocal rank fusion).
+**Time is not a mode** — it is the axis every mode can be bounded by, read on its own by the browse
+tool `turn_list` and by the recall selector's window.
 
 **grep is the mode no index serves**, so it is the one that behaves differently. SQLite has no regexp
 engine, so the text predicate runs in Python over a **scan** — newest first, capped at 20 000 rows
@@ -1444,11 +1671,14 @@ that text contract is half of what makes two vectors comparable, it is **version
 database's metadata) and a version change drops the stale vectors for the drainer to rebuild, exactly
 as a model or dimension change does.
 
-**The three search tools share one composition, and it decides everything a caller can get wrong.**
-`run_search` dispatches the mode, clamps the limit, embeds the query once, checks the semantic gate,
-fuses the legs, annotates the scores and produces the hint — so `turn_search` and `cabinet_search`
-differ only in the corpus they choose and the envelope they wrap it in, and a third caller cannot
-drift. A mode or a kind the tool does not have is **refused**, naming the values that exist: a silent
+**The two corpus search tools share one composition, and it decides everything a caller can get
+wrong.** `run_search` dispatches the mode, clamps the limit, embeds the query once, checks the
+semantic gate, fuses the legs, annotates the scores and produces the hint — so `turn_search` and
+`cabinet_search` differ only in the corpus they choose and the envelope they wrap it in, and neither
+can drift from the other. **`tool_search` is not a third caller.** The catalog's surface composes the
+same legs itself, with its own dispatch, clamp, mode vocabulary and browse-on-empty-query, sharing the
+scoring scale (§4.5) rather than the composition — because browsing is exactly how a family gets
+enumerated there. A mode or a kind the tool does not have is **refused**, naming the values that exist: a silent
 fallback answers a different question than the one asked, and the caller has no way to tell. A search
 also refuses an empty query, which is what browsing is for — an empty pattern matches everything, so
 a search tool that accepted one would be an accidental browse path.
@@ -1490,7 +1720,7 @@ fails every batch.
 an event-driven index drainer. It is document-generic, so each of the three stores drives its own
 instance and the three gates are independent. There is **one implementation and one subclass**: the
 turns database's is the base class, and the host's catalog subclasses it, overriding only the four
-hooks where the catalog genuinely differs.
+five hooks where the catalog genuinely differs.
 
 The gate opens exactly when the embedder is ready **and** nothing is left unembedded — there are no
 intermediate states, and **partial semantic results are never served**; while the gate is off, hybrid
@@ -1640,12 +1870,15 @@ independently. The user message stays verbatim; the extracted sources are handed
 **auto-invokes** the image tool once with the whole list through the harness-call machinery — a
 single history shape, no LLM iteration spent deciding to attach.
 
-A source is a bare path, a URL, a data URI, or any of those quoted or bracketed (so spaces work).
+A source is a bare path, a URL, a data URI, or any of those quoted (`"…"`, `'…'`) or bracketed
+(`[…]`, `{…}`, `(…)`). **Only the quoted forms may contain a space** — a bracketed token ends at the
+first whitespace — so a path with spaces is quoted, never bracketed.
 Multiple directives may sit adjacent without spaces. A bare path must end in an image extension, so a
 bare `@name` is skipped as plain text; **URLs and data URIs are self-identifying by scheme** and need
 no extension gate. A token ends at whitespace, a quote, the next `@`, a CJK character (a natural word
-boundary when typing) and — for URLs only — a comma; data URIs keep their commas because base64 is
-comma-heavy. There is no filesystem check at parse time: existence is validated downstream, where a
+boundary when typing) and — for URLs only — a comma; **data URIs are exempt from that rule**, because
+there the comma is the URI's own mediatype/payload separator and cutting at it would halve the
+payload. There is no filesystem check at parse time: existence is validated downstream, where a
 failure becomes a reported error rather than a silent drop.
 
 Parsing is deliberately **two-phase** — locate every `@`, then match a source pattern on the slice
@@ -1699,6 +1932,18 @@ and the retry arrives as a fresh request.
 
 A turn that fails is a **harness** failure, not a mesh one: the channel delivered the message and was
 done, so the TUI draws no mesh failure line for it.
+
+**A restart orphans every inbound task.** The completion bridge is process-local, and so is the reply
+path — the requester's reply topic and correlation are read off the inbound request's own MQTT
+properties and never leave it. So a task still in flight when the process dies can never be
+completed: the bridge is gone, the peer's reply topic is not reconstructible, and the protocol offers
+no post-restart completion path. Nor can the wire tell a restarted process which ids those were. A
+persisted record of inbound tasks — written on arrival, removed on departure — is what draws the line
+between *orphaned* and *never seen*: what a fresh process finds on disk is exactly what its
+predecessor died holding. Those are reported as **stale**, never completable, and they ride the
+per-turn prompt (§2.5) until the model answers the peer with a plain message, which clears them. That
+is the third failure mode of an inbound task, beside completion and withdrawal: a task the local
+process can no longer finish, which the model may still answer as a conversation.
 
 **Outbound.** Sending is typed, and only one type creates a task — one id serves as the JSON-RPC id,
 the task id, the reply correlation and the store key. A conversation type creates no store record. A
@@ -1764,7 +2009,9 @@ autoscroll suppressed and a single scroll at the end — rebuilding widget by wi
 behaviour, and it made restore jitter. And **following the tail is sticky**: the transcript scrolls
 to the end only while the reader is already there, so a reader who paged up mid-turn keeps that
 position instead of being undone by the next streamed token, and coming back down to the tail resumes
-following.
+following. **The reader's own send is the exception** — typing a message takes the view to the tail
+and re-arms following however far up they had read, because the reply to that message is what they
+are waiting for. Only streamed content and the incoming channels hold back.
 
 **The console belongs to the app only while the app runs.** Textual takes raw input and the alternate
 screen, and the teardown is what gives them back. A session that is *killed* rather than stopped —
@@ -1820,9 +2067,11 @@ URL pattern, which masks only the value's prefix and leaves most of the secret i
 Everything else passes through unchanged — a bare password, an AWS key id standing alone, an email
 address.
 
-**Config sections.** Two files carry the configuration, the second being the unified tool config of
-§4.3 — the old inline tool array is retired — and the media, job-model and sharefile sections are
-read by their own plugins rather than by the main config parser. **There is no user-facing timeout
+**Config sections.** Two files carry *Slife's* configuration: the main config, and the unified tool
+config of §4.3 — the old inline tool array is retired. The media and job-model sections are read by
+their own plugins rather than by the main config parser, and two further files belong to components
+rather than to Slife: `sharefile.yaml` is the sharefile plugin's own, and `local_embed.yaml` seeds to
+the embedding daemon's directory because it is its own service. **There is no user-facing timeout
 section** — every timeout is a developer-owned constant (§4.7).
 
 **Config writes preserve the file's comments.** Every writer mutates a dict and calls one write
@@ -1856,11 +2105,13 @@ internal functions, so nothing re-calls them after the aggregate.
 There are two kinds of input. **Static records** are pushed during startup — the active model, the
 config's provenance and counts, and a daemon-thread probe of the external toolchain — and the host
 facts come from **one recorder** shared by the TUI and a headless worker, so both views list the same
-components rather than differing by counts no reader could account for. The toolchain probe runs on a
-daemon thread, so a report read in that window states its own **scope** — which facts are not in yet
-— rather than letting a smaller count read as a smaller system. **Dynamic checks** are the
-per-subsystem check functions, enumerated **from the plugin registry** rather than hand-listed, with
-three non-plugin checks appended for the catalog, the active embedding endpoint, and the watchdog.
+components rather than differing by counts no reader could account for. The active-model record is
+also re-pushed on every live model switch, replacing the old one so the report still holds exactly
+one. The toolchain probe runs on a daemon thread, so a report read in that window states its own
+**scope** — which facts are not in yet — rather than letting a smaller count read as a smaller
+system. **Dynamic checks** are the per-subsystem check functions, enumerated **from the plugin
+registry** rather than hand-listed, with three non-plugin checks appended for the catalog, the active
+embedding endpoint, and the watchdog.
 
 **Health is layered on purpose.** Every plugin-backed check probes the plugin's internal check, which
 reports only raw technical state — facts and measurements, like a physical-examination report — and
@@ -1884,9 +2135,12 @@ last.
 ### 9.4 Logging
 
 Structured log lines: an event name followed by space-separated key/value pairs. Event names are
-snake_case — past tense for completions, present tense for state. Every line that could carry user
-input, tool arguments, tool output or subprocess stderr passes the secret sanitizer first. Nothing is
-written to stdout, which is reserved for the TUI and the plugin port signal.
+snake_case — past tense for completions, present tense for state. The sanitizer is applied at the
+**gates, not on every line**: inbound user messages, assistant tool-call arguments, every tool result,
+the TUI's tool preview, and relayed subprocess stderr. Plaintext elsewhere in a log — a raw inbound
+WeChat body, a search query — is hygiene rather than a security failure, for the reason §9.2 gives:
+what matters is what reaches the model and what crosses the machine boundary. Nothing is written to
+stdout, which is reserved for the TUI and the plugin port signal.
 
 **Log is for developers; the TUI is for the user — two sinks, two audiences.**
 
@@ -1930,7 +2184,8 @@ slife/
   tools/       # the Tool ABC, the registry, the catalog, discovery, the builtin tools
   plugins/     # the plugin children and the spec table — the one source of truth (§5.1)
   mcp/         # host-process MCP: slife-as-plugin, the MCP→Tool adapter, era negotiation
-  a2a/         # the mesh's transport-agnostic core — mesh, broker, card, task store
+  a2a/         # the harness-side mesh core — identity/channel, card + presence, the task
+               # and inbound-task stores — plus the MQTT SDK driver (mesh, broker)
   subagent/    # the worker process: its spawn and pipe protocol, its identity
   ui/          # the Textual TUI
   *.py         # platform · config · paths · health · logfmt · timeouts · threads · timeutil · …
@@ -1944,6 +2199,89 @@ tests/         # the static-source gates (timeouts, subagent parity) live here
 
 ---
 
+## 11. Open questions
+
+What is not settled. Each entry states the problem, what the design does about it today, and **what
+would settle it** — an entry that names no settling condition is a worry rather than a question, and
+belongs in a conversation instead of in this document. Nothing here overrides §1–§10: where an entry
+and the code disagree about today's behaviour, the code is what runs.
+
+### Answered since they were first asked
+
+Recorded rather than deleted — the reasoning is the durable part, and the same questions come back.
+Each is a rule in the body now.
+
+| Question | Answer |
+|---|---|
+| What happens to the context when a recall matches nothing? | Nothing. The set is a **union**, so an empty recall adds nothing and the context stands; clearing is only ever explicit ([§2.3](#23-recall--the-context-is-selected), Appendix A 3). |
+| Must a recall exclude the turns already in the context? | No. The union is by **id**, so a turn both kept and recalled is one turn — there is no incumbent to defend ([§2.3](#23-recall--the-context-is-selected)). |
+| Should the model get a tool that rewrites its own context — system prompt, history, tool list — taking effect next iteration? | No, on two grounds. The selector that feeds the context is **internal** precisely so the model cannot move the conversation under itself; and the idea was priced and rejected, because it spends the prompt cache to buy a rearrangement ([§2.3](#23-recall--the-context-is-selected)). |
+| Should `local-embed` be health-checked when it is not the active embedding provider? | Yes. It is an ordinary child plugin with a `__check`, so the plugin contract holds uniformly and no special case was needed (`slife/plugins/spec.py`). |
+| Why does the sharefile tunnel fail under a TUN fake-IP proxy? | The resolver lies, and intercepted traffic breaks the tunnel's long-lived control connection. Both are measured facts now rather than mysteries ([§7.5](#75-the-file-cabinet)). |
+| What happens when a model switch changes the context window? | Mostly absorbed: the tool-result cap is recomputed, the usage reading self-corrects, and the ceiling moves with the window — with one rough edge left open below. |
+
+### Open
+
+**1. A window that shrinks under a live context.** Switching to a model with a smaller window leaves
+the live context at its old size. For the main agent the ceiling check is a **save-point** check
+([§2.2](#22-context-window-management)) — it runs *after* a turn is persisted, because only then is
+the real usage known — so a 128K context meeting a 32K model is sent once, and rejected by the
+provider, before anything trims it. The turn is saved like any other, the save-point trim then cuts
+to the new floor, and the session recovers on the next turn, at the cost of one failed turn. A worker
+is immune, because its check *is* at the request boundary. *Settling it*: a ceiling check on the
+switch path itself, or a request-boundary check for the main agent when the window has moved since
+the last measurement. Neither is obviously right — the first can evict context the model chose to
+keep, and the second puts a second trim site on the hot path.
+
+**2. Multiple WeChat accounts.** The plugin holds one login at a time — switching accounts means
+logging out first — and `wechat` is one config section, one client and one channel. Several accounts
+need a decision this design has not made: whether each is its own channel, and so its own sender
+identity in memory and in the TUI, or one channel carrying the account, and how messages from two
+accounts interleave in a single shared agent context. *Settling it*: a call on whether an account is
+an identity or an attribute.
+
+**3. What the recall step costs.** The discriminator is one **context-sized** model call before every
+turn — about as expensive as the turn itself ([§2.3](#23-recall--the-context-is-selected)) — and what
+it returns is a selection a keyword search might have approximated for nothing. Skipping the rebuild
+when the decision keeps exactly what is in hand protects the prompt cache, but it does not protect
+the call. *Settling it*: a measurement, not an argument — the rate at which the step changes the
+context at all, set against the token cost of asking. If most decisions are "keep everything", the
+step is paying a full call to answer nothing. [§7.2](#72-search) is the other half of this: on CJK
+turns the semantic leg is often the only leg contributing, so the quality of a selection rests on one
+leg and one similarity floor.
+
+**4. Shared code across the plugin children.** The duplicate implementations that prompted this have
+largely converged — the two corpus searches share `run_search`, and the cabinet reuses memdb's index
+machinery ([§7.2](#72-search), [§7.5](#75-the-file-cabinet)) — but the pattern that produced them has
+not been settled. Each plugin is its own package with its own store, its own schema and its own copy
+of anything small, and the harness has no shared library for the shapes they hold in common.
+*Settling it*: naming what actually repeats across `memdb`, `memfiles` and the catalog, against the
+cost of a dependency every child then takes. "Nothing worth sharing" is a fine answer, once it is
+written down.
+
+**5. The approval gate's two blind spots.** Approval is pure model judgment, with no
+`requires_approval` flag anywhere ([§4.8](#48-the-approval-gate)), so the gate holds exactly where the
+model is diligent and nowhere else. Two consequences are worth stating plainly. A **headless worker
+auto-approves everything** — the decision belongs to whoever is watching, and nobody is — so a
+subagent running a task has no gate at all. And the [Prologue](#prologue--the-view-behind-the-design)
+ends on *lock up every critical tool*, which is a different posture from "the model decides, per
+call, every time". One of the two is intended and it is not recorded which. *Settling it*: a decision
+on whether any operation is gated **structurally** — irreversible, or reaching outside the machine —
+rather than left to judgment. The cost of the wrong answer cuts both ways: a structural gate nothing
+needs is a permanent tax on every capable model, which is the trade-off the
+[Prologue](#prologue--the-view-behind-the-design) already chose against.
+
+**6. The tool system's synchronization.** The most intricate part of the harness is keeping the
+config, the runtime's verdicts and the catalog's load state in step
+([§4.3](#43-the-catalog--the-tool-database)): one status column with two writers and two lanes, a
+load state with exactly four writers, a boot seed, a background reconcile, and a threshold eviction.
+The rules are stated and consistent, and each was paid for by a real bug — but the number of moving
+parts is the design's own admission that the shape has not been found yet. *Settling it*: a
+reduction that keeps every rule of §4.3 true while removing a writer or a lane, or a demonstration
+that the count is irreducible.
+
+---
+
 ## Appendix A. Invariants
 
 The rules that must not be broken, and what each prevents. They are collected here because each was
@@ -1954,8 +2292,10 @@ is wrong. The numbers are stable and may be cited.
 **Memory and context**
 
 1. **Usage is measured or it is zero.** The context-size accessor never returns an estimate — a guess
-   presented as occupancy is worse than an honest zero. Estimates appear in exactly one place: sizing
-   what a recall may add to a context that has not been rebuilt yet.
+   presented as occupancy is worse than an honest zero. Estimates appear only where no measurement can
+   exist: sizing what a recall may add to a context that has not been rebuilt yet, the ceiling check
+   of a process with no save point (§2.2), and the trim's own stop condition. They are never returned
+   as usage.
 2. **Every save path is a hard stop, not a skip.** A turn that cannot be persisted is not worth
    running. The flip side is deliberate too: subordinate dependencies never gate readiness, because
    they are uncontrollable and self-healing.
@@ -1983,15 +2323,19 @@ is wrong. The numbers are stable and may be cited.
 8. **A harness tool must be schema-declared**, because the Messages and Responses backends reject a
    tool call in history whose name is not in the declared tool list.
 9. **The tool list is computed once per request, outside the retry loop**, so every attempt sends
-   byte-identical tools; and a mid-turn load **appends**, leaving the request's prefix untouched.
+   byte-identical tools; and a tool **materialized** mid-turn appends, leaving the request's prefix
+   untouched. Only materialization appends — re-loading a tool that is already registered re-enters at
+   its registry position and shifts what follows it.
 10. **Never emit an async notification from inside a request handler's cancel scope.** Interleaving a
     burst into that scope desyncs the SDK's cancel-scope stack and every later call dies.
 
 **The tool system**
 
-11. **Load state governs what a turn injects, never what a call may do.** The only refused call is one
-    with no execution instance behind it, and a refusal names the state and nothing more — a refusal
-    that guesses at a remedy tells the caller to do what it has already done.
+11. **Load state governs what a turn injects, never what a call may do.** The only refusal driven by
+    load state is one with no execution instance behind it; an argument that fails its schema is a
+    separate refusal (16). A refusal names the state, and adds a remedy only where the state implies
+    exactly one — *enable it first* is a remedy, *its status is error* is not, because the cause has
+    not been checked and a wrong guess tells the caller to do what it has already done.
 12. **Load state has exactly four writers**: the autoload override, the load tool, the unload tool,
     and eviction. No connectivity verdict is ever written into it.
 13. **Removal is a row delete, never a status mark**, and the row's embedding chunks go with it
@@ -2020,7 +2364,10 @@ is wrong. The numbers are stable and may be cited.
 **Plugins and processes**
 
 21. **The spec table is the only place a plugin is declared.** Adding a plugin is one row plus a
-    server package; nothing else may hard-code a plugin's name.
+    server package, and no second name-keyed table may be built beside it. A name may still appear
+    where a handshake crosses a boundary the spec has no field for — the gateway's port reaching the
+    job plugin, the watchdog's child-exit branch — but each of those is a known exception to be
+    closed, never a licence to add another.
 22. **Readiness is the completed protocol negotiation.** There is no readiness probe, and a dependency
     not required to serve never gates readiness. Never signal the port early: the signal means "ready
     to serve MCP on this port".
@@ -2037,7 +2384,8 @@ is wrong. The numbers are stable and may be cited.
 **Subagents**
 
 25. **A worker is the same loop with a declared, zeroed capability set.** A new capability is
-    worker-denied by default and must be granted on purpose; a role branch outside the table fails CI.
+    worker-denied by default and must be granted on purpose; a role branch outside the table fails CI
+    for every spelling the gate scans — that list is a net to widen, not a proof of absence.
 26. **The harness pushes results; the worker never does**, and a late result is stored, never
     auto-pushed, because the caller was already told it timed out. The exception is the task nobody
     awaits: an async task's failure *is* pushed, because silence is otherwise indistinguishable from
@@ -2074,18 +2422,22 @@ is wrong. The numbers are stable and may be cited.
     mounted and unfocusable behind the picker, with only the turn-cancelling key able to resolve it.
     The mirror direction is the same rule: a dismissed picker must not take focus back from a prompt
     that is already mounted.
-36. **A binding action must be sync.** Binding actions run inside the key-event handler, so awaiting
-    there blocks the message pump and deadlocks the widget that needs the next key event.
+36. **A binding action of our own must be sync.** Binding actions run inside the key-event handler, so
+    awaiting there blocks the message pump and deadlocks the widget that needs the next key event. The
+    framework's own actions (`action_quit`, `action_toggle`) are async upstream and are overridden as
+    they come.
 37. **A dismissed widget must resolve its future**, or a re-entrancy flag stays stuck and the shortcut
-    is dead. The status-bar scroll happens **after layout**, or it pins the view above the fold.
+    is dead. A scroll that has to land on a freshly mounted widget happens **after layout**
+    (`call_after_refresh`), or the widget is pinned below the fold.
 38. **All user data renders with markup disabled**, and **tool widgets are cleared only at the genuine
     turn-end event** — never where the turn is merely *enqueued*, which wiped an in-flight turn's
     widgets and left its rows stuck.
 
 **Configuration**
 
-39. **A config parse failure raises; it never returns an empty dict**, or a mutating caller writes
-    that empty dict over the whole config.
+39. **A config read that feeds a write raises; it never returns an empty dict**, or the mutating caller
+    writes that empty dict over the whole config. A reader that only reports state may degrade to its
+    default instead — the hazard is the writer, not the failure.
 40. **Config writes edit the document and are verified before use.** Losing comments is bad; writing a
     config that says something else is worse.
 41. **Credstore is consulted before a `${VAR:-default}` literal**, or the default wins over a key that
