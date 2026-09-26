@@ -51,6 +51,7 @@ from slife.plugins.memdb.store import (
     DEFAULT_EMBEDDING_DIM,
     VecStoreLifecycleMixin,
     _contains_cjk,
+    _is_fts_parse_error,
     _like_escape,
     _like_terms,
     _serialize_f32,
@@ -1300,11 +1301,14 @@ class MemfilesStore(VecStoreLifecycleMixin):
                 (_to_fts5_query(query), *params, limit),
             )
             return [dict(r) for r in await cursor.fetchall()]
-        except aiosqlite.OperationalError:
+        except aiosqlite.OperationalError as e:
             # A MATCH the parser rejects is an empty result, not a failure: the
             # query reached us as text and nothing is wrong with the store.
-            # memdb's search_keyword swallows the same error for the same
-            # reason.
+            # Any other OperationalError is a store failure and propagates, so
+            # this leg and memdb's cannot answer the same failure differently
+            # (the shared discriminator; DESIGN.md Appendix A 4).
+            if not _is_fts_parse_error(e):
+                raise
             return []
 
     async def semantic_hits(

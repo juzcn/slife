@@ -107,7 +107,21 @@ def _get_encoding():
             )
         import tiktoken
 
-        _encoding = tiktoken.get_encoding(_ENCODING_NAME)
+        try:
+            _encoding = tiktoken.get_encoding(_ENCODING_NAME)
+        except Exception as e:
+            # A fetch that could not complete — no network, a transfer that
+            # stalled, a download whose hash does not match — leaves the
+            # vocabulary unusable, which is the same fact as a truncated one and
+            # must reach the caller AS that fact.  Left bare it is answered by
+            # the recall's catch-all with an empty selection, which the caller
+            # reads as "clear the context" (DESIGN.md Appendix A 4).
+            raise TokenizerUnavailable(
+                f"tiktoken vocabulary for {_ENCODING_NAME} could not be loaded "
+                f"({type(e).__name__}: {e}); it is fetched over the network on "
+                f"first use with no timeout — pre-fetch it, or check "
+                f"connectivity",
+            ) from e
         # A fetch that stopped short leaves exactly the file the check above
         # guards against, and by now tiktoken has already loaded it — so the
         # check is repeated rather than assumed.  An *absent* file here is not a

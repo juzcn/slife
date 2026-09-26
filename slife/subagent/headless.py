@@ -107,10 +107,11 @@ async def run_headless(argv: list[str] | None = None) -> None:
     )
 
     # Inherit config from the main agent via SLIFE_CONFIG_FILE (a 0600 temp
-    # file) or the older SLIFE_CONFIG env var.  Subagents never read the yaml
-    # file — they get the main agent's in-memory config directly.  The file
-    # path is preferred because the config carries resolved plaintext api_keys
-    # that must not ride the process env (visible via /proc/<pid>/environ).
+    # file).  Subagents never read the yaml file — they get the main agent's
+    # in-memory config directly.  The handover is a file and *only* a file: the
+    # config carries resolved plaintext api_keys, and the process environment is
+    # readable through the process table (/proc/<pid>/environ), so there is
+    # deliberately no env-var channel (DESIGN.md Appendix A 28).
     _config_json = ""
     _config_file = os.environ.get("SLIFE_CONFIG_FILE", "")
     if _config_file:
@@ -118,15 +119,12 @@ async def run_headless(argv: list[str] | None = None) -> None:
             _config_json = Path(_config_file).read_text(encoding="utf-8")
         except OSError:
             _config_json = ""
-    if not _config_json:
-        _config_json = os.environ.get("SLIFE_CONFIG", "")
     if _config_json:
         import json as _json
-        with elapsed("config_load", logger, level=logging.INFO, source="SLIFE_CONFIG"):
+        with elapsed("config_load", logger, level=logging.INFO, source="SLIFE_CONFIG_FILE"):
             config = Config.from_dict(_json.loads(_config_json))
-        # Both channels are the parent handing its config over (the file is
-        # the preferred one, the env var the older).  The report states that
-        # provenance rather than a path: a worker has no yaml of its own.
+        # The file is the parent handing its config over.  The report states
+        # that provenance rather than a path: a worker has no yaml of its own.
         _config_source = "inherited from the main agent"
     else:
         # Standalone mode: read config from file (fallback).  The shared

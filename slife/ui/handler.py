@@ -254,7 +254,18 @@ class TUIHandler:
         return approved
 
     def _refocus_input(self) -> None:
-        """Return focus to the user input bar after an inline decision."""
+        """Return focus to the user input bar after an inline decision.
+
+        Not while a model picker is open.  Ctrl+S denies a pending prompt
+        *before* mounting the picker, so this refocus is scheduled by that same
+        keypress and can land after the picker's own deferred focus — leaving
+        the picker mounted, unfocusable and undecided, with its re-entrancy flag
+        stuck so every later Ctrl+S returns early.  The mirror of
+        ``_dismiss_model_picker``'s guard, which will not take focus back from a
+        prompt that is already mounted (DESIGN.md Appendix A 35).
+        """
+        if getattr(self._app, "_model_picker_open", False):
+            return
         try:
             self._app.query_one("#user-input").focus()
         except Exception:

@@ -859,7 +859,10 @@ class SessionStore(VecStoreLifecycleMixin):
                 except aiosqlite.OperationalError as e:
                     # Mirror search_keyword's guard (D3): a MATCH syntax error
                     # must not make count and search disagree — treat it as no
-                    # matches, never surface {"error": ...}.
+                    # matches, never surface {"error": ...}.  Everything else is
+                    # a store failure and propagates (Appendix A 4).
+                    if not _is_fts_parse_error(e):
+                        raise
                     logger.debug(
                         "turn_count_fts_parse_error query=%s err=%s", query, e,
                     )
@@ -1045,6 +1048,10 @@ class SessionStore(VecStoreLifecycleMixin):
             logger.debug("search_keyword query=%s hits=%s", query, len(results))
             return results
         except aiosqlite.OperationalError as e:
+            # Only the query's own syntax is answered as "no matches"; a real
+            # store failure propagates (Appendix A 4).
+            if not _is_fts_parse_error(e):
+                raise
             logger.debug("search_keyword_parse_error query=%s err=%s", query, e)
             return []
 
@@ -1664,6 +1671,35 @@ def _contains_cjk(text: str) -> bool:
 #: NOT/leading +/-/colon, column filters …).  A bare `(urgent)` or trailing
 #: `foo -` would otherwise be a syntax error inside ``MATCH``.
 _FTS_SPECIALS = set("()[]{}:^~+-.,!?")
+
+
+#: What SQLite's FTS5 puts in the ``OperationalError`` it raises for a MATCH
+#: expression it cannot parse.  Matched on the message because that is the only
+#: handle SQLite offers — no error code separates this from a locked or missing
+#: database.
+_FTS_PARSE_ERROR_MARKERS = (
+    "fts5: syntax error",
+    "malformed match expression",
+    "unterminated string",
+    "unknown special query",
+    "phrase queries are not supported",
+    "unable to use function match",
+)
+
+
+def _is_fts_parse_error(exc: BaseException) -> bool:
+    """Is *exc* FTS5 rejecting the query text, rather than the store failing?
+
+    The distinction is the whole point of the guard it serves.  A malformed
+    MATCH expression is an *input* outcome — it matched nothing, which is a
+    legitimate answer.  Any other ``OperationalError`` (locked, missing, corrupt)
+    is a **store failure**, and answering it with an empty list is the shape that
+    hides a broken database behind a turn which ran without the history it asked
+    for (DESIGN.md Appendix A 4).  So callers swallow only the first and re-raise
+    the second.
+    """
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _FTS_PARSE_ERROR_MARKERS)
 
 
 def _to_fts5_query(query: str) -> str:

@@ -52,8 +52,16 @@ _URI_RE = re.compile(
 
 # Windows absolute paths ending in a common image / document extension.
 # Link target becomes file:/// with forward slashes.
+#
+# The backslash is excluded from BOTH inner classes on purpose.  It is the
+# group terminator, so leaving it in the content class makes ``(?:a+\)*``
+# ambiguous — the run of backslashes after a drive letter could be split
+# between the two classes in exponentially many ways, and this pattern runs on
+# every streamed chunk (``_linkify``).  A reply carrying ~40 consecutive
+# backslashes — a Windows path quoted inside JSON, an escaped UNC path — took
+# seconds to scan with it in (DESIGN.md Appendix A 32).
 _WIN_PATH_RE = re.compile(
-    r"(?<!\w)([A-Za-z]:\\(?:[^\s<>\[\]]+\\)*[^\s<>\[\]]+"
+    r"(?<!\w)([A-Za-z]:\\(?:[^\s<>\[\]\\]+\\)*[^\s<>\[\]\\]+"
     r"\.(?:png|jpg|jpeg|gif|webp|bmp|svg|tiff|tif))",
     re.IGNORECASE,
 )

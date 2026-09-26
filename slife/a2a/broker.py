@@ -11,6 +11,7 @@ import logging
 import socket
 
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.threads import run_daemon
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,16 @@ async def probe_broker(
     """
     if timeout is None:
         timeout = _timeouts.timeouts.ready.probe_broker  # call-time lookup
-    loop = asyncio.get_running_loop()
+    # Resolution goes to a daemon thread, not ``loop.getaddrinfo``.  The loop's
+    # helper is ``run_in_executor(None, ...)`` — the DEFAULT executor, whose
+    # non-daemon workers both shutdown paths join with ``wait=True``, so a
+    # resolver that hangs would wedge interpreter exit (DESIGN.md Appendix A 30,
+    # and the incident slife/threads.py documents).
     try:
-        infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        infos = await run_daemon(
+            socket.getaddrinfo, host, port, 0, socket.SOCK_STREAM,
+            name="broker-resolve",
+        )
     except OSError as e:
         logger.info("broker_unresolved host=%s port=%d err=%s", host, port, e)
         infos = []

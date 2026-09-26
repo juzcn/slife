@@ -65,6 +65,7 @@ import aiosqlite
 from slife.plugins.memdb.search import _clamp_limit
 from slife.plugins.memdb.store import (
     _contains_cjk,
+    _is_fts_parse_error,
     _like_terms,
     _serialize_f32,
     _split_sql,
@@ -993,19 +994,17 @@ class CatalogStore:
         The removal path (config removal, or a server disabled in
         ``tools.yaml``): a server that is off owns no rows — its tools are
         re-mirrored when it connects again.  Returns the number of rows
-        removed; embeddings follow via the FK cascade.
+        removed.  The rows are deleted through :meth:`_delete_rows` rather than
+        by ``source_id`` directly, so the embedding chunks go with them
+        *explicitly* and not by trusting the FK cascade to be on — the one
+        spelling of a removal this file already keeps (Appendix A 13).
         """
         async with self._write_lock:
             cursor = await self._c.execute(
-                "SELECT COUNT(*) FROM tool WHERE source_id = ?", (source_id,),
+                "SELECT name FROM tool WHERE source_id = ?", (source_id,),
             )
-            row = await cursor.fetchone()
-            count = row[0] if row else 0
-            await self._c.execute(
-                "DELETE FROM tool WHERE source_id = ?", (source_id,),
-            )
-            # Embedding chunks go with the rows (tool_embeddings.name has
-            # ON DELETE CASCADE and foreign_keys is ON).
+            names = [r[0] for r in await cursor.fetchall()]
+            count = await self._delete_rows(names)
             await self._c.commit()
         self._count_ops(removed=count)
         logger.info("catalog_source_purged source=%s tools=%d", source_id, count)
@@ -1176,11 +1175,11 @@ class CatalogStore:
         """DELETE *names* and their embedding chunks; returns the rows removed.
 
         The ONE spelling of a tool-row removal, shared by every batch purge —
-        :meth:`remove_tools`, :meth:`purge_source_except`, ``reconcile``'s
-        purge.  The caller holds the write lock (each of those deletes as part
-        of a read-then-write under one lock, and taking it again here would
-        deadlock).  The embeddings' delete is explicit: it must not depend on
-        the FK cascade being enabled.
+        :meth:`remove_tools`, :meth:`purge_source`, :meth:`purge_source_except`,
+        ``reconcile``'s purge.  The caller holds the write lock (each of those
+        deletes as part of a read-then-write under one lock, and taking it again
+        here would deadlock).  The embeddings' delete is explicit: it must not
+        depend on the FK cascade being enabled.
         """
         if not names:
             return 0
@@ -1474,6 +1473,11 @@ class CatalogStore:
             )
             return [dict(row) for row in await cursor.fetchall()]
         except aiosqlite.OperationalError as e:
+            # Only the query's own syntax is answered as "no matches"; a real
+            # store failure propagates (the shared discriminator, so this leg
+            # and memdb's cannot answer the same failure differently).
+            if not _is_fts_parse_error(e):
+                raise
             logger.debug("catalog_search_keyword_parse_error query=%s err=%s", query, e)
             return []
 
