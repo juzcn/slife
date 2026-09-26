@@ -271,15 +271,22 @@ says is ever shown.
   decision's *first* field is answered from that same context: the ids a keep-list names are the ones
   in the footnotes the model can read there, and seeing them is what tells the model what it already
   has, so it does not ask to recall it again.
-- **What the instruction states**: what the call decides (what to keep of the turns in hand, plus
-  what to recall, with the turn running on the two together), the current input, how the query is
-  matched (against stored turns — their user messages, the tools they called, their answers), one
-  rule — *name what the turn needs, in the words a stored turn would contain* — which end of a period
-  is read by default and how to read the other, and the reply surface itself, stated once. It cannot be read off a tool: the selector is an **internal** tool the
-  model never sees, so there is no LLM-facing schema to quote. The loop is the only caller and its
-  parser reads exactly these two fields, which is what keeps the two ends of this contract in step.
-  When the store cannot be reached at all there is no call either — the availability check is the
-  gate, so a turn is never spent asking a model to decide a recall that cannot run.
+- **What the instruction states**, in two parts. First the **decision**: what to keep of the turns in
+  hand (all of them, some by turn_id, or none), and — with the turn running on what is kept *plus*
+  what is recalled — recall's three conditions (a period, a query, a query within a period), together
+  with the one thing a model cannot read off the store: the context is bounded, so a recall answers
+  with a selection and never with every turn its condition matched, and which part survives follows
+  from the condition — a period is read from the end `anchor` names, a query is ranked by relevance
+  and so is narrowed by its time bound instead. Then the **cases**: one worked reply per combination
+  of the two fields, which is where a value's wording is shown rather than described. Around the two
+  sit the current input, how the query is matched (against the stored turns), one rule — *the query
+  holds what turn recall needs, in the words a stored turn would contain* — and the reply surface
+  itself, stated once as the reply's fields with their values and defaults and nothing beyond them. It
+  cannot be read off a tool: the selector is an **internal** tool the model never sees, so there is no
+  LLM-facing schema to quote. The loop is the only caller and its parser reads exactly these two
+  fields, which is what keeps the two ends of this contract in step. When the store cannot be reached
+  at all there is no call either — the availability check is the gate, so a turn is never spent asking
+  a model to decide a recall that cannot run.
 - **Cost**: one context-sized call per turn — the pre-turn call is about as expensive as the turn
   itself. That is what judging from the conversation costs.
 - **Not sent**: anything beyond that context. The runtime-only turn id on the message that opens each

@@ -67,9 +67,12 @@ def render_template(template: str, **kwargs: object) -> str:
 #: names which *end* of a time range the caps spend from, so it says what to
 #: look at, not how much of it to take.
 #:
-#: Every entry states its field and its default, and nothing else — how a value
-#: is worded is what the instruction's cases are for, so the two cannot become
-#: two places stating the same rule.
+#: Every entry is a description of its parameter — what the field is, the
+#: values it takes, and what leaving it out means — and nothing else.  What
+#: the call *decides* (the six keep/recall combinations, the three recall
+#: conditions, and how the caps cut a long answer) is the instruction's first
+#: part, and how a value is worded is its second, so no rule is stated in two
+#: places.
 #:
 #: Stated here, once, because the selector is an internal tool the model never
 #: sees: there is no LLM-facing schema left to quote.  The loop is the only
@@ -77,21 +80,16 @@ def render_template(template: str, **kwargs: object) -> str:
 #: shape — so this text and the call site are one contract in one repository,
 #: not two copies that can drift.
 RECALL_REPLY: dict[str, object] = {
-    "context": "Which of the turns in hand to keep. Omit (or \"keep\") to "
-               "keep them all, \"clear\" to keep none, or the ones to keep, "
-               "named by the turn_id in their [INFO: …] footnote, e.g. "
-               "[12, 15]. An id that is not in the context names nothing.",
+    "context": "Which of the turns in hand to keep: all of them (omit or "
+               "\"keep\"), none (\"clear\"), or the turn_ids to keep, e.g. "
+               "[12, 15].",
     "recall": {
-        "query": "Search text for the history this turn needs, matched "
-                 "against stored turns — their user messages, the tools they "
-                 "called, their answers. Name what the turn needs, in the "
-                 "words a stored turn would contain. Omit for no search — "
-                 "browse a time range instead.",
+        "query": "Search text. Omit for no search.",
         "since": "Lower time bound: an ISO date, or a relative phrase such "
                  "as yesterday / last week. Omit for none.",
-        "until": "Upper time bound, same grammar as since.",
-        "anchor": "Which end of a time range to take, \"oldest\" or "
-                  "\"newest\". Omit for the newest end.",
+        "until": "Upper time bound, same grammar as since. Omit for none.",
+        "anchor": "Which end of a period to recall from, \"newest\" or "
+                  "\"oldest\". Omit for the newest end.",
     },
 }
 
@@ -99,9 +97,11 @@ RECALL_REPLY: dict[str, object] = {
 def build_recall_instruction(user_input: str) -> str:
     """Render the discriminator's instruction (``rebuild_messages.j2``).
 
-    The user turn of the pre-turn recall call: it states what the call
-    decides, quotes the current input, says how a query is matched, and states
-    the reply the discriminator fills in (:data:`RECALL_REPLY`).
+    The user turn of the pre-turn recall call, in two parts: the decision the
+    call asks for — what to keep of the turns in hand, and the three recall
+    conditions with how the caps cut a long answer — then the cases that show
+    it.  Beside the current input sits the reply surface the discriminator
+    fills in (:data:`RECALL_REPLY`).
 
     The rest of the call is the agent's **current context** — the loop sends
     the live messages with the instruction in place of the user message, so

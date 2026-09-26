@@ -1,6 +1,6 @@
 ▸ Context recall
 
-This call chooses the context the turn runs on: what to keep of the turns in
+This call decides the context the turn runs on: what to keep of the turns in
 hand, plus what to recall from memory. The turn then runs on the two together,
 in time order.
 
@@ -12,59 +12,76 @@ Current user input:
 Reply with ONE JSON object holding the fields above, and nothing else. An empty
 object means the turns in hand are enough for this turn.
 
-The two fields are decided independently: what to keep of the turns in hand,
-and what to add from memory. The cases below take one value of each.
+Part 1 — the decision
+
+What to keep of the turns in hand: all of them (omit "context"), some (the
+turn_ids in the current context worth keeping), or none ("clear").
+
+What to recall from memory: nothing (omit "recall"), or one condition — a
+period (since / until), a query, or a query within a period.
+
+The "query" holds what turn recall needs, in the words a stored turn would
+contain. It is matched against the stored turns.
+
+The context is bounded, so a recall might return a bounded selection. Use
+"anchor" to guide the drop for a period recall, and bound a query recall with
+a narrowed period.
+
+Part 2 — the cases
+
+The two fields are decided independently, and each case below takes one value
+of each.
 
 1. Keep the turns in hand, recall nothing — this turn reads on its own.
 
-  input 把这段话翻成英文
+  input Translate this paragraph into French
     → {}
 
 2. Keep part of them, recall nothing — the plan is in hand, the tool output
 around it is not.
 
-  input 就按刚才那个方案来吧
+  input Let's go with the plan we just settled on
     → {"context": [31, 33]}
 
 3. Keep none of them, recall nothing.
 
-  input 忘掉前面那些
+  input Forget all that
     → {"context": "clear"}
 
 4. Keep them and recall a period — a range of time, and no topic.
 
-  input 这两天都做了些什么？
+  input What have I been doing these past two days?
     → {"recall": {"since": "yesterday"}}
 
 5. Keep them and recall a period from its beginning — the oldest turns in it.
 
-  input 上个月最早都聊了些什么？
+  input Where did we start last month?
     → {"recall": {"since": "last month", "anchor": "oldest"}}
 
 6. Keep them and recall the earliest turns of all — no bound to name.
 
-  input 翻看一下我们最早的聊天记录
+  input Let's look at our earliest conversations
     → {"recall": {"anchor": "oldest"}}
 
 7. Keep part and recall a query — the turn that answered this has left the
 context, and the tool dumps around it are dead weight.
 
-  input 刚才问首经贸管工学院院长是谁？
-    → {"context": [27, 28], "recall": {"query": "首经贸 管理工程学院 院长"}}
+  input Who did you say was the dean of CUEB's management school?
+    → {"context": [27, 28], "recall": {"query": "CUEB management school dean"}}
 
 8. Keep none and recall a query within a period — a topic, and when.
 
-  input 上周关于校庆都说了什么？
-    → {"context": "clear", "recall": {"query": "首经贸 校庆", "since": "last week"}}
+  input What did we say about the anniversary last week?
+    → {"context": "clear", "recall": {"query": "CUEB anniversary", "since": "last week"}}
 
 9. Keep them and recall a query in a period that has passed — a topic, and both
 ends of it.
 
-  input 上个月关于校庆都说了什么？
-    → {"recall": {"query": "首经贸 校庆", "since": "last month", "until": "this month"}}
+  input What did we say about the anniversary last month?
+    → {"recall": {"query": "CUEB anniversary", "since": "last month", "until": "this month"}}
 
 10. Keep them and recall a query for a follow-up — its subject is in the
 conversation above, so carry it into the query.
 
-  input 那人工智能学院呢？
-    → {"recall": {"query": "首经贸 人工智能学院 成立"}}
+  input What about the AI school?
+    → {"recall": {"query": "CUEB AI school founded"}}

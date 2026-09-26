@@ -507,7 +507,8 @@ class TestRecallInstruction:
 
         text = build_recall_instruction("那人工智能学院呢？")
 
-        assert "Name what the turn needs" in text
+        assert 'The "query" holds what turn recall needs' in text
+        assert "matched against the stored turns" in text
 
     @staticmethod
     def _examples(text: str) -> list[str]:
@@ -567,7 +568,7 @@ class TestRecallInstruction:
 
         assert "subject is in the conversation above" in text
         assert "carry it into the query" in text
-        assert '{"recall": {"query": "首经贸 人工智能学院 成立"}}' in text
+        assert '{"recall": {"query": "CUEB AI school founded"}}' in text
 
     def test_the_examples_cover_the_three_recall_modes(self):
         """A query, a period, and a topic within a period — the store has a
@@ -578,10 +579,10 @@ class TestRecallInstruction:
         text = " ".join(build_recall_instruction("x").split())
 
         assert '{"recall": {"since": "yesterday"}}' in text, "time only"
-        assert '{"recall": {"query": "首经贸 人工智能学院 成立"}}' in text, (
+        assert '{"recall": {"query": "CUEB AI school founded"}}' in text, (
             "query only"
         )
-        assert '"query": "首经贸 校庆", "since": "last week"' in text, (
+        assert '"query": "CUEB anniversary", "since": "last week"' in text, (
             "a topic within a period"
         )
 
