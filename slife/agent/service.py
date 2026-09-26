@@ -2833,7 +2833,8 @@ class AgentService:
 
     async def recall_turns(
         self, query: str = "", since: str | None = None,
-        until: str | None = None, reserved_tokens: int = 0,
+        until: str | None = None, anchor: str | None = None,
+        reserved_tokens: int = 0,
     ) -> list[int] | None:
         """Recall the turn ids this turn should **add** to its context.
 
@@ -2842,6 +2843,11 @@ class AgentService:
         ``turn_list`` for its own reading, and neither touches the context.
         The rebuild needs only the ids, and fetches the turns themselves with
         :meth:`turns_by_ids`.
+
+        *anchor* is which end of a time window the caps spend from
+        (``"oldest"``, or unset for the newest); it applies only where there is
+        no query, since relevance is the axis there.  It is passed through
+        rather than interpreted — the store owns the branch rule.
 
         *reserved_tokens* is what the turns being kept already spend: the
         recalled set is sized to the headroom *below* the context floor, so a
@@ -2864,7 +2870,7 @@ class AgentService:
         payload = await self._call_context_tool_payload(
             "__memory_turn_recall",
             {"query": query, "since": since, "until": until,
-             "reserved_tokens": reserved_tokens},
+             "anchor": anchor, "reserved_tokens": reserved_tokens},
         )
         if not payload or payload.get("error"):
             return None

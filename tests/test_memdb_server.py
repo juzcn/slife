@@ -707,7 +707,7 @@ class TestTurnRecallIsInternal:
     The ``__`` prefix is the whole hiding mechanism (``is_internal_tool``), so
     it never reaches the LLM's registry — the model's own reading of the Turns
     DB is ``turn_search`` / ``turn_list``, and neither of those touches the
-    context.  Three of its parameters are the ones the discriminator fills in
+    context.  Four of its parameters are the ones the discriminator fills in
     — the caps are recall's configuration, and the surface is stated once, in
     ``system_prompt.RECALL_REPLY`` — and ``reserved_tokens`` is the harness's
     own: the tokens the kept turns already spend, which *narrows* the token
@@ -726,11 +726,11 @@ class TestTurnRecallIsInternal:
         assert "turn_recall" not in names, "the selector is not an LLM tool"
 
     @pytest.mark.asyncio
-    async def test_schema_parameters_are_the_three_and_the_headroom(
+    async def test_schema_parameters_are_the_four_and_the_headroom(
         self, restore_root_logger,
     ):
-        """The discriminator fills exactly three of these in — no caps, no mode
-        knob.  The fourth is the *caller's*: the headroom below the context
+        """The discriminator fills exactly four of these in — no caps, no mode
+        knob.  The fifth is the *caller's*: the headroom below the context
         floor, which the harness derives from the config and the turns the
         decision kept, and which a model can neither see nor set."""
         srv = _import_memdb_server()
@@ -739,20 +739,22 @@ class TestTurnRecallIsInternal:
         tool = next(t for t in tools if t.name == "__memory_turn_recall")
 
         props = tool.parameters["properties"]
-        assert set(props) == {"query", "since", "until", "reserved_tokens"}
-        assert tool.parameters.get("required", []) == [], "all four are optional"
+        assert set(props) == {
+            "query", "since", "until", "anchor", "reserved_tokens",
+        }
+        assert tool.parameters.get("required", []) == [], "all five are optional"
         # The per-parameter how-to-use text rides the schema (FastMCP lifts it
         # from the docstring's Args block), and the discriminator is asked for
-        # the same three keys the loop whitelists.
-        for name in ("query", "since", "until", "reserved_tokens"):
+        # the same four keys the loop whitelists.
+        for name in ("query", "since", "until", "anchor", "reserved_tokens"):
             assert props[name].get("description"), f"{name} has no description"
 
     @pytest.mark.asyncio
     async def test_an_empty_call_recalls_nothing(self, restore_root_logger):
-        """No query and no range is **not** "the most recent turns" — there is
-        no default selection at all, and the store is not even queried.  A
-        default that hands back N turns would replace a context the caller
-        never asked to change."""
+        """No query, no range and no anchor is **not** "the most recent turns"
+        — there is no default selection at all, and the store is not even
+        queried.  A default that hands back N turns would replace a context the
+        caller never asked to change."""
         import json
 
         srv = _import_memdb_server()
@@ -768,6 +770,80 @@ class TestTurnRecallIsInternal:
         assert json.loads(out) == {"turns": []}
         store.search_time.assert_not_awaited()
         store.get_turns_by_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_anchor_orders_the_window_by_its_end(
+        self, restore_root_logger,
+    ):
+        """``anchor`` is the direction the *store* reads the window in, so the
+        ids come back in that order — the budget then spends from the head.
+        ``newest`` is the default, so an unset anchor keeps today's reading."""
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        srv._store = store
+        srv._manager = None
+        srv._recall_policy = lambda: RecallPolicy()
+        store.search_time = AsyncMock(return_value=[])
+        store.get_turns_by_ids = AsyncMock(return_value=[])
+        recall = _recall(srv)
+
+        with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
+            await recall(query="", since="today", anchor="oldest")
+            await recall(query="", since="today", anchor="newest")
+            await recall(query="", since="today")
+
+        assert [
+            c.kwargs["newest_first"] for c in store.search_time.await_args_list
+        ] == [False, True, True]
+
+    @pytest.mark.asyncio
+    async def test_an_anchor_alone_is_a_condition(self, restore_root_logger):
+        """An anchor names an end of the *whole history*, so
+        ``{"anchor": "oldest"}`` with no bounds is the earliest turns — which
+        is how "look at our earliest records" is asked without naming a window.
+        That amends the empty-call rule deliberately: nothing was named *then*,
+        an end is named *now*."""
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        srv._store = store
+        srv._manager = None
+        srv._recall_policy = lambda: RecallPolicy()
+        store.search_time = AsyncMock(return_value=[])
+        store.get_turns_by_ids = AsyncMock(return_value=[])
+        recall = _recall(srv)
+
+        with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
+            await recall(query="", anchor="oldest")
+
+        store.search_time.assert_awaited_once()
+        assert store.search_time.await_args.kwargs["newest_first"] is False
+        assert store.search_time.await_args.kwargs["since"] is None
+        assert store.search_time.await_args.kwargs["until"] is None
+
+    @pytest.mark.asyncio
+    async def test_an_anchor_beside_a_query_is_dropped(self, restore_root_logger):
+        """Relevance is the axis when there is a query, so the anchor has
+        nothing to say: a query is ranked by what matches, and its answer's
+        order is not an end of anything.  Dropped rather than refused — the
+        precedence rule reads as "the loser is dropped" — and logged so the
+        drop is not silent."""
+        import json
+
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        srv._store = store
+        srv._manager = None
+        srv._recall_policy = lambda: RecallPolicy()
+        store.search_keyword = AsyncMock(return_value=[])
+        store.get_turns_by_ids = AsyncMock(return_value=[])
+        recall = _recall(srv)
+
+        with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
+            out = await recall(query="天气", anchor="oldest")
+
+        assert json.loads(out) == {"turns": []}
+        store.search_keyword.assert_awaited_once()  # the query branch ran
+        store.search_time.assert_not_awaited()
 
 
 class TestTurnSearch:

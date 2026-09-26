@@ -7,7 +7,9 @@ a server or an embedding backend.
 
 import pytest; pytestmark = pytest.mark.unit
 
-from slife.plugins.memdb.recall import RecallPolicy, fit_budget, gate_turns
+from slife.plugins.memdb.recall import (
+    RecallPolicy, fit_budget, fit_window, gate_turns,
+)
 
 
 def _hit(turn_id, similarity=None):
@@ -77,6 +79,58 @@ class TestFitBudget:
 
     def test_unknown_cost_counts_as_zero(self):
         assert fit_budget([2, 1], {}, 1) == [1, 2]
+
+
+class TestFitWindow:
+    """The time branch's token cap — one rule, read from whichever end.
+
+    ``ranked_ids`` arrives ordered from the anchor: newest-first for
+    ``newest``, oldest-first for ``oldest``.  So the same input list means two
+    different things, and the rule is stated over the *head* rather than over
+    an end.
+    """
+
+    def test_returns_chronological_order_not_rank_order(self):
+        assert fit_window([9, 2, 7], {9: 1, 2: 1, 7: 1}, 0) == [2, 7, 9]
+
+    def test_the_head_is_taken_whatever_it_costs(self):
+        """The head is the end that was named: an answer that dropped it would
+        be the other end, which is not what was asked for.  A single turn
+        larger than the whole budget is recalled alone."""
+        assert fit_window([5, 4, 3], {5: 100, 4: 1, 3: 1}, 5) == [5]
+
+    def test_the_run_stops_at_the_first_turn_that_does_not_fit(self):
+        """A window is adjacency, so the run ends where the budget does: turn
+        3 would have fit, and reaching it would have punched a hole."""
+        assert fit_window([5, 4, 3], {5: 5, 4: 100, 3: 1}, 10) == [5]
+
+    def test_oldest_first_reads_the_mirror(self):
+        """The same costs, the other direction: the head is now the *oldest*
+        turn, so it is the one the exemption protects."""
+        assert fit_window([3, 4, 5], {5: 5, 4: 100, 3: 1}, 10) == [3]
+
+    def test_a_window_that_fits_is_returned_whole_either_way(self):
+        """The caps are the only reason the direction matters: nothing is cut,
+        so nothing is chosen between."""
+        costs = {1: 1, 2: 1, 3: 1}
+        assert fit_window([3, 2, 1], costs, 100) == [1, 2, 3]
+        assert fit_window([1, 2, 3], costs, 100) == [1, 2, 3]
+
+    def test_the_two_branches_disagree_on_the_same_input(self):
+        """Why this is not ``fit_budget`` with a flag: the same candidates,
+        costs and budget answer differently under each order's meaning."""
+        ranked, costs, budget = [5, 4, 3], {5: 100, 4: 1, 3: 1}, 5
+        assert fit_budget(ranked, costs, budget) == [3, 4]
+        assert fit_window(ranked, costs, budget) == [5]
+
+    def test_zero_budget_is_unbounded(self):
+        assert fit_window([3, 1, 2], {1: 999, 2: 999, 3: 999}, 0) == [1, 2, 3]
+
+    def test_empty_candidates_select_nothing(self):
+        assert fit_window([], {}, 100) == []
+
+    def test_unknown_cost_counts_as_zero(self):
+        assert fit_window([2, 1], {}, 1) == [1, 2]
 
 
 class TestOverrideSemantics:

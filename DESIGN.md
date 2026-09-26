@@ -274,8 +274,8 @@ says is ever shown.
 - **What the instruction states**: what the call decides (what to keep of the turns in hand, plus
   what to recall, with the turn running on the two together), the current input, how the query is
   matched (against stored turns — their user messages, the tools they called, their answers), one
-  rule — *name what the turn needs, in the words a stored turn would contain* — and the reply
-  surface itself, stated once. It cannot be read off a tool: the selector is an **internal** tool the
+  rule — *name what the turn needs, in the words a stored turn would contain* — which end of a period
+  is read by default and how to read the other, and the reply surface itself, stated once. It cannot be read off a tool: the selector is an **internal** tool the
   model never sees, so there is no LLM-facing schema to quote. The loop is the only caller and its
   parser reads exactly these two fields, which is what keeps the two ends of this contract in step.
   When the store cannot be reached at all there is no call either — the availability check is the
@@ -304,12 +304,12 @@ six combinations and no mode has to be enumerated:
 | some | ✓ | base ∪ recalled |
 | none | ✓ | recalled |
 
-Recall's own three shapes are the store's three branches: a **time-only** range (the turns in that
-range, ranked by nothing but time — no similarity cap, because there is no query to measure
-against); a **query alone**, a hybrid search over the whole diary; and **query plus a range**, the
-same search with both legs windowed. An empty-query branch must run **before** the hybrid legs —
-they cannot express "no query": an empty query reaches the full-text index as a syntax error and
-embeds to noise.
+Recall's own three shapes are the store's three branches: a **time-only** range (the newest turns in
+it, ranked by nothing but time — no similarity cap, because there is no query to measure against); a
+**query alone**, a hybrid search over the whole diary; and **query plus a range**, the same search
+with both legs windowed. An empty-query branch must run **before** the hybrid legs — they cannot
+express "no query": an empty query reaches the full-text index as a syntax error and embeds to
+noise.
 
 **The union is what makes "keep this and add that" expressible** — and it is why an empty recall is
 now *harmless*. Under the older overriding selection every reply but the empty one discarded the
@@ -332,6 +332,32 @@ position and carries no magnitude to threshold. Keyword-leg hits have no measure
 evidence against it. The caps are recall's own configuration, never the discriminator's arguments —
 it chooses *what to look for*, never how much of it to take, which is why they are absent from the
 schema it fills in.
+
+**The axis a condition provides decides the priority.** The caps cannot return everything a condition
+matches, so the cut has to fall at one end — and which end is not a free choice: it follows from what
+the condition's candidates are *ordered by*. With no query the axis is **time**: the candidates are the
+window's turns and `anchor` names the end the caps spend from — `newest` (the default) or `oldest`,
+which is the difference between reading a period from its end and reading it from its beginning. With
+a query the axis is **relevance**: the caps spend from the relevance head, and time enters only as a
+*bound* on the candidate set, so an `anchor` beside a query is not consulted (logged, not silently
+dropped). Relevance wins over time, and the request it describes — "the earliest turn about X" — is a
+*read* (`turn_search`, `turn_read`), not a context selection. The two ends are one concept in either
+branch, but not one mechanism, and the difference is worth stating plainly:
+`{"anchor": "oldest"}` reaches the beginning with no date knowledge at all, while a query can only
+reach back by naming a window it has to guess. Render order is chronological in every case, because
+that is the restore contract and not a choice.
+
+**A time-only recall reaches the end it names.** `anchor` also stands alone: with no range it is an
+end of the *whole* history, which is how "look at our earliest records" is asked without naming a
+window — a deliberate widening of the empty-call rule, since an anchor names a condition where
+nothing did before. The anchored turn is taken **whatever it costs** (a turn larger than the whole
+budget is recalled *alone*, which is the answer and not a failure, and one turn's overshoot is what
+the ceiling absorbs — the same bound the trim enforces), and the run behind it is **contiguous**: the
+scan stops at the first turn that does not fit rather than skipping it. Skipping is right under
+relevance, where a candidate behind an unaffordable one is still a candidate; a time window is
+adjacency instead, so a hole is a piece of the conversation missing with nothing in the result to say
+so — and under time order the turn a skip drops first is the newest, the one the answer is most often
+about.
 
 **A keep-list is a statement about the context in hand**, read as an intersection: an id that is not
 there names nothing, and is not a way to pull an arbitrary row into the context past every cap and

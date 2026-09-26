@@ -27,6 +27,13 @@ returned chronologically, because the list order is a contract (restore reads
 the last entry as the newest, and the renderer pairs position with message
 order).
 
+A **time-only** recall is the exception to that first half: with no query there
+is nothing to be relevant to, so its candidates are the window's turns and its
+**anchor** decides which end leads — ``newest`` (the default) or ``oldest``.
+Its token cap is therefore :func:`fit_window` and not :func:`fit_budget`: the
+same budget spent from the anchored end and contiguously, because a window's
+order means adjacency where a relevance order does not.
+
 The policy is a pure function over already-retrieved candidates, so it can be
 tested without a store or a server.  Retrieval (the hybrid legs and the
 similarity measurement) happens in the caller — see
@@ -141,6 +148,11 @@ def fit_budget(
     Rank order decides membership (relevance), time decides render order.
     A turn that does not fit is skipped rather than stopping the scan — a
     later turn can still be small enough.
+
+    This is the **query** branch's rule, and both halves of it are statements
+    about relevance order: a candidate behind an unaffordable one is still a
+    candidate, and no position is privileged.  A time window's order means
+    adjacency instead, so its budget phase is :func:`fit_window`.
     """
     kept: list[int] = []
     spent = 0
@@ -156,5 +168,50 @@ def fit_budget(
     logger.info(
         "recall_budgeted selected=%d tokens=%d over_budget=%d",
         len(ordered), spent, skipped,
+    )
+    return ordered
+
+
+def fit_window(
+    ranked_ids: list[int],
+    costs: dict[int, int],
+    budget: int,
+) -> list[int]:
+    """Take what fits *budget* from the head of *ranked_ids*, **chronological**
+    out — the time branch's rule.
+
+    Direction-agnostic: *ranked_ids* must arrive ordered **from the anchor** —
+    newest-first for ``newest``, oldest-first for ``oldest``
+    (``store.search_time``) — so position reads as time and the head is the end
+    the caller named.  One rule serves both directions; the direction lives in
+    the ordering, not here.
+
+    Two things follow from reading position as time, and both are why this is
+    not :func:`fit_budget` with a flag:
+
+    * **The head is taken whatever it costs.**  It is the end that was named,
+      so anything that would drop it answers a different question — a turn
+      larger than the whole budget is recalled *alone*, which is the answer and
+      not a failure, and one turn's overshoot is what the ceiling absorbs.
+    * **The run behind it is contiguous.**  The scan stops at the first turn
+      that does not fit instead of skipping it: relevance order may reach past
+      an unaffordable turn, but a time window is adjacency — a hole is a piece
+      of the conversation missing with nothing in the result to say so.
+    """
+    kept: list[int] = []
+    spent = 0
+    unreached = 0
+    for index, tid in enumerate(ranked_ids):
+        cost = costs.get(tid, 0)
+        # The head is the anchored end: the budget never decides it.
+        if index > 0 and budget > 0 and spent + cost > budget:
+            unreached = len(ranked_ids) - index
+            break
+        kept.append(tid)
+        spent += cost
+    ordered = sorted(kept)
+    logger.info(
+        "recall_window selected=%d tokens=%d budget=%d unreached=%d",
+        len(ordered), spent, budget, unreached,
     )
     return ordered

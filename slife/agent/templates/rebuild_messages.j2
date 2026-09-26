@@ -12,8 +12,8 @@ Current user input:
 Reply with ONE JSON object holding the fields above, and nothing else. An empty
 object means the turns in hand are enough for this turn.
 
-The two fields are decided independently, which makes six cases. One example
-each:
+The two fields are decided independently: what to keep of the turns in hand,
+and what to add from memory. The cases below take one value of each.
 
 1. Keep the turns in hand, recall nothing — this turn reads on its own.
 
@@ -31,30 +31,40 @@ around it is not.
   input 忘掉前面那些
     → {"context": "clear"}
 
-4. Keep them and recall more — a period, and no topic.
+4. Keep them and recall a period — a range of time, and no topic.
 
   input 这两天都做了些什么？
     → {"recall": {"since": "yesterday"}}
 
-5. Keep part and recall more — the turn that answered this has left the
+5. Keep them and recall a period from its beginning — the oldest turns in it.
+
+  input 上个月最早都聊了些什么？
+    → {"recall": {"since": "last month", "anchor": "oldest"}}
+
+6. Keep them and recall the earliest turns of all — no bound to name.
+
+  input 翻看一下我们最早的聊天记录
+    → {"recall": {"anchor": "oldest"}}
+
+7. Keep part and recall a query — the turn that answered this has left the
 context, and the tool dumps around it are dead weight.
 
   input 刚才问首经贸管工学院院长是谁？
     → {"context": [27, 28], "recall": {"query": "首经贸 管理工程学院 院长"}}
 
-6. Keep none and recall — a topic within a period.
+8. Keep none and recall a query within a period — a topic, and when.
 
   input 上周关于校庆都说了什么？
     → {"context": "clear", "recall": {"query": "首经贸 校庆", "since": "last week"}}
 
-A query is matched against stored turns — their user messages, the tools they
-called, their answers. Name what the turn needs, in the words a stored turn
-would contain. A follow-up's subject is in the conversation above, so carry it
-into the query:
+9. Keep them and recall a query in a period that has passed — a topic, and both
+ends of it.
 
-  input 那人工智能学院呢？ — the subject came three turns earlier
+  input 上个月关于校庆都说了什么？
+    → {"recall": {"query": "首经贸 校庆", "since": "last month", "until": "this month"}}
+
+10. Keep them and recall a query for a follow-up — its subject is in the
+conversation above, so carry it into the query.
+
+  input 那人工智能学院呢？
     → {"recall": {"query": "首经贸 人工智能学院 成立"}}
-
-The turn ids in a keep-list are the ones in the [INFO: …] footnote of the
-message that opens each turn — every turn in the context carries one. A
-keep-list names what to keep; an id that is not in the context names nothing.

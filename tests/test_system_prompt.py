@@ -454,7 +454,7 @@ class TestRecallInstruction:
         text = build_recall_instruction("查一下首经贸新闻")
 
         assert "查一下首经贸新闻" in text
-        for key in ("context", "recall", "query", "since", "until"):
+        for key in ("context", "recall", "query", "since", "until", "anchor"):
             assert f'"{key}"' in text, key
 
     def test_the_surface_is_exactly_the_loops_two_fields(self):
@@ -462,11 +462,16 @@ class TestRecallInstruction:
         out of the reply — and the **caps** (count, similarity, token budget)
         are deliberately not among them: the discriminator chooses *what to
         look for*, never how much of it to take, and naming them here would
-        invite a model to set recall's own configuration."""
+        invite a model to set recall's own configuration.  ``anchor`` is the
+        one that could be mistaken for a cap and is not: it names which *end*
+        of a time range the caps spend from, so it says what to look at, not
+        how much of it to take."""
         from slife.agent.system_prompt import RECALL_REPLY
 
         assert set(RECALL_REPLY) == {"context", "recall"}
-        assert set(RECALL_REPLY["recall"]) == {"query", "since", "until"}
+        assert set(RECALL_REPLY["recall"]) == {
+            "query", "since", "until", "anchor",
+        }
 
     def test_states_the_empty_object_rule(self):
         from slife.agent.system_prompt import build_recall_instruction
@@ -580,25 +585,45 @@ class TestRecallInstruction:
             "a topic within a period"
         )
 
-    def test_the_examples_are_shown_one_per_decision(self):
-        """The six decisions are numbered 1–6 in the instruction, so the
-        ordering *is* the documentation: a case out of order, or a decision
-        with no case, would leave the model counting on its own."""
+    def test_every_case_is_numbered_and_the_numbers_run_in_order(self):
+        """One case, one number, running 1..n with no gap — the numbering *is*
+        the documentation, so a case that lost its number, or a number with no
+        case behind it, would leave the model counting on its own.
+
+        The count is taken from the cases themselves rather than written down:
+        the six combinations of the two fields are the first six, and the cases
+        for how a value is worded follow them, so adding one must not mean
+        editing this test as well."""
         from slife.agent.system_prompt import build_recall_instruction
 
         text = build_recall_instruction("x")
+        cases = self._examples(text)
 
-        for n in range(1, 7):
-            assert f"\n{n}. " in text, f"decision {n} has no case"
-        assert "\n7. " not in text, "six decisions, six numbered cases"
+        for n in range(1, len(cases) + 1):
+            assert f"\n{n}. " in text, f"case {n} has no number"
+        assert f"\n{len(cases) + 1}. " not in text, "a number with no case"
 
     def test_the_time_examples_stay_in_the_bound_grammar(self):
         """An unparseable bound is answered as "recalled nothing", so a wrong
-        example is a wasted turn — the bounds shown have to be ones
-        ``timeutil`` accepts."""
+        example is a wasted turn — every bound the cases show has to be one
+        ``timeutil`` accepts.
+
+        Read off the cases rather than listed here: a new example is then
+        covered the moment it is written, which a hand-kept list of bounds
+        stops doing the first time someone forgets it."""
+        import re
+
+        from slife.agent.system_prompt import build_recall_instruction
         from slife.timeutil import normalize_time_bound
 
-        for bound in ("yesterday", "last week"):
+        bounds = [
+            bound
+            for case in self._examples(build_recall_instruction("x"))
+            for bound in re.findall(r'"(?:since|until)":\s*"([^"]+)"', case)
+        ]
+
+        assert len(bounds) >= 3, "the cases show bounds"
+        for bound in bounds:
             assert normalize_time_bound(bound), bound
 
 

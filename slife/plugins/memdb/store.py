@@ -1194,7 +1194,7 @@ class SessionStore(VecStoreLifecycleMixin):
 
     async def turn_list(
         self, since: str | None = None, until: str | None = None,
-        limit: int = 50, offset: int = 0,
+        limit: int = 50, offset: int = 0, newest_first: bool = True,
     ) -> dict:
         """Browse turns, newest first, within an optional time window.
 
@@ -1206,6 +1206,13 @@ class SessionStore(VecStoreLifecycleMixin):
         inside a group of turns sharing a timestamp and make offset paging
         skip or repeat one.
 
+        *newest_first* is the **recall selector's** direction and only its:
+        the browse is newest-first by definition — its ``offset`` pages in
+        that order and the tool exposing it says so — so the default is what
+        every other reader wants.  The window, its axis and the ordering still
+        come from this one place; the direction picks which end, it is not a
+        second query.
+
         Returns ``{"entries": [...], "total": n}``.  The entries keep the
         internal ``rowid`` name, as every reader here does; the plugin's tool
         layer is what renames it to ``turn_id``.
@@ -1216,9 +1223,10 @@ class SessionStore(VecStoreLifecycleMixin):
         cursor = await self._c.execute(f"SELECT COUNT(*) FROM diary {where}", params)
         row = await cursor.fetchone()
         total = row[0] if row else 0
+        direction = "DESC" if newest_first else "ASC"
         cursor = await self._c.execute(
             f"""SELECT rowid, user_message, summary, tags, created_at, token_count
-               FROM diary {where} ORDER BY rowid DESC LIMIT ? OFFSET ?""",
+               FROM diary {where} ORDER BY rowid {direction} LIMIT ? OFFSET ?""",
             (*params, limit, offset),
         )
         entries = [dict(row) for row in await _fetch_all_bounded(cursor)]
@@ -1231,14 +1239,21 @@ class SessionStore(VecStoreLifecycleMixin):
     async def search_time(
         self, limit: int = 20,
         since: str | None = None, until: str | None = None,
+        newest_first: bool = True,
     ) -> list[dict]:
         """Time-range browsing of turns — the recall selector's window.
 
         Delegates to :meth:`turn_list`, so the window, its axis and the
         ordering are built in one place; it only drops the envelope and the
         paging.
+
+        *newest_first* is the selector's **anchor** — which end of the window
+        its count cap spends from — and it comes back as a list the caller
+        takes in order, so the end that leads is the end the budget starts at.
         """
-        result = await self.turn_list(since=since, until=until, limit=limit)
+        result = await self.turn_list(
+            since=since, until=until, limit=limit, newest_first=newest_first,
+        )
         return result["entries"]
 
     #: Rows examined per regex ``grep``.  A regex cannot use an index, so grep

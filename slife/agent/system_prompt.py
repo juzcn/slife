@@ -63,7 +63,13 @@ def render_template(template: str, **kwargs: object) -> str:
 #:
 #: The **caps** (count / similarity / token budget) are deliberately absent —
 #: they are recall's own configuration, so the discriminator chooses *what to
-#: look for*, never how much of it to take.
+#: look for*, never how much of it to take.  ``anchor`` is not one of them: it
+#: names which *end* of a time range the caps spend from, so it says what to
+#: look at, not how much of it to take.
+#:
+#: Every entry states its field and its default, and nothing else — how a value
+#: is worded is what the instruction's cases are for, so the two cannot become
+#: two places stating the same rule.
 #:
 #: Stated here, once, because the selector is an internal tool the model never
 #: sees: there is no LLM-facing schema left to quote.  The loop is the only
@@ -72,15 +78,20 @@ def render_template(template: str, **kwargs: object) -> str:
 #: not two copies that can drift.
 RECALL_REPLY: dict[str, object] = {
     "context": "Which of the turns in hand to keep. Omit (or \"keep\") to "
-               "keep them all, \"clear\" to keep none, or name the ones to "
-               "keep by the turn_id in their [INFO: …] footnote, e.g. "
-               "[12, 15].",
+               "keep them all, \"clear\" to keep none, or the ones to keep, "
+               "named by the turn_id in their [INFO: …] footnote, e.g. "
+               "[12, 15]. An id that is not in the context names nothing.",
     "recall": {
-        "query": "Search text for the history this turn needs. Omit for no "
-                 "search — browse a time range instead.",
+        "query": "Search text for the history this turn needs, matched "
+                 "against stored turns — their user messages, the tools they "
+                 "called, their answers. Name what the turn needs, in the "
+                 "words a stored turn would contain. Omit for no search — "
+                 "browse a time range instead.",
         "since": "Lower time bound: an ISO date, or a relative phrase such "
                  "as yesterday / last week. Omit for none.",
         "until": "Upper time bound, same grammar as since.",
+        "anchor": "Which end of a time range to take, \"oldest\" or "
+                  "\"newest\". Omit for the newest end.",
     },
 }
 

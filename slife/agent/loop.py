@@ -614,11 +614,20 @@ class AgentLoop:
             return usage.total_tokens
         return 0  # fresh start — no previous round's usage yet
 
-    #: The keys the discriminator's ``recall`` field may carry — the three the
+    #: The keys the discriminator's ``recall`` field may carry — the four the
     #: store's internal selector takes, and nothing else.  The **caps** (count,
     #: similarity, token budget) are not among them: they are recall's own
     #: configuration, so a model naming one has it dropped rather than honoured.
-    _RECALL_KEYS = ("query", "since", "until")
+    #: ``anchor`` is not a cap but the *end* a time window is spent from
+    #: (``newest`` / ``oldest``), which is the decision's to make: the caps say
+    #: how much, the anchor says which end of it.
+    _RECALL_KEYS = ("query", "since", "until", "anchor")
+
+    #: The values ``anchor`` may take.  Anything else makes the reply unusable
+    #: rather than being read as the default: at this level the keys are the
+    #: decision itself, and "the newest" is a different answer from "the one I
+    #: could not spell".
+    _ANCHORS = ("newest", "oldest")
 
     @classmethod
     def _parse_recall_args(cls, text: str) -> dict | None:
@@ -636,8 +645,9 @@ class AgentLoop:
         * ``keep`` — ``None`` for *all the turns in hand* (the default, also
           spelled ``"keep"``), ``[]`` for *none of them* (``"clear"``), or the
           list of turn ids to keep.
-        * ``recall`` — ``None`` when nothing was asked for, else the three
-          search keys.
+        * ``recall`` — ``None`` when nothing was asked for, else the search
+          keys: the condition (``query`` and/or a time bound), and ``anchor``
+          for which end of a window to spend the caps from.
 
         A value of the wrong type in either field makes the whole reply
         unusable rather than being dropped in place: a dropped ``keep`` would
@@ -691,6 +701,13 @@ class AgentLoop:
                 isinstance(raw.get(k), (str, type(None)))
                 for k in cls._RECALL_KEYS
             ):
+                return None
+            anchor = raw.get("anchor")
+            if anchor is not None and anchor not in cls._ANCHORS:
+                # An anchor the store does not know.  Refused rather than read
+                # as the default, for the same reason a wrong type is: the
+                # reply would then answer a window's *other* end while the
+                # decision said nothing of the sort.
                 return None
             recall = {k: raw.get(k) for k in cls._RECALL_KEYS}
             if not any(recall.values()):
@@ -782,11 +799,11 @@ class AgentLoop:
         recall = args.get("recall") or {}
         logger.info(
             "recall_discriminated msgs=%d prompt_chars=%d took_ms=%.0f "
-            "keep=%s query=%.60s since=%s until=%s",
+            "keep=%s query=%.60s since=%s until=%s anchor=%s",
             len(messages), prompt_chars, took_ms,
             "all" if keep is None else len(keep),
             sanitize_secrets(str(recall.get("query") or "")),
-            recall.get("since"), recall.get("until"),
+            recall.get("since"), recall.get("until"), recall.get("anchor"),
         )
         return args
 
@@ -912,6 +929,7 @@ class AgentLoop:
                 str(recall.get("query") or ""),
                 recall.get("since") or None,
                 recall.get("until") or None,
+                anchor=recall.get("anchor") or None,
                 reserved_tokens=base_tokens,
             )
             if ids is None:

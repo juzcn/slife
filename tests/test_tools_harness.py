@@ -450,7 +450,9 @@ class TestRecallRebuild:
         persisted: list[list[int]] = []
         seen: list[dict] = []
 
-        async def recall(query="", since=None, until=None, reserved_tokens=0):
+        async def recall(
+            query="", since=None, until=None, anchor=None, reserved_tokens=0,
+        ):
             seen.append({"since": since, "reserved_tokens": reserved_tokens})
             return [7]
 
@@ -487,7 +489,9 @@ class TestRecallRebuild:
         persisted: list[list[int]] = []
         seen: list[dict] = []
 
-        async def recall(query="", since=None, until=None, reserved_tokens=0):
+        async def recall(
+            query="", since=None, until=None, anchor=None, reserved_tokens=0,
+        ):
             seen.append({"reserved_tokens": reserved_tokens})
             return [7]
 
@@ -663,7 +667,10 @@ class TestRecallDiscriminator:
 
         assert args == {
             "keep": None,
-            "recall": {"query": "首经贸 新闻", "since": None, "until": None},
+            "recall": {
+                "query": "首经贸 新闻", "since": None, "until": None,
+                "anchor": None,
+            },
         }
         assert conv.messages == before, (
             "the discriminator is not part of the conversation — it must not "
@@ -756,7 +763,10 @@ class TestRecallDiscriminator:
 
         assert args == {
             "keep": None,
-            "recall": {"query": "首经贸 新闻", "since": None, "until": None},
+            "recall": {
+                "query": "首经贸 新闻", "since": None, "until": None,
+                "anchor": None,
+            },
         }
         assert len(llm.sent) == 1
 
@@ -1318,6 +1328,20 @@ class TestRecallNotNeeded:
 
         assert asked and asked[0][0][1] == "yesterday", "the bound reaches the store"
 
+    @pytest.mark.asyncio
+    async def test_an_anchor_alone_still_recalls(self):
+        """An anchor names an end of the whole history, so it is a condition on
+        its own — the same "a request goes to the store" rule as a bound."""
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("old question")
+        loop, asked, _ = self._loop('{"recall": {"anchor": "oldest"}}')
+
+        await loop._recall_and_rebuild(conv, "new input")
+
+        assert asked and asked[0][1].get("anchor") == "oldest", (
+            "the anchor reaches the store"
+        )
+
 
 class TestRecallReplyParsing:
     """``_parse_recall_args`` — the only gate on what a model can inject.
@@ -1326,7 +1350,8 @@ class TestRecallReplyParsing:
     registry's schema validation, so this parser is the whole of the defence.
     It normalizes the reply's two fields to the two the caller composes with:
     ``keep`` as ``None`` / ``[]`` / a list of ids, and ``recall`` as ``None``
-    or the three search keys.
+    or the search keys — the condition (``query`` / ``since`` / ``until``) and
+    ``anchor``, which names which end of a window the caps spend from.
     """
 
     @staticmethod
@@ -1347,6 +1372,9 @@ class TestRecallReplyParsing:
             ('{"context": "clear", "recall": {"query": "x"}}', [], "x"),
             # "keep" is the omitted default, spelled out
             ('{"context": "keep"}', None, None),
+            # an anchor is a condition in its own right, and it carries a value
+            ('{"recall": {"anchor": "oldest"}}', None, "oldest"),
+            ('{"recall": {"since": "yesterday", "anchor": "oldest"}}', None, "oldest"),
             # an empty recall is not a decision to recall nothing
             ('{"recall": {"query": "", "since": null, "until": null}}', None, None),
             # a model's own caps are dropped, never honoured
@@ -1380,6 +1408,12 @@ class TestRecallReplyParsing:
             '{"recall": "x"}',              # not an object
             '{"recall": {"query": 5}}',     # not a string
             '{"context": 3, "recall": {"since": "today"}}',
+            # An anchor the store does not know.  Read as the default, this
+            # would answer the window's *other* end while the decision said
+            # nothing of the sort — a wrong selection is worse than none.
+            '{"recall": {"anchor": "earliest"}}',
+            '{"recall": {"anchor": "Oldest"}}',
+            '{"recall": {"anchor": true}}',
             # A key the reply does not document, at the level the *decision*
             # lives.  Read as a stray and dropped, this one would honour
             # `"clear"` — a context wiped, with the recall the model actually

@@ -23,7 +23,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from slife.agent.message_history import TokenizerUnavailable, estimate_turn_tokens
-from slife.plugins.memdb.recall import RecallPolicy, fit_budget, gate_turns
+from slife.plugins.memdb.recall import (
+    RecallPolicy, fit_budget, fit_window, gate_turns,
+)
 from slife.plugins.memdb.store import SessionStore, _clamp_limit
 from slife.plugins.memdb.search import (
     hybrid_hint, rename_rowid_to_turn_id, run_hybrid,
@@ -327,6 +329,7 @@ async def __memory_turn_recall(
     query: str = "",
     since: str | None = None,
     until: str | None = None,
+    anchor: str | None = None,
     reserved_tokens: int = 0,
 ) -> str:
     """Return the recalled turn ids — nothing else.
@@ -337,6 +340,13 @@ async def __memory_turn_recall(
         since: Lower bound — ISO date/datetime, or a relative phrase (the
             grammar is the LLM-facing ``turn_search``'s).
         until: Upper bound — same grammar as since.
+        anchor: Which end of a time window the caps spend from —
+            ``"oldest"``, or ``"newest"`` / unset for the newest.  It names the
+            end that *survives* the caps, because they cannot return the whole
+            window; a window that fits them is returned whole either way.  It
+            applies only with no *query*, and it is a criterion in its own
+            right: with no range either, ``"oldest"`` is the oldest turns of
+            the whole history.
         reserved_tokens: Tokens the caller's context already spends on the
             turns it is keeping.  A *fact* about that context, not a cap the
             caller sets: it narrows the budget to the headroom left below the
@@ -347,11 +357,17 @@ async def __memory_turn_recall(
     it; it fetches the turns themselves with ``__memory_turns_by_ids``.
 
     A *query* runs the hybrid search; a time range without one browses that
-    period; neither is an empty call, which recalls nothing.  The three caps
+    period; an *anchor* without either is an end of the whole history; an
+    empty call, naming none of the three, recalls nothing.  The three caps
     come from recall's own configuration (``agent.recall_*``) — see
     :mod:`slife.plugins.memdb.recall` — and *reserved_tokens* narrows the
     token budget without ever setting it, so what a caller may spend still
     follows from the config and never from what a model asked for.
+
+    **The axis a condition provides decides the priority.**  With no query,
+    time is the axis and *anchor* names the end the caps spend from; with a
+    query, relevance is the axis and *anchor* has nothing to say — time enters
+    only as the window — so it is ignored and logged.
 
     "Narrows" is meant literally: the answer is a subset of what the same
     call would have returned with nothing reserved, so no caller can raise its
@@ -402,27 +418,40 @@ async def __memory_turn_recall(
             manager = _manager
 
             if not query.strip():
-                if not (since or until):
-                    # No query and no range: nothing was asked for.  The caller
-                    # that means "add nothing" does not call at all — the agent
-                    # loop reads the decision's empty `recall` before it gets
-                    # here — so reaching this means an empty call, and an empty
-                    # call recalls nothing.
+                if not (since or until or anchor):
+                    # No query, no range, no anchor: nothing was asked for.
+                    # The caller that means "add nothing" does not call at all
+                    # — the agent loop reads the decision's empty `recall`
+                    # before it gets here — so reaching this means an empty
+                    # call, and an empty call recalls nothing.
                     logger.info("recall_no_criteria")
                     return json.dumps({"turns": []}, ensure_ascii=False)
                 # Time branch.  This branch MUST run before the hybrid legs:
                 # an empty query reaches FTS5 as `MATCH ''` (an OperationalError)
                 # and embeds to noise, so the legs cannot express "no query".
+                if anchor and anchor not in ("newest", "oldest"):
+                    # The loop's parser refuses an unknown value, so this is a
+                    # caller that bypassed it; answered as the default rather
+                    # than as nothing, since the range still stands.
+                    logger.warning("recall_anchor_unknown anchor=%.20s", anchor)
                 hits = await store.search_time(
                     limit=policy.limit, since=since, until=until,
+                    newest_first=anchor != "oldest",
                 )
                 ranked = [h["rowid"] for h in hits][: policy.limit]
+                fit = fit_window
             else:
+                if anchor:
+                    # Relevance is the axis when there is a query, so the
+                    # anchor has nothing to say there: time enters only as the
+                    # window.  Logged so the drop is not silent.
+                    logger.info("recall_anchor_ignored anchor=%s", anchor)
                 result = await run_hybrid(
                     store, manager, query=query, limit=policy.limit,
                     since=since, until=until, overfetch=3,
                 )
                 ranked = gate_turns(result.hits, policy=policy)
+                fit = fit_budget
                 if not result.semantic_available:
                     # The recalled set stands either way, but a degraded leg
                     # widens the empty case — which adds less, and on a query
@@ -431,10 +460,12 @@ async def __memory_turn_recall(
                                 hybrid_hint(result))
 
             # The token budget needs each turn's stored messages, so it is a
-            # second phase over what gating kept.
+            # second phase over what the first phase kept — and which rule
+            # spends it is the branch's, because that follows from the order
+            # the branch's candidates are in.
             turns = await store.get_turns_by_ids(ranked)
             costs = {t["rowid"]: estimate_turn_tokens(t) for t in turns}
-            selected = fit_budget(ranked, costs, budget)
+            selected = fit(ranked, costs, budget)
 
         return json.dumps({"turns": selected}, ensure_ascii=False)
     except InvalidTimeBound as e:
