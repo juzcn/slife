@@ -389,6 +389,15 @@ message posted to the inbox
 Active history is kept between a **floor** and a **ceiling**, both configured as fractions of the
 model's context window.
 
+**Which mechanism holds it there depends on the mode.** With the per-turn rebuild on — the default —
+the *selection* is the bound: every turn is rebuilt to fit the window before it runs, and a recall
+whose candidates would overfill it is cut by the recall's own token budget (§2.3). The trim then
+stands behind the selection as a **guard** rather than as the mechanism the context is normally held
+to, and the assumption that makes it a guard is that one recall's turns fit the window they were
+sized against — what it catches is what no selection made in advance can see, a turn whose tool
+results balloon *during* the run. With the rebuild off the context grows append-only, and there the
+trim is the bound itself.
+
 **Usage is measured, never estimated.** One function is the single source for the current context
 size, resolving the last API call's actual prompt plus completion tokens, else the restore-time
 value primed from the latest restored turn, else zero. It drives the per-turn prompt, the trim
@@ -2221,30 +2230,19 @@ Each is a rule in the body now.
 | Should the model get a tool that rewrites its own context — system prompt, history, tool list — taking effect next iteration? | No, on two grounds. The selector that feeds the context is **internal** precisely so the model cannot move the conversation under itself; and the idea was priced and rejected, because it spends the prompt cache to buy a rearrangement ([§2.3](#23-recall--the-context-is-selected)). |
 | Should `local-embed` be health-checked when it is not the active embedding provider? | Yes. It is an ordinary child plugin with a `__check`, so the plugin contract holds uniformly and no special case was needed (`slife/plugins/spec.py`). |
 | Why does the sharefile tunnel fail under a TUN fake-IP proxy? | The resolver lies, and intercepted traffic breaks the tunnel's long-lived control connection. Both are measured facts now rather than mysteries ([§7.5](#75-the-file-cabinet)). |
-| What happens when a model switch changes the context window? | Mostly absorbed: the tool-result cap is recomputed, the usage reading self-corrects, and the ceiling moves with the window — with one rough edge left open below. |
+| What happens when a model switch changes the context window? | Answered by the per-turn rebuild. The next turn is rebuilt against the new window and sized to fit it, so a *smaller* window is absorbed by the selection rather than by a trim after the fact: **a recall's turns are not expected to overfill the context**, which is what makes the trim a guard instead of the bound ([§2.2](#22-context-window-management)). The tool-result cap is recomputed on the switch and the usage reading self-corrects. |
 | Is the per-turn discriminator worth a context-sized call? | **Yes — it is the design**, and it is proven usable in practice. That cost is the price of judging from the conversation, not a sign the arrangement is wrong, and [§2.3](#23-recall--the-context-is-selected) states it that way. Anything cheaper would have to keep the reason this step is a model call at all: a follow-up names its subject only through the conversation in hand, so a query written from the input alone retrieves nothing. |
 
 ### Open
 
-**1. A window that shrinks under a live context.** Switching to a model with a smaller window leaves
-the live context at its old size. For the main agent the ceiling check is a **save-point** check
-([§2.2](#22-context-window-management)) — it runs *after* a turn is persisted, because only then is
-the real usage known — so a 128K context meeting a 32K model is sent once, and rejected by the
-provider, before anything trims it. The turn is saved like any other, the save-point trim then cuts
-to the new floor, and the session recovers on the next turn, at the cost of one failed turn. A worker
-is immune, because its check *is* at the request boundary. *Settling it*: a ceiling check on the
-switch path itself, or a request-boundary check for the main agent when the window has moved since
-the last measurement. Neither is obviously right — the first can evict context the model chose to
-keep, and the second puts a second trim site on the hot path.
-
-**2. Multiple WeChat accounts.** The plugin holds one login at a time — switching accounts means
+**1. Multiple WeChat accounts.** The plugin holds one login at a time — switching accounts means
 logging out first — and `wechat` is one config section, one client and one channel. Several accounts
 need a decision this design has not made: whether each is its own channel, and so its own sender
 identity in memory and in the TUI, or one channel carrying the account, and how messages from two
 accounts interleave in a single shared agent context. *Settling it*: a call on whether an account is
 an identity or an attribute.
 
-**3. Shared code across the plugin children.** The duplicate implementations that prompted this have
+**2. Shared code across the plugin children.** The duplicate implementations that prompted this have
 largely converged — the two corpus searches share `run_search`, and the cabinet reuses memdb's index
 machinery ([§7.2](#72-search), [§7.5](#75-the-file-cabinet)) — but the pattern that produced them has
 not been settled. Each plugin is its own package with its own store, its own schema and its own copy
@@ -2253,7 +2251,7 @@ of anything small, and the harness has no shared library for the shapes they hol
 cost of a dependency every child then takes. "Nothing worth sharing" is a fine answer, once it is
 written down.
 
-**4. The approval gate's two blind spots.** Approval is pure model judgment, with no
+**3. The approval gate's two blind spots.** Approval is pure model judgment, with no
 `requires_approval` flag anywhere ([§4.8](#48-the-approval-gate)), so the gate holds exactly where the
 model is diligent and nowhere else. Two consequences are worth stating plainly. A **headless worker
 auto-approves everything** — the decision belongs to whoever is watching, and nobody is — so a
@@ -2265,7 +2263,7 @@ rather than left to judgment. The cost of the wrong answer cuts both ways: a str
 needs is a permanent tax on every capable model, which is the trade-off the
 [Prologue](#prologue--the-view-behind-the-design) already chose against.
 
-**5. The tool system's synchronization.** Three sources have to agree — the config, the runtime's
+**4. The tool system's synchronization.** Three sources have to agree — the config, the runtime's
 verdicts and the catalog's load state ([§4.3](#43-the-catalog--the-tool-database)) — and the
 machinery that keeps them so is the most intricate part of the harness: one status column with two
 writers and two lanes, a load state with exactly four writers, a boot seed, a background reconcile,
