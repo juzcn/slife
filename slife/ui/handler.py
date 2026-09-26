@@ -109,19 +109,25 @@ class TUIHandler:
             else:
                 self._current_assistant.finalize(intermediate=False)
 
-    def on_rebuild(self, count: int) -> None:
+    def on_rebuild(self, total: int, recalled: int) -> None:
         """Show the context-rebuild notice for this turn.
 
         Called by the loop *before* the turn runs, when the per-turn rebuild
         replaced the context from a recall selection.  A user-facing status
         line rather than a log: the model's context changed under it, and
         staying silent would make the agent look like it had forgotten things
-        for no visible reason.  A count of 0 is a recall that selected
-        nothing — which clears the context, so it is the case that most needs
-        saying.
+        for no visible reason.
+
+        Both numbers are needed to read it.  *total* is the context's size
+        after the rebuild and *recalled* how many of its turns recall added
+        this turn; the total alone reads as "this many were recalled", which
+        is wrong by most of the context — a restored 26-turn context that
+        gained 4 was announced as "30 recalled".  A *total* of 0 is a context
+        that was cleared, which is the case that most needs saying.
         """
         self._chat_view.add_system_message(
-            t("recall_notice", count=count) if count else t("recall_none"),
+            t("recall_notice", total=total, recalled=recalled)
+            if total else t("recall_none"),
         )
 
     def on_trim(self, count: int) -> None:

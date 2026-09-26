@@ -294,24 +294,26 @@ class TestTUIHandler:
         handler = TUIHandler(app)
         handler.on_trim(2)  # should not raise
 
-    def test_on_rebuild_counts_the_selection(self):
-        """The rebuild notice names how many turns were recalled."""
+    def test_on_rebuild_reports_the_recall_and_the_context_size(self):
+        """Both numbers, because one alone reads as the other.  A 26-turn
+        context restored at startup that gained 4 recalled turns was announced
+        as "30 recalled" — the total dressed as the selection."""
         app = self._make_app_mock()
         handler = TUIHandler(app)
 
-        handler.on_rebuild(3)
+        handler.on_rebuild(30, 4)
 
         app.query_one.return_value.add_system_message.assert_called_once_with(
-            "↻ 3 turns recalled, context's messages rebuilt",
+            "↻ 4 recalled — context is now 30 turns",
         )
 
     def test_on_rebuild_zero_reports_the_cleared_context(self):
-        """A count of 0 is a recall that selected nothing — the context is
+        """A total of 0 is a context with nothing in it — the context is
         gone, so it is the case that most needs saying."""
         app = self._make_app_mock()
         handler = TUIHandler(app)
 
-        handler.on_rebuild(0)
+        handler.on_rebuild(0, 0)
 
         app.query_one.return_value.add_system_message.assert_called_once_with(
             "↻ no turn recalled — context's messages cleared",

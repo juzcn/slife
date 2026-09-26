@@ -998,14 +998,21 @@ class AgentLoop:
             written = await self.set_context_turns([t["rowid"] for t in turns])
             if not written:
                 logger.warning("recall_persist_failed ids=%d", len(turns))
-        # Tell the human: the model's context just changed under them.
+        # Tell the human: the model's context just changed under them.  Two
+        # numbers, because one is not enough to read: the context's size after
+        # the rebuild, and how many of its turns recall *added* this turn.  The
+        # size alone reads as "this many were recalled" — and the kept turns
+        # are the bulk of it, so a restored 26-turn context that gained 4 would
+        # be announced as "30 recalled".  Added, not selected: a recalled turn
+        # already in the context changed nothing.
+        recalled = len({t["rowid"] for t in turns} & (set(ids) - set(base)))
         on_rebuild = getattr(handler, "on_rebuild", None)
         if on_rebuild is not None and (turns or had_turns):
             try:
-                on_rebuild(len(turns))
+                on_rebuild(len(turns), recalled)
             except Exception:
                 logger.exception("recall_notice_ui_failed")
-        logger.info("recall_rebuilt turns=%d", len(turns))
+        logger.info("recall_rebuilt turns=%d recalled=%d", len(turns), recalled)
         return True
 
     async def _trim_context(

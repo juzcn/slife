@@ -95,10 +95,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "⏹ 已中断",
     },
     # The recall notice was the one user-facing string built by hand in
-    # handler.py, so a zh session still read English.  Text is unchanged.
+    # handler.py, so a zh session still read English.  Moving it here left the
+    # wording alone; it now carries two numbers (the recall's, and the
+    # context's) rather than the rebuilt list's size under the recall's name.
     "recall_notice": {
-        "en": "↻ {count} turns recalled, context's messages rebuilt",
-        "zh": "↻ 已召回 {count} 轮，上下文消息已重建",
+        "en": "↻ {recalled} recalled — context is now {total} turns",
+        "zh": "↻ 已召回 {recalled} 轮 — 上下文现为 {total} 轮",
     },
     "recall_none": {
         "en": "↻ no turn recalled — context's messages cleared",
