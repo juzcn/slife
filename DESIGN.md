@@ -2265,14 +2265,27 @@ rather than left to judgment. The cost of the wrong answer cuts both ways: a str
 needs is a permanent tax on every capable model, which is the trade-off the
 [Prologue](#prologue--the-view-behind-the-design) already chose against.
 
-**5. The tool system's synchronization.** The most intricate part of the harness is keeping the
-config, the runtime's verdicts and the catalog's load state in step
-([§4.3](#43-the-catalog--the-tool-database)): one status column with two writers and two lanes, a
-load state with exactly four writers, a boot seed, a background reconcile, and a threshold eviction.
-The rules are stated and consistent, and each was paid for by a real bug — but the number of moving
-parts is the design's own admission that the shape has not been found yet. *Settling it*: a
-reduction that keeps every rule of §4.3 true while removing a writer or a lane, or a demonstration
-that the count is irreducible.
+**5. The tool system's synchronization.** Three sources have to agree — the config, the runtime's
+verdicts and the catalog's load state ([§4.3](#43-the-catalog--the-tool-database)) — and the
+machinery that keeps them so is the most intricate part of the harness: one status column with two
+writers and two lanes, a load state with exactly four writers, a boot seed, a background reconcile,
+and a threshold eviction. The rules are stated and consistent, and each was paid for by a real bug;
+the shape is not obviously wrong, but it may still be larger than the problem needs. *Settling
+that*: a reduction that keeps every rule of §4.3 true while removing a writer or a lane.
+
+What it costs, though, is not the part count — it is **the delay from start to a usable tool set**.
+The reconcile runs in the background so that a plugin start never waits on external servers, which
+means every session opens inside a window where the builtins are present and the external tools are
+not; a call in that window fails, and the only signal that it has closed is one line
+([§5.5](#55-the-mcp-gateway)). The startup-sync budget bounds that wait rather than removing it
+([§4.7](#47-timeouts-and-cadences)). *Settling it*: a measurement of start → usable, and whether the
+mirrors that gate it can be shortened or overlapped.
+
+The **runtime** half is a different question — verification rather than design. Whether the three
+sources stay in step across a live session's transitions — a config edit, a server going down and
+coming back, a load, an unload, an eviction — has not been established: each transition has a written
+rule, and what is missing is the exercise that drives them in sequence against a live gateway and
+checks that the three agree once it settles. *Settling it*: that exercise.
 
 ---
 
