@@ -270,13 +270,16 @@ class ToolCallWidget(VerticalScroll):
         # Status text
         content = content + _lit("  ") + _lit(label_text, style=color)
 
-        # Iteration counter (e.g. "1/10") — hidden when iterations are
-        # uncapped (max_iterations = 0 means no limit).
-        if self._iteration > 0 and self._max_iterations > 0:
-            content = content + _lit(
-                f"  ({self._iteration}/{self._max_iterations})",
-                style="#484f58",
+        # Iteration counter — "1/10" when capped, a bare "1" when the cap
+        # is off (max_iterations = 0 means no limit), so the caller still
+        # sees the turn advancing.  Hidden only before the first iteration.
+        if self._iteration > 0:
+            counter = (
+                f"{self._iteration}/{self._max_iterations}"
+                if self._max_iterations > 0
+                else f"{self._iteration}"
             )
+            content = content + _lit(f"  ({counter})", style="#484f58")
 
         return content
 

@@ -212,6 +212,15 @@ class TestToolCallWidget:
         text = content.plain
         assert "1/10" in text
 
+    def test_header_line_iteration_uncapped_shows_bare_count(self):
+        """max_iterations=0 (no cap) still shows the iteration number,
+        without the denominator."""
+        w = _make_widget(_iteration=2, _max_iterations=0)
+        content = w._header_line()
+        text = content.plain
+        assert "(2)" in text
+        assert "2/0" not in text
+
     # ── Detail block ──────────────────────────────────────────────
 
     def test_detail_block_with_result(self):
