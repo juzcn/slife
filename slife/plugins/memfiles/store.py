@@ -334,8 +334,57 @@ class MemfilesStore(VecStoreLifecycleMixin):
         self._write_lock = asyncio.Lock()
 
     # ── lifecycle ─────────────────────────────────────────────────
-    # ``setup`` / ``reconfigure_for_embedding`` / ``_run_schema`` /
-    # ``_maybe_migrate_vec_tables`` come from VecStoreLifecycleMixin.
+    # ``reconfigure_for_embedding`` / ``_run_schema`` / ``_maybe_migrate_vec_tables``
+    # come from VecStoreLifecycleMixin; ``setup`` is extended below.
+
+    async def setup(
+        self,
+        embedding_dim: int = DEFAULT_EMBEDDING_DIM,
+        embedding_model: str = "",
+    ) -> None:
+        """Establish the store, refusing a cabinet from before the one corpus.
+
+        The check runs BEFORE the schema because the schema is what fails: it
+        creates a view over columns an old database does not have, and the
+        error that surfaces is ``no such column: summary`` — which says nothing
+        about what to do.  This says it instead.
+        """
+        await self._refuse_pre_one_corpus_db()
+        await super().setup(embedding_dim, embedding_model)
+
+    async def _refuse_pre_one_corpus_db(self) -> None:
+        """Name a stale cabinet rather than let the schema fail cryptically.
+
+        There is no migration layer (a deliberate project rule), so an old
+        database is deleted and rebuilt.  That is NOT done for you here: the
+        markdown mirrors and the saved files survive a rebuild, but the
+        scheduled tasks and their run history live in this database and nowhere
+        else — so the deletion is the user's, and this names it precisely,
+        including what would be lost.
+        """
+        if not self._db_path.exists():
+            return
+        conn = await aiosqlite.connect(str(self._db_path))
+        try:
+            cursor = await conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='notes'",
+            )
+            if await cursor.fetchone() is None:
+                return  # empty or brand-new — the schema will build it
+            cursor = await conn.execute("PRAGMA table_info(notes)")
+            columns = {row[1] for row in await cursor.fetchall()}
+        finally:
+            await conn.close()
+        if "summary" in columns:
+            return
+        raise RuntimeError(
+            f"this cabinet predates the one-corpus index (its notes have no "
+            f"summary column) and there is no migration layer — delete "
+            f"{self._db_path} and it rebuilds on the next start. The notes, "
+            f"diary and reports are mirrored as markdown and the saved files "
+            f"are on disk, so only the scheduled tasks and their run history "
+            f"would be lost: copy those out first if you need them."
+        )
 
     @property
     def _c(self):

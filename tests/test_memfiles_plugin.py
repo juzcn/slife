@@ -20,6 +20,7 @@ import pytest; pytestmark = pytest.mark.unit
 import asyncio
 import json
 import re
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1340,6 +1341,48 @@ class TestMemfilesLifespan:
         store.close.assert_awaited_once()
 
 
+class TestStaleCabinet:
+    """A cabinet from before the one-corpus index is named, not guessed at.
+
+    There is no migration layer — a deliberate project rule — so an old database
+    is deleted and rebuilt.  The schema is what fails (it creates a view over
+    columns an old database does not have), and "no such column: summary" says
+    nothing about what to do, so the store refuses it up front with the path and
+    with what a rebuild costs."""
+
+    @pytest.mark.asyncio
+    async def test_a_pre_one_corpus_db_is_refused_with_the_path(self, tmp_path):
+        db = tmp_path / ".index.db"
+        old = sqlite3.connect(db)
+        # The shape this DB had before: no summary column on the kinds.
+        old.execute(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, subject TEXT NOT NULL "
+            "UNIQUE, content TEXT NOT NULL, tags TEXT DEFAULT '', "
+            "file_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        old.commit()
+        old.close()
+
+        store = MemfilesStore(db)
+        with pytest.raises(RuntimeError) as err:
+            await store.setup(embedding_dim=0, embedding_model="")
+        message = str(err.value)
+        assert str(db) in message, "it names the file to delete"
+        assert "scheduled tasks" in message, "and what a rebuild would cost"
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_or_current_db_is_left_alone(self, tmp_path):
+        # Nothing on disk: the schema builds it.
+        store = MemfilesStore(tmp_path / ".index.db")
+        await store.setup(embedding_dim=0, embedding_model="")
+        await store.upsert_note("Python", "asyncio", "")
+        await store.close()
+        # …and a second start over that same (now current) database is fine.
+        again = MemfilesStore(tmp_path / ".index.db")
+        await again.setup(embedding_dim=0, embedding_model="")
+        assert (await again.get_note("Python")) is not None
+        await again.close()
+
+
 class TestCabinetSummarize:
     """The cabinet's counterpart of ``turn_summarize``: annotate a saved row.
 
@@ -1371,7 +1414,7 @@ class TestCabinetSummarize:
             assert [h["id"] for h in await store.keyword_hits(
                 query="paper", kind="file", limit=20)] == ["file:1"]
             assert [h["id"] for h in await store.regex_hits(
-                pattern="paper\.pdf", limit=20)] == ["file:1"]
+                pattern=r"paper\.pdf", limit=20)] == ["file:1"]
 
             await store.summarize("file", "files/documents/paper.pdf",
                                   summary="a survey of retrieval", tags="nlp")
