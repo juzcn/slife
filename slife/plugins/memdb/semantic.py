@@ -64,13 +64,13 @@ def _backend_unavailable_reason(embedder: EmbeddingClient) -> str:
 class SemanticManager:
     """The semantic-search actor: gate + embedder + event-driven drainer.
 
-    Shared by the memdb, memfiles and mcp_gateway plugins.  The diverging
-    bits — how the embedder is built (memdb/memfiles read the ``embeddings``
-    config; the gateway takes the connecting host's endpoint), how the store
-    records a model change, and how one document is embedded — are hook
-    methods (:meth:`_new_embedder`, :meth:`_on_model_selected`,
-    :meth:`_embed_doc`, :meth:`_start_enabled`) overridden by subclasses.
-    The gate, drain loop, no-progress bound and status readers are shared.
+    memdb and memfiles each construct one against their own store, so the two
+    plugins' gates are independent; the host's tool catalog SUBCLASSES it
+    (``slife/tools/semantic.py``) for the index the whole process shares.  The
+    diverging bits — how the embedder is built, how the store records a model
+    change, what an unavailable backend is called — are the hook methods
+    below; the gate, drain loop, no-progress bound and status readers are
+    shared.
     """
 
     def __init__(self, store, config_path: str | None = None):
@@ -87,10 +87,10 @@ class SemanticManager:
         self._write_lock = asyncio.Lock()  # serializes index writes
         self._no_progress = 0
 
-    # ── plugin hook points (overridden by subclasses) ────────────────
-    # ``Any`` return/param on these: each plugin has its OWN structurally
-    # identical EmbeddingClient class (memdb vs gateway), and a subclass
-    # passing its own must not trip type checkers.
+    # ── hook points (the catalog's manager overrides them) ───────────
+    # ``Any`` return/param on the embedder ones: the catalog carries its own
+    # EmbeddingClient class (and the plugins may too), so passing one must not
+    # trip type checkers.
 
     def _new_embedder(self) -> Any:
         """Build the embedder for this plugin's config shape."""
@@ -104,10 +104,9 @@ class SemanticManager:
         stops being reachable: dropping the last reference left its connection
         pool open until the GC got to it, so a reload stacked a second pool
         beside the first.  Closing is safe for anything still holding the old
-        embedder — the client is rebuilt lazily on the next call.  Only the
-        catalog's host-side embedder exposes ``close()`` (the memdb/gateway
-        ones own an SDK client with no such method), so a missing one is
-        nothing to close.
+        embedder — the client is rebuilt lazily on the next call.  The catalog's
+        host-side embedder exposes ``close()``; the memdb/memfiles one owns an
+        SDK client with no such method, so a missing one is nothing to close.
         """
         previous, self._embedder = self._embedder, embedder
         if previous is None:
@@ -126,8 +125,9 @@ class SemanticManager:
         return bool(cfg and cfg.get("enabled", True))
 
     async def _on_model_selected(self, embedder: Any) -> None:
-        """Apply a model identity to the store (memdb migrates vec0 in place;
-        the gateway drops stale vectors via its meta/drop contract)."""
+        """Apply a model identity to the store.  memdb/memfiles migrate their
+        vec0 tables in place; the catalog drops stale vectors via its
+        ``meta``/``drop`` contract."""
         model_id = f"{embedder.backend}:{embedder._model}"
         await self._store.reconfigure_for_embedding(
             embedding_dim=embedder.dimension,
@@ -211,14 +211,20 @@ class SemanticManager:
             await self._set_state("loading")
 
             embedder = self._new_embedder()
+            # Adopted before it is judged usable, so the embedder every status
+            # reader sees is the one the CURRENT config names — including on a
+            # reload that landed on a dead endpoint or a missing key.  Leaving
+            # the previous one in place reported its model and dimension as
+            # live beside a state of "disabled", which is two answers to one
+            # question.
+            await self._swap_embedder(embedder)
             if not embedder.available:
                 await self._set_state("disabled", self._unavailable_reason(embedder))
                 return self._status(
-                    status="degraded", embedder=embedder,
+                    status="degraded",
                     message="Embedding backend unavailable — keyword search still works.",
                 )
 
-            await self._swap_embedder(embedder)
             if not await embedder.load():
                 await self._set_state("stalled", "embedding model failed to load")
                 return self._status(
@@ -277,9 +283,10 @@ class SemanticManager:
 
     @property
     def embedder(self) -> Any:
-        """The active embedder.  ``Any`` like the hooks above — memdb and the
-        gateway each carry their own structurally identical EmbeddingClient,
-        so status readers must not trip on either."""
+        """The active embedder — the one the current config names, whether or
+        not it turned out to be usable.  ``Any`` like the hooks above, because
+        the catalog's manager carries its own EmbeddingClient class, so a
+        status reader must not trip on it."""
         return self._embedder
 
     @property

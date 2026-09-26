@@ -8,10 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.conftest import dump_config, load_config_text
+from tests.conftest import dump_config
 from slife.plugins.memdb.embedding_config import (
     read_embedding_config,
-    write_embedding_config,
     get_active_endpoint,
     make_check_report,
 )
@@ -93,30 +92,6 @@ class TestReadEmbeddingConfig:
     def test_parse_error(self, mock_config_file):
         with patch.object(Path, "read_text", return_value="key: [unclosed"):
             assert read_embedding_config() is None
-
-
-# ── write_embedding_config ────────────────────────────────────────────
-
-
-class TestWriteEmbeddingConfig:
-    def test_creates_embeddings_section_if_missing(self, mock_config_file):
-        mock_config_file["content"] = '{"tools": []}'
-        cfg = _emb_config(providers={"p1": {"base_url": "x"}}, active="p1")
-        write_embedding_config(cfg)
-
-        raw = load_config_text(mock_config_file["content"])
-        assert "embeddings" in raw
-        assert raw["embeddings"] == cfg
-
-    def test_overwrites_existing_embeddings(self, mock_config_file):
-        mock_config_file["content"] = dump_config({
-            "embeddings": {"providers": {"old": {}}, "active_model": "old"},
-        })
-        cfg = _emb_config(providers={"new": {"base_url": "y"}}, active="new")
-        write_embedding_config(cfg)
-
-        raw = load_config_text(mock_config_file["content"])
-        assert raw["embeddings"] == cfg
 
 
 # ── _active_endpoint / get_active_endpoint ────────────────────────────

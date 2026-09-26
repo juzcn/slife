@@ -229,7 +229,7 @@ def config_read_modify_write(path: Path):
     write that follows the read is the only one in flight (F8).
 
     SYNCHRONOUS, for the callers that are synchronous functions
-    (``switch_model``, the gateway's config helpers, ``write_embedding_config``).
+    (``switch_model``, the gateway's config helpers).
     An ``async def`` caller with an await inside the block must use
     :func:`config_write_locked` instead — that path acquires off the event
     loop, which this one cannot do.

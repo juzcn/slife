@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 from slife.plugins.memdb.search import SearchLegs, run_search
 
 import slife.plugins.memfiles.server as plugin
-from slife.plugins.memfiles.store import MemfilesStore
+from slife.plugins.memfiles.store import CABINET_BROWSE_TOOLS, MemfilesStore
 from slife.timeutil import InvalidTimeBound
 
 
@@ -61,7 +61,7 @@ def _fake_legs(**overrides) -> SearchLegs:
         keyword=AsyncMock(return_value=[dict(_HIT)]),
         semantic=AsyncMock(return_value=[dict(_HIT)]),
         regex=AsyncMock(return_value=[dict(_HIT)]),
-        key_field="id", noun="entries", browse="note_list",
+        key_field="id", noun="entries", browse=CABINET_BROWSE_TOOLS,
     )
     for name, value in overrides.items():
         setattr(legs, name, value)
@@ -292,6 +292,20 @@ class TestFileSave:
             await plugin.file_save(paths=[str(f)], summary="a doc about pdfs")
         manager.on_saved.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_a_save_without_a_summary_wakes_it_too(self, tmp_path):
+        """A file's body is its title, its paths and its summary, so it is
+        embeddable from the save — waking only when a summary was given left
+        the file unindexed until the next wake of any kind."""
+        f = tmp_path / "a.pdf"
+        f.write_bytes(b"pdf")
+        store, _ = _fake_store(tmp_path / "files")
+        manager = MagicMock()
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
+             patch.object(plugin, "_manager", manager):
+            await plugin.file_save(paths=[str(f)])
+        manager.on_saved.assert_called_once()
+
 
 class TestUrlSave:
     @pytest.mark.asyncio
@@ -452,10 +466,30 @@ class TestCabinetSearch:
                     out = await plugin.cabinet_search(query=q, mode=mode)
                     assert out.startswith("Error"), (mode, q)
                     assert "must not be empty" in out
-                    # And it names where browsing actually lives.
-                    assert "note_list" in out
+                    # And it names where browsing actually lives — all four
+                    # kind lists, since there is no single cabinet browse.
+                    for tool in ("note_list", "diary_list", "file_list",
+                                 "report_list"):
+                        assert tool in out, (mode, q, tool)
         legs.keyword.assert_not_awaited()
         legs.regex.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_browse_pointer_names_real_tools(self, tmp_path):
+        """The refusal's pointer is the corpus's own ``browse`` field, so the
+        store must fill it — the fake legs in this file supply it themselves,
+        which is exactly how "use list" (a tool that does not exist) survived
+        every search test."""
+        store = await _real_store(tmp_path)
+        try:
+            assert store.search_legs().browse == CABINET_BROWSE_TOOLS
+            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+                out = await plugin.cabinet_search(query="")
+            assert "cabinet_list" not in out
+            for tool in ("note_list", "diary_list", "file_list", "report_list"):
+                assert tool in out, tool
+        finally:
+            await store.close()
 
     @pytest.mark.asyncio
     async def test_hybrid_without_manager_degrades_to_fts5(self, tmp_path):
@@ -500,6 +534,24 @@ class TestCabinetSearch:
         assert json.loads(out)["mode"] == "fts5"
         manager.embedder.embed_one.assert_not_awaited()
         legs.semantic.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_silent_gate_still_explains_the_degradation(self, tmp_path):
+        """A manager that exists but has not come up yet carries an EMPTY
+        ``reason``.  Keying the fallback on None alone answered that with an
+        empty hint — the silent fallback the degradation prose exists to
+        prevent."""
+        store, legs = _fake_store(tmp_path / "files")
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
+             patch.object(plugin, "_manager", _stub_manager(reason="")):
+            out = await plugin.cabinet_search(query="python", mode="hybrid")
+
+        data = json.loads(out)
+        assert data["mode"] == "fts5"
+        assert data["hint"] == (
+            "hybrid degraded to fts5 — embedding backend unavailable"
+        )
+        assert data["results"], "the keyword leg still answered"
 
     @pytest.mark.asyncio
     async def test_hybrid_with_ready_manager_embeds_query(self, tmp_path):
@@ -1052,6 +1104,28 @@ class TestMemfilesStore:
                 category="documents", until="2020-01-01"))["total"] == 0
             assert (await store.file_list(
                 category="documents", since="2020-01-01"))["total"] == 1
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_file_list_category_matches_literally(self, tmp_path):
+        """``_slugify`` keeps ``_`` (a word character), and ``_`` is a LIKE
+        wildcard — so an unescaped pattern listed the files of every
+        slug-adjacent category beside the one that was asked for."""
+        store = await _real_store(tmp_path)
+        try:
+            await store.add_file(title="a", original_path="/x/a",
+                                 saved_path="files/my_docs/a.txt",
+                                 mime="txt", size=1, tags="", summary="")
+            await store.add_file(title="b", original_path="/x/b",
+                                 saved_path="files/my-docs/b.txt",
+                                 mime="txt", size=1, tags="", summary="")
+
+            for category, expected in (("my_docs", "files/my_docs/a.txt"),
+                                       ("my-docs", "files/my-docs/b.txt")):
+                data = await store.file_list(category=category)
+                assert data["total"] == 1, category
+                assert data["entries"][0]["saved_path"] == expected
         finally:
             await store.close()
 

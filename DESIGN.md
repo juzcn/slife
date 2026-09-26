@@ -1605,12 +1605,13 @@ pools are what sharefile's tunnel health *flags*, for the opposite reason: inter
 the tunnel's control connection.)
 
 **A file's bytes stay bytes.** The cabinet stores four kinds of document but only one of them can be
-binary, and nothing in the index ever holds a file's bytes: what is indexed and embedded is the
-LLM-written `summary`, which is text. So `file_read` returns a file's TEXT or refuses — a PDF, an
-image or an archive is answered as `Error: … is not text (<mime>, <n> bytes)` with the path to the
-bytes, rather than decoded with `errors="replace"` into a page of replacement characters. That
-silent decode used to *succeed*, which made a read of a file with no text in it indistinguishable
-from a read of one that is genuinely full of gibberish.
+binary, and nothing in the index ever holds a file's bytes: what is indexed and embedded is text —
+the row's name and paths, plus the `summary` once a model writes one — never the bytes themselves.
+So `file_read` returns a file's TEXT or refuses — a PDF, an image or an archive is answered as
+`Error: … is not text (<mime>, <n> bytes)` with the path to the bytes, rather than decoded with
+`errors="replace"` into a page of replacement characters. That silent decode used to *succeed*, which
+made a read of a file with no text in it indistinguishable from a read of one that is genuinely full
+of gibberish.
 
 All save tools return the saved local path and never auto-publish, so nothing is registered in any
 token registry as a side effect of saving. Publishing is always the model's explicit choice, through

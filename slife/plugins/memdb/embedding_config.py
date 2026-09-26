@@ -1,24 +1,20 @@
-"""Embedding configuration helpers — read, write, report.
+"""Embedding configuration readers — report what the ``embeddings`` section says.
 
-Manages the top-level ``embeddings`` section of ``slife.yaml`` — the
+Reads the top-level ``embeddings`` section of ``slife.yaml`` — the
 first-class, shared config for memdb + memfiles semantic search.  Each
 provider is **one OpenAI-compatible endpoint**: ``base_url`` + ``api_key``
 and a single ``model`` (the id sent on ``/v1/embeddings``).
 ``active_model`` names the active provider.  The vector dimension is never
 configured — it is discovered from the endpoint at runtime.  The embedder
-itself is owned by ``SemanticManager`` (semantic.py); this module never
-mutates it.
+itself is owned by ``SemanticManager`` (semantic.py) and the section is
+WRITTEN by the host-side ``embeddings_*`` tools (``slife/tools/embeddings.py``);
+this module only reads it, and never mutates either.
 """
 
 import logging
 
 from slife.paths import get_config_path
-from slife.tools._config_io import (
-    ConfigParseError,
-    config_read_modify_write,
-    read_config,
-    write_config,
-)
+from slife.tools._config_io import ConfigParseError, read_config
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +36,6 @@ def _read_raw() -> dict:
         return {}
 
 
-def _write_raw(raw: dict) -> None:
-    """Write the full slife.yaml dict."""
-    write_config(_CONFIG_PATH, raw)
-
-
 # ── Public API ────────────────────────────────────────────────────────
 
 
@@ -55,20 +46,6 @@ def read_embedding_config() -> dict | None:
     if not isinstance(emb, dict):
         return None
     return dict(emb)
-
-
-def write_embedding_config(cfg: dict) -> None:
-    """Write (overwrite) the top-level *embeddings* section with *cfg*.
-
-    Runs in the memdb CHILD process while host-side config tools RMW the same
-    slife.yaml — the read→mutate→write window is cross-process locked so a
-    concurrent host write can't be clobbered (F8).
-    """
-    with config_read_modify_write(_CONFIG_PATH):
-        raw = _read_raw()
-        raw["embeddings"] = cfg
-        _write_raw(raw)
-    logger.info("embeddings_config_written keys=%s", list(cfg.keys()))
 
 
 def _active_endpoint(cfg: dict) -> dict:

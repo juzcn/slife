@@ -612,6 +612,21 @@ class TestScheduledServerTools:
             await store.close()
 
     @pytest.mark.asyncio
+    async def test_report_save_wakes_the_drainer(self, tmp_path):
+        """A report is embedded from its content, and re-saving one drops its
+        chunks — the drainer is what puts them back, and it only drains when
+        woken."""
+        store = await _real_store(tmp_path)
+        manager = MagicMock()
+        try:
+            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
+                 patch.object(plugin, "_manager", manager):
+                await plugin.report_save(title="Standalone", content="solo")
+        finally:
+            await store.close()
+        manager.on_saved.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_report_save_standalone_no_task(self, tmp_path):
         """A report without a task is a standalone document — no run linked
         (the fresh test DB has a nullable reports.task_id)."""

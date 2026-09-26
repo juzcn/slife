@@ -438,6 +438,11 @@ async def __memory_turn_recall(
                     limit=policy.limit, since=since, until=until,
                     newest_first=anchor != "oldest",
                 )
+                # Re-sliced to the policy's own cap: ``turn_list`` clamps a
+                # limit below 1 up to 20, so a configured ``recall_limit`` of 0
+                # ("select nothing") would otherwise be answered with twenty
+                # turns.  The other branch cannot need this — ``gate_turns``
+                # applies the cap itself.
                 ranked = [h["rowid"] for h in hits][: policy.limit]
                 fit = fit_window
             else:
@@ -612,8 +617,9 @@ async def turn_search(
         # reports it as "no matches").
         return f"Error: {e}"
     except ValueError as e:
-        # A bad mode or an empty query — a subclass of the bound error above,
-        # so it must be caught after it to keep the two messages distinct.
+        # A bad mode or an empty query.  ``InvalidTimeBound`` IS a ValueError,
+        # so the specific one above must be caught first to keep the two
+        # messages distinct.
         return f"Error: {e}"
     except re.error as e:
         # grep is a regex: an unusable pattern is the caller's to fix, and

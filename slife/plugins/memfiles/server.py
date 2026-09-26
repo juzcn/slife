@@ -23,9 +23,10 @@ memdb's SemanticManager and RRF merge); ``file_read`` re-opens a saved file.
 
 LLM-visible tools: ``note_save``, ``diary_save``, ``file_save``, ``url_save``,
 ``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``file_list``,
-``cabinet_search``, ``file_read``, ``report_save``, ``report_list``,
-``report_read``. Semantic-index status goes through the plugin's internal
-``__check`` (probed by the harness's ``system_health``), not an LLM tool.
+``cabinet_search``, ``cabinet_summarize``, ``file_read``, ``report_save``,
+``report_list``, ``report_read``. Semantic-index status goes through the
+plugin's internal ``__check`` (probed by the harness's ``system_health``), not
+an LLM tool.
 The scheduled-task tools (``scheduled_task_*`` / ``scheduled_run_*``) are builtin
 in ``slife/tools/schedule.py`` (category "Schedule"); this plugin only exposes
 the ``__scheduled_*`` data layer they call over the memfiles MCP client.
@@ -380,7 +381,7 @@ async def file_save(
     files_dir = mem_dir / "files"
     files_dir.mkdir(parents=True, exist_ok=True)
     results = []
-    embedded = False
+    saved_any = False
     async with _save_lock:
         for p in paths:
             src = Path(p)
@@ -406,10 +407,14 @@ async def file_save(
                 mime=mime, size=src.stat().st_size, tags=tags or "",
                 summary=summary,
             )
-            if summary:
-                embedded = True
+            saved_any = True
             results.append(_saved_result(saved))
-    if _manager is not None and embedded:
+    # Every saved file is new work for the index: a file's body is its title,
+    # its paths and its summary, so it is embeddable from the save — a summary
+    # only makes the text it is embedded from richer (see the store's
+    # ``count_unembedded``).  Waking only when one was given left a
+    # summary-less file unembedded until the next wake of any kind.
+    if _manager is not None and saved_any:
         _manager.on_saved()
     return "\n".join(results)
 
@@ -548,7 +553,9 @@ async def url_save(
             title=display_title, original_path=url, saved_path=rel,
             mime=mime, size=len(raw), tags=tags or "", summary=summary,
         )
-    if _manager is not None and summary:
+    # Woken for the same reason as file_save's: the row is embeddable from the
+    # save, summary or not.
+    if _manager is not None:
         _manager.on_saved()
     return _saved_result(saved)
 
@@ -597,9 +604,9 @@ async def cabinet_search(
         # reports it as "no matches").
         return f"Error: {e}"
     except ValueError as e:
-        # A bad mode, a bad kind or an empty query — a subclass of the bound
-        # error above, so it must be caught after it to keep the two messages
-        # distinct.
+        # A bad mode, a bad kind or an empty query.  ``InvalidTimeBound`` IS a
+        # ValueError, so the specific one above must be caught first to keep
+        # the two messages distinct.
         return f"Error: {e}"
     except re.error as e:
         # grep is a regex: an unusable pattern is the caller's to fix, and
@@ -624,7 +631,7 @@ async def cabinet_search(
     description=(
         "Annotate a saved cabinet row so it becomes findable: tags for any "
         "kind, plus a summary for a file (the text its semantic search is "
-        "built from, so a file saved without one enters semantic search here)."
+        "built from, so writing one re-indexes the file with it)."
     ),
 )
 async def cabinet_summarize(
@@ -636,8 +643,8 @@ async def cabinet_summarize(
         kind: note | diary | file | report.
         key: The row's key — a note's subject, a diary's date, a file's
             saved_path, a report's report_id (from any list or search result).
-        summary: File summary — the text its vector is built from. Omit to
-            leave it alone.
+        summary: File summary — part of the text the file's vector is built
+            from, so the file is re-embedded with it. Omit to leave it alone.
         tags: Comma-separated tags. Omit to leave them alone.
     """
     store = await _ensure_store()
@@ -1197,6 +1204,11 @@ async def report_save(
         )
     except ValueError as e:
         return f"Error: {e}"
+    # A report is embedded from its content, and a re-save of the same one
+    # dropped its chunks (``upsert_report``) — the drainer is what puts them
+    # back, and it only drains when woken.
+    if _manager is not None:
+        _manager.on_saved()
     return _saved_result(store.mem_dir / info["file_path"])
 
 

@@ -51,6 +51,7 @@ from slife.plugins.memdb.store import (
     DEFAULT_EMBEDDING_DIM,
     VecStoreLifecycleMixin,
     _contains_cjk,
+    _like_escape,
     _like_terms,
     _serialize_f32,
     _to_fts5_query,
@@ -103,30 +104,8 @@ def _category_from_path(saved_path: str) -> str:
     return ""
 
 
-#: Per-kind specs — maps a kind to its tables/columns in the generic doc shape.
-#:
-#: ``time_col`` is the kind's own TIME AXIS: the single column every time filter
-#: on that kind measures against — the list window AND the search window, and
-#: the column the list is ordered by.  It lives here, once per kind, because a
-#: bound that meant one thing arriving through ``cabinet_search(kind="diary")``
-#: and another through ``diary_list`` is precisely how "last month" came to have
-#: two answers.
-#:
-#: Which column that is follows from whether the CONTENT has a date:
-#: - ``diary`` is date-KEYED — ``date`` is UNIQUE and names the file on disk
-#:   (``diary/<date>.md``) — so its date is content, not bookkeeping;
-#: - a ``note`` has no date of its own but is a living document, so its axis is
-#:   ``updated_at``, which is also the order ``note_list`` shows;
-#: - a ``file`` is written once and never touched, so ``created_at`` IS its date;
-#: - a ``report`` likewise.  Its ``period_start``/``period_end`` say what the
-#:   report COVERS — a different dimension from when it exists, and nullable —
-#:   so the axis is ``created_at``.
-#:
-#: ``time_granularity`` follows the column: a date-only column compares in date
-#: terms (a bare ``until`` already includes that whole day, no +1-day advance),
-#: a timestamp column in datetime terms.
-#: Per-kind specs — what a kind is called, where its columns live, and its
-#: own TIME AXIS.  The kinds' *searchable* text is not here: that is normalized
+#: Per-kind specs — what a kind is called, where its rows live, and its own
+#: TIME AXIS.  The kinds' *searchable* text is not here: that is normalized
 #: once, in the ``cabinet_docs`` view and the ``cabinet_fts`` triggers, which is
 #: what makes the four kinds ONE corpus (see the schema file).
 #:
@@ -156,32 +135,24 @@ _KIND_SPECS = {
     "note": {
         "table": "notes",
         "key_col": "subject",       # what the read tools take as the key
-        "text_col": "content",      # the text the corpus calls "body"
-        "file_col": "file_path",    # the md twin of this row
         "time_col": "updated_at",
         "time_granularity": "datetime",
     },
     "diary": {
         "table": "diary",
         "key_col": "date",
-        "text_col": "content",
-        "file_col": "file_path",
         "time_col": "date",
         "time_granularity": "date",
     },
     "file": {
         "table": "files",
         "key_col": "saved_path",
-        "text_col": "summary",
-        "file_col": "saved_path",   # for a file the row's key IS its path
         "time_col": "created_at",
         "time_granularity": "datetime",
     },
     "report": {
         "table": "reports",
         "key_col": "title",
-        "text_col": "content",
-        "file_col": "file_path",
         "time_col": "created_at",
         "time_granularity": "datetime",
     },
@@ -193,6 +164,12 @@ _KIND_NAMES = ("note", "diary", "file", "report")
 #: fallback: the union of what the four kinds' per-kind indexes used to hold
 #: (a note's subject, a file's original path, …), normalized by the view.
 _LIKE_COLS = ("title", "body", "tags", "source", "summary")
+
+#: What a caller is told to call instead when it searches the cabinet with an
+#: empty query — ``SearchLegs.browse``, which the shared refusal names.  Four
+#: tools rather than one: the cabinet is browsed per kind, and a single
+#: "cabinet_list" does not exist.
+CABINET_BROWSE_TOOLS = "note_list / diary_list / file_list / report_list"
 
 
 def _kind_window(
@@ -985,8 +962,12 @@ class MemfilesStore(VecStoreLifecycleMixin):
         clauses: list[str] = []
         params: list[str] = []
         if category.strip():
-            clauses.append("saved_path LIKE ?")
-            params.append(f"files/{_slugify(category)}/%")
+            # ``_slugify`` keeps ``_`` (it is a word character), and ``_`` is a
+            # LIKE wildcard that would match any single character — so
+            # ``category="my_docs"`` also listed the files under ``my-docs``.
+            # Escaped like every other LIKE predicate here.
+            clauses.append("saved_path LIKE ? ESCAPE '\\'")
+            params.append(f"files/{_like_escape(_slugify(category))}/%")
         w_clauses, w_params = _list_window(_KIND_SPECS["file"], since, until)
         clauses += w_clauses
         params += w_params
@@ -1098,14 +1079,13 @@ class MemfilesStore(VecStoreLifecycleMixin):
                 f"SET {', '.join(sets)} WHERE id = ?",
                 params,
             )
-            # The text the vector was built from changed, so the vector is
-            # stale — dropping the chunks is what puts the row back in the
-            # drainer's unembedded queue (same path a re-save takes).
             if summary is not None and kind == "file":
-                # A file's vector was built from the old summary, so it is
-                # stale; dropping the chunks puts the row back in the drainer's
-                # queue.  For every other kind the vector is built from the
-                # content, which this did not touch.
+                # A file's vector is built from its body, which includes the
+                # summary, so the new text makes the old vector stale —
+                # dropping the chunks is what puts the row back in the
+                # drainer's unembedded queue (the same path a re-save takes).
+                # For every other kind the vector is built from the content,
+                # which this did not touch.
                 await self._clear_doc_chunks(kind, row["id"])
             await self._c.commit()
         return {
@@ -1146,13 +1126,14 @@ class MemfilesStore(VecStoreLifecycleMixin):
         # be embedded, so the count is 0 (matches _clear_doc_chunks' guard).
         if self._embedding_dim <= 0:
             return 0
-        # The vector is built from ``body``: a document's own text, and a
-        # file's summary — the only text a file has.  So a file saved without
-        # one has nothing to embed and is skipped, which is why its identity
-        # (title, path) is reachable by the OTHER two legs instead: keyword and
-        # grep both read a row's name and place, and neither needs a summary.
-        # The counting route and the reading route below must share this rule
-        # or the gate opens on a row the drainer cannot embed.
+        # The vector is built from ``body``: a note/diary/report's own text, and
+        # for a file the text that stands in for the content it has none of —
+        # its title, source path and saved path, plus the summary once one is
+        # written (see the view in the schema file).  So a file is embeddable
+        # from the moment it is saved, summary or not; writing one re-queues it
+        # with the richer text.  The counting route and the reading route below
+        # must share this rule or the gate opens on a row the drainer cannot
+        # embed.
         cursor = await self._c.execute(
             "SELECT COUNT(*) FROM cabinet_docs d "
             "WHERE d.body != '' "
@@ -1238,6 +1219,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
             key_field="id",
             normalize=_normalize_hits,
             noun="entries",
+            browse=CABINET_BROWSE_TOOLS,
         )
 
     async def keyword_hits(

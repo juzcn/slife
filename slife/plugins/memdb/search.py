@@ -271,7 +271,11 @@ def hybrid_hint(result: HybridResult, noun: str = "turns") -> str:
                     "failed (API error or timeout). Check the API key, or "
                     "switch to a local model")
         else:
-            hint = result.reason if result.reason is not None else (
+            # ``reason`` is "" both before the manager has started and when a
+            # transition had nothing to say, so the fallback is on emptiness,
+            # not on None — an unexplained degradation is exactly the silent
+            # fallback this line exists to prevent.
+            hint = result.reason or (
                 "hybrid degraded to fts5 — embedding backend unavailable")
         if not result.hits:
             hint += " — no keyword (fts5) matches either"

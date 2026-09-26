@@ -459,8 +459,9 @@ class EmbeddingClient:
         There is no local model to materialise — the endpoint is the model.
         But *which* model it serves (and therefore the vector width) is the
         endpoint's fact, not the config's: discover it from ``/v1/models``
-        and pin the width before the vec0 table uses it.  The semantic gate
-        calls this from every search/check, so it is idempotent.
+        and pin the width before the vec0 table uses it.  Called by
+        ``SemanticManager.enable`` — the one place a model is adopted — so it
+        must stay safe to run again on every re-enable.
         """
         if self._backend != "api":
             return False

@@ -50,9 +50,11 @@ _TURN_COLUMNS = """rowid, user_message, messages, summary, tags,
 def _normalise_turns(rowids) -> list[int]:
     """Coerce a sequence of ids to a clean ordered list.
 
-    Positive ints only, duplicates collapsed to their **first** position —
-    the one normalisation shared by the reader and the setter, so a stored
-    list and a read-back list are always the same shape.
+    Positive ints only — a turn id is a rowid, so anything else names no row
+    and would only make the list's length disagree with what it resolves to —
+    with duplicates collapsed to their **first** position.  The one
+    normalisation shared by the reader and the setter, so a stored list and a
+    read-back list are always the same shape.
     """
     turns: list[int] = []
     seen: set[int] = set()
@@ -61,7 +63,7 @@ def _normalise_turns(rowids) -> list[int]:
             rowid = int(item)
         except (TypeError, ValueError):
             continue
-        if rowid in seen:
+        if rowid <= 0 or rowid in seen:
             continue
         seen.add(rowid)
         turns.append(rowid)
@@ -350,8 +352,6 @@ class VecStoreLifecycleMixin:
         backend is configured (dim ≤ 0): there is nothing to size the table
         for yet, and the next start with a backend does the work.
         """
-        import re
-
         if self._embedding_dim <= 0:
             return
         cursor = await self._c.execute(
@@ -446,8 +446,6 @@ class VecStoreLifecycleMixin:
     @staticmethod
     def _vec_metric(create_sql: str) -> str:
         """The distance metric a vec0 CREATE declares (sqlite-vec's default is L2)."""
-        import re
-
         m = re.search(
             r"distance_metric\s*=\s*(\w+)", create_sql or "", re.IGNORECASE,
         )
@@ -817,13 +815,14 @@ class SessionStore(VecStoreLifecycleMixin):
 
         if query and query.strip():
             mode = mode.lower()
+            # FTS5 unicode61 cannot match a whole-sentence CJK query, so a CJK
+            # query counts through the LIKE fallback ``search_keyword`` uses —
+            # otherwise count/search disagree (turn_count=0 while the recall
+            # returns hits).  The envelope still says ``fts5``: which backend
+            # answered is the store's business, and ``turn_search`` answers the
+            # same query with the same word.  (An explicit ``grep`` is the
+            # regex scan of the branch above, and it returns from there.)
             if mode == "fts5" and _contains_cjk(query):
-                # FTS5 unicode61 cannot match a whole-sentence CJK query —
-                # search_keyword routes CJK to the LIKE fallback, so the count
-                # must do the same or count/search disagree (turn_count=0
-                # while the recall returns hits).
-                mode = "grep"
-            if mode == "grep":
                 # The clause `search_keyword`'s LIKE fallback builds — escaping,
                 # word splitting AND the column set all come from `_like_terms`,
                 # so the count cannot disagree with the search about what
@@ -1621,7 +1620,7 @@ def _split_chunks_to_token_limit(chunks: list[str], max_tokens: int) -> list[str
         return chunks
     out: list[str] = []
     for c in chunks:
-        char_limit = _char_limit_for_tokens(max_tokens, c)
+        char_limit = _char_limit_for_tokens(max_tokens)
         while len(c) > char_limit:
             out.append(c[:char_limit])
             c = c[char_limit:]
@@ -1630,7 +1629,7 @@ def _split_chunks_to_token_limit(chunks: list[str], max_tokens: int) -> list[str
     return out
 
 
-def _char_limit_for_tokens(max_tokens: int, text: str) -> int:
+def _char_limit_for_tokens(max_tokens: int) -> int:
     """Chars that fit in *max_tokens*, at the 1 char/token floor.
 
     The densest any BPE gets is ~1 char/token; a Latin run is ~4 chars/token
@@ -1644,8 +1643,6 @@ def _char_limit_for_tokens(max_tokens: int, text: str) -> int:
     caps paragraphs at ``CHUNK_SIZE_CHARS`` (well under any limit), so this
     budget only governs pathological single lines.
     """
-    if not text:
-        return max_tokens
     return max(1, max_tokens)
 
 

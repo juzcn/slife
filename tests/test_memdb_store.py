@@ -124,12 +124,10 @@ class TestSplitChunksToTokenLimit:
         assert "".join(out) == line  # nothing lost
 
     def test_char_limit_floors_density_at_one_char_per_token(self):
-        """The char budget never assumes a better density than 1 char/token,
-        so a piece cannot exceed the provider's real token limit no matter
-        how dense the text is."""
-        assert _char_limit_for_tokens(8192, '{"a":1}' * 2000) <= 8192
-        assert _char_limit_for_tokens(8192, "x" * 100) <= 8192
-        assert _char_limit_for_tokens(8192, "中文" * 100) <= 8192
+        """The char budget is the token budget itself — the density floor is
+        1 char/token, the densest any BPE gets — so a piece cannot exceed the
+        provider's real token limit however dense the text is."""
+        assert _char_limit_for_tokens(8192) == 8192
 
 
 class TestTurnTextForEmbedding:
