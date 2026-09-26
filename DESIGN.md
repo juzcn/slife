@@ -272,8 +272,10 @@ says is ever shown.
   in the footnotes the model can read there, and seeing them is what tells the model what it already
   has, so it does not ask to recall it again.
 - **What the instruction states**, in two parts. First the **decision**: what to keep of the turns in
-  hand (all of them, some by turn_id, or none), and — with the turn running on what is kept *plus*
-  what is recalled — recall's three conditions (a period, a query, a query within a period), together
+  hand — the turns this input is answered from: all of them, some by turn_id, or none, the rule being
+  the input's because clearing is only ever the explicit clear, so an input none of them carries is
+  cleared only where the instruction asks for it — and, with the turn running on what is kept *plus*
+  what is recalled, recall's three conditions (a period, a query, a query within a period), together
   with the one thing a model cannot read off the store: the context is bounded, so a recall answers
   with a selection and never with every turn its condition matched, and which part survives follows
   from the condition — a period is read from the end `anchor` names, a query is ranked by relevance

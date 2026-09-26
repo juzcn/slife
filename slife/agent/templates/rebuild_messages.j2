@@ -14,9 +14,11 @@ object means the turns in hand are enough for this turn.
 
 Part 1 — the decision
 
-What to keep of the turns in hand — "context": leave it out (or "keep") for
-all of them, set it to the turn_ids in the current context worth keeping for
-some, or to "clear" for none.
+What to keep of the turns in hand — "context": the turns this input is answered
+from. Leave it out (or "keep") for all of them, set it to the turn_ids in the
+current context worth keeping for some, or to "clear" for none — an input none
+of them carries is answered from memory or from nothing, and every turn kept is
+spent from the same window the recall is.
 
 What to recall from memory — "recall": leave it out for nothing, or fill it
 in for one condition — a period (since / until), a query, or a query within a
@@ -35,9 +37,10 @@ Part 2 — the cases
 The two fields are decided independently, and each case below takes one value
 of each.
 
-1. Keep the turns in hand, recall nothing — this turn reads on its own.
+1. Keep the turns in hand, recall nothing — the input is answered from what is
+in hand.
 
-  input Translate this paragraph into French
+  input What did we decide about the retries?
     → {}
 
 2. Keep part of them, recall nothing — the plan is in hand, the tool output
@@ -46,9 +49,10 @@ around it is not.
   input Let's go with the plan we just settled on
     → {"context": [31, 33]}
 
-3. Keep none of them, recall nothing.
+3. Keep none of them, recall nothing — the input uses nothing in hand, or says
+to drop it.
 
-  input Forget all that
+  input Translate this paragraph into French
     → {"context": "clear"}
 
 4. Keep them and recall a period — a range of time, and no topic.
@@ -88,3 +92,9 @@ conversation above, so carry it into the query.
 
   input What about the AI school?
     → {"recall": {"query": "CUEB AI school founded"}}
+
+11. Keep none and recall a query — nothing in hand carries this input, and the
+subject is one memory may.
+
+  input What about the alumni fund?
+    → {"context": "clear", "recall": {"query": "CUEB alumni fund"}}

@@ -604,9 +604,9 @@ class TestRecallInstruction:
         case behind it, would leave the model counting on its own.
 
         The count is taken from the cases themselves rather than written down:
-        the six combinations of the two fields are the first six, and the cases
-        for how a value is worded follow them, so adding one must not mean
-        editing this test as well."""
+        the cases are a list of worked replies, and one was appended for the
+        decision a lookup needs, so adding a case must not mean editing this
+        test as well."""
         from slife.agent.system_prompt import build_recall_instruction
 
         text = build_recall_instruction("x")
