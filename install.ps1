@@ -855,7 +855,7 @@ try {
         }
     }
 
-    # tools.yaml upgrade merge (DESIGNER_NOTES §8.5): a live config that
+    # tools.yaml upgrade merge (DESIGN.md §4.3): a live config that
     # predates the unified tool system may lack the new top-level sections
     # (tool_load).  The generic seed above only copies/versioned-copies the
     # file — never touch a live server list.  Here we APPEND the missing

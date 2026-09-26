@@ -1,6 +1,6 @@
 """slife-as-plugin (host server) tests — in-process ToolRegistry → MCP bridge.
 
-Covers the DESIGNER_NOTES §8 "turn slife to a plugin" surface:
+Covers the DESIGN.md §1 slife-as-plugin surface:
 - auto-discovered registry tools exposed under their bare names (NO
   hand-written @mcp.tool — the factory's Tool objects ARE the tool set);
 - harness/context-control tools excluded from the outward face;

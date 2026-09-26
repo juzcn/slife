@@ -918,7 +918,7 @@ class _HungTool:
 async def test_async_without_timeout_escapes_chain_bound(
     sample_model_config, history,
 ):
-    """Rule 1 (DESIGNER_NOTES): ``_async: true`` with NO ``_timeout`` runs
+    """Rule 1 (DESIGN.md §4.7): ``_async: true`` with NO ``_timeout`` runs
     the tool BARE — the chain default (loop tool_timeout / work.tool_budget)
     is deliberately NOT applied to background work.  The hung tool must still
     be running well past the 0.2s loop bound; capping a background call is
@@ -958,7 +958,7 @@ async def test_async_without_timeout_escapes_chain_bound(
 async def test_async_with_explicit_timeout_bounds(
     sample_model_config, history,
 ):
-    """Rule 2 (DESIGNER_NOTES): ``_async`` + a positive ``_timeout`` on a tool
+    """Rule 2 (DESIGN.md §4.7): ``_async`` + a positive ``_timeout`` on a tool
     WITHOUT a native ``timeout`` param wraps the background execution with
     wait_for(agent value) — the hung tool must finish (as an error result)
     within the bound."""
@@ -994,7 +994,7 @@ async def test_async_with_explicit_timeout_bounds(
 async def test_async_with_explicit_timeout_maps_to_native_arg(
     sample_model_config, history,
 ):
-    """Rule 2 (DESIGNER_NOTES): ``_async`` + a positive ``_timeout`` on a tool
+    """Rule 2 (DESIGN.md §4.7): ``_async`` + a positive ``_timeout`` on a tool
     WITH a native ``timeout`` parameter assigns the agent value to the
     ``timeout`` arg — the tool enforces it itself, no wait_for double timer."""
     from slife.tools.registry import ToolRegistry

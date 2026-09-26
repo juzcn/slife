@@ -3395,7 +3395,7 @@ class AgentService:
         logger.info("inbox_started")
 
         # slife-as-plugin — the in-process MCP server exposing the live
-        # ToolRegistry to external MCP consumers (DESIGNER_NOTES §8).  Main
+        # ToolRegistry to external MCP consumers (DESIGN.md §1).  Main
         # agent only; subagents are workers and never serve their own face.
         if self.caps.host_server:
             from slife.mcp.host_server import start_host_server

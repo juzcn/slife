@@ -14,8 +14,8 @@ none unloadable via ``_func_tool_unload``:
   (``_turn_prompt`` / ``_check_new_input`` / ``attach_image``).  These are
   the mechanism, not user-facing meta tools; they are protected so the
   threshold squeeze can never take away the class the loop drives every turn.
-- :data:`META_WHITELIST` — the 5 tool-system meta tools (DESIGNER_NOTES
-  §8.5 "系统元工具"): server management as TWO separate families — ``mcp_*``
+- :data:`META_WHITELIST` — the 5 tool-system meta tools (DESIGN.md §4.4):
+  server management as TWO separate families — ``mcp_*``
   and ``rest_api_*`` (a rest-api is semantically distinct today even though
   it rides the mcp-openapi-proxy gateway, and may drop it later) — plus the
   search/load surface and the ``_func_tool_unload`` unloader.
@@ -38,7 +38,7 @@ HARNESS_WHITELIST: frozenset[str] = frozenset({
     "attach_image",
 })
 
-#: The tool-system meta surface — DESIGNER_NOTES §8.5, minus the retired
+#: The tool-system meta surface — DESIGN.md §4.4, minus the retired
 #: connect/disconnect pairs and `mcp_search`: server management (mcp AND
 #: rest-api as separate families) is one on/off switch per family, plus
 #: search/load and the unloader.  A "connect" had nothing left to

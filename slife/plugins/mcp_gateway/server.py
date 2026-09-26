@@ -189,7 +189,7 @@ def _request_tools_changed() -> None:
 # ── Connection → host notification ──────────────────────────────────────
 # The wrapper owns the CONNECTION, not a catalog: unified tool discovery /
 # search / load lives in the shared host ``tools.db``
-# (``slife.tools.catalog`` — the single catalog per DESIGNER_NOTES §8.5).
+# (``slife.tools.catalog`` — the single catalog per DESIGN.md §4.3).
 # Whenever a server's tool surface may have changed — a list read, a
 # ``tools/list_changed`` event, a dead transport — the host is told to
 # re-list, and reconciles server runtime + tool rows from ``__mcp_list_tools`` /

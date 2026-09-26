@@ -1,7 +1,7 @@
 """Tool catalog orchestration — policy over :class:`CatalogStore`.
 
 The store is a dumb data layer; this service owns the semantics from
-DESIGNER_NOTES §8.5: seed/reseed on session start, the effective-status
+DESIGN.md §4.3: seed/reseed on session start, the effective-status
 refusals for ``func_tool_load`` / ``_func_tool_unload``, the per-turn
 injection snapshot (loaded ∧ whitelist), and main-agent-only curatorship.
 Instances are per-process (main agent + subagent workers open the same

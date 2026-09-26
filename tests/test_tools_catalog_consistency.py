@@ -1,7 +1,7 @@
 """Tool-system self-consistency — a fresh install with its seeded tools.yaml
 must be coherent with an EMPTY database and with an EXISTING one.
 
-Covers the DESIGNER_NOTES §8.5 acceptance line under the post-``server``-table
+Covers the DESIGN.md §4.3 acceptance line under the post-``server``-table
 model: seeded config ⇄ empty db (first run) and ⇄ persisted db (restart), the
 category derivation from tools.yaml, and the connectivity verdict projected
 onto the tool rows (`error` when a server is unusable, cleared when it

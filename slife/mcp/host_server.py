@@ -1,6 +1,6 @@
 """slife-as-plugin — the running agent's live ToolRegistry served over MCP.
 
-DESIGNER_NOTES §8 "turn slife to a plugin": the running slife hosts an
+DESIGN.md §1 ("slife-as-plugin"): the running slife hosts an
 in-process FastMCP server that exposes its **live ToolRegistry**, so any MCP
 client (another slife, an external tool runner) can consume slife's tools
 like any other plugin.
