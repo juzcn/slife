@@ -257,6 +257,29 @@ models:
 
 **Secrets never reach the LLM.** User input, tool-call arguments, and every tool result pass through a pattern-based sanitizer before entering the context — API key shapes (`sk-*`, `ghp_*`, Bearer tokens, …) are auto-masked.
 
+### Behind a fake-IP proxy
+
+A local proxy in **fake-IP** mode (Clash / mihomo / sing-box TUN) answers every hostname with an address from a pool of its own — typically `198.18.0.0/15` for IPv4, `2001:2::/48` or a ULA range for IPv6 — and maps the address back to the name when the connection arrives. Slife works behind one out of the box: a resolved address is never treated as evidence about where a connection lands, because whether the resolver lies is **measured** rather than assumed.
+
+One case is off by default. `url_save` refuses a URL that arrives as an **IP literal** from such a pool, because a non-public address is normally LAN or cloud-metadata infrastructure. Turn the exemption on if you are behind such a proxy and a URL keeps arriving as a pool address — a redirect `Location:` header, or a link the model copied out of a page:
+
+```yaml
+net:
+  fake_ip_exempt: auto    # off (default) | auto | on
+```
+
+| Value | Effect |
+|-------|--------|
+| `off` | A non-public IP literal is refused, always. The default — and it is the default on purpose (see the cost below). |
+| `auto` | Exempt the fake-IP pools while this machine's resolver is measured to lie, i.e. while a pool address really is the proxy's synthetic space. |
+| `on` | Exempt them regardless, for a proxy in the path that the probe cannot see — a `fake-ip-filter` that lists the probe name, or a probe that ran before the proxy came up. |
+
+The ranges live in `slife/net.py` (`FAKE_IP_NETS`): `198.18.0.0/15`, `2001:2::/48`, `fdfe:dcba:9876::/48` and `fc00::/18` — the pools Clash, mihomo and sing-box ship or document, IPv6 included. **LAN, link-local and cloud-metadata addresses are never exempted**: `169.254.169.254`, `fd00:ec2::254` and `fd20:ce::254` all stay refused, which is why the IPv6 side is those specific ranges and never `fd00::/8`.
+
+**What the exemption opens.** A proxy's pool also holds the proxy's *own* addresses — on a mihomo machine `198.18.0.1` is the TUN interface and `198.18.0.2` Clash's DNS — so while the exemption is on, a fetch aimed at one of those reaches your machine and whatever is bound to `0.0.0.0` (a dev server, a Docker-published port, a controller misconfigured to listen on every interface). Nothing else opens. That one target is why the default is `off`, and why this is a range list rather than the all-or-nothing switch such proxies usually offer.
+
+**Reading pages through the proxy.** `mcp-server-fetch` performs no address check and reads pages normally behind such a proxy. `duckduckgo-mcp-server` refuses page content in its own SSRF check, and ships no way to exempt a range — only an all-or-nothing `--allow-private-urls` that would open the LAN along with it — so use DuckDuckGo to search and the `fetch` server to read.
+
 <a id="features" name="features"></a>
 ## Features
 

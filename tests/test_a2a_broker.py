@@ -66,9 +66,15 @@ class TestProbeBroker:
                 raise ConnectionRefusedError
             return MagicMock(), mock_writer
 
-        with patch("asyncio.get_running_loop") as loop, \
+        # The resolution is stubbed where ``probe_broker`` actually takes it:
+        # it hands ``socket.getaddrinfo`` to a daemon thread through
+        # ``run_daemon`` rather than calling ``loop.getaddrinfo`` — the loop's
+        # helper runs on the default executor, whose non-daemon workers a hung
+        # resolver would hold open at exit (slife/threads.py).  Patching
+        # ``asyncio.get_running_loop`` here instead only breaks ``run_daemon``:
+        # it calls that to get the loop it delivers the result on.
+        with patch("socket.getaddrinfo", return_value=infos), \
              patch("asyncio.open_connection", _open):
-            loop.return_value.getaddrinfo = AsyncMock(return_value=infos)
             assert await probe_broker("localhost", 1883) is True
 
         # The dead family was tried first, the live one second — and it was

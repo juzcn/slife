@@ -338,3 +338,27 @@ embeddings:
   active_model: siliconflow
   # false disables semantic search; keyword (FTS5) search keeps working.
   enabled: true
+
+# Network behaviour.  A machine behind a Clash / mihomo / sing-box TUN proxy in
+# fake-ip mode answers every name with an address of the proxy's own choosing,
+# so a resolved address stops being evidence about the destination — and a URL
+# that arrives *as* one of those addresses (an IP literal, or a redirect to
+# one) is refused by url_save's SSRF guard unless it is exempted here.
+#
+#   off   a non-public IP literal is refused, as it always was.  Names are
+#         unaffected either way: that question is answered by measuring the
+#         resolver, not by this switch.
+#   auto  exempt while this machine's resolver is measured to lie — i.e. while
+#         a pool address really is the proxy's synthetic space.
+#   on    exempt regardless, for a proxy in the path that the probe cannot see
+#         (a fake-ip-filter that lists the probe name, or a probe that ran
+#         before the proxy came up).
+#
+# The exemption covers the fake-ip pools only, never LAN or cloud-metadata
+# space (slife/net.py FAKE_IP_NETS).  It has one real cost, which is why the
+# default is off: a pool also holds the *proxy's own* interface addresses
+# (198.18.0.1 is the TUN address on a mihomo machine, 198.18.0.2 Clash's DNS),
+# so while this is on a fetch aimed at one of those reaches this machine and
+# whatever is bound to 0.0.0.0.
+net:
+  fake_ip_exempt: off

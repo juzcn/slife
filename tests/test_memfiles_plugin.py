@@ -888,6 +888,11 @@ class TestSaveUrlPublicGuard:
     the machine's resolver tells the truth, so the tests say which machine they
     are on.  Neither fixture touches the network: a fake-ip machine never
     reaches the resolution step, and an honest one has it stubbed.
+
+    A *literal* is judged on every machine, with one exemption: an address of
+    the local proxy's fake-ip pool while ``net.fake_ip_exempt`` is on.  Those
+    tests state the policy rather than inheriting whatever the developer's
+    slife.yaml happens to say.
     """
 
     @pytest.fixture
@@ -933,19 +938,57 @@ class TestSaveUrlPublicGuard:
         self._resolves_to(monkeypatch, "93.184.216.34")
         assert plugin._reject_non_public_url("https://example.com/") is None
 
-    def test_literals_are_refused_on_every_machine(self, fake_ip):
+    def test_private_literals_are_refused_on_every_machine(self, fake_ip):
         """An address the caller wrote *is* the destination, whatever the
-        resolver does — including one inside the range this machine's proxy
-        answers names from, which is the proxy's front door, not a host."""
+        resolver does — and these are the ones no exemption covers.
+
+        Asserted on the fake-ip machine on purpose: it is there that
+        ``net.is_fake_ip_answer`` says True for every one of them, so this is
+        also the test that step 1 grants through the exact permission
+        (``is_fake_ip_address``) rather than the coarse accusation.
+        """
         for url in (
             "http://127.0.0.1:8080/admin", "http://[::1]/x",
             "http://169.254.169.254/latest/meta-data/", "http://[fe80::1]/x",
             "http://10.0.0.1/", "http://192.168.1.1/", "http://172.16.0.1/",
             "http://[fd00::1]/x", "http://[fd00:ec2::254]/x",
-            "http://198.18.0.1/x", "http://[2001:2::127]/x",
-            "http://[fdfe:dcba:9876::1]/x", "http://[2001:db8::1]/x",
+            "http://[2001:db8::1]/x",
             "http://[::ffff:127.0.0.1]/x",   # an IPv4 address, IPv6 spelling
         ):
+            assert plugin._reject_non_public_url(url), url
+
+    def test_pool_literals_are_fetchable_when_the_exemption_is_on(
+        self, fake_ip, monkeypatch
+    ):
+        """The fake-ip pools become destinations a fetch may be aimed at,
+        IPv6 included — that is what the switch buys.  A pool address is the
+        proxy's own synthetic space: the proxy maps it back to the name it
+        answered with, so this aims the fetch at the proxy, not at a host."""
+        monkeypatch.setattr(net, "fake_ip_exempt", lambda: True)
+        for url in (
+            "http://198.18.0.1/x", "http://198.18.1.53/x",         # RFC 2544
+            "http://[2001:2::127]/x",                              # RFC 5180
+            "http://[fdfe:dcba:9876::1]/x", "http://[fc00::1]/x",  # the ULA pools
+            "http://[::ffff:198.18.0.1]/x",   # one destination, IPv6 spelling
+        ):
+            assert plugin._reject_non_public_url(url) is None, url
+
+        # Still refused on the same machine: the exemption is a permission,
+        # and what it does not cover is where it matters most.
+        for url in (
+            "http://127.0.0.1:8080/admin", "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[fd00:ec2::254]/x", "http://[fd00::1]/x",
+        ):
+            assert plugin._reject_non_public_url(url), url
+
+    def test_pool_literals_are_refused_while_the_exemption_is_off(
+        self, fake_ip, monkeypatch
+    ):
+        """The default, and what every machine that has not opted in keeps:
+        without the exemption a non-public literal is refused as it always was."""
+        monkeypatch.setattr(net, "fake_ip_exempt", lambda: False)
+        for url in ("http://198.18.1.53/x", "http://[2001:2::127]/x"):
             assert plugin._reject_non_public_url(url), url
 
     def test_names_that_cannot_be_public_are_refused_without_dns(self, fake_ip):

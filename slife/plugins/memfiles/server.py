@@ -1326,8 +1326,17 @@ def _reject_non_public_url(url: str) -> str | None:
     a fake-ip resolver said:
 
     1. The host is an IP **literal**: it is the destination, whatever the
-       resolver does, so a non-public one is refused.  These never reach DNS,
-       which is what makes this step work on every machine.
+       resolver does, so a non-public one is refused — except an address of the
+       local proxy's fake-ip pool while ``net.fake_ip_exempt`` is on.  Such an
+       address is the proxy's own synthetic space, not a host: the proxy maps
+       it back to the name it answered with, so aiming a fetch at one is aiming
+       it at the proxy.  That exemption does not close everything — the pool
+       also holds the proxy's **own** interface addresses (``198.18.0.1`` is
+       the TUN address on a mihomo machine), so a literal aimed at one of those
+       reaches this machine and whatever is bound to ``0.0.0.0``.  It is why
+       the switch defaults to off; ``slife.net`` carries the ranges and the
+       full residual.  These never reach DNS, which is what makes this step
+       work on every machine.
     2. The host is a name that **cannot be public** — an RFC 6761/6762/8375
        reserved TLD, ICANN's ``.internal``, the de-facto LAN TLDs, or a bare
        single label.  Refused by *name*, which no answer can affect.  The
@@ -1366,12 +1375,16 @@ def _reject_non_public_url(url: str) -> str | None:
         return "URL has no host"
 
     # 1. A literal the caller wrote: it is where the connection lands, DNS or
-    #    no DNS.  A bare "198.18.0.1" is refused even on the machine whose
-    #    proxy answers names from that range — it is the proxy's front door,
-    #    not a host, and url_save has no business fetching it.
+    #    no DNS.  A fake-ip pool address is the one non-public literal this
+    #    grants — the pool is the proxy's synthetic space, and the proxy maps
+    #    the address back to the name it answered with — and only while the
+    #    exemption is on.  is_public_address first, so the common path never
+    #    reads the config or asks the resolver.
     literal = _as_address(host)
     if literal is not None:
         if _net.is_public_address(literal):
+            return None
+        if _net.fake_ip_exempt() and _net.is_fake_ip_address(literal):
             return None
         return f"refusing non-public host '{host}'"
 

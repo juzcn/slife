@@ -464,6 +464,48 @@ class EmbeddingsConfig:
         }
 
 
+#: The values ``net.fake_ip_exempt`` accepts.  ``off`` is what an absent
+#: section means and what an unrecognised value falls back to: the switch
+#: grants a fetch to a proxy-synthesised address, so one nothing can read must
+#: not grant it.
+_FAKE_IP_EXEMPT_POLICIES = ("off", "auto", "on")
+
+
+@dataclass
+class NetConfig:
+    """Network behaviour config — top-level ``net`` section.
+
+    ``fake_ip_exempt`` is whether a fetch may be **aimed at** an address from
+    the local proxy's fake-ip pool:
+
+    - ``off`` (default) — a non-public IP literal is refused, as it always was.
+      Names are unaffected: that question is answered by measuring the
+      resolver, not by this switch.
+    - ``auto`` — exempt while this machine's resolver is measured to lie, i.e.
+      while a pool address really is the proxy's synthetic space.
+    - ``on`` — exempt regardless, for a proxy in the path that the probe cannot
+      see (a ``fake-ip-filter`` that lists the probe name, or a probe that ran
+      before the proxy came up).
+
+    :mod:`slife.net` owns what a pool address is, which ranges count, and what
+    exempting one reaches — including the one destination it newly opens, the
+    proxy's own address on this machine.
+    """
+
+    fake_ip_exempt: str = "off"
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "NetConfig":
+        """Parse the top-level ``net`` section from YAML config."""
+        if not isinstance(data, dict):
+            return cls()
+        policy = str(data.get("fake_ip_exempt", "off")).strip().lower()
+        if policy not in _FAKE_IP_EXEMPT_POLICIES:
+            logger.warning("net_config_bad_policy value=%r using=off", policy)
+            policy = "off"
+        return cls(fake_ip_exempt=policy)
+
+
 @dataclass
 class WechatConfig:
     """Configuration for the slife-wechat plugin.
@@ -495,6 +537,7 @@ _FIELD_DECODERS: dict[str, Callable[[Any], Any]] = {
     "models": lambda v: [_nested(ModelConfig, m) for m in (v or [])],
     "memdb_config": lambda v: _nested(MemdbConfig, v),
     "embeddings_config": EmbeddingsConfig.from_dict,
+    "net_config": NetConfig.from_dict,
     "wechat_config": lambda v: _nested(WechatConfig, v),
     "a2a_config": lambda v: _nested(A2AConfig, v),
     # Name sets ride as sorted lists; ``_as_name_set`` is their one reader.
@@ -560,6 +603,7 @@ class Config:
     cutin_enabled: bool = True
     memdb_config: MemdbConfig | None = None
     embeddings_config: EmbeddingsConfig | None = None
+    net_config: NetConfig | None = None
     wechat_config: WechatConfig | None = None
     a2a_config: A2AConfig | None = None
     subagent_config: dict | None = None
@@ -612,6 +656,8 @@ class Config:
             self.memdb_config = MemdbConfig()
         if self.embeddings_config is None:
             self.embeddings_config = EmbeddingsConfig()
+        if self.net_config is None:
+            self.net_config = NetConfig()
         if self.wechat_config is None:
             self.wechat_config = WechatConfig()
         if self.a2a_config is None:
@@ -1210,6 +1256,12 @@ class Config:
             len(embeddings_config.providers),
             embeddings_config.enabled,
         )
+
+        # Net -- the addresses the SSRF guard may grant a fetch to.  Off by
+        # default: only a machine behind a fake-ip proxy wants the exemption,
+        # and it can say so.
+        net_config = NetConfig.from_dict(raw.get("net", {}))
+        logger.debug("net_config fake_ip_exempt=%s", net_config.fake_ip_exempt)
 
         # WeChat -- optional plugin, enabled via wechat.enabled
         wechat_config = WechatConfig.from_dict(raw.get("wechat", {}))

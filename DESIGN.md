@@ -1843,15 +1843,44 @@ vectors for the drainer to rebuild exactly as a model change does.
 
 URL saving guards against SSRF **before fetching and again on every redirect hop**, in three steps
 whose order is the point: an IP **literal** is the destination whatever DNS does, so a non-public one
-is refused; a name that **cannot be public** (a reserved TLD, or a bare label) is refused by name,
-which no answer can affect; and otherwise the resolved answer is believed **only when the resolver is
-honest**. That last condition is measured, not configured — a fake-IP resolver answers a name that
-cannot exist, so `slife.net` asks it for one. Believing a fake-IP answer instead refused *every* public
-URL on a machine behind a TUN proxy, and listing the pools to exempt was a patch per pool (Clash's
-`fake-ip-range`, mihomo's per-profile `fake-ip-range6`, sing-box's own defaults), so the question
-became "does this resolver lie?" rather than "which pool is it?". The same fact is what sharefile's
-tunnel health *flags*, for the opposite reason: intercepted traffic breaks the tunnel's long-lived
-control connection, which is the one thing slife cannot do through such a proxy.
+is refused — bar the one address class the machine's own proxy owns; a name that **cannot be public**
+(a reserved TLD, or a bare label) is refused by name, which no answer can affect; and otherwise the
+resolved answer is believed **only when the resolver is honest**.
+
+The first and third steps answer two different questions, and keeping them apart is what makes each
+affordable. A **name** asks "is this answer evidence about the destination", and that is *measured,
+not configured*: a fake-IP resolver answers a name that cannot exist, so `slife.net` asks it for
+one, and a resolver that lies makes its whole answer worthless — believing it refused *every* public
+URL on a machine behind a TUN proxy. A **literal** asks "may a fetch be aimed at this address", and
+that is a *list* (`FAKE_IP_NETS`): an address in a pool a proxy synthesises from is the proxy's own
+space — the addresses it handed out map back to the names it answered with — so aiming a fetch at
+one aims it at the proxy rather than at the LAN. The asymmetry is cost, not inconsistency: a pool
+missing from the list refuses one URL shape, while a pool missing from the measurement refused every
+fetch on the machine. Clash's `fake-ip-range`, mihomo's per-profile `fake-ip-range6` and sing-box's
+defaults all sit inside the ranges listed, and the listing carries IPv6 beside IPv4 (`2001:2::/48`
+and the ULA pools — never `fd00::/8`, which holds AWS's `fd00:ec2::254` and GCP's `fd20:ce::254`,
+and is where a real LAN lives too).
+
+The same addresses are a **permission** to the guard and an **accusation** to sharefile's tunnel
+health, which flags them for the opposite reason: intercepted traffic breaks the tunnel's long-lived
+control connection, the one thing slife cannot do through such a proxy. A permission has to be exact;
+an accusation may be coarse. `is_fake_ip_answer` counts *every* non-public address once the resolver
+lies — harmless where the verdict is a warning, fatal where it is a grant — so the guard grants
+through `is_fake_ip_address` and never through it.
+
+The whole exemption is one switch, `net.fake_ip_exempt` in `slife.yaml`, off by default: **off** to
+refuse a non-public literal as it always did, **auto** to exempt exactly while the resolver is
+measured to lie, **on** for a proxy in the path that the probe cannot see. It defaults off because
+exempting a pool is not free — a pool also holds the **proxy's own** addresses (on a mihomo machine
+the TUN interface is `198.18.0.1/30` and Clash's DNS `198.18.0.2`), so while the exemption is on, a
+fetch aimed at one of those reaches the machine itself and whatever is bound to `0.0.0.0`. Nothing
+else opens: LAN, link-local and cloud-metadata addresses are outside every listed range, and that
+list is the only place a permission can be widened from.
+
+Fetching in *other* processes is not this guard's business, and one of them refuses on its own
+account: `duckduckgo-mcp-server` rejects every URL whose host resolves into a fake-IP pool, in its own
+SSRF check, and ships no way to exempt a range — only an all-or-nothing flag that would open the LAN
+along with it. `mcp-server-fetch` has no address check at all, so reading a page goes through it.
 
 **A file's bytes stay bytes.** The cabinet stores four kinds of document but only one of them can be
 binary, and nothing in the index ever holds a file's bytes: what is indexed and embedded is text —
@@ -2230,6 +2259,7 @@ Each is a rule in the body now.
 | Should the model get a tool that rewrites its own context — system prompt, history, tool list — taking effect next iteration? | No, on two grounds. The selector that feeds the context is **internal** precisely so the model cannot move the conversation under itself; and the idea was priced and rejected, because it spends the prompt cache to buy a rearrangement ([§2.3](#23-recall--the-context-is-selected)). |
 | Should `local-embed` be health-checked when it is not the active embedding provider? | Yes. It is an ordinary child plugin with a `__check`, so the plugin contract holds uniformly and no special case was needed (`slife/plugins/spec.py`). |
 | Why does the sharefile tunnel fail under a TUN fake-IP proxy? | The resolver lies, and intercepted traffic breaks the tunnel's long-lived control connection. Both are measured facts now rather than mysteries ([§7.5](#75-the-file-cabinet)). |
+| Why does `url_save` refuse a URL my browser opens fine? | It arrived as an **IP literal** from that proxy's fake-IP pool, and a literal is judged by address whatever DNS does ([§7.5](#75-the-file-cabinet)). `net.fake_ip_exempt: auto` exempts the pools — and read what the exemption opens first: a pool also holds the proxy's own addresses. |
 | What happens when a model switch changes the context window? | Answered by the per-turn rebuild. The next turn is rebuilt against the new window and sized to fit it, so a *smaller* window is absorbed by the selection rather than by a trim after the fact: **a recall's turns are not expected to overfill the context**, which is what makes the trim a guard instead of the bound ([§2.2](#22-context-window-management)). The tool-result cap is recomputed on the switch and the usage reading self-corrects. |
 | Is the per-turn discriminator worth a context-sized call? | **Yes — it is the design**, and it is proven usable in practice. That cost is the price of judging from the conversation, not a sign the arrangement is wrong, and [§2.3](#23-recall--the-context-is-selected) states it that way. Anything cheaper would have to keep the reason this step is a model call at all: a follow-up names its subject only through the conversation in hand, so a query written from the input alone retrieves nothing. |
 
