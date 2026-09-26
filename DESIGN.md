@@ -98,7 +98,7 @@ the live tool registry over MCP ("slife-as-plugin"), which is how a subagent rea
 | **Turn** | One user→assistant exchange, persisted as one row. The unit of history, memory and trimming. |
 | **Channel** | The sender identity of an inbox message: `human`, `wechat`, `subagent`, `heartbeat`, `system`, or an A2A peer name. Persisted with the turn; by default not part of the LLM context. |
 | **Marker** | Machine-generated notation inside a raw message telling the model or the TUI what the text alone does not say. |
-| **Recall** | The per-turn selection of history turns that becomes the context. Not an LLM tool — the harness calls it before each turn. |
+| **Recall** | The per-turn selection of history turns that becomes the context. A **system-level** arrangement, not an LLM tool — the harness calls it before each turn. What it does not select stays reachable through the model's own read tools (`turn_search` / `turn_list` / `turn_read`), whose results arrive as tool output. |
 | **Harness tool** | An LLM-visible but reserved tool the loop **auto-invokes** rather than the model choosing it: the per-turn status pair, the cut-in check, and image attach. The `_` prefix marks the reserved pair; the image tool is unprefixed because the model also calls it on its own. |
 | **Internal tool** | A `__`-prefixed plugin tool serving the main process, filtered out of the schema before registration. |
 | **Plugin** | A child process declared by one row in the central plugin spec, speaking MCP over Streamable HTTP. |
@@ -154,8 +154,8 @@ message posted to the inbox
   Tool-call deltas accumulate across chunks and execute as one batch concurrently; approval dialogs
   serialize behind a lock.
 - **Iteration limit.** Configurable, checked **live** each iteration so a mid-turn change applies
-  immediately. Hitting it returns a cancelled result and notifies the handler. The limit has a
-  sentinel meaning "unlimited" — it is not a very large number.
+  immediately. Hitting it returns a cancelled result and notifies the handler. The limit's
+  sentinel for "unlimited" is **0**, not a very large number.
 - **Cancellation.** The user's cancel key sets an event, checked before each iteration, after each
   stream, and before each tool batch.
 - **Background execution.** A per-call flag schedules the tool as a background task and returns a
@@ -279,10 +279,12 @@ says is ever shown.
   from the condition — a period is read from the end `anchor` names, a query is ranked by relevance
   and so is narrowed by its time bound instead. Then the **cases**: one worked reply per combination
   of the two fields, which is where a value's wording is shown rather than described. Around the two
-  sit the current input, how the query is matched (against the stored turns), one rule — *the query
-  holds what turn recall needs, in the words a stored turn would contain* — and the reply surface
-  itself, stated once as the reply's fields with their values and defaults and nothing beyond them. It
-  cannot be read off a tool: the selector is an **internal** tool the model never sees, so there is no
+  sit the current input, one rule — *the query holds what turn recall needs — keywords, short phrases,
+  or the full user input, in any combination — matched against the stored turns by a hybrid of
+  full-text and semantic search*, the three forms offered as sources rather than as a template — the
+  discriminator composes the query, so the rule names what the text may draw on (§7.2) and leaves the
+  composition to it — and the reply surface itself, stated once as the reply's fields with their
+  values and defaults and nothing beyond them. It cannot be read off a tool: the selector is an **internal** tool the model never sees, so there is no
   LLM-facing schema to quote. The loop is the only caller and its parser reads exactly these two
   fields, which is what keeps the two ends of this contract in step. When the store cannot be reached
   at all there is no call either — the availability check is the gate, so a turn is never spent asking
@@ -348,7 +350,7 @@ which is the difference between reading a period from its end and reading it fro
 a query the axis is **relevance**: the caps spend from the relevance head, and time enters only as a
 *bound* on the candidate set, so an `anchor` beside a query is not consulted (logged, not silently
 dropped). Relevance wins over time, and the request it describes — "the earliest turn about X" — is a
-*read* (`turn_search`, `turn_read`), not a context selection. The two ends are one concept in either
+*read* (`turn_search`, `turn_list`, `turn_read`), not a context selection. The two ends are one concept in either
 branch, but not one mechanism, and the difference is worth stating plainly:
 `{"anchor": "oldest"}` reaches the beginning with no date knowledge at all, while a query can only
 reach back by naming a window it has to guess. Render order is chronological in every case, because
@@ -404,10 +406,24 @@ turn's cost and so the budget come from it — because a broken database and a m
 real environment failures, and answering them with a plausible-looking empty list hides them behind a
 turn that quietly ran without the history it asked for.
 
-**The model's own way into the turns DB is separate.** Its search and list tools mirror the cabinet's,
-and they only ever *read* — neither touches the context. The selector that does feed the context is
-the harness's, and it is internal for exactly that reason: changing the conversation under the model
-is not something the model asks for.
+**The model's own way into the turns DB is the other half of the arrangement.** `turn_search`,
+`turn_list` and `turn_read` mirror the cabinet's, and all three only ever *read* — none touches the
+context. The selector that does feed the context is the harness's, and it is internal for exactly that
+reason: changing the conversation under the model is not something the model asks for.
+
+The division of labour is the point. The selection is a **system-level** arrangement: decided before
+the turn and on every turn, so the context a turn runs on is rebuilt whether or not the model thinks
+to do anything about it. The tools are the other direction — **the model's own** — and that is what
+keeps the selection from being the only door: what it does not select is still reachable, because the
+model can look for it and the answer arrives as tool output in the conversation it is already
+reading. So a query the discriminator never wrote, or a turn the caps cut, is a round-trip and not a
+dead end, and neither path has to be complete on its own.
+
+And the two do not search alike. The selection has exactly one search — hybrid — while `turn_search`
+also offers **grep**, a real regex (§7.2): a partial spelling, a path, a symbol, a word glued inside a
+longer CJK run, none of which the tokenizer or the vector sees. It is the mode the model reaches for
+increasingly often, and it is one the selection cannot ask for — so a missed selection costs a
+round-trip and buys a search the discriminator was never given.
 
 **What the decision does to the context.** The rebuilt set is the union above, built from the stored
 rows by the same builder restore uses — so a context is reproducible from its id list, and a restart
@@ -1388,9 +1404,23 @@ data is derived, and a migration path is a permanent maintenance cost.
 ### 7.2 Search
 
 Three indexes back the search modes: a full-text index, a vector KNN index, and a B-tree on the
-creation timestamp. The modes are exact-string matching (error messages, paths, code), ranked
-keyword search with snippets, hybrid (both legs fused by reciprocal rank fusion) and time (browse by
-date).
+creation timestamp. The modes are **grep** (a real regex over the user message and the message
+column), ranked keyword search with snippets, hybrid (both legs fused by reciprocal rank fusion) and
+time (browse by date).
+
+**grep is the mode no index serves**, so it is the one that behaves differently. SQLite has no regexp
+engine, so the text predicate runs in Python over a **scan** — newest first, capped at 20 000 rows
+examined — and its results are unranked: newest-first, each carrying a window of text around the
+match instead of a score. That is what the scan buys: a partial spelling (`translat(e|or)`), a path, a
+symbol, a word glued inside a longer CJK run — text neither the tokenizer nor the vector describes.
+
+Its column set is as deliberate as the rest: the user message and the message column, the conversation
+itself. The **generated summary is not in it** — grep reads what was said, not what the summarize pass
+later made of it, and that is not what it is for. A term surviving only in a summary is therefore the
+keyword leg's to find, which searches `summary` and `tags` along with the two text columns.
+
+It is also the mode the model reaches for increasingly often, and it has **no counterpart in the
+per-turn selection** (§2.3), whose only search is hybrid.
 
 The cosine metric is **declared in the vector table's DDL**, because that is what makes the raw
 distance readable as a 0–1 similarity: one-minus-distance is a cosine only when the metric is one,

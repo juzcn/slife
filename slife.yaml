@@ -16,8 +16,9 @@ env:
 
 # ── The agent loop ──────────────────────────────────────────────────────
 agent:
-  # Model calls allowed in a single turn before it is cut off.
-  max_iterations: 30
+  # Model calls allowed in a single turn before it is cut off.  0 removes the
+  # cap — the turn then ends only when the model stops calling tools.
+  max_iterations: 0
   # Context trimming, as a fraction of the active model's context_window.
   # Trimming fires once a turn's usage reaches context_ceiling and compresses
   # back down to context_floor by dropping the oldest *complete* turns — the

@@ -310,7 +310,7 @@ Every turn is permanently recorded in SQLite (`~/.slife/<agent>.db`) and searche
 
 | Mode | Best for |
 |------|----------|
-| `grep` | Exact strings — error messages, file paths, code |
+| `grep` | A regex — partial spellings too: error messages, file paths, code |
 | `fts5` | Topic / keyword search with ranked snippets |
 | `hybrid` | Semantic recall — keyword and meaning together |
 | `time` | Browse by date |

@@ -516,7 +516,7 @@ class Config:
     active_model_ref: str
     tools: list[dict]
     env: dict | None = None
-    max_iterations: int = 30
+    max_iterations: int = 30  # model calls per turn; 0 = no cap
     context_floor: float = 0.2
     context_ceiling: float = 0.8
     tool_result_ceiling: float = 0.2  # max tool result = 20% of context window (HARD constraint, see DESIGN)

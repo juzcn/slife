@@ -502,13 +502,25 @@ class TestRecallInstruction:
         carried over from the conversation, and the way back to a turn the
         context has dropped.  Without the second the discriminator reads a
         follow-up naming something it cannot see as "the turns in hand are
-        enough" and answers from what happens to be there."""
+        enough" and answers from what happens to be there.
+
+        The rule names both what the query is (keywords, short phrases, or the
+        full user input, in any combination) and what reads it (a hybrid of
+        full-text and semantic search) — the search is not literal-only, so
+        the two legs meet the same text differently.  The combination is what
+        makes case 10 expressible: the input's own words plus the subject
+        carried over from the conversation."""
         from slife.agent.system_prompt import build_recall_instruction
 
         text = build_recall_instruction("那人工智能学院呢？")
+        # Normalized: the template is wrapped prose, so a phrase can straddle
+        # a line break.
+        flat = " ".join(text.split())
 
         assert 'The "query" holds what turn recall needs' in text
-        assert "matched against the stored turns" in text
+        assert ("needs — keywords, short phrases, or the full user input, in "
+                "any combination — matched against the stored turns by a "
+                "hybrid of full-text and semantic search") in flat
 
     @staticmethod
     def _examples(text: str) -> list[str]:
