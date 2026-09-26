@@ -77,10 +77,42 @@ INDEX_TEXT_VERSION = "1"
 
 
 def _slugify(text: str) -> str:
-    """Turn arbitrary text into a safe filename slug."""
+    """Turn arbitrary text into a safe filename slug — a *stem*, so with no
+    dots: every caller appends an extension afterwards."""
     slug = re.sub(r"[^\w\s-]", "", text.lower())
     slug = re.sub(r"[-\s]+", "-", slug)
     return slug.strip("-")[:120]
+
+
+def _slugify_filename(text: str) -> str:
+    """Turn arbitrary text into a safe filename stem, keeping its dots.
+
+    ``_slugify`` drops ``.`` because its callers pass a subject or a title
+    whose extension is appended afterwards; a *name* is the other case, and
+    there the dot is part of the name: saving ``memfiles_test_doc.txt`` under
+    a title of the same text wrote ``memfiles_test_doctxt.txt`` (2026-09-26),
+    ``notes.v2`` losing the same way.  Legal in a filename, so kept — but a
+    stem still may not begin or end with one, a leading dot hiding the file
+    and a trailing dot not being a legal Windows name.
+    """
+    slug = re.sub(r"[^\w\s.-]", "", text.lower())
+    slug = re.sub(r"[-\s]+", "-", slug)
+    return slug.strip("-. ")[:120]
+
+
+def _name_to_stem(name: str, suffix: str) -> str:
+    """*name* as a stem: its own extension dropped, the rest slugified.
+
+    Callers hold a name that may or may not already carry the extension —
+    ``memfiles_test_doc.txt`` against a ``.txt`` source, ``notes.v2`` against
+    anything — while the extension is appended separately from the
+    authoritative source (``src.suffix``).  Dropping *suffix* when the name
+    ends in it, and only then, keeps the dot inside ``notes.v2`` while never
+    writing ``paper.pdf.pdf``.
+    """
+    if suffix and name.lower().endswith(suffix.lower()):
+        name = name[: -len(suffix)]
+    return _slugify_filename(name)
 
 
 def _unique_path(directory: Path, stem: str, suffix: str) -> Path:

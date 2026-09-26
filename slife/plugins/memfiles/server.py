@@ -60,6 +60,7 @@ from slife.plugins.memfiles.store import (
     MemfilesStore,
     _KIND_NAMES,
     _valid_kind,
+    _name_to_stem,
     _slugify,
     _unique_path,
 )
@@ -394,7 +395,12 @@ async def file_save(
             # A title that slugifies to nothing ("---", "!!!", "。，") must not
             # become an extension-only dotfile — the store guards this exact
             # case on its own writes (_slugify(subject) or "note").
-            stem = (_slugify(title) if title else "") or src.stem or "file"
+            # The title is often the *name* the caller has in hand
+            # ("memfiles_test_doc.txt"), so it goes through _name_to_stem: the
+            # dot is part of the name and must survive.  No title falls back to
+            # src.stem verbatim — that is already a legal filename, and
+            # slugifying it would spend case and CJK for nothing.
+            stem = (_name_to_stem(title, src.suffix) if title else "") or src.stem or "file"
             display_title = title or src.name
             cat_dir = files_dir / _detect_category(src.name, category)
             cat_dir.mkdir(parents=True, exist_ok=True)
@@ -440,21 +446,26 @@ def _url_name_parts(parsed, title: str) -> tuple[str, str, str, str]:
     punctuation) and then the extension went on again, saving "paper.pdf" as
     "paperpdf.pdf".  ``file_save`` splits the same two pieces off its source
     path (``src.stem`` + ``src.suffix``); a URL basename is the same kind of
-    name and gets the same treatment.  An explicit title is a stem already,
-    exactly as it is there.
+    name and gets the same treatment (``_name_to_stem``).
+
+    An explicit title is *not* a stem already — an earlier version of this
+    docstring claimed that, and it is how ``file_save`` came to write
+    ``memfiles_test_doctxt.txt``: a caller holding the filename passes the
+    filename.  The title gets the same treatment as the basename, so which of
+    the two it is stops mattering.
     """
     url_name = parsed.path.rsplit("/", 1)[-1] if parsed.path else ""
     if not url_name:
         segment = next((s for s in reversed(parsed.path.split("/")) if s), "")
         url_name = segment or parsed.netloc.replace(".", "-")
     display_title = title or url_name or "untitled"
-    stem = _slugify(title or url_name.rpartition(".")[0] or url_name) or "untitled"
     if url_name and "." in url_name:
         # ``re.sub`` keeps ``\w`` and ``.``, so the leading dot always survives
         # and the first character is never truncated away by ``[:10]``.
         ext = re.sub(r"[^\w.]", "", "." + url_name.rsplit(".", 1)[-1].split("?")[0])[:10]
     else:
         ext = ""
+    stem = _name_to_stem(title or url_name, ext) or "untitled"
     return url_name, display_title, stem, ext
 
 
@@ -1274,9 +1285,11 @@ def _reject_non_public_url(url: str) -> str | None:
     ngrok tunnel up, the response would be published as a public file. The
     host is validated as an IP literal or via DNS resolution; **every**
     resolved address must be globally routable, with one exception: the
-    ranges fake-ip resolvers answer *public* hostnames with.  Clash /
-    sing-box answer from 198.18.0.0/15 (the RFC 2544 benchmark space) and
-    sing-box's IPv6 pool fdfe:dcba:9876::/48, so both are accepted.
+    ranges fake-ip resolvers answer *public* hostnames with.  Clash answers
+    IPv4 from 198.18.0.0/15 (RFC 2544 benchmark space), and IPv6 from either
+    sing-box's fdfe:dcba:9876::/48 or a per-profile ``fake-ip-range6`` — the
+    RFC 5180 benchmark range 2001:2::/48 covers the latter — so all three are
+    accepted.
 
     ``url_save`` re-runs this guard on EVERY redirect hop immediately before
     that hop's fetch (an earlier comment claiming redirect chains are not
@@ -1328,7 +1341,26 @@ def _reject_non_public_url(url: str) -> str | None:
             or ip.is_multicast
             or ip.is_unspecified
         ):
-            return f"refusing non-public host '{host}' ({ip})"
+            # A *name* that resolved into private/reserved space is either a
+            # real LAN host — correctly refused — or a public host answered
+            # from a fake-ip pool this module does not list, which is how
+            # every url_save came to fail on 2026-09-26 (mihomo's per-profile
+            # fake-ip-range6 was 2001:2::0/64).  Name the two possibilities at
+            # the refusal so the next pool costs one line instead of a DNS
+            # investigation.  Literal-IP hosts, and the loopback / link-local
+            # answers, carry no such ambiguity — those stay terse.
+            try:
+                ipaddress.ip_address(host)
+                literal = True
+            except ValueError:
+                literal = False
+            hint = ""
+            if not literal and not (ip.is_loopback or ip.is_link_local):
+                hint = (
+                    " — a proxy in fake-ip mode answers public hosts from a "
+                    "synthetic pool; add its range to slife.net.FAKE_IP_NETS"
+                )
+            return f"refusing non-public host '{host}' ({ip}){hint}"
     return None
 
 

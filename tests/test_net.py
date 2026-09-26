@@ -28,12 +28,22 @@ class TestIsFakeIp:
         assert is_fake_ip("fdfe:dcba:9876::20")
         assert is_fake_ip("fdfe:dcba:9876::1")
 
+    def test_mihomo_ipv6_pool(self):
+        """2001:2::/48 is RFC 5180 space, the IPv6 twin of the RFC 2544 pool
+        above.  A mihomo profile that sets fake-ip-range6 (this machine sets
+        2001:2::0/64) answers every public hostname from it, so every url_save
+        on that machine was refused until the pool was listed."""
+        assert is_fake_ip("2001:2::127")        # example.com
+        assert is_fake_ip("2001:2::128")        # docs.astral.sh
+        assert is_fake_ip("2001:2:0:ffff::9")   # the top of /48
+
     def test_real_public_addresses_are_not_fake(self):
         """The whole value of the check: a genuine edge address must not be
         flagged, or every healthy tunnel reports a proxy interception."""
         assert not is_fake_ip("104.16.0.1")
         assert not is_fake_ip("198.20.0.1")     # just outside the /15
         assert not is_fake_ip("2606:4700::1")
+        assert not is_fake_ip("2001:3::1")      # just outside the /48
 
     def test_private_and_loopback_are_not_fake(self):
         """These are a DIFFERENT problem (the SSRF guard's real targets) and
@@ -52,9 +62,9 @@ class TestIsFakeIp:
         assert not is_fake_ip(None)
 
     def test_pools_are_declared_once(self):
-        """Both consumers read this tuple; a third copy is the thing this
+        """Both consumers read this tuple; a second copy is the thing this
         module exists to prevent."""
-        assert len(FAKE_IP_NETS) == 2
+        assert len(FAKE_IP_NETS) == 3
         assert {str(n) for n in FAKE_IP_NETS} == {
-            "198.18.0.0/15", "fdfe:dcba:9876::/48",
+            "198.18.0.0/15", "2001:2::/48", "fdfe:dcba:9876::/48",
         }

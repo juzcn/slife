@@ -158,6 +158,21 @@ class TestHelpers:
         assert plugin._slugify("Project Notes 2026!") == "project-notes-2026"
         assert plugin._slugify("--hello--") == "hello"
 
+    def test_name_to_stem_keeps_dots_and_takes_one_extension(self):
+        """A *name* keeps its dots — a subject or a stem does not (there the
+        extension is appended afterwards).  The name's own extension is dropped
+        only when it matches the one the caller will append, so "notes.v2"
+        keeps its dot while "paper.pdf" against a .txt source does not become
+        "paper.pdf.txt"."""
+        assert plugin._name_to_stem("memfiles_test_doc.txt", ".txt") == "memfiles_test_doc"
+        assert plugin._name_to_stem("notes.v2.txt", ".txt") == "notes.v2"
+        assert plugin._name_to_stem("Release 2.0", ".txt") == "release-2.0"
+        assert plugin._name_to_stem("report.pdf", ".txt") == "report.pdf"
+        assert plugin._name_to_stem("My Paper", ".txt") == "my-paper"
+        # a stem may not be hidden or end in a dot
+        assert plugin._name_to_stem(".hidden", ".txt") == "hidden"
+        assert plugin._name_to_stem("name.", ".txt") == "name"
+
     def test_unique_path_no_conflict(self, tmp_path):
         assert plugin._unique_path(tmp_path, "notes", ".md") == tmp_path / "notes.md"
 
@@ -262,6 +277,29 @@ class TestFileSave:
         assert (mem_dir / "files" / "images" / "shot.png").is_file()
         assert (mem_dir / "files" / "documents" / "report.pdf").is_file()
         assert (mem_dir / "files" / "other" / "archive.xyz").is_file()
+
+    @pytest.mark.asyncio
+    async def test_a_title_that_is_a_filename_keeps_its_dot(self, tmp_path):
+        """The tester's 2026-09-26 finding: saving with a title of
+        "memfiles_test_doc.txt" wrote "memfiles_test_doctxt.txt" — ``_slugify``
+        dropped the dot and the extension went on again.  A caller holding a
+        filename passes the filename, so a title is not always a stem, and the
+        extension comes from the source either way."""
+        doc = tmp_path / "memfiles_test_doc.txt"
+        doc.write_text("body")
+        png = tmp_path / "shot.png"
+        png.write_bytes(b"png")
+        mem_dir = tmp_path / "files"
+        mem_dir.mkdir()
+        store, _ = _fake_store(mem_dir)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            await plugin.file_save(
+                paths=[str(doc)], title="memfiles_test_doc.txt")
+            await plugin.file_save(
+                paths=[str(png)], title="slife_r2_vision_cjk-page-1.png")
+        assert (mem_dir / "files" / "documents" / "memfiles_test_doc.txt").is_file()
+        # src is a .png, so the title's own extension is dropped, not doubled
+        assert (mem_dir / "files" / "images" / "slife_r2_vision_cjk-page-1.png").is_file()
 
     @pytest.mark.asyncio
     async def test_category_override(self, tmp_path):
@@ -385,6 +423,13 @@ class TestUrlSave:
             # and src.suffix
             ("https://example.com/dl", "My Paper", "my-paper"),
             ("https://example.com/other.pdf", "My Paper", "my-paper.pdf"),
+            # a title that is itself a filename: the dot is part of the name,
+            # and the extension still appears exactly once (2026-09-26)
+            ("https://example.com/dl", "memfiles_test_doc.txt",
+             "memfiles_test_doc.txt"),
+            ("https://example.com/other.pdf", "My Paper.pdf", "my-paper.pdf"),
+            # a dot inside the basename survives too
+            ("https://example.com/a.b.c", "", "a.b.c"),
         ):
             _, _, stem, ext = plugin._url_name_parts(urlparse(url), title)
             assert stem + ext == expected, (url, title)
@@ -809,11 +854,41 @@ class TestSaveUrlPublicGuard:
             "http://[fdfe:dcba:9876:ffff::2]/x"
         ) is None
 
+    def test_allows_fake_ip_resolver_range_v6_benchmark(self):
+        """mihomo's ``fake-ip-range6`` is per-profile and one that picks RFC
+        5180 space (2001:2::/48) answers every public hostname from there.
+        Both addresses are what this machine's resolver returned for real
+        public hosts — before the pool was listed, url_save refused every
+        URL on it."""
+        assert plugin._reject_non_public_url("http://[2001:2::127]/x") is None
+        assert plugin._reject_non_public_url("http://[2001:2::128]/") is None
+
     def test_rejects_ula_outside_the_fake_ip_pool(self):
         """Only the documented fake-ip prefixes are exempt — any other ULA
-        (fc00::/7) answer is still refused."""
+        (fc00::/7) answer is still refused, and the v6 exemption is the
+        benchmark /48 itself, not all of 2001::."""
         assert plugin._reject_non_public_url("http://[fdfe::1]/x")
         assert plugin._reject_non_public_url("http://[fd12:3456::1]/x")
+        assert plugin._reject_non_public_url("http://[2001:db8::1]/x")
+
+    def test_refusal_names_the_pool_a_name_landed_in(self, monkeypatch):
+        """A *name* refused from private space points at the pool list to
+        edit — that is the 2026-09-26 failure (a public host answered from an
+        unlisted fake-ip pool), and it cost an afternoon to find.  A literal-IP
+        host has no such ambiguity and must stay terse."""
+        import socket as socket_mod
+
+        monkeypatch.setattr(
+            socket_mod,
+            "getaddrinfo",
+            lambda *a, **kw: [
+                (socket_mod.AF_INET, socket_mod.SOCK_STREAM, 6, "", ("10.7.7.7", 0)),
+            ],
+        )
+        err = plugin._reject_non_public_url("https://unlisted.example/x")
+        assert err and "FAKE_IP_NETS" in err
+        terse = plugin._reject_non_public_url("http://10.7.7.7/x")
+        assert terse and "FAKE_IP_NETS" not in terse
 
     def test_rejects_non_http_schemes(self):
         assert plugin._reject_non_public_url("ftp://example.com/x")

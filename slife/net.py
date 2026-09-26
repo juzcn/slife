@@ -24,14 +24,25 @@ from __future__ import annotations
 
 import ipaddress
 
-#: Pools a fake-ip resolver synthesises addresses from.
-#: ``198.18.0.0/15`` is RFC 2544 benchmarking space (Clash's default
-#: ``fake-ip-range``, ``198.18.0.1/16``, sits inside it); ``fdfe:dcba:9876::/48``
-#: is sing-box's default IPv6 pool.
+#: Pools a fake-ip resolver synthesises addresses from.  The IPv4 side has one
+#: ecosystem default: ``198.18.0.0/15``, RFC 2544 benchmarking space, which
+#: Clash's ``fake-ip-range`` (``198.18.0.1/16``) sits inside.  The IPv6 side
+#: has none — sing-box answers from ``fdfe:dcba:9876::/48`` (the ULA pool Clash
+#: Verge ships in its own DNS template), while mihomo takes a per-profile
+#: ``fake-ip-range6``: the profile on this machine sets ``2001:2::0/64``, RFC
+#: 5180 benchmarking space.  Both v6 ranges are listed.
+#:
+#: A range belongs here when no real host answers from it (both benchmarking
+#: ranges are unroutable, and nobody points a DNS answer at ULA) and no
+#: cloud-metadata address sits inside it — IPv6 metadata (``fd00:ec2::254``)
+#: is ULA, but outside all three.  Adding a range is a one-line change, and
+#: the SSRF guard names this module in its refusal, so a proxy configured
+#: with some other pool says so instead of just failing.
 FAKE_IP_NETS: tuple[
     ipaddress.IPv4Network | ipaddress.IPv6Network, ...
 ] = (
     ipaddress.ip_network("198.18.0.0/15"),
+    ipaddress.ip_network("2001:2::/48"),
     ipaddress.ip_network("fdfe:dcba:9876::/48"),
 )
 
