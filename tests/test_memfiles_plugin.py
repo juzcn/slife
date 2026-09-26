@@ -18,6 +18,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import asyncio
+import codecs
 import json
 import re
 import sqlite3
@@ -26,6 +27,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
+from slife import net
 from slife.plugins.memdb.search import SearchLegs, run_search
 
 import slife.plugins.memfiles.server as plugin
@@ -694,19 +696,69 @@ class TestCabinetRead:
         assert "attach_image" in out
 
     @pytest.mark.asyncio
-    async def test_a_non_utf8_text_file_is_refused_too(self, tmp_path):
-        """The NUL byte is not the only tell: a Latin-1 text file has none and
-        still has no UTF-8 text to return."""
+    async def test_a_text_file_in_another_encoding_is_read_and_named(self, tmp_path):
+        """The 2026-09-26 tester's file: a .txt written by cmd, so GBK.  It is
+        text and it has to be readable — refusing it and calling it "not text"
+        was wrong twice over, once about the content and once about the reason.
+
+        The bytes must be one of the tester's own, because that is the case
+        that failed: 中文编码样本 retest-R3."""
         mem_dir = tmp_path / "files"
         mem_dir.mkdir(parents=True, exist_ok=True)
-        bad = mem_dir / "latin1.txt"
-        bad.write_bytes("café".encode("latin-1"))
+        gbk = mem_dir / "样本.txt"
+        gbk.write_bytes("中文编码样本 retest-R3\r\n第二行中文\r\n".encode("gbk"))
+        latin = mem_dir / "cafe.txt"
+        latin.write_bytes("café au lait écrit à la main".encode("latin-1"))
+
         store, _ = _fake_store(mem_dir)
-        store.resolve_safe_path = MagicMock(return_value=bad)
+        for rel, target, needle in (
+            ("样本.txt", gbk, "中文编码样本 retest-R3"),
+            ("cafe.txt", latin, "café au lait"),
+        ):
+            store.resolve_safe_path = MagicMock(return_value=target)
+            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+                out = await plugin.file_read(rel)
+            assert not out.startswith("Error"), out
+            assert needle in out, "the text comes back, not mojibake"
+            # Which encoding the detector names is the library's business; that
+            # it says so at all is the contract — a silent wrong decode is the
+            # outcome this refuses to risk.
+            assert out.startswith("[decoded as "), out
+            assert "the file is not utf-8" in out.splitlines()[0]
+
+    @pytest.mark.asyncio
+    async def test_a_utf16_file_with_a_bom_is_read(self, tmp_path):
+        """PowerShell's ``>`` writes UTF-16LE with a BOM — text, carrying a NUL
+        on every ASCII character, which is why the BOM is settled before the
+        NUL test rather than after it."""
+        mem_dir = tmp_path / "files"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        target = mem_dir / "ps.txt"
+        target.write_bytes("第一行\r\nsecond line\r\n".encode("utf-16"))
+        store, _ = _fake_store(mem_dir)
+        store.resolve_safe_path = MagicMock(return_value=target)
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.file_read("latin1.txt")
-        assert out.startswith("Error")
-        assert "is not text" in out
+            out = await plugin.file_read("ps.txt")
+        assert "第一行" in out and "second line" in out
+        assert out.startswith("[decoded as utf-16")
+
+    @pytest.mark.asyncio
+    async def test_utf8_is_returned_verbatim_with_no_header(self, tmp_path):
+        """The common case stays exactly what it was: the file's bytes as text,
+        and not a word about encodings.  A UTF-8 BOM is not text either."""
+        mem_dir = tmp_path / "files"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        for name, raw, expected in (
+            ("plain.txt", "中文 plain\n".encode("utf-8"), "中文 plain\n"),
+            ("bom.txt", codecs.BOM_UTF8 + "中文 bom\n".encode("utf-8"), "中文 bom\n"),
+        ):
+            target = mem_dir / name
+            target.write_bytes(raw)
+            store, _ = _fake_store(mem_dir)
+            store.resolve_safe_path = MagicMock(return_value=target)
+            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+                out = await plugin.file_read(name)
+            assert out == expected, name
 
 
 class TestNoteDiaryBrowse:
@@ -830,85 +882,87 @@ class TestCabinetStatus:
 
 class TestSaveUrlPublicGuard:
     """url_save only fetches publicly reachable http(s) URLs — loopback /
-    LAN / cloud-metadata targets are refused (REVIEW §1-1)."""
+    LAN / cloud-metadata targets are refused (REVIEW §1-1).
 
-    def test_allows_public_http(self):
-        assert plugin._reject_non_public_url("http://8.8.8.8/x") is None
-        assert plugin._reject_non_public_url("https://1.1.1.1") is None
+    The rule has three steps, and which one judges a *name* depends on whether
+    the machine's resolver tells the truth, so the tests say which machine they
+    are on.  Neither fixture touches the network: a fake-ip machine never
+    reaches the resolution step, and an honest one has it stubbed.
+    """
 
-    def test_allows_fake_ip_resolver_range(self):
-        """Clash / sing-box fake-ip resolvers answer public hostnames from
-        the RFC 2544 benchmarking range (198.18.0.0/15) — that's the proxy's
-        front door, not LAN infra, and must not be refused."""
-        assert plugin._reject_non_public_url("http://198.18.0.1/x") is None
-        assert plugin._reject_non_public_url("http://198.18.255.9/") is None
+    @pytest.fixture
+    def honest(self, monkeypatch):
+        """A machine whose resolver answers where a name really goes."""
+        monkeypatch.setattr(net, "resolver_uses_fake_ip", lambda: False)
 
-    def test_allows_fake_ip_resolver_range_v6(self):
-        """sing-box's default IPv6 fake-ip pool (fdfe:dcba:9876::/48) is ULA
-        — Python flags it private, but a fake-ip resolver answering public
-        hostnames from it is the proxy's front door, not LAN infra."""
-        assert plugin._reject_non_public_url(
-            "http://[fdfe:dcba:9876::1]/x"
-        ) is None
-        assert plugin._reject_non_public_url(
-            "http://[fdfe:dcba:9876:ffff::2]/x"
-        ) is None
+    @pytest.fixture
+    def fake_ip(self, monkeypatch):
+        """A machine behind a TUN proxy: the proxy answers every name, so an
+        answer says nothing about the destination."""
+        monkeypatch.setattr(net, "resolver_uses_fake_ip", lambda: True)
 
-    def test_allows_fake_ip_resolver_range_v6_benchmark(self):
-        """mihomo's ``fake-ip-range6`` is per-profile and one that picks RFC
-        5180 space (2001:2::/48) answers every public hostname from there.
-        Both addresses are what this machine's resolver returned for real
-        public hosts — before the pool was listed, url_save refused every
-        URL on it."""
-        assert plugin._reject_non_public_url("http://[2001:2::127]/x") is None
-        assert plugin._reject_non_public_url("http://[2001:2::128]/") is None
-
-    def test_rejects_ula_outside_the_fake_ip_pool(self):
-        """Only the documented fake-ip prefixes are exempt — any other ULA
-        (fc00::/7) answer is still refused, and the v6 exemption is the
-        benchmark /48 itself, not all of 2001::."""
-        assert plugin._reject_non_public_url("http://[fdfe::1]/x")
-        assert plugin._reject_non_public_url("http://[fd12:3456::1]/x")
-        assert plugin._reject_non_public_url("http://[2001:db8::1]/x")
-
-    def test_refusal_names_the_pool_a_name_landed_in(self, monkeypatch):
-        """A *name* refused from private space points at the pool list to
-        edit — that is the 2026-09-26 failure (a public host answered from an
-        unlisted fake-ip pool), and it cost an afternoon to find.  A literal-IP
-        host has no such ambiguity and must stay terse."""
+    @staticmethod
+    def _resolves_to(monkeypatch, address: str) -> None:
         import socket as socket_mod
 
         monkeypatch.setattr(
             socket_mod,
             "getaddrinfo",
             lambda *a, **kw: [
-                (socket_mod.AF_INET, socket_mod.SOCK_STREAM, 6, "", ("10.7.7.7", 0)),
+                (socket_mod.AF_INET, socket_mod.SOCK_STREAM, 6, "", (address, 0)),
             ],
         )
-        err = plugin._reject_non_public_url("https://unlisted.example/x")
-        assert err and "FAKE_IP_NETS" in err
-        terse = plugin._reject_non_public_url("http://10.7.7.7/x")
-        assert terse and "FAKE_IP_NETS" not in terse
+
+    def test_allows_public_http(self):
+        assert plugin._reject_non_public_url("http://8.8.8.8/x") is None
+        assert plugin._reject_non_public_url("https://1.1.1.1") is None
+
+    def test_a_public_name_is_allowed_on_a_fake_ip_machine(self, fake_ip):
+        """The 2026-09-26 failure: every public URL was refused because the
+        proxy's answer was read as "LAN or metadata".  The address is not
+        evidence about the destination, so it is not consulted at all."""
+        assert plugin._reject_non_public_url("https://example.com/") is None
+        assert plugin._reject_non_public_url("https://docs.astral.sh/uv/") is None
+
+    def test_a_lan_name_is_refused_on_an_honest_machine(self, honest, monkeypatch):
+        self._resolves_to(monkeypatch, "192.168.1.5")
+        err = plugin._reject_non_public_url("https://intranet.example.com/x")
+        assert err and "192.168.1.5" in err
+
+    def test_a_public_name_is_allowed_on_an_honest_machine(self, honest, monkeypatch):
+        self._resolves_to(monkeypatch, "93.184.216.34")
+        assert plugin._reject_non_public_url("https://example.com/") is None
+
+    def test_literals_are_refused_on_every_machine(self, fake_ip):
+        """An address the caller wrote *is* the destination, whatever the
+        resolver does — including one inside the range this machine's proxy
+        answers names from, which is the proxy's front door, not a host."""
+        for url in (
+            "http://127.0.0.1:8080/admin", "http://[::1]/x",
+            "http://169.254.169.254/latest/meta-data/", "http://[fe80::1]/x",
+            "http://10.0.0.1/", "http://192.168.1.1/", "http://172.16.0.1/",
+            "http://[fd00::1]/x", "http://[fd00:ec2::254]/x",
+            "http://198.18.0.1/x", "http://[2001:2::127]/x",
+            "http://[fdfe:dcba:9876::1]/x", "http://[2001:db8::1]/x",
+            "http://[::ffff:127.0.0.1]/x",   # an IPv4 address, IPv6 spelling
+        ):
+            assert plugin._reject_non_public_url(url), url
+
+    def test_names_that_cannot_be_public_are_refused_without_dns(self, fake_ip):
+        """Refused by name, so no resolver's answer can affect it.  A bare
+        label carries an encoded literal the same way: 2130706433 is
+        127.0.0.1, and a trailing dot is legal FQDN syntax for the same host."""
+        for url in (
+            "http://localhost/admin", "http://nas.lan/", "http://nas.lan./",
+            "http://router.local/", "http://printer/", "http://foo.internal/",
+            "http://metadata.google.internal/", "http://2130706433/",
+        ):
+            assert plugin._reject_non_public_url(url), url
 
     def test_rejects_non_http_schemes(self):
         assert plugin._reject_non_public_url("ftp://example.com/x")
         assert plugin._reject_non_public_url("file:///etc/passwd")
         assert plugin._reject_non_public_url("gopher://localhost/1")
-
-    def test_rejects_loopback(self):
-        assert plugin._reject_non_public_url("http://127.0.0.1:8080/admin")
-        assert plugin._reject_non_public_url("http://[::1]/x")
-        assert plugin._reject_non_public_url("http://localhost/admin")
-
-    def test_rejects_cloud_metadata(self):
-        assert plugin._reject_non_public_url(
-            "http://169.254.169.254/latest/meta-data/"
-        )
-
-    def test_rejects_private_and_link_local(self):
-        assert plugin._reject_non_public_url("http://10.0.0.1/")
-        assert plugin._reject_non_public_url("http://192.168.1.1/")
-        assert plugin._reject_non_public_url("http://172.16.0.1/")
 
 
 # ═══════════════════════════════════════════════════════════════════════

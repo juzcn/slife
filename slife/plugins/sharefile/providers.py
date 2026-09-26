@@ -53,7 +53,7 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 import httpx2
 
-from slife.net import is_fake_ip
+from slife.net import is_fake_ip_answer
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
@@ -279,16 +279,21 @@ class _TunnelProviderBase:
 
     @property
     def edge_via_proxy(self) -> bool:
-        """Whether the edge address is a fake-ip one — a local proxy's answer.
+        """Whether the edge address is one a fake-ip resolver answered.
 
         True means a proxy in fake-ip mode is resolving the tunnel's edge, so
         the control connection is being carried (and cut) by that proxy rather
         than by Cloudflare.  Nothing about the transport or the protocol helps
-        there: the dial itself lands on a synthetic address.  Reported as a
-        fact — the caller owns the remedy, which is on the user's proxy config,
-        not in slife.
+        there: the dial itself lands on an address that is not a host.
+        Reported as a fact — the caller owns the remedy, which is on the user's
+        proxy config, not in slife.
+
+        This is the same pair of facts ``url_save``'s SSRF guard *exempts*,
+        read for the opposite reason: a fake-ip answer means "the proxy is in
+        the path", which is fine for a fetch and fatal for a long-lived
+        connection.  Both come from ``slife.net``.
         """
-        return is_fake_ip(self._edge_ip)
+        return is_fake_ip_answer(self._edge_ip)
 
     def is_reachable(self) -> bool:
         """Whether the published URL can actually be served right now.
@@ -777,7 +782,7 @@ class _CliTunnelProvider(_TunnelProviderBase):
         a synthetic one.
 
         cloudflared names it on every connection line (``ip=198.18.0.32``).
-        When it falls in a fake-ip pool, a local proxy is answering for the
+        When it is a fake-ip answer, a local proxy is answering for the
         edge — and that is the whole explanation for a tunnel that registers
         and then dies every 30-60 s: the control connection is being cut by
         the proxy, not by the transport or the protocol.  Worth capturing
@@ -1113,8 +1118,8 @@ class CloudflareQuickTunnel(_CliTunnelProvider):
     #:
     #: **This does NOT rescue a fake-ip proxy**, and the earlier claim here
     #: that it did was wrong — measured, not theorised: with a Clash/Mihomo
-    #: TUN in fake-ip mode the edge hostname resolves into 198.18.0.0/15, so
-    #: the TCP dial itself lands on a synthetic address and times out
+    #: TUN in fake-ip mode the edge hostname resolves to an address of the
+    #: proxy's choosing, so the TCP dial itself lands on one and times out
     #: (``dial tcp 198.18.0.32:7844: i/o timeout``).  The transport choice
     #: never comes into play, and the flap continues unchanged on http2.  The
     #: honest remedy is on the proxy config (make the edge resolve real and

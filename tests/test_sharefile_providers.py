@@ -302,11 +302,21 @@ class TestEdgeViaProxy:
 
     A tunnel that registers and dies every 30-60s while publishing a link that
     answers HTTP 530 reads as Cloudflare's fault.  Measured, it was this: the
-    proxy resolves the edge hostname into its fake-ip pool, so cloudflared's
-    TCP dial lands on a synthetic address and times out — which no value of
+    proxy answers the edge hostname with an address of its own choosing, so
+    cloudflared's TCP dial lands on one and times out — which no value of
     ``--protocol`` can change.  Detected off the child's own output, because
     it is otherwise invisible from inside slife.
     """
+
+    @pytest.fixture(autouse=True)
+    def _fake_ip_machine(self, monkeypatch):
+        """The machine that reported this flapping: a TUN proxy answers every
+        name, so a non-public edge address is the proxy's, not a host's.  The
+        fact is measured from the resolver, so it is stated here rather than
+        left to whatever DNS the test machine has."""
+        import slife.net as net
+
+        monkeypatch.setattr(net, "resolver_uses_fake_ip", lambda: True)
 
     #: The real line, from the machine that reported the flapping.
     CF_EDGE_LINE = (

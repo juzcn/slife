@@ -1597,12 +1597,17 @@ saved. The vector's text contract is **versioned**
 (`memfiles.store.INDEX_TEXT_VERSION`, compared in the meta table), so changing it drops the stale
 vectors for the drainer to rebuild exactly as a model change does.
 
-URL saving guards against SSRF **before fetching and again on every redirect hop**: every resolved
-address must be globally routable, so loopback, private, link-local and cloud-metadata targets are
-refused. One deliberate exception — the documented **fake-IP pools** used by common proxy tools are
-accepted, because those resolvers answer real public hostnames with addresses from them. (The same
-pools are what sharefile's tunnel health *flags*, for the opposite reason: intercepted traffic breaks
-the tunnel's control connection.)
+URL saving guards against SSRF **before fetching and again on every redirect hop**, in three steps
+whose order is the point: an IP **literal** is the destination whatever DNS does, so a non-public one
+is refused; a name that **cannot be public** (a reserved TLD, or a bare label) is refused by name,
+which no answer can affect; and otherwise the resolved answer is believed **only when the resolver is
+honest**. That last condition is measured, not configured — a fake-IP resolver answers a name that
+cannot exist, so `slife.net` asks it for one. Believing a fake-IP answer instead refused *every* public
+URL on a machine behind a TUN proxy, and listing the pools to exempt was a patch per pool (Clash's
+`fake-ip-range`, mihomo's per-profile `fake-ip-range6`, sing-box's own defaults), so the question
+became "does this resolver lie?" rather than "which pool is it?". The same fact is what sharefile's
+tunnel health *flags*, for the opposite reason: intercepted traffic breaks the tunnel's long-lived
+control connection, which is the one thing slife cannot do through such a proxy.
 
 **A file's bytes stay bytes.** The cabinet stores four kinds of document but only one of them can be
 binary, and nothing in the index ever holds a file's bytes: what is indexed and embedded is text —
@@ -1612,6 +1617,15 @@ So `file_read` returns a file's TEXT or refuses — a PDF, an image or an archiv
 `errors="replace"` into a page of replacement characters. That silent decode used to *succeed*, which
 made a read of a file with no text in it indistinguishable from a read of one that is genuinely full
 of gibberish.
+
+"No text" is not the same question as "is it UTF-8", and reading it as one was wrong twice over: it
+refused a `.txt` written by cmd (GBK) or redirected by PowerShell (UTF-16LE), which plainly has text
+in it, and it answered `text/plain` in one clause while calling the file "not text" in the next. A
+file in another encoding is now read, and the encoding is announced on the first line —
+`[decoded as gb18030; the file is not utf-8]` — because the one outcome still worth refusing is a
+*silent* wrong decode. UTF-8 (the cabinet's own writers, and the web) comes back verbatim with no
+header at all, a BOM settles the encoding before the binary sniff can mistake UTF-16 for a PDF, and a
+NUL in the first block is still the tell that a file has no text to return.
 
 All save tools return the saved local path and never auto-publish, so nothing is registered in any
 token registry as a side effect of saving. Publishing is always the model's explicit choice, through

@@ -78,7 +78,7 @@ mcp:
         - auto
         - --search-backend
         - auto
-      description: DuckDuckGo search MCP server — web search and content extraction via DuckDuckGo.
+      description: "DuckDuckGo search MCP server — web search and content extraction via DuckDuckGo. (--allow-private-urls was added 2026-09-26 as a temporary workaround for the local proxy's fake-ip mode, then removed the same day per user request.)"
     amap-maps:
       command: npx
       args:

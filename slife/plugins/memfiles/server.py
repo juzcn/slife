@@ -42,6 +42,8 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import codecs
+import ipaddress
 import json
 import mimetypes
 import os
@@ -84,18 +86,41 @@ _MAX_SAVE_BYTES = 50 * 1024 * 1024  # 50 MB
 _SNIFF_BYTES = 8192
 
 
-def _is_utf8(raw: bytes) -> bool:
-    """Whether *raw* decodes as UTF-8 — the second half of the text test.
+def _decode_text(raw: bytes) -> tuple[str, str] | None:
+    """*raw* as text, and the encoding it turned out to be in.
 
-    A NUL byte catches most binaries, but not all (a UTF-16 text file has one,
-    a Latin-1 file has none); a strict decode catches the rest of what has no
-    text to return.
+    None when there is no text in it at all.  This is the whole text test, and
+    it is deliberately not "is it UTF-8": a .txt saved from this machine's cmd
+    is GBK, one redirected from PowerShell is UTF-16LE, and both are text a
+    reader should get back.  What must not happen is a *silent* wrong answer —
+    so the encoding is returned with the text, and the caller announces it when
+    it is not UTF-8.
+
+    Order matters.  A BOM settles the question outright (and must be read
+    before the NUL test below, which UTF-16LE trips on every ASCII character).
+    UTF-8 then answers for the cabinet's own writers and for everything else on
+    the web without a detector's opinion.  A NUL in the first block is the
+    classic binary tell — no encoding a text file is plausibly in has one
+    there — and what is left goes to ``charset_normalizer``, which answers
+    None rather than guessing at a binary blob.
     """
+    if raw.startswith(codecs.BOM_UTF8):
+        raw = raw[len(codecs.BOM_UTF8):]
+    elif raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return raw.decode("utf-16"), "utf-16"
     try:
-        raw.decode("utf-8")
+        return raw.decode("utf-8"), "utf-8"
     except UnicodeDecodeError:
-        return False
-    return True
+        pass
+    if b"\x00" in raw[:_SNIFF_BYTES]:
+        return None
+    from charset_normalizer import from_bytes
+
+    best = from_bytes(raw).best()
+    if best is None:
+        return None
+    return str(best), best.encoding
+
 
 #: Serializes the save path-claim + file write + DB insert (file_save /
 #: url_save).  ``_unique_path`` is an exists-then-write claim — without a lock,
@@ -744,9 +769,11 @@ async def __memfiles_reload_semantic(enabled: bool = True) -> str:
 @mcp.tool(
     name="file_read",
     description=(
-        "Read a saved file's TEXT content by its cabinet-relative path. A "
-        "binary file (image, PDF, archive) is refused rather than decoded — "
-        "its bytes stay on disk, and the path is what other tools take."
+        "Read a saved file's TEXT content by its cabinet-relative path. Text "
+        "in another encoding (GBK, UTF-16) is decoded and the encoding named "
+        "on the first line; a binary file (image, PDF, archive) is refused "
+        "rather than decoded — its bytes stay on disk, and the path is what "
+        "other tools take."
     ),
 )
 async def file_read(path: str) -> str:
@@ -775,8 +802,15 @@ async def file_read(path: str) -> str:
     # genuinely full of gibberish.  The bytes stay on disk either way (the
     # cabinet never rewrites a saved file), so the answer names the type, the
     # size and the path, and the path is what the tools that want bytes take.
-    mime = mimetypes.guess_type(str(target))[0] or "unknown type"
-    if b"\x00" in raw[:_SNIFF_BYTES] or not _is_utf8(raw):
+    #
+    # "No text" is not the same as "not UTF-8", and saying so was wrong twice
+    # over: it refused a GBK or UTF-16 .txt that plainly has text in it, and it
+    # called that file "not text" while naming a text/plain mime beside it.  A
+    # file in another encoding is read, and the encoding is announced — a
+    # silent wrong decode is the one outcome worth refusing.
+    decoded = _decode_text(raw)
+    if decoded is None:
+        mime = mimetypes.guess_type(str(target))[0] or "unknown type"
         hint = (
             "attach_image takes that path"
             if mime.startswith("image/")
@@ -786,7 +820,10 @@ async def file_read(path: str) -> str:
             f"Error: {path} is not text ({mime}, {len(raw)} bytes) — "
             f"the bytes are at {target}; {hint}"
         )
-    return raw.decode("utf-8")
+    text, encoding = decoded
+    if encoding == "utf-8":
+        return text
+    return f"[decoded as {encoding}; the file is not utf-8]\n{text}"
 
 
 # ── Notes & diary browsing ────────────────────────────────────────
@@ -1282,39 +1319,39 @@ def _reject_non_public_url(url: str) -> str | None:
     SSRF guard for ``url_save``: this plugin process fetches *url*, so a
     loopback / LAN / cloud-metadata target (``169.254.169.254`` etc.) would
     let the LLM read addresses the user's browser can't reach — and with the
-    ngrok tunnel up, the response would be published as a public file. The
-    host is validated as an IP literal or via DNS resolution; **every**
-    resolved address must be globally routable, with one exception: the
-    ranges fake-ip resolvers answer *public* hostnames with.  Clash answers
-    IPv4 from 198.18.0.0/15 (RFC 2544 benchmark space), and IPv6 from either
-    sing-box's fdfe:dcba:9876::/48 or a per-profile ``fake-ip-range6`` — the
-    RFC 5180 benchmark range 2001:2::/48 covers the latter — so all three are
-    accepted.
+    ngrok tunnel up, the response would be published as a public file.
+
+    The rule, and why it is not "every resolved address must be globally
+    routable" — which is what it used to be, at the cost of believing whatever
+    a fake-ip resolver said:
+
+    1. The host is an IP **literal**: it is the destination, whatever the
+       resolver does, so a non-public one is refused.  These never reach DNS,
+       which is what makes this step work on every machine.
+    2. The host is a name that **cannot be public** — an RFC 6761/6762/8375
+       reserved TLD, ICANN's ``.internal``, the de-facto LAN TLDs, or a bare
+       single label.  Refused by *name*, which no answer can affect.  The
+       single-label case also catches an encoded literal (``2130706433``).
+    3. Otherwise the answer is evidence **only when the resolver is honest**.
+       Behind a fake-ip proxy it is not evidence at all: the proxy answers
+       every name, so the address says nothing about where the connection
+       lands, and reading it as "LAN" refused every public URL on such a
+       machine (see ``slife.net``).  What the proxy resolves is the proxy's
+       business; the teeth are steps 1 and 2.
 
     ``url_save`` re-runs this guard on EVERY redirect hop immediately before
     that hop's fetch (an earlier comment claiming redirect chains are not
-    re-checked was stale).  Residual DNS-rebinding TOCTOU: the guard resolves
-    via ``socket.getaddrinfo``, then aiohttp performs its own fresh resolution
-    at connect time — a public name whose DNS flips to a link-local address
-    in that window could pass the check and reach metadata.  Fully closing it
-    means pinning the validated IP for the connection (with TLS SNI / Host
-    preserved), which is not done here; the per-hop re-check narrows the
+    re-checked was stale).  Residual DNS-rebinding TOCTOU on step 3: the guard
+    resolves via ``socket.getaddrinfo``, then aiohttp performs its own fresh
+    resolution at connect time — a public name whose DNS flips to a link-local
+    address in that window could pass the check and reach metadata.  Fully
+    closing it means pinning the validated IP for the connection (with TLS SNI
+    / Host preserved), which is not done here; the per-hop re-check narrows the
     window to a single connect.
     """
-    import ipaddress
     import socket
 
-    from slife.net import is_fake_ip
-
-    # Clash / Mihomo / sing-box fake-ip resolvers answer *public* hostnames
-    # with synthetic addresses that Python's ipaddress classifies as private
-    # or ULA — that's the proxy's front door for public hosts, not
-    # LAN/metadata infrastructure.  EXEMPT exactly the documented pools
-    # (``slife.net``, shared with sharefile's tunnel health, which flags the
-    # same addresses for the opposite reason) or url_save refuses every URL
-    # when a fake-ip resolver is the system DNS.
-    # ANY other non-globally-routable answer (loopback, private, link-local,
-    # multicast, a real fc00::/7 ULA LAN host, ...) is still refused.
+    from slife import net as _net  # module ref — patchable, see slife/timeouts
 
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -1322,6 +1359,29 @@ def _reject_non_public_url(url: str) -> str | None:
     host = parsed.hostname
     if not host:
         return "URL has no host"
+    # A trailing dot is legal FQDN syntax ("nas.lan.") and may not be a way
+    # past the name check below, nor a way to hide a literal from step 1.
+    host = host.rstrip(".")
+    if not host:
+        return "URL has no host"
+
+    # 1. A literal the caller wrote: it is where the connection lands, DNS or
+    #    no DNS.  A bare "198.18.0.1" is refused even on the machine whose
+    #    proxy answers names from that range — it is the proxy's front door,
+    #    not a host, and url_save has no business fetching it.
+    literal = _as_address(host)
+    if literal is not None:
+        if _net.is_public_address(literal):
+            return None
+        return f"refusing non-public host '{host}'"
+
+    # 2. A name no public resolver answers for.
+    if _is_non_public_name(host):
+        return f"refusing non-public host '{host}'"
+
+    # 3. A resolved answer, believed only when the resolver is honest.
+    if _net.resolver_uses_fake_ip():
+        return None
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError as e:
@@ -1331,37 +1391,39 @@ def _reject_non_public_url(url: str) -> str | None:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if is_fake_ip(ip):
-            continue
-        if (
-            ip.is_loopback
-            or ip.is_private
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            # A *name* that resolved into private/reserved space is either a
-            # real LAN host — correctly refused — or a public host answered
-            # from a fake-ip pool this module does not list, which is how
-            # every url_save came to fail on 2026-09-26 (mihomo's per-profile
-            # fake-ip-range6 was 2001:2::0/64).  Name the two possibilities at
-            # the refusal so the next pool costs one line instead of a DNS
-            # investigation.  Literal-IP hosts, and the loopback / link-local
-            # answers, carry no such ambiguity — those stay terse.
-            try:
-                ipaddress.ip_address(host)
-                literal = True
-            except ValueError:
-                literal = False
-            hint = ""
-            if not literal and not (ip.is_loopback or ip.is_link_local):
-                hint = (
-                    " — a proxy in fake-ip mode answers public hosts from a "
-                    "synthetic pool; add its range to slife.net.FAKE_IP_NETS"
-                )
-            return f"refusing non-public host '{host}' ({ip}){hint}"
+        if not _net.is_public_address(ip):
+            return f"refusing non-public host '{host}' ({ip})"
     return None
+
+
+def _as_address(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """*text* as an IP address, or None when it is not one."""
+    try:
+        return ipaddress.ip_address(text)
+    except ValueError:
+        return None
+
+
+#: TLDs no public resolver answers for: RFC 6761 (``.test``, ``.example``,
+#: ``.invalid``, ``.localhost``), RFC 6762 (``.local``, mDNS), RFC 8375
+#: (``.home.arpa``), ICANN's reserved ``.internal``, the reverse tree, and the
+#: de-facto private-use TLDs LANs hand out.  A closed, standard set — unlike a
+#: proxy's fake-ip pool, it does not move when someone edits a config.
+_NON_PUBLIC_TLDS = frozenset({
+    "arpa", "corp", "example", "home", "internal", "intranet", "invalid",
+    "lan", "local", "localdomain", "localhost", "test",
+})
+
+
+def _is_non_public_name(host: str) -> bool:
+    """Whether *host* is a name that cannot be public.
+
+    A single label counts.  ``localhost`` is the obvious one, and an encoded
+    literal arrives the same way: ``http://2130706433/`` is neither a dotted
+    quad nor a name, and it resolves to loopback.
+    """
+    labels = host.split(".")
+    return len(labels) < 2 or labels[-1].lower() in _NON_PUBLIC_TLDS
 
 
 # ── Entry point ──────────────────────────────────────────────────────

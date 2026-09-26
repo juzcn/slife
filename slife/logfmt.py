@@ -83,6 +83,7 @@ _NOISY_LOGGER_NAMES = (
     "keyring.backend",        # probes 8 backends at startup (KWallet, SecretService, …)
     "win32ctypes.core.cffi",  # "Loaded cffi backend" — one-shot, not diagnostic
     "credstore",              # "backend already initialized" — noise on every import
+    "charset_normalizer",     # "Encoding detection: Found gb18030 as plausible…" per file_read
 )
 
 
