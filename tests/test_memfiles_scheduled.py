@@ -378,9 +378,13 @@ async def test_report_kind_in_unified_search(tmp_path):
         await store.upsert_report(task["task_id"], "Quarterly", "revenue up 20%", tags="finance")
         await store.upsert_note("Python", "asyncio notes", "py")
 
-        # report is a searchable kind
-        hits = await store.search("revenue", kind="report", limit=10)
-        assert any("Quarterly" in h.get("text", "") or "revenue" in h.get("text", "") for h in hits)
+        # report is a searchable kind.  A hit carries the corpus's normalized
+        # shape — its title (what the row is called), its body (its text) and
+        # "kind:doc_id" as the id the fusion aligns on.
+        hits = await store.keyword_hits(query="revenue", kind="report", limit=10)
+        assert [h["id"] for h in hits] == ["report:1"]
+        assert hits[0]["title"] == "Quarterly"
+        assert "revenue" in hits[0]["body"]
     finally:
         await store.close()
 

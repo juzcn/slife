@@ -26,9 +26,9 @@ from slife.agent.message_history import TokenizerUnavailable, estimate_turn_toke
 from slife.plugins.memdb.recall import (
     RecallPolicy, fit_budget, fit_window, gate_turns,
 )
-from slife.plugins.memdb.store import SessionStore, _clamp_limit
+from slife.plugins.memdb.store import SessionStore
 from slife.plugins.memdb.search import (
-    hybrid_hint, rename_rowid_to_turn_id, run_hybrid,
+    hybrid_hint, rename_rowid_to_turn_id, run_hybrid, run_search, turn_legs,
 )
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.server_utils import create_plugin_server, warm_after_ready
@@ -595,80 +595,42 @@ async def turn_search(
     """
     # Search only READS the semantic gate — no side effects, no reindex kick.
     store = await _ensure_store()
-    manager = _manager
-    mode = mode.lower()
-    if mode not in ("hybrid", "fts5", "grep"):
-        mode = "hybrid"
-    # Clamp before use — the store methods clamp internally, but the hybrid
-    # final slice (`hits[:limit]`) uses the raw value, so a limit of 0 (→ [])
-    # or a negative (→ slices from the tail) would slip through.
-    limit = _clamp_limit(limit)
-
-    if not query.strip():
-        # An empty query is not a search, and it must not become one: grep
-        # compiles the empty pattern, which matches EVERY string.  Browsing is
-        # what turn_list is for.
-        return json.dumps(
-            {"error": "query must not be empty — to browse instead of "
-                      "search, use turn_list"},
-            ensure_ascii=False,
-        )
-
+    # Every rule a caller can get wrong — the mode, the empty query, the
+    # clamp, the gate, the one embed, the fusion, the hint — belongs to the
+    # shared composition, which the cabinet calls too.  This tool chooses the
+    # corpus and builds the envelope, and that is the whole of the difference
+    # between turn_search and cabinet_search.
     try:
-        if mode == "grep":
-            try:
-                hits = await store.search_grep(
-                    pattern=query, limit=limit, since=since, until=until,
-                )
-            except re.error as e:
-                # grep is a regex: an unusable pattern is the caller's to fix,
-                # and saying so beats a silent empty result.
-                return json.dumps(
-                    {"error": f"invalid regex {query!r}: {e}"},
-                    ensure_ascii=False,
-                )
-            rename_rowid_to_turn_id(hits)
-            return json.dumps(
-                {"mode": "grep", "query": query, "results": hits,
-                 "hint": "" if hits else f"no turns contain '{query}'"},
-                ensure_ascii=False, indent=2,
-            )
-
-        if mode == "fts5":
-            hits = await store.search_keyword(
-                query=query, limit=limit, since=since, until=until,
-            )
-            rename_rowid_to_turn_id(hits)
-            return json.dumps(
-                {"mode": "fts5", "query": query, "results": hits,
-                 "hint": "" if hits else f"no turns related to '{query}'"},
-                ensure_ascii=False, indent=2,
-            )
-
-        # hybrid — the composition lives in ONE place (search.run_hybrid);
-        # this tool only formats its result.  The hits are already renamed to
-        # turn_id and carry the normalized similarity.
-        result = await run_hybrid(
-            store, manager, query=query, limit=limit,
+        outcome = await run_search(
+            turn_legs(store), _manager, query=query, mode=mode, limit=limit,
             since=since, until=until,
         )
-        # Report the mode that actually RAN.  A degraded hybrid is an fts5
-        # result, and answering "hybrid" would misreport what was searched.
-        return json.dumps({
-            "mode": "hybrid" if result.semantic_available else "fts5",
-            "query": query,
-            "results": result.hits[:limit],
-            "hint": hybrid_hint(result),
-        }, ensure_ascii=False, indent=2)
     except InvalidTimeBound as e:
         # A bound in no known grammar is the caller's to fix: saying so beats a
         # logged traceback, and beats the silent empty result a pass-through
         # bound used to produce (SQLite compares the text, matches nothing, and
         # reports it as "no matches").
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return f"Error: {e}"
+    except ValueError as e:
+        # A bad mode or an empty query — a subclass of the bound error above,
+        # so it must be caught after it to keep the two messages distinct.
+        return f"Error: {e}"
+    except re.error as e:
+        # grep is a regex: an unusable pattern is the caller's to fix, and
+        # saying so beats a silent empty result.
+        return f"Error: invalid regex {query!r}: {e}"
     except Exception as e:
         logger.exception("search_failed query=%s mode=%s", query, mode)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return f"Error: {e}"
+
+    # Report the mode that actually RAN.  A degraded hybrid is an fts5 result,
+    # and answering "hybrid" would misreport what was searched.
+    return json.dumps({
+        "mode": outcome.ran_mode,
+        "query": query,
+        "results": outcome.results,
+        "hint": outcome.hint,
+    }, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
@@ -699,10 +661,10 @@ async def turn_list(
             since=since, until=until, limit=limit, offset=offset,
         )
     except InvalidTimeBound as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return f"Error: {e}"
     except Exception as e:
         logger.exception("turn_list_failed limit=%s offset=%s", limit, offset)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return f"Error: {e}"
 
     entries = data["entries"]
     rename_rowid_to_turn_id(entries)
@@ -752,7 +714,7 @@ async def turn_token_usage(
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("token_usage_failed turn_id=%s", turn_id)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return f"Error: {e}"
 
 
 @mcp.tool(
@@ -776,6 +738,13 @@ async def turn_count(
         query: Search text to count matches for (grep/fts5 modes).
         mode: grep or fts5 (default fts5).
     """
+    # Validated like turn_search's, and for the same reason: the store used to
+    # fall through an unknown mode to the fts5 branch and echo the caller's
+    # word back in the envelope — a count that answered a question nobody
+    # asked, reported as the mode that was asked for.
+    mode = (mode or "").lower()
+    if mode not in ("grep", "fts5"):
+        return f"Error: mode must be one of grep/fts5 — got {mode!r}"
     store = await _ensure_store()
     try:
         result = await store.count_turns(
@@ -783,10 +752,10 @@ async def turn_count(
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
     except InvalidTimeBound as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return f"Error: {e}"
     except Exception as e:
         logger.exception("count_failed query=%s mode=%s", query, mode)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return f"Error: {e}"
 
 
 @mcp.tool(
@@ -806,15 +775,13 @@ async def turn_read(turn_id: int) -> str:
     try:
         turn = await store.get_turn(rowid=turn_id)
         if turn is None:
-            return json.dumps(
-                {"error": f"turn not found turn_id={turn_id}"}, ensure_ascii=False,
-            )
+            return f"Error: turn not found — {turn_id}"
         if "rowid" in turn:
             turn["turn_id"] = turn.pop("rowid")
         return json.dumps(turn, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("open_failed turn_id=%s", turn_id)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return f"Error: {e}"
 
 
 @mcp.tool(
@@ -849,11 +816,18 @@ async def turn_summarize(
                     "this turn is saved"
                 ),
             }, ensure_ascii=False, indent=2)
-        await store.update_summary(rowid=turn_id, summary=summary, tags=tags)
+        if summary is None and tags is None:
+            return "Error: nothing to write — pass summary and/or tags"
+        if not await store.update_summary(
+            rowid=turn_id, summary=summary, tags=tags,
+        ):
+            # The UPDATE matched no row: announcing "updated" here told the
+            # caller its annotation landed on a turn that does not exist.
+            return f"Error: turn not found — {turn_id}"
         return json.dumps({"status": "updated", "turn_id": turn_id}, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("summarize_failed turn_id=%s", turn_id)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return f"Error: {e}"
 
 
 # ═══════════════════════════════════════════════════════════════════════

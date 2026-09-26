@@ -293,7 +293,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 | `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`（有截断——其余用 `tool_search` 找） |
 | `memdb` | `turn_search`, `turn_list`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `note_save`, `diary_save`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `file_read`, `report_save`, `report_list`, `report_read` |
+| `memfiles` | `note_save`, `diary_save`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `cabinet_summarize`, `file_read`, `report_save`, `report_list`, `report_read` |
 | `sharefile` | `share_file`, `sharefile_unshare` |
 | `a2a` | `a2a_send_message`（异步——返回 task_id，结果稍后自动推送）、`a2a_cancel_task`、`a2a_list_agents`、`a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |

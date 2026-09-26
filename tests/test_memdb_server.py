@@ -875,7 +875,11 @@ class TestTurnSearch:
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
             out = await srv.turn_search(query="")
 
-        assert "turn_list" in json.loads(out)["error"]
+        # A plain "Error: …" string, not a JSON envelope: the loop reads a
+        # tool failure off the prefix (is_error = result.startswith("Error")),
+        # so an {"error": …} object was recorded as a SUCCESSFUL call.
+        assert out.startswith("Error")
+        assert "turn_list" in out
         store.search_keyword.assert_not_awaited()
         store.search_grep.assert_not_awaited()
         store.search_time.assert_not_awaited()
@@ -911,7 +915,8 @@ class TestTurnSearch:
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
             out = await srv.turn_search(query="a(b", mode="grep")
 
-        assert "invalid regex" in json.loads(out)["error"]
+        assert out.startswith("Error")
+        assert "invalid regex" in out
 
     @pytest.mark.asyncio
     async def test_a_rejected_time_bound_is_an_error(self, restore_root_logger):
@@ -933,7 +938,8 @@ class TestTurnSearch:
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
             out = await srv.turn_search(query="天气", since="下周")
 
-        assert "invalid since bound" in json.loads(out)["error"]
+        assert out.startswith("Error")
+        assert "invalid since bound" in out
 
     @pytest.mark.asyncio
     async def test_hybrid_reports_the_mode_that_ran(self, restore_root_logger):
@@ -969,7 +975,8 @@ class TestTurnSearch:
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
             out = await srv.turn_search(query="微信登录", mode="fts5")
 
-        assert "pipeline bug" in json.loads(out)["error"]
+        assert out.startswith("Error")
+        assert "pipeline bug" in out
 
 
 class TestTurnList:
@@ -1032,4 +1039,5 @@ class TestTurnList:
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
             out = await srv.turn_list(until="下周")
 
-        assert "invalid until bound" in json.loads(out)["error"]
+        assert out.startswith("Error")
+        assert "invalid until bound" in out

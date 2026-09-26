@@ -62,8 +62,8 @@ from typing import Any
 
 import aiosqlite
 
+from slife.plugins.memdb.search import _clamp_limit
 from slife.plugins.memdb.store import (
-    _clamp_limit,
     _contains_cjk,
     _like_terms,
     _serialize_f32,

@@ -18,6 +18,7 @@ from pathlib import Path
 import aiosqlite
 import sqlparse
 
+from slife.plugins.memdb.search import GREP_SCAN_LIMIT, _clamp_limit
 from slife.timeutil import normalize_time_bound, now_local_seconds
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
@@ -73,20 +74,6 @@ _now = now_local_seconds
 
 def _serialize_f32(vector: list[float]) -> bytes:
     return struct.pack(f"{len(vector)}f", *vector)
-
-
-_MAX_SEARCH_LIMIT = 200
-
-
-def _clamp_limit(limit: int) -> int:
-    """Clamp a search limit to a sane positive range.
-
-    SQLite treats a negative LIMIT as unlimited — a malformed/negative limit
-    from the LLM would otherwise scan the whole table.
-    """
-    if limit is None or limit < 1:
-        return 20
-    return min(limit, _MAX_SEARCH_LIMIT)
 
 
 async def _fetch_all_bounded(cursor) -> list:
@@ -823,7 +810,7 @@ class SessionStore(VecStoreLifecycleMixin):
             # different numbers for one query, which is the disagreement the
             # fts5 fallback below already guards against.
             hits = await self._grep_scan(
-                re.compile(query), since, until, hard_limit=self._GREP_SCAN_LIMIT,
+                re.compile(query), since, until, hard_limit=GREP_SCAN_LIMIT,
             )
             return {"total": total, "filtered": len(hits), "query": query,
                     "mode": "grep", "since": since, "until": until}
@@ -988,8 +975,16 @@ class SessionStore(VecStoreLifecycleMixin):
     async def update_summary(
         self, rowid: int,
         summary: str | None = None, tags: str | None = None,
-    ) -> None:
-        """Write summary and/or tags for a turn."""
+    ) -> int:
+        """Write summary and/or tags for a turn; returns the rows changed.
+
+        ``0`` means nothing was written, for either of two reasons the caller
+        has to tell apart: both fields were omitted (nothing to do), or no
+        turn has that id (the UPDATE matches nothing).  It used to return
+        ``None`` in both cases, so ``turn_summarize`` answered ``updated`` for
+        a turn id that does not exist — a write the caller could not tell from
+        a no-op, and a failure it could not tell from a success.
+        """
         updates = []
         params: list = []
         if summary is not None:
@@ -999,14 +994,15 @@ class SessionStore(VecStoreLifecycleMixin):
             updates.append("tags = ?")
             params.append(tags)
         if not updates:
-            return
+            return 0
         params.append(rowid)
         async with self._write_lock:
-            await self._c.execute(
+            cursor = await self._c.execute(
                 f"UPDATE diary SET {', '.join(updates)} WHERE rowid = ?",
                 params,
             )
             await self._c.commit()
+            return max(0, cursor.rowcount or 0)
 
     # ── Search ──────────────────────────────────────────────────────
 
@@ -1256,11 +1252,6 @@ class SessionStore(VecStoreLifecycleMixin):
         )
         return result["entries"]
 
-    #: Rows examined per regex ``grep``.  A regex cannot use an index, so grep
-    #: scans (newest first); the cap keeps the worst case bounded on a
-    #: long-lived diary while sitting far above any realistic hit count.
-    _GREP_SCAN_LIMIT = 20000
-
     async def _grep_scan(
         self, rx: "re.Pattern", since: str | None, until: str | None,
         hard_limit: int,
@@ -1287,7 +1278,7 @@ class SessionStore(VecStoreLifecycleMixin):
             f"""SELECT rowid, user_message, summary, tags, created_at, messages
                 FROM diary WHERE 1=1{where}
                 ORDER BY rowid DESC LIMIT ?""",
-            (*params, self._GREP_SCAN_LIMIT),
+            (*params, GREP_SCAN_LIMIT),
         )
         hits: list[dict] = []
         for row in await _fetch_all_bounded(cursor):

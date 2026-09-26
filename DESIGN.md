@@ -1442,6 +1442,15 @@ that text contract is half of what makes two vectors comparable, it is **version
 database's metadata) and a version change drops the stale vectors for the drainer to rebuild, exactly
 as a model or dimension change does.
 
+**The three search tools share one composition, and it decides everything a caller can get wrong.**
+`run_search` dispatches the mode, clamps the limit, embeds the query once, checks the semantic gate,
+fuses the legs, annotates the scores and produces the hint — so `turn_search` and `cabinet_search`
+differ only in the corpus they choose and the envelope they wrap it in, and a third caller cannot
+drift. A mode or a kind the tool does not have is **refused**, naming the values that exist: a silent
+fallback answers a different question than the one asked, and the caller has no way to tell. A search
+also refuses an empty query, which is what browsing is for — an empty pattern matches everything, so
+a search tool that accepted one would be an accidental browse path.
+
 Two hardening rules are load-bearing: **CJK queries route keyword search to a substring fallback**;
 and full-text MATCH operator words are quoted and stray symbols stripped, so a user query cannot
 crash the MATCH parser. Without an embedding backend, hybrid degrades to keyword-only and reports its
@@ -1531,13 +1540,58 @@ history is also exempt from the first-turn trim.
 A standard plugin, self-contained and replaceable. **Four** typed knowledge stores, each
 **dual-written** to a human-browsable markdown file and a SQLite index: **note** (keyed by subject),
 **diary** (keyed by date), **file** (saved attachments under a per-category directory, auto-filed by
-extension with bytes staying on the filesystem, and semantically searchable from an LLM summary given
-at save time — one pass, no separate summarize tool) and **report** (scheduled-task reports).
+extension with bytes staying on the filesystem, and semantically searchable from an LLM summary —
+given at save time, or written later by `cabinet_summarize` for a file saved without one) and
+**report** (scheduled-task reports).
 
-Each kind owns its own full-text and vector tables and declares its own time axis, so a range query
-on a kind uses the same column its list tool orders by. The index mirrors the turns database's design
-and **reuses its code**: the shared manager drives the drainer over all kinds, and each plugin
-reports its own gate.
+**The four kinds are ONE corpus.** There is a single full-text index and a single vector index for
+all of them, reached through a `cabinet_docs` view that normalizes each kind's own columns into the
+same four (a title, a body, its tags and its source) and reads every kind's time axis at one
+precision. The reason is the one §7.2 gives for the fusion: a rank only means something inside the
+corpus that produced it, so four indexes meant four corpora and a query spanning them answered with
+an order nothing had measured. Each kind still declares its own time axis, so a range query on a kind
+uses the same column its list tool orders by.
+
+The index mirrors the turns database's design and **reuses its code**: the shared manager drives the
+drainer over all kinds, each plugin reports its own gate, and — the part that used to be a promise
+rather than a fact — the search surface is the *same code* rather than a second implementation kept
+in step by hand. `run_search` in `memdb/search.py` owns the mode dispatch, the clamp, the single
+query embed, the semantic gate, the fusion and the hint; `turn_search` and `cabinet_search` choose a
+corpus and build an envelope, and nothing else. Their list tools share one envelope shape
+(`total` / `limit` / `offset` / `entries`) and one ordering rule, and their read tools answer a
+missing row the same way — as a plain `Error: …`, which is the string the loop reads a tool failure
+off (see §2.3 on why an `{"error": …}` object was the wrong shape).
+
+**An annotation is a write, and it is the model's to make.** `cabinet_summarize` is the cabinet's
+counterpart of `turn_summarize`: it writes a saved row's summary and/or tags so a row becomes
+findable after the fact. A summary is read by **keyword search**, on either side — a turn's vector is
+built from the conversation and not from its summary, so an abstract is how a row is *described* in
+words rather than what it is *nearest* to. One kind is the exception the turns database does not
+have: a **file** has no text of its own, so its summary *is* the text its vector is built from. That
+is why writing one re-queues that row's embedding (the stored vector was built from the old text) and
+why it is the one annotation that puts a file saved without a summary into semantic search at all.
+
+**Which leg reads which column is memdb's logic applied to a row that has more columns.** A turn has
+no title and no path: it is a conversation, so "what it says" and "what it is called" are the same
+thing, and memdb's rules — grep reads the text and not the summary, keyword reads the summary too,
+the vector is built from the text — are the whole story there. A cabinet row has a name and a place on
+disk *as well*, and the same logic says those are readable by the two legs that match on words and
+patterns, while the one column a model wrote rather than the document (the summary) is not something
+you grep for:
+
+| leg | reads |
+|---|---|
+| **grep** | the row's `title`, its paths (`file_path`, `source`) and its `body` — not its summary |
+| **keyword** | all of the above, plus `tags` and the summary |
+| **semantic** | the `body` alone |
+
+So an identity is reachable by pattern and by word, a meaning by meaning, and the **summary** by word
+alone — which is what a summary is for. A file is where this earns its keep: it has no text of its
+own, so its summary is its `body` and therefore what its vector is built from, while its name and its
+source path are what make it findable *before* anyone writes one. The vector's text contract is
+**versioned**
+(`memfiles.store.INDEX_TEXT_VERSION`, compared in the meta table), so changing it drops the stale
+vectors for the drainer to rebuild exactly as a model change does.
 
 URL saving guards against SSRF **before fetching and again on every redirect hop**: every resolved
 address must be globally routable, so loopback, private, link-local and cloud-metadata targets are
@@ -1545,6 +1599,14 @@ refused. One deliberate exception — the documented **fake-IP pools** used by c
 accepted, because those resolvers answer real public hostnames with addresses from them. (The same
 pools are what sharefile's tunnel health *flags*, for the opposite reason: intercepted traffic breaks
 the tunnel's control connection.)
+
+**A file's bytes stay bytes.** The cabinet stores four kinds of document but only one of them can be
+binary, and nothing in the index ever holds a file's bytes: what is indexed and embedded is the
+LLM-written `summary`, which is text. So `file_read` returns a file's TEXT or refuses — a PDF, an
+image or an archive is answered as `Error: … is not text (<mime>, <n> bytes)` with the path to the
+bytes, rather than decoded with `errors="replace"` into a page of replacement characters. That
+silent decode used to *succeed*, which made a read of a file with no text in it indistinguishable
+from a read of one that is genuinely full of gibberish.
 
 All save tools return the saved local path and never auto-publish, so nothing is registered in any
 token registry as a side effect of saving. Publishing is always the model's explicit choice, through

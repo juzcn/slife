@@ -7,6 +7,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import struct
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import aiosqlite
@@ -1206,10 +1207,17 @@ class TestSessionStoreUpdateSummary:
         mock_conn.commit = AsyncMock()
         store._conn = mock_conn
 
-        await store.update_summary(
+        mock_conn.execute = AsyncMock(
+            return_value=SimpleNamespace(rowcount=1),
+        )
+        # The return value is the point: 1 means the UPDATE matched a row, and
+        # 0 is how a caller tells "no such turn" from "updated" (the two used
+        # to be the same None, so a summarize call announced success while
+        # writing nothing).
+        assert await store.update_summary(
             rowid=1,
             summary="Great conversation", tags="ai,chat",
-        )
+        ) == 1
         mock_conn.commit.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1218,7 +1226,7 @@ class TestSessionStoreUpdateSummary:
         mock_conn = AsyncMock()
         store._conn = mock_conn
 
-        await store.update_summary(rowid=1)
+        assert await store.update_summary(rowid=1) == 0
         mock_conn.execute.assert_not_called()
 
 

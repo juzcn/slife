@@ -53,11 +53,12 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 from slife.paths import get_memfiles_dir
-from slife.plugins.memdb.search import SCORE_BAND_HINT, annotate_scores
+from slife.plugins.memdb.search import run_search
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.plugins.memfiles.store import (
     MemfilesStore,
     _KIND_NAMES,
+    _valid_kind,
     _slugify,
     _unique_path,
 )
@@ -74,6 +75,25 @@ from slife.server_utils import (
 # Hard cap on url_save downloads — a multi-GB public URL must not OOM the
 # plugin process by buffering the whole body.
 _MAX_SAVE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+#: How much of a file ``file_read`` sniffs before calling it binary.  A NUL
+#: byte in the first block is the classic tell and is enough: text formats do
+#: not carry one, and an image, a PDF or an archive carries one almost at once.
+_SNIFF_BYTES = 8192
+
+
+def _is_utf8(raw: bytes) -> bool:
+    """Whether *raw* decodes as UTF-8 — the second half of the text test.
+
+    A NUL byte catches most binaries, but not all (a UTF-16 text file has one,
+    a Latin-1 file has none); a strict decode catches the rest of what has no
+    text to return.
+    """
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 #: Serializes the save path-claim + file write + DB insert (file_save /
 #: url_save).  ``_unique_path`` is an exists-then-write claim — without a lock,
@@ -536,9 +556,10 @@ async def url_save(
 @mcp.tool(
     name="cabinet_search",
     description=(
-        "Search the cabinet (notes, diary, saved files): kind "
+        "Search the cabinet (notes, diary, saved files, reports): kind "
         "note/diary/file/report/all, mode hybrid (default)/fts5/grep (regex). "
-        "since/until window the search on when the row was written — "
+        "Each result carries its kind, its key (what the matching read tool "
+        "takes) and a snippet. since/until window the search — "
         + BOUND_GRAMMAR + "."
     ),
 )
@@ -546,102 +567,92 @@ async def cabinet_search(
     query: str, kind: str = "all", mode: str = "hybrid", limit: int = 20,
     since: str | None = None, until: str | None = None,
 ) -> str:
-    """Search the file cabinet (notes, diary and saved files).
+    """Search the file cabinet (notes, diary, saved files and reports).
 
     Args:
         query: The search text.
         kind: note | diary | file | report | all (default).
         mode: hybrid (default) | fts5 | grep (regex).
         limit: Maximum results.
-        since: Lower bound on when the row was written — ISO date/datetime or
-            a relative phrase (today/yesterday/tomorrow/now, last|this
-            week|month|quarter|year, "<N> days|weeks|months|years ago");
-            omit for no lower bound.
+        since: Lower bound — ISO date/datetime or a relative phrase
+            (today/yesterday/tomorrow/now, last|this week|month|quarter|year,
+            "<N> days|weeks|months|years ago"); omit for no lower bound.
         until: Upper bound — same grammar as since.
     """
     store = await _ensure_store()
-    manager = _manager
-    mode = mode.lower()
-    if mode not in ("hybrid", "fts5", "grep"):
-        mode = "hybrid"
-    # `report` belongs in this list: it is a first-class kind in _KIND_SPECS
-    # (report_save / report_list / report_read all exist), and it is already in
-    # `search()`'s kind map.  Leaving it out silently rewrote kind="report" to
-    # "all" — so asking for reports got every kind instead.
-    if kind not in ("all", "note", "diary", "file", "report"):
-        kind = "all"
-
-    if not query.strip():
-        # An empty query is not a search, and it must not be one.  It used to
-        # be worse than useless: `mode="grep"` compiled the empty pattern, which
-        # matches EVERY string, so it silently returned the whole window — with
-        # no `total`, no paging, and no mention in any description.  That was an
-        # accidental second browse path, one unrelated "reject empty patterns"
-        # fix away from vanishing.  Browsing is what the per-kind `*_list`
-        # tools are for — here and in memdb, whose `turn_list` does the same
-        # job for turns — so a search tool refuses to be one.
-        return json.dumps(
-            {"error": "query must not be empty — to browse instead of search, "
-                      "use note_list / diary_list / file_list / report_list"},
-            ensure_ascii=False,
-        )
-
-    emb: list[float] | None = None
-    semantic_available = False
-    if mode == "hybrid" and manager is not None and manager.semantic_ready:
-        e = manager.embedder
-        if e is not None and e.available:
-            emb = await e.embed_one(query)
-            if emb:
-                semantic_available = True
-
+    # The composition owns every rule a caller can get wrong: the mode, the
+    # empty query, the clamp, the gate, the one embed, the fusion and the
+    # hint.  This tool chooses the corpus and builds the envelope, which is
+    # the whole of what differs from turn_search.
     try:
-        hits = await store.search(
-            query, kind=kind, limit=limit, mode=mode, embed_query=emb,
+        legs = store.search_legs(kind=_valid_kind(kind))
+        outcome = await run_search(
+            legs, _manager, query=query, mode=mode, limit=limit,
             since=since, until=until,
         )
     except InvalidTimeBound as e:
-        # A bound in no known grammar is the caller's to fix — the same
-        # treatment an unusable grep pattern gets, and never a silent empty
-        # result (which is what a pass-through bound produced: SQLite compares
-        # the text, matches nothing, and reports it as "no matches").
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        # A bound in no known grammar is the caller's to fix: saying so beats a
+        # logged traceback, and beats the silent empty result a pass-through
+        # bound used to produce (SQLite compares the text, matches nothing, and
+        # reports it as "no matches").
+        return f"Error: {e}"
+    except ValueError as e:
+        # A bad mode, a bad kind or an empty query — a subclass of the bound
+        # error above, so it must be caught after it to keep the two messages
+        # distinct.
+        return f"Error: {e}"
     except re.error as e:
         # grep is a regex: an unusable pattern is the caller's to fix, and
         # saying so beats a generic failure.
-        return json.dumps({"error": f"invalid regex {query!r}: {e}"},
-                          ensure_ascii=False)
+        return f"Error: invalid regex {query!r}: {e}"
     except Exception as e:
         logger.exception("memfiles_search_failed query=%s kind=%s", query, kind)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return f"Error: cabinet search failed — {e}"
 
-    hint = ""
-    if mode == "hybrid" and not semantic_available:
-        hint = manager.reason if manager else (
-            "hybrid degraded to fts5 — embedding backend unavailable"
-        )
-        if not hits:
-            hint += " — no keyword matches either"
-    elif not hits:
-        hint = "no matching memories found"
-
-    if semantic_available and hits:
-        annotate_scores(hits)
-        hint = SCORE_BAND_HINT if not hint else f"{hint} · {SCORE_BAND_HINT}"
-
-    # Report the mode that actually RAN.  Deriving it from `semantic_available`
-    # alone made this envelope lie about the other two modes: a request for
-    # ``mode="grep"`` came back saying ``"fts5"``, so a caller reading an empty
-    # result concluded the keyword search had found nothing — when what ran was
-    # the regex.  Only hybrid has a degraded spelling; grep and fts5 ran what
-    # they were asked for.
-    ran_mode = "fts5" if mode == "hybrid" and not semantic_available else mode
     return json.dumps(
         {
-            "mode": ran_mode,
-            "query": query, "kind": kind, "results": hits, "hint": hint,
+            "mode": outcome.ran_mode,
+            "query": query, "kind": kind,
+            "results": outcome.results, "hint": outcome.hint,
         },
         ensure_ascii=False, indent=2,
+    )
+
+
+@mcp.tool(
+    name="cabinet_summarize",
+    description=(
+        "Annotate a saved cabinet row so it becomes findable: tags for any "
+        "kind, plus a summary for a file (the text its semantic search is "
+        "built from, so a file saved without one enters semantic search here)."
+    ),
+)
+async def cabinet_summarize(
+    kind: str, key: str, summary: str | None = None, tags: str | None = None,
+) -> str:
+    """Write a saved row's summary and/or tags.
+
+    Args:
+        kind: note | diary | file | report.
+        key: The row's key — a note's subject, a diary's date, a file's
+            saved_path, a report's report_id (from any list or search result).
+        summary: File summary — the text its vector is built from. Omit to
+            leave it alone.
+        tags: Comma-separated tags. Omit to leave them alone.
+    """
+    store = await _ensure_store()
+    try:
+        info = await store.summarize(kind, key, summary=summary, tags=tags)
+    except ValueError as e:
+        return f"Error: {e}"
+    if info["reembedded"] and _manager is not None:
+        # The vector was built from the old text, so the row is unembedded
+        # now — wake the drainer rather than waiting for the next save.
+        _manager.on_saved()
+    return json.dumps(
+        {"status": "updated", "kind": info["kind"], "key": info["key"],
+         "tags": info["tags"], "summary": info["summary"]},
+        ensure_ascii=False,
     )
 
 
@@ -715,14 +726,17 @@ async def __memfiles_reload_semantic(enabled: bool = True) -> str:
 @mcp.tool(
     name="file_read",
     description=(
-        "Read a saved file's content by its cabinet-relative path."
+        "Read a saved file's TEXT content by its cabinet-relative path. A "
+        "binary file (image, PDF, archive) is refused rather than decoded — "
+        "its bytes stay on disk, and the path is what other tools take."
     ),
 )
 async def file_read(path: str) -> str:
-    """Read a saved file's content.
+    """Read a saved file's text content.
 
     Args:
-        path: Relative path under the cabinet, as returned by file_save / cabinet_search.
+        path: Relative path under the cabinet, as returned by file_save /
+            cabinet_search.
     """
     store = await _ensure_store()
     try:
@@ -732,9 +746,29 @@ async def file_read(path: str) -> str:
     if not target.is_file():
         return f"Error: not a file — {path}"
     try:
-        return target.read_text(encoding="utf-8", errors="replace")
+        raw = target.read_bytes()
     except Exception as e:
         return f"Error: cannot read {path} — {e}"
+
+    # A read returns the file's TEXT, or says why it has none.  Decoding with
+    # errors="replace" used to *succeed* on a PDF or a PNG and hand the model a
+    # page of replacement characters — a successful-looking read of something
+    # with no text in it, which the caller cannot tell from a file that is
+    # genuinely full of gibberish.  The bytes stay on disk either way (the
+    # cabinet never rewrites a saved file), so the answer names the type, the
+    # size and the path, and the path is what the tools that want bytes take.
+    mime = mimetypes.guess_type(str(target))[0] or "unknown type"
+    if b"\x00" in raw[:_SNIFF_BYTES] or not _is_utf8(raw):
+        hint = (
+            "attach_image takes that path"
+            if mime.startswith("image/")
+            else "share_file takes that path to publish it"
+        )
+        return (
+            f"Error: {path} is not text ({mime}, {len(raw)} bytes) — "
+            f"the bytes are at {target}; {hint}"
+        )
+    return raw.decode("utf-8")
 
 
 # ── Notes & diary browsing ────────────────────────────────────────

@@ -1,35 +1,55 @@
-"""MemfilesStore — notes / diary / files knowledge base with hybrid search.
+"""MemfilesStore — notes / diary / files / reports knowledge base with hybrid search.
 
 Owns the memfiles SQLite index (``{agent}.files/.index.db``) and mirrors
-note/diary content to human-readable markdown files under ``{agent}.files/``.
+note/diary/report content to human-readable markdown files under
+``{agent}.files/``.
 
-Three typed tables (each with its own FTS5 + vec0 index):
+Four typed document tables — the writers' truth, each with its own columns:
   - ``notes`` — keyed by ``subject``; content mirrored to ``notes/<slug>.md``
   - ``diary``  — keyed by ``date``;  content mirrored to ``diary/<date>.md``
   - ``files``  — saved attachments (binary stays on the filesystem); an
     LLM-written ``summary`` is embedded for semantic search
+  - ``reports`` — scheduled-task reports
+
+and **ONE search index for all four** (``cabinet_fts`` + ``cabinet_semantic``),
+reached through the ``cabinet_docs`` view.  That is the shape the turns database
+has and the reason for it is in the schema file: a fusion consumes ranks, and a
+rank only means something inside the corpus that produced it.  Four indexes made
+four corpora, so a query spanning kinds had to answer with an order nothing had
+measured.
+
+The three legs over that one corpus (keyword / semantic / regex) are what the
+store exposes; the *composition* that runs them — the mode dispatch, the clamp,
+the single embed, the gate, the fusion and the hint — belongs to
+``slife.plugins.memdb.search.run_search``, shared with ``turn_search`` so the
+two plugins answer identically by construction.  :meth:`search_legs` hands them
+over in the shape that composition takes.
 
 Implements the SemanticManager "document source" contract
 (``count_unembedded`` / ``get_unembedded_docs`` / ``replace_embedding_chunks`` /
-``reconfigure_for_embedding``) over a unified view of all three kinds, so the
-shared ``SemanticManager`` (memdb.semantic) drives the memfiles drainer.
-Code reuse is via memdb helpers: ``_chunk_text``, ``_split_chunks_to_token_limit``,
-``_serialize_f32``, ``_to_fts5_query``, ``_contains_cjk``, ``_like_terms``,
-``merge_hybrid``.
+``reconfigure_for_embedding``) over the one index, so the shared
+``SemanticManager`` (memdb.semantic) drives the memfiles drainer.
+Other code reuse is via memdb helpers: ``_serialize_f32``, ``_to_fts5_query``,
+``_contains_cjk``, ``_like_terms``, ``in_placeholders`` — and the chunking and
+embedding itself, which arrive through the shared ``SemanticManager``.
 """
 
 import asyncio
 import logging
 import re
+from functools import partial
 from pathlib import Path
 
 import aiosqlite
 
-from slife.plugins.memdb.search import merge_hybrid
+from slife.plugins.memdb.search import (
+    GREP_SCAN_LIMIT,
+    SearchLegs,
+    _clamp_limit,
+)
 from slife.plugins.memdb.store import (
     DEFAULT_EMBEDDING_DIM,
     VecStoreLifecycleMixin,
-    _clamp_limit,
     _contains_cjk,
     _like_terms,
     _serialize_f32,
@@ -43,6 +63,16 @@ logger = logging.getLogger(__name__)
 #: Local ISO-seconds timestamp — the shared helper under the store's name
 #: (memdb aliases it the same way).
 _now = now_local_seconds
+
+#: Identity of the text contract the cabinet's vectors are built from — the
+#: ``body`` column of ``cabinet_docs``, which is a note/diary/report's own text
+#: and, for a file, the summary that stands in for the content it has none of.
+#: Stored vectors describe the text that was embedded, so the contract is part
+#: of what makes them comparable, exactly as it is for turns
+#: (``memdb.store.INDEX_TEXT_VERSION``): **bump it when the builder changes
+#: shape**, or vectors built from text the builder no longer produces stay
+#: beside the new ones and nothing in the numbers says so.
+INDEX_TEXT_VERSION = "1"
 
 
 def _slugify(text: str) -> str:
@@ -95,60 +125,74 @@ def _category_from_path(saved_path: str) -> str:
 #: ``time_granularity`` follows the column: a date-only column compares in date
 #: terms (a bare ``until`` already includes that whole day, no +1-day advance),
 #: a timestamp column in datetime terms.
+#: Per-kind specs — what a kind is called, where its columns live, and its
+#: own TIME AXIS.  The kinds' *searchable* text is not here: that is normalized
+#: once, in the ``cabinet_docs`` view and the ``cabinet_fts`` triggers, which is
+#: what makes the four kinds ONE corpus (see the schema file).
+#:
+#: ``time_col`` is the single column every time filter on that kind measures
+#: against — the list window AND the search window, and the column the list is
+#: ordered by.  It lives here, once per kind, because a bound that meant one
+#: thing arriving through ``cabinet_search(kind="diary")`` and another through
+#: ``diary_list`` is precisely how "last month" came to have two answers.
+#:
+#: Which column that is follows from whether the CONTENT has a date:
+#: - ``diary`` is date-KEYED — ``date`` is UNIQUE and names the file on disk
+#:   (``diary/<date>.md``) — so its date is content, not bookkeeping;
+#: - a ``note`` has no date of its own but is a living document, so its axis is
+#:   ``updated_at``, which is also the order ``note_list`` shows;
+#: - a ``file`` is written once and never touched, so ``created_at`` IS its date;
+#: - a ``report`` likewise.  Its ``period_start``/``period_end`` say what the
+#:   report COVERS — a different dimension from when it exists, and nullable —
+#:   so the axis is ``created_at``.
+#:
+#: ``time_granularity`` follows the column: a date-only column compares in date
+#: terms (a bare ``until`` already includes that whole day, no +1-day advance),
+#: a timestamp column in datetime terms.  It applies to the ``*_list`` tools,
+#: which window the column they order by.  A *search* windows the corpus's own
+#: ``ts`` instead, which the view reads at a uniform datetime precision — one
+#: corpus, one axis, so one bound narrows every kind the same way.
 _KIND_SPECS = {
     "note": {
-        "id_label": "note",
         "table": "notes",
-        "fts": "notes_fts",
-        "semantic": "notes_semantic",
-        "key_col": "subject",
-        "text_col": "content",
-        "file_col": "file_path",
-        "snippet_col": 1,        # notes_fts(subject, content, tags)
-        "like_cols": ["subject", "content", "tags"],
+        "key_col": "subject",       # what the read tools take as the key
+        "text_col": "content",      # the text the corpus calls "body"
+        "file_col": "file_path",    # the md twin of this row
         "time_col": "updated_at",
         "time_granularity": "datetime",
     },
     "diary": {
-        "id_label": "diary",
         "table": "diary",
-        "fts": "diary_fts",
-        "semantic": "diary_semantic",
         "key_col": "date",
         "text_col": "content",
         "file_col": "file_path",
-        "snippet_col": 0,        # diary_fts(content, tags)
-        "like_cols": ["content", "tags"],
         "time_col": "date",
         "time_granularity": "date",
     },
     "file": {
-        "id_label": "file",
         "table": "files",
-        "fts": "files_fts",
-        "semantic": "files_semantic",
         "key_col": "saved_path",
         "text_col": "summary",
-        "file_col": "saved_path",
-        "snippet_col": 3,        # files_fts(title, original_path, tags, summary)
-        "like_cols": ["title", "original_path", "tags", "summary"],
+        "file_col": "saved_path",   # for a file the row's key IS its path
         "time_col": "created_at",
         "time_granularity": "datetime",
     },
     "report": {
-        "id_label": "report",
         "table": "reports",
-        "fts": "reports_fts",
-        "semantic": "reports_semantic",
         "key_col": "title",
         "text_col": "content",
         "file_col": "file_path",
-        "snippet_col": 0,        # reports_fts(title, content, tags)
-        "like_cols": ["title", "content", "tags"],
         "time_col": "created_at",
         "time_granularity": "datetime",
     },
 }
+
+_KIND_NAMES = ("note", "diary", "file", "report")
+
+#: The corpus's searchable text columns, in one spelling for the LIKE (CJK)
+#: fallback: the union of what the four kinds' per-kind indexes used to hold
+#: (a note's subject, a file's original path, …), normalized by the view.
+_LIKE_COLS = ("title", "body", "tags", "source", "summary")
 
 
 def _kind_window(
@@ -175,11 +219,9 @@ def _list_window(
 ) -> tuple[list[str], list[str]]:
     """``(clauses, params)`` for *spec*'s window, unaliased — the ``*_list`` shape.
 
-    The list-shaped twin of :func:`_time_clause`: a ``*_list`` query names its
-    columns bare, may merge the window with another predicate (a category, a
-    task id), and may have no WHERE at all — so it hands back clauses to join
-    rather than a suffix to append.  Both are built on :func:`_kind_window`, so
-    the axis and the grammar are decided once.
+    A ``*_list`` query names its columns bare, may merge the window with another
+    predicate (a category, a task id), and may have no WHERE at all — so it hands
+    back clauses to join rather than a suffix to append.
     """
     since, until = _kind_window(spec, since, until)
     clauses: list[str] = []
@@ -191,45 +233,81 @@ def _list_window(
         clauses.append(f"{spec['time_col']} <= ?")
         params.append(until)
     return clauses, params
-_KIND_NAMES = ("note", "diary", "file", "report")
 
 
-def _time_clause(
-    since: str | None, until: str | None, column: str,
-) -> tuple[str, list[str]]:
-    """The window a search runs inside, as ``(sql, params)``.
+def _normalize_hits(hits: list[dict]) -> None:
+    """Rename each hit into the shape a caller reads, dropping the joins' keys.
 
-    *column* is the kind's time axis, qualified with the table alias these paths
-    use — ``spec["time_col"]``, so a diary search windows ``date`` and a note
-    search ``updated_at``.  Built in ONE place for the three SQL paths (FTS5 /
-    LIKE / regex): a window that meant different things in different modes would
-    be the same class of bug as two LIKE clauses drifting apart.
+    The legs carry ``doc_id`` and the corpus's ``ts`` because that is how they
+    join the view; neither means anything outside this module, and the vec0
+    legs additionally carry sqlite-vec's own ``rowid``.  A search result is a
+    tool result — the model reads it — so the internal keys go and the
+    model-facing names arrive here, once, for all three legs and both plugins'
+    worth of callers.
 
-    Returns a leading-``AND`` suffix, so a caller with no WHERE yet writes
-    ``WHERE 1=1{sql}`` (memdb's ``_grep_scan`` does the same).  The ``*_list``
-    methods do NOT use this — they have no table alias, may merge the window with
-    another predicate, and may not have a WHERE at all, so they build their own
-    clauses.  What they share with this is what matters: the axis
-    (:data:`_KIND_SPECS`) and the grammar
-    (:func:`~slife.timeutil.normalize_time_bound`).
+    ``time`` rather than ``created_at``: the value is the row's position on its
+    kind's own time axis (a note's last update, a diary's date, a file's save
+    time), and calling it ``created_at`` would be false for a note.
     """
+    for h in hits:
+        h.pop("doc_id", None)
+        h.pop("rowid", None)
+        h.pop("source", None)
+        h["time"] = h.pop("ts", "")
+
+
+def _valid_kind(kind: str) -> str:
+    """*kind* if the corpus has it, else a refusal naming the ones it does.
+
+    One function because two layers need the answer and must give it the same
+    way: the tool, which owns the parameter (and so refuses BEFORE it reaches
+    a store at all), and :meth:`MemfilesStore.search_legs`, which cannot build
+    a corpus from a kind it does not have.
+    """
+    if kind not in ("all", *_KIND_NAMES):
+        raise ValueError(
+            f"kind must be one of all/{'/'.join(_KIND_NAMES)} — got {kind!r}"
+        )
+    return kind
+
+
+def _doc_window(
+    since: str | None, until: str | None, kind: str,
+) -> tuple[str, list[str]]:
+    """The window a SEARCH runs inside, as an ``(sql, params)`` AND-suffix.
+
+    One bound, one axis: the corpus's ``ts``, which the view reads at a uniform
+    datetime precision.  A search has one corpus and therefore one axis — a
+    per-kind axis here would be four bounds pretending to be one, and the reason
+    the four kinds were merged in the first place was to stop answering one
+    question four ways.
+
+    *kind* narrows the corpus to one kind when the caller asked for one; the
+    bound itself is normalized once, not per kind.
+    """
+    since = normalize_time_bound(since, role="since") if since else None
+    until = normalize_time_bound(until, role="until") if until else None
     clauses: list[str] = []
     params: list[str] = []
+    if kind != "all":
+        clauses.append("d.kind = ?")
+        params.append(kind)
     if since:
-        clauses.append(f"{column} >= ?")
+        clauses.append("d.ts >= ?")
         params.append(since)
     if until:
-        clauses.append(f"{column} <= ?")
+        clauses.append("d.ts <= ?")
         params.append(until)
     return "".join(f" AND {c}" for c in clauses), params
 
 
 class MemfilesStore(VecStoreLifecycleMixin):
-    """The memfiles index: three typed document tables + hybrid search."""
+    """The memfiles index: four typed document tables, ONE search corpus."""
 
-    _semantic_tables: tuple[str, ...] = tuple(
-        _KIND_SPECS[k]["semantic"] for k in _KIND_NAMES
-    )
+    #: ONE vec0 table for all four kinds — the cabinet is one corpus (see the
+    #: schema file), so a model change migrates one table, not four.
+    _semantic_tables: tuple[str, ...] = ("cabinet_semantic",)
+    _index_text_version = INDEX_TEXT_VERSION
     _meta_table = "meta"
     _schema_dir = Path(__file__).parent
     _store_log_key = "memfiles"
@@ -324,7 +402,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
                     "WHERE id=?",
                     (new_md, tags, now, doc_id),
                 )
-                await self._clear_kind_chunks("note", doc_id)
+                await self._clear_doc_chunks("note", doc_id)
             else:
                 cursor = await self._c.execute(
                     "INSERT INTO notes (subject, content, tags, file_path, created_at, updated_at) "
@@ -368,7 +446,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
                     "WHERE date=?",
                     (new_md, tags, rel, now, date),
                 )
-                await self._clear_kind_chunks("diary", row["id"])
+                await self._clear_doc_chunks("diary", row["id"])
                 doc_id = row["id"]
             else:
                 cursor = await self._c.execute(
@@ -463,7 +541,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
                     "period_start=?, period_end=?, updated_at=? WHERE id=?",
                     (new_md, tags, period_start, period_end, now, doc_id),
                 )
-                await self._clear_kind_chunks("report", doc_id)
+                await self._clear_doc_chunks("report", doc_id)
             else:
                 cursor = await self._c.execute(
                     "INSERT INTO reports (task_id, title, content, tags, file_path, "
@@ -747,7 +825,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
         total = row[0] if row else 0
         cursor = await self._c.execute(
             f"SELECT id, subject, tags, file_path, created_at, updated_at "
-            f"FROM notes {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            f"FROM notes {where} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         )
         entries = [dict(row) for row in await cursor.fetchall()]
@@ -779,7 +857,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
         total = row[0] if row else 0
         cursor = await self._c.execute(
             f"SELECT id, date, tags, file_path, created_at, updated_at "
-            f"FROM diary {where} ORDER BY date DESC LIMIT ? OFFSET ?",
+            f"FROM diary {where} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         )
         entries = [dict(row) for row in await cursor.fetchall()]
@@ -872,7 +950,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
         cursor = await self._c.execute(
             f"SELECT id, title, original_path, saved_path, mime, size, tags, "
             f"summary, created_at FROM files {where} "
-            f"ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            f"ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         )
         entries = []
@@ -902,74 +980,168 @@ class MemfilesStore(VecStoreLifecycleMixin):
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def _clear_kind_chunks(self, kind: str, doc_id: int) -> None:
+    async def _clear_doc_chunks(self, kind: str, doc_id: int) -> None:
         """Delete a document's vector chunks (marks it for re-embedding).
 
-        No-op when no embedding backend is configured — the vec0 tables were
+        The cabinet's one semantic table keys on (kind, doc_id) — a bare
+        doc_id is not unique across kinds, every one of which counts from 1.
+
+        No-op when no embedding backend is configured — the vec0 table was
         not created (dim 0), so there is nothing to clear; when embedding is
         enabled later, the drainer embeds every unembedded document anyway.
         """
         if self._embedding_dim <= 0:
             return
         await self._c.execute(
-            f"DELETE FROM {_KIND_SPECS[kind]['semantic']} WHERE doc_id = ?",
-            (doc_id,),
+            "DELETE FROM cabinet_semantic WHERE kind = ? AND doc_id = ?",
+            (kind, doc_id),
         )
+
+    # ── writing an annotation onto a saved row ─────────────────────
+
+    async def summarize(
+        self, kind: str, key: str, summary: str | None = None,
+        tags: str | None = None,
+    ) -> dict:
+        """Write a saved row's summary and/or tags, and re-queue it to be embedded.
+
+        The counterpart of memdb's ``turn_summarize``: annotate a row that is
+        already saved, so it becomes findable — by **keyword** search, which is
+        what a summary is for on either side (a turn's vector is built from the
+        conversation, not from its summary).
+
+        One kind is the exception, and it is the exception memdb does not have:
+        a file has no text of its own, so its summary IS the text its vector is
+        built from.  Writing one therefore re-queues that row's embedding, and
+        writing one for a file saved without a summary is how such a file
+        enters semantic search at all.
+
+        ``None`` means "leave alone" for both fields, so an empty string is a
+        real value (it clears).  The kind's FTS row follows from the table's
+        ``AFTER UPDATE`` trigger either way.
+
+        The row's own timestamp is left alone: an annotation is not an edit of
+        the document, and bumping ``updated_at`` would jump a note to the top
+        of ``note_list`` for it.
+        """
+        if kind not in _KIND_NAMES:
+            raise ValueError(
+                f"kind must be one of {'/'.join(_KIND_NAMES)} — got {kind!r}"
+            )
+        if summary is None and tags is None:
+            raise ValueError("nothing to write — pass summary and/or tags")
+        row = await self._row_by_key(kind, key)
+        if row is None:
+            raise ValueError(f"{kind} not found — {key}")
+
+        sets: list[str] = []
+        params: list[object] = []
+        if summary is not None:
+            sets.append("summary = ?")
+            params.append(summary)
+        if tags is not None:
+            sets.append("tags = ?")
+            params.append(tags)
+        params.append(row["id"])
+        async with self._write_lock:
+            await self._c.execute(
+                f"UPDATE {_KIND_SPECS[kind]['table']} "
+                f"SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+            # The text the vector was built from changed, so the vector is
+            # stale — dropping the chunks is what puts the row back in the
+            # drainer's unembedded queue (same path a re-save takes).
+            if summary is not None and kind == "file":
+                # A file's vector was built from the old summary, so it is
+                # stale; dropping the chunks puts the row back in the drainer's
+                # queue.  For every other kind the vector is built from the
+                # content, which this did not touch.
+                await self._clear_doc_chunks(kind, row["id"])
+            await self._c.commit()
+        return {
+            "kind": kind, "id": row["id"], "key": key,
+            "tags": row["tags"] if tags is None else tags,
+            "summary": row.get("summary", "") if summary is None else summary,
+            "reembedded": summary is not None and kind == "file",
+        }
+
+    async def _row_by_key(self, kind: str, key: str) -> dict | None:
+        """The row a kind's key names, or None — the one key→row mapping.
+
+        ``report`` keys on its integer id (what ``report_list`` shows and
+        ``report_read`` takes); every other kind keys on its text key column.
+        """
+        spec = _KIND_SPECS[kind]
+        if kind == "report":
+            try:
+                value: object = int(key)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"report key must be the numeric report_id — got {key!r}"
+                ) from None
+            where = "id = ?"
+        else:
+            value = key
+            where = f"{spec['key_col']} = ?"
+        cursor = await self._c.execute(
+            f"SELECT id, * FROM {spec['table']} WHERE {where}", (value,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
     # ── SemanticManager contract (unified document view) ───────────
 
     async def count_unembedded(self) -> int:
-        # No vec0 tables when embedding is disabled (dim 0) — nothing can
-        # be embedded, so the count is 0 (matches _clear_kind_chunks' guard).
+        # No vec0 table when embedding is disabled (dim 0) — nothing can
+        # be embedded, so the count is 0 (matches _clear_doc_chunks' guard).
         if self._embedding_dim <= 0:
             return 0
-        total = 0
-        for kind in _KIND_NAMES:
-            spec = _KIND_SPECS[kind]
-            where = "AND t.summary != ''" if kind == "file" else ""
-            cursor = await self._c.execute(
-                f"SELECT COUNT(*) FROM {spec['table']} t "
-                f"WHERE t.id NOT IN (SELECT DISTINCT doc_id FROM {spec['semantic']}) "
-                f"{where}",
-            )
-            row = await cursor.fetchone()
-            total += row[0] if row else 0
-        return total
+        # The vector is built from ``body``: a document's own text, and a
+        # file's summary — the only text a file has.  So a file saved without
+        # one has nothing to embed and is skipped, which is why its identity
+        # (title, path) is reachable by the OTHER two legs instead: keyword and
+        # grep both read a row's name and place, and neither needs a summary.
+        # The counting route and the reading route below must share this rule
+        # or the gate opens on a row the drainer cannot embed.
+        cursor = await self._c.execute(
+            "SELECT COUNT(*) FROM cabinet_docs d "
+            "WHERE d.body != '' "
+            "AND d.id NOT IN (SELECT kind || ':' || doc_id FROM cabinet_semantic)",
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
 
     async def get_unembedded_docs(self, limit: int = 100) -> list[dict]:
         if self._embedding_dim <= 0:
             return []
-        docs: list[dict] = []
-        for kind in _KIND_NAMES:
-            spec = _KIND_SPECS[kind]
-            where = "AND t.summary != ''" if kind == "file" else ""
-            cursor = await self._c.execute(
-                f"SELECT t.id AS doc_id, t.{spec['text_col']} AS text, "
-                f"t.{spec['key_col']} AS summary, t.tags, t.created_at "
-                f"FROM {spec['table']} t "
-                f"WHERE t.id NOT IN (SELECT DISTINCT doc_id FROM {spec['semantic']}) "
-                f"{where} ORDER BY t.id LIMIT ?",
-                (limit,),
-            )
-            for row in await cursor.fetchall():
-                d = dict(row)
-                d["kind"] = kind
-                docs.append(d)
-            if len(docs) >= limit:
-                break
-        return docs[:limit]
+        # ``text`` is what gets embedded: ``body``, the same column the rule
+        # above counts on, so this route and the count cannot disagree.  The
+        # aux columns are memdb's shape, carrying the row's own summary and
+        # tags; a hit's key and display fields come from the view join the
+        # semantic leg already does, so nothing has to be smuggled through here.
+        cursor = await self._c.execute(
+            "SELECT d.kind, d.doc_id, d.body AS text, d.summary, "
+            "       d.tags, d.ts AS created_at "
+            "FROM cabinet_docs d "
+            "WHERE d.body != '' "
+            "AND d.id NOT IN (SELECT kind || ':' || doc_id FROM cabinet_semantic) "
+            "ORDER BY d.kind, d.doc_id LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
 
     async def replace_embedding_chunks(
         self, doc: dict, embeddings: list[list[float]],
     ) -> None:
-        """Atomically replace a document's vector chunks (routed by kind).
+        """Atomically replace a document's vector chunks.
 
-        No-op when embedding is disabled (dim 0) — the vec0 tables were not
+        No-op when embedding is disabled (dim 0) — the vec0 table was not
         created, so there is nothing to write.
         """
         if self._embedding_dim <= 0:
             return
-        spec = _KIND_SPECS[doc["kind"]]
+        kind = doc["kind"]
         doc_id = doc["doc_id"]
         summary = doc.get("summary", "")
         tags = doc.get("tags", "")
@@ -985,253 +1157,196 @@ class MemfilesStore(VecStoreLifecycleMixin):
         async with self._write_lock:
             try:
                 await self._c.execute(
-                    f"DELETE FROM {spec['semantic']} WHERE doc_id = ?", (doc_id,),
+                    "DELETE FROM cabinet_semantic WHERE kind = ? AND doc_id = ?",
+                    (kind, doc_id),
                 )
                 for idx, blob in enumerate(vec_blobs):
                     await self._c.execute(
-                        f"INSERT INTO {spec['semantic']} "
-                        "(doc_embedding, doc_id, chunk_index, summary, tags, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (blob, doc_id, idx, summary, tags, created_at),
+                        "INSERT INTO cabinet_semantic (doc_embedding, kind, doc_id, "
+                        "chunk_index, summary, tags, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (blob, kind, doc_id, idx, summary, tags, created_at),
                     )
                 await self._c.commit()
             except Exception:
                 await self._c.rollback()
                 raise
 
-    # ── search ─────────────────────────────────────────────────────
+    # ── search: the three legs over the one corpus ─────────────────
 
-    async def search(
-        self, query: str, kind: str = "all", limit: int = 20,
-        mode: str = "hybrid", embed_query: list[float] | None = None,
-        since: str | None = None, until: str | None = None,
+    def search_legs(self, kind: str = "all") -> SearchLegs:
+        """The cabinet, in the shape the shared composition takes.
+
+        One corpus, so ONE :class:`SearchLegs` — not one per kind.  *kind*
+        narrows it to a single kind when a caller asked for one, which is a
+        filter on the corpus and not a different corpus.
+        """
+        kind = _valid_kind(kind)
+        return SearchLegs(
+            keyword=partial(self.keyword_hits, kind=kind),
+            semantic=partial(self.semantic_hits, kind=kind),
+            regex=partial(self.regex_hits, kind=kind),
+            key_field="id",
+            normalize=_normalize_hits,
+            noun="entries",
+        )
+
+    async def keyword_hits(
+        self, *, query: str, limit: int, since: str | None = None,
+        until: str | None = None, kind: str = "all",
     ) -> list[dict]:
-        """Hybrid (FTS5 + vec0, RRF), keyword, or regex search across kinds.
+        """Ranked keyword hits over the cabinet, best first.
 
-        ``mode="grep"`` is a real grep: the pattern is a Python regex and the
-        match runs here (SQLite has no regexp engine).  An unusable pattern
-        raises ``re.error`` for the caller to report.
-
-        ``since``/``until`` window EACH KIND on its own time axis — the
-        ``time_col`` in :data:`_KIND_SPECS`, the same column ``*_list`` windows
-        and orders by.  So ``kind="all"`` reads one bound four ways, each the way
-        that kind means it: a diary by its ``date`` (content, since the date is
-        the key), a note by ``updated_at``, a file or report by ``created_at``.
-        That is what makes ``cabinet_search(kind="diary", ...)`` and
-        ``diary_list`` agree about "last month" instead of answering from two
-        different columns.  An unusable bound raises ``InvalidTimeBound``.
-
-        Each result carries ``id`` (``"note:5"`` etc.), ``file_path``, the
-        kind's key/text, ``snippet`` and the RRF annotations from
-        ``merge_hybrid``.
+        FTS5 over the one index; CJK routes to a substring scan because the
+        standard tokenizer makes a contiguous CJK run one token, so a Chinese
+        word is an exact-token lookup (memdb's store records the measurement).
+        Both ways AND their terms and both read the same corpus, so a hit means
+        the same thing in either.
         """
         limit = _clamp_limit(limit)
-        kinds = {
-            "note": ["note"], "diary": ["diary"], "file": ["file"],
-            "report": ["report"],
-            "all": ["note", "diary", "file", "report"],
-        }[kind]
-        use_semantic = mode == "hybrid" and bool(embed_query)
-        rx = re.compile(query) if mode == "grep" else None
-        out: list[dict] = []
-        for k in kinds:
-            # Normalized per kind rather than once up front: the GRANULARITY is
-            # the kind's (diary compares dates, a note datetimes), so one bound
-            # has to be read through each kind's own axis.  A bound in no known
-            # grammar still aborts the whole search — it raises on the first
-            # kind, before any result is returned.
-            k_since, k_until = _kind_window(_KIND_SPECS[k], since, until)
-            key_hits = (
-                await self._regex_search_kind(k, rx, limit, k_since, k_until)
-                if rx is not None
-                else await self._keyword_search_kind(
-                    k, query, limit, k_since, k_until,
-                )
-            )
-            sem_hits: list[dict] = []
-            if use_semantic:
-                assert embed_query is not None  # guaranteed by use_semantic
-                sem_hits = await self._semantic_search_kind(
-                    k, embed_query, limit, k_since, k_until,
-                )
-            out.extend(merge_hybrid(key_hits, sem_hits, key_field="id"))
-        out.sort(key=lambda r: r.get("rrf_score", 0.0), reverse=True)
-        return out[:limit]
+        where, params = _doc_window(since, until, kind)
 
-    async def _keyword_search_kind(
-        self, kind: str, query: str, limit: int,
-        since: str | None = None, until: str | None = None,
-    ) -> list[dict]:
-        spec = _KIND_SPECS[kind]
         if _contains_cjk(query):
-            return await self._like_search_kind(kind, query, limit, since, until)
-        q = _to_fts5_query(query)
-        # FTS5 carries no created_at, so the JOIN is what supplies the window
-        # — memdb joins diary for the same reason.
-        time_sql, time_params = _time_clause(
-            since, until, f"t.{spec['time_col']}",
-        )
-        cursor = await self._c.execute(
-            f"SELECT t.id, t.{spec['key_col']} AS key, "
-            f"t.{spec['text_col']} AS text, t.tags, t.created_at, "
-            f"t.{spec['file_col']} AS file_path, "
-            f"snippet({spec['fts']}, {spec['snippet_col']}, '…', '…', '…', 40) AS snippet, "
-            f"{spec['fts']}.rank AS rank "
-            f"FROM {spec['fts']} JOIN {spec['table']} t ON t.id = {spec['fts']}.rowid "
-            f"WHERE {spec['fts']} MATCH ?{time_sql} ORDER BY rank LIMIT ?",
-            (q, *time_params, limit),
-        )
-        hits = []
-        for row in await cursor.fetchall():
-            r = dict(row)
-            r["id"] = f"{spec['id_label']}:{r['id']}"
-            hits.append(r)
-        return hits
+            # A substring has no relevance to rank by, so this leg is newest
+            # first — the same constant-rank shape memdb's LIKE fallback has.
+            words = [w for w in query.split() if w]
+            if not words:
+                return []
+            clause, like_params = _like_terms(words, _LIKE_COLS)
+            cursor = await self._c.execute(
+                f"""SELECT d.kind, d.doc_id, d.id, d.key, d.title, d.body, d.summary, d.tags,
+                           d.source, d.file_path, d.ts,
+                           substr(d.body, 1, 80) AS snippet, 0 AS rank
+                    FROM cabinet_docs d WHERE {clause}{where}
+                    ORDER BY d.ts DESC LIMIT ?""",
+                (*like_params, *params, limit),
+            )
+            return [dict(r) for r in await cursor.fetchall()]
 
-    async def _like_search_kind(
-        self, kind: str, query: str, limit: int,
-        since: str | None = None, until: str | None = None,
-    ) -> list[dict]:
-        """CJK substring search — FTS5's unicode61 can't segment Chinese.
-
-        The predicate is :func:`_like_terms`, the very one memdb's
-        ``_search_like`` uses: split on whitespace, every word must appear in
-        some column, ANDed.  One pattern for the whole query instead needs the
-        words adjacent and in order — so ``"子agent 委托"`` missed a note holding
-        the two words in different columns, while ``turn_search`` answered with
-        it.  Same query, two stores, two answers.
-        """
-        spec = _KIND_SPECS[kind]
-        words = [w for w in query.split() if w]
-        if not words:
+        try:
+            cursor = await self._c.execute(
+                f"""SELECT d.kind, d.doc_id, d.id, d.key, d.title, d.body, d.summary, d.tags,
+                           d.source, d.file_path, d.ts,
+                           snippet(cabinet_fts, -1, '…', '…', '…', 40) AS snippet,
+                           f.rank
+                    FROM cabinet_fts f
+                    JOIN cabinet_docs d
+                      ON d.kind = f.kind AND d.doc_id = f.doc_id
+                    WHERE cabinet_fts MATCH ?{where}
+                    ORDER BY f.rank LIMIT ?""",
+                (_to_fts5_query(query), *params, limit),
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+        except aiosqlite.OperationalError:
+            # A MATCH the parser rejects is an empty result, not a failure: the
+            # query reached us as text and nothing is wrong with the store.
+            # memdb's search_keyword swallows the same error for the same
+            # reason.
             return []
-        where, params = _like_terms(
-            words, tuple(f"t.{c}" for c in spec["like_cols"]),
-        )
-        time_sql, time_params = _time_clause(
-            since, until, f"t.{spec['time_col']}",
-        )
+
+    async def semantic_hits(
+        self, *, embedding: list[float], limit: int,
+        since: str | None = None, until: str | None = None, kind: str = "all",
+    ) -> list[dict]:
+        """Vector hits over the cabinet, nearest first.
+
+        ``limit`` counts DOCUMENTS: a long text is several chunks, so the KNN
+        is asked for a wider pool and deduped by (kind, doc_id), keeping each
+        document's closest chunk.
+
+        With a time window the pool is wider still, because vec0 KNN is global
+        nearest-neighbour and sqlite-vec forbids an auxiliary-column constraint
+        inside it — so the window cannot narrow the KNN and is applied below.
+        Without the wider pool the in-window hits could all sit outside the
+        KNN's top ``limit*2`` and a windowed search would come back empty while
+        matches existed.  memdb's ``search_semantic`` widens by the same factor
+        for the same reason.
+        """
+        if self._embedding_dim <= 0:
+            return []
+        limit = _clamp_limit(limit)
+        fetch_limit = (limit * 8) if (since or until) else (limit * 2)
         cursor = await self._c.execute(
-            f"SELECT t.id, t.{spec['key_col']} AS key, "
-            f"t.{spec['text_col']} AS text, t.tags, t.created_at, "
-            f"t.{spec['file_col']} AS file_path "
-            f"FROM {spec['table']} t WHERE {where}{time_sql} "
-            f"ORDER BY t.id DESC LIMIT ?",
-            (*params, *time_params, limit),
+            "SELECT kind, doc_id, distance FROM cabinet_semantic "
+            "WHERE doc_embedding MATCH ? AND k = ? ORDER BY distance",
+            (_serialize_f32(embedding), fetch_limit),
         )
-        hits = []
+        best: dict[str, dict] = {}
         for row in await cursor.fetchall():
             r = dict(row)
-            r["id"] = f"{spec['id_label']}:{r['id']}"
-            text = r.get("text", "")
-            r["snippet"] = text[:80] + ("…" if len(text) > 80 else "")
-            hits.append(r)
-        return hits
+            key = f"{r['kind']}:{r['doc_id']}"
+            if key not in best:
+                best[key] = r
+        if not best:
+            return []
 
-    async def _regex_search_kind(
-        self, kind: str, rx: "re.Pattern", limit: int,
-        since: str | None = None, until: str | None = None,
-    ) -> list[dict]:
-        """REGEX search over the kind's text columns — a real ``grep``.
-
-        SQLite has no regexp engine, so the match runs here: the kind's own
-        row count is what bounds the scan (a cabinet is small, and the
-        alternative — SQL ``LIKE`` — is what made ``grep`` a misnomer).  The
-        time window still narrows in SQL, so it bounds the scan too — only the
-        text predicate is left to Python.
-        """
-        spec = _KIND_SPECS[kind]
-        time_sql, time_params = _time_clause(
-            since, until, f"t.{spec['time_col']}",
+        ids = list(best)
+        where, params = _doc_window(since, until, kind)
+        cur = await self._c.execute(
+            f"""SELECT d.kind, d.doc_id, d.id, d.key, d.title, d.body, d.summary, d.tags,
+                       d.source, d.file_path, d.ts, d.body AS snippet
+                FROM cabinet_docs d
+                WHERE d.id IN ({in_placeholders(len(ids))}){where}""",
+            (*ids, *params),
         )
+        hits: list[dict] = []
+        for row in await cur.fetchall():
+            r = dict(row)
+            r["distance"] = best[r["id"]]["distance"]
+            hits.append(r)
+        hits.sort(key=lambda h: h["distance"])
+        return hits[:limit]
+
+    async def regex_hits(
+        self, *, pattern: str, limit: int, since: str | None = None,
+        until: str | None = None, kind: str = "all",
+    ) -> list[dict]:
+        """Regex hits over the cabinet, newest first.
+
+        A real ``grep``: the pattern is a Python regex and the match runs here,
+        because SQLite has no regexp engine.
+
+        It reads a row's **title, its path and its text** — and not its tags
+        (those are the keyword leg's) or its summary, which is the one column a
+        model wrote rather than the document.  That is the cabinet's answer to
+        the question memdb answers with "a turn's messages, not its summary and
+        tags": a cabinet row has a name and a place on disk as well as a text,
+        and a grep is how you find a row by either.
+
+        An unusable pattern raises ``re.error`` for the caller to report.  Rows
+        are examined newest-first up to :data:`GREP_SCAN_LIMIT`, so the worst
+        case stays bounded on a long-lived cabinet.
+        """
+        limit = _clamp_limit(limit)
+        rx = re.compile(pattern)
+        where, params = _doc_window(since, until, kind)
         cursor = await self._c.execute(
-            f"SELECT t.id, t.{spec['key_col']} AS key, "
-            f"t.{spec['text_col']} AS text, t.tags, t.created_at, "
-            f"t.{spec['file_col']} AS file_path "
-            f"FROM {spec['table']} t WHERE 1=1{time_sql} "
-            f"ORDER BY t.id DESC",
-            time_params,
+            f"""SELECT d.kind, d.doc_id, d.id, d.key, d.title, d.body, d.summary, d.tags,
+                       d.source, d.file_path, d.ts
+                FROM cabinet_docs d WHERE 1=1{where}
+                ORDER BY d.ts DESC LIMIT ?""",
+            (*params, GREP_SCAN_LIMIT),
         )
         hits: list[dict] = []
         for row in await cursor.fetchall():
             r = dict(row)
-            m = (rx.search(str(r.get("key") or ""))
-                 or rx.search(str(r.get("text") or "")))
-            if m is None:
+            # The four the pattern reads, in the order a hit should be
+            # explained by: the row's text first, then its name, then where it
+            # lives.  The snippet comes from whichever one matched.
+            for field in ("body", "title", "file_path", "source"):
+                text = r.get(field) or ""
+                match = rx.search(text)
+                if match is None:
+                    continue
+                start = max(0, match.start() - 40)
+                r["snippet"] = text[start:start + 160]
+                break
+            else:
                 continue
-            r["id"] = f"{spec['id_label']}:{r['id']}"
-            text = str(r.get("text") or "")
-            start = max(0, m.start() - 40)
-            r["snippet"] = text[start:start + 80] + ("…" if len(text) > start + 80 else "")
             r["rank"] = 0
             hits.append(r)
             if len(hits) >= limit:
                 break
-        return hits
-
-    async def _semantic_search_kind(
-        self, kind: str, embedding: list[float], limit: int,
-        since: str | None = None, until: str | None = None,
-    ) -> list[dict]:
-        # No vec0 tables when embedding is disabled (dim 0) — hybrid search
-        # degrades to keyword-only (search() keeps the FTS5 half).
-        if self._embedding_dim <= 0:
-            return []
-        spec = _KIND_SPECS[kind]
-        vec_blob = _serialize_f32(embedding)
-        # Fetch extra rows to dedup multi-chunk documents (vec0 KNN no GROUP BY).
-        #
-        # With a time window, fetch a WIDER pool: vec0 KNN is global
-        # nearest-neighbour and sqlite-vec forbids an auxiliary-column
-        # constraint inside it, so the window cannot narrow the KNN — it is
-        # applied below, in Python.  Without a wider pool the in-window hits
-        # could all sit outside the KNN's top `limit*2` and the windowed
-        # search would come back empty while matches existed.  memdb's
-        # `search_semantic` widens by the same factor for the same reason.
-        fetch_limit = (limit * 8) if (since or until) else (limit * 2)
-        cursor = await self._c.execute(
-            f"SELECT rowid, doc_id, summary, tags, created_at, distance "
-            f"FROM {spec['semantic']} WHERE doc_embedding MATCH ? AND k = ? "
-            f"ORDER BY distance",
-            (vec_blob, fetch_limit),
-        )
-        seen: set[int] = set()
-        hits: list[dict] = []
-        for row in await cursor.fetchall():
-            r = dict(row)
-            rid = r["doc_id"]
-            if rid in seen:
-                continue
-            seen.add(rid)
-            r["id"] = f"{spec['id_label']}:{rid}"
-            hits.append(r)
-        # The window is applied on the metadata fetched below, NOT on the vec0
-        # row — the vec0 table carries only `created_at`, while the window is on
-        # the kind's OWN axis (`date` for diary, `updated_at` for a note).
-        # Filtering the aux column here is exactly what would make a hybrid
-        # diary search answer from `created_at` while its own keyword legs, in
-        # the same call, answered from `date`.
-        if hits:
-            ids = [h["doc_id"] for h in hits]
-            ph = in_placeholders(len(ids))
-            cur = await self._c.execute(
-                f"SELECT id, {spec['file_col']} AS file_path, "
-                f"{spec['time_col']} AS time_value "
-                f"FROM {spec['table']} WHERE id IN ({ph})",
-                ids,
-            )
-            meta = {r["id"]: r for r in await cur.fetchall()}
-            kept: list[dict] = []
-            for h in hits:
-                m = meta.get(h["doc_id"])
-                h["file_path"] = m["file_path"] if m is not None else ""
-                value = (m["time_value"] if m is not None else "") or ""
-                if since and value < since:
-                    continue
-                if until and value > until:
-                    continue
-                kept.append(h)
-            hits = kept[:limit]
         return hits
 
     # ── read / path safety ─────────────────────────────────────────
