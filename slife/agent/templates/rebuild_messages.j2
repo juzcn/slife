@@ -14,16 +14,18 @@ object means the turns in hand are enough for this turn.
 
 Part 1 — the decision
 
-What to keep of the turns in hand: all of them (omit "context"), some (the
-turn_ids in the current context worth keeping), or none ("clear").
+What to keep of the turns in hand — "context": leave it out (or "keep") for
+all of them, set it to the turn_ids in the current context worth keeping for
+some, or to "clear" for none.
 
-What to recall from memory: nothing (omit "recall"), or one condition — a
-period (since / until), a query, or a query within a period.
+What to recall from memory — "recall": leave it out for nothing, or fill it
+in for one condition — a period (since / until), a query, or a query within a
+period.
 
 The "query" holds what turn recall needs, in the words a stored turn would
 contain. It is matched against the stored turns.
 
-The context is bounded, so a recall might return a bounded selection. Use
+The context is bounded, so a recall might return a truncated selection. Use
 "anchor" to guide the drop for a period recall, and bound a query recall with
 a narrowed period.
 
