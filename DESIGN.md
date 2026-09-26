@@ -488,7 +488,10 @@ says is ever shown.
   at all there is no call either — the availability check is the gate, so a turn is never spent asking
   a model to decide a recall that cannot run.
 - **Cost**: one context-sized call per turn — the pre-turn call is about as expensive as the turn
-  itself. That is what judging from the conversation costs.
+  itself. That is what judging from the conversation costs, and it is **accepted** rather than
+  pending: it is what makes the context chosen instead of accumulated, and the step has proven usable
+  in practice. What keeps it from being paid for nothing is the skip — a decision that asks for
+  exactly what is in hand rebuilds nothing at all (below).
 - **Not sent**: anything beyond that context. The runtime-only turn id on the message that opens each
   turn is stripped.
 - **It never persists and never streams** — nothing it sends or receives touches the history, the
@@ -2219,6 +2222,7 @@ Each is a rule in the body now.
 | Should `local-embed` be health-checked when it is not the active embedding provider? | Yes. It is an ordinary child plugin with a `__check`, so the plugin contract holds uniformly and no special case was needed (`slife/plugins/spec.py`). |
 | Why does the sharefile tunnel fail under a TUN fake-IP proxy? | The resolver lies, and intercepted traffic breaks the tunnel's long-lived control connection. Both are measured facts now rather than mysteries ([§7.5](#75-the-file-cabinet)). |
 | What happens when a model switch changes the context window? | Mostly absorbed: the tool-result cap is recomputed, the usage reading self-corrects, and the ceiling moves with the window — with one rough edge left open below. |
+| Is the per-turn discriminator worth a context-sized call? | **Yes — it is the design**, and it is proven usable in practice. That cost is the price of judging from the conversation, not a sign the arrangement is wrong, and [§2.3](#23-recall--the-context-is-selected) states it that way. Anything cheaper would have to keep the reason this step is a model call at all: a follow-up names its subject only through the conversation in hand, so a query written from the input alone retrieves nothing. |
 
 ### Open
 
@@ -2240,17 +2244,7 @@ identity in memory and in the TUI, or one channel carrying the account, and how 
 accounts interleave in a single shared agent context. *Settling it*: a call on whether an account is
 an identity or an attribute.
 
-**3. What the recall step costs.** The discriminator is one **context-sized** model call before every
-turn — about as expensive as the turn itself ([§2.3](#23-recall--the-context-is-selected)) — and what
-it returns is a selection a keyword search might have approximated for nothing. Skipping the rebuild
-when the decision keeps exactly what is in hand protects the prompt cache, but it does not protect
-the call. *Settling it*: a measurement, not an argument — the rate at which the step changes the
-context at all, set against the token cost of asking. If most decisions are "keep everything", the
-step is paying a full call to answer nothing. [§7.2](#72-search) is the other half of this: on CJK
-turns the semantic leg is often the only leg contributing, so the quality of a selection rests on one
-leg and one similarity floor.
-
-**4. Shared code across the plugin children.** The duplicate implementations that prompted this have
+**3. Shared code across the plugin children.** The duplicate implementations that prompted this have
 largely converged — the two corpus searches share `run_search`, and the cabinet reuses memdb's index
 machinery ([§7.2](#72-search), [§7.5](#75-the-file-cabinet)) — but the pattern that produced them has
 not been settled. Each plugin is its own package with its own store, its own schema and its own copy
@@ -2259,7 +2253,7 @@ of anything small, and the harness has no shared library for the shapes they hol
 cost of a dependency every child then takes. "Nothing worth sharing" is a fine answer, once it is
 written down.
 
-**5. The approval gate's two blind spots.** Approval is pure model judgment, with no
+**4. The approval gate's two blind spots.** Approval is pure model judgment, with no
 `requires_approval` flag anywhere ([§4.8](#48-the-approval-gate)), so the gate holds exactly where the
 model is diligent and nowhere else. Two consequences are worth stating plainly. A **headless worker
 auto-approves everything** — the decision belongs to whoever is watching, and nobody is — so a
@@ -2271,7 +2265,7 @@ rather than left to judgment. The cost of the wrong answer cuts both ways: a str
 needs is a permanent tax on every capable model, which is the trade-off the
 [Prologue](#prologue--the-view-behind-the-design) already chose against.
 
-**6. The tool system's synchronization.** The most intricate part of the harness is keeping the
+**5. The tool system's synchronization.** The most intricate part of the harness is keeping the
 config, the runtime's verdicts and the catalog's load state in step
 ([§4.3](#43-the-catalog--the-tool-database)): one status column with two writers and two lanes, a
 load state with exactly four writers, a boot seed, a background reconcile, and a threshold eviction.
