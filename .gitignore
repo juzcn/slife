@@ -28,6 +28,11 @@ logs/
 # the a2a plugin; in dev mode the data dir IS the repo root, so it lands here.
 a2a_inbound.yaml
 
+# Generated documentation render.  DESIGN.pdf is DESIGN.md printed from a
+# browser, not a source file — DESIGN.md is what is edited and reviewed, so the
+# render is regenerated on demand rather than tracked.
+DESIGN.pdf
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
