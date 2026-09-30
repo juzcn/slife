@@ -397,6 +397,40 @@ async def _repainted(app, pilot, previous: list[str], tries: int = 20) -> list[s
     return lines
 
 
+async def _settled(pilot, condition, tries: int = 20) -> bool:
+    """``condition`` once it holds — polled, because a scroll lands a turn late.
+
+    ``scroll_to`` and ``scroll_end`` do not move the offset when they are
+    called: both defer, and the deferred scroll runs only once the widget is
+    idle again — a turn *after* the ``pilot.pause`` written to cover it.  The
+    read after that pause therefore compared the old position with itself:
+    green on an idle machine, red on macOS CI, where the pause came back first
+    and the view scrolled correctly a moment later.  Bounded, so a follow that
+    never lands still fails rather than waits.
+    """
+    for _ in range(tries):
+        if condition():
+            return True
+        await pilot.pause()
+    return bool(condition())
+
+
+async def _filled(pilot, view, n=30) -> None:
+    """Fill the history and wait for the view to come to rest at its tail.
+
+    ``_fill`` queues a ``scroll_end`` per message and returns before any of
+    them has run, so one ``pilot.pause`` left the view at the tail in the
+    common case and still at the top in the next.  Every test here starts from
+    "the reader is at the end", and a start that was occasionally somewhere
+    else is what made the rest of the class flaky.
+    """
+    _fill(view, n)
+    assert await _settled(
+        pilot,
+        lambda: view.scroll_offset.y == view.max_scroll_y > 0,
+    ), "the fill never came to rest at its tail"
+
+
 class TestScrollFollowing:
     """Following the tail must be sticky, or a streaming turn owns the view.
 
@@ -411,12 +445,10 @@ class TestScrollFollowing:
         app = Host()
         async with app.run_test(size=(80, 24)) as pilot:
             view = app.query_one("#chat-view", ChatView)
-            _fill(view)
-            await pilot.pause()
+            await _filled(pilot, view)
             before = view.scroll_offset.y
             view.add_user_message("[new] while at the tail")
-            await pilot.pause()
-            assert view.scroll_offset.y > before
+            assert await _settled(pilot, lambda: view.scroll_offset.y > before)
 
     @pytest.mark.asyncio
     async def test_does_not_yank_a_reader_back_to_the_tail(self):
@@ -424,17 +456,19 @@ class TestScrollFollowing:
         app = Host()
         async with app.run_test(size=(80, 24)) as pilot:
             view = app.query_one("#chat-view", ChatView)
-            _fill(view)
-            await pilot.pause()
+            await _filled(pilot, view)
             view.scroll_to(y=0, animate=False)
-            await pilot.pause()
+            assert await _settled(pilot, lambda: view.scroll_offset.y == 0)
 
             for _ in range(20):
                 view.add_assistant_message().append_text("token ")
                 view.follow_tail()
-            await pilot.pause()
 
-            assert view.scroll_offset.y == 0
+            # Five turns is several more than a queued follow needs to land,
+            # so a guarded one that moved the view anyway would be caught here
+            # rather than by the eye.
+            away = await _settled(pilot, lambda: view.scroll_offset.y != 0, tries=5)
+            assert not away, f"a token dragged the reader to {view.scroll_offset.y}"
 
     @pytest.mark.asyncio
     async def test_sending_a_message_returns_to_the_tail(self):
@@ -449,20 +483,23 @@ class TestScrollFollowing:
         app = Host()
         async with app.run_test(size=(80, 24)) as pilot:
             view = app.query_one("#chat-view", ChatView)
-            _fill(view)
-            await pilot.pause()
+            await _filled(pilot, view)
             view.scroll_to(y=0, animate=False)
-            await pilot.pause()
+            assert await _settled(pilot, lambda: view.scroll_offset.y == 0)
             assert view._at_tail is False
 
+            sent_from = _visible_lines(app)
             view.add_user_message("You> hello from up here")
             view.jump_to_tail()
-            await pilot.pause()
-
+            # Armed in the same turn as the jump: a token that lands before the
+            # jump's own scroll does must still be followed, and the watcher
+            # only re-arms once that scroll lands, a refresh later.
             assert view._at_tail is True
-            assert view.scroll_offset.y == view.max_scroll_y
-            assert any("hello from up here" in line
-                       for line in _visible_lines(app))
+            shown = await _repainted(app, pilot, sent_from)
+
+            assert await _settled(pilot,
+                                  lambda: view.scroll_offset.y == view.max_scroll_y)
+            assert any("hello from up here" in line for line in shown)
 
     @pytest.mark.asyncio
     async def test_following_resumes_after_a_send(self):
@@ -475,39 +512,39 @@ class TestScrollFollowing:
         app = Host()
         async with app.run_test(size=(80, 24)) as pilot:
             view = app.query_one("#chat-view", ChatView)
-            _fill(view)
-            await pilot.pause()
+            await _filled(pilot, view)
             view.scroll_to(y=0, animate=False)
-            await pilot.pause()
+            assert await _settled(pilot, lambda: view.scroll_offset.y == 0)
 
             view.add_user_message("You> hello")
             view.jump_to_tail()
-            await pilot.pause()
+            # Armed now, not a refresh later when the jump's own scroll lands:
+            # the reply is already on its way.
+            assert view._at_tail is True
+            assert await _settled(pilot,
+                                  lambda: view.scroll_offset.y == view.max_scroll_y)
             before = view.scroll_offset.y
 
             # exactly what on_text_chunk does for every streamed token
             view.add_assistant_message().append_text("token ")
             view.follow_tail()
-            await pilot.pause()
-
-            assert view.scroll_offset.y > before
+            assert await _settled(pilot, lambda: view.scroll_offset.y > before)
 
     @pytest.mark.asyncio
     async def test_returning_to_the_tail_resumes_following(self):
         app = Host()
         async with app.run_test(size=(80, 24)) as pilot:
             view = app.query_one("#chat-view", ChatView)
-            _fill(view)
-            await pilot.pause()
+            await _filled(pilot, view)
             view.scroll_to(y=0, animate=False)
-            await pilot.pause()
+            assert await _settled(pilot, lambda: view.scroll_offset.y == 0)
             view.scroll_to(y=view.max_scroll_y, animate=False)
-            await pilot.pause()
+            assert await _settled(pilot,
+                                  lambda: view.scroll_offset.y == view.max_scroll_y)
 
             before = view.scroll_offset.y
             view.add_user_message("[new] after coming back")
-            await pilot.pause()
-            assert view.scroll_offset.y > before
+            assert await _settled(pilot, lambda: view.scroll_offset.y > before)
 
     @pytest.mark.asyncio
     async def test_page_keys_reach_the_transcript_from_the_prompt(self):
@@ -520,20 +557,17 @@ class TestScrollFollowing:
         app = Host()
         async with app.run_test(size=(80, 24)) as pilot:
             view = app.query_one("#chat-view", ChatView)
-            _fill(view)
-            await pilot.pause()
-            view.scroll_to(y=view.max_scroll_y, animate=False)
+            await _filled(pilot, view)
             app.query_one("#prompt", HistoryInput).focus()
             await pilot.pause()
 
             before = view.scroll_offset.y
             await pilot.press("pageup")
-            await pilot.pause()
-            assert view.scroll_offset.y < before
+            assert await _settled(pilot, lambda: view.scroll_offset.y < before)
 
             await pilot.press("pagedown")
-            await pilot.pause()
-            assert view.scroll_offset.y == view.max_scroll_y
+            assert await _settled(pilot,
+                                  lambda: view.scroll_offset.y == view.max_scroll_y)
             # The reader keeps their cursor: paging must not move focus.
             assert isinstance(app.focused, HistoryInput)
 
@@ -550,8 +584,7 @@ class TestScrollFollowing:
         app = Host()
         async with app.run_test(size=(80, 24)) as pilot:
             view = app.query_one("#chat-view", ChatView)
-            _fill(view)
-            await pilot.pause()
+            await _filled(pilot, view)
             at_tail = _visible_lines(app)
 
             view.scroll_to(y=0, animate=False)
