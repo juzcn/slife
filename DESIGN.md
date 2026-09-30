@@ -1123,8 +1123,8 @@ faithfully, not "improved". (4) *One semantic, one value*. (5) *No global defaul
 socket timeout would silently change every third-party socket.
 
 **One bound outside that rule: the startup sync.** A single budget covers the boot tool sync — it
-bounds each mirror's wait on the gateway, decides when the tool-set line reports what the set has
-instead of waiting, and is the age at which a wedged reconcile pass may be abandoned by the next one.
+bounds each mirror's wait on the gateway, and decides when the tool-set line reports what the set has
+instead of waiting.
 Its invariant is that it must be no smaller than the gateway's own establishment, listing and **retry**
 bounds summed, which is what keeps the line honest: it may not claim "synced" before those have
 expired. The retry is in the sum because a slow cold start spends the whole establishment bound
@@ -1137,6 +1137,16 @@ run on an event loop** — a synchronous subprocess suspends every timer in that
 exempted blocking call that freezes the loop invalidates every other deadline in it (measured: over
 two minutes of frozen gateway loop, thirteen expired connect bounds firing at once). Blocking work
 goes to a daemon thread.
+
+**A pass that is slow is not a pass that is wedged**, and the reconcile guard is where that
+distinction has to be made, so it is its own value on its own clock. It used to borrow the startup
+sync budget and measure it from the pass's *start* — two mistakes that compound: a legitimate pass is
+several sequential bounded awaits long, each allowed to take the whole budget, so the guard called
+those passes wedged at the instant their slowest mirror was about to answer (measured: passes ending
+at exactly `held=150.0s` against a 150s threshold, every later trigger coalesced behind them). The
+clock is now *idle time*, restarted by every await a pass completes — the §4.7 rule applied to the
+pass itself, live-but-long work bounded by inactivity — and its threshold must clear the longest
+await a pass can be inside, or the clock would fire while that await was still legitimately running.
 
 **And the budget alone cannot make the line honest.** A probe stops *waiting* on a server whose spawn
 failed — that is what `pending` excludes — but stopping the wait is not the same as having the tools,

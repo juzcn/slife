@@ -88,13 +88,15 @@ class Ready:
     connect_retry_delay: float = 0.5
     sharefile_retry_delay: float = 2.0
     list_tools: float = 20.0
-    tool_sync_wait: float = 285.0  # THE startup-sync budget — one value, three
+    tool_sync_wait: float = 285.0  # THE startup-sync budget — one value, two
                                   # consumers that are the same fact: how long
-                                  # ONE mirror may wait on the gateway, how long
-                                  # the tool-set line waits before reporting what
-                                  # the set has, and how long a wedged reconcile
-                                  # pass may hold its guard before the next pass
-                                  # abandons it.  It must outlast the gateway's
+                                  # ONE mirror may wait on the gateway, and how
+                                  # long the tool-set line waits before
+                                  # reporting what the set has.  (It used to be
+                                  # three: the reconcile guard's staleness
+                                  # threshold borrowed it, which is what
+                                  # ``reconcile_guard`` below exists to undo.)
+                                  # It must outlast the gateway's
                                   # OWN clocks, or the line would announce
                                   # "synced" while a server is still legitimately
                                   # connecting — and there are FOUR of them, not
@@ -119,6 +121,29 @@ class Ready:
                                   # line's own correction is what covers the
                                   # rest, so a longer stall does not need a
                                   # longer block here.
+    reconcile_guard: float = 570.0  # How long a reconcile pass may go WITHOUT
+                                  # PROGRESS before the next pass takes its
+                                  # guard away.  An INACTIVITY bound, not an
+                                  # age: the guard exists for the case where the
+                                  # pass's own bounds never fire — a frozen
+                                  # loop, a swallowed cancellation — and that
+                                  # case is silence, which is what this
+                                  # measures (DESIGN.md §4.7: long-but-live work
+                                  # is bounded by inactivity, never a wall
+                                  # clock).  Age was the bug: a legitimate pass
+                                  # is four sequential bounded awaits long
+                                  # (``__mcp_list``, a ``__check``, every mirror
+                                  # gathered as the slowest of them, a second
+                                  # ``__check``), so measuring from its START
+                                  # meant a pass was called wedged at the very
+                                  # moment its slowest mirror was about to
+                                  # answer — measured, passes ending at
+                                  # ``held=150.0s`` against a 150s threshold,
+                                  # every later trigger coalesced behind them.
+                                  # The invariant keeps it above the longest
+                                  # await a pass can be inside, or the clock
+                                  # would fire while that await was still
+                                  # legitimately running.
     watchdog_backoff_initial: float = 1.0
     watchdog_backoff_max: float = 30.0
     watchdog_backoff_multiplier: float = 2.0
@@ -295,6 +320,17 @@ def validate(ts: Timeouts) -> list[str]:
             "invariant: ready.tool_sync_wait >= ready.connect_startup + "
             "ready.list_tools + pacing.mcp_relist_initial + "
             "ready.connect_startup + ready.list_tools"
+        )
+    if ts.ready.reconcile_guard < 2 * ts.ready.tool_sync_wait:
+        # The guard fires on SILENCE, and a pass is legitimately silent for as
+        # long as its longest single await runs — a mirror holding its whole
+        # startup budget.  So the threshold has to clear that await with room
+        # to spare, and two of them is the room: a pass is only abandoned after
+        # it has been quiet for as long as it could legitimately have been
+        # quiet INITIALLY, twice over.  One is not enough — that is exactly the
+        # boundary the old shared value sat on.
+        errs.append(
+            "invariant: ready.reconcile_guard >= 2 * ready.tool_sync_wait"
         )
     if ts.ready.tunnel_heal < ts.ready.tunnel_read_url:
         # A running child gets at least the patience a fresh start gets, or

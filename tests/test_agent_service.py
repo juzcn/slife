@@ -1072,18 +1072,19 @@ class TestAgentServiceMCPEnrichment:
         also meant a pass that never ended blocked every later
         ``tools/list_changed`` for the rest of the process, silently: the tool
         set froze at whatever moment the pass wedged (2026-09-24: frozen at
-        13:14:37).  The holder is a token with an age, so the next pass takes
-        over from a stale one — and only from a stale one.
+        13:14:37).  The holder is a token with an idle clock, so the next pass
+        takes over from a SILENT one — and only from a silent one.
         """
         import time
         import slife.timeouts as _T
 
         service, store = await self._sync_with_catalog(sample_config, tmp_path, "svc")
         try:
-            # A pass that took the guard and never released it, long ago.
+            # A pass that took the guard, made no further progress, and never
+            # released it.
             service._mcp_reconcile_owner = object()
-            service._mcp_reconcile_started_at = (
-                time.monotonic() - 10 * _T.timeouts.ready.tool_sync_wait
+            service._mcp_reconcile_progress_at = (
+                time.monotonic() - 10 * _T.timeouts.ready.reconcile_guard
             )
             with patch(
                 "slife.plugins.mcp_gateway.config.servers",
@@ -1099,7 +1100,7 @@ class TestAgentServiceMCPEnrichment:
             # that holds the guard owes one more when it ends.
             fresh = object()
             service._mcp_reconcile_owner = fresh
-            service._mcp_reconcile_started_at = time.monotonic()
+            service._mcp_reconcile_progress_at = time.monotonic()
             await service._sync_mcp_proxies()
             assert service._mcp_reconcile_owner is fresh
             assert service._mcp_reconcile_pending is True
@@ -1107,6 +1108,89 @@ class TestAgentServiceMCPEnrichment:
             service._mcp_reconcile_owner = None
             service._mcp_reconcile_pending = False
             await store.close()
+
+    @pytest.mark.asyncio
+    async def test_the_guard_reads_its_own_budget_not_the_tool_sync_one(
+        self, sample_config, tmp_path,
+    ):
+        """The threshold is a value of its own, not a borrowed one.
+
+        It used to be ``ready.tool_sync_wait``, and that is the bug in one
+        line: the value sized for ONE mirror's wait was being asked to say how
+        long a whole pass — several sequential awaits, each legitimately taking
+        up to that same value — may go without finishing.  Measured: passes
+        ending at exactly ``held=150.0s`` against a 150s threshold, every later
+        trigger coalesced behind a takeover that fired on schedule.
+
+        A holder whose last progress is PAST the tool-sync budget but inside the
+        guard's own is alive and keeps its guard.  Under the old value this is a
+        takeover; under the new one it is a coalesce, and that difference is the
+        whole assertion.
+        """
+        import time
+        import slife.timeouts as _T
+
+        service, store = await self._sync_with_catalog(sample_config, tmp_path, "svc")
+        try:
+            stalled_for = 1.5 * _T.timeouts.ready.tool_sync_wait
+            assert stalled_for > _T.timeouts.ready.tool_sync_wait
+            assert stalled_for < _T.timeouts.ready.reconcile_guard
+
+            holder = object()
+            service._mcp_reconcile_owner = holder
+            service._mcp_reconcile_progress_at = time.monotonic() - stalled_for
+            with patch(
+                "slife.plugins.mcp_gateway.config.servers",
+                return_value={"svc": {}},
+            ), patch.object(
+                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            ):
+                await service._sync_mcp_proxies()
+
+            assert service._mcp_reconcile_owner is holder   # not taken over
+            assert service._mcp_reconcile_pending is True   # owed a pass
+        finally:
+            service._mcp_reconcile_owner = None
+            service._mcp_reconcile_pending = False
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_every_await_a_pass_completes_restarts_its_idle_clock(
+        self, sample_config, tmp_path, monkeypatch,
+    ):
+        """What makes it an IDLE clock: the pass ticks as it goes.
+
+        Without the ticks the guard would be reading the pass's age again under
+        another name — a slow pass and a wedged one look identical if starting
+        is the only thing that resets the clock.  So every stage that finishes
+        ticks, the gathered mirrors included and the count is the contract
+        here: a stage that stops ticking is a stage that can be mistaken for a
+        wedge, and mirror branches run CONCURRENTLY, so one of them returning is
+        what a healthy pass looks like while the rest are still inside their own
+        bound.
+        """
+        ticks: list[float] = []
+        real = AgentService._mcp_reconcile_progress
+
+        def counted(self_):
+            real(self_)
+            ticks.append(self_._mcp_reconcile_progress_at)
+
+        monkeypatch.setattr(AgentService, "_mcp_reconcile_progress", counted)
+
+        servers = ["a", "b"]
+        service, store = await self._pool_build(
+            sample_config, tmp_path, servers, {"a": True, "b": True},
+        )
+        try:
+            await self._pool_pass(service, servers)
+        finally:
+            await store.close()
+
+        # taking the guard, __mcp_list, the first projection, one per mirror
+        # (gathered, so two), the re-projection.
+        assert len(ticks) == 6
+        assert ticks == sorted(ticks)      # each tick is a reset, never a rewind
 
     @pytest.mark.asyncio
     async def test_a_trigger_during_a_pass_is_redeemed_not_dropped(

@@ -533,7 +533,13 @@ class AgentService:
         # wedged, and the next pass takes it over instead of queueing behind it
         # for the rest of the process.
         self._mcp_reconcile_owner: object | None = None
-        self._mcp_reconcile_started_at: float | None = None
+        #: When the running pass last showed a sign of life — the clock
+        #: ``ready.reconcile_guard`` is measured against.  PROGRESS, not age:
+        #: the guard's job is to rescue a pass whose own bounds never fired,
+        #: and that failure looks like a pass that never ticks again, while a
+        #: healthy pass ticks once per await it completes however long the
+        #: whole thing takes (see :meth:`_mcp_reconcile_progress`).
+        self._mcp_reconcile_progress_at: float | None = None
         #: A trigger that arrived while a pass was running, coalesced rather
         #: than discarded.  The running pass has already read the tool list it
         #: is reporting on, so it cannot answer for a change that landed after
@@ -1441,6 +1447,20 @@ class AgentService:
         except Exception:
             logger.debug("mcp_tools_changed_sync_failed", exc_info=True)
 
+    def _mcp_reconcile_progress(self) -> None:
+        """A reconcile pass finished an await — restart its idle clock.
+
+        The guard's whole staleness test is this clock, and the reason it is a
+        clock rather than an age is the doctrine it follows (DESIGN.md §4.7):
+        work that is live but long is bounded by INACTIVITY, never by a wall
+        clock.  A reconcile pass is several sequential bounded awaits, so its
+        total duration says nothing about whether it is healthy; only its
+        silence does.  Every await that returns — including a mirror that
+        returned by TIMING OUT, since that is a bound firing exactly as
+        designed — is a sign of life and calls this.
+        """
+        self._mcp_reconcile_progress_at = _time.monotonic()
+
     async def _sync_mcp_proxies(self) -> None:
         """Reconcile external MCP proxies + the catalog's tool rows.
 
@@ -1478,17 +1498,26 @@ class AgentService:
         if client is None or not client.is_connected:
             return
         # One pass at a time — but not "one pass forever", and not "one pass for
-        # a change that arrived mid-pass".  Every await below is bounded by
-        # ``ready.tool_sync_wait``, so a pass still holding the guard after that
-        # budget is not slow, it is wedged (a bound the loop never got to run —
-        # the gateway froze, or a cancellation was swallowed under it).
-        # Abandoning it is what keeps one stuck server from disabling the
-        # mid-session sync for the rest of the process, which is exactly what a
-        # bare latch did.
+        # a change that arrived mid-pass".  Every await below is bounded, so a
+        # pass still holding the guard does not do so because it is slow: it is
+        # wedged (a bound the loop never got to run — the gateway froze, or a
+        # cancellation was swallowed under it).  Abandoning it is what keeps one
+        # stuck server from disabling the mid-session sync for the rest of the
+        # process, which is exactly what a bare latch did.
+        #
+        # What is measured is SILENCE, not age, and that is the whole fix: the
+        # pass is several sequential bounded awaits long, so a pass that has
+        # been alive for one budget may be perfectly healthy — its slowest
+        # mirror still inside its own.  Under an age test taken from the pass's
+        # start, that pass was called wedged at the exact moment it was about to
+        # answer, and every later trigger coalesced behind the takeover.  A
+        # WEDGED pass, by contrast, produces no ticks at all, however long it
+        # lives; every await below that completes calls
+        # :meth:`_mcp_reconcile_progress`, which is what keeps a live one alive.
         owner = object()
         if self._mcp_reconcile_owner is not None:
-            held = _time.monotonic() - (self._mcp_reconcile_started_at or 0.0)
-            if held < _timeouts.timeouts.ready.tool_sync_wait:
+            stalled = _time.monotonic() - (self._mcp_reconcile_progress_at or 0.0)
+            if stalled < _timeouts.timeouts.ready.reconcile_guard:
                 # Coalesced, NOT discarded.  Folding this trigger into the pass
                 # already running would answer with a stale set: that pass read
                 # each tool list once, at its own moment, and the change this
@@ -1502,11 +1531,11 @@ class AgentService:
                 # running now is not the last one; the ``finally`` below redeems
                 # it with one more.
                 self._mcp_reconcile_pending = True
-                logger.debug("mcp_reconcile_coalesced held=%.1fs", held)
+                logger.debug("mcp_reconcile_coalesced stalled=%.1fs", stalled)
                 return
             logger.warning(
-                "mcp_reconcile_stale_pass held=%.0fs — taking over",
-                held,
+                "mcp_reconcile_stale_pass stalled=%.0fs — taking over",
+                stalled,
             )
         self._mcp_reconcile_owner = owner
         # Timing: this pass is what decides when the agent can actually call
@@ -1516,7 +1545,7 @@ class AgentService:
         # ``_report_tool_sync`` reads it out, whether or not this is the pass
         # that converges.
         started = _time.monotonic()
-        self._mcp_reconcile_started_at = started
+        self._mcp_reconcile_progress()
         if self._tool_sync_started_at is None:
             self._tool_sync_started_at = started
         #: Enabled servers that have not answered a ``tools/list`` yet —
@@ -1555,6 +1584,7 @@ class AgentService:
             except Exception as e:
                 logger.debug("mcp_reconcile_list_failed err=%s", e)
                 servers = []
+            self._mcp_reconcile_progress()
 
             configured: set[str] = set()
             #: The config's on/off switch per server — the config arm of the
@@ -1577,6 +1607,7 @@ class AgentService:
                 await self._mark_server_connectivity(
                     client, configured, enabled_servers,
                 )
+            self._mcp_reconcile_progress()
 
             # 2/2b — every configured server's rows, off ONE pass over the
             # servers.  Every ENABLED server also gets its proxies registered:
@@ -1658,6 +1689,14 @@ class AgentService:
                 except Exception:
                     undelivered.add(name)
                     logger.debug("%s server=%s", tag, name, exc_info=True)
+                # The pass's long pole, and the tick that matters most: these
+                # branches run concurrently, so ONE of them returning is what a
+                # healthy pass looks like while the rest are still inside their
+                # own bound.  Without this the guard would see the whole gather
+                # as silence and abandon a pass that was answering all along.
+                # Every exit counts, the timeout included — a bound firing is
+                # the design working, not the pass wedging.
+                self._mcp_reconcile_progress()
 
             enabled_configured = [
                 n for n in sorted(configured) if enabled_servers.get(n, True)
@@ -1687,6 +1726,7 @@ class AgentService:
                 except Exception as e:
                     logger.debug("mcp_connectivity_recheck_failed err=%s", e)
                     pending, unanswered, probe_ok = set(), set(), False
+                self._mcp_reconcile_progress()
             # A mirror that failed contributes nothing either, whatever the
             # probe said: ``unanswered`` is "no tool list from this server this
             # pass", and the probe is only one of the two places that happens.
@@ -1742,7 +1782,7 @@ class AgentService:
                 # this pass is still emitting the line it corrects — two lines
                 # out of order, the older one last.
                 self._mcp_reconcile_owner = None
-                self._mcp_reconcile_started_at = None
+                self._mcp_reconcile_progress_at = None
                 # …and only now, with the guard released, the pass a coalesced
                 # trigger asked for (see the guard above).  A pass that finds
                 # the flag clear is the last one of the burst.

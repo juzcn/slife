@@ -122,6 +122,25 @@ def test_invariant_tool_sync_wait_covers_the_gateway():
     assert validate(_mutated(**{"ready.tool_sync_wait": 285})) == []
 
 
+def test_invariant_reconcile_guard_clears_the_longest_await():
+    """The guard fires on SILENCE, so it must outlast what silence can mean.
+
+    A pass is legitimately quiet for as long as its longest single await runs —
+    a mirror holding its whole startup budget — so a threshold at that value
+    (or under it) calls a healthy pass wedged exactly as it was about to
+    answer.  That is not hypothetical: the guard used to borrow the tool-sync
+    budget itself, and a real boot showed passes ending at `held=150.0s`
+    against the 150s threshold, every later trigger coalesced behind them.
+    """
+    with pytest.raises(TimeoutConfigError, match="reconcile_guard"):
+        _mutated(**{
+            "ready.reconcile_guard": 1.9 * Timeouts().ready.tool_sync_wait,
+        })
+    # …and two of the longest await is the bound, not a round number near it.
+    exact = 2 * Timeouts().ready.tool_sync_wait
+    assert validate(_mutated(**{"ready.reconcile_guard": exact})) == []
+
+
 def test_invariant_stall_positive():
     with pytest.raises(TimeoutConfigError, match="work.stall"):
         _mutated(**{"work.stall": 0})
