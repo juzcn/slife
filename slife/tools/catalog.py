@@ -471,7 +471,10 @@ class CatalogOpDelta:
     the tool-sync line can report what a startup changed in the catalog:
     insert → ``added``, update → ``updated``, delete → ``removed``.  The
     window is the STARTUP's, not one pass's: it opens with the catalog and
-    closes with the line (see :meth:`CatalogStore.begin_ops`).
+    closes with the line (see :meth:`CatalogStore.begin_ops`) — and is armed
+    once more behind a line that admitted a shortfall, so the CORRECTION that
+    follows reports what arrived after the user was last told, rather than
+    repeating a delta they have already read.
 
     ``added`` counts the rows the user GAINED, so a row born switched off does
     not book one: the line prints these beside a count of what is callable
@@ -531,6 +534,12 @@ class CatalogStore:
         whole catalog).  Reads accumulate until ``end_ops`` takes them; a
         second ``begin_ops`` starts a fresh window and DISCARDS what the
         previous one collected, so it is not a way to look without closing.
+
+        One caller does re-arm deliberately, and it takes ``end_ops`` FIRST so
+        nothing is discarded: the tool-sync report, when the line it just sent
+        admitted a shortfall.  A correction is owed the same question and a
+        different answer — what arrived SINCE that line — and the window is how
+        it gets one.  Every other re-arm would be the discard this warns about.
         """
         self._ops = CatalogOpDelta()
         return self._ops

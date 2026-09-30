@@ -1094,14 +1094,31 @@ class SlifeApp(App):
                 text = t("tools_synced_failed", seconds=seconds, err=err)
                 color = "#f85149"
             else:
+                # TWO independent axes, and they are two sentences rather than
+                # four because that is what they are: a startup line or the
+                # correction it was owed, and — appended to either — how many
+                # servers published no tool list.  The count alone is short by
+                # whatever those servers own, so a line that does not say so
+                # reads as the user's whole tool set (a real cold start said
+                # "124 个工具可用" against the 310 tools it went on to mirror),
+                # and a CORRECTED line can still be short: the machine whose
+                # slow server never does come up gets its correction, and it
+                # still owes the clause.
+                unanswered = kwargs.get("unanswered", 0)
+                key = (
+                    "tools_synced_corrected" if kwargs.get("corrected")
+                    else "tools_synced"
+                )
                 text = t(
-                    "tools_synced",
+                    key,
                     seconds=seconds,
                     total=kwargs.get("total", 0),
                     added=kwargs.get("added", 0),
                     updated=kwargs.get("updated", 0),
                     removed=kwargs.get("removed", 0),
                 )
+                if unanswered:
+                    text += t("tools_synced_not_ready", unanswered=unanswered)
                 color = "#3fb950"
             chat_view.add_system_message(text, color=color)
 

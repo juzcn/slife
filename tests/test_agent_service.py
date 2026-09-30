@@ -5,6 +5,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import asyncio
 import json as _json
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -232,7 +233,8 @@ class TestAgentServiceMCPEnrichment:
     async def _sync_with_catalog(self, sample_config, tmp_path, server: str, *,
                                  enabled: bool = True, activity=None,
                                  listed: bool = True, reachable: bool = True,
-                                 spawn_settled: bool = True, seed=None):
+                                 spawn_settled: bool = True, seed=None,
+                                 fail_check: bool = False):
         """Run one reconcile against a real catalog; return (service, store).
 
         *activity* is registered BEFORE that pass, so a test can observe the
@@ -243,6 +245,11 @@ class TestAgentServiceMCPEnrichment:
         handed the store before the op window opens, for the rows the real
         startup writes ahead of its first pass (the boot seed, the skill/cli
         mirror) — written outside the window so they are not this pass's delta.
+        *fail_check* makes the connectivity probe blow up, which is the only
+        way to reach the pass's own exception path.  The pass still re-raises
+        (that contract does not bend for a test) — this helper is just the one
+        that asserts it, so a caller asking for a failed startup still gets the
+        service and store back to inspect and close.
         """
         from slife.tools.catalog import CatalogStore
         from slife.tools.catalog_service import ToolCatalogService
@@ -273,12 +280,26 @@ class TestAgentServiceMCPEnrichment:
         # The skill/cli mirror is stubbed for the same reason: it reads the
         # real tools.yaml and skills dir, and those rows would ride along in
         # the pass's op delta (which these tests assert on).
+        # Only patched when asked for: an AsyncMock stands in for the whole
+        # probe, so leaving it on would replace the real two-set answer with a
+        # MagicMock and every caller of it would read nonsense.
+        check = (
+            patch.object(
+                service, "_mark_server_connectivity",
+                AsyncMock(side_effect=RuntimeError("boom")),
+            )
+            if fail_check else nullcontext()
+        )
         with patch(
             "slife.plugins.mcp_gateway.config.servers", return_value={server: {}},
         ), patch.object(
             AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
-        ):
-            await service._sync_mcp_proxies()
+        ), check:
+            if fail_check:
+                with pytest.raises(RuntimeError, match="boom"):
+                    await service._sync_mcp_proxies()
+            else:
+                await service._sync_mcp_proxies()
         return service, store
 
     @pytest.mark.asyncio
@@ -518,6 +539,273 @@ class TestAgentServiceMCPEnrichment:
         finally:
             await store.close()
 
+    # ── The partial line, and the one correction it is owed ─────────
+
+    @staticmethod
+    def _pool_client(servers, listed, *, down=frozenset(), spawn_settled=True,
+                     check_error=False):
+        """A gateway client over *servers* — the multi-pass shape.
+
+        *listed* maps server → whether it answers ``tools/list``, and it is
+        read on EVERY call, so a test can flip a server between passes: that is
+        the only way to observe a mid-startup arrival.  *down* names the
+        servers with no transport at all — with ``spawn_settled`` that is the
+        settled-verdict shape, the one where nothing is pending and plenty is
+        missing, which is where the reported bug hid.  *check_error* makes the
+        connectivity probe raise: the read-nothing shape.
+        """
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def call_tool(name, arguments=None):
+            if name == "__mcp_list":
+                return _json.dumps([
+                    {"name": s, "enabled": True, "auto_load": False}
+                    for s in servers
+                ])
+            if name == "__check":
+                if check_error:
+                    raise RuntimeError("check boom")
+                return _json.dumps({
+                    "servers": [
+                        {"name": s, "tools_ok": listed.get(s, False),
+                         "reachable": s not in down}
+                        for s in servers
+                    ],
+                    "spawn_settled": spawn_settled,
+                })
+            if name in ("mcp_list_tools", "__mcp_list_tools"):
+                server = (arguments or {}).get("server", "")
+                ok = listed.get(server, False)
+                return _json.dumps({
+                    "server": server, "connected": ok,
+                    "tools": [] if not ok else [{
+                        "server": server, "name": f"{server}_tool",
+                        "description": "d",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    }],
+                    "tool_count": 1 if ok else 0,
+                })
+            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+        client.call_tool = call_tool
+        return client
+
+    async def _pool_build(self, sample_config, tmp_path, servers, listed, *,
+                          down=frozenset(), spawn_settled=True, events=None,
+                          check_error=False):
+        """Wire a multi-server pool and hand back (service, store).
+
+        The store outlives the pass, because these tests drive SEVERAL — the
+        whole point is what a later pass does with what an earlier one said.
+        """
+        from slife.tools.catalog import CatalogStore
+        from slife.tools.catalog_service import ToolCatalogService
+
+        store = CatalogStore(tmp_path / "tools.db")
+        await store.open()
+        store.begin_ops()                      # where _init_catalog arms it
+        service = AgentService(sample_config)
+        service._catalog = ToolCatalogService(store, write_owner=True)
+        service._catalog_semantic = None
+        if events is not None:
+            service.on_activity(events)
+        service._plugins["mcp-gateway"].client = self._pool_client(
+            servers, listed, down=down, spawn_settled=spawn_settled,
+            check_error=check_error,
+        )
+        return service, store
+
+    @staticmethod
+    async def _pool_pass(service, servers):
+        """One reconcile over a pinned config view — the pass's own wiring."""
+        with patch(
+            "slife.plugins.mcp_gateway.config.servers",
+            return_value={s: {} for s in servers},
+        ), patch.object(
+            AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+        ):
+            await service._sync_mcp_proxies()
+
+    @pytest.mark.asyncio
+    async def test_a_partial_line_is_corrected_once_the_set_stops_growing(
+        self, sample_config, tmp_path,
+    ):
+        """The line that went out over an incomplete set is not the last word.
+
+        A slow cold start reports what it has while servers are still arriving:
+        measured, one said "124 个工具可用" at 07:11:59 and the same startup
+        mirrored 186 more rows over the next four and a half minutes, none of
+        them ever mentioned — the latch made a number that was true for fifty
+        seconds stand for the session.
+
+        So a line that ADMITS a shortfall stays correctable, and the correction
+        reports what arrived SINCE it: the startup's whole delta was already
+        told, and repeating it would read as a second startup.  One correction,
+        then the latch closes for good.
+        """
+        servers = ["a", "b"]
+        # "b" is configured and settled DOWN: no transport at all, and the boot
+        # pass is over — so it is not pending (nothing waits on it) while its
+        # tools are still missing.
+        listed = {"a": True, "b": False}
+        events = AsyncMock()
+        service, store = await self._pool_build(
+            sample_config, tmp_path, servers, listed, down={"b"}, events=events,
+        )
+        try:
+            await self._pool_pass(service, servers)
+
+            assert events.await_count == 1
+            first = events.await_args.kwargs
+            assert first["unanswered"] == 1     # …and the line says so
+            assert first["corrected"] is False
+            assert first["added"] == 1          # "a" only
+            assert first["total"] == 1
+            assert service._tool_sync_partial is True
+            # The correction is owed the same question, so the window opens
+            # again: its delta is what arrives from here on.
+            assert store._ops is not None
+
+            listed["b"] = True                  # the retry finally lists it
+            await self._pool_pass(service, servers)
+
+            assert events.await_count == 2
+            correction = events.await_args.kwargs
+            assert correction["corrected"] is True
+            assert correction["unanswered"] == 0
+            assert correction["added"] == 1     # b's tool — SINCE the first line
+            assert correction["total"] == 2
+            assert service._tool_sync_partial is False
+            # Nothing further is owed, so the window closes for good with it.
+            assert store._ops is None
+
+            await self._pool_pass(service, servers)
+            assert events.await_count == 2
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_a_server_that_never_comes_up_does_not_block_the_correction(
+        self, sample_config, tmp_path,
+    ):
+        """The correction waits for the set to stop GROWING, not to be complete.
+
+        Waiting for zero unanswered never terminates on a machine with one
+        permanently-broken server — a corrupted npx cache is enough — and that
+        is the ordinary case, not an edge one.  Under a completion rule the
+        correction would be permanently unreachable and the line permanently
+        wrong; under quiescence it fires on the first pass that finds no fewer
+        servers missing than the last one did.
+        """
+        servers = ["a", "b"]
+        listed = {"a": True, "b": False}
+        events = AsyncMock()
+        service, store = await self._pool_build(
+            sample_config, tmp_path, servers, listed, down={"b"}, events=events,
+        )
+        try:
+            await self._pool_pass(service, servers)
+            assert events.await_count == 1
+            assert events.await_args.kwargs["unanswered"] == 1
+
+            await self._pool_pass(service, servers)   # no progress at all
+
+            assert events.await_count == 2
+            correction = events.await_args.kwargs
+            assert correction["corrected"] is True
+            # Still short, and it still says so — the correction is not a
+            # claim that everything arrived, it is the final count.
+            assert correction["unanswered"] == 1
+            assert correction["total"] == 1
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_a_probe_that_read_nothing_does_not_disarm_the_correction(
+        self, sample_config, tmp_path,
+    ):
+        """An unread probe is a THIRD answer, not "nothing is missing".
+
+        ``__check`` returns an empty result when it times out, and an empty
+        result must not be read as a complete set: on a contended cold boot the
+        probe is exactly what times out, so treating it as good would reproduce
+        this whole bug — a line latching a silence it cannot justify.
+        """
+        servers = ["a"]
+        events = AsyncMock()
+        service, store = await self._pool_build(
+            sample_config, tmp_path, servers, {"a": True}, events=events,
+            check_error=True,
+        )
+        try:
+            await self._pool_pass(service, servers)
+
+            assert events.await_count == 1
+            first = events.await_args.kwargs
+            assert first["unanswered"] == 0     # nothing read ⇒ nothing to say
+            assert first["corrected"] is False
+            assert service._tool_sync_partial is True    # …but not settled either
+
+            service._plugins["mcp-gateway"].client = self._pool_client(
+                servers, {"a": True},                # the probe answers now
+            )
+            await self._pool_pass(service, servers)
+
+            assert events.await_count == 2
+            assert events.await_args.kwargs["corrected"] is True
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_a_settled_pass_waits_one_listing_not_the_startup_budget(
+        self, sample_config, tmp_path, monkeypatch,
+    ):
+        """The startup budget is for the STARTUP.
+
+        Once the line is final, establishing a server is the gateway's own
+        background job — its armed retry re-syncs whenever it succeeds and
+        pushes ``tools/list_changed``, which is what runs the next pass — so a
+        settled pass owes a read, not an establishment.  Charging it the
+        startup budget is what made one server that never lists hold EVERY pass
+        open for the full budget (measured: back-to-back 150s passes, for a
+        whole session).
+        """
+        import time
+
+        import slife.timeouts as _T
+
+        servers = ["a"]
+        events = AsyncMock()
+        service, store = await self._pool_build(
+            sample_config, tmp_path, servers, {"a": True}, events=events,
+        )
+        try:
+            await self._pool_pass(service, servers)
+            assert service._tool_sync_reported is True
+            assert service._tool_sync_partial is False    # the line is final
+
+            # A mirror that never answers, and the two bounds an order of
+            # magnitude apart: which one ends the pass is the whole assertion.
+            monkeypatch.setattr(_T.timeouts.ready, "list_tools", 0.05)
+            monkeypatch.setattr(_T.timeouts.ready, "tool_sync_wait", 30.0)
+            client = service._plugins["mcp-gateway"].client
+            original = client.call_tool
+
+            async def hung(name, arguments=None):
+                if name in ("mcp_list_tools", "__mcp_list_tools"):
+                    await asyncio.sleep(3600)
+                return await original(name, arguments)
+
+            client.call_tool = hung
+            started = time.monotonic()
+            await self._pool_pass(service, servers)
+            elapsed = time.monotonic() - started
+
+            assert elapsed < 5.0     # one listing, not the startup budget
+        finally:
+            await store.close()
+
     @pytest.mark.asyncio
     async def test_sync_waits_for_a_server_that_has_not_listed_yet(
         self, sample_config, tmp_path,
@@ -631,12 +919,42 @@ class TestAgentServiceMCPEnrichment:
     async def test_sync_reports_a_failure_rather_than_going_silent(
         self, sample_config, tmp_path,
     ):
-        """Silence has to keep meaning 'still syncing' — a pass that blew up
-        must say so, or a dead sync reads exactly like a slow one."""
+        """Silence has to keep meaning 'still syncing' — a STARTUP that blew up
+        must say so, or a dead sync reads exactly like a slow one.
+
+        The line belongs to the startup, so a failure only speaks while the
+        startup is what is being waited on.  It is also an UNREAD set: the pass
+        never got to look, which is a third answer beside complete and
+        short — so the line stays correctable rather than latching the question
+        shut (see the probe-timeout test for why that matters).
+        """
+        events = []
+        service, store = await self._sync_with_catalog(
+            sample_config, tmp_path, "svc",
+            activity=lambda kind, **kw: events.append(kw), fail_check=True,
+        )
+        try:
+            assert len(events) == 1
+            assert events[0]["error"] == "boom"
+            assert events[0]["unanswered"] == 0
+            assert events[0]["corrected"] is False
+            assert service._tool_sync_partial is True
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_a_failure_after_the_line_is_out_stays_silent(
+        self, sample_config, tmp_path,
+    ):
+        """…and the other half of that rule: once the startup has spoken, a
+        later pass blowing up is mid-session sync trouble with its own
+        surfaces (system_health, the mcp_* warnings).  Re-reporting it per
+        pass is exactly the heartbeat this line is not."""
         service, store = await self._sync_with_catalog(
             sample_config, tmp_path, "svc",
         )
         try:
+            assert service._tool_sync_reported is True
             events = []
             service.on_activity(lambda kind, **kw: events.append(kw))
             with patch.object(
@@ -646,8 +964,7 @@ class TestAgentServiceMCPEnrichment:
                 with pytest.raises(RuntimeError):
                     await service._sync_mcp_proxies()
 
-            assert len(events) == 1
-            assert events[0]["error"] == "boom"
+            assert events == []
         finally:
             await store.close()
 
@@ -1151,8 +1468,16 @@ class TestAgentServiceMCPDiscovery:
 
     @pytest.mark.asyncio
     async def test_discover_with_no_tools_leaves_health_untouched(self, sample_config):
-        """An empty / not-ready tool list is NOT a recovery — the stale
-        warning must survive (no flicker in either registry or health)."""
+        """An empty / not-ready tool list is NOT a recovery — the tools stay,
+        and health stays at a warning (no flicker in either).
+
+        It is not a SILENCE either.  The registry and the catalog can both say
+        nothing about this server — it owns no rows, so it is simply absent
+        from every count a reader could compare against their own tools.yaml —
+        and this is the one place the server's own name is still on record.  So
+        the entry is REWRITTEN with what this pass actually found, rather than
+        left as whatever an earlier one said.
+        """
         from slife.health import record
         record(
             "mcp_servers", "warning",
@@ -1169,8 +1494,42 @@ class TestAgentServiceMCPDiscovery:
 
         from slife.health import get_report
         recs = [e for e in get_report() if e.get("key") == "foo"]
-        assert len(recs) == 1
+        assert len(recs) == 1            # replaced, not appended — no flicker
         assert recs[0]["level"] == "warning"
+        assert recs[0]["value"] == "no tool list"
+        # The tools that were already registered are untouched: a not-ready
+        # listing must not tear a live set down.
+        assert "foo__keep" in {t.name for t in service.tool_registry.list_tools()}
+
+    @pytest.mark.asyncio
+    async def test_a_server_that_lists_later_supersedes_the_no_tool_list_record(
+        self, sample_config,
+    ):
+        """…and the record is self-clearing: the same (component, key) the
+        success path writes is what the warning occupied, so the store heals
+        itself as the wrapper's retry lands — no reader has to know the state
+        ever existed."""
+        from slife.health import get_report
+        service = AgentService(sample_config)
+        service._plugins["mcp-gateway"].client = self._client_with(
+            status_servers=[], tools_by_server={},
+        )
+
+        await service._discover_and_register_external_tools("foo")
+        assert "no tool list" in [
+            e.get("value") for e in get_report() if e.get("key") == "foo"
+        ]
+
+        # The background retry finally lists it.
+        service._plugins["mcp-gateway"].client = self._client_with(
+            status_servers=[], tools_by_server={"foo": [self._tool("foo", "t1")]},
+        )
+        await service._discover_and_register_external_tools("foo")
+
+        recs = [e for e in get_report() if e.get("key") == "foo"]
+        assert len(recs) == 1
+        assert recs[0]["level"] == "ok"
+        assert recs[0]["value"] == "tools registered"
 
 
 class TestAgentServicePluginRescan:

@@ -1125,12 +1125,25 @@ socket timeout would silently change every third-party socket.
 **One bound outside that rule: the startup sync.** A single budget covers the boot tool sync — it
 bounds each mirror's wait on the gateway, decides when the tool-set line reports what the set has
 instead of waiting, and is the age at which a wedged reconcile pass may be abandoned by the next one.
-Its invariant is that it must be no smaller than the gateway's own establishment and listing bounds
-summed, which is what keeps the line honest: it may not claim "synced" before those have expired. The
-corollary is why it had to be written down: **no blocking work may run on an event loop** — a
-synchronous subprocess suspends every timer in that process, so one exempted blocking call that
-freezes the loop invalidates every other deadline in it (measured: over two minutes of frozen gateway
-loop, thirteen expired connect bounds firing at once). Blocking work goes to a daemon thread.
+Its invariant is that it must be no smaller than the gateway's own establishment, listing and **retry**
+bounds summed, which is what keeps the line honest: it may not claim "synced" before those have
+expired. The retry is in the sum because a slow cold start spends the whole establishment bound
+installing packages, every connect dies on it together, and the answers arrive on the retry the
+gateway arms from that failure — a budget sized for one attempt expired 25s into it and reported 124
+of the 310 tools the same startup went on to mirror. Only the startup pass pays that budget: once the
+line is final, a mirror waits for one listing, because establishing a server mid-session is the
+gateway's own background job. The corollary is why it had to be written down: **no blocking work may
+run on an event loop** — a synchronous subprocess suspends every timer in that process, so one
+exempted blocking call that freezes the loop invalidates every other deadline in it (measured: over
+two minutes of frozen gateway loop, thirteen expired connect bounds firing at once). Blocking work
+goes to a daemon thread.
+
+**And the budget alone cannot make the line honest.** A probe stops *waiting* on a server whose spawn
+failed — that is what `pending` excludes — but stopping the wait is not the same as having the tools,
+and on a machine where every server fails its establishment bound at once there is nothing pending and
+plenty missing. So the line carries the count it is short by, and a line that admits a shortfall is
+**corrected** once the set stops growing (quiescence, not completion: a machine with one permanently
+down server never completes). At most one correction is ever owed, so silence still means one thing.
 
 **Tool-execution precedence — one value per tool call.**
 

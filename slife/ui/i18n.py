@@ -329,16 +329,40 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "✓ 来自 {source} 的 A2A {type} 已处理",
     },
     # The startup tool-set sync — ONE shape, every time.  `total` counts what is
-    # REGISTERED (callable); the load_status snapshot decides what a turn
-    # actually injects, so this says "usable", never "all loaded".  The three
-    # counts are what the pass WROTE to the catalog: rows inserted / updated /
-    # deleted (only config-derived columns count as an update — a load, an
-    # eviction or a connectivity mark is runtime state, not a change to the
-    # tool set).  They are printed even at zero: a startup that changed nothing
-    # says so, which is the whole point of showing them.
+    # USABLE right now (`count_usable`: every catalog row that is neither
+    # switched off nor marked down — not the registry, which cannot see the two
+    # registry-less families, and not the whole catalog, since a disabled or
+    # errored row is not callable).  The load_status snapshot decides what a
+    # turn actually injects, so this says "usable", never "all loaded".  The
+    # three counts are what the pass WROTE to the catalog: rows inserted /
+    # updated / deleted (only config-derived columns count as an update — a
+    # load, an eviction or a connectivity mark is runtime state, not a change
+    # to the tool set).  They are printed even at zero: a startup that changed
+    # nothing says so, which is the whole point of showing them.
     "tools_synced": {
         "en": "⚙ Tool set synced in {seconds}s, {added} added, {updated} updated, {removed} removed — {total} tools usable",
         "zh": "⚙ 工具集同步完成，耗时 {seconds}s，新增 {added}，更新 {updated}，移除 {removed} — {total} 个工具可用",
+    },
+    # …and what that count is short by, APPENDED to either sentence above.  It
+    # is its own key because it is its own fact: `unanswered` servers published
+    # no tool list, so `total` is short by whatever they own and cannot be read
+    # as the user's tool set.  Orthogonal to the two sentences rather than
+    # multiplied with them, because the two axes really are independent — a
+    # corrected line can still be short (the machine whose slow server never
+    # does come up gets its correction, and it still owes this clause).
+    # ``server(s)``: the registry has no plural machinery (its other counted
+    # strings dodge the noun entirely — "{n} queued", "… {n} more"), and the
+    # count is the fact here, so it may not be dropped to dodge agreement.
+    "tools_synced_not_ready": {
+        "en": " ({unanswered} server(s) not ready yet)",
+        "zh": "（{unanswered} 个 server 尚未就绪）",
+    },
+    # The correction a partial line is owed — same counts, and the delta is what
+    # arrived SINCE that line.  Worded to read as an update, not as a second
+    # startup: `seconds` is the whole wait, measured from the first pass.
+    "tools_synced_corrected": {
+        "en": "⚙ Tool set sync completed in {seconds}s, {added} more added since the last count — {total} tools usable",
+        "zh": "⚙ 工具集同步补齐，耗时 {seconds}s，此后新增 {added} — {total} 个工具可用",
     },
     "tools_synced_failed": {
         "en": "✗ Tool set sync failed after {seconds}s: {err}",

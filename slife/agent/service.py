@@ -21,6 +21,7 @@ import weakref
 from collections import deque
 from datetime import datetime
 from collections.abc import Awaitable, Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -137,6 +138,33 @@ def _server_category(name: str) -> str:
     except Exception:
         logger.debug("catalog_server_category_lookup_failed server=%s", name, exc_info=True)
         return "mcp"
+
+
+@dataclass(frozen=True)
+class ServerStates:
+    """What one connectivity probe found — the two sets the report reads.
+
+    ``pending`` is the WAIT: configured servers switched on but not yet
+    answering a ``tools/list``, minus the ones whose failed spawn is a settled
+    verdict.  ``unanswered`` is what the tool-set line owes an explanation for:
+    every enabled server that contributed no tool list this pass, ``pending``
+    included.  The two differ by exactly the servers a probe has given up on
+    — and "down for now" is not "no tools": a line that reports the set
+    without naming them reads as a complete count of a set that is still
+    missing them (a slow cold start reported 124 that way against the 310 rows
+    the same startup went on to mirror).
+
+    ``probe_ok`` is whether anything was actually READ.  A ``__check`` that
+    timed out or failed returns an empty result, and an empty result must not
+    be mistaken for a good one: it says nothing about which servers are
+    missing, so a line built on it is neither complete nor known-incomplete —
+    it is unread, and the caller has to treat it as such rather than latch a
+    silence it cannot justify.
+    """
+
+    pending: frozenset[str] = frozenset()
+    unanswered: frozenset[str] = frozenset()
+    probe_ok: bool = True
 
 
 def _health_component(name: str) -> str:
@@ -515,6 +543,19 @@ class AgentService:
         #: reconcile is the slow one the user waits through; once it has
         #: converged the line is sent, and never again for this process.
         self._tool_sync_reported: bool = False
+        #: Whether that line went out over an INCOMPLETE set (a server
+        #: unanswered, the pass failed, or the probe read nothing).  It is the
+        #: one thing that earns a second line: the pass that finds the set has
+        #: stopped growing corrects the count and clears this — so the whole
+        #: session still says at most two things about the tool set, and the
+        #: second one is news.
+        self._tool_sync_partial: bool = False
+        #: The shortfall the last look found — the bar the next one must clear
+        #: to earn one more pass.  The correction waits for this to stop
+        #: shrinking rather than for it to reach zero, because reaching zero is
+        #: not something a machine with one permanently-down server ever does.
+        #: ``None`` means nobody has read the set yet.
+        self._tool_sync_shortfall: int | None = None
         #: When this process's first reconcile pass started — the wait the
         #: tool-set line reports, and the anchor for how long it may wait for
         #: servers that are still starting (``ready.tool_sync_wait``).
@@ -1482,6 +1523,13 @@ class AgentService:
         #: filled in by the post-mirror projection below, the first look that
         #: can tell a slow server from an absent one.
         pending: set[str] = set()
+        #: The same servers PLUS the ones that probe gave up on — what this
+        #: pass's tool-set line is short by, and therefore what it must name.
+        unanswered: set[str] = set()
+        #: Whether the connectivity probe was actually READ this pass.  False
+        #: means the line knows neither that the set is complete nor which
+        #: servers are missing — a state the report must not treat as either.
+        probe_ok = True
         failure = ""
         try:
             try:
@@ -1552,6 +1600,41 @@ class AgentService:
             # every server waited on all the servers before it; twenty of them
             # made a cold reconcile a minute-plus of pure queueing.  One
             # server's failure still never sinks the pass.
+            #: What one mirror may wait on.  The STARTUP's budget while the
+            #: set is still unsettled — a mirror there may have to outlast a
+            #: cold spawn and the retry that follows a failed one, and the
+            #: line is the thing that must not go out early.  ONE LISTING once
+            #: the line is final, because from then on bringing a server up is
+            #: the gateway's own job: its armed ``_refresh_until_listed``
+            #: retries until it holds a list and then pushes
+            #: ``tools/list_changed``, which is what runs the next pass.  The
+            #: branches are ``gather``ed, so charging a settled pass the
+            #: startup budget made ONE server that never lists hold EVERY pass
+            #: open for the full budget (measured: back-to-back passes of
+            #: exactly the budget, for a whole session).
+            #:
+            #: "Final" is ``reported and not partial``, NOT ``reported``: a
+            #: line that went out over an incomplete set (or a failure) means
+            #: the startup sync is still on, and under-bounding it here would
+            #: abandon exactly the servers the budget was raised to wait for.
+            #: The short bound does abort a connect the gateway had in flight,
+            #: and that is safe rather than free: the cancellation unwinds into
+            #: ``refresh_tools``' own ``CancelledError`` handler, which re-arms
+            #: the retry, so the server still re-syncs itself — just on the
+            #: gateway's clock, with an ``mcp_sync_timeout`` line saying so.
+            mirror_wait = (
+                _timeouts.timeouts.ready.list_tools
+                if (self._tool_sync_reported and not self._tool_sync_partial)
+                else _timeouts.timeouts.ready.tool_sync_wait
+            )
+            #: Servers whose mirror did not deliver this pass.  ``__check`` is
+            #: not the only witness to "this server contributed nothing": a
+            #: mirror that timed out or raised owns no rows either, and a probe
+            #: taken before it can still say ``tools_ok`` (the gateway holds a
+            #: list the host never got).  Folded into ``unanswered`` below, so
+            #: the line cannot claim completeness over a gap it caused itself.
+            undelivered: set[str] = set()
+
             async def _mirror(name: str, coro, tag: str) -> None:
                 """One server's mirror, bounded.
 
@@ -1563,17 +1646,17 @@ class AgentService:
                 what makes the tool-set line reachable at all.
                 """
                 try:
-                    async with asyncio.timeout(
-                        _timeouts.timeouts.ready.tool_sync_wait,
-                    ):
+                    async with asyncio.timeout(mirror_wait):
                         await coro
                 except TimeoutError:
                     # Its own line: "one server never answered" is the case the
                     # next diagnosis should read off the log rather than infer
                     # from a response that never shows up.  The server keeps
                     # whatever rows it had; a later pass re-reads it.
+                    undelivered.add(name)
                     logger.warning("mcp_sync_timeout server=%s", name)
                 except Exception:
+                    undelivered.add(name)
                     logger.debug("%s server=%s", tag, name, exc_info=True)
 
             enabled_configured = [
@@ -1595,12 +1678,19 @@ class AgentService:
             # moved.  Best-effort: a failed probe is not a verdict.
             if self.caps.catalog_owner and self._catalog is not None:
                 try:
-                    pending = await self._mark_server_connectivity(
+                    states = await self._mark_server_connectivity(
                         client, configured, enabled_servers,
                     )
+                    pending = set(states.pending)
+                    unanswered = set(states.unanswered)
+                    probe_ok = states.probe_ok
                 except Exception as e:
                     logger.debug("mcp_connectivity_recheck_failed err=%s", e)
-                    pending = set()
+                    pending, unanswered, probe_ok = set(), set(), False
+            # A mirror that failed contributes nothing either, whatever the
+            # probe said: ``unanswered`` is "no tool list from this server this
+            # pass", and the probe is only one of the two places that happens.
+            unanswered |= undelivered
 
             # 3 — a proxy whose server left the CONFIG is dropped; a merely
             # disconnected/disabled server keeps it (its rows are `error`).
@@ -1640,11 +1730,19 @@ class AgentService:
             # speaks for the set now.  The guard is held THROUGH the report: a
             # pass is not done until its line is out.
             if self._mcp_reconcile_owner is owner:
+                await self._report_tool_sync(
+                    started, pending=pending, unanswered=unanswered,
+                    probe_ok=probe_ok, failure=failure,
+                )
+                # Released only now, and the order is load-bearing: the report
+                # AWAITS, and the latch it sets is read by whoever reports next.
+                # Freeing the guard before it (which this did) lets a
+                # ``tools/list_changed`` that lands mid-await start a second
+                # pass, find the set settled, and emit the CORRECTION while
+                # this pass is still emitting the line it corrects — two lines
+                # out of order, the older one last.
                 self._mcp_reconcile_owner = None
                 self._mcp_reconcile_started_at = None
-                await self._report_tool_sync(
-                    started, pending=pending, failure=failure,
-                )
                 # …and only now, with the guard released, the pass a coalesced
                 # trigger asked for (see the guard above).  A pass that finds
                 # the flag clear is the last one of the burst.
@@ -1673,15 +1771,33 @@ class AgentService:
             logger.debug("mcp_reconcile_deferred_failed", exc_info=True)
 
     async def _report_tool_sync(
-        self, started: float, *, pending: set[str], failure: str = "",
+        self, started: float, *, pending: set[str], unanswered: set[str],
+        probe_ok: bool = True, failure: str = "",
     ) -> None:
         """Tell the TUI the tool set is ready — once, and only once it has converged.
 
-        Emitted on the first pass that has converged and NEVER again for this
-        process: later passes ride the gateway's own ``tools/list_changed``
-        cadence, so reporting each one would be a heartbeat rather than news.
-        A failure always reports, converged or not — silence has to keep
-        meaning "still syncing", or a dead sync reads exactly like a slow one.
+        Emitted on the first pass that has converged; later passes ride the
+        gateway's own ``tools/list_changed`` cadence, so reporting each one
+        would be a heartbeat rather than news.  The FIRST failure reports,
+        converged or not — silence has to keep meaning "still syncing", or a
+        dead sync reads exactly like a slow one.  A failure after a line is
+        already out says nothing more: that line already reported the set as
+        short, and waiting for the correction is what keeps the channel from
+        becoming a heartbeat on a sync that keeps failing.
+
+        **The exception to "once", and the reason this line is worth
+        trusting: a line that went out OVER AN INCOMPLETE SET is corrected
+        once the set STOPS GROWING.**  ``unanswered`` (from
+        ``_mark_server_connectivity``) names every enabled server that
+        contributed no tool list — the ones ``pending`` stopped waiting on
+        included.  When it is non-empty the line says how many, and the first
+        later pass that finds no fewer servers missing re-reports what the
+        catalog holds.  Without that, a slow cold start's first line is the
+        last word: measured, one reported ``124 个工具可用`` at 07:11:59 and
+        the same startup went on to mirror 310 rows over the next four and a
+        half minutes, unseen.  At most one correction is ever owed
+        (``_tool_sync_partial``), so this stays news and never becomes a
+        heartbeat.
 
         Convergence is "no enabled server is still starting".  ``pending``
         (from ``_mark_server_connectivity``) names the configured servers that
@@ -1690,14 +1806,24 @@ class AgentService:
         that finally carries those tools look like a change to the tool set.
 
         Once ``ready.tool_sync_wait`` is spent, what the set HAS is the answer:
-        the budget outlasts the gateway's own establishment and listing bounds,
-        so a server still missing after it is not still arriving — it is down
-        for now, and its rows already say so.  What makes that a real bound
-        rather than a hope is that every await in the pass is bounded by the
-        same value: the pass always ENDS, so this check is always reached.  A
-        pass that never ended (an unbounded await on a gateway that stopped
-        answering) is what used to leave this line unwritten for a whole
-        session, while silence kept claiming the sync was merely slow.
+        the budget outlasts the gateway's own establishment, listing and RETRY
+        clocks, so a server still missing after it is not still arriving — it
+        is down for now.  What makes that a real bound rather than a hope is
+        that every await in the pass is bounded by the same value: the pass
+        always ENDS, so this check is always reached.  A pass that never ended
+        (an unbounded await on a gateway that stopped answering) is what used
+        to leave this line unwritten for a whole session, while silence kept
+        claiming the sync was merely slow.
+
+        **Past the budget, ``pending`` alone is not enough of an answer, and
+        that is the second half of this method's job.**  The probe stops
+        WAITING on a server whose spawn failed (the gateway's armed retry owns
+        it), which is right — but it means the pass that reported 124 of a
+        machine's 310 tools had no pending server at all.  Every survivor was
+        "settled unreachable", so the budget was never consulted and the
+        convergence branch reported an incomplete set as a complete one.  That
+        is why the line carries ``unanswered`` and why a line that admits a
+        shortfall stays correctable.
 
         ``total`` is every USABLE catalog row — not the registry, which cannot
         see the two registry-less families: ``skill`` and ``cli`` are rows
@@ -1712,18 +1838,64 @@ class AgentService:
         reads every tool as "added" and turns a restart into a change to the
         tool set.  The window belongs to the STARTUP, not to this pass — it is
         armed by ``_init_catalog`` before the boot seed, and a pass that stays
-        quiet leaves it open so the counts keep accumulating.
+        quiet leaves it open so the counts keep accumulating.  A CORRECTION
+        re-arms it for the same reason and reports since the line above it: the
+        startup's whole delta was already told, and repeating it would read as
+        a second startup.
         """
-        if not failure and self._tool_sync_reported:
-            return
-        if not failure and pending and not self._tool_sync_wait_over():
+        #: First line, or the one correction a partial first line is owed?
+        corrected = self._tool_sync_reported
+        if corrected:
+            # A line is already out.  Only a first line that went over an
+            # INCOMPLETE — or unread — set earns a second.
+            if not self._tool_sync_partial:
+                return
+            # Still arriving, or nothing was read this pass: neither is an
+            # answer.  A failure is not news either — the line already said the
+            # set was short, and the correction carries the real outcome.
+            if failure or pending or not probe_ok:
+                return
+            # And the set must have STOPPED GROWING, which is not the same as
+            # "complete".  Waiting for zero unanswered never terminates on a
+            # server that is down for good — and that is not an edge case, it
+            # is the ordinary one (one broken npx cache is enough), which would
+            # leave the correction permanently unreachable and the line
+            # permanently wrong.  So the test is QUIESCENCE: this probe found
+            # no fewer servers missing than the last look did.  The shortfall
+            # only shrinks, so this terminates, and a set that really is still
+            # arriving gets one more pass to prove it.
+            missing = len(unanswered)
+            if missing:
+                baseline = self._tool_sync_shortfall
+                if baseline is None or missing < baseline:
+                    self._tool_sync_shortfall = missing
+                    return
+        elif not failure and pending and not self._tool_sync_wait_over():
             return
         self._tool_sync_reported = True
+        #: ``probe_ok`` is in here because an unread probe leaves the question
+        #: OPEN, not answered: an empty reading must not latch the correction
+        #: shut, or a ``__check`` timeout on a contended cold boot would
+        #: reproduce this whole bug by itself.
+        self._tool_sync_partial = bool(
+            failure or pending or unanswered or not probe_ok
+        )
+        #: The bar the NEXT probe must clear to earn one more pass.  ``None``
+        #: (nothing was read) is "no baseline": any reading beats it, so the
+        #: correction waits for a second look rather than firing on the first.
+        self._tool_sync_shortfall = (
+            len(unanswered) if probe_ok and not failure else None
+        )
         # Take the window: it closes with the line that reports it, so nothing
-        # a later pass writes can feed a line already sent.
+        # a later pass writes can feed a line already sent.  A partial line
+        # RE-ARMS it, because the correction is owed the same question — what
+        # did this startup change — and the answer it owes is the part the user
+        # has not been told yet: what arrived after the line they already read.
         delta: "CatalogOpDelta | None" = (
             self._catalog.store.end_ops() if self._catalog is not None else None
         )
+        if self._tool_sync_partial and self._catalog is not None:
+            self._catalog.store.begin_ops()
         # The wait the user was actually in: measured from this process's first
         # pass, not from this pass's start — the late pass is the short one.
         anchor = self._tool_sync_started_at or started
@@ -1746,6 +1918,8 @@ class AgentService:
                 added=delta.added if delta else 0,
                 updated=delta.updated if delta else 0,
                 removed=delta.removed if delta else 0,
+                unanswered=len(unanswered),
+                corrected=corrected,
                 error=failure,
             )
         except Exception:
@@ -1794,7 +1968,7 @@ class AgentService:
 
     async def _mark_server_connectivity(
         self, client, configured: set[str], enabled: dict[str, bool] | None = None,
-    ) -> set[str]:
+    ) -> ServerStates:
         """Project each configured server's state onto its tool rows.
 
         Two independent facts land here, each in its own lane of one column
@@ -1813,13 +1987,23 @@ class AgentService:
         marking its tools ``error`` would be a lie the model could not tell
         from the real thing.
 
-        Returns the **pending** set — the configured servers that are switched
-        on, reachable, and have not answered a ``tools/list`` yet.  "No verdict"
-        is not "no tools": a server that is still starting (a REST proxy
-        installing its environment takes tens of seconds, and its first listing
-        can even time out and succeed on the retry) has nothing to mirror yet,
-        so the startup tool-set line waits for it rather than announce a set
-        that is still arriving.
+        Returns a :class:`ServerStates` — the **pending** set (the configured
+        servers that are switched on, reachable, and have not answered a
+        ``tools/list`` yet) plus the **unanswered** set (every enabled server
+        that contributed no tool list this pass).  "No verdict" is not "no
+        tools": a server that is still starting (a REST proxy installing its
+        environment takes tens of seconds, and its first listing can even time
+        out and succeed on the retry) has nothing to mirror yet, so the startup
+        tool-set line waits for it rather than announce a set that is still
+        arriving.
+
+        The two sets part company exactly where a probe stops waiting, and the
+        second one exists because that is where the line started lying.  A
+        server whose failed spawn is a settled verdict leaves ``pending`` (the
+        gateway's own retry is what re-syncs it) — but its tools are not in the
+        catalog either, so it stays in ``unanswered`` and the line names it.
+        A server waiting on USER AUTH is the same case: no wait is owed, and no
+        tools exist.
 
         Two shapes are NOT pending, because they are settled rather than
         undecided: a server whose transport never came up after the boot pass
@@ -1833,7 +2017,7 @@ class AgentService:
         """
         catalog = self._catalog
         if catalog is None:
-            return set()
+            return ServerStates()
         try:
             # Bounded like every other gateway await in the pass — this one is
             # not a mirror, but a probe that never answers holds the pass open
@@ -1846,14 +2030,20 @@ class AgentService:
                 "mcp_reconcile_check_timeout budget=%.0fs",
                 _timeouts.timeouts.ready.tool_sync_wait,
             )
-            return set()
+            return ServerStates(probe_ok=False)
         except Exception as e:
             # A failed probe is NOT a verdict — leave the rows alone rather
             # than marking every server broken on a transient error.  It is
             # also not something to wait on: no pending set, so the report
-            # goes out rather than hanging on a probe that never answers.
+            # goes out rather than hanging on a probe that never answers.  It
+            # is likewise not a count: an unread probe says nothing about which
+            # servers are missing, and naming them all on a transient error
+            # would be the same lie in the other direction.  What it IS is
+            # ``probe_ok=False``, so a line built on it is marked unread and
+            # stays correctable — an empty reading must never latch the
+            # question shut.
             logger.debug("mcp_reconcile_check_failed err=%s", e)
-            return set()
+            return ServerStates(probe_ok=False)
         live: set[str] = set()
         awaiting_auth: set[str] = set()
         unreachable: set[str] = set()
@@ -1877,6 +2067,15 @@ class AgentService:
                 # gateway's armed retry re-syncs it if it comes up later.
                 unreachable.add(s["name"])
         switches = enabled or {}
+        #: Enabled, and no tool list this pass — the set the line's count is
+        #: short by.  Includes every server ``pending`` gave up on, which is the
+        #: whole point: a probe may stop WAITING on a server, but the line may
+        #: not stop SAYING so.
+        unanswered = frozenset(
+            name for name in configured
+            if switches.get(name, True) is not False
+            and name not in live
+        )
         pending = {
             name for name in configured
             if switches.get(name, True) is not False
@@ -1900,7 +2099,7 @@ class AgentService:
                 # One server's write failing (a transient lock) must never
                 # crash the reconcile loop — the next pass retries.
                 logger.debug("catalog_connectivity_mark_failed server=%s err=%s", name, se)
-        return pending
+        return ServerStates(pending=frozenset(pending), unanswered=unanswered)
 
     async def _upsert_external_catalog_rows(
         self, server_name: str, tools: list[dict], *, category: str,
@@ -2136,7 +2335,17 @@ class AgentService:
         notification, mcp_set callbacks) — a per-server in-flight guard
         coalesces races, and an empty tool list leaves the registry untouched
         so a half-connected server can't flicker its tools out.
+
+        An empty tool list also RECORDS itself, and that is the point: the
+        catalog has no server table (DESIGN.md §4.3), so a server that never
+        lists owns no rows and is simply absent from the count — a reader
+        comparing the catalog against their own tools.yaml sees a silent gap
+        with nothing to attribute it to.  The record is the attribution, and
+        it is self-superseding: the same ``(component, key)`` is rewritten
+        ``ok`` below the moment this server's tools finally register.
         """
+        from slife.health import record
+
         lc = self._gateway_lifecycle()
         client = lc.client if lc is not None else None
         assert client is not None
@@ -2158,6 +2367,20 @@ class AgentService:
                 # server isn't CONNECTED) — leave existing tools untouched so
                 # a transient status blip can't tear them down.
                 logger.debug("mcp_no_tools server=%s", server_name)
+                # …but do not leave the READER with nothing: this server is
+                # contributing no rows, and outside this debug line nothing
+                # anywhere says so.  replace=True makes every pass rewrite the
+                # one entry rather than stack a new one, and the success path
+                # below writes over it with the same component and key.
+                record(
+                    _health_component(server_name), "warning",
+                    key=server_name, value="no tool list",
+                    hint="the server published no tool list, so it owns no "
+                         "catalog rows; the wrapper retries in the background "
+                         "and this entry clears when its tools register. "
+                         "Check system_health for the current state.",
+                    replace=True,
+                )
                 return
 
             proxy_tools = create_proxy_tools(
@@ -2187,8 +2410,8 @@ class AgentService:
             # the two server families separately) so the merge layer supersedes
             # this record once the live entry covers the same server;
             # ``replace=True`` keeps the store itself consistent when a server
-            # recovers mid-session.
-            from slife.health import record
+            # recovers mid-session — and it is what clears the "no tool list"
+            # entry this method records for a server that had not listed yet.
             record(
                 _health_component(server_name), "ok",
                 key=server_name, value="tools registered",
@@ -2211,7 +2434,6 @@ class AgentService:
             )
         except Exception as e:
             logger.error("mcp_discover_failed server=%s err=%s", server_name, e)
-            from slife.health import record
             record(
                 _health_component(server_name), "warning",
                 key=server_name, value="tool discovery failed",

@@ -694,6 +694,80 @@ class TestStatusBar:
         assert call.kwargs["color"] == "#f85149"
 
     @pytest.mark.asyncio
+    async def test_tools_synced_names_what_the_count_is_short_by(self):
+        """A partial set must not read as a complete one.
+
+        ``total`` counts usable rows, and a server that published no tool list
+        is simply absent from it — so the same sentence that is right on a
+        converged startup is a lie on a slow one (a real cold start read
+        "124 个工具可用" against the 310 tools it went on to mirror).  The
+        clause is the difference, so it is a separate string rather than an
+        optional placeholder: `total` and `unanswered` are one fact.
+        """
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_activity(
+            "tools_synced", seconds=151.2, total=124, added=124, updated=0,
+            removed=0, unanswered=15, corrected=False, error="",
+        )
+
+        assert chat_view.add_system_message.call_args.args[0] == (
+            "⚙ Tool set synced in 151.2s, 124 added, 0 updated, 0 removed "
+            "— 124 tools usable (15 server(s) not ready yet)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_corrected_line_reads_as_an_update_not_a_second_startup(self):
+        """The correction is the same sync finishing, so it must not look like
+        the sync starting over: `seconds` is the whole wait and the delta is
+        what arrived SINCE the line above it."""
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_activity(
+            "tools_synced", seconds=435.0, total=310, added=186, updated=0,
+            removed=0, unanswered=0, corrected=True, error="",
+        )
+
+        assert chat_view.add_system_message.call_args.args[0] == (
+            "⚙ Tool set sync completed in 435.0s, 186 more added since the "
+            "last count — 310 tools usable"
+        )
+        assert chat_view.add_system_message.call_args.kwargs["color"] == "#3fb950"
+
+    @pytest.mark.asyncio
+    async def test_a_correction_that_is_still_short_says_so(self):
+        """The two axes are independent, and this is the case that proves it.
+
+        A machine with one server that never comes up gets its correction —
+        the set has stopped growing, so what the catalog holds IS the answer —
+        and that answer is still short.  Dropping the clause because the line
+        is now "the final count" would put the original lie back, one line
+        later."""
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_activity(
+            "tools_synced", seconds=571.0, total=309, added=185, updated=0,
+            removed=0, unanswered=1, corrected=True, error="",
+        )
+
+        assert chat_view.add_system_message.call_args.args[0] == (
+            "⚙ Tool set sync completed in 571.0s, 185 more added since the "
+            "last count — 309 tools usable (1 server(s) not ready yet)"
+        )
+
+    @pytest.mark.asyncio
     async def test_wechat_status_renders_both_states(self):
         """Login is green; logout is amber, not red — it may be deliberate,
         but it does stop messages arriving."""

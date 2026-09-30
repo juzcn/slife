@@ -88,22 +88,37 @@ class Ready:
     connect_retry_delay: float = 0.5
     sharefile_retry_delay: float = 2.0
     list_tools: float = 20.0
-    tool_sync_wait: float = 150.0  # THE startup-sync budget — one value, three
+    tool_sync_wait: float = 285.0  # THE startup-sync budget — one value, three
                                   # consumers that are the same fact: how long
                                   # ONE mirror may wait on the gateway, how long
                                   # the tool-set line waits before reporting what
                                   # the set has, and how long a wedged reconcile
                                   # pass may hold its guard before the next pass
                                   # abandons it.  It must outlast the gateway's
-                                  # OWN two clocks — establishment
-                                  # (connect_startup) plus one listing
-                                  # (list_tools) — or the line would announce
+                                  # OWN clocks, or the line would announce
                                   # "synced" while a server is still legitimately
-                                  # connecting; validate() enforces that.  The
-                                  # gateway's re-list backoff (5→10→20→40, capped
-                                  # at 60 — mcp_gateway/connection.py) is the
-                                  # second clock it covers: a first listing that
-                                  # times out can still succeed on that retry.
+                                  # connecting — and there are FOUR of them, not
+                                  # two.  Establishment (connect_startup) plus
+                                  # one listing (list_tools) is only the FIRST
+                                  # attempt: measured on a slow machine, a cold
+                                  # start spends that whole establishment bound
+                                  # installing packages, all eighteen connects
+                                  # die on it together, and the servers answer
+                                  # only on the retry the gateway arms from that
+                                  # failure (pacing.mcp_relist_initial later,
+                                  # then the same pair again).  A budget sized
+                                  # for one attempt expired 25s into that retry
+                                  # and the line reported 124 of the 310 tools
+                                  # the same startup went on to mirror.
+                                  # validate() enforces the four-clock sum.
+                                  # That sum is the honest MINIMUM, not a
+                                  # promise: on the machine measured, eighteen
+                                  # concurrent uvx installs staggered the retry
+                                  # wave out to 435s, well past this.  Covering
+                                  # one retry is what the budget owes; the
+                                  # line's own correction is what covers the
+                                  # rest, so a longer stall does not need a
+                                  # longer block here.
     watchdog_backoff_initial: float = 1.0
     watchdog_backoff_max: float = 30.0
     watchdog_backoff_multiplier: float = 2.0
@@ -260,14 +275,25 @@ def validate(ts: Timeouts) -> list[str]:
         errs.append("invariant: ready.relisten_max >= ready.relisten")
     if ts.ready.connect_startup < ts.ready.spawn:
         errs.append("invariant: ready.connect_startup >= ready.spawn")
-    if ts.ready.tool_sync_wait < ts.ready.connect_startup + ts.ready.list_tools:
-        # A mirror's wait IS the gateway's own two bounds — bringing the server
-        # up and reading one listing, which is all a stateless server needs to
-        # answer.  A smaller startup-sync budget would
-        # have the line announce "synced" while a server is still legitimately
-        # connecting (the old 75 < 120 did exactly that).
+    _attempt = ts.ready.connect_startup + ts.ready.list_tools
+    _retry_cycle = _attempt + ts.pacing.mcp_relist_initial + _attempt
+    if ts.ready.tool_sync_wait < _retry_cycle:
+        # A mirror's wait IS the gateway's own clocks — bringing the server up
+        # and reading one listing, then the SAME pair once more on the retry the
+        # gateway arms when the first attempt fails.  One attempt alone (the old
+        # 140) is not enough: a slow cold start spends the whole establishment
+        # bound on installs and every connect dies on it, so the answer arrives
+        # on the retry — and a budget that expired in between announced "synced"
+        # over a set that was still arriving (the old 75 < 120 was the same
+        # mistake at one attempt's scale).
+        #
+        # The pacing value is in the sum as a DELAY this budget must outlast,
+        # which is not the same as a cadence bounding an await: the backoff
+        # still only sets when the gateway retries, and it is this budget that
+        # has to be long enough to still be there when it does.
         errs.append(
-            "invariant: ready.tool_sync_wait >= "
+            "invariant: ready.tool_sync_wait >= ready.connect_startup + "
+            "ready.list_tools + pacing.mcp_relist_initial + "
             "ready.connect_startup + ready.list_tools"
         )
     if ts.ready.tunnel_heal < ts.ready.tunnel_read_url:

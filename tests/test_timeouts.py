@@ -106,15 +106,20 @@ def test_invariant_connect_startup_ge_spawn():
 def test_invariant_tool_sync_wait_covers_the_gateway():
     """The startup-sync budget must outlast what a mirror actually waits on.
 
-    A mirror waits on the gateway's own two bounds — bringing the server up and
-    reading one listing.  Under that, the tool-set line would announce "synced"
-    while a server is still legitimately coming up, which is what the old 75s
-    (against a 120s establishment bound) did.
+    A mirror waits on the gateway's own clocks — bringing the server up and
+    reading one listing, then the same pair again on the retry the gateway arms
+    when the first attempt fails.  One attempt alone is not enough: a slow cold
+    start spends the whole establishment bound on installs (measured: eighteen
+    connects dying on the 120s bound together, at 13-48s of package install
+    each), so the answer arrives on the retry — under a one-attempt budget the
+    tool-set line announced "synced" 25s into that retry and reported 124 of the
+    310 tools the same startup went on to mirror.  The old 75 < 120 was the same
+    mistake at one attempt's scale.
     """
     with pytest.raises(TimeoutConfigError, match="tool_sync_wait"):
-        _mutated(**{"ready.tool_sync_wait": 130})
+        _mutated(**{"ready.tool_sync_wait": 275})
     # …and the sum is the bound, not a round number near it.
-    assert validate(_mutated(**{"ready.tool_sync_wait": 140})) == []
+    assert validate(_mutated(**{"ready.tool_sync_wait": 285})) == []
 
 
 def test_invariant_stall_positive():

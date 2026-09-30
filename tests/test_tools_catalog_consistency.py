@@ -782,11 +782,17 @@ async def test_a_check_that_never_answers_is_not_a_verdict_either(
 
         client.call_tool = _never_answers
 
-        pending = await asyncio.wait_for(
+        states = await asyncio.wait_for(
             service._mark_server_connectivity(client, {"serper"}), timeout=5.0,  # noqa-timeout
         )
 
-        assert pending == set()  # no verdict, and nothing to wait on
+        assert states.pending == frozenset()  # no verdict, and nothing to wait on
+        # …and no COUNT either: an unread probe must not be read as "nothing is
+        # missing", or a boot whose probe timed out would report a complete set
+        # and latch the question shut.  `probe_ok` is that distinction, and the
+        # tool-set line is its only consumer.
+        assert states.unanswered == frozenset()
+        assert states.probe_ok is False
         assert (await store.get_tool("serper__search"))["load_status"] == "loaded"
         assert "serper__search" in await svc.snapshot_loaded()
     finally:
