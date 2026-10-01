@@ -7,6 +7,7 @@ its primary responsibility: UI event handling and layout.
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING
 
 from slife.a2a.identity import Channel
@@ -21,6 +22,8 @@ from slife.ui.tool_display import ToolCallWidget
 if TYPE_CHECKING:
     from slife.agent.message_history import MessageHistory
     from slife.ui.app import SlifeApp
+
+logger = logging.getLogger(__name__)
 
 
 # ── Turn header (restore-time annotation) ────────────────────────────
@@ -292,6 +295,13 @@ async def restore_session(
                 break
 
     except Exception as e:
+        # LOGGED, not just shown.  The red line reaches the reader; this reaches
+        # whoever has to explain it.  Returning normally also means the caller's
+        # own handler (``app.py``) never sees the exception, so without this the
+        # only trace of a failed rebuild was a sentence in the transcript and a
+        # log that simply stopped — which is what made an earlier report of a
+        # dead transcript un-diagnosable.
+        logger.exception("session_restore_failed turns=%d", len(turns))
         app._show_system_message(t("restore_failed", err=e), color="#f85149")
         return
 
@@ -375,8 +385,13 @@ async def restore_session(
     # scroll by itself; the single final scroll below covers it.
     app._show_system_message(t("restored_ok"), color="#3fb950")
 
-    # Auto-scroll is live again; settle the view with ONE scroll.
+    # Auto-scroll is live again; settle the view with ONE scroll.  The re-arm
+    # is stated here for the reason ``jump_to_tail`` states it: ``scroll_end``
+    # lands a refresh later, so content arriving in between would find
+    # following still off.  Restore rebuilds from the top, so the reader is
+    # put back at the tail whether or not they were there at exit.
     chat_view._autoscroll = True
+    chat_view._at_tail = True
     chat_view.scroll_end(animate=False)
 
     # Reset session token counter — session starts fresh

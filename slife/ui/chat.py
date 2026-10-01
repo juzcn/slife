@@ -170,6 +170,35 @@ class ChatView(VerticalScroll):
         if self._autoscroll and self._at_tail:
             self.scroll_end(animate=False)
 
+    # ── Leaving the tail is recorded when the reader ASKS ────────────────
+    #
+    # ``_at_tail`` is otherwise maintained by ``watch_scroll_y``, which only
+    # fires once a scroll has LANDED — and every scroll here lands a refresh
+    # later.  In that window a streaming token reaches ``follow_tail`` while
+    # ``_at_tail`` still reads True, so it queues its own ``scroll_end``
+    # behind the reader's scroll and runs after them, putting them back where
+    # they started.  Repeated per token, that makes the keys and the wheel
+    # look dead for the whole of a turn — and only sometimes, because it
+    # needs a token to arrive inside that window.
+    #
+    # This is the mirror of ``jump_to_tail``'s own reasoning ("stated here
+    # rather than left to the watcher, because ``scroll_end`` lands a refresh
+    # later"): the intent is known at request time, so it is recorded there.
+    # Only the away-from-the-tail moves are overridden — scrolling back down
+    # arms following the ordinary way, when it arrives.
+
+    def scroll_up(self, *args, **kwargs) -> None:
+        self._at_tail = False
+        super().scroll_up(*args, **kwargs)
+
+    def scroll_page_up(self, *args, **kwargs) -> None:
+        self._at_tail = False
+        super().scroll_page_up(*args, **kwargs)
+
+    def scroll_home(self, *args, **kwargs) -> None:
+        self._at_tail = False
+        super().scroll_home(*args, **kwargs)
+
     def jump_to_tail(self) -> None:
         """Return to the tail and follow from there — the reader's own send.
 

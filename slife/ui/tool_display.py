@@ -12,6 +12,7 @@ eliminating MarkupError crashes from search results containing URLs, JSON, etc.
 import os
 import subprocess
 import sys
+from textual.actions import SkipAction
 from textual.content import Content
 from textual.containers import VerticalScroll
 from textual.widgets import Static
@@ -99,7 +100,9 @@ class ToolCallWidget(VerticalScroll):
     Keyboard:
       - Ctrl+Y — copy result (when widget is focused and expanded)
       - Enter / Space — toggle expand/collapse
-      - scroll as usual (wheel / PageUp / PageDown) inside the panel
+      - scroll as usual (wheel / PageUp / PageDown) inside the panel; when it
+        is already at the top or bottom, the key falls through to the
+        transcript rather than being consumed with nothing to show for it
 
     Claude Code style: amber header line, expandable detail below.
     """
@@ -188,6 +191,30 @@ class ToolCallWidget(VerticalScroll):
         """
         if self._is_collapsed:
             self.toggle()
+
+    def action_page_up(self) -> None:
+        """Page the panel, or hand the key to the transcript when it cannot.
+
+        This widget inherits ``pageup``/``pagedown`` from
+        ``ScrollableContainer``, and it holds focus after a click.  A result
+        that fits under ``max-height`` leaves the panel with nowhere to go, so
+        the inherited action consumed the key and moved nothing — the
+        transcript stayed frozen and the keys looked dead, for as long as a
+        tool row held focus.  ``SkipAction`` declines the binding instead, so
+        the key travels on to the transcript, which is what the reader meant.
+
+        Declining only when the panel cannot move is the point: while it has
+        somewhere to go, this panel is still the thing being scrolled.
+        """
+        if self.scroll_offset.y <= 0:
+            raise SkipAction()
+        super().action_page_up()
+
+    def action_page_down(self) -> None:
+        """The mirror of :meth:`action_page_up` — same fall-through."""
+        if self.scroll_offset.y >= self.max_scroll_y:
+            raise SkipAction()
+        super().action_page_down()
 
     def action_copy_result(self) -> None:
         """Copy the result (or arguments if no result yet) to clipboard."""
