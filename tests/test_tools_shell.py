@@ -1,5 +1,7 @@
 """Tests for Slife.tools.shell — shell command execution tool."""
 
+from contextlib import contextmanager
+
 import pytest; pytestmark = pytest.mark.unit
 
 
@@ -8,7 +10,30 @@ import base64
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from slife.tools.exec import ShellTool, _shell_argv, _shell_output_codec
+from slife.tools.exec import ShellTool, _shell_launch, _shell_output_codec
+
+
+
+@contextmanager
+def _spawn(mock_process):
+    """Patch BOTH spawn entry points with one fake process.
+
+    ``execute_shell`` reaches the OS through ``create_subprocess_exec`` on the
+    PowerShell and POSIX branches — an argv — and through
+    ``create_subprocess_shell`` on the cmd branch, where the command goes over
+    verbatim because argv serialisation rewrites cmd syntax (``echo "x"``
+    arrived as ``echo \"x\"``).  Patching only the first left the cmd branch
+    running for REAL, so POSIX-only test commands reached cmd and failed.
+
+    A shared dict of kwargs was not an option for the same reason: it is typed
+    too loosely for the checker to catch a wrong one.
+    """
+    with patch.multiple(
+        "asyncio",
+        create_subprocess_exec=AsyncMock(return_value=mock_process),
+        create_subprocess_shell=AsyncMock(return_value=mock_process),
+    ):
+        yield
 
 
 class _MockStream:
@@ -92,16 +117,17 @@ class TestShellExecute:
         mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
+        with _spawn(mock_process):
             result = await tool.execute(command="echo hello")
 
         assert result == "hello world"
 
     @pytest.mark.asyncio
-    async def test_runs_detected_shell_argv(self):
-        """execute spawns the detected shell (not COMSPEC=cmd.exe) — so a
-        powershell-detected Windows runs ``powershell …``, and the argv is
-        passed through create_subprocess_exec."""
+    async def test_runs_the_shell_the_prompt_claims(self):
+        """execute spawns what the launcher says — the shell the prompt claims,
+        never a blind COMSPEC=cmd.exe.  Asserted by the fake process being the
+        one that answers, which holds on every branch; the launcher's own shape
+        is pinned by TestShellLaunch below."""
         tool = ShellTool(timeout=10)  # noqa-timeout
 
         mock_process = MagicMock()
@@ -109,11 +135,10 @@ class TestShellExecute:
         mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as m:
-            await tool.execute(command="Get-Date")
+        with _spawn(mock_process):
+            result = await tool.execute(command="Get-Date")
 
-        args = m.call_args.args
-        assert args[0] == _shell_argv("Get-Date")[0]  # same shell the prompt claims
+        assert result == "ok"
 
     @pytest.mark.asyncio
     async def test_command_with_stderr(self):
@@ -125,7 +150,7 @@ class TestShellExecute:
         mock_process.stderr = _MockStream(b"error output")
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
+        with _spawn(mock_process):
             result = await tool.execute(command="some-command")
 
         assert "output" in result
@@ -144,7 +169,7 @@ class TestShellExecute:
         mock_process.kill = MagicMock()
         mock_process.wait = AsyncMock()
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
+        with _spawn(mock_process):
             result = await tool.execute(command="sleep 100")
 
         assert "timed out" in result
@@ -165,7 +190,7 @@ class TestShellExecute:
             mock_process.stderr = _MockStream(b"")
             mock_process.returncode = 0
 
-            with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
+            with _spawn(mock_process):
                 result = await tool.execute(command="echo hello", timeout=bad)
             # The command ran to completion under the default timeout —
             # never an instant "timed out after 0s".
@@ -182,7 +207,7 @@ class TestShellExecute:
         mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
+        with _spawn(mock_process):
             result = await tool.execute(command="true")
 
         assert "exit code" in result
@@ -198,7 +223,7 @@ class TestShellExecute:
         mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
+        with _spawn(mock_process):
             result = await tool.execute(command="echo")
 
         assert "exit code" in result
@@ -213,7 +238,7 @@ class TestShellExecute:
         mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
+        with _spawn(mock_process):
             result = await tool.execute(command="cat binary")
 
         # Invalid bytes decode with U+FFFD replacement and the trailing valid
@@ -226,7 +251,7 @@ class TestShellExecute:
 
 
 class TestShellArgv:
-    """Tests for _shell_argv — the tool runs the shell the prompt claims."""
+    """Tests for _shell_launch — the tool runs the shell the prompt claims."""
 
     def test_windows_powershell_uses_encoded_command(self, monkeypatch):
         """Detected powershell → powershell -EncodedCommand (quote-proof)."""
@@ -234,7 +259,7 @@ class TestShellArgv:
         with patch(
             "slife.platform.detect_current_shell", return_value="powershell",
         ) as mock_detect:
-            argv = _shell_argv("Get-Date")
+            argv = _shell_launch("Get-Date")
         mock_detect.assert_called_once_with()
         assert argv[0] == "powershell"
         assert "-EncodedCommand" in argv
@@ -245,31 +270,39 @@ class TestShellArgv:
         assert script.endswith("Get-Date")
         assert "SilentlyContinue" in script
 
-    def test_windows_cmd_uses_cmd_c(self, monkeypatch):
-        """Detected cmd → cmd /c."""
+    def test_windows_cmd_hands_the_command_over_verbatim(self, monkeypatch):
+        """Detected cmd → the command line ITSELF, not an argv.
+
+        An argv would have to be serialised into one Windows command line, and
+        ``subprocess.list2cmdline`` does that by MS-C *argument* rules: quoted,
+        with ``"`` escaped to ``\\"``.  The agent's ``echo "x"`` therefore
+        reached cmd as ``echo \\"x\\"`` and every quoted path failed to parse —
+        with the backslashes in the real output, not in any echo of it.
+        """
         monkeypatch.setattr("os.name", "nt")
         with patch(
             "slife.platform.detect_current_shell", return_value="cmd",
         ):
-            argv = _shell_argv("dir")
-        assert argv == ["cmd", "/c", "dir"]
+            launch = _shell_launch('echo "x"')
+        assert launch == 'echo "x"'            # verbatim; nothing escaped
+        assert '"' in launch and "\\" not in launch
 
     def test_posix_uses_shell(self, monkeypatch):
         """POSIX (incl. WSL) → $SHELL -c, same value the prompt reports."""
         monkeypatch.setattr("os.name", "posix")
         monkeypatch.setenv("SHELL", "/bin/bash")
-        assert _shell_argv("ls -la") == ["/bin/bash", "-c", "ls -la"]
+        assert _shell_launch("ls -la") == ["/bin/bash", "-c", "ls -la"]
 
     def test_posix_falls_back_to_sh(self, monkeypatch):
         monkeypatch.setattr("os.name", "posix")
         monkeypatch.delenv("SHELL", raising=False)
-        assert _shell_argv("ls") == ["/bin/sh", "-c", "ls"]
+        assert _shell_launch("ls") == ["/bin/sh", "-c", "ls"]
 
 
 class TestShellOutputCodec:
     """Tests for _shell_output_codec — the codec the LAUNCHED shell emits.
 
-    The Windows answer depends on which branch _shell_argv took, so each case
+    The Windows answer depends on which branch _shell_launch took, so each case
     pins the detected shell instead of inheriting the environment's: a suite
     run from PowerShell must not assert the cmd.exe codec.
     """
@@ -282,7 +315,7 @@ class TestShellOutputCodec:
 
     def test_windows_powershell_uses_utf8(self, monkeypatch):
         """Regression: the PS branch pins [Console]::OutputEncoding to UTF-8
-        in _shell_argv, so decoding its output with the locale codec turned
+        in _shell_launch, so decoding its output with the locale codec turned
         every non-ASCII result into mojibake."""
         monkeypatch.setattr("os.name", "nt")
         monkeypatch.setattr("locale.getpreferredencoding", lambda _: "cp936")

@@ -127,7 +127,7 @@ class _CapturedRun:
 
 
 async def _run_captured(
-    argv: list[str],
+    argv: list[str] | str,
     *,
     timeout: float | None = None,
     codec: str | None = None,
@@ -143,21 +143,40 @@ async def _run_captured(
     own message.
 
     Args:
-        argv: Command vector (spawned via ``create_subprocess_exec``).
+        argv: Command vector, or a command line STRING to hand to the shell
+              verbatim — see :func:`_shell_launch`, whose cmd branch returns
+              the string form because argv cannot carry shell syntax intact.
         timeout: Optional overall bound on the stream read (``wait_for``);
                  ``None`` relies on the loop's tool-timeout cancelling the read.
         codec: Stream decode codec — ``None`` → the shell output codec
                (:func:`_shell_output_codec`), ``"utf-8"`` for scripts.
     """
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        # Own process group on POSIX so timeout/cancel can kill the whole
-        # tree (sh + children, a mid-install uv) — see kill_process_tree.
-        start_new_session=True,
-    )
+    # A string IS the command line, so it goes through the shell: that is the
+    # only path that can deliver cmd metacharacters unescaped.  An argv list is
+    # spawned directly, with no serialisation to rewrite it (see
+    # :func:`_shell_launch`).  The spawn kwargs are spelled out in both arms on
+    # purpose — a shared dict is inferred too loosely for the checker to catch
+    # a wrong one.
+    #
+    # start_new_session gives the child its own process group on POSIX so
+    # timeout/cancel can kill the whole tree (sh + children, a mid-install uv)
+    # — see kill_process_tree.
+    if isinstance(argv, str):
+        proc = await asyncio.create_subprocess_shell(
+            argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
     try:
         read = _read_stdout_stderr(proc)
         if timeout is not None:
@@ -175,8 +194,13 @@ async def _run_captured(
     )
 
 
-def _shell_argv(command: str) -> list[str]:
-    """Build argv that runs *command* in the shell the prompt claims.
+def _shell_launch(command: str) -> list[str] | str:
+    """How to run *command* in the shell the prompt claims.
+
+    A **list** is an argv to spawn directly.  A **string** is a command line to
+    hand to the shell verbatim — and only the cmd branch returns one, because
+    an argv list cannot carry shell syntax intact.  That asymmetry is the whole
+    reason this function has two shapes.
 
     ``asyncio.create_subprocess_shell`` runs ``COMSPEC`` (cmd.exe) on Windows
     even when the detected shell is PowerShell, so the LLM's PS commands
@@ -208,7 +232,22 @@ def _shell_argv(command: str) -> list[str]:
                 "powershell", "-NoProfile", "-NonInteractive",
                 "-EncodedCommand", encoded,
             ]
-        return ["cmd", "/c", command]
+        # cmd: the command goes over VERBATIM, and that is only expressible as a
+        # command line.  ``create_subprocess_exec`` must serialise an argv into
+        # one Windows command line, and ``subprocess.list2cmdline`` does it by
+        # MS-C ARGUMENT rules — quoted because it is an argument, with ``"``
+        # escaped to ``\"``.  So the agent's ``echo "x"`` reached cmd as
+        # ``echo \"x\"`` and every quoted path failed to parse, with the
+        # backslashes really in the output rather than in any echo of it.  That
+        # escaping is Python's, applied because a process takes a single
+        # command line, and it cannot be switched off for an element that is
+        # shell syntax rather than a program argument.
+        #
+        # A string is passed through as the command line itself
+        # (``%COMSPEC% /c <command>``), which is the shell this branch wants
+        # anyway — the COMSPEC caveat above is the PowerShell branch's problem,
+        # and here COMSPEC *is* cmd.
+        return command
     # POSIX (incl. WSL): $SHELL — the same value the prompt reports.
     return [os.environ.get("SHELL", "/bin/sh"), "-c", command]
 
@@ -231,7 +270,7 @@ def _shell_output_codec() -> str:
     if os.name == "nt":
         from slife.platform import detect_current_shell
         if detect_current_shell() == "powershell":
-            return "utf-8"  # pinned by _shell_argv's -EncodedCommand preamble
+            return "utf-8"  # pinned by _shell_launch's -EncodedCommand preamble
         return locale.getpreferredencoding(False) or "utf-8"
     return "utf-8"
 
@@ -293,13 +332,13 @@ class ShellTool(Tool):
 
         # Run the detected shell (not COMSPEC=cmd.exe on Windows) so the
         # command executes in the same shell the system prompt reports.
-        argv = _shell_argv(command)
+        launch = _shell_launch(command)
         try:
             # Shared spine: spawn in its own group, bounded stream read, and
             # tree-kill on timeout/cancel (see _run_captured).  The default
             # codec decodes per launcher branch — OEM for cmd.exe, UTF-8 for
             # the PowerShell branch, which pins its child's encoding.
-            run = await _run_captured(argv, timeout=timeout)
+            run = await _run_captured(launch, timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("shell_timeout timeout=%ds cmd=%.200s", timeout, sanitize_secrets(command))
             return f"Error: Command timed out after {timeout}s"
