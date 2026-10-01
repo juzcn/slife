@@ -76,6 +76,9 @@ class Ready:
                                  # must not be asked every second forever
     probe_broker: float = 1.0
     probe_endpoint: float = 5.0
+    probe_toolchain: float = 5.0  # ONE external-tool version probe
+                                  # (``node --version`` …) on the startup
+                                  # diagnostic's daemon thread
     tunnel_start: float = 45.0
     tunnel_read_url: float = 30.0
     tunnel_settle: float = 20.0

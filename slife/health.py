@@ -20,6 +20,11 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
+import slife.timeouts as _T  # module ref — call-time lookup, reload/patch-safe
+# (``slife.timeouts`` is stdlib-only by design, so importing it here keeps this
+# store importable from the earliest startup path — the constraint the
+# TYPE_CHECKING import below exists to respect.)
+
 # Annotation-only: the store must stay importable from the earliest startup
 # path (``slife/__init__.py``), so it never imports config at runtime.
 if TYPE_CHECKING:
@@ -118,9 +123,9 @@ def record_host_facts(config, *, source: str) -> None:
     provenance rather than a path anyone can open.
 
     The toolchain probe is the expensive part — four subprocesses, each
-    bounded at 5s — so it runs on a daemon thread: nothing waits on it, and
-    ``system_health`` reads the entries lazily.  On a host with broken shims
-    that is ~20s no startup ever pays.
+    bounded by ``ready.probe_toolchain`` — so it runs on a daemon thread:
+    nothing waits on it, and ``system_health`` reads the entries lazily.  On a
+    host with broken shims that is four such bounds no startup ever pays.
     """
     import threading
 
@@ -164,37 +169,84 @@ def _probe_version(
     """Probe one external tool's ``--version`` and record its health verdict.
 
     The shared shape behind the node / npm / bun / uv checks: ``which`` →
-    run ``--version`` → record ``ok`` with the version, a ``warning`` with
-    the non-zero exit code or the unexpected error, or a ``warning`` with a
-    ``missing`` hint when the tool is absent.  A 5 s sync subprocess runs in
-    a daemon-thread diagnostic, never on the event loop.
+    run ``--version`` → record ``ok`` with the version, or a ``warning``
+    carrying the non-zero exit code, the timeout, or the unexpected error —
+    and a ``warning`` with a ``missing`` hint when the tool is absent.  A sync
+    subprocess bounded by ``ready.probe_toolchain`` runs in a daemon-thread
+    diagnostic, never on the event loop.
+
+    Every failure is CLASSIFIED and LOGGED, because the verdict is what the
+    model reads and repeats to the user.  A bare ``except Exception`` that
+    recorded the literal string "unexpected error" — which is what this was —
+    cost exactly that: a report asserting npm was broken and prescribing a
+    Node.js reinstall, on a machine where ``npm --version`` answers in 0.2 s,
+    with nothing in the log to say why.  A timeout now says it timed out and
+    claims nothing about the tool; the other failures carry the exception
+    itself rather than a placeholder.
     """
     import shutil as _shutil
     import subprocess as _sp
     import sys as _sys
+    import tempfile
 
     if _shutil.which(name) is None:
         record(name, "warning", key="missing", value="not found",
                hint=missing_hint)
         return
-    try:
-        # npm / bun resolve through ``cmd`` on Windows (no .exe on PATH as a
-        # bare name); node / uv exec directly.
-        cmd = (
-            ["cmd", "/c", name, "--version"]
-            if wrap_cmd_on_windows and _sys.platform == "win32"
-            else [name, "--version"]
-        )
-        r = _sp.run(cmd, capture_output=True, text=True, timeout=5)  # noqa-timeout — sync probe in a daemon-thread diagnostic
-    except Exception:
-        record(name, "warning", key="error", value="unexpected error",
-               hint=error_hint)
-        return
-    if r.returncode == 0:
-        record(name, "ok", key="version", value=(r.stdout.strip() or "?"))
-    else:
-        record(name, "warning", key="exit", value=str(r.returncode),
-               hint=exit_hint)
+    # npm / bun resolve through ``cmd`` on Windows (no .exe on PATH as a
+    # bare name); node / uv exec directly.
+    cmd = (
+        ["cmd", "/c", name, "--version"]
+        if wrap_cmd_on_windows and _sys.platform == "win32"
+        else [name, "--version"]
+    )
+    bound = _T.timeouts.ready.probe_toolchain  # call-time lookup
+
+    # The child writes to FILES, never pipes — the same reason the MCP stdio
+    # child does (``connection.py``).  On timeout ``subprocess.run`` kills the
+    # direct child and then ``communicate()``s; over a pipe that call waits for
+    # the FAR end to close, and on Windows the grandchild under ``cmd.exe``
+    # (``npm.cmd`` runs ``node``) survives the kill and still holds it.
+    # Measured: a 1 s bound took 30.07 s that way.  A file has no far end, so
+    # the bound is the bound.
+    #
+    # stdout and stderr stay APART: the version is stdout's first line, and a
+    # tool that emits a warning on stderr first must not have that warning read
+    # back as its version.  stderr is kept for the failure paths — a non-zero
+    # exit's own output is the diagnostic, and it used to be discarded.
+    with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+        try:
+            r = _sp.run(cmd, stdout=out_f, stderr=err_f, timeout=bound)
+        except _sp.TimeoutExpired:
+            logger.warning("toolchain_probe_timeout name=%s bound=%.1fs",
+                           name, bound)
+            record(
+                name, "warning", key="timeout", value=f"no answer in {bound:g}s",
+                hint=(f"{name} did not answer its version probe — its state is "
+                      f"unverified and it may be fine. Restart slife to "
+                      f"re-probe."),
+            )
+            return
+        except Exception as e:  # noqa: BLE001 — a probe never takes down the collector
+            logger.warning("toolchain_probe_failed name=%s err=%s", name, e,
+                           exc_info=True)
+            record(name, "warning", key="error",
+                   value=f"{type(e).__name__}: {e}", hint=error_hint)
+            return
+
+        out_f.seek(0)
+        version = out_f.read().decode("utf-8", errors="replace").strip()
+        if r.returncode != 0:
+            err_f.seek(0)
+            detail = err_f.read().decode("utf-8", errors="replace").strip()
+            logger.warning("toolchain_probe_exit name=%s code=%s err=%s",
+                           name, r.returncode, (detail or version)[:200])
+            record(name, "warning", key="exit", value=str(r.returncode),
+                   hint=exit_hint)
+            return
+
+    record(name, "ok", key="version",
+           value=(version.splitlines()[0].strip() if version else "?"))
 
 
 def check_external_deps() -> None:

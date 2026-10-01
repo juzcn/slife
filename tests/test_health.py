@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import patch
 
 from slife.health import (
+    _probe_version,
     get_report,
     record,
     record_active_model,
@@ -182,5 +183,111 @@ class TestRecordHostFacts:
             record_host_facts(self._config(), source="inherited from the main agent")
         cfg = next(e for e in get_report() if e["component"] == "config")
         assert cfg["value"].startswith("inherited from the main agent (")
+
+
+class TestProbeVersion:
+    """The toolchain probe's verdicts.
+
+    The report is what the model reads and repeats to the user, so a wrong
+    verdict is not cosmetic: this probe once recorded ``npm: error=unexpected
+    error — Reinstall Node.js`` on a machine where ``npm --version`` answers in
+    0.2 s, because a bare ``except Exception`` collapsed every cause into one
+    placeholder and prescribed a reinstall for all of them.
+    """
+
+    _HINTS = dict(missing_hint="install it", exit_hint="reinstall it",
+                  error_hint="reinstall it")
+
+    @pytest.fixture(autouse=True)
+    def _found(self, monkeypatch):
+        """``which`` resolves, so the probe reaches the subprocess."""
+        import shutil
+        monkeypatch.setattr(shutil, "which", lambda name: "C:/nodejs/" + name)
+
+    @staticmethod
+    def _run(*, out: bytes = b"", err: bytes = b"", rc: int = 0):
+        import subprocess
+
+        def run(cmd, stdout=None, stderr=None, timeout=None):
+            if out:
+                stdout.write(out)
+            if err:
+                stderr.write(err)
+            return subprocess.CompletedProcess(cmd, rc)
+
+        return run
+
+    def test_a_present_tool_reports_the_first_line_of_its_version(self, monkeypatch):
+        import subprocess
+        monkeypatch.setattr(
+            subprocess, "run", self._run(out=b"11.17.0\nsome extra line\n"),
+        )
+        _probe_version("npm", **self._HINTS)
+        e = get_report()[-1]
+        assert (e["component"], e["level"], e["key"]) == ("npm", "ok", "version")
+        assert e["value"] == "11.17.0"
+        assert "hint" not in e          # a healthy fact carries no remedy
+
+    def test_a_warning_on_stderr_is_not_read_back_as_the_version(self, monkeypatch):
+        """The version is stdout's; a tool that warns on stderr first (node
+        does) must not have that warning reported as its version."""
+        import subprocess
+        monkeypatch.setattr(
+            subprocess, "run",
+            self._run(out=b"11.17.0\n", err=b"(node:32068) Warning: something\n"),
+        )
+        _probe_version("npm", **self._HINTS)
+        assert get_report()[-1]["value"] == "11.17.0"
+
+    def test_an_absent_tool_is_missing_not_an_error(self, monkeypatch):
+        import shutil
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        _probe_version("npm", **self._HINTS)
+        e = get_report()[-1]
+        assert e["key"] == "missing" and e["hint"] == "install it"
+
+    def test_a_non_zero_exit_reports_the_code_and_keeps_the_tool_s_own_output(
+        self, monkeypatch,
+    ):
+        """The child's stderr is the diagnostic; it used to be discarded."""
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", self._run(err=b"boom\n", rc=1))
+        _probe_version("npm", **self._HINTS)
+        e = get_report()[-1]
+        assert e["key"] == "exit" and e["value"] == "1"
+        assert e["hint"] == "reinstall it"
+
+    def test_a_timeout_says_so_and_claims_nothing_about_the_tool(self, monkeypatch):
+        """The incident, locked: a timeout is its own verdict, and its hint
+        must not prescribe a reinstall for a tool that is probably fine."""
+        import subprocess
+
+        def run(cmd, stdout=None, stderr=None, timeout=None):
+            raise subprocess.TimeoutExpired(cmd, timeout)
+
+        monkeypatch.setattr(subprocess, "run", run)
+        _probe_version("npm", **self._HINTS)
+        e = get_report()[-1]
+        assert e["level"] == "warning" and e["key"] == "timeout"
+        assert "5s" in e["value"]
+        assert "unverified" in e["hint"]
+        assert e["hint"] != self._HINTS["error_hint"]
+
+    def test_an_unexpected_error_carries_the_exception_not_a_placeholder(
+        self, monkeypatch,
+    ):
+        import subprocess
+
+        def run(cmd, stdout=None, stderr=None, timeout=None):
+            raise OSError("no paging file")
+
+        monkeypatch.setattr(subprocess, "run", run)
+        _probe_version("npm", **self._HINTS)
+        e = get_report()[-1]
+        assert e["key"] == "error"
+        assert "unexpected error" not in e["value"]
+        assert "OSError" in e["value"] and "no paging file" in e["value"]
+        assert e["hint"] == "reinstall it"
+
 
 
