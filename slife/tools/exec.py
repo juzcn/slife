@@ -57,6 +57,33 @@ async def _read_bounded(stream, head: int = _STREAM_HEAD, tail: int = _STREAM_TA
     return bytes(head_buf), bytes(tail_buf), total - retained
 
 
+def _decode_stream(data: bytes, codec: str) -> str:
+    """Decode captured output — as UTF-8 when it *is* UTF-8, else *codec*.
+
+    One codec is not knowable on the cmd branch, because a piped child writes
+    whatever encoding IT chose, and there are two populations behind that pipe:
+
+      - interpreter children (python, node) honour ``PYTHONIOENCODING``, which
+        slife sets to utf-8 process-wide (``slife/__init__.py``), so they write
+        UTF-8;
+      - native tools write the console code page — cp936 on a zh-CN box.
+
+    Decoding the first as the second is SILENT mojibake, not an error: GBK
+    accepts UTF-8 byte pairs, so the wrong codec succeeds and returns garbage.
+    That asymmetry is what makes the order decidable — UTF-8 strictly validates
+    its multi-byte sequences and raises on anything that is not UTF-8, so it is
+    the one question worth asking first.  Whatever fails that test falls to the
+    branch's own codec, which is the permissive one.
+
+    Only the decode changes; what runs, and what the child is told to emit, are
+    untouched.
+    """
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode(codec, errors="replace")
+
+
 def _merge_text(
     head: bytes, tail: bytes, dropped: int, *, codec: str | None = None,
 ) -> str:
@@ -68,7 +95,7 @@ def _merge_text(
     """
     if codec is None:
         codec = _shell_output_codec()
-    text = (head + tail).decode(codec, errors="replace")
+    text = _decode_stream(head + tail, codec)
     if dropped > 0:
         text += f"\n… (truncated: {dropped} bytes of streamed output not retained)"
     return text
@@ -187,15 +214,19 @@ def _shell_argv(command: str) -> list[str]:
 
 
 def _shell_output_codec() -> str:
-    """Codec for decoding shell output bytes.
+    """The codec a launcher branch's output falls back to.
 
-    On Windows the two launcher branches of :func:`_shell_argv` encode
-    differently, so this must follow the SAME branch rather than assume one:
-    cmd.exe writes the console/OEM code page to a pipe (GBK/cp936 on a zh-CN
-    locale), while the PowerShell invocation pins ``[Console]::OutputEncoding``
-    and ``$OutputEncoding`` to UTF-8 precisely so the caller can decode UTF-8.
-    Decoding PowerShell output with the locale codec turned every non-ASCII
-    result into mojibake.  POSIX shells emit UTF-8.
+    Not the whole answer any more — :func:`_decode_stream` tries UTF-8 first
+    and uses this only when the bytes are not UTF-8, because a piped child may
+    be an interpreter honouring ``PYTHONIOENCODING`` rather than a native tool
+    honouring this code page.  What stays true is that the two launcher
+    branches differ, so this must follow the SAME branch rather than assume
+    one: cmd.exe writes the console/OEM code page to a pipe (GBK/cp936 on a
+    zh-CN locale), while the PowerShell invocation pins
+    ``[Console]::OutputEncoding`` and ``$OutputEncoding`` to UTF-8 precisely so
+    the caller can decode UTF-8.  Decoding PowerShell output with the locale
+    codec turned every non-ASCII result into mojibake.  POSIX shells emit
+    UTF-8.
     """
     if os.name == "nt":
         from slife.platform import detect_current_shell
