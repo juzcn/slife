@@ -196,7 +196,16 @@ class ToolSearchTool(Tool):
             row = dict(r)
             entry = {
                 "name": row.get("name", ""),
-                "description": row.get("description", "").split(".")[0].strip()[:120],
+                # The description WHOLE — no sentence cut, no length cap.  A
+                # search hit is how the model tells siblings apart, so the
+                # field it reads to choose must be the field its author wrote;
+                # this one used to keep only the text before the first ".",
+                # which is where these tools do the disambiguating.  A
+                # description that is too long to read is a description to
+                # rewrite at the source, not to slice here — and the oversized
+                # case is already covered once, by the tool-result bound that
+                # says it truncated rather than one that does it silently.
+                "description": (row.get("description") or "").strip(),
                 "category": row.get("category", ""),
                 "source_id": row.get("source_id"),
                 "schema_bytes": _schema_bytes(row.get("schema")),

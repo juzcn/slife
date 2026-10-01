@@ -256,3 +256,49 @@ class TestScoreBands:
         object.__setattr__(tool, "_ctx", ctx)
         payload = json.loads(await tool.execute(query="translate"))
         assert "similarity" not in payload["results"][0]
+
+
+class TestSearchDescription:
+    """What a ``tool_search`` hit says about a tool.
+
+    The field is whole.  It used to keep only the text before the first ``.``
+    — which for a two-sentence description is the half that does NOT
+    disambiguate.  ``file_read`` arrived as "Read a saved file's TEXT content
+    by its cabinet-relative path" with the encoding handling and the binary
+    refusal dropped, and 259 of the 339 catalog rows contain a period, so that
+    was the common path rather than an edge.  A description too long to read is
+    a description to rewrite at the source, not to slice in the search result.
+    """
+
+    #: The real description, whose second clause is the disambiguating half.
+    _FILE_READ = (
+        "Read a saved file's TEXT content by its cabinet-relative path. Text "
+        "in another encoding (GBK, UTF-16) is decoded and the encoding named "
+        "on the first line; a binary file (image, PDF, archive) is refused "
+        "rather than decoded — its bytes stay on disk, and the path is what "
+        "other tools take."
+    )
+
+    @pytest.mark.asyncio
+    async def test_a_hit_carries_the_description_whole(self, db, ctx):
+        """Nothing is cut — not at the first period, not at a length cap."""
+        await db.upsert_tool("talky", category="builtin",
+                             description=self._FILE_READ)
+        tool = ToolSearchTool()
+        object.__setattr__(tool, "_ctx", ctx)
+        payload = json.loads(await tool.execute(query="talky"))
+        row = payload["results"][0]
+        assert row["description"] == self._FILE_READ
+        assert "GBK" in row["description"]      # the old cut dropped this
+        assert "…" not in row["description"]
+
+    @pytest.mark.asyncio
+    async def test_a_very_long_description_is_still_whole(self, db, ctx):
+        """Bounding is the tool-result layer's job, and it says so; the search
+        result does not pre-empt it with a silent cut of its own."""
+        long = ("Sentence about the tool. " * 200).strip()
+        await db.upsert_tool("wordy", category="builtin", description=long)
+        tool = ToolSearchTool()
+        object.__setattr__(tool, "_ctx", ctx)
+        payload = json.loads(await tool.execute(query="wordy"))
+        assert payload["results"][0]["description"] == long

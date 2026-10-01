@@ -1514,8 +1514,14 @@ class SystemToolsListTool(Tool):
         groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for tool in sorted(system, key=lambda tool: tool.name):
             cat = _system_category(tool)
-            desc = tool.description.split(".")[0].strip() + "."
-            desc = _strip_server_prefix(tool, desc)
+            # The description WHOLE.  This line is how the model tells the
+            # system tools apart, and the cut it used to carry kept only the
+            # text before the first "." — the half that does NOT disambiguate.
+            # Every system tool is one of slife's own and single-line by
+            # construction, so nothing here needs shortening: a description
+            # that reads too long is one to rewrite at the source, not to
+            # slice on the way out.
+            desc = _strip_server_prefix(tool, (tool.description or "").strip())
             groups[cat].append((tool.name, desc))
 
         for cat in sorted(groups):
