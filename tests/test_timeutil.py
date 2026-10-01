@@ -71,10 +71,27 @@ class TestPeriodWords:
             _dt.date.today().replace(day=1)
         ).isoformat()
 
-    def test_last_month_is_not_today_minus_one_month(self):
-        """The naive reading is a different instant — never what we return."""
-        naive = (_dt.date.today() - relativedelta(months=1)).isoformat()
-        assert normalize_time_bound("last month", role="since") != naive
+    def test_last_month_is_not_today_minus_one_month(self, monkeypatch):
+        """The naive reading is a different instant — never what we return.
+
+        Pinned to a MID-MONTH today, deliberately.  On the 1st the naive
+        reading and the period edge are the same date, so reading the wall
+        clock made this assertion fail on the first of every month — the two
+        readings are only distinguishable off the 1st, which is the case the
+        claim is about.
+        """
+        class _MidMonth(_dt.date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 10, 20)
+
+        monkeypatch.setattr("slife.timeutil.date", _MidMonth)
+        got = normalize_time_bound("last month", role="since")
+        assert got == "2026-09-01"                       # the period's edge
+        assert got != (
+            _MidMonth.today() - relativedelta(months=1)
+        ).isoformat()                                    # 2026-09-20, the same
+                                                         # day-of-month
 
     def test_since_and_until_of_one_period_differ(self):
         """One word, two instants — bounded from either end."""
