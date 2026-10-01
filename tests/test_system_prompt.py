@@ -310,17 +310,27 @@ class TestStructure:
 
     def test_common_world_identical_across_roles(self, cfg, monkeypatch):
         """The slife.j2 world block is byte-identical in both compositions."""
-        # USER.md is free-form appending to both identities' tails; a real
-        # USER.md (via SLIFE_AGENT_NAME) would make the subagent's world slice
-        # include the User Preferences section the main slice cuts before.
+        # The world block is followed by role-specific sections — Autonomy in
+        # the main template, User Preferences in both — so the slice ends at
+        # the FIRST of them.  (Slicing to a single marker ran to the end of
+        # the subagent's prompt, which has no Autonomy, and picked up the
+        # preferences tail the main slice cuts before.)
         monkeypatch.delenv("SLIFE_AGENT_NAME", raising=False)
         from slife.agent.system_prompt import build
         self._env_sub(monkeypatch)
 
         def world(s: str) -> str:
             start = s.index("**Environment**")
-            end = s.find("**Autonomy**")
-            return s[start:end if end != -1 else len(s)].strip()
+            # The preferences block is the prompt's tail, and its FIRST line is
+            # the prose introducing it — the "**User Preferences**" header sits
+            # below that.  Anchoring on the header let the prose into the
+            # subagent's slice (its prompt has no Autonomy to stop at) and not
+            # the main's, so the anchor is the block's first line.
+            prefs = s.find("standing preferences")
+            prefs = s.rfind("\n", 0, prefs) + 1 if prefs != -1 else -1
+            ends = [i for i in (s.find("**Autonomy**"), prefs) if i != -1]
+            end = min(ends) if ends else len(s)
+            return s[start:end].strip()
 
         assert world(build(cfg)) == world(build(cfg, is_subagent=True))
 

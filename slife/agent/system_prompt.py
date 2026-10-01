@@ -305,10 +305,12 @@ def _memory_start_time(agent_name: str) -> str:
         return ""
 
 
-#: Defensive cap for the USER.md read into the prompt.  The file is
-#: user-curated and normally a few hundred tokens; this only guards against
-#: a pathological size blowing the context.
-_USER_PREFS_MAX_CHARS = 32_768
+#: How much of USER.md the prompt carries.  The file is user-curated and
+#: normally a few hundred tokens; this guards against a pathological size
+#: blowing the context.  Public because it has two readers: this read, and
+#: ``user_pref_edit``, which REFUSES anything larger rather than accepting
+#: text the prompt would then silently cut.
+USER_PREFS_MAX_CHARS = 32_768
 
 
 def _user_preferences(agent_name: str) -> str:
@@ -328,8 +330,8 @@ def _user_preferences(agent_name: str) -> str:
         if not path.is_file():
             return ""
         text = path.read_text(encoding="utf-8", errors="replace")
-        if len(text) > _USER_PREFS_MAX_CHARS:
-            text = text[:_USER_PREFS_MAX_CHARS]
+        if len(text) > USER_PREFS_MAX_CHARS:
+            text = text[:USER_PREFS_MAX_CHARS]
         lines = text.splitlines()
         if lines and lines[0].lstrip().startswith("#"):
             lines = lines[1:]

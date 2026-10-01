@@ -32,8 +32,8 @@ in ``slife/tools/schedule.py`` (category "Schedule"); this plugin only exposes
 the ``__scheduled_*`` data layer they call over the memfiles MCP client.
 Internal tools (``__`` prefix, never LLM-visible): ``__check``,
 ``__memfiles_reload_semantic``, the ``__scheduled_*`` registry ops, and
-``__user_pref_append`` (the USER.md write layer behind the builtin
-``add_user_pref`` tool).
+``__user_pref_edit`` (the USER.md store behind the builtin
+``user_pref_edit`` tool).
 
 Usage::
     uv run python -m slife.plugins.memfiles.server
@@ -68,7 +68,7 @@ from slife.plugins.memfiles.store import (
 )
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.timeutil import BOUND_GRAMMAR, InvalidTimeBound
-from slife.plugins.memfiles.user_prefs import append_preference, user_prefs_path
+from slife.plugins.memfiles.user_prefs import user_prefs_path
 from slife.tools.base import require_params
 from slife.server_utils import (
     create_plugin_server,
@@ -1172,33 +1172,29 @@ async def __scheduled_run_skip(name: str, due_at: str) -> str:
 
 
 # ── User Preferences (USER.md) data layer ──────────────────────────────
-# The LLM-visible ``add_user_pref`` tool is builtin (``slife/tools/
-# user_prefs.py``) and delegates here over the memfiles MCP client — the
-# main process never touches USER.md directly.  This internal tool is the
-# user-preference store's single writer: a deterministic read-merge-write
-# (structure-preserving, deduped) onto the plain ``USER.md`` file.
+# The LLM-visible ``user_pref_edit`` tool is builtin (``slife/tools/
+# user_prefs.py``) and delegates here over the memfiles MCP client — the main
+# process never touches USER.md directly.  USER.md is a document: this puts
+# text back, and nothing more.  "Update" and "remove" are edits the model
+# makes to text it read.  There is no read twin because the file is rendered
+# into the system prompt, so its contents are already in front of the model.
 
 
 @mcp.tool(
-    name="__user_pref_append",
+    name="__user_pref_edit",
     description=(
-        "Internal: append one standing user preference to the cabinet's "
-        "USER.md (read-merge-write, deduped, structure-preserving).  "
-        "Returns appended / duplicate / item / item count."
+        "Internal: replace the cabinet's USER.md with the given text, "
+        "creating it when absent.  Returns the path and the written length."
     ),
 )
-async def __user_pref_append(preference: str) -> str:
+async def __user_pref_edit(content: str) -> str:
     async with _get_user_pref_lock():
         path = user_prefs_path(get_memfiles_dir())
-        current = (
-            path.read_text(encoding="utf-8", errors="replace")
-            if path.is_file() else ""
+        _write_atomic(path, content)
+        return json.dumps(
+            {"path": str(path), "chars": len(content)},
+            ensure_ascii=False,
         )
-        new_text, info = append_preference(current, preference)
-        if info.get("appended"):
-            _write_atomic(path, new_text)
-        info["path"] = str(path)
-        return json.dumps(info, ensure_ascii=False)
 
 
 @mcp.tool(

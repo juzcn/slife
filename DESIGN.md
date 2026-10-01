@@ -659,15 +659,25 @@ The prompt splits **identity** from **world** so each role reads one coherent do
 - **Dynamic** — the per-turn status prompt, rendered by the harness tool once per turn (§2.5).
 - **Preferences** — `USER.md` in the agent's file cabinet: the standing directives the user wants
   the agent to work under, rendered as the prompt's final section by **both** identity templates. It
-  is the one place the user's own words reach the prompt, and the one part the harness never authors.
+  is the one place the user's own words reach the prompt, and the one part whose words the harness
+  never authors.
   The file is read at build time and included verbatim, with its own title line stripped so the
-  heading is not doubled; **absent is the normal case and renders nothing at all**, so an agent that
-  has never been given a preference carries a byte-identical prompt. The model's single write path is
-  the `add_user_pref` tool, which delegates to the cabinet's own locked read-merge-write — deduped,
-  structure-preserving, so a repeated preference does not accumulate — and then re-renders the
-  prompt, so a preference is live from the next call. It transcribes a preference the user actually
-  stated; it never authors one. A frequent writer is a real cost rather than a style question: every
-  write moves the prompt's tail and so spends the prompt cache.
+  heading is not doubled; one harness-written line stands above it naming what the section is and
+  which tool replaces it — otherwise the model meets a block of the user's prose with nothing
+  saying it is editable. **That line and the heading are unconditional**, and a file with
+  nothing in it renders ``(Empty)`` rather than vanishing — so an agent that has never been given a
+  preference still carries the section, knows the preferences exist, and knows what to call. It
+  costs a fixed few lines on every request, which the prompt cache absorbs because the text never
+  varies. **The file is the interface**, and it has **one verb**: `user_pref_edit` replaces it
+  whole. There is no read tool, because the section above it *is* the read — the file is rendered
+  into the prompt every turn, so a read would only hand back the text the model is looking at.
+  There is no append either, and that is deliberate: a store the agent can only add to is one it can
+  neither review nor correct, which left a badly-worded preference fixable only by hand-editing the
+  file, and left "what are the preferences?" unanswerable. Update and remove are edits to text the
+  model has read, and `edit` re-renders the prompt, so a change is live from the next call. It
+  transcribes a preference the user actually stated; it never authors one. A frequent writer is a
+  real cost rather than a style question: every write moves the prompt's tail and so spends the
+  prompt cache.
 
 Identity + world change only on a model switch or a user-preference write, and **always from the
 role's own identity template** — the grant decides which — because re-rendering the main agent's

@@ -12,7 +12,6 @@ You have a human-like heartbeat — an opportunity for autonomous thought and ac
 {{ 2 + hb }}. Silence output
    - A reply of exactly `.` is silence — nothing is surfaced.
 
-{% if user_preferences %}
+Below are the user's standing preferences, held across sessions — use `user_pref_edit` to edit them.
 **User Preferences**
-{{ user_preferences }}
-{% endif %}
+{% if user_preferences %}{{ user_preferences }}{% else %}(Empty){% endif %}

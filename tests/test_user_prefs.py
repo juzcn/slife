@@ -1,10 +1,9 @@
 """Tests for USER.md — the per-agent standing user preferences file.
 
-Covers the pure read-merge-append logic (``memfiles.user_prefs``), the
-internal ``__user_pref_append`` data-layer tool served by the memfiles
-plugin, the system-prompt render (the ``**User Preferences**`` section
-appended by both identity templates), and the native ``add_user_pref``
-tool that delegates to the plugin and refreshes the session prompt.
+Covers the plugin's ``__user_pref_edit`` data layer,
+the system-prompt render (the ``**User Preferences**`` section appended by
+both identity templates), and the native ``user_pref_edit`` tool that
+delegates to the plugin and refreshes the session prompt on a write.
 """
 
 import pytest; pytestmark = pytest.mark.unit
@@ -12,104 +11,43 @@ import pytest; pytestmark = pytest.mark.unit
 import json
 from unittest.mock import AsyncMock
 
+from slife.agent.system_prompt import USER_PREFS_MAX_CHARS
 from slife.config import Config, ModelConfig
-from slife.plugins.memfiles.user_prefs import append_preference
 
 
-# ── Pure merge logic ────────────────────────────────────────────────────
+# ── memfiles internal read/write data layer ────────────────────────────
 
 
-class TestAppendPreference:
-    def test_first_item_on_empty_file(self):
-        text, info = append_preference("", "**A** — one")
-        assert info["appended"] and not info["duplicate"]
-        assert text == "1. **A** — one"
-        assert info["item"] == "1. **A** — one"
-        assert info["items"] == 1
+class TestUserPrefStoreInternal:
+    """The plugin is USER.md's only host: it puts text back and nothing more.
+    Nothing here parses or merges the file, which is the point."""
 
-    def test_continues_numbering(self):
-        text, info = append_preference(
-            "# User Preferences\n\n1. **A** — one\n", "**B** — two"
-        )
-        assert info["appended"] and info["item"] == "2. **B** — two"
-        assert "# User Preferences" in text and "1. **A** — one" in text
-        assert text.index("2. **B** — two") > text.index("1. **A** — one")
-
-    def test_keeps_bullet_style(self):
-        _, info = append_preference("- alpha\n", "beta")
-        assert info["item"] == "- beta"
-
-    def test_empty_preference_rejected(self):
-        _, info = append_preference("1. a\n", "   ")
-        assert info["error"] and not info["appended"]
-
-    def test_duplicate_normalized_noop(self):
-        current = "1. **Search** — for Chinese news use Baidu.\n"
-        _, info = append_preference(current, "**SEARCH** — For Chinese news use Baidu")
-        assert info["duplicate"] and not info["appended"]
-
-    def test_substantial_containment_is_duplicate(self):
-        _, info = append_preference(
-            "1. Use Baidu for Chinese domestic news searches.\n",
-            "use baidu for chinese domestic news searches when researching",
-        )
-        assert info["duplicate"]
-
-    def test_structure_preserved_verbatim(self):
-        original = "# User Preferences\n\n1. **A** — x\n\nTrailing note kept\n"
-        text, info = append_preference(original, "**B** — y")
-        assert info["appended"]
-        assert text.startswith("# User Preferences")
-        assert "Trailing note kept" in text
-        # untouched bytes: the title line and the trailing note are unchanged
-        assert "# User Preferences" in text
-        assert text.index("2. **B** — y") < text.index("Trailing note kept")
-
-    def test_prose_only_file_gets_blank_separator(self):
-        text, _ = append_preference("# User Preferences\n\nhello\n", "**C** — z")
-        assert "\n\n1. **C** — z" in text
-
-    def test_blank_separator_not_duplicated(self):
-        text, _ = append_preference("hello\n\n", "hi")
-        assert text.count("\n\n") == 1 and text.endswith("1. hi")
-
-
-# ── memfiles internal __user_pref_append data layer ────────────────────
-
-
-class TestUserPrefAppendInternal:
-    @pytest.mark.asyncio
-    async def test_writes_new_file(self, tmp_path, monkeypatch):
+    @staticmethod
+    def _dir(tmp_path, monkeypatch, existing: str = ""):
         import slife.plugins.memfiles.server as plugin
 
         memfiles = tmp_path / "agent.files"
         memfiles.mkdir()
+        if existing:
+            (memfiles / "USER.md").write_text(existing, encoding="utf-8")
         monkeypatch.setattr(plugin, "get_memfiles_dir", lambda: memfiles)
-
-        append = getattr(plugin, "__user_pref_append")
-        out = json.loads(await append("**A** — one"))
-        assert out["appended"] and out["items"] == 1
-        assert (memfiles / "USER.md").read_text(encoding="utf-8") == "1. **A** — one"
+        return plugin, memfiles
 
     @pytest.mark.asyncio
-    async def test_dedupe_and_append_existing(self, tmp_path, monkeypatch):
-        import slife.plugins.memfiles.server as plugin
-
-        memfiles = tmp_path / "agent.files"
-        memfiles.mkdir()
-        (memfiles / "USER.md").write_text(
-            "1. **A** — one\n", encoding="utf-8"
+    async def test_write_replaces_the_whole_file(self, tmp_path, monkeypatch):
+        """The thing append could never do: make text that was there go away."""
+        plugin, memfiles = self._dir(tmp_path, monkeypatch, "1. stale line\n")
+        out = json.loads(
+            await getattr(plugin, "__user_pref_edit")("1. corrected\n")
         )
-        monkeypatch.setattr(plugin, "get_memfiles_dir", lambda: memfiles)
+        assert out["chars"] == len("1. corrected\n")
+        assert (memfiles / "USER.md").read_text(encoding="utf-8") == "1. corrected\n"
 
-        append = getattr(plugin, "__user_pref_append")
-        dup = json.loads(await append("**A** — ONE"))
-        assert dup["duplicate"] and not dup["appended"]
-        live = json.loads(await append("**B** — two"))
-        assert live["appended"] and live["items"] == 2
-        assert (memfiles / "USER.md").read_text(
-            encoding="utf-8"
-        ) == "1. **A** — one\n2. **B** — two"
+    @pytest.mark.asyncio
+    async def test_write_creates_a_missing_file(self, tmp_path, monkeypatch):
+        plugin, memfiles = self._dir(tmp_path, monkeypatch)
+        await getattr(plugin, "__user_pref_edit")("1. **A** — one\n")
+        assert (memfiles / "USER.md").read_text(encoding="utf-8") == "1. **A** — one\n"
 
 
 # ── System prompt render ───────────────────────────────────────────────
@@ -129,7 +67,11 @@ def _cfg(agent_name: str = "testbot") -> Config:
 
 
 class TestUserPreferencesRender:
-    def test_absent_file_renders_no_section(self, monkeypatch):
+    def test_absent_file_still_states_the_section(self, monkeypatch):
+        """The header and the line that names the tools are unconditional, so
+        an agent that has never been given a preference still knows the
+        preferences exist and which tools read and replace them.  Only the
+        user's own bytes are conditional."""
         from slife.agent.system_prompt import build
 
         monkeypatch.setattr(
@@ -137,7 +79,12 @@ class TestUserPreferencesRender:
             lambda agent_name: __import__("pathlib").Path("nope") / f"{agent_name}.files",
         )
         result = build(_cfg())
-        assert "**User Preferences**" not in result
+        assert result.endswith(
+            "Below are the user's standing preferences, held across sessions — "
+            "use `user_pref_edit` to edit them.\n"
+            "**User Preferences**\n"
+            "(Empty)"
+        )
 
     def test_section_appended_with_title_stripped(self, tmp_path, monkeypatch):
         from slife.agent.system_prompt import build
@@ -152,9 +99,13 @@ class TestUserPreferencesRender:
 
         result = build(_cfg())
         assert result.endswith(
-            "**User Preferences**\n1. **Search** — use Baidu for Chinese news."
+            "Below are the user's standing preferences, held across sessions — "
+            "use `user_pref_edit` to edit them.\n"
+            "**User Preferences**\n"
+            "1. **Search** — use Baidu for Chinese news."
         )
         assert "# User Preferences" not in result
+        assert "(Empty)" not in result
 
     def test_identical_section_both_roles(self, tmp_path, monkeypatch):
         from slife.agent.system_prompt import build
@@ -172,17 +123,17 @@ class TestUserPreferencesRender:
             sub[sub.index("**User Preferences**"):]
 
 
-# ── Native add_user_pref tool ──────────────────────────────────────────
+# ── Native user_pref_edit tool ────────────────────────────────────────
 
 
-class TestAddUserPrefTool:
+class TestUserPrefEditTool:
     def _tool(self, reply, refresh_calls):
         from slife.tools.context import ToolContext
-        from slife.tools.user_prefs import AddUserPrefTool
+        from slife.tools.user_prefs import UserPrefEditTool
 
         client = AsyncMock()
         client.call_tool.return_value = json.dumps(reply)
-        tool = AddUserPrefTool()
+        tool = UserPrefEditTool()
         tool._ctx = ToolContext(
             memfiles_client=client,
             refresh_system_prompt=lambda: refresh_calls.append(1),
@@ -190,45 +141,43 @@ class TestAddUserPrefTool:
         return tool
 
     @pytest.mark.asyncio
-    async def test_delegates_and_refreshes_on_append(self):
+    async def test_delegates_and_refreshes_the_prompt(self):
         refresh_calls = []
-        tool = self._tool(
-            {"appended": True, "duplicate": False, "item": "1. **A** — x",
-             "items": 1, "chars": 12, "path": "x/USER.md"},
-            refresh_calls,
-        )
-        out = json.loads(await tool.execute(preference="**A** — x"))
-        assert out["appended"]
+        tool = self._tool({"path": "x/USER.md", "chars": 12}, refresh_calls)
+        out = json.loads(await tool.execute(content="1. **A** — x\n"))
+        assert out["chars"] == 12
         assert refresh_calls == [1]
         tool._ctx.memfiles_client.call_tool.assert_awaited_once_with(
-            "__user_pref_append", {"preference": "**A** — x"}
+            "__user_pref_edit", {"content": "1. **A** — x\n"}
         )
 
     @pytest.mark.asyncio
-    async def test_duplicate_skips_refresh(self):
+    async def test_empty_content_rejected_without_writing(self):
+        """An omitted argument must not clear the file — the write is whole."""
         refresh_calls = []
-        tool = self._tool(
-            {"appended": False, "duplicate": True, "items": 1, "chars": 12},
-            refresh_calls,
-        )
-        out = json.loads(await tool.execute(preference="**A** — x"))
-        assert out["duplicate"]
+        tool = self._tool({}, refresh_calls)
+        out = await tool.execute(content="   ")
+        assert "content is required" in out
         assert refresh_calls == []
+        tool._ctx.memfiles_client.call_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_content_over_the_prompt_cap_is_refused_by_name(self):
+        """The prompt would silently cut it; the write refuses and says the
+        number instead."""
+        refresh_calls = []
+        tool = self._tool({}, refresh_calls)
+        out = await tool.execute(content="x" * (USER_PREFS_MAX_CHARS + 1))
+        assert out.startswith("Error:")
+        assert str(USER_PREFS_MAX_CHARS) in out
+        assert refresh_calls == []
+        tool._ctx.memfiles_client.call_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_offline_client_reports_error(self):
         from slife.tools.context import ToolContext
-        from slife.tools.user_prefs import AddUserPrefTool
+        from slife.tools.user_prefs import UserPrefEditTool
 
-        tool = AddUserPrefTool()
+        tool = UserPrefEditTool()
         tool._ctx = ToolContext(memfiles_client=None)
-        out = await tool.execute(preference="**A** — x")
-        assert "not connected" in out
-
-    @pytest.mark.asyncio
-    async def test_missing_preference_rejected(self):
-        refresh_calls = []
-        tool = self._tool({}, refresh_calls)
-        out = await tool.execute(preference="   ")
-        assert "preference is required" in out
-        assert refresh_calls == []
+        assert "not connected" in await tool.execute(content="1. a\n")

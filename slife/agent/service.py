@@ -425,7 +425,7 @@ class AgentService:
         # rather than present-and-inert.
         if self.caps.cutin:
             self._tool_ctx.set_midturn_input = self.set_midturn_input
-        # USER.md write hook for the add_user_pref tool — re-render the
+        # USER.md write hook for the user_pref_edit tool — re-render the
         # system prompt (re-reads USER.md) so the new preference is live
         # from the next call.  Populated for the main agent and subagents.
         self._tool_ctx.refresh_system_prompt = self.refresh_system_prompt
@@ -665,7 +665,7 @@ class AgentService:
         A worker renders the subagent template, the main agent its own; the
         grant decides, since the role whose context is continuous is the main
         one.  ``refresh_system_prompt`` used the main-agent form
-        unconditionally, so a single ``add_user_pref`` (or model switch) inside
+        unconditionally, so a single ``user_pref_edit`` (or model switch) inside
         a worker replaced its identity with the main agent's — heartbeat and
         autonomy framing included — for every later task in that process.
         """
@@ -3376,7 +3376,7 @@ class AgentService:
         and the per-history store, so the next API call reads the new bytes.
 
         Called when model info changes (``reload_active_model``) and after a
-        ``add_user_pref`` write (the USER.md section changed).  The byte
+        ``user_pref_edit`` (the USER.md section changed).  The byte
         change touches the prompt cache — accepted, both events are rare.
         """
         new_system = self._role_system_prompt()

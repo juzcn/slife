@@ -292,7 +292,7 @@ net:
 
 | 类别 | 工具 |
 |----------|-------|
-| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `set_max_iterations`, `set_midturn_input`（轮中抢先开/关）, `notify_user`, `wait_minutes`（暂停本轮，稍后自动继续）, `add_user_pref`（把偏好记录到 `USER.md`） |
+| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `set_max_iterations`, `set_midturn_input`（轮中抢先开/关）, `notify_user`, `wait_minutes`（暂停本轮，稍后自动继续）, `user_pref_edit`（替换 `USER.md`，即常驻偏好） |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package`（默认禁用） |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Job | `job-<name>`——你写在 `~/.slife/jobs/` 里的每个 job 一个工具；通过 `job-list` / `job-write` / `job-remove` / `job-run` 增删，这四个属于 `job-coding` 插件 |
