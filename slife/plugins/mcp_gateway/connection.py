@@ -506,17 +506,26 @@ class MCPServerConnection:
         stack = self._exit_stack if self._exit_stack is not None else AsyncExitStack()
         self._exit_stack = stack
         try:
-            read_stream, write_stream = await stack.enter_async_context(
-                sse_client(url, headers=headers),
-            )
+            # The SSE probe carries its OWN bound (ready.connect_attempt), and
+            # that bound is what keeps the Streamable-HTTP fallback reachable.
+            # A legacy SSE peer answers the GET with its ``endpoint`` event
+            # straight away, and a modern Streamable-HTTP peer usually refuses
+            # the GET outright (arxiv: 400 in 3s) — but some answer ``200
+            # text/event-stream`` and then hold the stream open without ever
+            # sending ``endpoint`` (hasdata: measured).  sse_client waits for
+            # that event under its own 300s read timeout, so an unbounded probe
+            # ate the WHOLE establishment budget and failed: by the time the
+            # outer asyncio.timeout in ensure_session fired, every later await
+            # inside it re-raises immediately, which left the fallback below
+            # unreachable.  Such a server could then never connect at all —
+            # 120s, every attempt, reported as a bare TimeoutError.  Expiring
+            # the probe is the same verdict as a refusal ("this is not a legacy
+            # SSE peer"), so it falls through exactly like one.
+            async with asyncio.timeout(_timeouts.timeouts.ready.connect_attempt):
+                read_stream, write_stream = await stack.enter_async_context(
+                    sse_client(url, headers=headers),
+                )
             logger.info("mcp_sse_connected server=%s url=%s", self.config.name, url)
-        except asyncio.TimeoutError:
-            # The OUTER establishment asyncio.timeout has already fired — every
-            # subsequent await inside that context re-raises immediately, so
-            # the Streamable-HTTP fallback below could never succeed.  Re-raise
-            # so ensure_session() handles a genuinely slow/hung SSE endpoint as
-            # a failure, not as "SSE unsupported, try the other transport".
-            raise
         except Exception:
             # SSE not supported — release anything the failed enter opened and
             # retry as Streamable HTTP.  The SDK reuses a pre-built httpx2
@@ -711,6 +720,17 @@ class MCPServerConnection:
                 await self._cleanup_resources()
                 raise
             except Exception as e:
+                # ``asyncio.timeout`` raises a BARE TimeoutError, whose str() is
+                # empty — so a failed establishment was recorded as a blank
+                # fact, and __check showed a 120s deadline without ever naming
+                # it.  That is what let a hung transport probe be read as an
+                # auth problem.  Name the clock and the transport.
+                if isinstance(e, TimeoutError) and not str(e):
+                    e = TimeoutError(
+                        f"transport establishment timed out after "
+                        f"{_timeouts.timeouts.ready.connect_startup:g}s "
+                        f"(transport={self.config.transport})"
+                    )
                 self._record_error(e)
                 logger.warning("mcp_connect_failed server=%s err=%s", self.config.name, e)
                 await self._cleanup_resources()

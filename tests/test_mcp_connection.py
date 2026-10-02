@@ -729,6 +729,51 @@ class TestMCPServerConnectionHTTP:
         assert conn._session is not None
 
     @pytest.mark.asyncio
+    async def test_sse_probe_that_never_answers_falls_through(self):
+        """An SSE GET the peer accepts but never answers is not a legacy peer.
+
+        Some Streamable-HTTP servers answer the SSE GET with ``200
+        text/event-stream`` and then hold the stream open without ever sending
+        the legacy ``endpoint`` event (hasdata: measured).  ``sse_client``
+        waits for that event under its own 300s read timeout, so an unbounded
+        probe ate the whole establishment budget — and the Streamable-HTTP
+        fallback, which can only run while the outer deadline is still alive,
+        was never reached: the server could not connect at all.  The probe's
+        own bound makes its expiry read as "not SSE", and the server connects.
+        """
+        from slife.plugins.mcp_gateway import connection as conn_mod
+
+        cfg = ServerConfig(
+            name="streamable_srv",
+            url="http://remote:8080/mcp",
+            headers={"x-api-key": "${A_KEY}"},
+        )
+        conn = MCPServerConnection(cfg)
+
+        entered = {}
+
+        @asynccontextmanager
+        async def _sse_never_answers(url, headers=None, **kw):
+            await asyncio.sleep(60)  # noqa-timeout — the probe must cut this short
+            yield None  # pragma: no cover
+
+        @asynccontextmanager
+        async def _streamable_entry(url, http_client=None, **kw):
+            entered["url"] = url
+            entered["http_client"] = http_client
+            yield (AsyncMock(), AsyncMock())
+
+        with (
+            patch("slife.timeouts.timeouts.ready.connect_attempt", 0.05),
+            patch.object(conn_mod, "sse_client", new=_sse_never_answers),
+            patch.object(conn_mod, "streamable_http_client", new=_streamable_entry),
+        ):
+            await conn._connect_http()
+
+        assert entered["url"] == "http://remote:8080/mcp"
+        assert conn._session is not None
+
+    @pytest.mark.asyncio
     async def test_disconnect_closes_transport_client(self):
         """disconnect closes the SDK httpx2 client."""
         import httpx2
