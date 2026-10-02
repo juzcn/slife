@@ -210,7 +210,7 @@ def estimate_turn_tokens(turn: dict) -> int:
 # machine-facing; the TUI renders the payload alone (see
 # ``unwrap_info_envelope``).
 # Heartbeat is NOT an annotation: `[Heartbeat]` is a stored turn identity
-# (old diary rows start with it), so it stays a distinct sentinel.
+# (old turn rows start with it), so it stays a distinct sentinel.
 #: Envelope of machine-injected annotations (``[INFO: …]``).  Shared by the
 #: restore path, the save path, and the TUI ``UserMessage`` styler.
 INFO_PREFIX = "[INFO: "
@@ -249,7 +249,7 @@ A2A_PREFIX = "[A2A:"
 #: Runtime-only trim note: ``[INFO: <N> oldest turns have been removed from
 #: context]``.  Appended by the loop after a trim — NEVER persisted: a
 #: restored session is already the trimmed state, so a "past session was
-#: truncated" note is meaningless.  Stripped before every diary save.  It is
+#: truncated" note is meaningless.  Stripped before every turn save.  It is
 #: told apart from the JSON turn footnote by its payload head — a digit; the
 #: turn footnote's JSON starts with ``{`` (see ``_trim_note_in``).
 
@@ -333,7 +333,7 @@ def messages_from_turns(
             "content": user_text + (" " + header if header else ""),
         }
         # The structural turn id rides the message so the loop can map an
-        # in-context turn back to its diary row.  Runtime-only: it is popped
+        # in-context turn back to its turn row.  Runtime-only: it is popped
         # before the wire and never part of a stored ``messages`` slice.
         if rowid is not None:
             user_msg["_turn_id"] = rowid
@@ -521,7 +521,7 @@ def _unwrap_with_footnote(text: str) -> tuple[str, tuple[int, int] | None]:
 #: other synthetic harness line: this is the harness speaking, not the model.
 #:
 #: The reason is a SHORT TOKEN, never raw exception text — the line lands in
-#: the LLM's context and in the diary, and an error string can carry secrets:
+#: the LLM's context and in the turn log, and an error string can carry secrets:
 #:
 #:   ``esc``               the user pressed Esc / the turn was cancelled
 #:   ``parent``            a worker's parent cancelled the task it was running
@@ -805,7 +805,7 @@ class MessageHistory:
     def strip_trim_markers(messages: list[dict]) -> list[dict]:
         """Return a copy of *messages* with the trim note removed.
 
-        The note is runtime-only: this keeps it out of the diary.  The
+        The note is runtime-only: this keeps it out of the turn log.  The
         live history keeps it (the LLM needs to know the current cut); only
         what is persisted is cleaned.  Works on the list passed in — callers
         pass the sliced turn messages.  Only the assistant-message prose
@@ -829,7 +829,7 @@ class MessageHistory:
         """Return a copy of *messages* with the runtime turn ids removed.
 
         ``_turn_id`` is how the loop maps an in-context turn back to its
-        diary row — the trim needs the real ids to drop them from the
+        turn row — the trim needs the real ids to drop them from the
         persisted live-context list.  It rides the message that *opens* a
         turn, and the persisted slice deliberately excludes that message
         (``save_to_memory`` stores ``all_messages[user_idx + 1:]`` and keeps
@@ -967,7 +967,7 @@ class MessageHistory:
                 # reasoning.
                 m["reasoning_content"] = ""
             m.pop("images", None)  # internal attachment tracking
-            m.pop("_turn_id", None)  # internal diary-row mapping
+            m.pop("_turn_id", None)  # internal turn-row mapping
             cleaned.append(m)
 
         return cleaned
@@ -1044,7 +1044,7 @@ class MessageHistory:
           - ``user_message`` (str) — the user's text
           - ``messages`` (list[dict]) — all messages in the turn
           - ``estimated_tokens`` (int) — rough token count
-          - ``turn_id`` (int | None) — the turn's diary rowid when known
+          - ``turn_id`` (int | None) — the turn's rowid when known
         """
         turns: list[dict] = []
         current_turn: list[dict] = []
@@ -1058,7 +1058,7 @@ class MessageHistory:
                 "estimated_tokens": sum(
                     estimate_message_tokens(m) for m in msgs
                 ),
-                # The turn's diary rowid when known — runtime-only, stamped
+                # The turn's rowid when known — runtime-only, stamped
                 # on the opening user message at save and on restore.  The
                 # trim reads it to drop the evicted turns from the persisted
                 # live-context list.

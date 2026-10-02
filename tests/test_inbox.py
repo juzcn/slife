@@ -230,7 +230,7 @@ class TestErrorReason:
     """Structured fields first (status / the provider's code / a class name),
     then the message — scrubbed, one line, bounded.
 
-    The line lands in the LLM's context and in the diary, so it must not be
+    The line lands in the LLM's context and in the turn log, so it must not be
     able to carry secrets out or grow the history."""
 
     def test_status_code_and_message(self):
@@ -616,7 +616,7 @@ class TestInboxProcessOne:
     @pytest.mark.asyncio
     async def test_on_turn_complete_passes_handler_timestamp(self, mock_loop, mock_store):
         """The turn timestamp captured by the TUI handler is forwarded as
-        created_at so the diary save matches the live display time."""
+        created_at so the turn save matches the live display time."""
         from datetime import datetime
 
         from slife.agent.inbox import Inbox

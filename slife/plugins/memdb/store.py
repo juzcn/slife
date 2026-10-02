@@ -40,7 +40,7 @@ INDEX_TEXT_VERSION = "1"
 #: so chunk below it rather than trusting the build.
 _MAX_SQL_VARS = 900
 
-#: The diary columns a live-context read returns — one spelling, so the
+#: The turn columns a live-context read returns — one spelling, so the
 #: read and any future windowed query over the same rows agree.
 _TURN_COLUMNS = """rowid, user_message, messages, summary, tags,
                    channel, created_at, completed_at,
@@ -100,7 +100,7 @@ def _like_escape(pattern: str) -> str:
 
 
 #: Columns memdb's CJK (LIKE) fallback searches — the indexed text columns of
-#: ``diary``.  memfiles passes its own per-kind list; both go through
+#: ``turn``.  memfiles passes its own per-kind list; both go through
 #: :func:`_like_terms`.
 _LIKE_COLUMNS = ("user_message", "messages", "summary", "tags")
 
@@ -487,15 +487,30 @@ class SessionStore(VecStoreLifecycleMixin):
 
     # ── Lifecycle (VecStoreLifecycleMixin) ─────────────────────────
 
-    _semantic_tables = ("diary_semantic",)
-    _meta_table = "diary_meta"
+    _semantic_tables = ("turn_semantic",)
+    _meta_table = "turn_meta"
     _schema_dir = Path(__file__).parent
     _index_text_version = INDEX_TEXT_VERSION
 
-    async def _post_schema_check(self) -> None:
-        """Audit the diary schema and meta for pre-list leftovers.
+    async def _legacy_diary_turns(self) -> int | None:
+        """Row count of a pre-rename ``diary`` table, or ``None`` if absent.
 
-        A diary table still carrying ``prompt_tokens`` predates the rename to
+        memfiles has a table of the same name, but in its own DB file —
+        this connection only ever sees one agent's turns database.
+        """
+        cursor = await self._c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='diary'",
+        )
+        if await cursor.fetchone() is None:
+            return None
+        cursor = await self._c.execute("SELECT COUNT(*) FROM diary")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def _post_schema_check(self) -> None:
+        """Audit the turn schema and meta for pre-list leftovers.
+
+        A turn table still carrying ``prompt_tokens`` predates the rename to
         ``context_tokens`` (CREATE IF NOT EXISTS never alters an existing
         table).  The new code SELECT/INSERTs ``context_tokens``, so such a DB
         fails on the next save or restore — surface the one-time migration
@@ -507,22 +522,28 @@ class SessionStore(VecStoreLifecycleMixin):
         of context, and the list rebuilds from the next save — but say so,
         because the first restore after the upgrade is otherwise silently
         blank.
+
+        A DB still carrying the pre-rename ``diary`` table is a third case:
+        ``CREATE IF NOT EXISTS`` has just made an empty ``turn`` beside it, so
+        those turns are present but outside the live history.  Nothing is
+        migrated automatically — name the script that carries them over,
+        because otherwise the history reads as lost.
         """
         try:
-            cursor = await self._c.execute("PRAGMA table_info(diary)")
+            cursor = await self._c.execute("PRAGMA table_info(turn)")
             cols = [r[1] for r in await cursor.fetchall()]
             if "prompt_tokens" in cols and "context_tokens" not in cols:
                 logger.error(
-                    "diary_legacy_column prompt_tokens still present — this DB "
+                    "turn_legacy_column prompt_tokens still present — this DB "
                     "predates the context_tokens rename and is NOT migrated; "
                     "delete and rebuild it (path=%s)", self._db_path,
                 )
-            # ``context_turns`` is a diary_meta KEY, not a diary column.
-            cursor = await self._c.execute("SELECT COUNT(*) FROM diary")
+            # ``context_turns`` is a turn_meta KEY, not a turn column.
+            cursor = await self._c.execute("SELECT COUNT(*) FROM turn")
             row = await cursor.fetchone()
             turns = row[0] if row else 0
             cursor = await self._c.execute(
-                "SELECT 1 FROM diary_meta WHERE key = ?",
+                "SELECT 1 FROM turn_meta WHERE key = ?",
                 (self._CONTEXT_TURNS_KEY,),
             )
             if turns and await cursor.fetchone() is None:
@@ -531,6 +552,16 @@ class SessionStore(VecStoreLifecycleMixin):
                     "context starts empty; older turns stay searchable via "
                     "turn_search and re-enter as new turns are saved "
                     "(path=%s)", turns, self._db_path,
+                )
+            legacy = await self._legacy_diary_turns()
+            if legacy:
+                logger.warning(
+                    "turn_legacy_diary legacy_turns=%d turns=%d — this DB "
+                    "predates the diary→turn rename: the live history is the "
+                    "``turn`` table, and the old rows are NOT loaded.  Carry "
+                    "them over with `uv run python "
+                    "scripts/migrate_memdb_diary_to_turn.py --db %s` "
+                    "(path=%s)", legacy, turns, self._db_path, self._db_path,
                 )
         except Exception:
             # These checks ARE the diagnostics: the one-time migration warnings
@@ -584,7 +615,7 @@ class SessionStore(VecStoreLifecycleMixin):
         ``channel`` is the identity string; ``channel_data`` is the JSON
         payload for the channel's own fields (A2A peer name, subagent
         name/task, …), written to the sibling ``turn_channel`` table under
-        the same lock/commit as the diary row.  An empty payload writes no
+        the same lock/commit as the turn row.  An empty payload writes no
         row (see :meth:`get_turns_by_ids`, which tolerates missing rows).
 
         The new rowid is also appended to the live-context list
@@ -598,7 +629,7 @@ class SessionStore(VecStoreLifecycleMixin):
 
         async with self._write_lock:
             cursor = await self._c.execute(
-                """INSERT INTO diary (user_message, messages, summary, tags,
+                """INSERT INTO turn (user_message, messages, summary, tags,
                                       channel, created_at, completed_at,
                                       who_helped, what_model, token_count,
                                       context_tokens)
@@ -627,7 +658,7 @@ class SessionStore(VecStoreLifecycleMixin):
     async def get_turn(self, rowid: int) -> dict | None:
         """Return a single turn by rowid."""
         cursor = await self._c.execute(
-            "SELECT rowid, * FROM diary WHERE rowid = ?",
+            "SELECT rowid, * FROM turn WHERE rowid = ?",
             (rowid,),
         )
         row = await cursor.fetchone()
@@ -657,7 +688,7 @@ class SessionStore(VecStoreLifecycleMixin):
         for start in range(0, len(ordered), _MAX_SQL_VARS):
             chunk = ordered[start:start + _MAX_SQL_VARS]
             cursor = await self._c.execute(
-                f"SELECT {_TURN_COLUMNS} FROM diary "
+                f"SELECT {_TURN_COLUMNS} FROM turn "
                 f"WHERE rowid IN ({in_placeholders(len(chunk))})",
                 chunk,
             )
@@ -688,9 +719,9 @@ class SessionStore(VecStoreLifecycleMixin):
 
     # ── Live context ─────────────────────────────────────────────────
     #
-    # The diary is the whole session history; the *live context* is the
+    # The turn table is the whole session history; the *live context* is the
     # slice the agent was actually working with (bounded to the window by
-    # the internal trim).  ``context_turns`` (stored in ``diary_meta``) is
+    # the internal trim).  ``context_turns`` (stored in ``turn_meta``) is
     # the ordered list of the rowids that are in it.
     #
     # An ordered *list*, not a boundary: the in-context slice is not
@@ -712,7 +743,7 @@ class SessionStore(VecStoreLifecycleMixin):
         Order is preserved; duplicate ids collapse to their first position.
         """
         cursor = await self._c.execute(
-            "SELECT value FROM diary_meta WHERE key = ?",
+            "SELECT value FROM turn_meta WHERE key = ?",
             (self._CONTEXT_TURNS_KEY,),
         )
         row = await cursor.fetchone()
@@ -729,7 +760,7 @@ class SessionStore(VecStoreLifecycleMixin):
     async def _write_context_turns_locked(self, rowids: Sequence[int]) -> None:
         """Write the list.  The caller holds ``_write_lock`` and commits."""
         await self._c.execute(
-            "INSERT OR REPLACE INTO diary_meta (key, value) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO turn_meta (key, value) VALUES (?, ?)",
             (self._CONTEXT_TURNS_KEY, json.dumps(list(rowids))),
         )
 
@@ -798,7 +829,7 @@ class SessionStore(VecStoreLifecycleMixin):
 
         Returns {total, filtered, since, until, query, mode}.
         """
-        row = await self._c.execute("SELECT COUNT(*) FROM diary")
+        row = await self._c.execute("SELECT COUNT(*) FROM turn")
         count_row = await row.fetchone()
         total = count_row[0] if count_row else 0
 
@@ -835,7 +866,7 @@ class SessionStore(VecStoreLifecycleMixin):
                 where, params = _like_terms(words, _LIKE_COLUMNS)
             else:
                 fts_query = _to_fts5_query(query)
-                # FTS5 has no created_at — join the diary rowid so since/until
+                # FTS5 has no created_at — join the turn rowid so since/until
                 # filter the same way as grep/time.
                 time_clauses = ""
                 time_params: list[str] = []
@@ -849,9 +880,9 @@ class SessionStore(VecStoreLifecycleMixin):
                     time_params.append(until)
                 try:
                     row2 = await self._c.execute(
-                        f"""SELECT COUNT(*) FROM diary_fts fts
-                            JOIN diary d ON fts.rowid = d.rowid
-                            WHERE diary_fts MATCH ?{time_clauses}""",
+                        f"""SELECT COUNT(*) FROM turn_fts fts
+                            JOIN turn d ON fts.rowid = d.rowid
+                            WHERE turn_fts MATCH ?{time_clauses}""",
                         (fts_query, *time_params),
                     )
                     count_row = await row2.fetchone()
@@ -880,7 +911,7 @@ class SessionStore(VecStoreLifecycleMixin):
                 where += " AND created_at <= ?"
                 params.append(until)
             row2 = await self._c.execute(
-                f"SELECT COUNT(*) FROM diary WHERE {where}", params,
+                f"SELECT COUNT(*) FROM turn WHERE {where}", params,
             )
             count_row = await row2.fetchone()
             filtered = count_row[0] if count_row else 0
@@ -897,7 +928,7 @@ class SessionStore(VecStoreLifecycleMixin):
                 params.append(until)
             where = " AND ".join(clauses)
             row2 = await self._c.execute(
-                f"SELECT COUNT(*) FROM diary WHERE {where}", params,
+                f"SELECT COUNT(*) FROM turn WHERE {where}", params,
             )
             count_row = await row2.fetchone()
             filtered = count_row[0] if count_row else 0
@@ -947,7 +978,7 @@ class SessionStore(VecStoreLifecycleMixin):
         cursor = await self._c.execute(
             f"""SELECT rowid, created_at,
                       token_count, context_tokens
-               FROM diary{where}
+               FROM turn{where}
                ORDER BY rowid DESC
                LIMIT ?""",
             params,
@@ -1000,7 +1031,7 @@ class SessionStore(VecStoreLifecycleMixin):
         params.append(rowid)
         async with self._write_lock:
             cursor = await self._c.execute(
-                f"UPDATE diary SET {', '.join(updates)} WHERE rowid = ?",
+                f"UPDATE turn SET {', '.join(updates)} WHERE rowid = ?",
                 params,
             )
             await self._c.commit()
@@ -1037,10 +1068,10 @@ class SessionStore(VecStoreLifecycleMixin):
         try:
             cursor = await self._c.execute(
                 f"""SELECT d.rowid, d.user_message, d.summary, d.tags, d.created_at,
-                          snippet(diary_fts, 0, '…', '…', '…', 40) AS snippet, rank
-                   FROM diary_fts fts
-                   JOIN diary d ON fts.rowid = d.rowid
-                   WHERE diary_fts MATCH ?{time_clauses}
+                          snippet(turn_fts, 0, '…', '…', '…', 40) AS snippet, rank
+                   FROM turn_fts fts
+                   JOIN turn d ON fts.rowid = d.rowid
+                   WHERE turn_fts MATCH ?{time_clauses}
                    ORDER BY rank LIMIT ?""",
                 (fts_query, *time_params, limit),
             )
@@ -1094,7 +1125,7 @@ class SessionStore(VecStoreLifecycleMixin):
             f"""SELECT rowid, user_message, summary, tags, created_at,
                       substr(messages, max(0, instr(messages, ?) - 40), 160) AS snippet,
                       0 AS rank
-               FROM diary
+               FROM turn
                WHERE {and_clause}
                      {time_clauses}
                ORDER BY rowid DESC LIMIT ?""",
@@ -1108,7 +1139,7 @@ class SessionStore(VecStoreLifecycleMixin):
         self, embedding: list[float], limit: int = 20,
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
-        """sqlite-vec KNN on turn_embedding, deduplicated by diary_rowid.
+        """sqlite-vec KNN on turn_embedding, deduplicated by turn_rowid.
 
         A single turn can produce multiple chunks — we keep only the best
         (lowest distance) match per turn so the result list has one entry
@@ -1120,7 +1151,7 @@ class SessionStore(VecStoreLifecycleMixin):
             return []
         limit = _clamp_limit(limit)
         vec_blob = _serialize_f32(embedding)
-        # Fetch extra rows to account for duplicate diary_rowid entries
+        # Fetch extra rows to account for duplicate turn_rowid entries
         # (one turn → multiple chunks).  Dedup in Python: vec0 KNN does
         # not allow GROUP BY.
         #
@@ -1132,24 +1163,24 @@ class SessionStore(VecStoreLifecycleMixin):
         fetch_limit = (limit * 8) if (since or until) else (limit * 2)
         # sqlite-vec forbids ANY auxiliary-column constraint — including a
         # JOIN ON — inside a KNN query ("illegal WHERE constraint on a vec0
-        # auxiliary column").  So the KNN runs alone (no JOIN) and the diary
+        # auxiliary column").  So the KNN runs alone (no JOIN) and the turn
         # lookup is a separate query below.
         cursor = await self._c.execute(
-            """SELECT rowid, diary_rowid, summary, tags, created_at, distance
-               FROM diary_semantic
+            """SELECT rowid, turn_rowid, summary, tags, created_at, distance
+               FROM turn_semantic
                WHERE turn_embedding MATCH ? AND k = ?
                ORDER BY distance""",
             (vec_blob, fetch_limit),
         )
-        # Deduplicate by diary_rowid — keep best (lowest) distance per turn
+        # Deduplicate by turn_rowid — keep best (lowest) distance per turn
         seen: set[int] = set()
         results: list[dict] = []
         for row in await _fetch_all_bounded(cursor):
             r = dict(row)
-            rid = r.get("diary_rowid")
+            rid = r.get("turn_rowid")
             if rid is not None and rid not in seen:
                 seen.add(rid)
-                r["rowid"] = rid  # merge_hybrid keys on rowid (= diary_rowid)
+                r["rowid"] = rid  # merge_hybrid keys on rowid (= turn_rowid)
                 results.append(r)
         if since:
             since = normalize_time_bound(since, role="since")
@@ -1159,17 +1190,17 @@ class SessionStore(VecStoreLifecycleMixin):
             results = [r for r in results if r.get("created_at", "") <= until]
         results = results[:limit]
         # Fetch user_message for the surviving turns — a second query, since
-        # the KNN query must not join the diary table.
+        # the KNN query must not join the turn table.
         if results:
-            rowids = [r["diary_rowid"] for r in results]
+            rowids = [r["turn_rowid"] for r in results]
             ph = in_placeholders(len(rowids))
             cur = await self._c.execute(
-                f"SELECT rowid, user_message FROM diary WHERE rowid IN ({ph})",
+                f"SELECT rowid, user_message FROM turn WHERE rowid IN ({ph})",
                 rowids,
             )
             msgs = {r["rowid"]: r["user_message"] for r in await _fetch_all_bounded(cur)}
             for r in results:
-                r["user_message"] = msgs.get(r["diary_rowid"], "")
+                r["user_message"] = msgs.get(r["turn_rowid"], "")
         logger.debug("search_semantic hits=%s", len(results))
         return results
 
@@ -1222,13 +1253,13 @@ class SessionStore(VecStoreLifecycleMixin):
         limit = _clamp_limit(limit)
         offset = max(0, offset)
         where, params = self._time_window(since, until)
-        cursor = await self._c.execute(f"SELECT COUNT(*) FROM diary {where}", params)
+        cursor = await self._c.execute(f"SELECT COUNT(*) FROM turn {where}", params)
         row = await cursor.fetchone()
         total = row[0] if row else 0
         direction = "DESC" if newest_first else "ASC"
         cursor = await self._c.execute(
             f"""SELECT rowid, user_message, summary, tags, created_at, token_count
-               FROM diary {where} ORDER BY rowid {direction} LIMIT ? OFFSET ?""",
+               FROM turn {where} ORDER BY rowid {direction} LIMIT ? OFFSET ?""",
             (*params, limit, offset),
         )
         entries = [dict(row) for row in await _fetch_all_bounded(cursor)]
@@ -1282,7 +1313,7 @@ class SessionStore(VecStoreLifecycleMixin):
             params.append(until)
         cursor = await self._c.execute(
             f"""SELECT rowid, user_message, summary, tags, created_at, messages
-                FROM diary WHERE 1=1{where}
+                FROM turn WHERE 1=1{where}
                 ORDER BY rowid DESC LIMIT ?""",
             (*params, GREP_SCAN_LIMIT),
         )
@@ -1347,13 +1378,13 @@ class SessionStore(VecStoreLifecycleMixin):
         transaction.  A crash (or error) mid-way rolls back to NO chunks —
         the document is fully unembedded again and gets re-indexed on the next
         pass, instead of being left half-indexed where the ``NOT IN
-        diary_semantic`` unembedded query would mistake it for complete.
+        turn_semantic`` unembedded query would mistake it for complete.
         ``doc`` is a drainer row: ``doc_id`` plus ``summary`` / ``tags`` /
         ``created_at`` (which are stored on every chunk for display).
         """
         if self._embedding_dim <= 0:
             return
-        diary_rowid = doc["doc_id"]
+        turn_rowid = doc["doc_id"]
         summary = doc.get("summary", "")
         tags = doc.get("tags", "")
         created_at = doc.get("created_at", "")
@@ -1361,24 +1392,24 @@ class SessionStore(VecStoreLifecycleMixin):
         async with self._write_lock:
             try:
                 await self._c.execute(
-                    "DELETE FROM diary_semantic WHERE diary_rowid = ?",
-                    (diary_rowid,),
+                    "DELETE FROM turn_semantic WHERE turn_rowid = ?",
+                    (turn_rowid,),
                 )
                 for idx, blob in enumerate(vec_blobs):
                     await self._c.execute(
-                        """INSERT INTO diary_semantic
-                           (turn_embedding, diary_rowid, chunk_index,
+                        """INSERT INTO turn_semantic
+                           (turn_embedding, turn_rowid, chunk_index,
                             summary, tags, created_at)
                            VALUES (?, ?, ?, ?, ?, ?)""",
-                        (blob, diary_rowid, idx, summary, tags, created_at),
+                        (blob, turn_rowid, idx, summary, tags, created_at),
                     )
                 await self._c.commit()
             except Exception:
                 await self._c.rollback()
                 raise
         logger.debug(
-            "embedding_chunks_replaced diary_rowid=%s chunks=%d",
-            diary_rowid, len(vec_blobs),
+            "embedding_chunks_replaced turn_rowid=%s chunks=%d",
+            turn_rowid, len(vec_blobs),
         )
 
     # A turn is "embeddable" when it has any text worth embedding.  Turns with
@@ -1391,7 +1422,7 @@ class SessionStore(VecStoreLifecycleMixin):
     )
 
     async def get_unembedded_docs(self, limit: int = 100) -> list[dict]:
-        """Return documents (turns) that have no embedding in diary_semantic.
+        """Return documents (turns) that have no embedding in turn_semantic.
 
         These need re-indexing after embedding config is added or changed.
         Each row carries the SemanticManager drainer's shape: ``doc_id``
@@ -1403,9 +1434,9 @@ class SessionStore(VecStoreLifecycleMixin):
         cursor = await self._c.execute(
             f"""SELECT d.rowid AS doc_id, d.user_message, d.messages, d.summary,
                       d.tags, d.created_at
-               FROM diary d
+               FROM turn d
                WHERE d.rowid NOT IN (
-                   SELECT DISTINCT diary_rowid FROM diary_semantic
+                   SELECT DISTINCT turn_rowid FROM turn_semantic
                )
                  AND ({self._EMBEDDABLE_TEXT})
                ORDER BY d.rowid
@@ -1431,9 +1462,9 @@ class SessionStore(VecStoreLifecycleMixin):
         if self._embedding_dim <= 0:
             return 0
         cursor = await self._c.execute(
-            f"""SELECT COUNT(*) FROM diary d
+            f"""SELECT COUNT(*) FROM turn d
                WHERE d.rowid NOT IN (
-                   SELECT DISTINCT diary_rowid FROM diary_semantic
+                   SELECT DISTINCT turn_rowid FROM turn_semantic
                )
                  AND ({self._EMBEDDABLE_TEXT})""",
         )

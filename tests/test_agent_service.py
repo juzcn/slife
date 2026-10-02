@@ -1888,7 +1888,7 @@ class TestAgentServiceMemory:
     @pytest.mark.asyncio
     async def test_save_to_memory_passes_created_at(self, sample_config):
         """The turn-start timestamp captured at display time flows to the
-        __memory_save_turn tool as created_at (→ diary), keeping restore
+        __memory_save_turn tool as created_at (→ the turn row), keeping restore
         aligned with the live TUI."""
         from datetime import datetime
 
@@ -1966,7 +1966,7 @@ class TestAgentServiceMemory:
     @pytest.mark.asyncio
     async def test_save_to_memory_skips_when_user_message_absent(self, sample_config):
         """When the user message is no longer in the history (rolled back
-        on a content-policy error), nothing is saved — no empty diary row."""
+        on a content-policy error), nothing is saved — no empty turn row."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
@@ -2144,7 +2144,7 @@ class TestAgentServiceMemory:
     @pytest.mark.asyncio
     async def test_save_strips_runtime_trim_marker(self, sample_config):
         """The trim note is runtime-only — a note on the live
-        history (from a prior trim) must not reach the diary."""
+        history (from a prior trim) must not reach the turn log."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
@@ -3508,13 +3508,13 @@ class TestGetExitContextTurns:
         db = tmp_path / "test.db"
         con = sqlite3.connect(str(db))
         con.execute(
-            "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
+            "CREATE TABLE turn (user_message TEXT, messages TEXT, summary TEXT, "
             "tags TEXT, channel TEXT, "
             "created_at TEXT, completed_at TEXT, "
             "who_helped TEXT, what_model TEXT, token_count INT, context_tokens INT)"
         )
         con.execute(
-            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            "CREATE TABLE turn_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
         con.execute(
             "CREATE TABLE turn_channel (turn_id INTEGER PRIMARY KEY, "
@@ -3522,7 +3522,7 @@ class TestGetExitContextTurns:
         )
         for i in range(1, n + 1):
             con.execute(
-                "INSERT INTO diary (user_message, messages, channel, created_at, token_count) "
+                "INSERT INTO turn (user_message, messages, channel, created_at, token_count) "
                 "VALUES (?, ?, 'human', ?, ?)",
                 (
                     f"msg {i}",
@@ -3533,7 +3533,7 @@ class TestGetExitContextTurns:
             )
         if context_turns is not None:
             con.execute(
-                "INSERT INTO diary_meta (key, value) VALUES ('context_turns', ?)",
+                "INSERT INTO turn_meta (key, value) VALUES ('context_turns', ?)",
                 (_json.dumps(context_turns),),
             )
         con.commit()
@@ -3564,7 +3564,7 @@ class TestGetExitContextTurns:
         self, sample_config, tmp_path, monkeypatch
     ):
         """Turns dropped from the list by the internal trim (or by an empty
-        recall selection) do not come back — the diary keeps them, the context
+        recall selection) do not come back — the turn table keeps them, the context
         does not."""
         from slife.agent.service import AgentService
 
@@ -3580,10 +3580,10 @@ class TestGetExitContextTurns:
         assert ids == [5, 6, 7, 8], "only the listed turns are restored"
 
     @pytest.mark.asyncio
-    async def test_list_bounds_the_read_not_the_diary(
+    async def test_list_bounds_the_read_not_the_turn_table(
         self, sample_config, tmp_path, monkeypatch
     ):
-        """The list is its own bound: a large diary with a short list
+        """The list is its own bound: a large turn table with a short list
         restores only the list."""
         from slife.agent.service import AgentService
 
@@ -3645,19 +3645,19 @@ class TestGetExitContextTurns:
         db = tmp_path / "old.db"
         con = sqlite3.connect(str(db))
         con.execute(
-            "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
+            "CREATE TABLE turn (user_message TEXT, messages TEXT, summary TEXT, "
             "tags TEXT, channel TEXT, created_at TEXT, "
             "who_helped TEXT, what_model TEXT, token_count INT)"
         )
         con.execute(
-            "INSERT INTO diary (user_message, messages, channel, created_at, token_count) "
+            "INSERT INTO turn (user_message, messages, channel, created_at, token_count) "
             "VALUES ('hi', '[]', 'human', '2026-08-12T00:00:00+08:00', 100)"
         )
         con.execute(
-            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            "CREATE TABLE turn_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
         con.execute(
-            "INSERT INTO diary_meta (key, value) VALUES ('context_turns', '[1]')"
+            "INSERT INTO turn_meta (key, value) VALUES ('context_turns', '[1]')"
         )
         con.commit()
         con.close()

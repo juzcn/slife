@@ -787,7 +787,7 @@ class TestTrimMarker:
 
 
 class TestStripTrimMarkers:
-    """strip_trim_markers keeps the runtime trim note out of the diary."""
+    """strip_trim_markers keeps the runtime trim note out of the turn log."""
 
     def test_strips_marker_from_assistant_content(self):
         conv = MessageHistory(system_prompt="SYS")
@@ -820,7 +820,7 @@ class TestStripTrimMarkers:
 
 
 class TestRuntimeTurnIds:
-    """``_turn_id`` maps an in-context turn back to its diary row.  It is
+    """``_turn_id`` maps an in-context turn back to its turn row.  It is
     runtime-only: stripped before the turn is persisted and popped before
     the wire."""
 

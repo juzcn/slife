@@ -71,7 +71,7 @@ def _format_timestamp(ts) -> str | None:
     """Format *ts* for inline display — ``[HH:MM]`` / ``[MM-DD HH:MM]`` / ``[YYYY-MM-DD HH:MM]``.
 
     Accepts a timezone-aware ``datetime`` (live path) or an ISO-8601 string
-    as stored in the diary ``created_at`` (restore path, e.g.
+    as stored in the turn ``created_at`` (restore path, e.g.
     ``2026-08-12T14:32:09+08:00``).  Same-day → time only; same-year →
     month-day + time; older → full date.  Returns ``None`` (no timestamp)
     for a missing or unparseable value.
@@ -361,7 +361,7 @@ class AssistantMessage(Static):
         super().__init__("")
         self.add_class("assistant-message")
         self._name_prefix = name_prefix  # e.g. "Jack> " or None
-        self._timestamp = timestamp  # datetime or ISO-8601 str (diary created_at)
+        self._timestamp = timestamp  # datetime or ISO-8601 str (turn created_at)
         self._buffer = ""
         self._thinking = ""
         self._has_thinking = False

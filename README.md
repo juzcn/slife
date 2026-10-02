@@ -139,6 +139,18 @@ From the source tree, data files stay in the project directory; every installed 
 
 Re-run the install script to upgrade slife — it rebuilds from the latest `main` and preserves what you've customized:
 
+One schema change needs a command. The turns database's table was renamed `diary` → `turn` (it collided
+with the file cabinet's own *diary*, the day journal), and nothing migrates automatically — a database
+from before the rename keeps its history in the old table, which the new code ignores. Carry it over
+once, from the source tree:
+
+```bash
+uv run python scripts/migrate_memdb_diary_to_turn.py --all
+```
+
+Use `--agent NAME` or `--db PATH` for a single database. The script backs the file up first, is safe to
+re-run, and refuses if both tables hold turns rather than guessing which is authoritative.
+
 - **Optional packages** (e.g. `sentence-transformers`, `llama-cpp-python`) are captured from the previous tool venv and re-added after the fresh install, diffed against the new base so nothing is duplicated.
 - **Configs, skills, and sample jobs** already present are never touched, and the installer **never prompts**. Missing ones are seeded in place; identical ones pass silently; when a bundled default has changed, the new default is seeded into `~/.slife/` as a **versioned reference copy** — `<name>.<version>.<ext>` for configs and jobs (`slife.0.9.8.yaml`, `total_tokens.0.9.8.py`), `<name>.<version>/` for skills — each written copy announced as `seeded <file> → <folder>`, so you apply it with a single `cp` / `Copy-Item` when you want it. Reinstalls refresh the same-version copy; older versions remain for reference. A skill counts as different only when a file the **bundled default ships** differs, so your own additions to a skill never trigger a reference copy.
 

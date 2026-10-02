@@ -138,6 +138,16 @@ uv run pytest --cov --cov-report=term-missing
 
 重跑安装脚本即可升级 slife——它从最新的 `main` 重建，并保留你自定义过的东西：
 
+有一处 schema 变更需要你手动执行一条命令：turns 数据库的表由 `diary` 改名为 `turn`（原名与文件柜里的
+**日记** 撞名）。它不会自动迁移——改名之前的数据库，历史仍留在旧表里，新代码不会读取。从源码目录执行一次：
+
+```bash
+uv run python scripts/migrate_memdb_diary_to_turn.py --all
+```
+
+单个数据库用 `--agent NAME` 或 `--db PATH`。脚本会先备份原文件，可重复执行；两个表都有 turns 时会拒绝
+执行而不是猜哪个才是权威数据。
+
 - **可选包**（如 `sentence-transformers`、`llama-cpp-python`）会从旧的工具 venv 中捕获，在全新安装后重新加入，并与新的基础版本做 diff，避免任何重复。
 - **已存在的配置、skills、示例 jobs** 一律保持原样，安装器**不再询问、绝不覆盖**。缺失的默认文件直接铺设；内容完全相同的静默跳过；当随包默认值发生变化时，新默认会被铺设到 `~/.slife/` 下作为**带版本号的参考副本**——配置与 jobs 形如 `<文件名>.<版本号>.<后缀>`（如 `slife.0.9.8.yaml`、`total_tokens.0.9.8.py`），skills 形如 `<名称>.<版本号>/`——每次写入都以 `seeded <文件> → <文件夹>` 的形式提示，需要它时一条 `cp` / `Copy-Item` 即可应用。重复安装会刷新同版本副本，旧版本副本保留作参考。判定 skill 是否不同，只看**随包默认自带的那些文件**是否有差异，因此你自己往 skill 里加的文件不会触发参考副本。
 

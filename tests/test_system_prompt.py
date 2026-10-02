@@ -344,18 +344,18 @@ class TestStructure:
         # Model / working directory / shell are reported by the dynamic
         # turn_prompt.j2 (_turn_prompt), not duplicated in the static prompt.
 
-    def test_memory_start_time_from_diary(self, cfg, tmp_path, monkeypatch):
+    def test_memory_start_time_from_turn(self, cfg, tmp_path, monkeypatch):
         """Opening states when the agent's persisted memory began — the
-        earliest turn in the SQLite diary."""
+        earliest turn in the SQLite turn table."""
         import sqlite3
 
         from slife.agent.system_prompt import build
 
         db = tmp_path / "mem.db"
         con = sqlite3.connect(str(db))
-        con.execute("CREATE TABLE diary (created_at TEXT)")
+        con.execute("CREATE TABLE turn (created_at TEXT)")
         con.execute(
-            "INSERT INTO diary (created_at) VALUES ('2026-01-05T10:00:00+08:00')"
+            "INSERT INTO turn (created_at) VALUES ('2026-01-05T10:00:00+08:00')"
         )
         con.commit()
         con.close()
@@ -367,8 +367,8 @@ class TestStructure:
             in result
         )
 
-    def test_no_memory_start_when_no_diary(self, cfg, tmp_path, monkeypatch):
-        """Fresh agent with no diary → framed as first arrival, not a time."""
+    def test_no_memory_start_when_no_turn(self, cfg, tmp_path, monkeypatch):
+        """Fresh agent with no turn table → framed as first arrival, not a time."""
         from slife.agent.system_prompt import build
 
         monkeypatch.setattr(

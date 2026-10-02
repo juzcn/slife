@@ -230,7 +230,7 @@ class TestRecallAnswerIsIds:
                  "tags": "", "created_at": "2026-08-02", "snippet": "…", "rank": -0.5},
             ],
             semantic_hits=[
-                {"rowid": 5, "diary_rowid": 5, "summary": "s5", "tags": "",
+                {"rowid": 5, "turn_rowid": 5, "summary": "s5", "tags": "",
                  "created_at": "2026-08-01", "distance": 0.5},
             ],
         )

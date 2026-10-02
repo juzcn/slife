@@ -143,7 +143,7 @@ def _render_context(config: Config) -> dict:
     return {
         # ── 身份 ──
         "agent_name": config.agent_name,
-        # When the agent's persisted memory began (earliest diary turn) —
+        # When the agent's persisted memory began (earliest turn) —
         # tells the LLM the origin of its session history.
         "memory_start_time": _memory_start_time(config.agent_name),
         # The user's standing preferences (USER.md), appended as the final
@@ -277,10 +277,10 @@ def build_turn_prompt(
 
 
 def _memory_start_time(agent_name: str) -> str:
-    """Earliest persisted turn time from the SQLite diary — ``""`` if none.
+    """Earliest persisted turn time from the SQLite turn table — ``""`` if none.
 
-    This is the agent's true memory origin: the diary is append-only (old
-    turns are evicted from the *context*, never deleted from the diary),
+    This is the agent's true memory origin: the turn log is append-only (old
+    turns are evicted from the *context*, never deleted from the turn table),
     so the earliest ``created_at`` is stable across trims and session
     restarts.  It belongs in the static system prompt, not the per-turn
     prompt.  Reads directly (sync, bounded timeout) — no tool dependency.
@@ -297,7 +297,7 @@ def _memory_start_time(agent_name: str) -> str:
             str(db_path), timeout=_timeouts.timeouts.storage.sqlite_busy,
         )
         try:
-            row = con.execute("SELECT MIN(created_at) FROM diary").fetchone()
+            row = con.execute("SELECT MIN(created_at) FROM turn").fetchone()
             return row[0] if row and row[0] else ""
         finally:
             con.close()

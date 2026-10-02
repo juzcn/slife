@@ -106,7 +106,7 @@ class Channel:
         return f"A2A({peer})> "
 
     def to_db(self) -> tuple[str, dict]:
-        """Persisted form: (``diary.channel`` identity string, payload).
+        """Persisted form: (``turn.channel`` identity string, payload).
 
         An A2A channel keeps its peer name as the identity so full-text
         search on the peer still matches the row; the name also rides the
@@ -126,7 +126,7 @@ class Channel:
     def from_db(cls, identity: str, data: "str | dict | None" = None) -> "Channel":
         """Rebuild a channel from a persisted row.
 
-        ``identity`` is the ``diary.channel`` value: a known kind string,
+        ``identity`` is the ``turn.channel`` value: a known kind string,
         or — for an A2A channel — the peer's name (the format
         :meth:`to_db` writes, so full-text search on the peer matches the
         row).  An empty string (old human rows) decodes as human; any other

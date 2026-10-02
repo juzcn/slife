@@ -11,7 +11,7 @@
 -- ═══════════════════════════════════════════════════════════════
 
 
-CREATE TABLE IF NOT EXISTS diary (
+CREATE TABLE IF NOT EXISTS turn (
 
     -- ▼ 用户说了什么（独立列，便于搜索和嵌入）
     user_message   TEXT NOT NULL DEFAULT '',
@@ -44,41 +44,41 @@ CREATE TABLE IF NOT EXISTS diary (
 
 
 -- ── 关键词搜索 ────────────────────────────────────────────────
-CREATE VIRTUAL TABLE IF NOT EXISTS diary_fts USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS turn_fts USING fts5(
     user_message,
     messages,
     summary,
     tags,
     channel,
-    content='diary',
+    content='turn',
     content_rowid='rowid'
 );
 
-CREATE TRIGGER IF NOT EXISTS diary_ai AFTER INSERT ON diary BEGIN
-    INSERT INTO diary_fts(rowid, user_message, messages, summary, tags, channel)
+CREATE TRIGGER IF NOT EXISTS turn_ai AFTER INSERT ON turn BEGIN
+    INSERT INTO turn_fts(rowid, user_message, messages, summary, tags, channel)
     VALUES (new.rowid, new.user_message, new.messages, new.summary, new.tags, new.channel);
 END;
 
-CREATE TRIGGER IF NOT EXISTS diary_ad AFTER DELETE ON diary BEGIN
-    INSERT INTO diary_fts(diary_fts, rowid, user_message, messages, summary, tags, channel)
+CREATE TRIGGER IF NOT EXISTS turn_ad AFTER DELETE ON turn BEGIN
+    INSERT INTO turn_fts(turn_fts, rowid, user_message, messages, summary, tags, channel)
     VALUES ('delete', old.rowid, old.user_message, old.messages, old.summary, old.tags, old.channel);
 END;
 
 -- memory_turn_summarize writes summary/tags via UPDATE — the FTS5 external-content
 -- index must track those updates or the summary stays invisible to keyword
 -- search (only the insert-time empty row was indexed).
-CREATE TRIGGER IF NOT EXISTS diary_au AFTER UPDATE ON diary BEGIN
-    INSERT INTO diary_fts(diary_fts, rowid, user_message, messages, summary, tags, channel)
+CREATE TRIGGER IF NOT EXISTS turn_au AFTER UPDATE ON turn BEGIN
+    INSERT INTO turn_fts(turn_fts, rowid, user_message, messages, summary, tags, channel)
     VALUES ('delete', old.rowid, old.user_message, old.messages, old.summary, old.tags, old.channel);
-    INSERT INTO diary_fts(rowid, user_message, messages, summary, tags, channel)
+    INSERT INTO turn_fts(rowid, user_message, messages, summary, tags, channel)
     VALUES (new.rowid, new.user_message, new.messages, new.summary, new.tags, new.channel);
 END;
 
 
 -- ── 语义搜索 ──────────────────────────────────────────────────
 -- One turn → one or more chunks (long turns are split by paragraph).
--- diary_rowid references diary.rowid; chunk_index is 0-based within a turn.
--- search_semantic groups results by diary_rowid (best chunk wins).
+-- turn_rowid references turn.rowid; chunk_index is 0-based within a turn.
+-- search_semantic groups results by turn_rowid (best chunk wins).
 --
 -- ``distance_metric=cosine`` — a vec0 option on the vector column: the raw
 -- ``distance`` this store returns is the
@@ -90,9 +90,9 @@ END;
 -- (local-embed's gguf path) is not normalized, so L2 distances ran far past
 -- the [0,2] that identity allows and every strong hit read as 0.0.
 -- A vector's norm is not part of what "how close is this document" means.
-CREATE VIRTUAL TABLE IF NOT EXISTS diary_semantic USING vec0(
+CREATE VIRTUAL TABLE IF NOT EXISTS turn_semantic USING vec0(
     turn_embedding float[1536] distance_metric=cosine,
-    +diary_rowid   INTEGER,
+    +turn_rowid    INTEGER,
     +chunk_index   INTEGER,
     +summary       TEXT,
     +tags          TEXT,
@@ -101,20 +101,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS diary_semantic USING vec0(
 
 
 -- ── 元数据 ────────────────────────────────────────────────────
--- Tracks which embedding model produced the diary_semantic vectors.
+-- Tracks which embedding model produced the turn_semantic vectors.
 -- When the model changes (even same-dimension, e.g. ada-002 → 3-small),
 -- old vectors are dropped because they live in a different vector space.
-CREATE TABLE IF NOT EXISTS diary_meta (
+CREATE TABLE IF NOT EXISTS turn_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
 -- ── 索引 ──────────────────────────────────────────────────────
-CREATE INDEX IF NOT EXISTS idx_diary_created ON diary(created_at);
+CREATE INDEX IF NOT EXISTS idx_turn_created ON turn(created_at);
 
 -- ── 通道负载 ──────────────────────────────────────────────────
 -- Sibling row per turn: the channel's JSON payload (A2A peer name,
--- subagent name/task, …).  ``diary.channel`` stays the identity string
+-- subagent name/task, …).  ``turn.channel`` stays the identity string
 -- and its FTS triggers are untouched; this table holds the per-channel
 -- data.  CREATE IF NOT EXISTS covers existing DBs on the next setup() —
 -- no migration, no ALTER.

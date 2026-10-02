@@ -830,7 +830,7 @@ class AgentLoop:
         """The turns in the context right now, in ``extract_turns`` shape.
 
         The same read ``_trim_context`` makes: each entry carries the turn's
-        diary rowid (``turn_id``) and its estimated cost (``estimated_tokens``).
+        turn rowid (``turn_id``) and its estimated cost (``estimated_tokens``).
         Both are what a rebuild's *base* is built from — the ids the model
         keeps explicitly are the very ones it read off the ``[INFO: …]``
         footnote, and the cost is what the recall's headroom is measured
@@ -891,7 +891,7 @@ class AgentLoop:
             return False
 
         # The base: what the turn keeps.  `None` is "all of them", read off the
-        # live history — every turn in a live context carries its diary rowid
+        # live history — every turn in a live context carries its turn rowid
         # as ``_turn_id`` (stamped at save, re-stamped on restore and rebuild),
         # which is also the id the model names in a keep-list.
         live = self._live_turns(history)
@@ -1107,7 +1107,7 @@ class AgentLoop:
 
         # Drop the evicted turns from the persisted live-context list
         # (best-effort — see drop_context_turns).  The ids are exact: each
-        # turn carries its diary rowid as ``_turn_id`` on its opening user
+        # turn carries its rowid as ``_turn_id`` on its opening user
         # message, set at save and re-stamped on restore.  A turn whose save
         # failed has no id and is simply left on the list (a superset on the
         # next restore, never a loss) — hence ``removed`` counts turns while
@@ -1250,7 +1250,7 @@ class AgentLoop:
             # processing.  `_ctx.message_history` is set once at startup to the
             # human history, but harness tools are invoked per-source
             # (WeChat / remote-agent turns have their own MessageHistory) — a
-            # trim must target the active one, not always the human diary.
+            # trim must target the active one, not always the human channel.
             # Swap for the duration of the call and restore afterwards.
             ctx = getattr(tool, "_ctx", None)
             prev_history = None

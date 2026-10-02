@@ -93,7 +93,7 @@ def _error_reason(exc: BaseException) -> str:
     length exceeded``, ``model not found``) — the body's own message when the
     SDK exposes one, else the rendered exception.  It is not copied raw: it
     goes through :func:`sanitize_secrets` — the same gate every user message
-    and tool argument passes, because this line also lands in the diary —
+    and tool argument passes, because this line also lands in the turn log —
     collapsed to one line, and bounded by :data:`_MAX_REASON_CHARS`.
 
     A **content-filter** reject is not among the failures this can label: that
@@ -213,7 +213,7 @@ class MemorySaveError(RuntimeError):
 
 
 def _channel_persist(msg: AgentMessage) -> tuple[str, str]:
-    """(``diary.channel`` identity, payload JSON) for the turn save.
+    """(``turn.channel`` identity, payload JSON) for the turn save.
 
     Every message carries a typed channel; the channel yields its identity
     and JSON payload.
@@ -606,7 +606,7 @@ class Inbox:
             logger.warning("inbox_process_error source=%s err=%s", msg.source, e)
             # The reason the turn died: status + provider code when the SDK
             # has them, else a class name.  Never the message — the closing
-            # line lands in the LLM's context and the diary, and error text
+            # line lands in the LLM's context and the turn log, and error text
             # can carry secrets.
             stop_reason = _error_reason(e)
             # Finalize the handler so the TUI spinner stops — without
@@ -644,7 +644,7 @@ class Inbox:
                         # NOT re-save it.  The backward text match in
                         # save_to_memory would otherwise match an earlier turn
                         # with identical text (heartbeat content is constant)
-                        # and duplicate it as a fresh diary row.
+                        # and duplicate it as a fresh turn row.
                         rolled_back = True
                     except Exception:
                         pass
@@ -723,7 +723,7 @@ class Inbox:
                         # the save point's closing line names it.
                         stop_reason=stop_reason,
                         # The user-input timestamp captured by the TUI
-                        # handler — becomes the diary created_at so restore
+                        # handler — becomes the turn's created_at so restore
                         # shows the same time as the live display.  Absent
                         # for non-TUI handlers (None → store uses now).
                         created_at=getattr(msg.handler, "_timestamp", None),
@@ -772,7 +772,7 @@ class MessageHistoryStore:
 
     The main agent has ONE context: every inbox message, whatever its
     source, is a user message into that one history.  The source is
-    metadata on the user message (the diary's ``channel`` column and
+    metadata on the user message (the turn's ``channel`` column and
     the TUI prefix), never a selector for a different context.
     """
 
@@ -807,7 +807,7 @@ class MessageHistoryStore:
         inbox — from the human TUI, WeChat, a heartbeat/autonomous
         trigger, a scheduled run, or a subagent completion — is a user
         message into the same history.  *source* only labels who sent
-        it (the diary's ``channel`` column and the TUI prefix); it never
+        it (the turn's ``channel`` column and the TUI prefix); it never
         selects a different context.
         """
         from slife.a2a.identity import HUMAN

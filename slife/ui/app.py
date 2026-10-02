@@ -993,7 +993,7 @@ class SlifeApp(App):
         chat_view = self.query_one("#chat-view", ChatView)
         # Display the original raw text — exactly what the agent sees.
         # The timestamp is the Enter-press moment — shown on the user
-        # message and threaded into the turn's diary created_at so the
+        # message and threaded into the turn's created_at so the
         # assistant reply (and restore) show the same time.
         now = datetime.now().astimezone()
         chat_view.add_user_message(

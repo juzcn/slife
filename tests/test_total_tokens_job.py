@@ -4,7 +4,7 @@ The job is a pure-computation memdb reader: it locates the agent's SQLite
 database (``$SLIFE_AGENT_NAME.db`` first, then any memdb-shaped ``*.db``)
 and aggregates ``token_count`` / ``context_tokens`` per turn.  These tests
 exercise both the DB discovery and the aggregation against a real temp DB
-shaped like the current diary schema.
+shaped like the current turn schema.
 """
 
 import os
@@ -30,11 +30,11 @@ def job():
 
 
 def _make_db(path, rows):
-    """Create a diary-table SQLite DB with the current memdb columns."""
+    """Create a turn-table SQLite DB with the current memdb columns."""
     conn = sqlite3.connect(str(path))
     try:
         conn.execute(
-            "CREATE TABLE diary ("
+            "CREATE TABLE turn ("
             " user_message TEXT NOT NULL DEFAULT '',"
             " messages TEXT NOT NULL DEFAULT '[]',"
             " created_at TEXT NOT NULL,"
@@ -42,7 +42,7 @@ def _make_db(path, rows):
             " context_tokens INTEGER NOT NULL DEFAULT 0)"
         )
         conn.executemany(
-            "INSERT INTO diary (user_message, created_at, token_count,"
+            "INSERT INTO turn (user_message, created_at, token_count,"
             " context_tokens) VALUES (?, ?, ?, ?)",
             rows,
         )
@@ -138,7 +138,7 @@ def test_total_tokens_sums_current_columns(tmp_path, job):
         ("there", "2026-09-12T10:00:00", 250, 200),
         ("!", "2026-09-12T11:00:00", 60, 55),
     ]
-    db = _make_db(tmp_path / "diary.db", rows)
+    db = _make_db(tmp_path / "turn.db", rows)
     out = job.total_tokens(db_path=db)
 
     assert "轮数(turns): 3" in out
@@ -153,7 +153,7 @@ def test_total_tokens_since_until_filter(tmp_path, job):
         ("middle", "2026-09-12T10:00:00", 250, 200),
         ("late", "2026-09-12T11:00:00", 60, 55),
     ]
-    db = _make_db(tmp_path / "diary.db", rows)
+    db = _make_db(tmp_path / "turn.db", rows)
 
     out = job.total_tokens(db_path=db, since="2026-09-12T09:30:00")
     assert "轮数(turns): 2" in out

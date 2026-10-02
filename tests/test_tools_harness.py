@@ -284,7 +284,7 @@ class TestRecallRebuild:
     def _history(with_ids: bool = False):
         """A live context of two turns.
 
-        *with_ids* stamps the diary rowids (3, then 5) the way restore and
+        *with_ids* stamps the turn rowids (3, then 5) the way restore and
         rebuild do — ``add_user_message`` leaves them off, so the default
         history is the untracked shape a save that returned no rowid would
         leave.  Two turns is the minimum that lets a keep-list *drop*
@@ -623,7 +623,7 @@ class TestRecallDiscriminator:
 
     It is a *discriminator*: one call that decides what this turn needs, and
     nothing else.  It never writes to the history (so it can never become part
-    of the conversation, the diary, the TUI, or the next request), and it
+    of the conversation, the turn log, the TUI, or the next request), and it
     answers with a decision — what to keep, what to recall — or nothing at all.
     """
 
@@ -832,7 +832,7 @@ class TestTrimAfterSave:
         conv = MessageHistory(system_prompt="SYS")
         for i in range(turns):
             conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大Context usage估计。")
-            # Every saved turn carries its diary rowid on its opening user
+            # Every saved turn carries its turn rowid on its opening user
             # message (set at save, re-stamped on restore) — the trim reads
             # them to drop the evicted turns from the persisted list.
             conv.messages[-1]["_turn_id"] = i + 1

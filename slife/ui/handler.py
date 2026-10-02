@@ -49,7 +49,7 @@ class TUIHandler:
         self._assistant_prefix = assistant_prefix
         # Turn timestamp — the user's Enter-press moment when threaded from
         # the app, else captured now.  Rendered on assistant messages AND
-        # threaded into the diary ``created_at`` via the inbox →
+        # threaded into the turn's ``created_at`` via the inbox →
         # save_to_memory path, so restore shows the same [HH:MM] as live.
         self._timestamp: datetime = timestamp or datetime.now().astimezone()
         self._current_assistant: AssistantMessage | None = None

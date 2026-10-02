@@ -2782,7 +2782,7 @@ class AgentService:
         # meaningful only in the live session.  Strip it from the copy
         # being persisted (the live history keeps its note).  The runtime
         # turn ids go with it: the loop needs them in memory to map turns
-        # back to diary rows, but they are not part of the record.
+        # back to turn rows, but they are not part of the record.
         from slife.agent.message_history import MessageHistory as _MH
         turn_messages = _MH.strip_turn_ids(
             _MH.strip_trim_markers(turn_messages)
@@ -2811,7 +2811,7 @@ class AgentService:
         assert self._plugins["memdb"].client is not None  # guarded above
         save_args = {
             # The MASKED text, the same form the live history holds (see
-            # add_user_message): this column is the diary, and restore rebuilds
+            # add_user_message): this column is the turn log, and restore rebuilds
             # the user turn from it verbatim — persisting the raw text put a
             # pasted API key back into the model's context after a restart,
             # which is the one thing the sanitizer exists to prevent.  `target`
@@ -2944,7 +2944,7 @@ class AgentService:
 
         The **structural** id (``_turn_id``) is separate from that footnote
         and is set on every saved turn too: the loop maps in-context turns
-        back to diary rows with it, so the trim can hand the store the real
+        back to turn rows with it, so the trim can hand the store the real
         ids to drop.  It is runtime-only and stripped before the turn is
         persisted; the footnote is not — it rides the stored user message.
         """

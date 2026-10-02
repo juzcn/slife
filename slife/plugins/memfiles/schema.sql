@@ -95,11 +95,10 @@ CREATE INDEX IF NOT EXISTS idx_reports_task ON reports(task_id);
 
 
 -- ── 关键词搜索：整个 cabinet 一份索引 ──────────────────────────
--- ONE index for the whole cabinet, the way memdb has ONE diary_fts — because
--- a fusion consumes RANKS, and a rank only means something inside the corpus
--- that produced it (an FTS5 rank is bm25, a per-table score).  Four per-kind
--- indexes made four corpora, so a query spanning them had to answer with an
--- order nothing had measured.
+-- ONE index for the whole cabinet — because a fusion consumes RANKS, and a
+-- rank only means something inside the corpus that produced it (an FTS5 rank
+-- is bm25, a per-table score).  Four per-kind indexes made four corpora, so a
+-- query spanning them had to answer with an order nothing had measured.
 --
 -- Each kind's searchable columns normalize into the same four:
 --   title  — what the row is called

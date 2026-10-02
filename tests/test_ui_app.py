@@ -252,7 +252,7 @@ class TestTUIHandler:
     @pytest.mark.asyncio
     async def test_set_completed_at_updates_turn_assistants(self):
         """set_completed_at stamps every assistant message of the turn with
-        the completion time so the live [HH:MM] matches diary completed_at."""
+        the completion time so the live [HH:MM] matches turn completed_at."""
         from datetime import datetime
 
         app = self._make_app_mock()

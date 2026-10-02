@@ -40,7 +40,7 @@ def total_tokens(since: str = "", until: str = "", db_path: str = "") -> str:
         row = conn.execute(
             "SELECT COUNT(*), COALESCE(SUM(token_count),0), "
             "COALESCE(SUM(context_tokens),0) "
-            f"FROM diary {where}",
+            f"FROM turn {where}",
             params,
         ).fetchone()
     finally:
@@ -68,13 +68,13 @@ def _data_dir() -> str:
 
 
 def _looks_like_memdb(path: str) -> bool:
-    """True if the SQLite file exposes the memdb 'diary' table."""
+    """True if the SQLite file exposes the memdb 'turn' table."""
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
             row = conn.execute(
                 "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='diary'"
+                "WHERE type='table' AND name='turn'"
             ).fetchone()
         finally:
             conn.close()

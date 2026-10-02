@@ -198,7 +198,7 @@ def rename_rowid_to_turn_id(entries: list[dict]) -> None:
     for e in entries:
         if "rowid" in e:
             e["turn_id"] = e.pop("rowid")
-        e.pop("diary_rowid", None)
+        e.pop("turn_rowid", None)
 
 
 @dataclass

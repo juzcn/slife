@@ -31,15 +31,15 @@ from slife.plugins.memdb.store import (
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-async def _create_diary_table(conn) -> None:
-    """Create the real diary schema (all columns non-NULL defaults) on an
+async def _create_turn_table(conn) -> None:
+    """Create the real turn schema (all columns non-NULL defaults) on an
     already-open aiosqlite connection.
 
     Matches ``schema.sql``; the full column list is required because
     ``get_turns_by_ids`` SELECTs every column.
     """
     await conn.execute("""\
-        CREATE TABLE IF NOT EXISTS diary (
+        CREATE TABLE IF NOT EXISTS turn (
             user_message   TEXT NOT NULL DEFAULT '',
             messages       TEXT NOT NULL DEFAULT '[]',
             summary        TEXT DEFAULT '',
@@ -60,7 +60,7 @@ async def _create_diary_table(conn) -> None:
     # save_turn appends the new rowid to the live-context list inside the
     # same transaction, so the meta table is part of what it needs.
     await conn.execute("""\
-        CREATE TABLE IF NOT EXISTS diary_meta (
+        CREATE TABLE IF NOT EXISTS turn_meta (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         )""")
@@ -260,7 +260,7 @@ class TestSplitSql:
     def test_trigger_after_comment_block_is_kept_together(self):
         """A CREATE TRIGGER preceded by -- comments must not be split.
 
-        Regression: the diary_au trigger (two interior INSERTs) follows a
+        Regression: the turn_au trigger (two interior INSERTs) follows a
         comment block; the comments accumulate into the same fragment and
         used to hide the CREATE TRIGGER keyword, so the trigger body was
         split into orphan fragments and never created.
@@ -268,9 +268,9 @@ class TestSplitSql:
         sql = (
             "-- memory_turn_summarize writes summary/tags via UPDATE\n"
             "-- index must track those updates\n"
-            "CREATE TRIGGER IF NOT EXISTS diary_au AFTER UPDATE ON diary BEGIN\n"
-            "    INSERT INTO diary_fts(diary_fts, rowid) VALUES ('delete', old.rowid);\n"
-            "    INSERT INTO diary_fts(rowid) VALUES (new.rowid);\n"
+            "CREATE TRIGGER IF NOT EXISTS turn_au AFTER UPDATE ON turn BEGIN\n"
+            "    INSERT INTO turn_fts(turn_fts, rowid) VALUES ('delete', old.rowid);\n"
+            "    INSERT INTO turn_fts(rowid) VALUES (new.rowid);\n"
             "END;\n"
         )
         result = _split_sql(sql)
@@ -461,7 +461,7 @@ class TestSessionStoreSaveTurn:
 
         writes = [
             call[0] for call in mock_conn.execute.call_args_list
-            if "diary_meta" in call[0][0] and "INSERT OR REPLACE" in call[0][0]
+            if "turn_meta" in call[0][0] and "INSERT OR REPLACE" in call[0][0]
         ]
         assert writes, "save_turn must append to the live-context list"
         assert json.loads(writes[0][1][1]) == [42]
@@ -486,11 +486,11 @@ class TestSessionStoreSaveTurn:
         )
 
         assert rowid == 7
-        # The save writes several statements (diary INSERT, context-list
-        # append) — pick the diary row's.
+        # The save writes several statements (turn INSERT, context-list
+        # append) — pick the turn row's.
         insert = next(
             call for call in mock_conn.execute.call_args_list
-            if "INSERT INTO diary " in call[0][0]
+            if "INSERT INTO turn " in call[0][0]
         )
         args = insert[0][1]
         # INSERT tuple order: (user_message, messages_json, channel,
@@ -575,7 +575,7 @@ class TestSessionStoreGetTurnsByIds:
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("""\
-            CREATE TABLE IF NOT EXISTS diary (
+            CREATE TABLE IF NOT EXISTS turn (
                 user_message   TEXT NOT NULL DEFAULT '',
                 messages       TEXT NOT NULL DEFAULT '[]',
                 summary        TEXT DEFAULT '',
@@ -599,7 +599,7 @@ class TestSessionStoreGetTurnsByIds:
         # ── Insert 5 turns ──
         for i in range(1, 6):
             await conn.execute(
-                """INSERT INTO diary
+                """INSERT INTO turn
                    (user_message, messages, created_at, who_helped, what_model, token_count)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (
@@ -664,12 +664,12 @@ class TestSessionStoreGetTurnsByIds:
         store = SessionStore(tmp_path / "memory.db")
         store._conn = await aiosqlite.connect(str(tmp_path / "memory.db"))
         store._conn.row_factory = aiosqlite.Row
-        await _create_diary_table(store._conn)
+        await _create_turn_table(store._conn)
 
         n = _MAX_SQL_VARS + 5
         for i in range(n):
             await store._conn.execute(
-                "INSERT INTO diary (user_message, created_at) VALUES (?, ?)",
+                "INSERT INTO turn (user_message, created_at) VALUES (?, ?)",
                 (f"msg {i + 1}", "2026-08-12T00:00:00+08:00"),
             )
         await store._conn.commit()
@@ -686,9 +686,9 @@ class TestSessionStoreGetTurnsByIds:
         store = SessionStore(tmp_path / "memory.db")
         store._conn = await aiosqlite.connect(str(tmp_path / "memory.db"))
         store._conn.row_factory = aiosqlite.Row
-        await _create_diary_table(store._conn)
+        await _create_turn_table(store._conn)
         await store._conn.execute(
-            "INSERT INTO diary (user_message, created_at) VALUES ('a', '2026-08-12T00:00:00+08:00')"
+            "INSERT INTO turn (user_message, created_at) VALUES ('a', '2026-08-12T00:00:00+08:00')"
         )
         await store._conn.commit()
 
@@ -705,7 +705,7 @@ class TestSessionStoreGetTurnsByIds:
         db_path = tmp_path / "memory.db"
         conn = await aiosqlite.connect(str(db_path))
         conn.row_factory = aiosqlite.Row
-        await _create_diary_table(conn)
+        await _create_turn_table(conn)
         await conn.close()
 
         store = SessionStore(db_path)
@@ -738,19 +738,19 @@ class TestSessionStoreGetTurnsByIds:
 
 
 class TestSessionStoreContextTurns:
-    """Live-context id list on diary_meta — the ordered list of turns that
+    """Live-context id list on turn_meta — the ordered list of turns that
     makes restore rebuild the exit-time context."""
 
     @staticmethod
-    async def _store_with_meta(tmp_path, diary=True):
+    async def _store_with_meta(tmp_path, turn=True):
         store = SessionStore(tmp_path / "memory.db")
         store._conn = await aiosqlite.connect(str(tmp_path / "memory.db"))
         store._conn.row_factory = aiosqlite.Row
         await store._conn.execute(
-            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            "CREATE TABLE turn_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
-        if diary:
-            await _create_diary_table(store._conn)
+        if turn:
+            await _create_turn_table(store._conn)
         return store
 
     @pytest.mark.asyncio
@@ -777,7 +777,7 @@ class TestSessionStoreContextTurns:
         """A corrupt value degrades to "nothing in context", never a crash."""
         store = await self._store_with_meta(tmp_path)
         await store._conn.execute(
-            "INSERT INTO diary_meta (key, value) VALUES ('context_turns', ?)",
+            "INSERT INTO turn_meta (key, value) VALUES ('context_turns', ?)",
             ("not json at all",),
         )
         await store._conn.commit()
@@ -788,7 +788,7 @@ class TestSessionStoreContextTurns:
     async def test_duplicate_ids_collapse_to_first_position(self, tmp_path):
         store = await self._store_with_meta(tmp_path)
         await store._conn.execute(
-            "INSERT INTO diary_meta (key, value) VALUES ('context_turns', ?)",
+            "INSERT INTO turn_meta (key, value) VALUES ('context_turns', ?)",
             (json.dumps([4, 2, 4, 9, 2]),),
         )
         await store._conn.commit()
@@ -887,7 +887,7 @@ class TestSessionStoreCountTurns:
 
     @pytest.mark.asyncio
     async def test_count_fts5_honors_since_until(self):
-        """REVIEW M6 — the fts5 count joins diary and applies since/until
+        """REVIEW M6 — the fts5 count joins turn and applies since/until
         (previously they were silently ignored for fts5 mode)."""
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
@@ -907,10 +907,10 @@ class TestSessionStoreCountTurns:
             since="2026-01-01", until="2026-02-01",
         )
 
-        # Second execute = the fts5 count — must JOIN diary and carry the
+        # Second execute = the fts5 count — must JOIN turn and carry the
         # time clauses + params.
         sql, params = mock_conn.execute.call_args_list[1][0]
-        assert "JOIN diary" in sql
+        assert "JOIN turn" in sql
         assert "d.created_at >=" in sql and "d.created_at <=" in sql
         assert len(params) == 3  # fts_query + since + until
 
@@ -991,7 +991,7 @@ class TestSessionStoreCountTurns:
         conn = await aiosqlite.connect(str(db_path))
         conn.row_factory = aiosqlite.Row
         await conn.execute("""\
-            CREATE TABLE diary (
+            CREATE TABLE turn (
                 user_message   TEXT NOT NULL DEFAULT '',
                 messages       TEXT NOT NULL DEFAULT '[]',
                 summary        TEXT DEFAULT '',
@@ -999,13 +999,13 @@ class TestSessionStoreCountTurns:
                 created_at     TEXT NOT NULL
             )""")
         await conn.execute(
-            "INSERT INTO diary (user_message, messages, created_at) VALUES (?, ?, ?)",
+            "INSERT INTO turn (user_message, messages, created_at) VALUES (?, ?, ?)",
             ("让子agent 去处理这个任务",
              '[{"role": "assistant", "content": "已经委托给子进程了"}]',
              "2026-07-22T10:00:00"),
         )
         await conn.execute(
-            "INSERT INTO diary (user_message, messages, tags, created_at)"
+            "INSERT INTO turn (user_message, messages, tags, created_at)"
             " VALUES (?, ?, ?, ?)",
             ("无关内容", "[]", "重构", "2026-07-22T11:00:00"),
         )
@@ -1039,7 +1039,7 @@ class TestSessionStoreCountTurns:
         conn = await aiosqlite.connect(str(db_path))
         conn.row_factory = aiosqlite.Row
         await conn.execute("""\
-            CREATE TABLE diary (
+            CREATE TABLE turn (
                 user_message   TEXT NOT NULL DEFAULT '',
                 messages       TEXT NOT NULL DEFAULT '[]',
                 summary        TEXT DEFAULT '',
@@ -1048,15 +1048,15 @@ class TestSessionStoreCountTurns:
                 created_at     TEXT NOT NULL
             )""")
         await conn.execute("""\
-            CREATE VIRTUAL TABLE diary_fts USING fts5(
+            CREATE VIRTUAL TABLE turn_fts USING fts5(
                 user_message, messages, summary, tags, channel,
-                content='diary', content_rowid='rowid')""")
+                content='turn', content_rowid='rowid')""")
         await conn.execute(
-            "INSERT INTO diary (user_message, messages, created_at) VALUES (?, ?, ?)",
+            "INSERT INTO turn (user_message, messages, created_at) VALUES (?, ?, ?)",
             ("asyncio 并发笔记", '[{"role": "assistant", "content": "关于 asyncio"}]',
              "2026-09-21T10:00:00+08:00"),
         )
-        await conn.execute("INSERT INTO diary_fts(diary_fts) VALUES('rebuild')")
+        await conn.execute("INSERT INTO turn_fts(turn_fts) VALUES('rebuild')")
         await conn.commit()
 
         store = SessionStore(db_path)
@@ -1152,9 +1152,9 @@ class TestSessionStoreTokenUsage:
         conn = await aiosqlite.connect(str(db_path))
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA journal_mode=WAL")
-        await _create_diary_table(conn)
+        await _create_turn_table(conn)
         await conn.execute(
-            "INSERT INTO diary (user_message, messages, created_at, "
+            "INSERT INTO turn (user_message, messages, created_at, "
             "token_count, context_tokens) "
             "VALUES ('a long user message', '[]', '2026-08-01T10:00:00', 100, 200)"
         )
@@ -1352,7 +1352,7 @@ class TestSessionStoreTurnList:
         page_sql, page_params = conn.execute.call_args_list[1].args
         # `total` must count the SAME window the page is drawn from, or the
         # caller pages past the end of a set that was never that big.
-        assert count_sql.startswith("SELECT COUNT(*) FROM diary WHERE")
+        assert count_sql.startswith("SELECT COUNT(*) FROM turn WHERE")
         assert "created_at >= ?" in count_sql and "created_at <= ?" in count_sql
         # A date-only `until` is advanced a day so records on that day are
         # included (the same normalisation every time-filtered query uses).
@@ -1551,7 +1551,7 @@ class TestVecStoreMetric:
         store = await _vec_store(tmp_path)
         try:
             cursor = await store._c.execute(
-                "SELECT sql FROM sqlite_master WHERE name = 'diary_semantic'",
+                "SELECT sql FROM sqlite_master WHERE name = 'turn_semantic'",
             )
             ddl = (await cursor.fetchone())[0]
             assert "distance_metric=cosine" in ddl
@@ -1589,10 +1589,10 @@ class TestVecStoreMetric:
         # Hand-build the pre-change table on the store's own connection (the
         # extension is loaded there; a macOS Python cannot load it at all,
         # which is why _vec_store skipped us out otherwise).
-        await store._c.execute("DROP TABLE IF EXISTS diary_semantic")
+        await store._c.execute("DROP TABLE IF EXISTS turn_semantic")
         await store._c.execute(
-            "CREATE VIRTUAL TABLE diary_semantic USING vec0("
-            "turn_embedding float[8], +diary_rowid INTEGER)",
+            "CREATE VIRTUAL TABLE turn_semantic USING vec0("
+            "turn_embedding float[8], +turn_rowid INTEGER)",
         )
         await store._c.commit()
         await store.close()
@@ -1602,7 +1602,7 @@ class TestVecStoreMetric:
         try:
             assert store._vec_available, "skip guard should have caught this"
             cursor = await store._c.execute(
-                "SELECT sql FROM sqlite_master WHERE name = 'diary_semantic'",
+                "SELECT sql FROM sqlite_master WHERE name = 'turn_semantic'",
             )
             assert "distance_metric=cosine" in (await cursor.fetchone())[0]
         finally:
@@ -1620,13 +1620,13 @@ class TestVecStoreMetric:
             a = [0.9, 1.4, -0.7, 2.1, 0.3, 0.3, 0.3, 0.3]
             b = [1.1, 1.2, -0.5, 1.9, 0.4, 0.4, 0.4, 0.4]
             await store._c.execute(
-                "INSERT INTO diary_semantic(turn_embedding, diary_rowid, "
+                "INSERT INTO turn_semantic(turn_embedding, turn_rowid, "
                 "chunk_index) VALUES (?, 1, 0)",
                 (_serialize_f32(a),),
             )
             await store._c.commit()
             cursor = await store._c.execute(
-                "SELECT distance FROM diary_semantic "
+                "SELECT distance FROM turn_semantic "
                 "WHERE turn_embedding MATCH ? AND k = 1",
                 (_serialize_f32(b),),
             )
@@ -1650,7 +1650,7 @@ class TestIndexTextContract:
     @staticmethod
     async def _seed_one_vector(store) -> None:
         await store._c.execute(
-            "INSERT INTO diary_semantic(turn_embedding, diary_rowid, "
+            "INSERT INTO turn_semantic(turn_embedding, turn_rowid, "
             "chunk_index) VALUES (?, 1, 0)",
             (_serialize_f32([0.1] * 8),),
         )
@@ -1658,13 +1658,13 @@ class TestIndexTextContract:
 
     @staticmethod
     async def _indexed_rows(store) -> int:
-        cursor = await store._c.execute("SELECT COUNT(*) FROM diary_semantic")
+        cursor = await store._c.execute("SELECT COUNT(*) FROM turn_semantic")
         return (await cursor.fetchone())[0]
 
     @pytest.mark.asyncio
     async def test_a_current_text_contract_keeps_the_index(self, tmp_path):
         """The check must not rebuild on every start — that would throw the
-        index away and re-embed the whole diary on each launch."""
+        index away and re-embed the whole turn on each launch."""
         db = tmp_path / "t.db"
         store = await _vec_store(tmp_path)
         try:
@@ -1691,7 +1691,7 @@ class TestIndexTextContract:
         try:
             await self._seed_one_vector(store)
             await store._c.execute(
-                "DELETE FROM diary_meta WHERE key = 'embedding_text_version'",
+                "DELETE FROM turn_meta WHERE key = 'embedding_text_version'",
             )
             await store._c.commit()
         finally:
@@ -1703,7 +1703,7 @@ class TestIndexTextContract:
             assert store._vec_available, "skip guard should have caught this"
             assert await self._indexed_rows(store) == 0       # dropped
             cursor = await store._c.execute(
-                "SELECT value FROM diary_meta "
+                "SELECT value FROM turn_meta "
                 "WHERE key = 'embedding_text_version'",
             )
             assert (await cursor.fetchone())[0] == INDEX_TEXT_VERSION
@@ -1717,7 +1717,7 @@ class TestIndexTextContract:
         try:
             await self._seed_one_vector(store)
             await store._c.execute(
-                "UPDATE diary_meta SET value = 'older' "
+                "UPDATE turn_meta SET value = 'older' "
                 "WHERE key = 'embedding_text_version'",
             )
             await store._c.commit()
@@ -1741,9 +1741,9 @@ class TestSessionStoreSearchSemantic:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        # First fetchall = KNN rows, second = diary lookup rows.
+        # First fetchall = KNN rows, second = turn lookup rows.
         mock_cursor.fetchall = AsyncMock(side_effect=[
-            [{"rowid": 1, "diary_rowid": 7, "summary": "A chat", "distance": 0.5,
+            [{"rowid": 1, "turn_rowid": 7, "summary": "A chat", "distance": 0.5,
               "tags": "", "created_at": "2026-01-01"}],
             [{"rowid": 7, "user_message": "北京天气怎么样"}],
         ])
@@ -1754,19 +1754,19 @@ class TestSessionStoreSearchSemantic:
             embedding=[0.1, 0.2, 0.3],
         )
         assert len(result) == 1
-        assert result[0]["rowid"] == 7  # rowid == diary_rowid (merge_hybrid keys on it)
+        assert result[0]["rowid"] == 7  # rowid == turn_rowid (merge_hybrid keys on it)
         assert result[0]["user_message"] == "北京天气怎么样"
 
     @pytest.mark.asyncio
     async def test_search_semantic_knn_has_no_join(self):
         """sqlite-vec forbids auxiliary-column constraints (including JOIN ON)
-        inside a KNN query — the KNN runs alone and the diary lookup is a
+        inside a KNN query — the KNN runs alone and the turn lookup is a
         second query."""
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(side_effect=[
-            [{"rowid": 1, "diary_rowid": 7, "summary": "s", "tags": "",
+            [{"rowid": 1, "turn_rowid": 7, "summary": "s", "tags": "",
               "created_at": "2026-01-01", "distance": 0.1}],
             [{"rowid": 7, "user_message": "北京天气怎么样"}],
         ])
@@ -1779,10 +1779,10 @@ class TestSessionStoreSearchSemantic:
         knn_sql = mock_conn.execute.call_args_list[0].args[0]
         assert "JOIN" not in knn_sql
         assert "turn_embedding MATCH ? AND k = ?" in knn_sql
-        # Second execute fetches user_message for the surviving diary_rowids.
+        # Second execute fetches user_message for the surviving turn_rowids.
         assert mock_conn.execute.await_count == 2
         second_sql = mock_conn.execute.call_args_list[1].args[0]
-        assert "user_message FROM diary" in second_sql
+        assert "user_message FROM turn" in second_sql
 
 
 class TestSessionStoreReplaceEmbeddingChunks:

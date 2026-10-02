@@ -337,7 +337,7 @@ message posted to the inbox
       → LLM stream → thinking / text / tool deltas → handler callbacks
       → tool calls? → execute the batch concurrently → continue
       → no tool calls? → return the reply text
-  → save the turn to the diary (unconditional — cancel, error, max-iterations alike)
+  → save the turn to the turn log (unconditional — cancel, error, max-iterations alike)
   → trim the context if it is over the ceiling         (§2.2)
   → trim the injected tool set if it is over the threshold   (§4.4)
 ```
@@ -366,7 +366,7 @@ message posted to the inbox
   (HTTP status and the provider's own code when the SDK exposes them, else the exception's class name
   one hop down its cause chain), and the save point forwards whatever it received into the repair.
   That label is short by construction: the message passes the same secret mask as any user text, is
-  collapsed to one line, and is bounded — the line stays in the model's context *and* in the diary
+  collapsed to one line, and is bounded — the line stays in the model's context *and* in the turn log
   for the rest of the session, so neither secrets nor a provider's whole JSON body may ride it.
   A repair on **load** has no reason to give — the process that knew it is gone — so it reads as a
   placeholder. A content-filter reject produces no closing line at all, because that turn is rolled
@@ -419,7 +419,7 @@ into while a worker gets a fresh one-shot history per task.
   That is what bounds a worker's context (§6.2). The hook that maintains the persisted live-context
   list is withheld from it for the same reason: those ids are the parent's turns.
 - **There is no summarization of evicted context.** Old turns leave the *context*; they stay in the
-  diary forever. Recall is the only way to bring one back.
+  turn log forever. Recall is the only way to bring one back.
 - **Tool result cap (a hard limit).** One tool result is truncated at a configured multiple of the
   context window, with an explicit marker inside the output. Generous enough that a large-but-real
   file read is never truncated; it caps only outputs that could not fit the window at all.
@@ -504,7 +504,7 @@ says is ever shown.
 - **Not sent**: anything beyond that context. The runtime-only turn id on the message that opens each
   turn is stripped.
 - **It never persists and never streams** — nothing it sends or receives touches the history, the
-  diary or the TUI.
+  turn log or the TUI.
 - **It degrades, it does not retry.** A timeout, a provider failure, or a reply that is not the
   requested JSON object all return nothing. Retrying would double the pre-turn latency of a call
   whose fallback — keep the context — is perfectly good.
@@ -525,7 +525,7 @@ six combinations and no mode has to be enumerated:
 
 Recall's own three shapes are the store's three branches: a **time-only** range (the newest turns in
 it, ranked by nothing but time — no similarity cap, because there is no query to measure against); a
-**query alone**, a hybrid search over the whole diary; and **query plus a range**, the same search
+**query alone**, a hybrid search over the whole turn log; and **query plus a range**, the same search
 with both legs windowed. An empty-query branch must run **before** the hybrid legs — they cannot
 express "no query": an empty query reaches the full-text index as a syntax error and embeds to
 noise.
@@ -1647,7 +1647,7 @@ subagent-specific gate — trust, not enforcement.
 
 Every turn is permanently recorded as an independent row — there is **no session concept**, just a
 continuous time-ordered log in a per-agent database file. Agent isolation is at the database-file
-level: naming an agent gives it its own diary, indexes, file cabinet and mesh name.
+level: naming an agent gives it its own turn log, indexes, file cabinet and mesh name.
 
 **Memory is core — the agent never runs silently without it.** A fatal turn-save failure is a hard
 stop, not a skip: the memory-broken state is set, the **inbox freezes** (queued turns are dropped — a
@@ -1657,7 +1657,10 @@ Restore-side failure is likewise fatal: a present-but-broken database **aborts s
 
 ### 7.1 The turns database
 
-One table is the diary, and the schema file is authoritative for its columns. The row's user-message
+One table is ``turn``, and the schema file is authoritative for its columns. It was called ``diary``
+until the name collided with the file cabinet's own diary (§7.5) — a database predating that rename
+keeps its turns in the old table, and the store logs the one-off script
+(`scripts/migrate_memdb_diary_to_turn.py`) that carries them across. The row's user-message
 column holds the **masked** text, the same form the live history holds — so restore rebuilds the user
 turn from that column verbatim, and a pasted key cannot return to the model's context through a
 restart. Beside it sit the assistant side as a message array, the summarize pass's summary and tags,
@@ -1673,6 +1676,13 @@ an index does not otherwise track — without it the summary stays invisible to 
 **There is no migration layer.** Backward compatibility is not supported: schema changes land in the
 schema file for fresh databases, and an old database is deleted and rebuilt rather than upgraded. The
 data is derived, and a migration path is a permanent maintenance cost.
+
+The one deliberate exception is a **rename**, where "derived" is the wrong word: the table's *name*
+changed while the rows behind it are the whole session history, and deleting them to fix a name is
+not a trade worth making. Renaming `diary` to `turn` therefore ships as a one-off standalone script
+(`scripts/migrate_memdb_diary_to_turn.py`) that moves the turns and their embeddings across.
+It is not a precedent for a migration layer — it exists because a rename preserves data by
+construction, and it is the only shape of change here that does.
 
 ### 7.2 Search
 
@@ -1735,7 +1745,7 @@ degraded mode and reason.
 
 The routing's real reason is narrower than "the tokenizer cannot do Chinese, substring matching
 can". The standard tokenizer makes a **contiguous CJK run one token**, so a Chinese query is an
-*exact-token* lookup: measured on a live diary, a two-character word matched only the turns where it
+*exact-token* lookup: measured on a live turn log, a two-character word matched only the turns where it
 sits next to punctuation or a digit, while the substring route matched three times as many — the
 others hold the word glued inside a longer run, which an exact-token lookup cannot see. Substring
 matching is a true per-word matcher, which is what Chinese prose needs, so it is the leg CJK routes
@@ -1791,11 +1801,11 @@ there.
 ### 7.4 Session restore, and the live-context list
 
 On startup, recent turns are read **directly from SQLite** — no MCP transport, no plugin dependency.
-The UI rebuilds the last session from the diary, and only then does the plugin spawn begin. Restored
+The UI rebuilds the last session from the turn log, and only then does the plugin spawn begin. Restored
 messages carry their stored timestamps, so the rebuilt chat matches what was seen live.
 
 **The id list replays the exit-time context.** One metadata entry is an **ordered array of row ids**
-naming the live context. Three things maintain it: the save appends the new row id inside the diary
+naming the live context. Three things maintain it: the save appends the new row id inside the turn
 row's own transaction; the internal trim drops the turns it evicts, passing the **actual** ids; and
 the per-turn rebuild replaces the list with what the turn kept plus what it recalled, with an
 explicit clear for a context that is to be empty.
