@@ -8,6 +8,11 @@ import pytest; pytestmark = pytest.mark.unit
 import pytest
 from unittest.mock import MagicMock, patch
 
+from textual.app import App, ComposeResult
+
+from slife.ui.app import HistoryInput
+from slife.ui.chat import ChatView
+
 
 def _make_widget(**kwargs):
     """Create a ToolCallWidget with mocked Textual internals.
@@ -276,6 +281,109 @@ class TestToolCallWidget:
         assert "more lines" in text
         assert "line 0" in text  # head kept
         assert "line 2499" not in text  # tail cut beyond the cap
+
+
+# ── A focused row must not eat the transcript's keys ─────────────────
+
+
+class _Host(App):
+    """A transcript plus a tool row, as the app composes them."""
+
+    # The panel's rules as slife.tcss has them: an expanded panel really does
+    # scroll, which is what makes it able to eat a key.
+    CSS = """
+    ChatView { overflow-y: auto; }
+    #prompt { dock: bottom; height: 3; }
+    .tool-call { width: 1fr; height: auto; max-height: 60%;
+                 min-height: 1; overflow-y: auto; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield ChatView(id="chat-view")
+        yield HistoryInput(id="prompt")
+
+
+def _fill(view, n=20) -> None:
+    for i in range(n):
+        view.add_user_message(f"[{i}] " + "line of history text " * 6)
+
+
+async def _settled(pilot, condition, tries=20) -> bool:
+    for _ in range(tries):
+        if condition():
+            return True
+        await pilot.pause()
+    return bool(condition())
+
+
+class TestKeyFallThrough:
+    """The row takes the arrows only while it has somewhere to go.
+
+    It holds focus after a click (``can_focus``), and a collapsed row has
+    nowhere to scroll: the inherited action consumed the key and moved
+    nothing, so the reader's only way up — the transcript — never saw it.
+    ``SkipAction`` declines the binding and lets the key travel on, the same
+    rule the page keys already follow.
+    """
+
+    @pytest.mark.asyncio
+    async def test_up_arrow_at_the_top_of_a_row_scrolls_the_transcript(self):
+        from slife.ui.chat import ChatView
+        from slife.ui.tool_display import ToolCallWidget
+
+        app = _Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            _fill(view)
+            assert await _settled(
+                pilot, lambda: view.scroll_offset.y == view.max_scroll_y > 0
+            )
+            # An expanded panel whose result overflows: it CAN scroll, so it
+            # is what the key belongs to — except at its own top, where it has
+            # nowhere to go and the reader means the transcript.
+            row = ToolCallWidget(tool_name="execute_shell", tool_args={"command": "ls"})
+            view.mount(row)
+            row.set_complete("\n".join(f"line {i}" for i in range(200)), False)
+            row.toggle()
+            assert await _settled(pilot, lambda: row.max_scroll_y > 0)
+
+            row.focus()
+            await pilot.pause()
+            # Let the mount's own scroll animation finish: an in-flight
+            # animation swallows the step the key is about to ask for.
+            await pilot.wait_for_animation()
+            assert row.scroll_offset.y == 0, "the panel had somewhere to go"
+
+            before = view.scroll_offset.y
+            await pilot.press("up")
+            assert await _settled(pilot, lambda: view.scroll_offset.y < before)
+
+    @pytest.mark.asyncio
+    async def test_up_arrow_inside_a_row_still_scrolls_the_row(self):
+        """While the panel has somewhere to go, the panel is what moves."""
+        from slife.ui.chat import ChatView
+        from slife.ui.tool_display import ToolCallWidget
+
+        app = _Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            _fill(view)
+            assert await _settled(
+                pilot, lambda: view.scroll_offset.y == view.max_scroll_y > 0
+            )
+            row = ToolCallWidget(tool_name="execute_shell", tool_args={"command": "ls"})
+            view.mount(row)
+            row.set_complete("\n".join(f"line {i}" for i in range(200)), False)
+            row.toggle()
+            assert await _settled(pilot, lambda: row.max_scroll_y > 0)
+
+            row.focus()
+            await pilot.pause()
+            await pilot.wait_for_animation()
+            view_before = view.scroll_offset.y
+            await pilot.press("pagedown")          # the panel goes down one page
+            assert await _settled(pilot, lambda: row.scroll_offset.y > 0)
+            assert view.scroll_offset.y == view_before
 
 
 class TestHelperFunctions:

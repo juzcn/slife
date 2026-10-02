@@ -192,6 +192,26 @@ class ToolCallWidget(VerticalScroll):
         if self._is_collapsed:
             self.toggle()
 
+    def action_scroll_up(self) -> None:
+        """Scroll the panel one line up, or hand the key to the transcript.
+
+        The mirror of :meth:`action_page_up` for the arrow keys, which had the
+        same hole: this widget holds focus after a click, so a row already at
+        its own top had the key consumed with nothing to show for it — and the
+        reader's only way up, the transcript, never saw it.  A collapsed row
+        reaches that state immediately; an expanded one after its first page.
+        While the panel has somewhere to go it is still what gets scrolled.
+        """
+        if self.scroll_offset.y <= 0:
+            raise SkipAction()
+        super().action_scroll_up()
+
+    def action_scroll_down(self) -> None:
+        """The mirror of :meth:`action_scroll_up` — same fall-through."""
+        if self.scroll_offset.y >= self.max_scroll_y:
+            raise SkipAction()
+        super().action_scroll_down()
+
     def action_page_up(self) -> None:
         """Page the panel, or hand the key to the transcript when it cannot.
 

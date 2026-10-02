@@ -415,6 +415,18 @@ async def _settled(pilot, condition, tries: int = 20) -> bool:
     return bool(condition())
 
 
+def _wheel_over(widget, *, up: bool):
+    """A wheel event over *widget*, as the driver would deliver it."""
+    from textual import events
+
+    x, y = widget.region.x + 1, widget.region.y + 1
+    cls = events.MouseScrollUp if up else events.MouseScrollDown
+    return cls(
+        widget=None, x=x, y=y, delta_x=0, delta_y=0, button=0,
+        shift=False, meta=False, ctrl=False, screen_x=x, screen_y=y, style=None,
+    )
+
+
 async def _filled(pilot, view, n=30) -> None:
     """Fill the history and wait for the view to come to rest at its tail.
 
@@ -569,6 +581,67 @@ class TestScrollFollowing:
             assert await _settled(pilot,
                                   lambda: view.scroll_offset.y == view.max_scroll_y)
             # The reader keeps their cursor: paging must not move focus.
+            assert isinstance(app.focused, HistoryInput)
+
+    @pytest.mark.asyncio
+    async def test_a_one_line_scroll_survives_the_next_token(self):
+        """One line up is a reader leaving the tail, not still being on it.
+
+        The arrow keys move a single line, and ``at the tail`` counted a
+        one-line step as still-at-the-tail — so following re-armed and the
+        very next streamed token pulled the view back down.  During a turn
+        those keys moved nothing at all, however many times they were
+        pressed, and the view always ended at the newest message.
+        """
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            await _filled(pilot, view)
+            view.focus()
+            await pilot.pause()
+
+            # Each press lands (a reader lets go of the key long before the
+            # reply's next token), and the token that follows it must leave
+            # the view where the reader put it.
+            before = view.scroll_offset.y
+            for step in range(1, 6):
+                await pilot.press("up")
+                assert await _settled(
+                    pilot, lambda: view.scroll_offset.y == before - step
+                ), "the one-line step never landed"
+
+                view.add_assistant_message()
+                view.follow_tail()
+                await pilot.pause()
+
+                assert view.scroll_offset.y <= before - step, (
+                    f"a streamed token dragged the reader back to the tail "
+                    f"after step {step}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_the_wheel_over_the_prompt_scrolls_the_transcript(self):
+        """A tick aimed at the bottom of the screen still moves the reading.
+
+        Textual delivers a wheel tick to the widget under the pointer, and
+        that widget is the input box whenever the pointer sits low on the
+        screen — where it lands after typing.  A three-line draft has nothing
+        to scroll, so the tick died there and the transcript never moved,
+        while everything else about the session looked normal.
+        """
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            await _filled(pilot, view)
+            prompt = app.query_one("#prompt", HistoryInput)
+            prompt.focus()
+            await pilot.pause()
+
+            before = view.scroll_offset.y
+            app.screen._forward_event(_wheel_over(prompt, up=True))
+            assert await _settled(pilot, lambda: view.scroll_offset.y < before)
+
+            # The reader keeps their cursor: the wheel must not move focus.
             assert isinstance(app.focused, HistoryInput)
 
     @pytest.mark.asyncio

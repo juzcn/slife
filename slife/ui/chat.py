@@ -155,9 +155,18 @@ class ChatView(VerticalScroll):
         This overrides ``Widget.watch_scroll_y``, which is what repaints the
         widget at the new offset — dropping the delegation left the reader
         scrolling an image that never moved.
+
+        The tail is the exact end, not "within a line of it".  One line is
+        what the arrow keys move, so counting a step of one as still-at-the-
+        tail handed the view straight back to the next streamed token: the
+        reader pressed ↑, landed a single line above the end, following
+        re-armed, and the token pulled them down again — during a turn those
+        keys moved nothing at all, however many times they were pressed.
+        Coming back to the end lands exactly on ``max_scroll_y``, which is
+        what re-arms following.
         """
         super().watch_scroll_y(old_value, new_value)
-        self._at_tail = new_value >= self.max_scroll_y - 1
+        self._at_tail = new_value >= self.max_scroll_y
 
     def follow_tail(self) -> None:
         """Follow new content unless following is off or the reader has gone

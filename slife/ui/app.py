@@ -204,6 +204,55 @@ class HistoryInput(TextArea):
         except NoMatches:
             return None
 
+    # The wheel over this box is the same case as PageUp/PageDown above.  The
+    # draft is a few lines with nothing to scroll, and Textual delivers a tick
+    # to whatever is under the pointer — so one aimed at the bottom of the
+    # screen (where the pointer sits after typing, and where nobody means to
+    # scroll a three-line box) died here instead of reaching the transcript.
+    # The draft still keeps it while it really has somewhere to go: a pasted
+    # draft up to ``max-height`` is what super() scrolls, and only a tick it
+    # could not use is passed on.
+
+    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        """Forward a wheel tick the draft cannot use to the transcript.
+
+        The same shape as ``Widget._on_mouse_scroll_up``, with the transcript
+        as the fall-through: the draft takes the tick when it has somewhere to
+        go and the transcript takes it when the draft does not.
+        """
+        if event.ctrl or event.shift:
+            super()._on_mouse_scroll_up(event)  # horizontal — not ours
+            return
+        if not self._scroll_up_for_pointer(animate=False):
+            self._wheel_transcript(up=True)
+        event.stop()
+
+    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        """The mirror of :meth:`_on_mouse_scroll_up`."""
+        if event.ctrl or event.shift:
+            super()._on_mouse_scroll_down(event)
+            return
+        if not self._scroll_down_for_pointer(animate=False):
+            self._wheel_transcript(up=False)
+        event.stop()
+
+    def _wheel_transcript(self, *, up: bool) -> None:
+        """Step the transcript by one wheel notch.
+
+        ``immediate=True`` for the reason the arrow keys state their intent
+        when they are ASKED rather than when they land: a deferred scroll
+        would be queued behind a token's follow and undone by it.
+        """
+        transcript = self._transcript()
+        if transcript is None:
+            return  # standalone input (its widget tests) — nothing to scroll
+        step = self.app.scroll_sensitivity_y
+        transcript.scroll_to(
+            y=transcript.scroll_y - step if up else transcript.scroll_y + step,
+            animate=False,
+            immediate=True,
+        )
+
     def action_up_or_history(self) -> bool:
         """Up on the first line walks history; otherwise moves the cursor."""
         if self.cursor_location[0] == 0:
