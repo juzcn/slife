@@ -568,15 +568,13 @@ class AttachImageTool(Tool):
 
     Takes data URIs, local file paths, or HTTP(S) URLs and makes them
     visible to the vision model.  Works exactly like the ``@`` syntax
-    in chat.  Pass a list via ``sources`` for multiple images in one
-    call (a single one also works via ``source``).
+    in chat.
     """
 
     name: ClassVar[str] = "attach_image"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
-        "Attach one or more images for vision (data URI, local path, or URL; "
-        "list via 'sources', single via 'source')."
+        "Attach one or more images for vision (data URI, local path, or URL)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -590,20 +588,11 @@ class AttachImageTool(Tool):
                     ),
                 },
                 "description": (
-                    "Images to attach."
-                ),
-            },
-            "source": {
-                "type": "string",
-                "description": (
-                    "Single image source (data URI, local path, or URL)."
+                    "Images to attach in this call."
                 ),
             },
         },
-        "oneOf": [
-            {"required": ["sources"]},
-            {"required": ["source"]},
-        ],
+        "required": ["sources"],
     }
 
     async def execute(self, **kwargs) -> str:
@@ -645,24 +634,21 @@ class AttachImageTool(Tool):
 
     @staticmethod
     def _resolve_sources(kwargs: dict) -> list[str]:
-        """Return the ordered, deduplicated list of sources from ``sources``
-        (list) or ``source`` (single), validating the argument shape.
+        """Return the ordered, deduplicated list of image sources.
 
         Exact duplicates are dropped (order-preserving): attaching the same
         source twice would inject two identical base64 blocks — wasted
         context with no information gain.  Dedup happens here so the
         reported message and the injected blocks both reflect it.
+
+        ``sources`` is ``required`` in the schema, so :func:`validate_args`
+        rejects a call without it before this runs; the raise below is for
+        callers that reach the tool as plain Python.
         """
         raw = kwargs.get("sources")
         if raw is None:
-            single = kwargs.get("source")
-            if single is None:
-                raise ValueError("attach_image requires 'sources' or 'source'")
-            if isinstance(single, str):
-                sources = [single]
-            else:
-                sources = list(single)
-        elif isinstance(raw, (list, tuple)):
+            raise ValueError("attach_image requires 'sources'")
+        if isinstance(raw, (list, tuple)):
             sources = [str(s) for s in raw]
         else:
             # LLM occasionally sends a single string in the array slot — treat

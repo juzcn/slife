@@ -24,25 +24,20 @@ class TestAttachImageTool:
     def test_parameters_schema(self):
         params = AttachImageTool.parameters
         assert params["type"] == "object"
-        assert "sources" in params["properties"]
+        assert sorted(params["properties"]) == ["sources"]
         assert params["properties"]["sources"]["type"] == "array"
-        assert "source" in params["properties"]
-        # Either sources (list) or source (single) — never both required.
-        assert params.get("oneOf") == [
-            {"required": ["sources"]},
-            {"required": ["source"]},
-        ]
-        assert "required" not in params
+        assert params["required"] == ["sources"]
 
     @pytest.mark.asyncio
-    async def test_execute_single_source_alias(self):
+    async def test_execute_bare_string_in_array_slot(self):
+        """An LLM sometimes sends a bare string where the array belongs."""
         fake_block = {"type": "image_url", "image_url": {"url": "data:..."}}
         with patch(
             "slife.agent.multimodal.include_image_urls",
             return_value=([fake_block], []),
         ):
             tool = AttachImageTool()
-            result = await tool.execute(source="D:\\photo.jpg")
+            result = await tool.execute(sources="D:\\photo.jpg")
 
         assert result == "Image included: D:\\photo.jpg"
 
@@ -127,18 +122,13 @@ class TestResolveSources:
             {"sources": ["a", "b"]},
         ) == ["a", "b"]
 
-    def test_source_single(self):
-        assert AttachImageTool._resolve_sources(
-            {"source": "a"},
-        ) == ["a"]
-
     def test_string_in_sources_slot(self):
         # An LLM occasionally sends a bare string in the array slot.
         assert AttachImageTool._resolve_sources(
             {"sources": "a"},
         ) == ["a"]
 
-    def test_missing_both_raises(self):
+    def test_missing_raises(self):
         with pytest.raises(ValueError):
             AttachImageTool._resolve_sources({})
 
@@ -146,9 +136,6 @@ class TestResolveSources:
         assert AttachImageTool._resolve_sources(
             {"sources": ["a", "b", "a", "c", "b"]},
         ) == ["a", "b", "c"]
-
-    def test_duplicate_single_not_created(self):
-        assert AttachImageTool._resolve_sources({"source": "a"}) == ["a"]
 
 
 def _config_with_vision(supports_vision: bool) -> Config:
