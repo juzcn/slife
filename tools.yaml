@@ -241,6 +241,25 @@ mcp:
 # `uvx mcp-openapi-proxy` invocation — belonging to this section is what makes
 # it a REST API, and every endpoint in its spec becomes a `{name}__{endpoint}`
 # tool.
+    arxiv:
+      url: https://arxiv.mcp.brunosan.de/mcp
+      description: arXiv paper search, download and reading for AI/ML/NLP/CV/robotics — free, no API key, uses the public arXiv API.
+      command: uvx
+      args:
+        - arxiv-mcp-server
+    crossref:
+      command: npx
+      args:
+        - -y
+        - '@cyanheads/crossref-mcp-server'
+      description: Search and retrieve scholarly metadata from the Crossref REST API — 150M+ academic works, journals and funders; DOI resolution and reference lookup. No API key required.
+    google-scholar:
+      command: uvx
+      args:
+        - hasdata-google-scholar-mcp
+      env:
+        HASDATA_API_KEY: ${HASDATA_API_KEY}
+      description: Google Scholar search results, citation counts and citation export formats, as structured JSON (HasData). Local stdio build; credential via HASDATA_API_KEY.
 rest-api:
   github:
     command: uvx
