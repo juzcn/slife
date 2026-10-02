@@ -343,7 +343,7 @@ embeddings:
 # fake-ip mode answers every name with an address of the proxy's own choosing,
 # so a resolved address stops being evidence about the destination — and a URL
 # that arrives *as* one of those addresses (an IP literal, or a redirect to
-# one) is refused by url_save's SSRF guard unless it is exempted here.
+# one) is refused by file_save's SSRF guard unless it is exempted here.
 #
 #   off   a non-public IP literal is refused, as it always was.  Names are
 #         unaffected either way: that question is answered by measuring the

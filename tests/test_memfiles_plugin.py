@@ -184,11 +184,11 @@ class TestHelpers:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# note_save / diary_save / file_save / url_save
+# note_edit / note_remove / diary_write / file_save
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class TestNoteSave:
+class TestNoteEdit:
     @pytest.mark.asyncio
     async def test_saves_and_returns_local_path(self, tmp_path):
         """A note is private — the result names the local md file, with no
@@ -197,7 +197,7 @@ class TestNoteSave:
         mem_dir.mkdir()
         store, _ = _fake_store(mem_dir)
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            result = await plugin.note_save(subject="Python", content="asyncio notes",
+            result = await plugin.note_edit(subject="Python", content="asyncio notes",
                                             tags="py")
         assert "Saved:" in result
         assert result.rstrip().replace("\\", "/").endswith("notes/subj.md")
@@ -210,8 +210,44 @@ class TestNoteSave:
         manager = MagicMock()
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
              patch.object(plugin, "_manager", manager):
-            await plugin.note_save(subject="s", content="c")
+            await plugin.note_edit(subject="s", content="c")
         manager.on_saved.assert_called_once()
+
+
+class TestNoteRemove:
+    @pytest.mark.asyncio
+    async def test_reports_the_subject_it_removed(self, tmp_path):
+        store, _ = _fake_store(tmp_path / "files")
+        store.remove_note = AsyncMock(return_value=True)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.note_remove(subject="Python")
+        assert out.startswith("Removed")
+        assert "Python" in out
+        store.remove_note.assert_awaited_once_with("Python")
+
+    @pytest.mark.asyncio
+    async def test_a_missing_note_is_an_error_not_a_silent_success(self, tmp_path):
+        """Deletion is not idempotent-looking: a caller that names a subject
+        nobody saved must hear that nothing was removed, or it reports a
+        deletion that never happened."""
+        store, _ = _fake_store(tmp_path / "files")
+        store.remove_note = AsyncMock(return_value=False)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.note_remove(subject="Nope")
+        assert out.startswith("Error")
+        assert "Nope" in out
+
+    @pytest.mark.asyncio
+    async def test_a_locked_md_reports_instead_of_raising(self, tmp_path):
+        """Windows holds an open file against deletion (an editor, a viewer).
+        The store unlinks before it deletes the row, so the note survived —
+        and the caller must hear that, not a traceback out of the MCP layer."""
+        store, _ = _fake_store(tmp_path / "files")
+        store.remove_note = AsyncMock(side_effect=PermissionError("in use by another process"))
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.note_remove(subject="Python")
+        assert out.startswith("Error")
+        assert "in use" in out
 
 
 class TestDiaryWrite:
@@ -219,7 +255,7 @@ class TestDiaryWrite:
     async def test_defaults_to_today(self, tmp_path):
         store, _ = _fake_store(tmp_path / "files")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            await plugin.diary_save(content="today's entry")
+            await plugin.diary_write(content="today's entry")
         store.upsert_diary.assert_awaited_once()
         call_date = store.upsert_diary.await_args.args[0]
         assert call_date == "2026-08-15" or len(call_date.split("-")) == 3
@@ -228,7 +264,7 @@ class TestDiaryWrite:
     async def test_explicit_date(self, tmp_path):
         store, _ = _fake_store(tmp_path / "files")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            await plugin.diary_save(date="2026-08-10", content="x")
+            await plugin.diary_write(date="2026-08-10", content="x")
         store.upsert_diary.assert_awaited_once_with("2026-08-10", "x", "")
 
     @pytest.mark.asyncio
@@ -239,7 +275,7 @@ class TestDiaryWrite:
         mem_dir.mkdir()
         store, _ = _fake_store(mem_dir)
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            result = await plugin.diary_save(date="2026-08-10", content="x")
+            result = await plugin.diary_write(date="2026-08-10", content="x")
         assert "Saved:" in result
         assert result.rstrip().replace("\\", "/").endswith("diary/2026-08-15.md")
         assert "URL:" not in result
@@ -346,8 +382,108 @@ class TestFileSave:
             await plugin.file_save(paths=[str(f)])
         manager.on_saved.assert_called_once()
 
+    def test_a_windows_path_is_not_a_url(self):
+        """The scheme decides what an entry is, and it has to be http/https
+        specifically: ``urlparse("C:\\\\x\\\\a.txt")`` answers ``scheme="c"``, so
+        "it has a scheme" would send every absolute Windows path to the
+        downloader."""
+        assert plugin._is_url("https://example.com/a.pdf") is True
+        assert plugin._is_url("HTTP://example.com/") is True
+        assert plugin._is_url("C:\\Users\\me\\a.pdf") is False
+        assert plugin._is_url("D:/data/a.pdf") is False
+        assert plugin._is_url("/home/me/a.pdf") is False
+        assert plugin._is_url("example.com/a.pdf") is False  # no scheme → a path
+        assert plugin._is_url("ftp://example.com/a.pdf") is False
 
-class TestUrlSave:
+    @pytest.mark.asyncio
+    async def test_one_list_may_hold_paths_and_urls(self, tmp_path):
+        """One intent — "put these in the cabinet" — so the caller holding a
+        link does not have to know which half of the tool it wanted."""
+        local = tmp_path / "a.txt"
+        local.write_text("local bytes")
+        mem_dir = tmp_path / "files"
+        mem_dir.mkdir()
+        store, _ = _fake_store(mem_dir)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
+             patch.object(plugin, "_download",
+                          AsyncMock(return_value=(b"page bytes", ""))):
+            result = await plugin.file_save(
+                paths=[str(local), "https://example.com/page.html"])
+        assert store.add_file.await_count == 2
+        # Each entry is filed by its own extension, so the two land in
+        # different categories: .txt is documents, .html is code.
+        assert (mem_dir / "files" / "documents" / "a.txt").read_text() == "local bytes"
+        assert (mem_dir / "files" / "code" / "page.html").read_bytes() == b"page bytes"
+        assert result.count("Saved:") == 2
+
+    @pytest.mark.asyncio
+    async def test_one_bad_entry_does_not_cost_the_others(self, tmp_path):
+        """A refused URL is that entry's error, reported beside the file that
+        did save — the same per-entry rule the local half has always had."""
+        local = tmp_path / "a.txt"
+        local.write_text("ok")
+        store, _ = _fake_store(tmp_path / "files")
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
+             patch.object(plugin, "_download",
+                          AsyncMock(return_value=(b"", "refusing URL — nope"))):
+            result = await plugin.file_save(
+                paths=[str(local), "https://169.254.169.254/x"])
+        assert "Error: refusing URL" in result
+        assert "Saved:" in result
+        assert store.add_file.await_count == 1
+
+
+class TestFileRemove:
+    @pytest.mark.asyncio
+    async def test_reports_the_path_it_removed(self, tmp_path):
+        store, _ = _fake_store(tmp_path / "files")
+        store.remove_file = AsyncMock(return_value=True)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.file_remove(path="files/documents/a.pdf")
+        assert out.startswith("Removed")
+        assert "files/documents/a.pdf" in out
+        store.remove_file.assert_awaited_once_with("files/documents/a.pdf")
+
+    @pytest.mark.asyncio
+    async def test_a_missing_file_is_an_error_not_a_silent_success(self, tmp_path):
+        store, _ = _fake_store(tmp_path / "files")
+        store.remove_file = AsyncMock(return_value=False)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.file_remove(path="files/documents/nope.pdf")
+        assert out.startswith("Error")
+        assert "nope.pdf" in out
+
+    @pytest.mark.asyncio
+    async def test_a_path_escaping_the_cabinet_is_refused(self, tmp_path):
+        """The store's only ValueError here is the path guard, and the tool
+        must report it rather than let it out as a traceback.  A bare
+        traversal string does not reach the guard — no row holds it, so the
+        answer is "not found" — but a row that *does* is the case the guard
+        exists for (see the store-level test)."""
+        store, _ = _fake_store(tmp_path / "files")
+        store.remove_file = AsyncMock(side_effect=ValueError("path escapes the files directory"))
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.file_remove(path="../../secrets.txt")
+        assert out.startswith("Error")
+        assert "escapes" in out
+
+    @pytest.mark.asyncio
+    async def test_a_locked_file_reports_instead_of_raising(self, tmp_path):
+        """Same Windows case as the note's: the bytes are held open, the unlink
+        fails before the row is touched, and the entry is still whole."""
+        store, _ = _fake_store(tmp_path / "files")
+        store.remove_file = AsyncMock(side_effect=PermissionError("in use by another process"))
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.file_remove(path="files/documents/a.pdf")
+        assert out.startswith("Error")
+        assert "in use" in out
+
+
+class TestFileSaveFromUrl:
+    """``file_save``'s URL half: an entry that is an http(s) URL is downloaded
+    rather than copied, and everything downstream of the bytes — the category,
+    the name, the row, the wake — is the same code the local half runs."""
+
     @pytest.mark.asyncio
     async def test_downloads_and_records(self, tmp_path):
         mem_dir = tmp_path / "files"
@@ -372,7 +508,7 @@ class TestUrlSave:
             async def read(self): return b"<html>Page</html>"
 
         def _fake_get(url, timeout=None, **kwargs):
-            # sync: url_save does ``async with session.get(...)``
+            # sync: file_save does ``async with session.get(...)``
             return _Resp()
 
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
@@ -382,7 +518,7 @@ class TestUrlSave:
             sess.__aenter__ = AsyncMock(return_value=sess)
             sess.__aexit__ = AsyncMock(return_value=None)
             sess_cls.return_value = sess
-            result = await plugin.url_save(url="https://8.8.8.8/page.html")
+            result = await plugin.file_save(paths=["https://8.8.8.8/page.html"])
         assert "Saved:" in result
         store.add_file.assert_awaited_once()
         assert store.add_file.await_args.kwargs["original_path"] == "https://8.8.8.8/page.html"
@@ -391,7 +527,7 @@ class TestUrlSave:
     async def test_refuses_non_public(self, tmp_path):
         store, _ = _fake_store(tmp_path / "files")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            result = await plugin.url_save(url="http://169.254.169.254/latest/meta-data/")
+            result = await plugin.file_save(paths=["http://169.254.169.254/latest/meta-data/"])
         assert result.startswith("Error: refusing URL")
         store.add_file.assert_not_awaited()
 
@@ -404,7 +540,7 @@ class TestUrlSave:
         then had the extension appended again, so "paper.pdf" landed as
         "paperpdf.pdf".
 
-        Tested through the pure derivation rather than a live ``url_save``:
+        Tested through the pure derivation rather than a live download:
         the real path runs an SSRF guard that resolves the host via
         ``socket.getaddrinfo``, so driving it with invented hostnames makes
         the assertion depend on the CI machine's DNS.  The wiring from these
@@ -877,12 +1013,13 @@ class TestCabinetStatus:
         assert data["semantic_ready"] is False
 
 
-# ── SSRF guard for url_save ───────────────────────────────────────────
+# ── SSRF guard for file_save's URL downloads ──────────────────────────
 
 
 class TestSaveUrlPublicGuard:
-    """url_save only fetches publicly reachable http(s) URLs — loopback /
-    LAN / cloud-metadata targets are refused (REVIEW §1-1).
+    """``file_save`` only *fetches* a publicly reachable http(s) URL — a local
+    path is copied, never fetched, so the guard covers one half of the tool.
+    Loopback / LAN / cloud-metadata targets are refused (REVIEW §1-1).
 
     The rule has three steps, and which one judges a *name* depends on whether
     the machine's resolver tells the truth, so the tests say which machine they
@@ -1041,16 +1178,144 @@ async def _search(store, query, *, kind="all", mode="fts5", limit=20, **kw):
 
 class TestMemfilesStore:
     @pytest.mark.asyncio
-    async def test_upsert_note_appends_and_mirrors_md(self, tmp_path):
+    async def test_upsert_note_replaces_the_body_and_mirrors_md(self, tmp_path):
+        """An edit is not an append: the note IS the text just written, and the
+        md mirror holds exactly that — no timestamped section, no leftovers."""
         store = await _real_store(tmp_path)
         try:
             first = await store.upsert_note("Python", "asyncio basics", "py")
             second = await store.upsert_note("Python", "more on await", "py")
-            # Same subject → same doc_id, md appended with a timestamped section
+            # Same subject → same row, same file
             assert first["doc_id"] == second["doc_id"]
+            assert first["file_path"] == second["file_path"]
             md = (tmp_path / "notes" / "python.md").read_text(encoding="utf-8")
-            assert "asyncio basics" in md and "more on await" in md
-            assert "##" in md  # appended section header
+            assert md == "# Python\n\nmore on await\n"
+            assert "asyncio basics" not in md
+            get = await store.get_note("Python")
+            assert get["content"] == md
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_upsert_note_keeps_tags_when_none_is_given(self, tmp_path):
+        """An edit that says nothing about tags must not wipe them — the
+        caller edited the body, and ``None`` is the module's "leave alone"
+        (``summarize`` draws the same line).  An empty string still clears."""
+        store = await _real_store(tmp_path)
+        try:
+            await store.upsert_note("Python", "asyncio", "py,async")
+            await store.upsert_note("Python", "more", None)
+            assert (await store.get_note("Python"))["tags"] == "py,async"
+            await store.upsert_note("Python", "more", "")
+            assert (await store.get_note("Python"))["tags"] == ""
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_remove_note_deletes_md_row_and_vectors(self, tmp_path):
+        """A removed note must leave nothing behind — not the md the user
+        browses, not the row, not the FTS entry, not the vectors."""
+        store = await _real_store(tmp_path, require_vec=True)
+        try:
+            note = await store.upsert_note("Python", "asyncio notes", "py")
+            md = tmp_path / note["file_path"]
+            assert md.is_file()
+            await store.replace_embedding_chunks(
+                {"kind": "note", "doc_id": note["doc_id"], "summary": "",
+                 "tags": "py", "created_at": "2026-01-01"},
+                [[0.1, 0.2, 0.3, 0.4]],
+            )
+            assert await store.count_unembedded() == 0
+
+            assert await store.remove_note("Python") is True
+
+            assert not md.exists()
+            assert await store.get_note("Python") is None
+            assert (await store.note_list())["total"] == 0
+            assert await store.count_unembedded() == 0  # the vectors went too
+            hits = await _search(store, "asyncio", kind="note", mode="fts5")
+            assert hits == []
+            # Re-creating the subject starts clean, not from the old text.
+            again = await store.upsert_note("Python", "fresh", "")
+            assert (tmp_path / again["file_path"]).read_text(
+                encoding="utf-8") == "# Python\n\nfresh\n"
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_remove_note_reports_a_missing_subject(self, tmp_path):
+        store = await _real_store(tmp_path)
+        try:
+            assert await store.remove_note("Nope") is False
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_remove_file_deletes_bytes_row_and_vectors(self, tmp_path):
+        """A removed file must leave nothing behind — not the bytes in the
+        cabinet, not the row, not the FTS entry, not the vectors — and it must
+        not touch the file the cabinet copied them *from*."""
+        store = await _real_store(tmp_path, require_vec=True)
+        try:
+            src = tmp_path / "outside" / "a.txt"
+            src.parent.mkdir()
+            src.write_text("original bytes")
+            entry = await store.add_file(
+                title="a.txt", original_path=str(src),
+                saved_path="files/documents/a.txt", mime="text/plain",
+                size=14, tags="t", summary="a memo",
+            )
+            saved = store.mem_dir / "files" / "documents" / "a.txt"
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            saved.write_text("copied bytes")
+            await store.replace_embedding_chunks(
+                {"kind": "file", "doc_id": entry["doc_id"], "summary": "a memo",
+                 "tags": "t", "created_at": "2026-01-01"},
+                [[0.1, 0.2, 0.3, 0.4]],
+            )
+            assert await store.count_unembedded() == 0
+            assert (await store.file_list())["total"] == 1
+
+            assert await store.remove_file("files/documents/a.txt") is True
+
+            assert not saved.exists()
+            assert src.read_text() == "original bytes"   # the source is the caller's
+            assert (await store.file_list())["total"] == 0
+            assert await store.count_unembedded() == 0
+            cur = await store._c.execute("SELECT COUNT(*) FROM files")
+            assert (await cur.fetchone())[0] == 0
+            hits = await store.keyword_hits(query="memo", kind="file", limit=5)
+            assert hits == []
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_remove_file_refuses_a_path_that_escapes(self, tmp_path):
+        """The key is cabinet-relative, and a row naming a file outside the
+        cabinet must not be able to delete it — the guard runs before anything
+        is removed, and the row stays."""
+        store = await _real_store(tmp_path)
+        outside = tmp_path.parent / "slife_remove_file_escape_probe.txt"
+        outside.write_text("not the cabinet's")
+        try:
+            await store.add_file(
+                title=outside.name, original_path="",
+                saved_path="../" + outside.name, mime="text/plain",
+                size=16, tags="", summary="",
+            )
+            with pytest.raises(ValueError):
+                await store.remove_file("../" + outside.name)
+            assert outside.read_text() == "not the cabinet's"
+            assert (await store.file_list())["total"] == 1
+        finally:
+            outside.unlink(missing_ok=True)
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_remove_file_reports_a_missing_path(self, tmp_path):
+        store = await _real_store(tmp_path)
+        try:
+            assert await store.remove_file("files/documents/nope.pdf") is False
         finally:
             await store.close()
 
@@ -1058,8 +1323,9 @@ class TestMemfilesStore:
     async def test_concurrent_same_subject_upserts_serialized(self, tmp_path):
         """D1 regression: concurrent upsert_note for the SAME subject (main
         agent + subagent sharing the plugin) must not race — both seeing
-        'no row' would hit notes.subject UNIQUE, and the md read-append-
-        rewrite would drop one writer's section.  The write lock serializes."""
+        'no row' would hit notes.subject UNIQUE, and two interleaved md writes
+        could leave the file and the row holding different text.  The write
+        lock serializes, so the row's content and the md agree."""
         store = await _real_store(tmp_path)
         try:
             n = 8
@@ -1068,14 +1334,15 @@ class TestMemfilesStore:
                 for i in range(n)
             ])
             assert len({r["doc_id"] for r in results}) == 1  # one row
-            md = (tmp_path / "notes" / "same.md").read_text(encoding="utf-8")
-            for i in range(n):
-                assert f"payload {i}" in md
             cur = await store._c.execute(
                 "SELECT COUNT(*) FROM notes WHERE subject='same'",
             )
             row = await cur.fetchone()
             assert row[0] == 1
+            md = (tmp_path / "notes" / "same.md").read_text(encoding="utf-8")
+            assert (await store.get_note("same"))["content"] == md
+            # One of the eight payloads, not a mix of them.
+            assert [f"payload {i}" in md for i in range(n)].count(True) == 1
         finally:
             await store.close()
 

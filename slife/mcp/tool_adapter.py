@@ -96,7 +96,7 @@ class MCPProxyTool(Tool):
 
         # Tool name: built-in plugin tools (DIRECT/WRAPPER) register under
         # their bare name (semantic, self-describing — e.g. "turn_search",
-        # "note_save", "mcp_set", "wechat_login"); they are first-class like
+        # "note_edit", "mcp_set", "wechat_login"); they are first-class like
         # builtin tools and the `{server}_` prefix inside the name is preserved
         # as-is where the plugin chose it.  External MCP server tools ALWAYS
         # keep the full "{server}__{tool}" namespace: applying a bare-name

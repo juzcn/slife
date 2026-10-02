@@ -1831,6 +1831,21 @@ extension with bytes staying on the filesystem, and semantically searchable from
 given at save time, or written later by `cabinet_summarize` for a file saved without one) and
 **report** (scheduled-task reports).
 
+**One save tool takes either source.** `file_save`'s entries are local paths or public http(s) URLs —
+a path is copied, a URL downloaded — because "put this in the cabinet" is one intent and the caller
+holding a link should not have to know which tool the byte's origin picked. The scheme decides, and it
+must be http/https specifically: a Windows path parses as a scheme of its own.
+
+**A note is a document; a diary and a report are logs.** `note_edit` writes the note the caller just
+wrote — the md mirror holds exactly that and nothing older — and `note_remove` deletes it again: the
+file, the row and the vectors. A saved **file** is one document too, so `file_remove` deletes the
+cabinet's copy of it — the bytes, the row and the vectors, and never what it was copied *from*, which
+`original_path` records. `diary_write` and `report_save` instead **append** a timestamped section to a
+key that already exists, because a day and a task's run *accumulate*: two entries under one date are
+two facts about it, not one correction of the other, and nothing in the later text says which part of
+the earlier one it replaces. So the two kinds that hold one current thing per key are the two with a
+remove tool, and the two that are logs are not.
+
 **The four kinds are ONE corpus.** There is a single full-text index and a single vector index for
 all of them, reached through a `cabinet_docs` view that normalizes each kind's own columns into the
 same four (a title, a body, its tags and its source) and reads every kind's time axis at one
@@ -1884,7 +1899,7 @@ saved. The vector's text contract is **versioned**
 (`memfiles.store.INDEX_TEXT_VERSION`, compared in the meta table), so changing it drops the stale
 vectors for the drainer to rebuild exactly as a model change does.
 
-URL saving guards against SSRF **before fetching and again on every redirect hop**, in three steps
+Saving a **URL** guards against SSRF **before fetching and again on every redirect hop**, in three steps
 whose order is the point: an IP **literal** is the destination whatever DNS does, so a non-public one
 is refused — bar the one address class the machine's own proxy owns; a name that **cannot be public**
 (a reserved TLD, or a bare label) is refused by name, which no answer can affect; and otherwise the
@@ -2302,7 +2317,7 @@ Each is a rule in the body now.
 | Should the model get a tool that rewrites its own context — system prompt, history, tool list — taking effect next iteration? | No, on two grounds. The selector that feeds the context is **internal** precisely so the model cannot move the conversation under itself; and the idea was priced and rejected, because it spends the prompt cache to buy a rearrangement ([§2.3](#23-recall--the-context-is-selected)). |
 | Should `local-embed` be health-checked when it is not the active embedding provider? | Yes. It is an ordinary child plugin with a `__check`, so the plugin contract holds uniformly and no special case was needed (`slife/plugins/spec.py`). |
 | Why does the sharefile tunnel fail under a TUN fake-IP proxy? | The resolver lies, and intercepted traffic breaks the tunnel's long-lived control connection. Both are measured facts now rather than mysteries ([§7.5](#75-the-file-cabinet)). |
-| Why does `url_save` refuse a URL my browser opens fine? | It arrived as an **IP literal** from that proxy's fake-IP pool, and a literal is judged by address whatever DNS does ([§7.5](#75-the-file-cabinet)). `net.fake_ip_exempt: auto` exempts the pools — and read what the exemption opens first: a pool also holds the proxy's own addresses. |
+| Why does `file_save` refuse a URL my browser opens fine? | It arrived as an **IP literal** from that proxy's fake-IP pool, and a literal is judged by address whatever DNS does ([§7.5](#75-the-file-cabinet)). `net.fake_ip_exempt: auto` exempts the pools — and read what the exemption opens first: a pool also holds the proxy's own addresses. |
 | What happens when a model switch changes the context window? | Answered by the per-turn rebuild. The next turn is rebuilt against the new window and sized to fit it, so a *smaller* window is absorbed by the selection rather than by a trim after the fact: **a recall's turns are not expected to overfill the context**, which is what makes the trim a guard instead of the bound ([§2.2](#22-context-window-management)). The tool-result cap is recomputed on the switch and the usage reading self-corrects. |
 | Is the per-turn discriminator worth a context-sized call? | **Yes — it is the design**, and it is proven usable in practice. That cost is the price of judging from the conversation, not a sign the arrangement is wrong, and [§2.3](#23-recall--the-context-is-selected) states it that way. Anything cheaper would have to keep the reason this step is a model call at all: a follow-up names its subject only through the conversation in hand, so a query written from the input alone retrieves nothing. |
 

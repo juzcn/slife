@@ -57,7 +57,7 @@ def create_tools_from_config(
         # non-vision model that calls it gets a clear "vision=false" refusal
         # instead of a silently-missing tool.
 
-        # Note: the cabinet + sharing tools (note_save / share_file)
+        # Note: the cabinet + sharing tools (note_edit / share_file)
         # live in their plugins (registered as proxy tools), not here — so
         # there is no tunnel-gating needed at builtin-tool load time.
 

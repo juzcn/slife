@@ -7,12 +7,15 @@ file-serving state directly.  Public sharing lives in a separate plugin
 (``sharefile``) — memfiles is the private cabinet only.
 
 Four typed knowledge stores (each md-mirrored on disk + SQLite-indexed):
-  - ``note_save(subject, …)`` — a private note keyed by subject, appended
-    to ``notes/<subject>.md``
-  - ``diary_save(date, …)``   — a private day's diary, appended to
+  - ``note_edit(subject, …)`` — a private note keyed by subject, written to
+    ``notes/<subject>.md`` (the edit replaces the note's body);
+    ``note_remove(subject)`` deletes it again
+  - ``diary_write(date, …)`` — a private day's diary, appended to
     ``diary/<date>.md``
-  - ``file_save`` / ``url_save`` — saved attachments (bytes on disk,
-    metadata + optional LLM ``summary`` in the SQLite index)
+  - ``file_save`` — saved attachments: one entry per file, an absolute local
+    path to copy or a public http(s) URL to download (bytes on disk, metadata
+    + optional LLM ``summary`` in the SQLite index); ``file_remove`` deletes
+    the cabinet's copy again
   - ``report_save(name?, …)`` — a report (notes/diary are also report
     documents); an optional ``name`` binds it to a scheduled task and
     confirms that task's run (pending → ran).  Reports double-write to
@@ -21,12 +24,13 @@ All save tools return the saved **local path** (clickable) — they never
 auto-publish.  ``cabinet_search`` hybrid-searches them (FTS5 + vec0, reusing
 memdb's SemanticManager and RRF merge); ``file_read`` re-opens a saved file.
 
-LLM-visible tools: ``note_save``, ``diary_save``, ``file_save``, ``url_save``,
-``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``file_list``,
-``cabinet_search``, ``cabinet_summarize``, ``file_read``, ``report_save``,
-``report_list``, ``report_read``. Semantic-index status goes through the
-plugin's internal ``__check`` (probed by the harness's ``system_health``), not
-an LLM tool.
+LLM-visible tools: ``note_edit``, ``note_remove``, ``diary_write``,
+``file_save``, ``file_remove``, ``note_list``, ``diary_list``,
+``note_read``, ``diary_read``, ``file_list``, ``cabinet_search``,
+``cabinet_summarize``, ``file_read``, ``report_save``, ``report_list``,
+``report_read``.
+Semantic-index status goes through the plugin's internal ``__check`` (probed by
+the harness's ``system_health``), not an LLM tool.
 The scheduled-task tools (``scheduled_task_*`` / ``scheduled_run_*``) are builtin
 in ``slife/tools/schedule.py`` (category "Schedule"); this plugin only exposes
 the ``__scheduled_*`` data layer they call over the memfiles MCP client.
@@ -76,8 +80,8 @@ from slife.server_utils import (
     warm_after_ready,
 )
 
-# Hard cap on url_save downloads — a multi-GB public URL must not OOM the
-# plugin process by buffering the whole body.
+# Hard cap on a ``file_save`` URL download — a multi-GB public URL must not OOM
+# the plugin process by buffering the whole body.
 _MAX_SAVE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 #: How much of a file ``file_read`` sniffs before calling it binary.  A NUL
@@ -122,12 +126,13 @@ def _decode_text(raw: bytes) -> tuple[str, str] | None:
     return str(best), best.encoding
 
 
-#: Serializes the save path-claim + file write + DB insert (file_save /
-#: url_save).  ``_unique_path`` is an exists-then-write claim — without a lock,
+#: Serializes ONE saved file's path-claim + write + DB insert (``file_save``).
+#: ``_unique_path`` is an exists-then-write claim — without a lock,
 #: two concurrent saves of the same name both pick the same free path and the
 #: second overwrites the first's bytes while two DB rows point at the file
 #: (D1).  Subagents share this plugin over HTTP, so the lock covers the main
-#: agent + subagent writers.
+#: agent + subagent writers.  Taken per file, not around the whole call: a
+#: download waiting on the network has no business holding it.
 _save_lock = asyncio.Lock()
 
 
@@ -179,10 +184,10 @@ mcp, _log_path, logger = create_plugin_server(
     "slife-memfiles",
     instructions=(
         "slife-memfiles — notes / diary / files cabinet (private). "
-        "note_save / diary_save / file_save / url_save all return the saved "
-        "local path (clickable) — they never auto-publish. file_save / "
-        "url_save store one or more files with an optional LLM summary "
-        "(given at save time) for semantic search. cabinet_search finds them "
+        "note_edit / diary_write / file_save all return the saved local path "
+        "(clickable) — they never auto-publish. file_save copies local files "
+        "and downloads public http(s) URLs into the cabinet, taking an "
+        "optional LLM summary for semantic search. cabinet_search finds them "
         "by hybrid (keyword + semantic) search; file_read re-opens a "
         "saved file. To publish a local file as a public HTTPS URL, call the "
         "separate sharefile plugin's share_file explicitly. "
@@ -328,25 +333,26 @@ def _detect_category(filename: str, override: str = "") -> str:
 
 
 @mcp.tool(
-    name="note_save",
+    name="note_edit",
     description=(
-        "Write or update a private note for a subject (notes/<subject>.md), "
-        "re-indexed for search."
+        "Write a private note for a subject (notes/<subject>.md), replacing "
+        "the body it held, and re-index it for search."
     ),
 )
-async def note_save(
+async def note_edit(
     subject: str, content: str, tags: str | None = None,
 ) -> str:
-    """Write or update a private note for a subject.
+    """Write a private note for a subject.
 
     Args:
         subject: Subject — also the filename (notes/<subject>.md).
-        content: The note body (Markdown).
-        tags: Comma-separated tags for search.
+        content: The note body (Markdown); it replaces the note's current body.
+        tags: Comma-separated tags for search. Omit to keep the note's current
+            tags.
     """
     store = await _ensure_store()
     try:
-        info = await store.upsert_note(subject, content, tags or "")
+        info = await store.upsert_note(subject, content, tags)
     except ValueError as e:
         return f"Error: {e}"
     if _manager is not None:
@@ -355,13 +361,39 @@ async def note_save(
 
 
 @mcp.tool(
-    name="diary_save",
+    name="note_remove",
     description=(
-        "Write a date's diary entry (diary/<date>.md; default today), "
-        "re-indexed for search."
+        "Delete a note — its markdown file, its index entry and its vectors — "
+        "by subject."
     ),
 )
-async def diary_save(
+async def note_remove(subject: str) -> str:
+    """Delete a note.
+
+    Args:
+        subject: The note's subject (from note_list).
+    """
+    store = await _ensure_store()
+    try:
+        removed = await store.remove_note(subject)
+    except OSError as e:
+        # Windows holds the md open (an editor, a viewer).  The store unlinks
+        # before it deletes the row, so this failure left the note whole.
+        return f"Error: cannot remove {subject} — {e}"
+    if not removed:
+        return f"Error: note not found — {subject}"
+    return f"Removed note '{subject}'."
+
+
+@mcp.tool(
+    name="diary_write",
+    description=(
+        "Write a date's diary entry (diary/<date>.md; default today) — a "
+        "later write of the same date appends a section rather than "
+        "replacing the day — re-indexed for search."
+    ),
+)
+async def diary_write(
     date: str | None = None, content: str = "", tags: str | None = None,
 ) -> str:
     """Write today's (or a given date's) diary entry.
@@ -385,19 +417,22 @@ async def diary_save(
 @mcp.tool(
     name="file_save",
     description=(
-        "Copy local file(s) into the cabinet (files/<category>/ by "
-        "extension); an optional summary enables semantic search."
+        "Copy local files, or download public http(s) URLs, into the cabinet "
+        "(files/<category>/ by extension); an optional summary enables "
+        "semantic search."
     ),
 )
 async def file_save(
     paths: list[str], title: str = "", tags: str | None = None,
     summary: str = "", category: str = "",
 ) -> str:
-    """Copy local files into the cabinet and record them.
+    """Copy local files, or download public URLs, into the cabinet.
 
     Args:
-        paths: Absolute paths of the files to copy.
-        title: Display title (default: the source filename).
+        paths: One entry per file — an absolute local path, or a public
+            http(s) URL to download.
+        title: Display title (default: the source filename, or one derived
+            from the URL).
         tags: Comma-separated tags for search.
         summary: LLM summary (enables semantic search).
         category: Subfolder override (files/<category>/); auto-detected by extension.
@@ -408,8 +443,22 @@ async def file_save(
     files_dir.mkdir(parents=True, exist_ok=True)
     results = []
     saved_any = False
-    async with _save_lock:
-        for p in paths:
+    for p in paths:
+        # Everything a source needs to become a row is settled BEFORE the lock.
+        # For a URL that is the download itself, and it is the reason the lock
+        # is taken per file rather than around the loop: a fetch inside it would
+        # hold up every other save for as long as the network takes.
+        raw: bytes | None = None
+        src: Path | None = None
+        if _is_url(p):
+            raw, err = await _download(p)
+            if err:
+                results.append(f"Error: {err}")
+                continue
+            url_name, display_title, stem, ext = _url_name_parts(urlparse(p), title)
+            name = url_name or display_title
+            mime = mimetypes.guess_type(url_name)[0] or ""
+        else:
             src = Path(p)
             if not src.exists():
                 results.append(f"Error: file not found — {p}")
@@ -426,16 +475,28 @@ async def file_save(
             # src.stem verbatim — that is already a legal filename, and
             # slugifying it would spend case and CJK for nothing.
             stem = (_name_to_stem(title, src.suffix) if title else "") or src.stem or "file"
+            ext = src.suffix
             display_title = title or src.name
-            cat_dir = files_dir / _detect_category(src.name, category)
-            cat_dir.mkdir(parents=True, exist_ok=True)
-            saved = _unique_path(cat_dir, stem, src.suffix)
-            shutil.copy2(src, saved)
-            rel = saved.relative_to(mem_dir).as_posix()
+            name = src.name
             mime = mimetypes.guess_type(str(src))[0] or ""
+
+        # The claim (``_unique_path``), the write and the row go together for
+        # one file: without the lock, two concurrent saves of the same name both
+        # pick the same free path, and the second overwrites the first's bytes
+        # while two rows point at the file (D1).
+        async with _save_lock:
+            cat_dir = files_dir / _detect_category(name, category)
+            cat_dir.mkdir(parents=True, exist_ok=True)
+            saved = _unique_path(cat_dir, stem, ext)
+            if raw is not None:
+                saved.write_bytes(raw)
+            else:
+                assert src is not None
+                shutil.copy2(src, saved)
+            rel = saved.relative_to(mem_dir).as_posix()
             await store.add_file(
-                title=display_title, original_path=str(src), saved_path=rel,
-                mime=mime, size=src.stat().st_size, tags=tags or "",
+                title=display_title, original_path=p, saved_path=rel,
+                mime=mime, size=saved.stat().st_size, tags=tags or "",
                 summary=summary,
             )
             saved_any = True
@@ -448,6 +509,74 @@ async def file_save(
     if _manager is not None and saved_any:
         _manager.on_saved()
     return "\n".join(results)
+
+
+def _is_url(source: str) -> bool:
+    """Whether a ``file_save`` entry is a URL to download, not a path to copy.
+
+    The scheme is the whole test, and it has to be http/https *specifically*: a
+    Windows path parses as a scheme of its own (``urlparse("C:\\\\x\\\\a.txt")``
+    answers ``scheme="c"``), so "it has a scheme" would call every absolute
+    Windows path a URL.  A bare ``example.com/a.pdf`` has no scheme and is read
+    as a path — a caller that means a URL writes one.
+    """
+    return urlparse(source).scheme.lower() in ("http", "https")
+
+
+async def _download(url: str) -> tuple[bytes, str]:
+    """Fetch a public http(s) *url*: ``(bytes, "")``, or ``(b"", error)``.
+
+    Bounded in both directions — 5 redirects at most, 50 MB at most — and the
+    SSRF guard re-runs immediately before EVERY hop's fetch, so a public URL
+    that 302s to ``169.254.169.254`` (cloud metadata) is refused rather than
+    followed.
+    """
+    import aiohttp
+
+    from slife.threads import run_daemon
+
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return b"", f"invalid URL — {url}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            current = url
+            # Follow redirects manually — see the guard re-run above.
+            for _ in range(5):
+                err = await run_daemon(_reject_non_public_url, current)
+                if err:
+                    return b"", f"refusing URL — {err}"
+                async with session.get(
+                    current,
+                    timeout=aiohttp.ClientTimeout(
+                        total=_timeouts.timeouts.transport.url_download,
+                    ),
+                    allow_redirects=False,
+                ) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("Location")
+                        if not location:
+                            return b"", f"redirect without Location — {url}"
+                        current = urljoin(current, location)
+                        continue
+                    if resp.status != 200:
+                        return b"", f"HTTP {resp.status} — {url}"
+                    # Stream with a hard size cap — a multi-GB public URL must
+                    # not OOM the plugin by buffering the whole body in RAM.
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in resp.content.iter_chunked(65536):
+                        size += len(chunk)
+                        if size > _MAX_SAVE_BYTES:
+                            return b"", (
+                                f"file too large "
+                                f"({size // (1024 * 1024)}MB > 50MB)"
+                            )
+                        chunks.append(chunk)
+                    return b"".join(chunks), ""
+    except Exception as e:
+        return b"", f"download failed — {e}"
+    return b"", f"too many redirects — {url}"
 
 
 def _url_name_parts(parsed, title: str) -> tuple[str, str, str, str]:
@@ -495,105 +624,33 @@ def _url_name_parts(parsed, title: str) -> tuple[str, str, str, str]:
 
 
 @mcp.tool(
-    name="url_save",
+    name="file_remove",
     description=(
-        "Download a public http(s) URL into the cabinet (files/<category>/ by "
-        "extension); an optional summary enables semantic search."
+        "Delete a saved file — the cabinet's copy of it, its index entry and "
+        "its vectors — by its cabinet-relative path. The file it was saved "
+        "from is left alone."
     ),
 )
-async def url_save(
-    url: str, title: str = "", tags: str | None = None, summary: str = "",
-    category: str = "",
-) -> str:
-    """Download a public http(s) URL into the cabinet and record it.
+async def file_remove(path: str) -> str:
+    """Delete a saved file from the cabinet.
 
     Args:
-        url: The public http(s) URL to download.
-        title: Display title (default: derived from the URL).
-        tags: Comma-separated tags for search.
-        summary: LLM summary (enables semantic search).
-        category: Subfolder override (files/<category>/); auto-detected by extension.
+        path: Relative path under the cabinet, as returned by file_save /
+            cabinet_search / file_list.
     """
-    import aiohttp
-
     store = await _ensure_store()
-    mem_dir = store.mem_dir
-    files_dir = mem_dir / "files"
-    files_dir.mkdir(parents=True, exist_ok=True)
-
-    parsed = urlparse(url)
-    if not parsed.scheme or not parsed.netloc:
-        return f"Error: invalid URL — {url}"
-
-    # SSRF guard — only publicly reachable http(s) URLs may be fetched.
-    from slife.threads import run_daemon
-
-    err = await run_daemon(_reject_non_public_url, url)
-    if err:
-        return f"Error: refusing URL — {err}"
-
-    raw: bytes | None = None
     try:
-        async with aiohttp.ClientSession() as session:
-            current = url
-            # Follow redirects manually, re-running the SSRF guard on every
-            # hop — a public URL that 302s to 169.254.169.254 (cloud metadata)
-            # must not be fetched and published.  Bounded chain, no loop.
-            for _ in range(5):
-                err = await run_daemon(_reject_non_public_url, current)
-                if err:
-                    return f"Error: refusing URL — {err}"
-                async with session.get(
-                    current,
-                    timeout=aiohttp.ClientTimeout(
-                        total=_timeouts.timeouts.transport.url_download,
-                    ),
-                    allow_redirects=False,
-                ) as resp:
-                    if resp.status in (301, 302, 303, 307, 308):
-                        location = resp.headers.get("Location")
-                        if not location:
-                            return f"Error: redirect without Location — {url}"
-                        current = urljoin(current, location)
-                        continue
-                    if resp.status != 200:
-                        return f"Error: HTTP {resp.status} — {url}"
-                    # Stream with a hard size cap — a multi-GB public URL must
-                    # not OOM the plugin by buffering the whole body in RAM.
-                    chunks: list[bytes] = []
-                    size = 0
-                    async for chunk in resp.content.iter_chunked(65536):
-                        size += len(chunk)
-                        if size > _MAX_SAVE_BYTES:
-                            return (
-                                f"Error: file too large "
-                                f"({size // (1024 * 1024)}MB > 50MB)"
-                            )
-                        chunks.append(chunk)
-                    raw = b"".join(chunks)
-                    break
-    except Exception as e:
-        return f"Error: download failed — {e}"
-    if raw is None:
-        return f"Error: too many redirects — {url}"
-
-    url_name, display_title, stem, ext = _url_name_parts(parsed, title)
-    async with _save_lock:
-        cat_dir = files_dir / _detect_category(url_name or display_title, category)
-        cat_dir.mkdir(parents=True, exist_ok=True)
-        saved = _unique_path(cat_dir, stem, ext or "")
-        saved.write_bytes(raw)
-        rel = saved.relative_to(mem_dir).as_posix()
-        mime = mimetypes.guess_type(url_name)[0] or ""
-        await store.add_file(
-            title=display_title, original_path=url, saved_path=rel,
-            mime=mime, size=len(raw), tags=tags or "", summary=summary,
-        )
-    # Woken for the same reason as file_save's: the row is embeddable from the
-    # save, summary or not.
-    if _manager is not None:
-        _manager.on_saved()
-    return _saved_result(saved)
+        removed = await store.remove_file(path)
+    except ValueError as e:
+        return f"Error: {e}"
+    except OSError as e:
+        # Windows holds a file open (something is reading it — a download being
+        # served, an editor).  The store unlinks before it deletes the row, so
+        # this failure left the entry whole rather than half-removed.
+        return f"Error: cannot remove {path} — {e}"
+    if not removed:
+        return f"Error: file not found — {path}"
+    return f"Removed file '{path}'."
 
 
 @mcp.tool(
@@ -922,7 +979,7 @@ async def note_read(subject: str) -> str:
     """Read a note's full content.
 
     Args:
-        subject: The note's subject (from note_list / note_save).
+        subject: The note's subject (from note_list / note_edit).
     """
     store = await _ensure_store()
     note = await store.get_note(subject)
@@ -939,7 +996,7 @@ async def diary_read(date: str) -> str:
     """Read a day's diary full content.
 
     Args:
-        date: The diary date, YYYY-MM-DD (from diary_list / diary_save).
+        date: The diary date, YYYY-MM-DD (from diary_list / diary_write).
     """
     store = await _ensure_store()
     entry = await store.get_diary(date)
@@ -1305,14 +1362,14 @@ async def report_read(report_id: int) -> str:
     return report["content"]
 
 
-# ── SSRF guard (shared with url_save) ─────────────────────────────
+# ── SSRF guard (file_save's URL downloads) ────────────────────────
 
 
 def _reject_non_public_url(url: str) -> str | None:
     """Return an error message if *url* is not a publicly reachable http(s)
     URL, else None.
 
-    SSRF guard for ``url_save``: this plugin process fetches *url*, so a
+    SSRF guard for ``file_save``: this plugin process fetches *url*, so a
     loopback / LAN / cloud-metadata target (``169.254.169.254`` etc.) would
     let the LLM read addresses the user's browser can't reach — and with the
     ngrok tunnel up, the response would be published as a public file.
@@ -1344,7 +1401,7 @@ def _reject_non_public_url(url: str) -> str | None:
        machine (see ``slife.net``).  What the proxy resolves is the proxy's
        business; the teeth are steps 1 and 2.
 
-    ``url_save`` re-runs this guard on EVERY redirect hop immediately before
+    ``file_save`` re-runs this guard on EVERY redirect hop immediately before
     that hop's fetch (an earlier comment claiming redirect chains are not
     re-checked was stale).  Residual DNS-rebinding TOCTOU on step 3: the guard
     resolves via ``socket.getaddrinfo``, then aiohttp performs its own fresh

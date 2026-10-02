@@ -10,7 +10,7 @@ problem and is reported rather than fixed.
 Two components care about the same addresses and want **opposite things** from
 them:
 
-* ``url_save``'s SSRF guard must not read a synthetic answer as "this is LAN or
+* ``file_save``'s SSRF guard must not read a synthetic answer as "this is LAN or
   metadata infrastructure" — believing that refused every public URL on such a
   machine.  It must, however, still refuse a destination that really is LAN or
   metadata.
@@ -95,7 +95,7 @@ import uuid
 #: addresses (on the machine this was measured, the TUN interface is
 #: ``198.18.0.1/30`` and Clash's DNS ``198.18.0.2``), so a literal aimed at one
 #: of those reaches the local machine rather than the proxy's reverse mapping —
-#: see ``url_save``'s guard, which carries the residual.  Every other address in
+#: see ``file_save``'s guard, which carries the residual.  Every other address in
 #: these ranges is unreachable as a destination: either the proxy maps it back
 #: to a name, or nothing answers.
 FAKE_IP_NETS: tuple[

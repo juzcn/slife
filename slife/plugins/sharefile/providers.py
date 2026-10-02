@@ -288,7 +288,7 @@ class _TunnelProviderBase:
         Reported as a fact — the caller owns the remedy, which is on the user's
         proxy config, not in slife.
 
-        This is the same pair of facts ``url_save``'s SSRF guard *exempts*,
+        This is the same pair of facts ``file_save``'s SSRF guard *exempts*,
         read for the opposite reason: a fake-ip answer means "the proxy is in
         the path", which is fine for a fetch and fatal for a long-lived
         connection.  Both come from ``slife.net``.

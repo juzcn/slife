@@ -335,10 +335,11 @@ class MemfilesStore(VecStoreLifecycleMixin):
         #: false — an unset attribute there is an AttributeError in the probe.
         self._vec_reason = ""
         # Serializes multi-statement read-modify-write writes (upsert_note /
-        # upsert_diary / upsert_report): aiosqlite lets coroutines interleave
-        # between awaited statements, so two concurrent upserts of the same
-        # subject/date/title could both see "no row" (UNIQUE IntegrityError)
-        # or drop one writer's appended section.  Same reason memdb carries
+        # upsert_diary / upsert_report / remove_note): aiosqlite lets coroutines
+        # interleave between awaited statements, so two concurrent upserts of
+        # the same subject/date/title could both see "no row" (UNIQUE
+        # IntegrityError), and a remove interleaved into a write could drop the
+        # md of a note that still has a row.  Same reason memdb carries
         # one — subagents share this plugin over HTTP, so the lock covers the
         # main agent + subagent writers in this one process.
         self._write_lock = asyncio.Lock()
@@ -412,66 +413,130 @@ class MemfilesStore(VecStoreLifecycleMixin):
 
     # ── document writes (md mirrored) ──────────────────────────────
 
-    async def upsert_note(self, subject: str, content: str, tags: str) -> dict:
-        """Append a timestamped section to the subject's note (md + DB row).
+    async def upsert_note(
+        self, subject: str, content: str, tags: str | None = None,
+    ) -> dict:
+        """Write the subject's note, replacing the body it held (md + DB row).
 
-        The whole read-modify-write (existing md + SELECT + UPDATE/INSERT +
-        commit) runs under the store write lock: without it, two concurrent
-        upserts (main agent + a subagent sharing this plugin) can both see
-        "no row" and hit ``notes.subject UNIQUE``, or the md read-append-
-        rewrite drops one writer's section.
+        An edit, not an append: the note is the document the caller just wrote,
+        and its md mirror holds exactly that.
+
+        The whole write (SELECT + file write + UPDATE/INSERT + commit) runs
+        under the store write lock: without it, two concurrent writes (main
+        agent + a subagent sharing this plugin) can both see "no row" and hit
+        ``notes.subject UNIQUE``.
+
+        ``tags=None`` leaves the note's current tags alone; an empty string
+        clears them (same rule as :meth:`summarize`).
         """
         if not subject.strip() or not content.strip():
             raise ValueError("subject and content are required")
         async with self._write_lock:
             slug = _slugify(subject) or "note"
             now = _now()
-            body = content.strip()
+            new_md = f"# {subject}\n\n{content.strip()}\n"
 
-            # The row's OWN file path is authoritative: re-appending to the
-            # same subject reuses it.  A NEW subject whose slug collides with
-            # an existing note (e.g. "API Design" vs "API-Design" → both
+            # The row's OWN file path is authoritative: an edit rewrites the
+            # file the note already owns.  A NEW subject whose slug collides
+            # with an existing note (e.g. "API Design" vs "API-Design" → both
             # "api-design") must get a DISTINCT file — otherwise the two rows
-            # would share one md, and updating either re-reads the merged
-            # content (content bleeds across notes) (D2).
+            # would share one md, and an edit of either would overwrite the
+            # other's content (content bleeds across notes) (D2).
             cursor = await self._c.execute(
-                "SELECT id, file_path FROM notes WHERE subject = ?", (subject,),
+                "SELECT id, file_path, tags FROM notes WHERE subject = ?",
+                (subject,),
             )
             row = await cursor.fetchone()
             if row:
                 doc_id = row["id"]
                 rel = row["file_path"]
+                kept_tags = row["tags"]
             else:
                 notes_dir = self._mem_dir / "notes"
                 rel = "notes/" + _unique_path(notes_dir, slug, ".md").name
                 doc_id = None
+                kept_tags = ""
+            written_tags = kept_tags if tags is None else tags
 
             abs_path = self._mem_dir / rel
             abs_path.parent.mkdir(parents=True, exist_ok=True)
-            if abs_path.exists():
-                existing = abs_path.read_text(encoding="utf-8").rstrip()
-                new_md = f"{existing}\n\n## {now}\n\n{body}\n"
-            else:
-                new_md = f"# {subject}\n\n{body}\n"
             abs_path.write_text(new_md, encoding="utf-8")
 
             if doc_id is not None:
                 await self._c.execute(
                     "UPDATE notes SET content=?, tags=?, updated_at=? "
                     "WHERE id=?",
-                    (new_md, tags, now, doc_id),
+                    (new_md, written_tags, now, doc_id),
                 )
                 await self._clear_doc_chunks("note", doc_id)
             else:
                 cursor = await self._c.execute(
                     "INSERT INTO notes (subject, content, tags, file_path, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    (subject, new_md, tags, rel, now, now),
+                    (subject, new_md, written_tags, rel, now, now),
                 )
                 doc_id = cursor.lastrowid
             await self._c.commit()
             return {"kind": "note", "doc_id": doc_id, "key": subject,
                     "file_path": rel, "content": new_md}
+
+    async def remove_note(self, subject: str) -> bool:
+        """Delete a note: its md mirror, its row and its vectors.
+
+        Returns True if a note was removed.  The FTS row follows the row's
+        deletion (``notes_ad``), and the vectors have to go by hand because
+        ``cabinet_semantic`` is not keyed to the table.
+
+        Under the write lock, so a concurrent write of the same subject cannot
+        recreate the md between the row's deletion and the file's — which would
+        leave a file the cabinet no longer indexes.
+        """
+        async with self._write_lock:
+            cursor = await self._c.execute(
+                "SELECT id, file_path FROM notes WHERE subject = ?", (subject,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return False
+            # The md first: it is a mirror of the row's content, so a failure
+            # here leaves the note whole.  The other order would leave a file
+            # the cabinet no longer knows about.
+            (self._mem_dir / row["file_path"]).unlink(missing_ok=True)
+            await self._clear_doc_chunks("note", row["id"])
+            await self._c.execute("DELETE FROM notes WHERE id = ?", (row["id"],))
+            await self._c.commit()
+            return True
+
+    async def remove_file(self, saved_path: str) -> bool:
+        """Delete a saved file: the cabinet's bytes, its row and its vectors.
+
+        Returns True if a file was removed.  Only the cabinet's own copy goes:
+        ``original_path`` records where the bytes were copied (or downloaded)
+        *from*, and that file is the caller's, not ours to delete.
+
+        Under the write lock, for the same reason as :meth:`remove_note` — and
+        the unlink runs first, so a path that cannot be removed leaves the row
+        in place rather than pointing at bytes that are gone.
+        """
+        async with self._write_lock:
+            # Deleted by key rather than by one id: ``saved_path`` is not
+            # UNIQUE in the schema (``_unique_path`` is what keeps it so in
+            # practice), and a duplicate left behind would be a row naming
+            # bytes this call just removed.
+            cursor = await self._c.execute(
+                "SELECT id FROM files WHERE saved_path = ?", (saved_path,),
+            )
+            doc_ids = [r["id"] for r in await cursor.fetchall()]
+            if not doc_ids:
+                return False
+            self.resolve_safe_path(saved_path).unlink(missing_ok=True)
+            for doc_id in doc_ids:
+                await self._clear_doc_chunks("file", doc_id)
+            await self._c.execute(
+                "DELETE FROM files WHERE saved_path = ?", (saved_path,),
+            )
+            await self._c.commit()
+            return True
 
     async def upsert_diary(self, date: str, content: str, tags: str) -> dict:
         """Append a timestamped section to a day's diary (md + DB row).

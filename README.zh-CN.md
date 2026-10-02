@@ -271,7 +271,7 @@ OpenAI 后端上的 `compat.thinking`：`"omit"` 不发送 thinking 字段（给
 
 **fake-IP** 模式的本地代理（Clash / mihomo / sing-box TUN）会用自己地址池里的地址回答每一个域名——IPv4 通常是 `198.18.0.0/15`，IPv6 是 `2001:2::/48` 或某个 ULA 段——等连接到达时再把地址映射回域名。Slife 开箱即可在这种代理后面工作：解析出的地址从不会被当作"连接会落到哪里"的证据，因为 resolver 是否说谎是**实测**的，不是假定的。
 
-只有一种情况默认关闭。`url_save` 会拒绝以这种池中**IP 字面量**形式到来的 URL，因为非公网地址通常就是 LAN 或云 metadata 基础设施。如果你确实在这种代理后面，而某个 URL 反复以池中地址出现（重定向的 `Location:` 头，或模型从页面里抄下来的链接），就把豁免打开：
+只有一种情况默认关闭。`file_save` 会拒绝以这种池中**IP 字面量**形式到来的 URL，因为非公网地址通常就是 LAN 或云 metadata 基础设施。如果你确实在这种代理后面，而某个 URL 反复以池中地址出现（重定向的 `Location:` 头，或模型从页面里抄下来的链接），就把豁免打开：
 
 ```yaml
 net:
@@ -326,7 +326,7 @@ net:
 | `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`（有截断——其余用 `tool_search` 找） |
 | `memdb` | `turn_search`, `turn_list`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `note_save`, `diary_save`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `cabinet_summarize`, `file_read`, `report_save`, `report_list`, `report_read` |
+| `memfiles` | `note_edit`, `note_remove`, `diary_write`, `file_save`, `file_remove`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `cabinet_summarize`, `file_read`, `report_save`, `report_list`, `report_read` |
 | `sharefile` | `share_file`, `sharefile_unshare` |
 | `a2a` | `a2a_send_message`（异步——返回 task_id，结果稍后自动推送）、`a2a_cancel_task`、`a2a_list_agents`、`a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |

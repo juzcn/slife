@@ -273,7 +273,7 @@ models:
 
 A local proxy in **fake-IP** mode (Clash / mihomo / sing-box TUN) answers every hostname with an address from a pool of its own — typically `198.18.0.0/15` for IPv4, `2001:2::/48` or a ULA range for IPv6 — and maps the address back to the name when the connection arrives. Slife works behind one out of the box: a resolved address is never treated as evidence about where a connection lands, because whether the resolver lies is **measured** rather than assumed.
 
-One case is off by default. `url_save` refuses a URL that arrives as an **IP literal** from such a pool, because a non-public address is normally LAN or cloud-metadata infrastructure. Turn the exemption on if you are behind such a proxy and a URL keeps arriving as a pool address — a redirect `Location:` header, or a link the model copied out of a page:
+One case is off by default. `file_save` refuses a URL that arrives as an **IP literal** from such a pool, because a non-public address is normally LAN or cloud-metadata infrastructure. Turn the exemption on if you are behind such a proxy and a URL keeps arriving as a pool address — a redirect `Location:` header, or a link the model copied out of a page:
 
 ```yaml
 net:
@@ -327,7 +327,7 @@ Every tool accepts three meta-parameters: `_timeout` (per-call override), `_asyn
 | `mcp-gateway` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` (capped — `tool_search` finds the rest) |
 | `memdb` | `turn_search`, `turn_list`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `note_save`, `diary_save`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `cabinet_summarize`, `file_read`, `report_save`, `report_list`, `report_read` |
+| `memfiles` | `note_edit`, `note_remove`, `diary_write`, `file_save`, `file_remove`, `note_list`, `diary_list`, `note_read`, `diary_read`, `file_list`, `cabinet_search`, `cabinet_summarize`, `file_read`, `report_save`, `report_list`, `report_read` |
 | `sharefile` | `share_file`, `sharefile_unshare` |
 | `a2a` | `a2a_send_message` (async — returns a task_id, the result pushes back later), `a2a_cancel_task`, `a2a_list_agents`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
