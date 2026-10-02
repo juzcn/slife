@@ -76,7 +76,7 @@ async def main(allowed_dir: str | None = None):
 
     # ── 4. List tools from filesystem server ──────────────────────
     print("4. Listing tools from filesystem server...")
-    tools_result = await client.call_tool("mcp_list_tools", {"server": "fs"})
+    tools_result = await client.call_tool("mcp_list_tools", {"name": "fs"})
     print(tools_result)
     print()
 

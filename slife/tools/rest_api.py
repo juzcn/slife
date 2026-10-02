@@ -269,8 +269,8 @@ class RestApiListToolsTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncomp
             "limit": {
                 "type": "integer",
                 "description": (
-                    "Max operations to list (0 = the configured cap, "
-                    "mcp.tool_list_limit)."
+                    "Max operations to list; omit for the configured cap "
+                    "(mcp.tool_list_limit)."
                 ),
             },
         },
@@ -279,7 +279,7 @@ class RestApiListToolsTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncomp
 
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
-        limit: int = kwargs.get("limit") or 0
+        limit: int | None = kwargs.get("limit")
 
         if name not in mcp_gateway_config.list_rest_apis():
             return f"'{name}' not found in rest_apis. Use rest_api_list."
@@ -291,7 +291,7 @@ class RestApiListToolsTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncomp
         # The gateway applies the cap, so this tool never slices a list: one
         # implementation decides how much context a listing may spend, and it
         # is the same one mcp_list_tools uses.
-        cap = mcp_gateway_config.tool_list_limit() if limit <= 0 else limit
+        cap = limit if limit else mcp_gateway_config.tool_list_limit()
         try:
             raw = await mcp.call_tool(  # type: ignore[union-attr]
                 "__mcp_list_tools", {"server": name, "limit": cap},

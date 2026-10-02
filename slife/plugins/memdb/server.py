@@ -21,6 +21,7 @@ import re
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from slife.agent.message_history import TokenizerUnavailable, estimate_turn_tokens
 from slife.plugins.memdb.recall import (
@@ -576,21 +577,23 @@ async def __memory_context_turns_clear() -> str:
 @mcp.tool(
     name="turn_search",
     description=(
-        "Search turns (each result carries its turn_id): mode hybrid "
-        "(default)/fts5/grep (regex). Use turn_read for a full turn, or "
-        "turn_list to browse. since/until window the search — "
+        "Search turns (each result carries its turn_id). Use turn_read for a "
+        "full turn, or turn_list to browse. since/until window the search — "
         + BOUND_GRAMMAR + "."
     ),
 )
 async def turn_search(
-    query: str, mode: str = "hybrid", limit: int = 20,
+    query: str,
+    mode: Literal["hybrid", "fts5", "grep"] = "hybrid",
+    limit: int = 20,
     since: str | None = None, until: str | None = None,
 ) -> str:
     """Search the turn history (each result = one turn).
 
     Args:
         query: The search text.
-        mode: hybrid (default) | fts5 | grep (regex).
+        mode: hybrid fuses the semantic and keyword legs; fts5 is keyword
+            only; grep is a regex scan.
         limit: Maximum results.
         since: Lower bound on when the turn was written — ISO date/datetime or
             a relative phrase (today/yesterday/tomorrow/now, last|this
@@ -734,27 +737,29 @@ async def turn_count(
     since: str | None = None,
     until: str | None = None,
     query: str | None = None,
-    mode: str = "fts5",
+    mode: Literal["grep", "fts5"] = "fts5",
 ) -> str:
     """Count turns.
 
     Args:
         since: Lower bound — ISO datetime/date or today/yesterday/tomorrow.
         until: Upper bound — ISO datetime/date or today/yesterday/tomorrow.
-        query: Search text to count matches for (grep/fts5 modes).
-        mode: grep or fts5 (default fts5).
+        query: Search text to count matches for; omit to count every turn in
+            the range.
+        mode: fts5 is keyword only; grep is a regex scan.
     """
-    # Validated like turn_search's, and for the same reason: the store used to
-    # fall through an unknown mode to the fts5 branch and echo the caller's
-    # word back in the envelope — a count that answered a question nobody
-    # asked, reported as the mode that was asked for.
-    mode = (mode or "").lower()
-    if mode not in ("grep", "fts5"):
-        return f"Error: mode must be one of grep/fts5 — got {mode!r}"
+    # The schema already closes mode to the two literals; this re-checks for
+    # callers that reach the function directly, where no schema applies.  The
+    # reason it must: the store falls through an unknown mode to the fts5
+    # branch and echoes the caller's word back in the envelope — a count that
+    # answered a question nobody asked, reported as the mode that was asked for.
+    chosen = mode.lower()
+    if chosen not in ("grep", "fts5"):
+        return f"Error: mode must be one of grep/fts5 — got {chosen!r}"
     store = await _ensure_store()
     try:
         result = await store.count_turns(
-            since=since, until=until, query=query, mode=mode,
+            since=since, until=until, query=query, mode=chosen,
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
     except InvalidTimeBound as e:
@@ -805,7 +810,7 @@ async def turn_summarize(
 
     Args:
         turn_id: Turn id to annotate (historical); omit for the current turn.
-        summary: A 1-2 sentence summary of the turn.
+        summary: A 1-2 sentence summary of the turn. Pass it and/or tags.
         tags: Comma-separated tags.
     """
     store = await _ensure_store()

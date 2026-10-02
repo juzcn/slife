@@ -292,7 +292,7 @@ same endpoint family's smallest flash model (e.g. `bailian_personal/qwen3.6-flas
 | Tool | Purpose |
 |---|---|
 | `job-list` | List registered jobs: name, exposed `tool` name, description, source file. Call this first. |
-| `job-run` | `job-run(job, params)` — run a job by name with a JSON object of args. |
+| `job-run` | `job-run(name, params)` — run a job by name with a JSON object of args. |
 | `job-write` | `job-write(name, code)` — write a job's code, creating it or replacing it; the tool (re)registers now and a broken write restores the previous version. |
 | `job-remove` | `job-remove(name)` — delete a job file and unregister its tool. |
 
@@ -306,7 +306,7 @@ want typed arguments.
 1. `job-list` to see what exists and confirm the name is free.
 2. If the job will call external MCP tools, probe the surface first —
    `mcp_list` for server names (a `rest-api` server is `rest_api_list`'s),
-   `mcp_list_tools(server)` for an unloaded tool's real schema — and write
+   `mcp_list_tools(name)` for an unloaded tool's real schema — and write
    against the observed names, never memory.
 3. Write the code following the grammar above — start from the `translate`
    template (LLM job), `search_github` (MCP job), or `slugify` (pure job).

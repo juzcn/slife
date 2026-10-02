@@ -202,23 +202,26 @@ class ScheduledRunListTool(_ScheduleMixin, Tool):
     description = (
         "List scheduled-task run records, newest first (name/status filter)."
     )
-    parameters = make_params(
-        name={
-            "type": "string",
-            "default": "",
-            "description": "Filter by task name (omitted = all).",
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Filter by task name; omit for all tasks.",
+            },
+            "status": {
+                "type": "string",
+                "enum": ["pending", "ran", "failed", "missed", "skipped"],
+                "description": "Filter by run status; omit for all statuses.",
+            },
+            "limit": {
+                "type": "integer",
+                "default": 50,
+                "description": "Maximum records to return.",
+            },
         },
-        status={
-            "type": "string",
-            "default": "",
-            "description": "pending/ran/failed/missed/skipped",
-        },
-        limit={
-            "type": "integer",
-            "default": 50,
-            "description": "Maximum records to return.",
-        },
-    )
+        "required": [],
+    }
 
     async def execute(
         self, name: str = "", status: str = "", limit: int = 50, **kwargs,

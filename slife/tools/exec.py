@@ -291,7 +291,7 @@ class ShellTool(Tool):
         "type": "object",
         "properties": {
             "command": {"type": "string", "description": "Shell command to execute."},
-            "timeout": {"type": "integer", "description": "Timeout in seconds. Omit to use the default (registry work.shell); ≤0 = default (never instant)."},
+            "timeout": {"type": "integer", "description": "Timeout in seconds; omit for the default (registry work.shell). A value ≤ 0 also falls back to the default."},
         },
         "required": ["command"],
     }
@@ -454,7 +454,7 @@ class InstallPythonPackageTool(Tool):
             },
             "timeout": {
                 "type": "integer",
-                "description": "Install deadline in seconds. Omit to use the default (registry work.pip_install); only a positive integer overrides, <=0 falls back to the default",
+                "description": "Install deadline in seconds; omit for the default (registry work.pip_install). A value ≤ 0 also falls back to the default.",
             },
         },
         "required": ["packages"],

@@ -344,7 +344,7 @@ async def test_job_run_executes(srv):
         name="echo",
         code="def echo(text: str, times: int = 2) -> str:\n    return (text * times).upper()",
     )
-    out = await srv.job_run(job="echo", params='{"text": "ab", "times": 3}')
+    out = await srv.job_run(name="echo", params='{"text": "ab", "times": 3}')
     assert out == "ABABAB"
 
 
@@ -356,7 +356,7 @@ async def test_job_run_accepts_the_exposed_tool_name(srv):
         name="echo",
         code="def echo(text: str) -> str:\n    return text.upper()",
     )
-    assert await srv.job_run(job="job-echo", params='{"text": "ab"}') == "AB"
+    assert await srv.job_run(name="job-echo", params='{"text": "ab"}') == "AB"
 
 
 @pytest.mark.asyncio
@@ -372,7 +372,7 @@ async def test_job_list_reports_the_exposed_tool_name(srv):
 
 @pytest.mark.asyncio
 async def test_job_run_unknown(srv):
-    out = await srv.job_run(job="nope")
+    out = await srv.job_run(name="nope")
     assert "unknown job 'nope'" in out
 
 
@@ -382,7 +382,7 @@ async def test_job_run_bad_params_json(srv):
         name="echo",
         code="def echo(text: str) -> str:\n    return text",
     )
-    out = await srv.job_run(job="echo", params="not-json{")
+    out = await srv.job_run(name="echo", params="not-json{")
     assert "not valid JSON" in out
 
 
@@ -392,19 +392,19 @@ async def test_job_write_updates_and_rolls_back(srv):
         name="shout",
         code="def shout(msg: str) -> str:\n    return msg.upper()",
     )
-    assert await srv.job_run(job="shout", params='{"msg": "hi"}') == "HI"
+    assert await srv.job_run(name="shout", params='{"msg": "hi"}') == "HI"
 
     out = await srv.job_write(
         name="shout",
         code="def shout(msg: str) -> str:\n    return f'[{msg.upper()}]'",
     )
     assert "updated" in out
-    assert await srv.job_run(job="shout", params='{"msg": "hi"}') == "[HI]"
+    assert await srv.job_run(name="shout", params='{"msg": "hi"}') == "[HI]"
 
     # Broken write rolls back to the previous working code.
     out = await srv.job_write(name="shout", code="def broken(:\n")
     assert "previous code restored" in out
-    assert await srv.job_run(job="shout", params='{"msg": "hi"}') == "[HI]"
+    assert await srv.job_run(name="shout", params='{"msg": "hi"}') == "[HI]"
 
 
 @pytest.mark.asyncio
@@ -428,7 +428,7 @@ async def test_job_write_unregisters_removed_sibling_functions(srv):
     assert "updated" in out
     assert "sibling" not in srv._registry  # the ghost is gone
     assert "multi" in srv._registry
-    assert await srv.job_run(job="multi", params='{"x": 1}') == "11"
+    assert await srv.job_run(name="multi", params='{"x": 1}') == "11"
 
 
 @pytest.mark.asyncio

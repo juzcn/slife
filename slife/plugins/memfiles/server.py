@@ -56,6 +56,7 @@ import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from urllib.parse import urljoin, urlparse
 
@@ -656,23 +657,25 @@ async def file_remove(path: str) -> str:
 @mcp.tool(
     name="cabinet_search",
     description=(
-        "Search the cabinet (notes, diary, saved files, reports): kind "
-        "note/diary/file/report/all, mode hybrid (default)/fts5/grep (regex). "
-        "Each result carries its kind, its key (what the matching read tool "
-        "takes) and a snippet. since/until window the search — "
-        + BOUND_GRAMMAR + "."
+        "Search the cabinet (notes, diary, saved files, reports). Each result "
+        "carries its kind, its key (what the matching read tool takes) and a "
+        "snippet. since/until window the search — " + BOUND_GRAMMAR + "."
     ),
 )
 async def cabinet_search(
-    query: str, kind: str = "all", mode: str = "hybrid", limit: int = 20,
+    query: str,
+    kind: Literal["note", "diary", "file", "report", "all"] = "all",
+    mode: Literal["hybrid", "fts5", "grep"] = "hybrid",
+    limit: int = 20,
     since: str | None = None, until: str | None = None,
 ) -> str:
     """Search the file cabinet (notes, diary, saved files and reports).
 
     Args:
         query: The search text.
-        kind: note | diary | file | report | all (default).
-        mode: hybrid (default) | fts5 | grep (regex).
+        kind: Which store to search; all searches every kind.
+        mode: hybrid fuses the semantic and keyword legs; fts5 is keyword
+            only; grep is a regex scan.
         limit: Maximum results.
         since: Lower bound — ISO date/datetime or a relative phrase
             (today/yesterday/tomorrow/now, last|this week|month|quarter|year,
@@ -728,16 +731,18 @@ async def cabinet_search(
     ),
 )
 async def cabinet_summarize(
-    kind: str, key: str, summary: str | None = None, tags: str | None = None,
+    kind: Literal["note", "diary", "file", "report"],
+    key: str, summary: str | None = None, tags: str | None = None,
 ) -> str:
     """Write a saved row's summary and/or tags.
 
     Args:
-        kind: note | diary | file | report.
+        kind: The store the row lives in.
         key: The row's key — a note's subject, a diary's date, a file's
             saved_path, a report's report_id (from any list or search result).
         summary: File summary — part of the text the file's vector is built
-            from, so the file is re-embedded with it. Omit to leave it alone.
+            from, so the file is re-embedded with it. Pass it and/or tags;
+            omit to leave it alone.
         tags: Comma-separated tags. Omit to leave them alone.
     """
     store = await _ensure_store()
@@ -1019,7 +1024,9 @@ async def file_list(
     """List saved files, newest first.
 
     Args:
-        category: images/documents/archives/code/audio/video/data/other.
+        category: Filter by the files/<category>/ subfolder; the usual ones are
+            images/documents/archives/code/audio/video/data/other, but a
+            file_save override may have created its own. Omit for all.
         since: Lower bound on when the file was saved — ISO date/datetime or a
             relative phrase (today/yesterday/tomorrow/now, last|this
             week|month|quarter|year, "<N> days|weeks|months|years ago"); omit

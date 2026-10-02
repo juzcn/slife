@@ -1420,7 +1420,7 @@ class SystemHealthTool(Tool):
     category: ClassVar[str] = "System"
     description = ("One-call health report over every subsystem: problems first "
                    "with the remedy, then one line per healthy component "
-                   "(startup records included). No arguments.")
+                   "(startup records included).")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:

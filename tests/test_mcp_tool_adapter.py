@@ -229,9 +229,9 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = '{"tools":[]}'
 
         tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER)
-        result = await tool.execute(server="filesystem")
+        result = await tool.execute(name="filesystem")
 
-        client.call_tool.assert_called_once_with("mcp_list_tools", {"server": "filesystem"})
+        client.call_tool.assert_called_once_with("mcp_list_tools", {"name": "filesystem"})
         assert result == '{"tools":[]}'
 
     @pytest.mark.asyncio

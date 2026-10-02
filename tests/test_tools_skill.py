@@ -315,7 +315,7 @@ class TestRemoveSkillTool:
         )
 
         tool = RemoveSkillTool(skills_dir=str(skills_dir))
-        result = await tool.execute(skill_name="to-remove")
+        result = await tool.execute(name="to-remove")
         assert "[OK]" in result
         assert not d.exists()
 
@@ -325,7 +325,7 @@ class TestRemoveSkillTool:
         skills_dir.mkdir()
 
         tool = RemoveSkillTool(skills_dir=str(skills_dir))
-        result = await tool.execute(skill_name="ghost")
+        result = await tool.execute(name="ghost")
         assert "not found" in result
 
     @pytest.mark.asyncio
@@ -338,7 +338,7 @@ class TestRemoveSkillTool:
         # No SKILL.md — should still be removable
 
         tool = RemoveSkillTool(skills_dir=str(skills_dir))
-        result = await tool.execute(skill_name="raw-dir")
+        result = await tool.execute(name="raw-dir")
         assert "[OK]" in result
         assert not d.exists()
 
@@ -357,7 +357,7 @@ class TestRemoveSkillTool:
         (skills_dir / "raw-dir").mkdir()
 
         tool = RemoveSkillTool(skills_dir=str(skills_dir))
-        result = await tool.execute(skill_name="ghost")
+        result = await tool.execute(name="ghost")
         assert "valid-skill" in result
         assert "raw-dir" in result
         assert "not found" in result
@@ -400,7 +400,7 @@ class TestUseSkillToolExecute:
             "---\nname: my-skill\ndescription: Desc\n---\n# Instructions\nDo stuff.", encoding="utf-8"
         )
         tool = UseSkillTool(skills_dir=str(skills_dir))
-        result = await tool.execute(skill_name="my-skill")
+        result = await tool.execute(name="my-skill")
         assert "Instructions" in result
         assert "Do stuff" in result
 
@@ -409,7 +409,7 @@ class TestUseSkillToolExecute:
         skills_dir = tmp_path / "empty"
         skills_dir.mkdir()
         tool = UseSkillTool(skills_dir=str(skills_dir))
-        result = await tool.execute(skill_name="ghost")
+        result = await tool.execute(name="ghost")
         assert "not found" in result
 
     @pytest.mark.asyncio
@@ -422,7 +422,7 @@ class TestUseSkillToolExecute:
         )
         tool = UseSkillTool(skills_dir=str(skills_dir))
         # Match by directory name
-        result = await tool.execute(skill_name="dir-name")
+        result = await tool.execute(name="dir-name")
         assert "# Body" in result
 
 
@@ -599,7 +599,7 @@ class TestSkillSecurity:
         (victim / "keep.txt").write_text("keep")
 
         tool = RemoveSkillTool(skills_dir=str(skills_dir))
-        result = await tool.execute(skill_name="../victim")
+        result = await tool.execute(name="../victim")
 
         assert result.startswith("Error")
         assert victim.exists()

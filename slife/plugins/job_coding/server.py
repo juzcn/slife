@@ -340,15 +340,22 @@ async def job_list(ctx: Context | None = None) -> str:
         "Run a registered job by name with a JSON object of its arguments."
     ),
 )
-async def job_run(job: str, params: str = "{}", ctx: Context | None = None) -> str:
-    """Execute a job deterministically with the given JSON arguments."""
+async def job_run(name: str, params: str = "{}", ctx: Context | None = None) -> str:
+    """Execute a job deterministically with the given JSON arguments.
+
+    Args:
+        name: Job name, bare or as the exposed tool name from job-list —
+            'translate' or 'job-translate'.
+        params: The job's arguments as a JSON object, keyed by its own
+            parameter names.
+    """
     # Also accept the exposed tool name (``job-translate``): the LLM reads the
     # job's schema as that name, and job-list reports it, so both spellings
     # must resolve.
-    entry = _registry.get(registry.bare_name(job))
+    entry = _registry.get(registry.bare_name(name))
     if entry is None:
         return (
-            f"Error: unknown job '{job}'. Registered: "
+            f"Error: unknown job '{name}'. Registered: "
             f"{', '.join(sorted(_registry)) or '(none)'}"
         )
     try:
@@ -368,7 +375,14 @@ async def job_run(job: str, params: str = "{}", ctx: Context | None = None) -> s
 )
 async def job_write(name: str, code: str, ctx: Context | None = None) -> str:
     """Write a job's code: creates <name>.py (or replaces it) and registers
-    the tool now (persists across restart); a broken write rolls back."""
+    the tool now (persists across restart); a broken write rolls back.
+
+    Args:
+        name: Job name — a Python identifier, not reserved.  It stems the
+            file (<name>.py), names the function the code must define, and is
+            exposed to the model as job-<name>.
+        code: The job's full Python source.
+    """
     err = _validate_name(name)
     if err:
         return err
@@ -414,7 +428,12 @@ async def job_write(name: str, code: str, ctx: Context | None = None) -> str:
     ),
 )
 async def job_remove(name: str, ctx: Context | None = None) -> str:
-    """Delete a job file and unregister its tool."""
+    """Delete a job file and unregister its tool.
+
+    Args:
+        name: Job name, bare or as the exposed tool name from job-list —
+            'translate' or 'job-translate'.
+    """
     if name not in _registry:
         return f"Error: unknown job '{name}'"
     path = _jobs_dir / f"{name}.py"

@@ -881,11 +881,12 @@ async def __mcp_list_tools(
     name="mcp_list_tools",
     description=(
         "List a server's tools (full_name server__tool). Capped at "
-        "mcp.tool_list_limit — use tool_search to find a specific one. "
-        "Use mcp_list to discover server names."
+        "mcp.tool_list_limit — use tool_search to find a specific one."
     ),
 )
-async def mcp_list_tools(server: str, limit: int = 0, ctx: Context | None = None) -> str:
+async def mcp_list_tools(
+    name: str, limit: int | None = None, ctx: Context | None = None,
+) -> str:
     """List a server's tools, capped for the caller's context.
 
     ``__mcp_list_tools`` with the configured cap — the SAME read and the SAME
@@ -898,17 +899,18 @@ async def mcp_list_tools(server: str, limit: int = 0, ctx: Context | None = None
     context on names it never asked for.
 
     Args:
-        server: Server name (from mcp_list).
-        limit: Max tools to list (0 = the configured cap, ``mcp.tool_list_limit``).
+        name: Server name (from mcp_list).
+        limit: Max tools to list; omit for the configured cap
+            (mcp.tool_list_limit).
     """
     # No twin registration needed: ``rest_api_list_tools`` already reads the
     # uncapped ``__mcp_list_tools`` (its own cap, its own family), so this tool
     # has no internal caller to keep working past the gate.
-    refusal = _family_refusal(server, "mcp", "rest_api_list_tools")
+    refusal = _family_refusal(name, "mcp", "rest_api_list_tools")
     if refusal:
         return refusal
-    cap = plugin_config.tool_list_limit() if limit <= 0 else limit
-    return await __mcp_list_tools(server, limit=cap)
+    cap = limit if limit else plugin_config.tool_list_limit()
+    return await __mcp_list_tools(name, limit=cap)
 
 
 @mcp.tool(

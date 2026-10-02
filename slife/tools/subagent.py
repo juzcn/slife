@@ -259,7 +259,7 @@ class SubagentSendTaskTool(Tool):
         task={"type": "string", "description": "Self-contained task for the worker."},
         timeout={
             "type": "integer",
-            "description": "Worker task timeout in seconds. Omit to use the default (registry work.task_budget); only a positive integer overrides, 0/negative fall back to the default.",
+            "description": "Worker task timeout in seconds; omit for the default (registry work.task_budget). A value ≤ 0 also falls back to the default.",
             "default": 0,
         },
     )
@@ -423,10 +423,21 @@ class SubagentListTasksTool(Tool):
         "List worker task records across local subagents (task_id, worker, "
         "status, preview)."
     )
-    parameters: ClassVar[dict] = make_params(
-        subagent_name={"type": "string", "description": "Filter by worker name (omitted = all).", "default": ""},
-        status={"type": "string", "description": "pending/completed/failed/cancelled", "default": ""},
-    )
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "subagent_name": {
+                "type": "string",
+                "description": "Filter by worker name; omit for all workers.",
+            },
+            "status": {
+                "type": "string",
+                "enum": ["pending", "completed", "failed", "cancelled"],
+                "description": "Filter by task status; omit for all statuses.",
+            },
+        },
+        "required": [],
+    }
 
     async def execute(self, subagent_name: str = "", status: str = "", **kwargs) -> str:
         manager, hint = _manager_or_hint()

@@ -80,46 +80,57 @@ class ToolSearchTool(Tool):
     name = "tool_search"
     category: ClassVar[str] = TOOL_META_CATEGORY
     description = (
-        "Search the unified tool catalog across all six categories "
-        "(builtin/job/plugin/mcp/rest-api/skill/cli). Returns name, category, source "
-        "server, and effective status per tool — load a function tool with "
-        "func_tool_load."
+        "Search the unified tool catalog across all six categories. Returns "
+        "name, category, source server, and effective status per tool — load a "
+        "function tool with func_tool_load."
     )
-    parameters = make_params(
-        query={
-            "type": "string",
-            "description": "Search query (matches name/description/schema).",
+    # The filters ARE the catalog's columns — one parameter per column, so
+    # the surface cannot drift from the table and every filter is a real
+    # predicate the query sees.  Each closed-vocabulary filter carries its
+    # values as an ``enum`` (the code below treats an omitted filter as "no
+    # filter", so there is no empty-string sentinel to mis-type).
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query (matches name/description/schema).",
+            },
+            "category": {
+                "type": "string",
+                "enum": ["builtin", "job", "plugin", "mcp", "rest-api", "skill", "cli"],
+                "description": "Filter by category; omit for all categories.",
+            },
+            "source_id": {
+                "type": "string",
+                "description": (
+                    "Filter by owner — an mcp/rest-api server name, or a "
+                    "plugin name; omit for all owners."
+                ),
+            },
+            "status": {
+                "type": "string",
+                "enum": ["enabled", "disabled", "error"],
+                "description": "Filter by status; omit for all statuses.",
+            },
+            "load_status": {
+                "type": "string",
+                "enum": ["loaded", "unloaded", "n/a"],
+                "description": "Filter by load state; omit for all states.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["hybrid", "keyword", "grep"],
+                "default": "hybrid",
+                "description": (
+                    "hybrid fuses the semantic and keyword legs; keyword is "
+                    "FTS5 only; grep is a regex scan."
+                ),
+            },
+            "limit": {"type": "integer", "description": "Max results.", "default": 10},
         },
-        # The filters ARE the catalog's columns — one parameter per column, so
-        # the surface cannot drift from the table and every filter is a real
-        # predicate the query sees.
-        category={
-            "type": "string",
-            "description": "Filter by category (builtin|job|plugin|mcp|rest-api|skill|cli); empty = all.",
-            "default": "",
-        },
-        source_id={
-            "type": "string",
-            "description": "Filter by owner: an mcp/rest-api server name, or a plugin name; empty = all.",
-            "default": "",
-        },
-        status={
-            "type": "string",
-            "description": "Filter by status (enabled|disabled|error); empty = all.",
-            "default": "",
-        },
-        load_status={
-            "type": "string",
-            "description": "Filter by load state (loaded|unloaded|n/a); empty = all.",
-            "default": "",
-        },
-        mode={
-            "type": "string",
-            "description": "hybrid (semantic+keyword) | keyword (FTS5) | grep (regex).",
-            "default": "hybrid",
-        },
-        limit={"type": "integer", "description": "Max results.", "default": 10},
-    )
+        "required": ["query"],
+    }
 
     async def execute(self, **kwargs) -> str:
         query: str = kwargs.get("query", "") or ""

@@ -442,7 +442,7 @@ async def sharefile_unshare(file_id: str) -> str:
     """Revoke a share by its file id (from a share_file URL: ``/share/{id}``).
 
     Args:
-        file_id: The share file id (the path segment after ``/share/``).
+        file_id: The share file id (the path segment after /share/).
     """
     if not (file_id or "").strip():
         return "Error: file_id is required (the path segment after /share/)."

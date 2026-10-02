@@ -313,7 +313,9 @@ async def generate_video(
         ratio: Aspect ratio, e.g. '16:9', '9:16', '1:1'.
         duration: Video duration in seconds.
         folder: Output folder (default: working dir).
-        timeout: generation poll deadline in seconds; omit for the registry default (transport.media_deadline)
+        timeout: Generation poll deadline in seconds; omit for the default
+            (registry transport.media_deadline). A value ≤ 0 also falls back
+            to the default.
     """
     pid, model_label = "", ""
     try:

@@ -470,8 +470,10 @@ class TestMCPListToolsSingleRead:
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(srv, "_pool", pool))
             fn = getattr(srv, tool)
+            # The public listing names the server ``name``; its internal twin
+            # keeps ``server``.
             if tool == "mcp_list_tools":
-                raw = await fn(server="fs", limit=limit)
+                raw = await fn(name="fs", limit=limit)
             else:
                 raw = await fn(server="fs")
         return _json.loads(raw)
@@ -807,7 +809,7 @@ class TestMcpFamilyGate:
             patch.object(srv, "_pool", pool),
             patch.object(srv.plugin_config, "is_rest_api", return_value=True),
         ):
-            out = _json.loads(await srv.mcp_list_tools(server="github"))
+            out = _json.loads(await srv.mcp_list_tools(name="github"))
         assert out["status"] == "error"
         assert "rest_api_list_tools" in out["error"]
         pool.list_all_tools.assert_not_called()

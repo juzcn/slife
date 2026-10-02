@@ -389,21 +389,21 @@ class UseSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
     parameters = {
         "type": "object",
         "properties": {
-            "skill_name": {"type": "string", "description": "Skill name, from skill_list."},
+            "name": {"type": "string", "description": "Skill name, from skill_list."},
         },
-        "required": ["skill_name"],
+        "required": ["name"],
     }
 
     async def execute(self, **kwargs) -> str:
-        skill_name: str = kwargs["skill_name"]
+        name: str = kwargs["name"]
         ctx = getattr(self, "_ctx", None)
         disabled = _disabled_skill_names(ctx.config if ctx is not None else None)
-        if skill_name in disabled:
+        if name in disabled:
             return (
-                f"Skill '{skill_name}' is disabled. "
-                f"Use skill_set_enabled(name=\"{skill_name}\", enabled=true) to re-enable."
+                f"Skill '{name}' is disabled. "
+                f"Use skill_set_enabled(name=\"{name}\", enabled=true) to re-enable."
             )
-        return _read_skill(self.skills_dir, skill_name)
+        return _read_skill(self.skills_dir, name)
 
 
 class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -446,13 +446,20 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
                 "description": "Provenance for future updates.",
                 "properties": {
                     "url": {"type": "string", "description": "Discovery URL."},
-                    "type": {"type": "string", "description": "Source type: github, url, marketplace."},
+                    "type": {"type": "string", "description": "Where it came from — e.g. github, marketplace, url."},
                     "version": {"type": "string", "description": "Version at install time."},
                     "description": {"type": "string", "description": "Optional note."},
                 },
             },
         },
         "required": ["name"],
+        # The install source is either/or: the body refuses both and refuses
+        # neither, so the schema says the same thing rather than leaving the
+        # model to learn it from an error string.
+        "oneOf": [
+            {"required": ["files"]},
+            {"required": ["archive"]},
+        ],
     }
 
     async def execute(self, **kwargs) -> str:
@@ -649,31 +656,31 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
     parameters = {
         "type": "object",
         "properties": {
-            "skill_name": {"type": "string", "description": "Skill name, from skill_list."},
+            "name": {"type": "string", "description": "Skill name, from skill_list."},
         },
-        "required": ["skill_name"],
+        "required": ["name"],
     }
 
     async def execute(self, **kwargs) -> str:
-        skill_name: str = kwargs["skill_name"]
+        name: str = kwargs["name"]
 
         # Reject path traversal in the skill name before touching the FS, and
         # resolve it once: step 2 below acts on THIS path, never on a fresh
         # join of the raw name (which is how "." once reached the root).
         try:
-            direct = _skill_dir_for(self.skills_dir, skill_name)
+            direct = _skill_dir_for(self.skills_dir, name)
         except ValueError:
-            return f"Error: invalid skill name: {skill_name!r}"
+            return f"Error: invalid skill name: {name!r}"
 
         # 1) Try matching via _iter_skills (directories with SKILL.md)
         skills = _iter_skills(self.skills_dir)
         for d, fm in skills:
-            if fm.get("name") == skill_name or d.name == skill_name:
+            if fm.get("name") == name or d.name == name:
                 import shutil
                 shutil.rmtree(d)
-                logger.info("skill_removed name=%s", skill_name)
+                logger.info("skill_removed name=%s", name)
                 await sync_skill_catalog(getattr(self, "_ctx", None), self.skills_dir)
-                return f"[OK] Removed skill '{skill_name}' (deleted {d})."
+                return f"[OK] Removed skill '{name}' (deleted {d})."
 
         # 2) Try matching by directory name directly (handles git clones
         #    or archives that lack SKILL.md)
@@ -683,7 +690,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
             logger.info("skill_dir_removed path=%s", direct)
             await sync_skill_catalog(getattr(self, "_ctx", None), self.skills_dir)
             return (
-                f"[OK] Removed directory '{skill_name}' ({direct}).\n"
+                f"[OK] Removed directory '{name}' ({direct}).\n"
                 f"Note: it had no SKILL.md — may not have been a valid skill."
             )
 
@@ -695,7 +702,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
                 if item.is_dir() and not (item / "SKILL.md").exists():
                     available.append(f"  - {item.name} (no SKILL.md)")
         hint = "\n".join(available) if available else "  (none)"
-        return f"Skill '{skill_name}' not found.\n\nAvailable skills/directories:\n{hint}"
+        return f"Skill '{name}' not found.\n\nAvailable skills/directories:\n{hint}"
 
 
 # ═══════════════════════════════════════════════════════════════════════
