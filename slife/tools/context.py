@@ -105,7 +105,7 @@ class ToolContext:
 
     refresh_system_prompt: Callable[[], None] | None = None
     """Re-render the session's system prompt after USER.md changed — called
-    by the ``user_pref_edit`` tool so the new preference is live from the next
+    by the ``profile_edit`` tool so the new profile is live from the next
     API call (the byte change touches the prompt cache; accepted, writes are
     rare).  Populated by AgentService."""
 

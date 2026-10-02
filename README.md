@@ -303,7 +303,7 @@ Every tool accepts three meta-parameters: `_timeout` (per-call override), `_asyn
 
 | Category | Tools |
 |----------|-------|
-| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `set_max_iterations`, `set_midturn_input` (mid-turn preemption on/off), `notify_user`, `wait_minutes` (pause the turn and resume automatically), `user_pref_edit` (replace `USER.md`, the standing preferences) |
+| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `set_max_iterations`, `set_midturn_input` (mid-turn preemption on/off), `notify_user`, `wait_minutes` (pause the turn and resume automatically), `profile_edit` (replace `USER.md`, the user's standing profile) |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` (disabled by default) |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Job | `job-<name>` — one tool per job you wrote in `~/.slife/jobs/`; added and removed through `job-list` / `job-write` / `job-remove` / `job-run`, which belong to the `job-coding` plugin |

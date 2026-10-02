@@ -36,8 +36,8 @@ in ``slife/tools/schedule.py`` (category "Schedule"); this plugin only exposes
 the ``__scheduled_*`` data layer they call over the memfiles MCP client.
 Internal tools (``__`` prefix, never LLM-visible): ``__check``,
 ``__memfiles_reload_semantic``, the ``__scheduled_*`` registry ops, and
-``__user_pref_edit`` (the USER.md store behind the builtin
-``user_pref_edit`` tool).
+``__user_profile_edit`` (the USER.md store behind the builtin
+``profile_edit`` tool).
 
 Usage::
     uv run python -m slife.plugins.memfiles.server
@@ -72,7 +72,7 @@ from slife.plugins.memfiles.store import (
 )
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.timeutil import BOUND_GRAMMAR, InvalidTimeBound
-from slife.plugins.memfiles.user_prefs import user_prefs_path
+from slife.plugins.memfiles.user_profile import user_profile_path
 from slife.tools.base import require_params
 from slife.server_utils import (
     create_plugin_server,
@@ -216,16 +216,16 @@ def _get_init_lock() -> asyncio.Lock:
     return _init_lock
 
 
-_user_pref_lock: asyncio.Lock | None = None
+_user_profile_lock: asyncio.Lock | None = None
 
 
-def _get_user_pref_lock() -> asyncio.Lock:
+def _get_user_profile_lock() -> asyncio.Lock:
     """Serialize USER.md read-merge-writes — the plugin is USER.md's single
     writer, and concurrent MCP requests must not interleave read-modify-write."""
-    global _user_pref_lock
-    if _user_pref_lock is None:
-        _user_pref_lock = asyncio.Lock()
-    return _user_pref_lock
+    global _user_profile_lock
+    if _user_profile_lock is None:
+        _user_profile_lock = asyncio.Lock()
+    return _user_profile_lock
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -1228,9 +1228,9 @@ async def __scheduled_run_skip(name: str, due_at: str) -> str:
     )
 
 
-# ── User Preferences (USER.md) data layer ──────────────────────────────
-# The LLM-visible ``user_pref_edit`` tool is builtin (``slife/tools/
-# user_prefs.py``) and delegates here over the memfiles MCP client — the main
+# ── User Profile (USER.md) data layer ──────────────────────────────────
+# The LLM-visible ``profile_edit`` tool is builtin (``slife/tools/
+# user_profile.py``) and delegates here over the memfiles MCP client — the main
 # process never touches USER.md directly.  USER.md is a document: this puts
 # text back, and nothing more.  "Update" and "remove" are edits the model
 # makes to text it read.  There is no read twin because the file is rendered
@@ -1238,15 +1238,15 @@ async def __scheduled_run_skip(name: str, due_at: str) -> str:
 
 
 @mcp.tool(
-    name="__user_pref_edit",
+    name="__user_profile_edit",
     description=(
         "Internal: replace the cabinet's USER.md with the given text, "
         "creating it when absent.  Returns the path and the written length."
     ),
 )
-async def __user_pref_edit(content: str) -> str:
-    async with _get_user_pref_lock():
-        path = user_prefs_path(get_memfiles_dir())
+async def __user_profile_edit(content: str) -> str:
+    async with _get_user_profile_lock():
+        path = user_profile_path(get_memfiles_dir())
         _write_atomic(path, content)
         return json.dumps(
             {"path": str(path), "chars": len(content)},

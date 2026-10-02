@@ -657,29 +657,31 @@ The prompt splits **identity** from **world** so each role reads one coherent do
   platform, workspace paths, marker expectations, the credential chain, tool naming, skills, jobs,
   subagents, and mesh info when configured. **Byte-identical in both roles.**
 - **Dynamic** — the per-turn status prompt, rendered by the harness tool once per turn (§2.5).
-- **Preferences** — `USER.md` in the agent's file cabinet: the standing directives the user wants
-  the agent to work under, rendered as the prompt's final section by **both** identity templates. It
-  is the one place the user's own words reach the prompt, and the one part whose words the harness
-  never authors.
+- **Profile** — `USER.md` in the agent's file cabinet: whatever the user wants held across sessions
+  and in front of the model every turn — identity facts, working conventions, standing directives —
+  rendered as the prompt's final section by **both** identity templates. It is the one place the
+  user's own words reach the prompt, and the one part whose words the harness never authors.
   The file is read at build time and included verbatim, with its own title line stripped so the
   heading is not doubled; one harness-written line stands above it naming what the section is and
   which tool replaces it — otherwise the model meets a block of the user's prose with nothing
   saying it is editable. **That line and the heading are unconditional**, and a file with
   nothing in it renders ``(Empty)`` rather than vanishing — so an agent that has never been given a
-  preference still carries the section, knows the preferences exist, and knows what to call. It
+  profile still carries the section, knows the profile exists, and knows what to call. It
   costs a fixed few lines on every request, which the prompt cache absorbs because the text never
-  varies. **The file is the interface**, and it has **one verb**: `user_pref_edit` replaces it
-  whole. There is no read tool, because the section above it *is* the read — the file is rendered
+  varies. **The file is the interface**, and it has **one verb**: `profile_edit` replaces it
+  whole, addressing the model in the user's terms rather than the filesystem's — the artifact is
+  named for what it is, never for a content type the model would take as the whole of its scope.
+  There is no read tool, because the section above it *is* the read — the file is rendered
   into the prompt every turn, so a read would only hand back the text the model is looking at.
   There is no append either, and that is deliberate: a store the agent can only add to is one it can
-  neither review nor correct, which left a badly-worded preference fixable only by hand-editing the
-  file, and left "what are the preferences?" unanswerable. Update and remove are edits to text the
-  model has read, and `edit` re-renders the prompt, so a change is live from the next call. It
-  transcribes a preference the user actually stated; it never authors one. A frequent writer is a
+  neither review nor correct, which left a badly-worded line fixable only by hand-editing the
+  file, and left "what does the user want me to hold?" unanswerable. Update and remove are edits to
+  text the model has read, and `edit` re-renders the prompt, so a change is live from the next call.
+  It transcribes what the user actually stated; it never authors. A frequent writer is a
   real cost rather than a style question: every write moves the prompt's tail and so spends the
   prompt cache.
 
-Identity + world change only on a model switch or a user-preference write, and **always from the
+Identity + world change only on a model switch or a profile write, and **always from the
 role's own identity template** — the grant decides which — because re-rendering the main agent's
 identity for a worker replaced its framing for every later task in that process. Between those two
 events the static prefix of every request stays byte-identical and the prompt-cache breakpoint lands

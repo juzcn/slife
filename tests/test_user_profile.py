@@ -1,8 +1,8 @@
-"""Tests for USER.md — the per-agent standing user preferences file.
+"""Tests for USER.md — the per-agent standing user profile file.
 
-Covers the plugin's ``__user_pref_edit`` data layer,
-the system-prompt render (the ``**User Preferences**`` section appended by
-both identity templates), and the native ``user_pref_edit`` tool that
+Covers the plugin's ``__user_profile_edit`` data layer,
+the system-prompt render (the ``**User Profile**`` section appended by
+both identity templates), and the native ``profile_edit`` tool that
 delegates to the plugin and refreshes the session prompt on a write.
 """
 
@@ -11,14 +11,14 @@ import pytest; pytestmark = pytest.mark.unit
 import json
 from unittest.mock import AsyncMock
 
-from slife.agent.system_prompt import USER_PREFS_MAX_CHARS
+from slife.agent.system_prompt import USER_PROFILE_MAX_CHARS
 from slife.config import Config, ModelConfig
 
 
 # ── memfiles internal read/write data layer ────────────────────────────
 
 
-class TestUserPrefStoreInternal:
+class TestUserProfileStoreInternal:
     """The plugin is USER.md's only host: it puts text back and nothing more.
     Nothing here parses or merges the file, which is the point."""
 
@@ -38,7 +38,7 @@ class TestUserPrefStoreInternal:
         """The thing append could never do: make text that was there go away."""
         plugin, memfiles = self._dir(tmp_path, monkeypatch, "1. stale line\n")
         out = json.loads(
-            await getattr(plugin, "__user_pref_edit")("1. corrected\n")
+            await getattr(plugin, "__user_profile_edit")("1. corrected\n")
         )
         assert out["chars"] == len("1. corrected\n")
         assert (memfiles / "USER.md").read_text(encoding="utf-8") == "1. corrected\n"
@@ -46,7 +46,7 @@ class TestUserPrefStoreInternal:
     @pytest.mark.asyncio
     async def test_write_creates_a_missing_file(self, tmp_path, monkeypatch):
         plugin, memfiles = self._dir(tmp_path, monkeypatch)
-        await getattr(plugin, "__user_pref_edit")("1. **A** — one\n")
+        await getattr(plugin, "__user_profile_edit")("1. **A** — one\n")
         assert (memfiles / "USER.md").read_text(encoding="utf-8") == "1. **A** — one\n"
 
 
@@ -66,12 +66,12 @@ def _cfg(agent_name: str = "testbot") -> Config:
     )
 
 
-class TestUserPreferencesRender:
+class TestUserProfileRender:
     def test_absent_file_still_states_the_section(self, monkeypatch):
-        """The header and the line that names the tools are unconditional, so
-        an agent that has never been given a preference still knows the
-        preferences exist and which tools read and replace them.  Only the
-        user's own bytes are conditional."""
+        """The header and the line that names the tool are unconditional, so
+        an agent that has never been given a profile still knows the profile
+        exists and which tool replaces it.  Only the user's own bytes are
+        conditional."""
         from slife.agent.system_prompt import build
 
         monkeypatch.setattr(
@@ -80,9 +80,9 @@ class TestUserPreferencesRender:
         )
         result = build(_cfg())
         assert result.endswith(
-            "Below are the user's standing preferences, held across sessions — "
-            "use `user_pref_edit` to edit them.\n"
-            "**User Preferences**\n"
+            "Below is the user's standing profile, held across sessions — "
+            "their own words; `profile_edit` replaces it.\n"
+            "**User Profile**\n"
             "(Empty)"
         )
 
@@ -92,19 +92,19 @@ class TestUserPreferencesRender:
         files = tmp_path / "testbot.files"
         files.mkdir()
         files.joinpath("USER.md").write_text(
-            "# User Preferences\n\n1. **Search** — use Baidu for Chinese news.\n",
+            "# User Profile\n\n1. **Search** — use Baidu for Chinese news.\n",
             encoding="utf-8",
         )
         monkeypatch.setattr("slife.paths.get_memfiles_dir", lambda agent_name: files)
 
         result = build(_cfg())
         assert result.endswith(
-            "Below are the user's standing preferences, held across sessions — "
-            "use `user_pref_edit` to edit them.\n"
-            "**User Preferences**\n"
+            "Below is the user's standing profile, held across sessions — "
+            "their own words; `profile_edit` replaces it.\n"
+            "**User Profile**\n"
             "1. **Search** — use Baidu for Chinese news."
         )
-        assert "# User Preferences" not in result
+        assert "# User Profile" not in result
         assert "(Empty)" not in result
 
     def test_identical_section_both_roles(self, tmp_path, monkeypatch):
@@ -119,21 +119,21 @@ class TestUserPreferencesRender:
 
         main = build(_cfg(), is_subagent=False)
         sub = build(_cfg(), is_subagent=True)
-        assert main[main.index("**User Preferences**"):] == \
-            sub[sub.index("**User Preferences**"):]
+        assert main[main.index("**User Profile**"):] == \
+            sub[sub.index("**User Profile**"):]
 
 
-# ── Native user_pref_edit tool ────────────────────────────────────────
+# ── Native profile_edit tool ──────────────────────────────────────────
 
 
-class TestUserPrefEditTool:
+class TestProfileEditTool:
     def _tool(self, reply, refresh_calls):
         from slife.tools.context import ToolContext
-        from slife.tools.user_prefs import UserPrefEditTool
+        from slife.tools.user_profile import ProfileEditTool
 
         client = AsyncMock()
         client.call_tool.return_value = json.dumps(reply)
-        tool = UserPrefEditTool()
+        tool = ProfileEditTool()
         tool._ctx = ToolContext(
             memfiles_client=client,
             refresh_system_prompt=lambda: refresh_calls.append(1),
@@ -148,7 +148,7 @@ class TestUserPrefEditTool:
         assert out["chars"] == 12
         assert refresh_calls == [1]
         tool._ctx.memfiles_client.call_tool.assert_awaited_once_with(
-            "__user_pref_edit", {"content": "1. **A** — x\n"}
+            "__user_profile_edit", {"content": "1. **A** — x\n"}
         )
 
     @pytest.mark.asyncio
@@ -167,17 +167,17 @@ class TestUserPrefEditTool:
         number instead."""
         refresh_calls = []
         tool = self._tool({}, refresh_calls)
-        out = await tool.execute(content="x" * (USER_PREFS_MAX_CHARS + 1))
+        out = await tool.execute(content="x" * (USER_PROFILE_MAX_CHARS + 1))
         assert out.startswith("Error:")
-        assert str(USER_PREFS_MAX_CHARS) in out
+        assert str(USER_PROFILE_MAX_CHARS) in out
         assert refresh_calls == []
         tool._ctx.memfiles_client.call_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_offline_client_reports_error(self):
         from slife.tools.context import ToolContext
-        from slife.tools.user_prefs import UserPrefEditTool
+        from slife.tools.user_profile import ProfileEditTool
 
-        tool = UserPrefEditTool()
+        tool = ProfileEditTool()
         tool._ctx = ToolContext(memfiles_client=None)
         assert "not connected" in await tool.execute(content="1. a\n")

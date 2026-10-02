@@ -13,6 +13,6 @@ The Slife runtime below is the world {{ agent_name }} lives in — your working 
 
 {% include 'slife.j2' %}
 
-Below are the user's standing preferences, held across sessions — use `user_pref_edit` to edit them.
-**User Preferences**
-{% if user_preferences %}{{ user_preferences }}{% else %}(Empty){% endif %}
+Below is the user's standing profile, held across sessions — their own words; `profile_edit` replaces it.
+**User Profile**
+{% if user_profile %}{{ user_profile }}{% else %}(Empty){% endif %}

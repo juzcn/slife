@@ -146,10 +146,10 @@ def _render_context(config: Config) -> dict:
         # When the agent's persisted memory began (earliest turn) —
         # tells the LLM the origin of its session history.
         "memory_start_time": _memory_start_time(config.agent_name),
-        # The user's standing preferences (USER.md), appended as the final
+        # The user's standing profile (USER.md), appended as the final
         # system-prompt section by both identity templates.  Absent → "" and
         # the section is skipped, keeping the prompt byte-identical to today.
-        "user_preferences": _user_preferences(config.agent_name),
+        "user_profile": _user_profile(config.agent_name),
         # ── 环境 ──
         "platform_type": _platform_type(),
         "platform_name": _os_name(),
@@ -308,17 +308,17 @@ def _memory_start_time(agent_name: str) -> str:
 #: How much of USER.md the prompt carries.  The file is user-curated and
 #: normally a few hundred tokens; this guards against a pathological size
 #: blowing the context.  Public because it has two readers: this read, and
-#: ``user_pref_edit``, which REFUSES anything larger rather than accepting
+#: ``profile_edit``, which REFUSES anything larger rather than accepting
 #: text the prompt would then silently cut.
-USER_PREFS_MAX_CHARS = 32_768
+USER_PROFILE_MAX_CHARS = 32_768
 
 
-def _user_preferences(agent_name: str) -> str:
-    """The user's standing preferences (File Cabinet's ``USER.md``) —
+def _user_profile(agent_name: str) -> str:
+    """The user's standing profile (File Cabinet's ``USER.md``) —
     ``""`` when absent.
 
     Read synchronously at prompt-build time (like :func:`_memory_start_time`).
-    The ``**User Preferences**`` section header is rendered by the identity
+    The ``**User Profile**`` section header is rendered by the identity
     templates; a leading ``#`` title line found in the file is stripped so
     the prompt never shows the heading twice.  The rest of the body is
     included verbatim — the harness never rewrites the user's bytes.
@@ -330,8 +330,8 @@ def _user_preferences(agent_name: str) -> str:
         if not path.is_file():
             return ""
         text = path.read_text(encoding="utf-8", errors="replace")
-        if len(text) > USER_PREFS_MAX_CHARS:
-            text = text[:USER_PREFS_MAX_CHARS]
+        if len(text) > USER_PROFILE_MAX_CHARS:
+            text = text[:USER_PROFILE_MAX_CHARS]
         lines = text.splitlines()
         if lines and lines[0].lstrip().startswith("#"):
             lines = lines[1:]

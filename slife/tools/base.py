@@ -82,11 +82,11 @@ logger = logging.getLogger(__name__)
 class _MemfilesClientMixin:
     """Delegate data-mutating ops to the memfiles plugin's MCP client.
 
-    Shared by the schedule tools (``schedule.py``) and the user-preference
-    tool (``user_prefs.py``): the main process never touches the plugin's
+    Shared by the schedule tools (``schedule.py``) and the user-profile
+    tool (``user_profile.py``): the main process never touches the plugin's
     store — every data op reaches it through ``ToolContext.memfiles_client``.
     The offline message is a class attribute so each feature can name its
-    own gap ("scheduled-task tools are unavailable" vs "user preferences are
+    own gap ("scheduled-task tools are unavailable" vs "the user profile is
     unavailable").
     """
 
