@@ -2015,6 +2015,32 @@ Connecting does not return until **both** are live, because without that gate an
 dropped before the responder subscribed. (The SDK publishes the card only *after* subscribing, so our
 own online card appearing on the discovery wildcard is the deterministic "inbound is live" signal.)
 
+**The agent name is the mesh identity, and it is held, not assumed.** The name is not a label: it is
+the MQTT client id of both connections *and* the last segment of the request topic, and the profile
+has nothing that arbitrates a shared one. A broker's answer to a duplicate client id is to disconnect
+the incumbent, so two instances with one name would trade the connection forever; and because both
+subscribe to the same request topic, every task sent to that name would run **twice** — two turns,
+two sets of side effects, two artifact-and-terminal pairs back to the requester. Presence cannot
+reveal it either: a card on our own topic is filtered as our own echo, which is exactly what a twin
+looks like. So the name is checked **before joining**: a throwaway connection — its own unique client
+id, so it can never displace a session — reads the retained card on our own discovery topic, and a
+card that is neither our own instance's nor a *retirement* (`a2a-status: offline`, which is what a
+clean shutdown and a last will both publish) means the name is taken: the mesh refuses to connect and
+names the holder. Our own card carries a per-process instance id in `capabilities.extensions`, which
+is the only thing that makes "our own echo" decidable at all — the card schema has no field for the
+process behind it. The check costs one short-lived connection and one probe budget per connect:
+silence within that budget *is* the answer "no card", because MQTT has no end-of-retained marker.
+
+Two instances that start inside the same probe window see only each other's absence, announce, and
+then each sees the other's card — and **both leave**. No winner is picked, deliberately: a tie-break
+would have to let the loser disconnect, and a departing agent's last act is to publish an *offline*
+card on the name's own topic, which would overwrite the winner's retained card and leave the survivor
+advertising as offline to every peer. Both leaving leaves the broker's state truthful — the name is
+offline because nobody holds it — and the next connect re-probes, so a twin that is renamed or gone
+costs a retry, not a restart. The residual ambiguity is the one presence has always had: a retained
+*online* card left by a process that died while the broker was down is indistinguishable from a live
+claimant, and it refuses a start until the card is cleared.
+
 **Inbound.** The responder classifies a message by its declared type and blocks on a per-task
 completion bridge **only** for a task request — only a request creates a task. A plain message is a
 conversation, enqueued task-less with no bridge; a task response is not a task at all and is

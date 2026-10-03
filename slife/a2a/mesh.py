@@ -16,6 +16,12 @@ terminal task lifecycle.  This module adds only slife's harness glue:
   building/parsing uses SDK primitives directly.
 * **Presence** — discovery wildcard → peer cache + transition events; the
   SDK's ``Responder`` owns the retained card / LWT for our own identity.
+* **Identity** — the agent name is the MQTT client id *and* the request
+  topic's last segment, so two instances sharing one would take each other
+  over and duplicate every task.  The name is therefore checked against the
+  broker's retained card BEFORE joining (:meth:`A2AMesh._probe_own_name`),
+  and a claim seen afterwards takes the mesh down rather than letting it
+  fight for the name.
 
 Two connections, distinct client ids: the SDK ``Responder`` connects on its
 own (presence publishing stays inside the SDK, untouched); the outbound
@@ -56,6 +62,10 @@ import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/pa
 logger = logging.getLogger(__name__)
 
 _MAX_INFLIGHT = 16
+#: The card extension key holding a mesh instance's id — our only way to tell
+#: our own card from a same-named twin's (see ``A2AMesh.__init__``).  The SDK's
+#: ``build_card`` nests extensions under ``capabilities.extensions``.
+_INSTANCE_EXT = "instance"
 #: Standard TASK_RESPONSE continuity for inbound tasks: the SDK emits the
 #: "submitted" ack, then a long harness turn (LLM thinking, often > 30 s) would
 #: otherwise leave the response stream silent past a standard requester's
@@ -310,6 +320,22 @@ def _presence_status(props) -> str:
     return "offline" if status == "offline" else "online"
 
 
+def _card_instance(data: dict | None) -> str:
+    """The mesh instance id a card advertises — ``""`` when it carries none.
+
+    Read from ``capabilities.extensions`` (where the SDK's ``build_card``
+    nests them).  A card from another implementation, or from an older Slife,
+    simply has none: not ours, but also not evidence of a twin.
+    """
+    caps = (data or {}).get("capabilities")
+    if not isinstance(caps, dict):
+        return ""
+    for ext in caps.get("extensions") or []:
+        if isinstance(ext, dict) and ext.get(_INSTANCE_EXT):
+            return str(ext[_INSTANCE_EXT])
+    return ""
+
+
 def _reply_state(data: dict) -> str:
     """Store status implied by a terminal reply's raw wire state."""
     result = data.get("result") or {}
@@ -341,15 +367,19 @@ class A2AMesh:
         self._mqtt_cfg = MqttConfig(
             host=config.broker_host, port=config.broker_port,
         )
+        #: This process's A2A instance id, carried in our own card.  The card
+        #: schema has no field for "which process", and the agent name cannot
+        #: serve — telling our own card from a same-named twin's is exactly
+        #: what it must not do.  A fresh id per mesh, so a predecessor's
+        #: retained card is never mistaken for our own.
+        self._instance = uuid.uuid4().hex
         self._card = build_card(
             name=self.agent_name,
             description="slife agent — A2A mesh peer",
             url=f"mqtt://{config.broker_host}:{config.broker_port}",
             input_modes=["text/plain"],
             output_modes=["text/plain"],
-            # Cheaper insurance for a future same-name-collision detector than
-            # today's system — flagged, not solved.
-            extensions=[{"instance": uuid.uuid4().hex}],
+            extensions=[{_INSTANCE_EXT: self._instance}],
         )
         #: Inbound tasks awaiting a result — persisted, so a restarted process
         #: can tell the ones its predecessor died holding (which can never be
@@ -363,6 +393,9 @@ class A2AMesh:
         self._outbound: aiomqtt.Client | None = None
         self._connected = False
         self._closing = False
+        #: Set when another agent turns out to hold our name — the mesh then
+        #: leaves the broker (see :meth:`_note_collision`).
+        self._collision = ""
         self._ready = asyncio.Event()  # outbound connected + subscribed
         self._responder_ready = asyncio.Event()  # inbound responder subscribed
         self._tasks: list[asyncio.Task] = []
@@ -412,17 +445,34 @@ class A2AMesh:
     def broker_address(self) -> str:
         return f"{self._config.broker_host}:{self._config.broker_port}"
 
+    @property
+    def collision(self) -> str:
+        """Why this mesh refused the name — empty when it holds it.
+
+        Non-empty means another agent is using our name on the broker: either
+        the pre-join check saw it and :meth:`connect` raised, or it announced
+        itself afterwards and the mesh left (see :meth:`_note_collision`).
+        """
+        return self._collision
+
     async def connect(self) -> None:
         """Start the inbound responder and the outbound driver.
 
         Returns once the outbound connection is established — the broker probe
         in the plugin gate already confirmed reachability, so a failure here is
-        a genuine error surfaced to the caller.  Raises on connect timeout.
+        a genuine error surfaced to the caller.  Raises on connect timeout, and
+        raises *before* connecting at all when another agent already holds our
+        name on the broker (see :meth:`_probe_own_name`) — joining would take
+        that agent's session over and duplicate every task sent to the name.
         """
         await self.disconnect()
         self._closing = False
+        self._collision = ""
         self._ready = asyncio.Event()
         self._responder_ready = asyncio.Event()
+        claim = await self._probe_own_name()
+        if claim:
+            raise RuntimeError(claim)
         self._tasks.append(asyncio.create_task(self._run_responder()))
         self._tasks.append(asyncio.create_task(self._run_outbound()))
         try:
@@ -443,17 +493,103 @@ class A2AMesh:
                 f"{self.broker_address} up?"
             ) from None
 
+    async def _probe_own_name(self) -> str | None:
+        """Whether another agent already holds our name on this broker.
+
+        The name is the MQTT client id *and* the request topic's last segment,
+        and a broker's answer to a duplicate client id is to disconnect the
+        incumbent — so two instances sharing a name kick each other in a loop
+        and every task sent to the name is executed by both (each subscribes
+        to the same request topic).  Nothing on the wire arbitrates it, so the
+        check is made here, BEFORE joining: a throwaway connection — its own
+        unique client id, so it can never take a session over — reads the
+        retained card on our own discovery topic.
+
+        Returns a description of the claim, or ``None`` when the name is free.
+        """
+        kwargs = self._mqtt_cfg.client_kwargs(
+            identifier=(
+                f"{self._topics.org}/{self._topics.unit}/{self.agent_name}"
+                f"-probe-{uuid.uuid4().hex[:8]}"
+            ),
+        )
+        try:
+            async with aiomqtt.Client(**kwargs) as client:
+                await client.subscribe(
+                    self._topics.discovery(self.agent_name), qos=1,
+                )
+                try:
+                    async with asyncio.timeout(
+                        _timeouts.timeouts.deliver.name_probe,
+                    ):
+                        async for msg in client.messages:
+                            claim = self._foreign_claim(msg)
+                            if claim is not None:
+                                return claim
+                except TimeoutError:
+                    return None
+        except (aiomqtt.MqttError, OSError, ValueError) as e:
+            # An unreachable or rejecting broker is not a name problem — the
+            # connect below reports it, with the error that belongs to it.
+            logger.debug("a2a_name_probe_failed err=%s", e)
+        return None
+
+    def _foreign_claim(self, msg) -> str | None:
+        """Whether *msg* is another agent holding our name — and how it looks.
+
+        A card on our own discovery topic claims the name unless it is our own
+        instance's or a *retirement*: ``a2a-status: offline`` is what a
+        departing agent and a last will both publish, so a predecessor's
+        retained card is a card nobody holds.  A deleted card (empty payload)
+        is the absence of a claim, not one.
+        """
+        try:
+            agent_id = msg.topic.value.rsplit("/", 1)[-1]
+        except (AttributeError, IndexError):
+            return None
+        if agent_id != self.agent_name or not msg.payload:
+            return None
+        instance = _card_instance(_decode_payload(msg))
+        if instance and instance == self._instance:
+            return None  # our own card, echoed back
+        if _presence_status(msg.properties) == "offline":
+            return None  # retired — nobody is holding the name
+        who = (
+            f"another A2A instance ({instance[:8]})" if instance
+            else "an agent that carries no instance id"
+        )
+        return (
+            f"agent name {self.agent_name!r} is already in use on "
+            f"{self._topics.org}/{self._topics.unit} — {who} announced it "
+            f"online"
+        )
+
+    def _note_collision(self, claim: str) -> None:
+        """Record that another agent holds our name; the outbound loop leaves
+        the broker on the message that carried it (:meth:`_run_outbound`)."""
+        if self._collision:
+            return
+        self._collision = claim
+        logger.error("a2a_name_collision %s", claim)
+
     async def disconnect(self) -> None:
         """Stop both connections; inflight inbound tasks get cancelled by the
-        SDK (their cancel noise is suppressed by the ``_closing`` gate)."""
+        SDK (their cancel noise is suppressed by the ``_closing`` gate).
+
+        Never cancels its own caller: a mesh task tearing the mesh down (the
+        outbound loop, on a name collision) must be skipped, or it would
+        cancel itself mid-teardown.
+        """
         self._closing = True
+        current = asyncio.current_task()
         tasks, self._tasks = self._tasks, []
         loops = [loop for send in self._sends.values() for loop in send.loops]
-        for task in tasks + loops:
+        mine = [t for t in tasks + loops if t is not current]
+        for task in mine:
             if not task.done():
                 task.cancel()
-        if tasks or loops:
-            await asyncio.gather(*(tasks + loops), return_exceptions=True)
+        if mine:
+            await asyncio.gather(*mine, return_exceptions=True)
         self._sends.clear()
         self._corr_to_task.clear()
         self._pending.clear()  # artifact texts for tasks that never completed
@@ -516,6 +652,12 @@ class A2AMesh:
                     try:
                         async for msg in client.messages:
                             self._handle_message(msg)
+                            if self._collision:
+                                # A twin announced our name while we were live.
+                                # Leave rather than fight it for the client id
+                                # — reconnecting would take its session over and
+                                # the two of us would trade the name forever.
+                                break
                     except asyncio.CancelledError:
                         raise
                     except (aiomqtt.MqttError, AttributeError, ValueError):
@@ -537,6 +679,9 @@ class A2AMesh:
             finally:
                 self._connected = False
                 self._outbound = None
+            if self._collision:
+                await self.disconnect()  # also takes the responder down
+                return
             if not self._closing:
                 try:
                     await asyncio.sleep(_timeouts.timeouts.deliver.retry_delay)
@@ -582,11 +727,20 @@ class A2AMesh:
         except IndexError:
             return
         if agent_id == self.agent_name:
-            # Our own retained card echo.  The SDK responder publishes it
-            # AFTER subscribing its request topic, so an ONLINE sighting is the
-            # deterministic "inbound subscription live" signal connect() gates
-            # on.  Never cached/announced as a peer.
-            if _presence_status(msg.properties) == "online":
+            # A card on OUR OWN topic: either our own (the SDK responder
+            # publishes it AFTER subscribing its request topic, so an ONLINE
+            # sighting of it is the deterministic "inbound subscription live"
+            # signal connect() gates on) or a second instance holding our
+            # name.  Never cached/announced as a peer either way.
+            claim = self._foreign_claim(msg)
+            if claim is not None:
+                self._note_collision(claim)
+                return
+            # Only a real card announces: a deleted one (empty payload) is how
+            # a publisher retires its card, and its absent status property
+            # would otherwise read as "online" — arming the readiness gate on
+            # the absence of a card.
+            if msg.payload and _presence_status(msg.properties) == "online":
                 self._responder_ready.set()
             return
         if not msg.payload:

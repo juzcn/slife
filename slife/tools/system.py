@@ -766,7 +766,9 @@ async def check_a2a(client=None) -> list[dict]:
     process, so this check asks the plugin's internal tool ``__check``
     through its MCP client (from ``ToolContext.a2a_mcp_client``).  When the
     mesh is unreachable — mosquitto not running (no active MQTT port), or
-    the connection dropped — a warning is reported.
+    the connection dropped — a warning is reported, and a mesh that reported
+    *why* it is down (another instance holding our agent name) is reported by
+    that reason instead of the broker.
     """
     data, entries = await _probe_plugin(
         client, "a2a",
@@ -780,6 +782,19 @@ async def check_a2a(client=None) -> list[dict]:
 
     broker = data.get("broker", "")
     where = f" (broker {broker})" if broker else ""
+    error = data.get("error") or ""
+    if error:
+        # The mesh is down for a reason that is NOT a missing broker: a name
+        # another instance already holds, or a failed connect.  Reporting the
+        # generic "start mosquitto" line here would send the reader after a
+        # broker that is running fine.
+        return [{"component": "a2a", "level": "warning", "key": "status",
+                 "value": f"unavailable{where} — {error}",
+                 "hint": "Give this instance its own agent name: the name is "
+                         "its address in the broker's org/unit namespace, and "
+                         "one name is one agent.  Start slife with a distinct "
+                         "--agent name (or give the pair different a2a org/unit "
+                         "values)."}]
     if not data.get("connected"):
         return [{"component": "a2a", "level": "warning", "key": "status",
                  "value": f"unavailable{where}",

@@ -198,6 +198,14 @@ class Storage:
 @dataclass
 class Deliver:
     mqtt_connect: float = 15.0
+    name_probe: float = 1.0       # how long the pre-join name check listens on our
+                                  # OWN discovery topic before concluding nobody
+                                  # holds it.  A retained card is replayed right
+                                  # after SUBACK, so this only has to cover that
+                                  # delivery — and the wait IS the answer "no card":
+                                  # MQTT has no end-of-retained marker, so silence
+                                  # is the only evidence, and it is paid on every
+                                  # connect.
     reply_first: float = 15.0
     keepalive: float = 25.0
     retry_delay: float = 1.0

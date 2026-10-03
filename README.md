@@ -412,6 +412,7 @@ A2A is how separate agents — on one machine or across several — discover eac
 
 - **Mesh tools** (one uniform `a2a_` prefix): `a2a_send_message` (async — returns a task_id immediately, the result arrives later), `a2a_cancel_task`, `a2a_list_agents`, `a2a_broadcast` (fire-and-forget event). Inbound peer traffic reaches the model in one `[A2A:…]` envelope (`from` names the sending peer — never the receiver); the TUI shows `A2A(<peer>)>`. The `a2a` plugin only starts when the MQTT broker is reachable.
 - **Subagents are local workers, not A2A peers**: `spawn_subagent` / `subagent_send_task` / `subagent_get_task_result` / … create workers that share your plugins and run one task at a time (a sync send to a busy worker is auto-queued as async). Async results auto-push to your chat (`mode="auto"`, default) or stay pollable-only (`mode="poll"`). Subagents never drain your inbox — all replies and management belong to the main agent.
+- **One name is one agent.** The agent name *is* the mesh identity — the MQTT client id and the topic segment peers address — so a second instance with the same name on the same broker would take the first one's session over, and every task sent to that name would run in both. The mesh checks the name before joining, so the newcomer refuses and says whose the name is; `system_health` reports it as the reason the mesh is down. Give each instance its own `--agent` name, or different `a2a` `org`/`unit` values.
 
 All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
 
@@ -448,7 +449,7 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 
 | Flag | Description |
 |------|-------------|
-| `--agent <id>` | Agent identity — separate turns database + A2A mesh name (default: `slife`) |
+| `--agent <id>` | Agent identity — separate turns database + A2A mesh name (default: `slife`). The mesh name must be unique on the broker: a second instance with the same name refuses to join instead of fighting for it |
 | `--lang <en\|zh>` | TUI language — force English / Chinese (default: auto-detect from OS locale) |
 | `-h`, `--help` | Print the usage and exit |
 | `<config-path>` | Positional — use a specific config file (its parent dir becomes the data dir) |

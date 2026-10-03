@@ -1100,6 +1100,20 @@ class TestCheckA2aFunction:
         assert entries[0]["value"] == "connected (broker localhost:1883, 1 peer: peer-1)"
 
     @pytest.mark.asyncio
+    async def test_name_collision_is_reported_as_the_reason(self):
+        """A mesh down over its agent name must not be reported as a missing
+        broker — mosquitto is running; the second instance is the problem."""
+        client = _FakeA2aClient(self._status(
+            connected=False,
+            error="agent name 'slife' is already in use on default/default",
+        ))
+        entries = await check_a2a(client=client)
+        assert entries[0]["level"] == "warning"
+        assert "already in use" in entries[0]["value"]
+        assert "mosquitto" not in entries[0]["hint"]
+        assert "--agent" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
     async def test_connected_multiple_peers_plural(self):
         """Two peers pluralise and list both names."""
         client = _FakeA2aClient(self._status(peers=[

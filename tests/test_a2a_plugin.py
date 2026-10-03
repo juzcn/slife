@@ -19,10 +19,12 @@ from slife.a2a.config import A2AConfig
 @pytest.fixture(autouse=True)
 def _fresh_plugin_state():
     """The mesh client is a module-level singleton shared across test files —
-    isolate it per test."""
+    isolate it per test, along with the last connect error it reports."""
     plugin._client = None
+    plugin._connect_error = ""
     yield
     plugin._client = None
+    plugin._connect_error = ""
 
 
 def _config(enabled: bool = True) -> A2AConfig:
@@ -44,6 +46,7 @@ def _fake_client():
     client.cancel_task = AsyncMock(return_value="cancelled")
     client.broadcast = AsyncMock()
     client.complete_task = MagicMock(return_value="ok")
+    client.collision = ""
     client.list_agents = MagicMock(return_value=[
         MagicMock(agent_name="self-1", status="online"),
         MagicMock(agent_name="peer-1", status="online"),
@@ -247,6 +250,38 @@ class TestA2aStatusTool:
         assert data["peers"] == [
             {"agent_name": "peer-1", "status": "online"},
         ]
+
+    @pytest.mark.asyncio
+    async def test_reports_why_a_failed_connect_left_the_mesh_down(self):
+        """A refused name is not "no broker": __check carries the reason, or
+        health reports a bare "not connected" for a broker that is running."""
+        plugin._connect_error = (
+            "agent name 'self-1' is already in use on default/default"
+        )
+        with patch.object(plugin, "_load_config", return_value=_config()):
+            data = json.loads(await getattr(plugin, "__check")())
+        assert data["connected"] is False
+        assert "already in use" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_reports_a_live_meshs_name_collision(self):
+        """A twin seen AFTER we connected takes the mesh down; the claim is
+        what health has to show, since the mesh itself is simply offline."""
+        client = _fake_client()
+        client.is_connected = False
+        client.collision = "agent name 'self-1' is already in use on default/default"
+        plugin._client = client
+        with patch.object(plugin, "_load_config", return_value=_config()):
+            data = json.loads(await getattr(plugin, "__check")())
+        assert data["connected"] is False
+        assert "already in use" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_healthy_mesh_reports_no_error(self):
+        plugin._client = _fake_client()
+        with patch.object(plugin, "_load_config", return_value=_config()):
+            data = json.loads(await getattr(plugin, "__check")())
+        assert data["error"] == ""
 
     @pytest.mark.asyncio
     async def test_status_does_not_trigger_connect(self):
