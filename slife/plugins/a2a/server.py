@@ -344,10 +344,12 @@ async def __a2a_drain_incoming() -> str:
     _cancellations.clear()
     completions = list(_task_completions)
     _task_completions.clear()
-    stale = (
-        _client.stale_inbound() if _client is not None
-        else [t.as_dict() for t in InboundStore().stale()]
-    )
+    if _client is not None:
+        stale = _client.stale_inbound()
+    else:
+        # No live mesh: read this agent's own file straight off disk, so a
+        # restart reports its orphans even if the broker never came back up.
+        stale = [t.as_dict() for t in InboundStore().stale()]
     return json.dumps(
         {
             "tasks": tasks,

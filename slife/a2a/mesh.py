@@ -381,9 +381,9 @@ class A2AMesh:
             output_modes=["text/plain"],
             extensions=[{_INSTANCE_EXT: self._instance}],
         )
-        #: Inbound tasks awaiting a result — persisted, so a restarted process
-        #: can tell the ones its predecessor died holding (which can never be
-        #: completed) from ids it has simply never seen.
+        #: Inbound tasks awaiting a result — persisted, per agent, so a
+        #: restarted process can tell the ones its predecessor died holding
+        #: (which can never be completed) from ids it has simply never seen.
         self._inbound = InboundStore()
         self._responder = MeshResponder(
             agent_id=self.agent_name, mqtt=self._mqtt_cfg,

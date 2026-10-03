@@ -2070,7 +2070,9 @@ completed: the bridge is gone, the peer's reply topic is not reconstructible, an
 no post-restart completion path. Nor can the wire tell a restarted process which ids those were. A
 persisted record of inbound tasks — written on arrival, removed on departure — is what draws the line
 between *orphaned* and *never seen*: what a fresh process finds on disk is exactly what its
-predecessor died holding. Those are reported as **stale**, never completable, and they ride the
+predecessor died holding. That line is drawn for **one process**, so the record is per **agent**
+(`a2a_inbound_<agent>.yaml`, §9.5): two instances on one machine are the normal way to run two
+agents, and a shared file would have each read the other's in-flight tasks as its own orphans. Those are reported as **stale**, never completable, and they ride the
 per-turn prompt (§2.5) until the model answers the peer with a plain message, which clears them. That
 is the third failure mode of an inbound task, beside completion and withdrawal: a task the local
 process can no longer finish, which the model may still answer as a conversation.

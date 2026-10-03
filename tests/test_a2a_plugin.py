@@ -191,9 +191,11 @@ class TestDrain:
         """``stale_tasks`` rides the drain — read off the live mesh when there
         is one, and off disk otherwise, so a restart still reports its orphans
         when the broker never came back up."""
-        monkeypatch.setenv("A2A_INBOUND_FILE", str(tmp_path / "inbound.json"))
+        monkeypatch.setenv("SLIFE_A2A_INBOUND", str(tmp_path / "inbound.json"))
         from slife.a2a.inbound_store import InboundStore
-        InboundStore().add("ec604319", "jack")  # left in flight, then "restart"
+        # Left in flight by a predecessor, then "restart": written through the
+        # same $SLIFE_A2A_INBOUND the drain resolves for this agent.
+        InboundStore().add("ec604319", "jack")
 
         data = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
         assert [t["task_id"] for t in data["stale_tasks"]] == ["ec604319"]

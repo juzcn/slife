@@ -126,6 +126,22 @@ def get_memdb_db_path(agent_name: str = "slife") -> Path:
     return get_db_path(agent_name)
 
 
+def get_a2a_inbound_path(agent_name: str = "slife") -> Path:
+    """Path to the A2A inbound-task ledger for *agent_name*.
+
+    ``SLIFE_A2A_INBOUND`` wins when set (a test/dev override), else the
+    per-agent ledger beside the database — the A2A counterpart of
+    :func:`get_db_path`, and per-agent for the same reason: the ledger's
+    premise is one process ("what is on disk is what my predecessor died
+    holding"), which a file shared by two agents on one machine would break.
+    """
+    env_path = os.environ.get("SLIFE_A2A_INBOUND")
+    if env_path:
+        return Path(env_path)
+    agent = os.environ.get("SLIFE_AGENT_NAME", agent_name)
+    return get_data_dir() / f"a2a_inbound_{agent}.yaml"
+
+
 def get_db_path(agent_name: str = "slife") -> Path:
     """Path to the SQLite memory database for *agent_name*.
 
