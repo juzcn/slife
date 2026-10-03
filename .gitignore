@@ -25,8 +25,9 @@ logs/
 *.files/
 
 # A2A inbound-task state (which inbound tasks a restart orphaned).  Written by
-# the a2a plugin; in dev mode the data dir IS the repo root, so it lands here.
-a2a_inbound.yaml
+# the a2a plugin; in dev mode the data dir IS the repo root, so it lands here —
+# one file per agent, beside the agent's .db and .files.
+a2a_inbound_*.yaml
 
 # Generated documentation render.  DESIGN.pdf is DESIGN.md printed from a
 # browser, not a source file — DESIGN.md is what is edited and reviewed, so the
