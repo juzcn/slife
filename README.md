@@ -414,6 +414,14 @@ A2A is how separate agents — on one machine or across several — discover eac
 - **Subagents are local workers, not A2A peers**: `spawn_subagent` / `subagent_send_task` / `subagent_get_task_result` / … create workers that share your plugins and run one task at a time (a sync send to a busy worker is auto-queued as async). Async results auto-push to your chat (`mode="auto"`, default) or stay pollable-only (`mode="poll"`). Subagents never drain your inbox — all replies and management belong to the main agent.
 - **One name is one agent.** The agent name *is* the mesh identity — the MQTT client id and the topic segment peers address — so a second instance with the same name on the same broker would take the first one's session over, and every task sent to that name would run in both. The mesh checks the name before joining, so the newcomer refuses and says whose the name is; `system_health` reports it as the reason the mesh is down. Give each instance its own `--agent` name, or different `a2a` `org`/`unit` values.
 
+  Leaving is automatic: a clean shutdown publishes an *offline* card before disconnecting, and a crash gets the same card from the broker's last will — so the name frees itself. Only a broker that keeps retained messages across restarts (`persistence true`, off by default) can hold a card nobody is behind; if no other slife is running and the mesh still refuses, clear that card and retry on the next connect:
+
+  ```bash
+  mosquitto_pub -h localhost -t '$a2a/v1/discovery/default/default/slife' -r -n
+  ```
+
+  (adjust `default/default/slife` to your `a2a` `org`/`unit` and `--agent` name)
+
 All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
 
 <a id="semantic-memory-search--installation-guide" name="semantic-memory-search--installation-guide"></a>

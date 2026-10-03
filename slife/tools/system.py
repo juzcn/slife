@@ -790,11 +790,12 @@ async def check_a2a(client=None) -> list[dict]:
         # broker that is running fine.
         return [{"component": "a2a", "level": "warning", "key": "status",
                  "value": f"unavailable{where} — {error}",
-                 "hint": "Give this instance its own agent name: the name is "
-                         "its address in the broker's org/unit namespace, and "
-                         "one name is one agent.  Start slife with a distinct "
-                         "--agent name (or give the pair different a2a org/unit "
-                         "values)."}]
+                 "hint": "Another slife may be holding this agent name, or a "
+                         "previous run's card is still on the broker.  Give "
+                         "this instance its own --agent name (the name is its "
+                         "address in the broker's org/unit namespace, and one "
+                         "name is one agent), or clear the leftover card and "
+                         "retry."}]
     if not data.get("connected"):
         return [{"component": "a2a", "level": "warning", "key": "status",
                  "value": f"unavailable{where}",

@@ -2037,9 +2037,12 @@ would have to let the loser disconnect, and a departing agent's last act is to p
 card on the name's own topic, which would overwrite the winner's retained card and leave the survivor
 advertising as offline to every peer. Both leaving leaves the broker's state truthful — the name is
 offline because nobody holds it — and the next connect re-probes, so a twin that is renamed or gone
-costs a retry, not a restart. The residual ambiguity is the one presence has always had: a retained
-*online* card left by a process that died while the broker was down is indistinguishable from a live
-claimant, and it refuses a start until the card is cleared.
+costs a retry, not a restart. The card retires itself in the ordinary ways — a clean shutdown
+publishes the offline card before disconnecting, and a process that simply dies gets the same card
+from the broker's last will — so only the one case nobody can answer for is left: a retained *online*
+card whose process died while the **broker** was down, on a broker that persists retained messages
+across restarts. That card is indistinguishable from a live claimant, exactly as it is for a peer's
+roster, and it refuses a start until someone clears it.
 
 **Inbound.** The responder classifies a message by its declared type and blocks on a per-task
 completion bridge **only** for a task request — only a request creates a task. A plain message is a
