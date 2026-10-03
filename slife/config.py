@@ -102,9 +102,9 @@ def parse_cli_config_path(argv: list[str]) -> str | None:
     """Extract the first positional CLI arg as an explicit config path.
 
     ``python -m slife myconf.yaml`` must use ``myconf.yaml`` (the docstring
-    promises it); flags (``--headless``, ``--agent <id>``, ``--lang <en|zh>``)
-    are skipped along with their values.  Returns ``None`` when no positional
-    path is given.
+    promises it); flags (``--agent <id>``, ``--lang <en|zh>``) are skipped
+    along with their values.  Returns ``None`` when no positional path is
+    given.
     """
     args = argv[1:]
     i = 0
@@ -142,11 +142,6 @@ def parse_cli_lang(argv: list[str]) -> str | None:
     return None
 
 
-def parse_cli_headless(argv: list[str]) -> bool:
-    """Whether the worker protocol was asked for instead of the TUI."""
-    return "--headless" in argv[1:]
-
-
 def parse_cli_help(argv: list[str]) -> bool:
     """Whether ``-h`` / ``--help`` was asked for."""
     return any(a in ("-h", "--help") for a in argv[1:])
@@ -165,8 +160,6 @@ Usage: slife [options] [config-path]
   --agent <id>       agent identity — a separate turns database and A2A mesh
                      name (default: slife)
   --lang <en|zh>     interface language (default: the OS locale)
-  --headless         no TUI: speak the worker protocol over stdin/stdout, the
-                     way subagent processes do
   -h, --help         show this message and exit
 """
 

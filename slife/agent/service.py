@@ -2218,7 +2218,7 @@ class AgentService:
         own.  When the watchdog respawns a plugin, it lands on a fresh
         auto-assigned port; workers still holding the old session are dead
         until they reconnect.  This broadcasts the new port so they rebuild
-        their client (``worker/plugin_restart`` in headless.py).  Best-effort.
+        their client (``worker/plugin_restart`` in worker.py).  Best-effort.
         """
         if not port:
             return

@@ -199,7 +199,7 @@ class TestCliHelp:
             main()  # returns; never reaches the config/TUI imports
         out = capsys.readouterr().out
         assert "Usage: slife [options] [config-path]" in out
-        for flag in ("--agent", "--lang", "--headless", "-h, --help"):
+        for flag in ("--agent", "--lang", "-h, --help"):
             assert flag in out
 
     def test_help_short_flag(self, capsys, monkeypatch):
@@ -222,26 +222,14 @@ class TestCliHelp:
                  if m.split(".")[0] in ("textual", "rich") or m.startswith("slife.ui")}
         assert not heavy, heavy
 
-    def test_headless_help_does_not_start_the_worker(self, capsys, monkeypatch):
-        """`--headless --help` would otherwise sit on stdin waiting for a parent."""
-        from slife.subagent import headless
-        with patch.object(headless.asyncio, "run",
+    def test_worker_help_does_not_start_the_worker(self, capsys):
+        """`python -m slife.subagent.worker --help` would otherwise sit on
+        stdin waiting for a parent that is never coming."""
+        from slife.subagent import worker
+        with patch.object(worker.asyncio, "run",
                           side_effect=AssertionError("worker loop must not start")):
-            headless.main(["prog", "--headless", "--help"])
+            worker.main(["prog", "--help"])
         assert "Usage: slife" in capsys.readouterr().out
-
-    def test_headless_flag_routes_to_the_worker(self, monkeypatch):
-        """The console script is `slife:main`, so it is the flag's other door."""
-        import sys
-
-        from slife import main
-        monkeypatch.setattr(sys, "argv", ["slife", "--headless", "conf.yaml"])
-        seen = {}
-        with patch("slife.subagent.headless.main",
-                   side_effect=lambda argv: seen.setdefault("argv", argv)):
-            main()
-        # --headless is stripped; the positional config path survives.
-        assert seen["argv"] == ["slife", "conf.yaml"]
 
 
 class TestMainModule:

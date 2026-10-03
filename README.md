@@ -450,7 +450,6 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 |------|-------------|
 | `--agent <id>` | Agent identity — separate turns database + A2A mesh name (default: `slife`) |
 | `--lang <en\|zh>` | TUI language — force English / Chinese (default: auto-detect from OS locale) |
-| `--headless` | No TUI — the worker protocol over stdin/stdout, which is how subagent processes talk to their parent |
 | `-h`, `--help` | Print the usage and exit |
 | `<config-path>` | Positional — use a specific config file (its parent dir becomes the data dir) |
 

@@ -180,7 +180,7 @@ class SubagentProcess:
 
     async def start(self) -> None:
         if self._running: return
-        cmd = [sys.executable, "-m", "slife.subagent.headless"]
+        cmd = [sys.executable, "-m", "slife.subagent.worker"]
         logger.info("spawn name=%s", self._name)
         env = dict(os.environ)
         env["SLIFE_SUBAGENT_NAME"] = self._name

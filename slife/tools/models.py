@@ -75,7 +75,7 @@ def _sync_in_memory_models(config, raw: dict) -> None:
     ``model_set`` / ``model_remove`` persist to disk; this keeps the
     in-memory ``config.models`` in sync so additions/removals take effect
     in the running session without a restart.  No-op when there is no live
-    Config (headless, or tools constructed directly in tests).
+    Config (tools constructed directly, e.g. in tests).
     """
     if config is None:
         return

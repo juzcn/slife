@@ -1198,7 +1198,7 @@ race between the user's answer and the turn's cancel, and a cancel **denies** th
 abandoning it — a prompt that has lost focus, to the model picker or to anything else, must not hold
 the turn open, because every later message would queue behind it. A denied call returns an error
 naming the denial, mounts no tool widget (the prompt row itself carries the rejection state), and the
-rest of the batch proceeds. A process with no handler — a headless worker — **auto-approves**: the
+rest of the batch proceeds. A process with no handler — a worker — **auto-approves**: the
 decision belongs to whoever is watching, and nobody is.
 
 ---
@@ -1503,7 +1503,7 @@ the mesh it sends **as the main agent**.
 ```
  Main agent (the harness)                     Worker child
  ┌──────────────────────────────┐             ┌──────────────────────────────────┐
- │ Inbox ─ one turn per message │             │ a headless service, worker role  │
+ │ Inbox ─ one turn per message │             │ a worker service, worker role    │
  │   ▲  subagent auto-push      │             │  inbox ─ worker/send = ONE turn  │
  │   │                          │  JSON-RPC   │  one-shot history per task       │
  │ done-hook ◄──────────────────┼─────────────┤  no TUI · no persistence         │
@@ -1576,7 +1576,7 @@ worker are queued by the *parent*, never refused and never re-sent.
 ### 6.3 Identity and result delivery
 
 The worker renders its own system prompt from the worker identity template, which frames it as a
-headless process of the parent with the same capabilities, carrying **no identity of its own** — no
+worker process of the parent with the same capabilities, carrying **no identity of its own** — no
 presence, no personality, and in all external communication it acts as the main agent, never
 introducing itself. It is told it is ephemeral, and how it was seeded. Its completion posts back
 under a dedicated inbox source, so it is distinguishable from human turns in memory search yet
@@ -2205,7 +2205,7 @@ internal functions, so nothing re-calls them after the aggregate.
 
 There are two kinds of input. **Static records** are pushed during startup — the active model, the
 config's provenance and counts, and a daemon-thread probe of the external toolchain — and the host
-facts come from **one recorder** shared by the TUI and a headless worker, so both views list the same
+facts come from **one recorder** shared by the TUI and a worker, so both views list the same
 components rather than differing by counts no reader could account for. The active-model record is
 also re-pushed on every live model switch, replacing the old one so the report still holds exactly
 one. The toolchain probe runs on a daemon thread, so a report read in that window states its own
@@ -2343,7 +2343,7 @@ written down.
 
 **3. The approval gate's two blind spots.** Approval is pure model judgment, with no
 `requires_approval` flag anywhere ([§4.8](#48-the-approval-gate)), so the gate holds exactly where the
-model is diligent and nowhere else. Two consequences are worth stating plainly. A **headless worker
+model is diligent and nowhere else. Two consequences are worth stating plainly. A **worker
 auto-approves everything** — the decision belongs to whoever is watching, and nobody is — so a
 subagent running a task has no gate at all. And the [Prologue](#prologue--the-view-behind-the-design)
 ends on *lock up every critical tool*, which is a different posture from "the model decides, per

@@ -1337,7 +1337,7 @@ def _scope_line(groups: dict[str, list[dict]]) -> str:
     toolchain half is probed **on a daemon thread**.  A report read in the
     seconds before those probes land says which facts are not in yet, instead
     of letting a smaller component count read as a smaller system.  Both entry
-    points (the TUI and a headless worker) call the same recorder, so this is
+    points (the TUI and a worker) call the same recorder, so this is
     a window, not a role difference: the worker/parent asymmetry it was
     written for is gone.
 
