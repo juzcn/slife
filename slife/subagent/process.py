@@ -667,7 +667,7 @@ class SubagentProcess:
 
     async def _read_stdout(self) -> None:
         if not self._process or not self._process.stdout: return
-        from slife.logfmt import PROTOCOL_LINE_LIMIT, discard_overlong_line
+        from slife.logfmt import PROTOCOL_LINE_LIMIT, read_line_bounded
         reader = self._process.stdout
         # One stdout line can legitimately be a many-MB worker result — raise
         # the StreamReader cap accordingly.  A line beyond even that is
@@ -685,12 +685,10 @@ class SubagentProcess:
             pass
         try:
             while self._running:
-                try:
-                    line = await reader.readline()
-                except ValueError:
-                    # LimitOverrunError — a single over-long line.  Discard
-                    # its remainder and keep reading; never die here.
-                    dropped = await discard_overlong_line(reader)
+                # One over-long line is discarded and reading continues; the
+                # reader never dies here.
+                line, dropped = await read_line_bounded(reader)
+                if dropped or line is None:
                     logger.warning(
                         "subagent_stdout_line_overlong_discarded "
                         "name=%s min_bytes=%d", self._name, dropped,

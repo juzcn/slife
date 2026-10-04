@@ -95,11 +95,22 @@ def _format_timestamp(ts) -> str | None:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
-def _linkify(plain: str) -> Content:
-    """Return *plain* as Content with clickable links for detected URIs / paths."""
-    if not plain:
+def _linkify(plain: str, prefix: str | None = "") -> Content:
+    """Return *prefix* + *plain* as Content with clickable links for URIs / paths.
+
+    The ONE place a message becomes clickable text.  Live messages (which
+    carry a sender prefix) and *restored* ones (which mostly do not) both come
+    through here — they used to be two copies of this pass, so a regex or
+    scheme change could apply to one and not the other and the same message
+    would render differently before and after a restart.
+
+    The link passes run over the whole string, then *prefix* is styled — the
+    order matters: styling first would leave the prefix's own text unscanned.
+    """
+    prefix = prefix or ""
+    if not prefix and not plain:
         return Content("")
-    rt = RichText(plain)
+    rt = RichText(f"{prefix}{plain}")
 
     # URIs → clickable (the URI itself is the link target)
     rt.highlight_regex(
@@ -112,6 +123,9 @@ def _linkify(plain: str) -> Content:
         return RichStyle(link="file:///" + m.replace("\\", "/"))
 
     rt.highlight_regex(_WIN_PATH_RE, style=_file_link)
+
+    if prefix:
+        rt.stylize("bold #d97706", 0, len(prefix))
 
     return Content.from_rich_text(rt)
 
@@ -466,20 +480,7 @@ class AssistantMessage(Static):
         URLs and absolute file paths are auto-detected and rendered as
         clickable links (via Rich :class:`~rich.text.Text` highlight).
         """
-        if self._name_prefix:
-            full = f"{self._name_prefix}{self._buffer}"
-            rt = RichText(full)
-            rt.highlight_regex(
-                _URI_RE,
-                style=lambda m: RichStyle(link=m),
-            )
-            rt.highlight_regex(
-                _WIN_PATH_RE,
-                style=lambda m: RichStyle(link="file:///" + m.replace("\\", "/")),
-            )
-            rt.stylize("bold #d97706", 0, len(self._name_prefix))
-            return Content.from_rich_text(rt)
-        return _linkify(self._buffer)
+        return _linkify(self._buffer, self._name_prefix)
 
     def _build_usage_line(self) -> Content:
         """Token usage footer line."""

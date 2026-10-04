@@ -21,7 +21,7 @@ from slife.tools._config_io import (
     read_config,
     with_fetched_at,
 )
-from slife.tools.base import Tool
+from slife.tools.base import Tool, require_bool
 from slife.tools.catalog import STATUS_ERROR, config_status
 
 if TYPE_CHECKING:
@@ -744,6 +744,12 @@ class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompati
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         enabled: bool = kwargs["enabled"]
+        # A JSON null must not reach ``save_skill_enabled``: it wrote
+        # ``enabled: null`` while this returned "[OK] Skill 'x' disabled.",
+        # and the reader (``is False``) does not treat null as disabled — so
+        # the report said one thing and the config another.
+        if err := require_bool(enabled=enabled):
+            return err
 
         # The skill must exist on disk (frontmatter name or directory name) —
         # the toggle records into the ``skills:`` config section, which

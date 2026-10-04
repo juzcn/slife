@@ -7,6 +7,7 @@ nesting.
 """
 
 import asyncio
+import base64
 import logging
 import tempfile
 from collections.abc import Awaitable, Callable
@@ -20,6 +21,7 @@ from mcp import ClientSession, MCPError
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Implementation
 
+from slife.mcp.content import format_content_blocks
 from slife.mcp.era import negotiate_era, peer_era, watch_tools_changed
 from slife.plugins.mcp_gateway import __version__
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
@@ -635,13 +637,23 @@ class MCPClient:
             for t in result.tools
         ]
 
-    def _save_image_bytes(self, data: bytes) -> str | None:
+    def _save_image_bytes(self, data: str | bytes) -> str | None:
         """Save *data* to a temp file if it looks like an image.
+
+        ``ImageContent.data`` is base64 **text** (the SDK's own field type),
+        so a ``str`` is decoded here before the magic-byte sniff — passing it
+        through raw made every comparison fail and the image unreachable.  A
+        caller already holding raw bytes passes them through.
 
         Returns the absolute path, or ``None`` if the data is not a
         recognised image format or saving fails.  The file is registered for
         deletion at client disconnect (:meth:`MCPClient.disconnect`).
         """
+        if isinstance(data, str):
+            try:
+                data = base64.b64decode(data)
+            except ValueError:  # binascii.Error — not base64 at all
+                return None
         ext = _guess_image_extension(data)
         if ext is None:
             return None
@@ -698,29 +710,11 @@ class MCPClient:
         # CallToolResult carries ``is_error`` (snake_case) — the SDK's
         # pydantic field name, matching connection.py's read.  The wire/
         # camelCase alias ``isError`` does not exist on the parsed model.
-        if getattr(result, "is_error", False):
-            parts: list[str] = []
-            for block in result.content:
-                if hasattr(block, "text"):
-                    parts.append(block.text)  # type: ignore[union-attr]
-            return "Error: " + "\n".join(parts)
-
-        parts: list[str] = []
-        for block in result.content:
-            if hasattr(block, "text"):
-                parts.append(block.text)  # type: ignore[union-attr]
-            elif hasattr(block, "data"):
-                img_path = self._save_image_bytes(block.data)  # type: ignore[union-attr]
-                if img_path is not None:
-                    # Binary image content is materialized to a temp file so
-                    # the LLM can reference it by path — no in-terminal
-                    # rendering; the user opens the file with the OS.
-                    parts.append(str(img_path))
-                else:
-                    parts.append(f"[binary data: {len(block.data)} bytes]")  # type: ignore[union-attr]
-            else:
-                parts.append(str(block))
-        return "\n".join(parts)
+        # The one block → string walk both transports share (see
+        # slife.mcp.content).  Binary content is materialized to a temp file so
+        # the LLM can reference it by path — no in-terminal rendering; the user
+        # opens the file with the OS.
+        return format_content_blocks(result, save_image=self._save_image_bytes)
 
     def _ensure_connected(self) -> None:
         if not self._connected or self._session is None:

@@ -76,7 +76,7 @@ class TestListSubagentsTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = ListSubagentsTool()
             result = await tool.execute()
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_no_subagents(self):
@@ -122,7 +122,7 @@ class TestSpawnSubagentTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SpawnSubagentTool()
             result = await tool.execute()
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_spawn_success(self):
@@ -272,7 +272,7 @@ class TestRemoveSubagentTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = RemoveSubagentTool()
             result = await tool.execute(subagent_name="sub-1")
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_remove_success(self):
@@ -355,7 +355,7 @@ class TestSubagentSendTaskTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentSendTaskTool()
             result = await tool.execute(subagent_name="sub-1", task="do X")
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_send_success(self):
@@ -471,7 +471,7 @@ class TestSubagentSendTaskAsyncTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentSendTaskAsyncTool()
             result = await tool.execute(subagent_name="sub-1", task="do X")
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_send_async_success(self):
@@ -543,7 +543,7 @@ class TestSubagentGetTaskResultTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentGetTaskResultTool()
             result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_result_pending(self):
@@ -596,7 +596,7 @@ class TestSubagentListTasksTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentListTasksTool()
             result = await tool.execute()
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_no_records(self):
@@ -668,7 +668,7 @@ class TestSubagentCancelTaskTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentCancelTaskTool()
             result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_cancel_success(self):

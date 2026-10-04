@@ -36,7 +36,7 @@ from slife.tools._config_io import (
     read_config,
     write_config,
 )
-from slife.tools.base import Tool, make_params
+from slife.tools.base import Tool, make_params, require_bool
 
 logger = logging.getLogger(__name__)
 
@@ -427,7 +427,9 @@ class EnableEmbeddingsTool(_EmbeddingsConfigTool):
         if err := self._require_config():
             return err
 
-        enabled = bool(kwargs["enabled"])
+        enabled: bool = kwargs["enabled"]
+        if err := require_bool(enabled=enabled):
+            return err
         raw = read_config(self._config_path)
         emb = raw.setdefault(_EMBEDDINGS_KEY, {})
         if not isinstance(emb, dict):

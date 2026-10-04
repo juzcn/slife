@@ -40,6 +40,24 @@ INDEX_TEXT_VERSION = "1"
 #: so chunk below it rather than trusting the build.
 _MAX_SQL_VARS = 900
 
+#: KNN over-fetch factors — see :func:`semantic_fetch_limit`.
+_WINDOWED_OVERFETCH = 8
+_UNWINDOWED_OVERFETCH = 2
+
+
+def semantic_fetch_limit(limit: int, *, windowed: bool) -> int:
+    """How many KNN rows to fetch to end up with *limit* results.
+
+    vec0 KNN is global nearest-neighbour: it cannot constrain the search inside
+    a time window, so a windowed search filters AFTER the fetch (in SQL for the
+    cabinet, in Python for the turns DB) and needs a wider pool for the
+    in-window rows not to fall outside the fetched set.
+
+    One tuning factor shared by both stores — two copies of it would drift into
+    two different recalls for the same query against the same content.
+    """
+    return limit * (_WINDOWED_OVERFETCH if windowed else _UNWINDOWED_OVERFETCH)
+
 #: The turn columns a live-context read returns — one spelling, so the
 #: read and any future windowed query over the same rows agree.
 _TURN_COLUMNS = """rowid, user_message, messages, summary, tags,
@@ -191,6 +209,21 @@ class VecStoreLifecycleMixin:
     def _c(self) -> "aiosqlite.Connection":
         """The live connection — the concrete store asserts and returns it."""
         raise NotImplementedError
+
+    @property
+    def can_index(self) -> bool:
+        """Whether this store can hold vectors at all.
+
+        False when sqlite-vec did not load (or no dimension is applied): no
+        vec0 table exists, ``search_semantic`` returns nothing, and no row can
+        ever be embedded.  It is what tells the drainer that
+        ``count_unembedded() == 0`` means "nothing CAN be indexed" rather than
+        "the index is ready" — reading it as ready opened the semantic gate on
+        a corpus with no vector storage, so hybrid search reported
+        ``semantic_available: true`` beside a leg that structurally returned
+        nothing.
+        """
+        return self._embedding_dim > 0
 
     async def setup(
         self,
@@ -1155,12 +1188,7 @@ class SessionStore(VecStoreLifecycleMixin):
         # (one turn → multiple chunks).  Dedup in Python: vec0 KNN does
         # not allow GROUP BY.
         #
-        # With a since/until window, use a larger pool: vec0 KNN is global
-        # nearest-neighbour — it cannot constrain the search inside the time
-        # window — so the window is filtered in Python afterwards.  The wider
-        # pool reduces the chance that the in-window turns are all outside the
-        # fetched KNN results.
-        fetch_limit = (limit * 8) if (since or until) else (limit * 2)
+        fetch_limit = semantic_fetch_limit(limit, windowed=bool(since or until))
         # sqlite-vec forbids ANY auxiliary-column constraint — including a
         # JOIN ON — inside a KNN query ("illegal WHERE constraint on a vec0
         # auxiliary column").  So the KNN runs alone (no JOIN) and the turn
@@ -1412,13 +1440,29 @@ class SessionStore(VecStoreLifecycleMixin):
             turn_rowid, len(vec_blobs),
         )
 
-    # A turn is "embeddable" when it has any text worth embedding.  Turns with
-    # no user text AND no messages (or an empty message list) can never be
-    # embedded — excluding them from the unembedded count lets the semantic
-    # gate open instead of stalling forever on the same zero-text rows.
+    # A turn is "embeddable" when :func:`_turn_text_for_embedding` would render
+    # it non-empty — the predicate must be that function's rule in SQL, not an
+    # approximation of it.  "Has a non-empty ``messages`` column" was such an
+    # approximation, and it admitted turns whose only messages are TOOL
+    # RESULTS: the builder ignores those by design, so the row rendered "" and
+    # ``_embed_doc`` refused it.  It stayed unembedded forever, so
+    # ``count_unembedded`` never reached 0 — the semantic gate never opened,
+    # and the drainer burned its no-progress bound and parked in "stalled"
+    # with the misleading reason "the embedder failed repeatedly".
+    #
+    # ``json_valid`` guards the parse: a malformed ``messages`` cannot make the
+    # count query raise, and such a row (with no user text) yields no text
+    # anyway, so excluding it is the same answer the builder gives.
     _EMBEDDABLE_TEXT = (
         "trim(COALESCE(d.user_message, '')) != '' "
-        "OR (d.messages IS NOT NULL AND trim(d.messages) NOT IN ('', '[]'))"
+        "OR (json_valid(d.messages) AND EXISTS ("
+        "      SELECT 1 FROM json_each("
+        "          CASE WHEN json_type(d.messages) = 'array' "
+        "               THEN d.messages ELSE '[]' END) AS m "
+        "      WHERE json_array_length(json_extract(m.value, '$.tool_calls')) > 0 "
+        "         OR (json_extract(m.value, '$.role') = 'assistant' "
+        "             AND trim(COALESCE(json_extract(m.value, '$.content'), '')) != '')"
+        "   ))"
     )
 
     async def get_unembedded_docs(self, limit: int = 100) -> list[dict]:
@@ -1449,7 +1493,7 @@ class SessionStore(VecStoreLifecycleMixin):
             docs.append({
                 "doc_id": r["doc_id"],
                 "text": _turn_text_for_embedding(
-                    r["user_message"], json.loads(r.get("messages") or "[]"),
+                    r["user_message"], _loaded_messages(r.get("messages")),
                 ),
                 "summary": r.get("summary", ""),
                 "tags": r.get("tags", ""),
@@ -1525,6 +1569,7 @@ async def run_schema(
             continue
         if keep is not None and not keep(stmt):
             continue
+        await _drop_view_if_redefined(conn, stmt, log_prefix)
         try:
             await conn.execute(stmt)
         except Exception as e:
@@ -1533,6 +1578,49 @@ async def run_schema(
             # silently hide a structurally broken DB).
             logger.error("%s_stmt_error err=%s stmt=%.80s", log_prefix, e, stmt)
     await conn.commit()
+
+
+#: A ``CREATE VIEW`` statement, with its name and body split out.
+_VIEW_RE = re.compile(
+    r"CREATE\s+VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_]\w*)\s+AS\s+(.*)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+async def _drop_view_if_redefined(conn, stmt: str, log_prefix: str) -> None:
+    """Drop an existing VIEW whose live definition differs from the schema's.
+
+    ``CREATE VIEW IF NOT EXISTS`` never touches an existing view — so a
+    corrected definition would apply only to databases created after the fix,
+    and every database already on disk would keep answering with the old
+    query.  That is the one class of schema object where "no migrations" is
+    not a choice: the view IS the query, and leaving it stale is the bug.
+
+    A view holds no data, so recreating it is free — unlike the vec0 tables,
+    which have to be dropped for their content to be rebuilt.  The comparison
+    is against the SCHEMA FILE rather than a version constant, so the two
+    cannot drift; whitespace is collapsed because SQLite stores its own
+    rendering of the statement, not the file's bytes.
+    """
+    match = _VIEW_RE.match(stmt)
+    if not match:
+        return
+    name = match.group(1)
+    want = _normalize_ddl(f"CREATE VIEW {name} AS {match.group(2)}")
+    cursor = await conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?", (name,),
+    )
+    row = await cursor.fetchone()
+    have = row[0] if (row and isinstance(row[0], str)) else ""
+    if not have or _normalize_ddl(have) == want:
+        return
+    logger.info("%s_view_recreated name=%s", log_prefix, name)
+    await conn.execute(f"DROP VIEW IF EXISTS {name}")
+
+
+def _normalize_ddl(sql: str) -> str:
+    """A DDL statement reduced to a comparable form (whitespace collapsed)."""
+    return " ".join(sql.split())
 
 
 def _split_sql(sql_text: str) -> list[str]:
@@ -1554,6 +1642,24 @@ def _split_sql(sql_text: str) -> list[str]:
 #: the command); its arguments are unbounded (a file body, a rendered page),
 #: so keeping all of them would let one call own the whole chunk.
 TOOL_ARG_CHARS = 400
+
+def _loaded_messages(raw: str | None) -> list[dict]:
+    """The ``messages`` column as a list — ``[]`` when it will not parse.
+
+    A turn's message list is JSON in a TEXT column, so a legacy or hand-edited
+    row can hold something that is not JSON at all.  This column is on the
+    embedding path, and a raise here strands the drainer: the pending count
+    never falls, the gate never opens, and the failure surfaces as a stalled
+    embedder rather than as one unreadable row.
+    """
+    if not raw:
+        return []
+    try:
+        loaded = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return loaded if isinstance(loaded, list) else []
+
 
 def _tool_requests(messages: list[dict]) -> list[str]:
     """The tool calls a turn made, as ``name arguments`` lines."""

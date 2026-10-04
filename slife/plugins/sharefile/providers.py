@@ -148,20 +148,40 @@ def _read_auth_token() -> str | None:
 
 
 def _ngrok_tunnel_alive(public_url: str) -> bool:
-    """True if ngrok still lists *public_url* as a live tunnel.
+    """True if ngrok still lists *public_url* as a live listener.
 
     The embedded SDK does NOT report a server-side teardown (free-tier sessions
-    get recycled by ngrok), so the monitor probes the API for our public URL.
-    Any probe error returns True — don't flap on transient API trouble.
+    get recycled by ngrok), so the monitor asks the SDK what it is still
+    forwarding.  ``get_listeners`` is the API this SDK version actually
+    exposes — the previous probe called ``get_tunnels``, which does not exist
+    in ngrok 1.x, so it returned True for every input and detected nothing.
+
+    TWO conservative rules, because a wrong "dead" costs more than a wrong
+    "alive" here: the monitor answers a false negative by tearing the tunnel
+    down and minting a NEW hostname, which kills every link already handed to
+    a person or an LLM.  So an unavailable probe (an older SDK, API trouble)
+    returns True, and so does an EMPTY list — "no listeners" cannot be told
+    apart from "this build does not track them".  A NON-EMPTY list that omits
+    our URL does answer: there the SDK is demonstrably tracking listeners for
+    this session and ours is not among them.
     """
     try:
         ngrok = _import_ngrok()
         if ngrok is None:
             return True
-        get_tunnels = getattr(ngrok, "get_tunnels", None)
-        if get_tunnels is None:
+        get_listeners = getattr(ngrok, "get_listeners", None)
+        if get_listeners is None:
             return True
-        return any(t.public_url == public_url for t in get_tunnels())
+        listeners = list(get_listeners())
+        if not listeners:
+            return True
+        want = public_url.rstrip("/")
+        for listener in listeners:
+            url = listener.url
+            url = url() if callable(url) else url
+            if str(url).rstrip("/") == want:
+                return True
+        return False
     except Exception:
         return True
 

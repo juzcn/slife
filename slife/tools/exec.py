@@ -319,7 +319,16 @@ class ShellTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         command: str = kwargs["command"]
-        timeout: int = kwargs.get("timeout", self.timeout)
+        # An explicit JSON ``null`` reached the ``<= 0`` guard below as None and
+        # raised TypeError, so the command never ran.  Anything that is not a
+        # real integer falls back to the default; ``bool`` is excluded because
+        # ``True`` is an ``int``.
+        raw_timeout = kwargs.get("timeout")
+        timeout: int = (
+            raw_timeout
+            if isinstance(raw_timeout, int) and not isinstance(raw_timeout, bool)
+            else self.timeout
+        )
         # A 0/negative timeout would reach the read loop as
         # ``wait_for(..., timeout=0)`` → INSTANT TimeoutError, the opposite
         # of the "0 = no timeout" intent (B2/B3).  Treat ≤0 as "use the

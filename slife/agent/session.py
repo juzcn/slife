@@ -400,10 +400,9 @@ async def shutdown_session(service: AgentService) -> None:
     await _stop_one("inbox", service.stop_inbox())
     await asyncio.gather(
         _stop_one("subagent", service.stop_subagent()),
-        *(
-            _stop_one(lc.name, lc.stop())
-            for lc in list(service._plugins.values())
-        ),
+        # The plugins' own grace-bounded stop, shared with the worker's exit
+        # (AgentService.stop_plugins) — never a second copy of it here.
+        service.stop_plugins(),
         return_exceptions=True,
     )
     await _stop_one("catalog", service.close_catalog())

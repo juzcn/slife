@@ -23,6 +23,15 @@ import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/pa
 logger = logging.getLogger(__name__)
 
 # Known embedding dimensions and token limits by model family
+#: Model family → (dimension, max_tokens).
+#:
+#: A DELIBERATE copy of ``local_embed.engine``'s table, and the only one that
+#: can exist: slife spawns local-embed and never imports it (see pyproject),
+#: and local-embed is a standalone distribution that cannot depend on slife.
+#: The two must agree — the server enforces this token limit while this side
+#: sizes the vec0 table from this dimension, and a wrong width silently drops
+#: every insert — so ``tests/test_embedding_table.py`` compares the two
+#: sources and fails on any drift.
 _KNOWN_MODELS: dict[str, tuple[int, int]] = {
     # (dimension, max_tokens)
     "text-embedding-3-small": (1536, 8191),
@@ -137,7 +146,7 @@ class EmbeddingClient:
         # Resolve backend — an OpenAI-compatible endpoint is the only one
         # slife speaks.  Local models (GGUF / HF) are served by the separate
         # local-embed daemon, which presents this same URL standard.
-        if api_key:
+        if api_key and base_url:
             self._backend = "api"
             self._available = _check_runtime()
             if self._available:
@@ -150,6 +159,17 @@ class EmbeddingClient:
                     "hint='uv pip install openai'",
                     model,
                 )
+        elif api_key:
+            # A key with no endpoint is NOT configured.  ``AsyncOpenAI``
+            # silently falls back to its own default when ``base_url`` is
+            # omitted, so treating this as available would POST the user's
+            # key — and every embedded document — to api.openai.com, while
+            # the health report said "has no base_url configured".
+            # ``_discover_model`` already refuses an empty base_url; this
+            # keeps ``available``/``load()`` from disagreeing with it.
+            _log_warn(
+                "embeddings_unavailable backend=none reason=no_base_url"
+            )
         else:
             _log_warn(
                 "embeddings_unavailable backend=none reason=no_config"
@@ -227,10 +247,8 @@ class EmbeddingClient:
         if api_key and is_env_ref(api_key):
             api_key = ""
 
-        if not base_url:
-            _log_warn(
-                "embeddings_unavailable backend=none reason=no_base_url"
-            )
+        # ``__init__`` reports no_base_url / no_config — the one place every
+        # construction path passes through, so the reason is stated once.
 
         # The width is never configured.  A recognised model family is a
         # good guess; otherwise it is provisional until the OpenAI endpoint

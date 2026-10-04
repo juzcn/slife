@@ -477,7 +477,7 @@ async def test_rescan_registers_and_unregisters(sample_config):
     service._plugins["job-coding"] = lifecycle
     service.tool_registry.register(SimpleNamespace(name="gone"))
 
-    await service._rescan_plugin_tools("job-coding")
+    await service._sync_plugin_tools("job-coding")
 
     names = {t.name for t in service.tool_registry.list_tools()}
     assert "translate" in names

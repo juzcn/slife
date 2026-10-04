@@ -9,6 +9,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import asyncio
+import sys
 import os
 import time
 from unittest.mock import MagicMock, patch
@@ -537,6 +538,63 @@ class TestServerOwnedTunnel:
 
 
 # ── _read_auth_token ─────────────────────────────────────────────────────────
+
+
+class TestNgrokTunnelAlive:
+    """Tests for _ngrok_tunnel_alive().
+
+    The probe used to call ``ngrok.get_tunnels``, which does not exist in
+    ngrok 1.x — so it returned True for every input and the monitor's
+    dead-tunnel detection never fired.  A wrong "dead" is the expensive
+    error (the monitor answers it by minting a NEW hostname, killing every
+    link already handed out), so everything ambiguous stays True.
+    """
+
+    URL = "https://abc.ngrok-free.app"
+
+    class _Listener:
+        def __init__(self, url):
+            self.url = lambda: url
+
+    @staticmethod
+    def _ngrok(listeners=None, *, raises=False):
+        def get_listeners():
+            if raises:
+                raise RuntimeError("api down")
+            return list(listeners or [])
+
+        return type("_Ngrok", (), {"get_listeners": staticmethod(get_listeners)})
+
+    def _install(self, monkeypatch, mod):
+        monkeypatch.setitem(sys.modules, "ngrok", mod)
+
+    def test_our_url_is_listed(self, monkeypatch):
+        self._install(monkeypatch, self._ngrok(
+            [self._Listener(self.URL), self._Listener("https://other.ngrok.app")],
+        ))
+        assert tmod._ngrok_tunnel_alive(self.URL) is True
+
+    def test_absent_from_a_non_empty_list_is_the_one_answer(self, monkeypatch):
+        self._install(monkeypatch, self._ngrok([self._Listener("https://other.ngrok.app")]))
+        assert tmod._ngrok_tunnel_alive(self.URL) is False
+
+    def test_an_empty_list_is_unknown_not_dead(self, monkeypatch):
+        """'No listeners' cannot be told from 'this build does not track them'."""
+        self._install(monkeypatch, self._ngrok([]))
+        assert tmod._ngrok_tunnel_alive(self.URL) is True
+
+    def test_an_sdk_without_the_api_stays_alive(self, monkeypatch):
+        self._install(monkeypatch, type("_Ngrok", (), {}))
+        assert tmod._ngrok_tunnel_alive(self.URL) is True
+
+    def test_a_failing_probe_does_not_flap(self, monkeypatch):
+        self._install(monkeypatch, self._ngrok(raises=True))
+        assert tmod._ngrok_tunnel_alive(self.URL) is True
+
+    def test_url_may_be_an_attribute_rather_than_a_method(self, monkeypatch):
+        listener = type("_L", (), {"url": self.URL})()
+        self._install(monkeypatch, self._ngrok([listener]))
+        assert tmod._ngrok_tunnel_alive(self.URL) is True
 
 
 class TestReadAuthToken:

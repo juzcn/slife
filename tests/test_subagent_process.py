@@ -366,37 +366,33 @@ class TestSubagentProcessReadStdout:
         assert proc._pending == {}
 
     @pytest.mark.asyncio
-    async def test_read_stdout_survives_overlong_line(self):
+    async def test_read_stdout_survives_overlong_line(self, monkeypatch):
         """A2 regression: one over-long stdout line must be discarded, not
-        fatal.  Before the fix the ValueError (LimitOverrunError) fell into the
-        generic handler, killed the reader, and every later task on this worker
-        hung until send_task's own timeout."""
+        fatal.  Before the fix the overrun fell into the generic handler,
+        killed the reader, and every later task on this worker hung until
+        send_task's own timeout.
+
+        Real ``StreamReader``, not a mock: the overflow behaviour IS asyncio's
+        — including the buffer state ``readuntil`` leaves behind — and the
+        response that follows is what proves the discard stopped in the right
+        place.
+        """
         proc = self._proc()
         proc._running = True
         proc._record_send("rpc-1", "do X", mode="sync")
         fut = asyncio.get_event_loop().create_future()
         proc._pending["rpc-1"] = fut
         proc._awaiting.add("rpc-1")
+
+        monkeypatch.setattr("slife.logfmt.PROTOCOL_LINE_LIMIT", 1024)
+        reader = asyncio.StreamReader(limit=1024)
+        reader.feed_data(
+            b"T" * 2048 + b"\n"
+            + b'{"jsonrpc":"2.0","id":"rpc-1","result":"after-overlong"}\n'
+        )
+        reader.feed_eof()
         proc._process = MagicMock()
-
-        # readline sequence: [overlong-line head -> ValueError, its tail, a
-        # valid JSON-RPC response, EOF].
-        seq = [
-            ValueError("LimitOverrunError"),
-            b"T" * 200 + b"\n",
-            b'{"jsonrpc":"2.0","id":"rpc-1","result":"after-overlong"}\n',
-            b"",
-        ]
-
-        async def _readline():
-            item = seq.pop(0) if seq else b""
-            if isinstance(item, Exception):
-                raise item
-            return item
-
-        proc._process.stdout = MagicMock()
-        proc._process.stdout._limit = 1024
-        proc._process.stdout.readline = _readline
+        proc._process.stdout = reader
 
         await proc._read_stdout()
 

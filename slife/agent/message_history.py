@@ -562,9 +562,34 @@ class MessageHistory:
 
     def __init__(self, system_prompt: str | None = None):
         self.messages: list[dict] = []
+        #: Index of the user message that opened the turn currently running,
+        #: or ``None`` when no turn is in flight.  Set by ``AgentLoop.run``
+        #: when it appends the turn's user message and consumed by
+        #: ``save_to_memory`` — see :meth:`mark_turn_open`.
+        self._open_turn_index: int | None = None
         if system_prompt:
             self.messages.append({"role": "system", "content": system_prompt})
             logger.debug("conv_init sys_prompt_len=%d", len(system_prompt))
+
+    def mark_turn_open(self) -> None:
+        """Record that the message just appended opens the turn now running.
+
+        The save point needs to know WHICH turn to persist, and text cannot
+        answer that: heartbeat / timer / schedule content is constant, so a
+        search for a message whose text matches finds an older turn's.  The
+        loop appends the message, so it is the one that knows — and the index
+        is exact, where the search was a guess.
+        """
+        self._open_turn_index = len(self.messages) - 1
+
+    def take_open_turn(self) -> int | None:
+        """The open turn's index, clearing the mark; ``None`` when none is open.
+
+        Consumed rather than read: a turn is saved once, and a stale index
+        left behind would let the NEXT turn's save address this one.
+        """
+        index, self._open_turn_index = self._open_turn_index, None
+        return index
 
     @classmethod
     def from_history(
@@ -744,6 +769,10 @@ class MessageHistory:
         # history is already well-formed.
         content = sanitize_secrets(content)
         self.messages.append({"role": "user", "content": content})
+        # Appending a user message IS what opens a turn — every caller means
+        # it that way (the loop's main path and its vision-unsupported early
+        # return, which still produces a complete turn to persist).
+        self.mark_turn_open()
         logger.debug("conv_user text=%.80s", content)
 
     def add_assistant_message(

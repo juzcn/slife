@@ -286,8 +286,10 @@ def _surface_reply(service):
     async def _reply(
         text: str, cancelled: bool = False, stop_reason: str = "",
     ) -> None:
-        t = (text or "").strip()
-        if t and t != ".":
+        # The silence rule is the service's, shared with the heartbeat and
+        # timer turns — never a second copy of it here.
+        t = service.autonomous_reply_text(text)
+        if t is not None:
             await service.surface_schedule(t)
     return _reply
 

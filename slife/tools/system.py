@@ -55,7 +55,7 @@ from slife.health import get_report as get_startup_records
 from slife.plugins.spec import PLUGIN_SPECS, health_check_name
 from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 from slife.paths import get_data_dir
-from slife.tools.base import Tool, make_params, require_params
+from slife.tools.base import Tool, make_params, require_bool, require_params
 from slife.ui.i18n import t
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
@@ -184,12 +184,17 @@ def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, s
         return ("warning",
                 f"stalled ({sem.get('unembedded', 0)} {pending_noun} pending; "
                 f"keyword search available)", "")
-    if sem.get("reason"):
-        return ("warning", f"unavailable ({sem['reason']})", "")
+    # Same reason as the stall above: every "disabled" transition publishes a
+    # reason too (SemanticManager.disable / _unavailable_reason), so sitting
+    # after the generic ``reason`` branch meant this one never ran and the
+    # report read "unavailable" where the user had switched semantic search
+    # off on purpose.
     if sem.get("state") == "disabled":
         return ("warning", "disabled",
                 "Enable with embeddings_enable true, or edit the top-level "
                 "embeddings section in slife.yaml.")
+    if sem.get("reason"):
+        return ("warning", f"unavailable ({sem['reason']})", "")
     if sem.get("semantic_ready"):
         # A width nobody has measured is NOT 0.  Each semantic index has its
         # own embedder, and only the one that has probed its endpoint knows
@@ -1716,6 +1721,8 @@ class SetMidturnInputTool(Tool):
     )
 
     async def execute(self, enabled: bool = True, **kwargs) -> str:
+        if err := require_bool(enabled=enabled):
+            return err
         setter = getattr(self, "_ctx", None)
         if setter is not None:
             setter = setter.set_midturn_input

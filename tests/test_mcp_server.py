@@ -176,7 +176,11 @@ class TestPersistEntry:
                 "srv", "echo", [], {}, "", None, "", None, None,
             )
         entry = fake_cfg.add_server_entry.call_args[0][1]
-        assert entry == {"command": "echo"}
+        # ``enabled`` is the one always-present key, and it is not an empty
+        # field: ``add_server_entry`` needs the True to CLEAR a stale
+        # ``enabled: false`` (and strips the key again before writing, so the
+        # file is not cluttered with ``enabled: true``).
+        assert entry == {"command": "echo", "enabled": True}
 
     def test_an_existing_entry_keeps_its_own_section(self, restore_root_logger):
         """Upserting a REST API must write back into ``rest-api``: defaulting

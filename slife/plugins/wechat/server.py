@@ -801,9 +801,19 @@ async def wechat_check_status() -> str:
     ),
 )
 async def wechat_logout() -> str:
-    global _client
+    global _client, _qr_status, _qr_content, _qr_error
 
     _stop_polling()
+
+    # Drop the last login's QR state with the session.  It is only otherwise
+    # reset at the top of ``wechat_login``, so a stale "confirmed" outlived the
+    # logout: ``wechat_check_status``'s first branch keys on ``_qr_status``
+    # alone, and with the fresh (logged-out) client it reported a QR login
+    # still pending — telling the model to wait for a scan that already
+    # happened.  A server-side revocation reaches the same branch.
+    _qr_status = ""
+    _qr_content = ""
+    _qr_error = ""
 
     try:
         await _client.stop()

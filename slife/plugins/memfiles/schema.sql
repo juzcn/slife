@@ -227,7 +227,12 @@ CREATE VIEW IF NOT EXISTS cabinet_docs AS
       FROM notes
     UNION ALL
     SELECT 'diary', id, date, date, content, tags, '', file_path,
-           date || ' 00:00:00', 'diary' || ':' || id, summary
+           -- ISO 'T', not a space: every other kind's ts carries one, and the
+           -- window compares `d.ts >= ?` as TEXT against an ISO bound.  A
+           -- space (0x20) sorts below 'T' (0x54), so '2026-10-03 00:00:00'
+           -- failed every bound on its own day — a diary silently dropped
+           -- from any search with a datetime since/until.
+           date || 'T00:00:00', 'diary' || ':' || id, summary
       FROM diary
     UNION ALL
     SELECT 'file', id, saved_path, title,

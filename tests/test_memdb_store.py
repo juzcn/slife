@@ -1097,6 +1097,57 @@ class TestSessionStoreCountTurns:
         assert "trim(COALESCE(d.user_message, ''))" in sql
         assert count == 2
 
+    @pytest.mark.asyncio
+    async def test_the_embeddable_predicate_matches_the_text_builder(self, tmp_path):
+        """The predicate is the builder's rule in SQL, not an approximation of it.
+
+        A turn whose only messages are TOOL RESULTS renders "" — the builder
+        ignores tool results by design — so it must not count as unembedded.
+        While it did, the count never reached 0, the semantic gate never
+        opened, and the drainer parked in "stalled" blaming the embedder.
+        """
+        store = SessionStore(tmp_path / "mem.db")
+        await store.setup()
+        try:
+            await store.save_turn(
+                user_message="",
+                messages=[{"role": "tool", "content": "a result nobody asked for"}],
+            )
+            await store.save_turn(
+                user_message="a real question",
+                messages=[{"role": "assistant", "content": "an answer"}],
+            )
+
+            assert await store.count_unembedded() == 1
+            docs = await store.get_unembedded_docs()
+            assert [d["doc_id"] for d in docs] == [2]
+            # The one row the predicate admits is the one that has text —
+            # admitting a row the builder renders empty is the whole bug.
+            assert docs[0]["text"].strip()
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_unparseable_messages_still_yields_its_user_text(self, tmp_path):
+        """A malformed ``messages`` column must not strand the drainer.
+
+        The column is on the embedding path; a raise there froze the pending
+        count instead of reporting one unreadable row.
+        """
+        store = SessionStore(tmp_path / "mem.db")
+        await store.setup()
+        try:
+            await store.save_turn(user_message="a real question")
+            # A legacy/hand-edited row: the column is TEXT, so it can hold
+            # something that is not JSON at all.
+            await store._c.execute("UPDATE turn SET messages = ?", ("{not json",))
+            await store._c.commit()
+            docs = await store.get_unembedded_docs()
+            assert [d["doc_id"] for d in docs] == [1]
+            assert docs[0]["text"] == "a real question"
+        finally:
+            await store.close()
+
 
 class TestSessionStoreTokenUsage:
     """Tests for token_usage — per-turn billing / context-size query."""

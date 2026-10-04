@@ -68,6 +68,19 @@ def _flat_entry_ref(entry: dict) -> str:
     return f"unknown/{api_model}"
 
 
+def _flat_list(raw: dict) -> list | None:
+    """The flat-list ``models:`` section, or ``None`` for the provider shape.
+
+    ``Config._parse_models_section`` accepts both, and so must every tool that
+    reads the section: ``model_set`` already writes the flat list, so a model
+    added through it was invisible to ``model_list`` / ``model_switch`` /
+    ``model_remove`` — the agent could create a model it could never list,
+    switch to, or remove.
+    """
+    models = raw.get(_MODELS_KEY)
+    return models if isinstance(models, list) else None
+
+
 def _sync_in_memory_models(config, raw: dict) -> None:
     """Rebuild the live Config's model registry from *raw* — as if the
     config file were re-read.
@@ -142,10 +155,32 @@ class ListModelsTool(_ConfigPathMixin, Tool):
             models_section.get("providers", {})
             if isinstance(models_section, dict) else None
         )
+        active = raw.get(_ACTIVE_KEY, "")
+
+        flat = _flat_list(raw)
+        if flat is not None:
+            if not flat:
+                return "No models configured. Add a provider with models in slife.yaml."
+            lines = []
+            for m in flat:
+                if not isinstance(m, dict):
+                    continue
+                ref = _flat_entry_ref(m)
+                star = "★" if ref == active else " "
+                thinking = "🧠" if m.get("reasoning") else ""
+                vision = "👁" if "image" in m.get("input", []) else ""
+                lines.append(
+                    f"  {star} `{ref}` — {m.get('name', ref)}"
+                    f"  ctx={m.get('context_window', '?')}"
+                    f"  max_tok={m.get('max_tokens', '?')}"
+                    f"  {thinking} {vision}".rstrip()
+                )
+            lines.insert(0, f"**{len(flat)} model(s)** configured. Active: `{active}`")
+            return "\n".join(lines)
+
         if not isinstance(providers, dict) or not providers:
             return "No models configured. Add a provider with models in slife.yaml."
 
-        active = raw.get(_ACTIVE_KEY, "")
         lines = []
         total = 0
         for pid, pcfg in providers.items():
@@ -435,6 +470,11 @@ class RemoveModelTool(_ModelConfigTool):
             models_section.get("providers", {})
             if isinstance(models_section, dict) else None
         )
+
+        flat = _flat_list(raw)
+        if flat is not None:
+            return self._remove_from_flat_list(raw, flat, ref, pid, model_id)
+
         if not isinstance(providers, dict):
             return "Error: no providers configured."
 
@@ -472,6 +512,30 @@ class RemoveModelTool(_ModelConfigTool):
         _sync_in_memory_models(self._config, raw)
         logger.info("model_removed ref=%s", ref)
         return f"[OK] Removed `{ref}`."
+
+    def _remove_from_flat_list(
+        self, raw: dict, flat: list, ref: str, pid: str, model_id: str,
+    ) -> str:
+        """Remove one entry from a flat-list ``models:`` section.
+
+        Matched on the ref the LOADER derives (``_flat_entry_ref``), not on
+        the raw id: a flat entry may spell its provider as a prefix or as its
+        own ``provider`` field, and both name the same model.
+        """
+        # The active model cannot be removed — switch away first.
+        if raw.get(_ACTIVE_KEY, "") == ref:
+            return (
+                f"Error: cannot remove the active model `{ref}`. "
+                f"Switch to another model first with model_switch, then remove it."
+            )
+        for i, m in enumerate(flat):
+            if isinstance(m, dict) and _flat_entry_ref(m) == ref:
+                del flat[i]
+                write_config(self._config_path, raw)
+                _sync_in_memory_models(self._config, raw)
+                logger.info("model_removed ref=%s flat=True", ref)
+                return f"[OK] Removed `{ref}`."
+        return f"Error: model '{ref}' not found."
 
 
 # ── Switch Model ─────────────────────────────────────────────────────
@@ -517,22 +581,33 @@ class SwitchModelTool(_ModelConfigTool):
             models_section.get("providers", {})
             if isinstance(models_section, dict) else None
         )
-        if not isinstance(providers, dict):
-            return "Error: no providers configured."
 
         if "/" not in ref:
             return f"Error: invalid ref '{ref}'. Use format: provider/model-name"
 
         pid, model_id = ref.split("/", 1)
-        pcfg = providers.get(pid)
         found = False
         display = model_id
-        if isinstance(pcfg, dict):
-            for m in pcfg.get("models", []):
-                if isinstance(m, dict) and m.get("model") == model_id:
+        flat = _flat_list(raw)
+        if flat is not None:
+            # A flat entry names itself by the ref the loader derives, so the
+            # requested ref is matched against that rather than rebuilt from
+            # a provider block that a flat list does not have.
+            for m in flat:
+                if isinstance(m, dict) and _flat_entry_ref(m) == ref:
                     found = True
                     display = m.get("name", model_id)
                     break
+        else:
+            if not isinstance(providers, dict):
+                return "Error: no providers configured."
+            pcfg = providers.get(pid)
+            if isinstance(pcfg, dict):
+                for m in pcfg.get("models", []):
+                    if isinstance(m, dict) and m.get("model") == model_id:
+                        found = True
+                        display = m.get("name", model_id)
+                        break
 
         if not found:
             return f"Error: model '{ref}' not found in config. Use model_list."

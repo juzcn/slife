@@ -54,6 +54,7 @@ from slife.plugins.memdb.store import (
     _is_fts_parse_error,
     _like_escape,
     _like_terms,
+    semantic_fetch_limit,
     _serialize_f32,
     _to_fts5_query,
     in_placeholders,
@@ -342,6 +343,14 @@ class MemfilesStore(VecStoreLifecycleMixin):
         # md of a note that still has a row.  Same reason memdb carries
         # one — subagents share this plugin over HTTP, so the lock covers the
         # main agent + subagent writers in this one process.
+        #
+        # EVERY write path must take it, including the single-statement ones:
+        # there is ONE connection, so a `commit()` from anywhere commits
+        # whatever another coroutine has already executed.  The drainer's
+        # `replace_embedding_chunks` is the case that matters — its DELETE and
+        # its INSERTs are separate statements, and an unlocked commit landing
+        # between them leaves the document half-indexed, which no rollback can
+        # then undo (it is already committed).
         self._write_lock = asyncio.Lock()
 
     # ── lifecycle ─────────────────────────────────────────────────
@@ -588,12 +597,13 @@ class MemfilesStore(VecStoreLifecycleMixin):
         mime: str, size: int, tags: str, summary: str,
     ) -> dict:
         """Record a saved file (bytes already copied by the caller)."""
-        cursor = await self._c.execute(
-            "INSERT INTO files (title, original_path, saved_path, mime, size, tags, summary, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (title, original_path, saved_path, mime, size, tags, summary, _now()),
-        )
-        await self._c.commit()
+        async with self._write_lock:
+            cursor = await self._c.execute(
+                "INSERT INTO files (title, original_path, saved_path, mime, size, tags, summary, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (title, original_path, saved_path, mime, size, tags, summary, _now()),
+            )
+            await self._c.commit()
         return {"kind": "file", "doc_id": cursor.lastrowid,
                 "key": saved_path, "file_path": saved_path}
 
@@ -715,26 +725,27 @@ class MemfilesStore(VecStoreLifecycleMixin):
     ) -> dict:
         """Create or update a scheduled task by name.  Returns its row."""
         now = _now()
-        cursor = await self._c.execute(
-            "SELECT id FROM scheduled_tasks WHERE name = ?", (name,),
-        )
-        row = await cursor.fetchone()
-        if row:
-            await self._c.execute(
-                "UPDATE scheduled_tasks SET description=?, schedule=?, "
-                "timezone=?, enabled=?, updated_at=? WHERE id=?",
-                (description, schedule, timezone, 1 if enabled else 0, now, row["id"]),
-            )
-            task_id = row["id"]
-        else:
+        async with self._write_lock:
             cursor = await self._c.execute(
-                "INSERT INTO scheduled_tasks (name, description, schedule, timezone, "
-                "enabled, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (name, description, schedule, timezone, 1 if enabled else 0, now, now),
+                "SELECT id FROM scheduled_tasks WHERE name = ?", (name,),
             )
-            task_id = cursor.lastrowid
-        await self._c.commit()
+            row = await cursor.fetchone()
+            if row:
+                await self._c.execute(
+                    "UPDATE scheduled_tasks SET description=?, schedule=?, "
+                    "timezone=?, enabled=?, updated_at=? WHERE id=?",
+                    (description, schedule, timezone, 1 if enabled else 0, now, row["id"]),
+                )
+                task_id = row["id"]
+            else:
+                cursor = await self._c.execute(
+                    "INSERT INTO scheduled_tasks (name, description, schedule, timezone, "
+                    "enabled, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (name, description, schedule, timezone, 1 if enabled else 0, now, now),
+                )
+                task_id = cursor.lastrowid
+            await self._c.commit()
         return {"task_id": task_id, "name": name}
 
     async def get_scheduled_task(self, name: str) -> dict | None:
@@ -760,20 +771,21 @@ class MemfilesStore(VecStoreLifecycleMixin):
 
         Returns True if a task was removed.
         """
-        cursor = await self._c.execute(
-            "SELECT id FROM scheduled_tasks WHERE name = ?", (name,),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return False
-        task_id = row["id"]
-        await self._c.execute(
-            "DELETE FROM scheduled_runs WHERE task_id = ?", (task_id,),
-        )
-        await self._c.execute(
-            "DELETE FROM scheduled_tasks WHERE id = ?", (task_id,),
-        )
-        await self._c.commit()
+        async with self._write_lock:
+            cursor = await self._c.execute(
+                "SELECT id FROM scheduled_tasks WHERE name = ?", (name,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return False
+            task_id = row["id"]
+            await self._c.execute(
+                "DELETE FROM scheduled_runs WHERE task_id = ?", (task_id,),
+            )
+            await self._c.execute(
+                "DELETE FROM scheduled_tasks WHERE id = ?", (task_id,),
+            )
+            await self._c.commit()
         return True
 
     async def record_scheduled_run(
@@ -787,26 +799,28 @@ class MemfilesStore(VecStoreLifecycleMixin):
         due time.
         """
         now = _now()
-        cursor = await self._c.execute(
-            "INSERT INTO scheduled_runs (task_id, due_at, status, ran_at) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(task_id, due_at) DO UPDATE SET status=excluded.status, "
-            "ran_at=excluded.ran_at WHERE scheduled_runs.report_id IS NULL",
-            (task_id, due_at, status, now),
-        )
-        await self._c.commit()
+        async with self._write_lock:
+            cursor = await self._c.execute(
+                "INSERT INTO scheduled_runs (task_id, due_at, status, ran_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(task_id, due_at) DO UPDATE SET status=excluded.status, "
+                "ran_at=excluded.ran_at WHERE scheduled_runs.report_id IS NULL",
+                (task_id, due_at, status, now),
+            )
+            await self._c.commit()
         return {"run_id": cursor.lastrowid, "task_id": task_id, "due_at": due_at}
 
     async def mark_run_missed(self, task_id: int, due_at: str) -> None:
         """Mark a due-but-not-dispatched run as missed (idempotent)."""
-        await self._c.execute(
-            "INSERT INTO scheduled_runs (task_id, due_at, status) VALUES (?, ?, 'missed') "
-            "ON CONFLICT(task_id, due_at) DO UPDATE SET status='missed' "
-            "WHERE scheduled_runs.status NOT IN "
-            "('pending', 'ran', 'failed', 'skipped')",
-            (task_id, due_at),
-        )
-        await self._c.commit()
+        async with self._write_lock:
+            await self._c.execute(
+                "INSERT INTO scheduled_runs (task_id, due_at, status) VALUES (?, ?, 'missed') "
+                "ON CONFLICT(task_id, due_at) DO UPDATE SET status='missed' "
+                "WHERE scheduled_runs.status NOT IN "
+                "('pending', 'ran', 'failed', 'skipped')",
+                (task_id, due_at),
+            )
+            await self._c.commit()
 
     async def mark_run_failed(
         self, task_id: int, due_at: str, error: str = "",
@@ -818,12 +832,13 @@ class MemfilesStore(VecStoreLifecycleMixin):
         is a detail string, not the state itself — the correctness invariant
         is "no report = failed", so a missing writeback here never matters.
         """
-        await self._c.execute(
-            "UPDATE scheduled_runs SET status='failed', error=? "
-            "WHERE task_id=? AND due_at=? AND status='pending'",
-            (error or "", task_id, due_at),
-        )
-        await self._c.commit()
+        async with self._write_lock:
+            await self._c.execute(
+                "UPDATE scheduled_runs SET status='failed', error=? "
+                "WHERE task_id=? AND due_at=? AND status='pending'",
+                (error or "", task_id, due_at),
+            )
+            await self._c.commit()
 
     async def mark_run_skipped(self, task_id: int, due_at: str) -> bool:
         """Close a missed/failed run the user decided not to backfill.
@@ -834,12 +849,13 @@ class MemfilesStore(VecStoreLifecycleMixin):
         is already closed.  The caller reports this verdict instead of
         assuming the write landed.
         """
-        cursor = await self._c.execute(
-            "UPDATE scheduled_runs SET status='skipped' "
-            "WHERE task_id=? AND due_at=? AND status IN ('missed', 'failed')",
-            (task_id, due_at),
-        )
-        await self._c.commit()
+        async with self._write_lock:
+            cursor = await self._c.execute(
+                "UPDATE scheduled_runs SET status='skipped' "
+                "WHERE task_id=? AND due_at=? AND status IN ('missed', 'failed')",
+                (task_id, due_at),
+            )
+            await self._c.commit()
         return cursor.rowcount > 0
 
     async def run_status(self, task_id: int, due_at: str) -> str | None:
@@ -860,21 +876,22 @@ class MemfilesStore(VecStoreLifecycleMixin):
         its report and is never touched.  Returns the flipped runs (with task
         name) so the agent can surface them.
         """
-        cursor = await self._c.execute(
-            "SELECT r.task_id, t.name, r.due_at, r.status FROM scheduled_runs r "
-            "JOIN scheduled_tasks t ON t.id = r.task_id "
-            "WHERE r.status='pending' AND r.report_id IS NULL "
-            "ORDER BY r.due_at DESC",
-        )
-        rows = [dict(row) for row in await cursor.fetchall()]
-        if rows:
-            await self._c.execute(
-                "UPDATE scheduled_runs SET status='failed', "
-                "error=COALESCE(NULLIF(error,''), "
-                "  'slife restarted before completion') "
-                "WHERE status='pending' AND report_id IS NULL",
+        async with self._write_lock:
+            cursor = await self._c.execute(
+                "SELECT r.task_id, t.name, r.due_at, r.status FROM scheduled_runs r "
+                "JOIN scheduled_tasks t ON t.id = r.task_id "
+                "WHERE r.status='pending' AND r.report_id IS NULL "
+                "ORDER BY r.due_at DESC",
             )
-            await self._c.commit()
+            rows = [dict(row) for row in await cursor.fetchall()]
+            if rows:
+                await self._c.execute(
+                    "UPDATE scheduled_runs SET status='failed', "
+                    "error=COALESCE(NULLIF(error,''), "
+                    "  'slife restarted before completion') "
+                    "WHERE status='pending' AND report_id IS NULL",
+                )
+                await self._c.commit()
         return rows
 
     async def last_run_due(self, task_id: int) -> str | None:
@@ -1397,7 +1414,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
         if self._embedding_dim <= 0:
             return []
         limit = _clamp_limit(limit)
-        fetch_limit = (limit * 8) if (since or until) else (limit * 2)
+        fetch_limit = semantic_fetch_limit(limit, windowed=bool(since or until))
         cursor = await self._c.execute(
             "SELECT kind, doc_id, distance FROM cabinet_semantic "
             "WHERE doc_embedding MATCH ? AND k = ? ORDER BY distance",

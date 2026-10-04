@@ -38,6 +38,7 @@ import logging
 import re
 import secrets
 import time
+from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -267,37 +268,102 @@ PROTOCOL_LINE_LIMIT = 256 * 1024 * 1024
 _MAX_RELAYED_CHARS = 16 * 1024
 
 
-async def discard_overlong_line(reader) -> int:
-    """Drop the remainder of a line that overran *reader*'s limit.
+async def read_line_bounded(reader) -> tuple[bytes | None, int]:
+    """Read one line, absorbing an over-long one instead of raising.
 
-    ``readline()`` raises ``ValueError`` (``LimitOverrunError``) after
-    discarding the buffered head of the over-long line — but the tail is
-    still in flight and must be consumed up to and including its newline,
-    otherwise the next ``readline()`` returns that tail as if it were a
-    fresh line (and the consumer's line accounting silently corrupts).
+    Returns ``(line, 0)`` for a normal line (``b""`` is EOF), or
+    ``(None, dropped)`` when the line overran the reader's limit and was
+    discarded.  *reader* is any asyncio ``StreamReader``.
+
+    ``StreamReader.readline`` cannot answer this.  On overflow it deletes
+    through the newline WHEN ONE IS ALREADY BUFFERED and only then raises a
+    plain ``ValueError`` — so the caller cannot tell "the over-long line is
+    fully consumed" from "its tail is still in flight", and the discard loop
+    that used to follow ate the next legitimate line with it.  On the subagent
+    channels that is a dropped JSON-RPC result: the parent's pending future
+    never resolves, and a task that completed is reported as a timeout.
+    Reading ``readuntil`` here — which leaves the buffer intact on overflow —
+    mirrors CPython's own ``readline`` branch and keeps the distinction.
+    """
+    try:
+        return await reader.readuntil(b"\n"), 0
+    except asyncio.IncompleteReadError as e:
+        return e.partial, 0
+    except asyncio.LimitOverrunError as e:
+        if _drop_what_is_buffered(reader, e):
+            # The newline was already in the buffer, so that WAS the whole
+            # line — nothing of it is left to consume.
+            return None, 0
+    # The tail is still in flight — consume it up to and including its newline.
+    return None, await discard_overlong_line(reader)
+
+
+def _drop_what_is_buffered(reader, error: "asyncio.LimitOverrunError") -> bool:
+    """Drop the over-long line's buffered bytes; True when that was all of it.
+
+    Mirrors ``StreamReader.readline``'s overflow branch, which deletes through
+    the newline when one is buffered and otherwise clears — except that this
+    REPORTS which happened, because ``readline`` throws that distinction away
+    and the caller needs it (see :func:`read_line_bounded`).
+    """
+    buffer = getattr(reader, "_buffer", None)
+    if buffer is None:
+        return False
+    if buffer.startswith(b"\n", error.consumed):
+        del buffer[: error.consumed + 1]
+        _resume_transport(reader)
+        return True
+    buffer.clear()
+    _resume_transport(reader)
+    return False
+
+
+def _resume_transport(reader) -> None:
+    """Let the transport refill a reader we just emptied (CPython does this)."""
+    resume = getattr(reader, "_maybe_resume_transport", None)
+    if resume is not None:
+        resume()
+
+
+async def discard_overlong_line(reader) -> int:
+    """Drop the remainder of a line whose tail is still in flight.
+
+    Called only from :func:`read_line_bounded`, and only when the over-long
+    line's newline had NOT been buffered — so the bytes still to come belong
+    to that line and must be consumed up to and including its newline, or the
+    next read returns them as if they were a fresh line.
 
     *reader* is any asyncio ``StreamReader`` (a stderr relay, the subagent
     parent's stdout pipe, or the worker's stdin).  Returns the number of
-    discarded tail bytes (lower bound — the head size is unknown once
-    ``readline`` cleared its buffer).
+    discarded bytes (a lower bound — the head ``readuntil`` dropped is gone).
     """
     dropped = 0
     while True:
         try:
-            rest = await reader.readline()
-        except ValueError:
-            # The remainder alone still exceeds the limit — readline raised
-            # again after discarding another head-sized chunk; keep going.
-            continue
-        if not rest:
+            # ``readuntil``, not ``readline``: readline would delete through
+            # the newline and raise, and this loop would then consume the
+            # FOLLOWING line as if it were the tail it is looking for.
+            rest = await reader.readuntil(b"\n")
+        except asyncio.IncompleteReadError as e:
+            dropped += len(e.partial)
             break  # EOF inside the over-long line
+        except asyncio.LimitOverrunError:
+            # The remainder alone still exceeds the limit — drop the chunk
+            # readuntil left buffered and keep going.
+            buffer = getattr(reader, "_buffer", None)
+            if buffer is None:
+                break
+            dropped += len(buffer)
+            buffer.clear()
+            _resume_transport(reader)
+            continue
         dropped += len(rest)
         if rest.endswith(b"\n"):
             break  # the newline terminating the over-long line
     return dropped
 
 
-async def read_stderr_lines(process, running_check=None):
+async def read_stderr_lines(process, running_check=None) -> "AsyncIterator[str]":
     """Async generator yielding decoded stderr lines from a subprocess.
 
     Used by MCPWrapperProcess, BrokerManager, and SubagentProcess to
@@ -327,12 +393,10 @@ async def read_stderr_lines(process, running_check=None):
         pass
     try:
         while running_check is None or running_check():
-            try:
-                line = await stderr.readline()
-            except ValueError:
-                # LimitOverrunError — an over-long line.  Discard its
-                # remainder and keep relaying; never die here.
-                dropped = await discard_overlong_line(stderr)
+            # An over-long line is discarded and relaying continues; the
+            # reader never dies here.
+            line, dropped = await read_line_bounded(stderr)
+            if dropped or line is None:
                 logger.warning(
                     "stderr_line_overlong_discarded min_bytes=%d", dropped,
                 )

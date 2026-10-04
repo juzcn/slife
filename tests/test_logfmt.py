@@ -17,6 +17,7 @@ from slife.logfmt import (
     request_scope,
     SessionFormatter,
     elapsed,
+    read_line_bounded,
     read_stderr_lines,
     drain_stderr,
     sanitize_secrets,
@@ -25,6 +26,18 @@ from slife.logfmt import (
     error_json,
     resolve_log_dir,
 )
+
+
+async def _collect_two(reader):
+    """The raw result of two consecutive read_line_bounded calls.
+
+    Returns ``(first_line_or_None, [second_line])`` so a test can assert both
+    that the over-long line was dropped AND what the reader produced next —
+    the pair is the whole point: dropping the right line is only half of it.
+    """
+    first, _ = await read_line_bounded(reader)
+    line, _ = await read_line_bounded(reader)
+    return first, ([line] if line else [])
 
 
 # ── Session ID ──────────────────────────────────────────────────────────────
@@ -223,16 +236,17 @@ class TestReadStderrLines:
     """Tests for read_stderr_lines async generator."""
 
     def _make_stderr_mock(self, lines: list):
-        """Build a mock process whose stderr.readline returns the given lines."""
+        """A process whose stderr is a REAL StreamReader carrying *lines*.
+
+        Real, not mocked: the over-long-line behaviour is asyncio's own
+        (``readuntil``'s LimitOverrunError and the buffer state it leaves), so
+        a mock that merely raises ValueError cannot exercise it.
+        """
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"".join(lines))
+        reader.feed_eof()
         proc = MagicMock()
-        proc.stderr = MagicMock()
-
-        async def _readline_side_effect():
-            if lines:
-                return lines.pop(0)
-            return b""
-
-        proc.stderr.readline = _readline_side_effect
+        proc.stderr = reader
         return proc
 
     @pytest.mark.asyncio
@@ -282,14 +296,14 @@ class TestReadStderrLines:
         assert len(lines) == 2
 
     @pytest.mark.asyncio
-    async def test_cancelled_error_handled(self):
+    async def test_cancelled_error_handled(self, monkeypatch):
         proc = MagicMock()
-        proc.stderr = MagicMock()
+        proc.stderr = asyncio.StreamReader()
 
-        async def _raise_cancelled():
+        async def _raise_cancelled(reader):
             raise asyncio.CancelledError()
 
-        proc.stderr.readline = _raise_cancelled
+        monkeypatch.setattr("slife.logfmt.read_line_bounded", _raise_cancelled)
         lines = [line async for line in read_stderr_lines(proc)]
         assert lines == []
 
@@ -303,38 +317,64 @@ class TestReadStderrLines:
         assert lines[0] == "valid line"
         assert "invalid utf8" in lines[1]  # errors='replace' handles it
 
+    @staticmethod
+    def _small_limit(monkeypatch, size: int = 100):
+        """Make the relay's over-long threshold *size*, for a real overrun."""
+        monkeypatch.setattr("slife.logfmt._STDERR_LIMIT", size)
+
     @pytest.mark.asyncio
-    async def test_overlong_line_discarded_relay_survives(self):
-        """Regression: an over-long line must not kill the relay.
+    async def test_an_overlong_line_whose_newline_was_buffered_drops_only_itself(
+        self, monkeypatch,
+    ):
+        """The NEXT line must survive an over-long one.
 
-        A 315 KB anthropic SDK "Request options" DEBUG line raised
-        LimitOverrunError in readline(); the relay died silently, the
-        child's stderr pipe filled up, and the child blocked on its next
-        log write — a subagent task stuck "pending" forever.  The relay
-        must discard the over-long line and keep relaying.
+        ``StreamReader.readline`` deletes through the newline when one is
+        buffered and *then* raises, so the discard loop that used to follow
+        consumed the following line as if it were the tail.  On the subagent
+        channels that is a dropped JSON-RPC result: the parent's pending
+        future never resolves and a task that completed reads as a timeout.
         """
+        self._small_limit(monkeypatch)
+        reader = asyncio.StreamReader(limit=100)
+        reader.feed_data(b"A" * 150 + b"\n" + b'{"id":"legit"}\n')
+        reader.feed_eof()
         proc = MagicMock()
-        proc.stderr = MagicMock()
-        calls = {"readline": 0}
+        proc.stderr = reader
 
-        async def _readline():
-            calls["readline"] += 1
-            if calls["readline"] == 1:
-                # First line overruns the reader limit.
-                raise ValueError(
-                    "Separator is not found, and chunk exceed the limit",
-                )
-            if calls["readline"] == 2:
-                return b"X" * 1000 + b"\n"  # remainder of the overlong line
-            if calls["readline"] == 3:
-                return b"next line\n"
-            return b""
-
-        proc.stderr.readline = _readline
         lines = [line async for line in read_stderr_lines(proc)]
-        # The overlong line (incl. its remainder) is dropped entirely;
-        # relaying continues with the next line.
-        assert lines == ["next line"]
+        assert lines == ['{"id":"legit"}']
+
+    @pytest.mark.asyncio
+    async def test_an_overlong_line_still_in_flight_is_fully_consumed(self, monkeypatch):
+        """The tail is still arriving — consume it, and stop at its newline.
+
+        The over-long line's newline had NOT been buffered when the reader
+        overran, so its remaining bytes arrive afterwards and belong to that
+        line.  A 315 KB anthropic SDK "Request options" DEBUG line is the case
+        this relay exists for: it died silently, the child's stderr pipe
+        filled, and the child blocked on its next log write.
+        """
+        self._small_limit(monkeypatch)
+        reader = asyncio.StreamReader(limit=100)
+        reader.feed_data(b"A" * 150)
+        pending = asyncio.ensure_future(
+            _collect_two(reader),
+        )
+        await asyncio.sleep(0.01)          # let it hit the limit and clear
+        reader.feed_data(b"B" * 50 + b"\n" + b"next line\n")
+        reader.feed_eof()
+
+        first, second = await pending
+        assert first is None, "the over-long line must not be relayed"
+        assert second == [b"next line\n"], "its own terminator ends the discard"
+
+    @pytest.mark.asyncio
+    async def test_a_line_within_the_limit_is_returned_whole(self, monkeypatch):
+        self._small_limit(monkeypatch)
+        reader = asyncio.StreamReader(limit=100)
+        reader.feed_data(b"short line\n")
+        reader.feed_eof()
+        assert await read_line_bounded(reader) == (b"short line\n", 0)
 
     @pytest.mark.asyncio
     async def test_reader_limit_raised_large_line_truncated(self):

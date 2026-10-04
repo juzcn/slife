@@ -12,7 +12,7 @@ import os
 import pytest
 from pathlib import Path
 
-from slife.config import Config, ModelConfig
+from slife.config import DEFAULT_CONTEXT_WINDOW, Config, ModelConfig
 from tests.conftest import dump_config, load_config_text
 
 
@@ -107,6 +107,28 @@ class TestModelConfigFromDict:
             "input": [],
         })
         assert mc.supports_vision is False
+
+    @pytest.mark.parametrize("value", [0, -5, None, "abc"])
+    def test_a_window_that_cannot_bound_falls_back_to_the_default(self, value):
+        """A non-positive context window is not a window.
+
+        Zero used to pass straight through: it reached ``_trim_context`` as a
+        ceiling of 0 and compressed the live context down to the current turn
+        after every save, and it zeroed the live tool-result cap — the model
+        destroyed its own ongoing context with nothing said.
+        """
+        mc = ModelConfig.from_dict({
+            "model": "test-model", "api_key": "test-key",
+            "context_window": value,
+        })
+        assert mc.context_window == DEFAULT_CONTEXT_WINDOW
+
+    def test_a_usable_window_is_kept(self):
+        mc = ModelConfig.from_dict({
+            "model": "test-model", "api_key": "test-key",
+            "context_window": 65536,
+        })
+        assert mc.context_window == 65536
 
     def test_defaults_applied(self):
         """Missing optional fields get sensible defaults."""

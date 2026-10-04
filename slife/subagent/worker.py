@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 
 from slife.server_utils import setup_server_logging, shutdown_server_logging
-from slife.logfmt import PROTOCOL_LINE_LIMIT, discard_overlong_line, elapsed
+from slife.logfmt import PROTOCOL_LINE_LIMIT, elapsed, read_line_bounded
 from slife.agent.roles import Role
 
 logger = logging.getLogger("slife_subagent")
@@ -210,15 +210,12 @@ async def run_worker(argv: list[str] | None = None) -> None:
     request_count = 0
     try:
         while True:
-            try:
-                line = await reader.readline()
-            except ValueError:
-                # LimitOverrunError — a single line beyond the reader limit.
-                # Discard its remainder and keep the worker alive; one
-                # pathological line must never tear down the whole worker
-                # (only JSONDecodeError was caught before — this path would
-                # otherwise kill the child on a long context).
-                dropped = await discard_overlong_line(reader)
+            # A line beyond the reader limit is discarded and the worker stays
+            # alive; one pathological line must never tear down the whole
+            # worker (only JSONDecodeError was caught before — this path would
+            # otherwise kill the child on a long context).
+            line, dropped = await read_line_bounded(reader)
+            if dropped or line is None:
                 logger.warning(
                     "subagent_stdin_line_overlong_discarded min_bytes=%d",
                     dropped,

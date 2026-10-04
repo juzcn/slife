@@ -87,14 +87,29 @@ class TestEmbeddingClientInit:
         assert client.dimension == 512
 
     def test_api_runtime_check_fails(self):
-        """available=False when api_key is set but openai isn't installed."""
+        """available=False when the endpoint is configured but openai isn't installed."""
         with patch("slife.plugins.memdb.embeddings._check_runtime", return_value=False):
             client = EmbeddingClient(
                 model="text-embedding-3-small",
                 api_key="sk-test-key",
+                base_url="http://127.0.0.1:9/v1",
             )
             assert client.backend == "api"
             assert client.available is False
+
+    def test_api_key_without_base_url_is_not_configured(self):
+        """A key alone must NOT open the API backend.
+
+        ``AsyncOpenAI`` falls back to its own default when ``base_url`` is
+        omitted, so treating this as available POSTed the key — and every
+        embedded document — to api.openai.com.
+        """
+        client = EmbeddingClient(
+            model="text-embedding-3-small",
+            api_key="sk-test-key",
+        )
+        assert client.backend == ""
+        assert client.available is False
 
     def test_properties(self):
         client = EmbeddingClient()
@@ -321,13 +336,15 @@ class TestEmbeddingClientEmbed:
 
     @pytest.mark.asyncio
     async def test_embed_empty_list(self):
-        client = EmbeddingClient(api_key="sk-key")
+        client = EmbeddingClient(api_key="sk-key", base_url="http://127.0.0.1:9/v1")
         result = await client.embed([])
         assert result == []
 
     @pytest.mark.asyncio
     async def test_embed_empty_strings(self):
-        client = EmbeddingClient(api_key="sk-key", dim=4)
+        client = EmbeddingClient(
+            api_key="sk-key", base_url="http://127.0.0.1:9/v1", dim=4,
+        )
         result = await client.embed(["", "  "])
         # All empty → returns zero vectors with correct dim
         assert result is not None

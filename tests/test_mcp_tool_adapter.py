@@ -365,8 +365,13 @@ class TestMCPProxyToolExecute:
         on_remove.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_execute_source_stripped_for_wrapper(self):
-        """Source dict is stripped from kwargs for wrapper tools."""
+    async def test_execute_source_reaches_the_gateway(self):
+        """Source dict is passed through to the MCP client.
+
+        The gateway persists it into tools.yaml; popping it in the wrapper
+        made the advertised parameter silently discardable, so no new server
+        could record its provenance.
+        """
         info = make_tool_info(server="mcp", name="mcp_set")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "connected"})
@@ -374,13 +379,15 @@ class TestMCPProxyToolExecute:
         tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER)
         await tool.execute(name="test", command="cmd", source={"url": "x"})
 
-        # source key should not be passed to the MCP client
         call_kwargs = client.call_tool.call_args[0][1]
-        assert "source" not in call_kwargs
+        assert call_kwargs["source"] == {"url": "x"}
 
     @pytest.mark.asyncio
-    async def test_source_not_a_dict_stripped_from_mcp_call(self):
-        """source that isn't a dict is still stripped from kwargs — callback gets None."""
+    async def test_non_dict_source_passes_through_but_reads_as_none(self):
+        """A non-dict source is NOT normalized on the way to the gateway.
+
+        It still reaches ``mcp_set`` as the caller wrote it; only the
+        slife-side callback treats a non-dict as "no provenance"."""
         info = make_tool_info(server="mcp", name="mcp_set")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "connected"})
@@ -388,9 +395,25 @@ class TestMCPProxyToolExecute:
         tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER)
         await tool.execute(name="test", source="string-source")
 
-        # source is always stripped from MCP client call
+        # the gateway sees what the caller passed
         call_kwargs = client.call_tool.call_args[0][1]
-        assert "source" not in call_kwargs
+        assert call_kwargs["source"] == "string-source"
+
+    @pytest.mark.asyncio
+    async def test_non_dict_source_reads_as_none_for_the_callback(self):
+        """A non-dict source reaches the callback as None, not as the raw value."""
+        info = make_tool_info(server="mcp", name="mcp_set")
+        client = make_mock_mcp_client()
+        client.call_tool.return_value = json.dumps({"status": "connected"})
+        on_add = AsyncMock()
+
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add,
+        )
+        await tool.execute(name="test", source="string-source")
+
+        on_add.assert_called_once()
+        assert on_add.call_args.kwargs["source"] is None
 
     @pytest.mark.asyncio
     async def test_memory_server_calls_directly(self):
