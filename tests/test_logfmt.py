@@ -620,17 +620,25 @@ class TestSilenceNoisyLoggers:
             for call_args in mock_get_logger.call_args_list:
                 mock_get_logger.return_value.setLevel.assert_called_with(logging.WARNING)
 
-    def test_silences_extra_loggers(self):
-        """Extra logger names are also silenced."""
-        with patch("logging.getLogger") as mock_get_logger:
-            silence_noisy_loggers(extra=("my.custom.logger", "another.one"))
-            mock_get_logger.assert_any_call("my.custom.logger")
-            mock_get_logger.assert_any_call("another.one")
+    def test_fastmcp_loggers_silenced(self):
+        """FastMCP is silenced like every other noisy library.
 
-    def test_extra_loggers_not_duplicated(self):
-        """Even if an extra logger is already in defaults, it's still silenced."""
-        # Just verify calling with extras doesn't error
-        silence_noisy_loggers(extra=("openai._base_client",))
+        It used to be passed per call as an "extra" — only the plugin
+        children did so, which is exactly how the host server's rich handler
+        kept printing "Starting MCP server …" in the MAIN process.  The
+        library installs its own handlers, so no root-level console policy
+        can reach it: the level is the only lever, and every process pulls
+        it (DESIGN §2.8).
+        """
+        from slife.logfmt import _NOISY_LOGGER_NAMES
+
+        assert "fastmcp" in _NOISY_LOGGER_NAMES
+        assert "mcp.server.lowlevel.server" in _NOISY_LOGGER_NAMES
+
+        with patch("logging.getLogger") as mock_get_logger:
+            silence_noisy_loggers()
+            mock_get_logger.assert_any_call("fastmcp")
+            mock_get_logger.assert_any_call("mcp.server.lowlevel.server")
 
     def test_llm_sdk_client_loggers_silenced(self):
         """Both LLM SDK clients dump full request bodies at DEBUG.

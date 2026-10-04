@@ -84,19 +84,27 @@ _NOISY_LOGGER_NAMES = (
     "win32ctypes.core.cffi",  # "Loaded cffi backend" — one-shot, not diagnostic
     "credstore",              # "backend already initialized" — noise on every import
     "charset_normalizer",     # "Encoding detection: Found gb18030 as plausible…" per file_read
+    # FastMCP installs its OWN handlers on its own loggers — a rich handler
+    # writing straight to stderr — so no root-level console policy can reach
+    # them.  Raising the level here is what stops them being emitted at all;
+    # without it, "Starting MCP server 'slife' with transport 'streamable-http'"
+    # prints on every start.  The TUI hid that behind its alternate screen; a
+    # headless agent has no screen, so it landed in the operator's terminal.
+    "fastmcp",
+    "mcp.server.lowlevel.server",
 )
 
 
-def silence_noisy_loggers(extra: tuple[str, ...] = ()) -> None:
-    """Suppress DEBUG output from common third-party loggers.
+def silence_noisy_loggers() -> None:
+    """Suppress third-party loggers slife never wants in its own log.
 
-    These libraries dump full request/response bodies at DEBUG level,
-    making log files unreadable. slife's own DEBUG output is sufficient.
-
-    Args:
-        extra: Additional logger names to silence (e.g. FastMCP internals).
+    Most of these dump full request/response bodies at DEBUG level, which
+    makes log files unreadable — slife's own DEBUG output is sufficient.  The
+    FastMCP entries are a different problem with the same fix: that library
+    brings its own handlers, which no amount of root-logger configuration can
+    silence, so the level is the only lever.
     """
-    for name in (*_NOISY_LOGGER_NAMES, *extra):
+    for name in _NOISY_LOGGER_NAMES:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 # ── Session ID ──────────────────────────────────────────────────────────

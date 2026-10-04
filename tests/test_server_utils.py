@@ -128,15 +128,17 @@ class TestSetupServerLogging:
         mock_handler.setLevel.assert_called_with(logging.DEBUG)
 
     def test_silences_noisy_loggers(self, tmp_path):
-        """Noisy third-party and FastMCP loggers are silenced."""
+        """A plugin server's logging setup silences the noisy third-party set.
+
+        FastMCP is no longer passed as an "extra" here: it is part of the
+        shared set, because the same library runs in the main process too
+        (the host server), and a per-call list is what let that go unheard
+        (DESIGN §2.8).  What this pins is that the setup still asks for it.
+        """
         with patch("slife.server_utils.silence_noisy_loggers") as mock_silence:
             _, _ = _run_with_mocks(tmp_path / "logs")
 
-        mock_silence.assert_called_once()
-        args = mock_silence.call_args[1]
-        assert "extra" in args
-        assert "mcp.server.lowlevel.server" in args["extra"]
-        assert "fastmcp" in args["extra"]
+        mock_silence.assert_called_once_with()
 
     def test_log_filename_includes_timestamp_and_service(self, temp_log_dir):
         """Log follows pattern: YYYYMMDD_HHMMSS_servicename.log."""

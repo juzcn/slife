@@ -272,13 +272,24 @@ _started_servers: set[int] = set()
 
 
 async def _serve_host(server, host: str, sockets, port: int) -> None:
-    """Serve one Streamable-HTTP run of *server* (blocking until it stops)."""
+    """Serve one Streamable-HTTP run of *server* (blocking until it stops).
+
+    ``log_config=None`` is the same switch the plugin children pass
+    (:func:`slife.server_utils.run_plugin_server`): it stops uvicorn from
+    installing its own loggers with their own stream handlers.  Without it,
+    "Started server process […]" and "Application startup complete." are
+    written straight to stderr — invisible behind the TUI's alternate screen,
+    but the whole terminal output of a headless agent.  Letting the records
+    propagate to the root handlers instead puts them in the session log with
+    everything else.
+    """
     if sockets is not None:
         await server.run_async(
             transport="streamable-http",
             host=host,
             sockets=sockets,
             show_banner=False,
+            uvicorn_config={"log_config": None},
         )
     else:
         await server.run_async(
@@ -286,6 +297,7 @@ async def _serve_host(server, host: str, sockets, port: int) -> None:
             host=host,
             port=port,
             show_banner=False,
+            uvicorn_config={"log_config": None},
         )
 
 
