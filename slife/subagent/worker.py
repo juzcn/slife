@@ -316,10 +316,13 @@ async def run_worker(argv: list[str] | None = None) -> None:
                     _write(result=reply_text, rpc_id=rid)
                     _notify("worker/complete", {"task_id": str(rid)})
 
-                # The task text is posted as-is: routing back to the parent is
-                # by correlation_id and the _reply closure, never by the text,
-                # and the clone this task was sent with rides the message (no
-                # cross-task disambiguation needed).
+                # The task text is posted as-is: it is the parent's own
+                # words, and how to read the history it lands in — the last
+                # message is the task, what precedes it is a copy of the
+                # parent's context — is the worker's system prompt, stated once
+                # per process rather than wrapped around every task.  Routing
+                # back to the parent is by correlation_id and the _reply
+                # closure, never by the text.
                 await service.inbox.post(AgentMessage(
                     source=_source,
                     content=task_text,

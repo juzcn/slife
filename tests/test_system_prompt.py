@@ -239,7 +239,15 @@ class TestBuild:
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
         result = build(cfg, is_subagent=True)
-        assert "arrives with a copy of testbot's conversation as it stood" in result
+        # The reading rule for the history the task lands in: which message is
+        # the task, whose the rest is, and that the task is the whole job.  It
+        # lives here — once per process — rather than wrapped around every
+        # task, so the message stays the parent's own words.
+        assert (
+            "your task is the last message; everything before it is a copy of "
+            "testbot's context as it stood when the task was sent." in result
+        )
+        assert "Do what the task asks — your answer is the result." in result
         assert "Context: clean" not in result
 
     def test_a2a_section_when_configured(self, cfg):

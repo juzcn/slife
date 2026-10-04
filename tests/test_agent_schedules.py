@@ -239,9 +239,11 @@ async def test_fire_task_now_dispatches_directly(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fire_task_now_sends_the_context_with_the_task(monkeypatch):
-    """Every dispatched task carries `service._tool_ctx`'s history — the
-    main agent's context at dispatch time, minus its system message.  A
-    scheduled task is a send like any other, so it gets the same rule."""
+    """Every dispatched task carries `service._tool_ctx`'s settled turns.
+
+    The main agent's context at dispatch time, minus its system message and
+    minus the turn being run (it carries no turn rowid yet).  A scheduled task
+    is a send like any other, so it gets the same rule."""
     S._SCHEDULE_WORKERS.clear()
     client = AsyncMock()
 
@@ -259,8 +261,11 @@ async def test_fire_task_now_sends_the_context_with_the_task(monkeypatch):
     ctx.memfiles_client = client
     ctx.message_history = MagicMock(
         messages=[{"role": "system", "content": "sys"},
-                 {"role": "user", "content": "u1"},
-                 {"role": "assistant", "content": "a1"}],
+                 {"role": "user", "content": "u1", "_turn_id": 4},
+                 {"role": "assistant", "content": "a1"},
+                 # The turn being run: no rowid, so it is not context.
+                 {"role": "user", "content": "u2"},
+                 {"role": "assistant", "content": "a2"}],
     )
     service = MagicMock()
     service._tool_ctx = ctx
@@ -273,7 +278,9 @@ async def test_fire_task_now_sends_the_context_with_the_task(monkeypatch):
     await S.fire_task_now(service, "daily")
     manager.spawn.assert_awaited_once_with(name="daily")
     seed = manager.send_task_async.call_args.kwargs["seed"]
-    assert seed == [{"role": "user", "content": "u1"},
+    # Verbatim, ``_turn_id`` included: the worker's rebuild keys on it to
+    # re-fetch a turn from the shared store.
+    assert seed == [{"role": "user", "content": "u1", "_turn_id": 4},
                     {"role": "assistant", "content": "a1"}]
 
 

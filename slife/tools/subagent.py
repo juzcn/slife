@@ -7,7 +7,7 @@ it is invisible to the mesh and, when it does reach the mesh, it sends as
 this agent (via the a2a plugin).
 
 This module is fully decoupled from A2A:
-  * lifecycle — ``spawn_subagent`` / ``list_subagents`` / ``stop_subagent``
+  * lifecycle — ``spawn_subagent`` / ``list_subagents`` / ``remove_subagent``
   * delegation — ``subagent_send_task`` (sync wait),
     ``subagent_send_task_async`` (async; mode=auto result auto-pushed to the
     parent, mode=poll not pushed),
@@ -45,25 +45,38 @@ def _manager_or_hint() -> tuple:
 
 
 def _serialize_cloned_context(ctx) -> list[dict] | None:
-    """Return the parent's in-context messages, to be sent with one task.
+    """Return the parent's completed context, to be sent with one task.
 
-    The parent's messages are cloned as-is (the worker rebuilds its own
-    system prompt) and repaired on arrival — the snapshot is taken *inside*
-    the tool call that sends the task, so its last message is the
-    ``assistant(tool_calls=…)`` whose results do not exist yet
-    (``MessageHistory.from_history`` is the one place that invariant is
-    restored).  That in-flight turn is deliberately kept: it is the parent's
-    live context, and the worker's rebuild carries it through rather than
-    re-fetching it (``MessageHistory.rebuild_messages``).  No upfront trimming
-    either: the worker's own window bound (``AgentLoop._trim_context`` at the
-    request boundary) compacts the clone once it is over the ceiling.  Returns
-    None when no history is available.
+    **The turn in flight is not context**, so it is not sent.  The snapshot is
+    taken *inside* the tool call that sends the task, so that turn is the
+    parent's own unfinished business: the request it is answering, its
+    reasoning, and the ``assistant(tool_calls=…)`` doing the delegating.  Sent,
+    it arrived repaired to "(Tool execution interrupted)" and read to the
+    worker as *its own* interrupted action — a live test had the worker
+    conclude it was the one delegating, then go and continue the parent's work
+    instead of the task.  What a task needs from its parent is what the parent
+    had *settled*, and that is exactly what carries a turn rowid.
+
+    No upfront trimming either: the worker's own window bound
+    (``AgentLoop._trim_context`` at the request boundary) compacts the clone
+    once it is over the ceiling.  Returns None when no history is available,
+    and an empty list when the parent has no completed turn yet — a task sent
+    from the first turn of a session has nothing to carry, and the task text
+    is self-contained by contract.
     """
+    from slife.agent.message_history import MessageHistory
+
     history = getattr(ctx, "message_history", None)
     if history is None:
         return None
     # Drop the parent's system message — the worker renders its own.
-    return [m for m in history.messages if m.get("role") != "system"]
+    messages = [m for m in history.messages if m.get("role") != "system"]
+    return [
+        msg
+        for turn in MessageHistory.extract_turns(messages)
+        if turn.get("turn_id") is not None
+        for msg in turn["messages"]
+    ]
 
 
 class ListSubagentsTool(Tool):
@@ -159,21 +172,29 @@ class SpawnSubagentTool(Tool):
             return f"Error spawning subagent: {e}"
 
 
-class StopSubagentTool(Tool):
-    """Stop a locally-managed subagent process."""
+class RemoveSubagentTool(Tool):
+    """Remove a locally-managed subagent worker.
 
-    name = "stop_subagent"
+    Named for what it does to the *fleet*, which is what the caller is deciding:
+    the worker leaves it.  Its process is stopped on the way out, and the
+    registry is the lifetime (§6.5), so the worker's task records go with it —
+    a result worth keeping is read before this call, not after.  Spawning the
+    name again starts a new worker with no memory of the old one's tasks.
+    """
+
+    name = "remove_subagent"
     category = "Subagent"
     description = (
-        "Stop a locally-spawned subagent worker process, dropping any task it "
-        "still holds."
+        "Remove a local subagent worker: its process is stopped and the worker "
+        "is forgotten, with its task records. Spawning the name again starts a "
+        "fresh worker."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "subagent_name": {
                 "type": "string",
-                "description": "subagent_name of the worker to stop, from list_subagents.",
+                "description": "subagent_name of the worker to remove, from list_subagents.",
             },
         },
         "required": ["subagent_name"],
@@ -187,13 +208,14 @@ class StopSubagentTool(Tool):
         if manager is None:
             return hint
 
-        logger.info("subagent_tool_stop subagent_name=%s", subagent_name)
+        logger.info("subagent_tool_remove subagent_name=%s", subagent_name)
 
         ok = await manager.stop(subagent_name)
         if ok:
             return (
-                f"Subagent '{subagent_name}' stopped successfully. "
-                f"Use list_subagents to verify."
+                f"Subagent '{subagent_name}' removed — it is no longer running "
+                f"and no longer listed. Use list_subagents to verify; spawning "
+                f"that name again starts a fresh worker."
             )
         else:
             return (
@@ -216,7 +238,9 @@ class SubagentSendTaskTool(Tool):
     description = (
         "Send a task to a local subagent worker and wait for the result; "
         "if the worker is busy, queues it as async. The task is sent with a "
-        "copy of your current context as it stands now."
+        "copy of your settled context (the turns already completed), subject "
+        "to the worker's own context selection before it runs: a candidate "
+        "context, not a guarantee."
     )
     parameters: ClassVar[dict] = make_params(
         subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
@@ -276,19 +300,26 @@ class SubagentSendTaskTool(Tool):
                 # The id is what makes the timeout survivable: the worker was
                 # preempted, so a reply may still arrive — and this is the only
                 # place the caller is told which task to poll for it.
+                #
+                # "Preempted" covers the tools it was running, not just the
+                # turn: the cancel reaches the executing batch and stops what
+                # it started.  It used to mean the flag alone, which left a
+                # ``sleep 300`` holding the worker's one task slot for minutes
+                # while this very sentence told the caller it did not block
+                # later tasks.
                 return (
                     f"Timed out waiting for task to '{subagent_name}' after the "
-                    "worker timeout. The task was preempted on the worker so it "
-                    "does not block later tasks; its result, if one arrives, is "
-                    "NOT pushed automatically — poll it with "
-                    "subagent_get_task_result "
+                    "worker timeout. The task and any tool it was running were "
+                    "stopped on the worker, so it does not hold up later tasks; "
+                    "its result, if one arrives, is NOT pushed automatically — "
+                    "poll it with subagent_get_task_result "
                     f"(subagent_name={subagent_name}, task_id={e.task_id})."
                 )
             return (
                 f"Timed out waiting for task to '{subagent_name}' after the worker "
-                "timeout. The task was preempted on the worker so it does not "
-                "block later tasks; its eventual result, if any, is NOT "
-                "delivered automatically."
+                "timeout. The task and any tool it was running were stopped on "
+                "the worker, so it does not hold up later tasks; its eventual "
+                "result, if any, is NOT delivered automatically."
             )
         except Exception as e:
             return f"Error sending task to subagent '{subagent_name}': {e}"
@@ -311,7 +342,9 @@ class SubagentSendTaskAsyncTool(Tool):
         "task_id; mode 'auto' (default) auto-pushes the result and stays "
         "pollable, mode 'poll' disables auto-push (retrieve with "
         "subagent_get_task_result). The task is sent with a copy of your "
-        "current context as it stands now."
+        "settled context (the turns already completed), subject to the "
+        "worker's own context selection before it runs: a candidate context, "
+        "not a guarantee."
     )
     parameters: ClassVar[dict] = make_params(
         subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},

@@ -9,7 +9,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from slife.subagent.worker import _write, _notify, cancelled_reply_text, main
+from slife.subagent.worker import (
+    _write,
+    _notify,
+    cancelled_reply_text,
+    main,
+)
 
 
 class TestWrite:

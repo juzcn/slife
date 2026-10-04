@@ -13,7 +13,7 @@ import slife.subagent.process  # noqa: F401
 from slife.tools.subagent import (
     ListSubagentsTool,
     SpawnSubagentTool,
-    StopSubagentTool,
+    RemoveSubagentTool,
     SubagentCancelTaskTool,
     SubagentGetTaskResultTool,
     SubagentListTasksTool,
@@ -32,7 +32,7 @@ MANAGER_PATH = "slife.subagent.process.get_manager"
 TOOLS = [
     ListSubagentsTool,
     SpawnSubagentTool,
-    StopSubagentTool,
+    RemoveSubagentTool,
     SubagentSendTaskTool,
     SubagentSendTaskAsyncTool,
     SubagentGetTaskResultTool,
@@ -186,61 +186,119 @@ class TestSpawnSubagentTool:
 
     def test_serialize_cloned_context_drops_system(self):
         """The parent's system message is not serialized."""
-        from slife.agent.message_history import MessageHistory
         from slife.config import Config, ModelConfig
         from slife.tools.context import ToolContext
         from slife.tools.subagent import _serialize_cloned_context
 
-        conv = MessageHistory(system_prompt="PARENT_SYS")
-        conv.add_user_message("t1")
-        conv.add_assistant_message("r1")
         mc = ModelConfig(
             ref="t/m", provider="t", api_model="m", display_name="M",
             api_key="k", context_window=1000,
         )
         cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
 
-        data = _serialize_cloned_context(ToolContext(message_history=conv, config=cfg))
+        data = _serialize_cloned_context(
+            ToolContext(message_history=_parent_context(), config=cfg)
+        )
         assert data is not None
         assert all(m.get("role") != "system" for m in data)
+        assert [m["role"] for m in data] == ["user", "assistant"]
+
+    def test_the_clone_excludes_the_turn_in_flight(self):
+        """The parent's unfinished turn is its own business, not context.
+
+        The snapshot is taken inside the delegating tool call, so that turn is
+        the parent's request, its reasoning and the ``assistant(tool_calls=…)``
+        doing the delegating — repaired on arrival to "(Tool execution
+        interrupted)" and read by the worker as *its own* interrupted action.
+        A live test had the worker conclude it was the parent, then go and
+        continue the parent's work instead of the task.
+        """
+        from slife.config import Config, ModelConfig
+        from slife.tools.context import ToolContext
+        from slife.tools.subagent import _serialize_cloned_context
+
+        mc = ModelConfig(
+            ref="t/m", provider="t", api_model="m", display_name="M",
+            api_key="k", context_window=1000,
+        )
+        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
+
+        data = _serialize_cloned_context(ToolContext(
+            message_history=_parent_context(in_flight=True), config=cfg,
+        ))
+        assert data == [
+            {"role": "user", "content": "t1", "_turn_id": 7},
+            {"role": "assistant", "content": "r1"},
+        ], "the settled turn is carried; the turn being run is not"
+
+    def test_a_parent_with_no_settled_turn_clones_nothing(self):
+        """A task sent from a session's first turn has nothing to carry.
+
+        Every turn so far is in flight, so the clone is empty and the worker
+        runs on the task alone — which is what the task text is for.
+        """
+        from slife.agent.message_history import MessageHistory
+        from slife.config import Config, ModelConfig
+        from slife.tools.context import ToolContext
+        from slife.tools.subagent import _serialize_cloned_context
+
+        conv = MessageHistory(system_prompt="PARENT_SYS")
+        conv.add_user_message("the only turn, still running")
+        mc = ModelConfig(
+            ref="t/m", provider="t", api_model="m", display_name="M",
+            api_key="k", context_window=1000,
+        )
+        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
+
+        assert _serialize_cloned_context(
+            ToolContext(message_history=conv, config=cfg)
+        ) == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# StopSubagentTool
+# RemoveSubagentTool
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestStopSubagentTool:
+class TestRemoveSubagentTool:
     @pytest.mark.asyncio
     async def test_missing_agent_name(self):
-        tool = StopSubagentTool()
+        tool = RemoveSubagentTool()
         result = await tool.execute(subagent_name="")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_no_manager(self):
         with patch(MANAGER_PATH, return_value=None):
-            tool = StopSubagentTool()
+            tool = RemoveSubagentTool()
             result = await tool.execute(subagent_name="sub-1")
             assert result == "Subagent manager is not running."
 
     @pytest.mark.asyncio
-    async def test_stop_success(self):
+    async def test_remove_success(self):
+        """The reply says what the caller now faces, not just "done".
+
+        The worker is gone from the fleet and its task records with it, and
+        spawning the name again is a fresh worker — three facts a caller acts
+        on, none of them implied by the word "stopped".
+        """
         mock_mgr = MagicMock()
         mock_mgr.stop = AsyncMock(return_value=True)
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = StopSubagentTool()
+            tool = RemoveSubagentTool()
             result = await tool.execute(subagent_name="sub-1")
-            assert "stopped" in result.lower()
+            assert "removed" in result.lower()
+            assert "no longer running" in result
+            assert "starts a fresh worker" in result
 
     @pytest.mark.asyncio
-    async def test_stop_not_found(self):
+    async def test_remove_not_found(self):
         mock_mgr = MagicMock()
         mock_mgr.stop = AsyncMock(return_value=False)
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = StopSubagentTool()
+            tool = RemoveSubagentTool()
             result = await tool.execute(subagent_name="sub-1")
             assert "not found" in result.lower()
 
@@ -250,21 +308,38 @@ class TestStopSubagentTool:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _tool_with_parent_context(tool):
-    """Give *tool* a live parent context, as the loop does per tool batch."""
+def _parent_context(*, in_flight: bool = False):
+    """A parent history as the loop hands it to a tool: one settled turn, and
+    optionally the turn being run right now (which carries no turn rowid)."""
     from slife.agent.message_history import MessageHistory
-    from slife.config import Config, ModelConfig
-    from slife.tools.context import ToolContext
 
     conv = MessageHistory(system_prompt="PARENT_SYS")
     conv.add_user_message("t1")
     conv.add_assistant_message("r1")
+    conv.messages[1]["_turn_id"] = 7          # the settled turn, as saved
+    if in_flight:
+        conv.add_user_message("what we are doing now")
+        conv.add_assistant_message("", tool_calls=[{
+            "id": "call_00_x", "type": "function",
+            "function": {"name": "subagent_send_task_async", "arguments": "{}"},
+        }])
+    return conv
+
+
+def _tool_with_parent_context(tool, *, in_flight: bool = False):
+    """Give *tool* a live parent context, as the loop does per tool batch."""
+    from slife.config import Config, ModelConfig
+    from slife.tools.context import ToolContext
+
     mc = ModelConfig(
         ref="t/m", provider="t", api_model="m", display_name="M",
         api_key="k", context_window=1000,
     )
     cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
-    object.__setattr__(tool, "_ctx", ToolContext(message_history=conv, config=cfg))
+    object.__setattr__(
+        tool, "_ctx",
+        ToolContext(message_history=_parent_context(in_flight=in_flight), config=cfg),
+    )
     return tool
 
 

@@ -654,13 +654,14 @@ the `turn_persistence` grant, which a worker does not hold, so its rebuild is in
 persisted live-context list keeps its single owner. Reading is not owning — the store's recall half
 is wired for both roles.
 
-**A rebuild carries what it cannot re-fetch.** A selection names stored turns; the messages of any
-turn the store holds no row for — in a worker, the parent's turn in flight, which its clone ends on —
-are carried through the rebuild verbatim rather than dropped. The unbacked turns are always the
-newest (a turn is stamped with its rowid when it is saved), so the carried messages are restored
-after the selected turns and the chronology holds. The rule is shared, and inert for the main agent
-in the ordinary case; it also closes a hole there, where a save that returned no rowid would leave
-the last turn unstamped and a rebuild would otherwise lose it silently.
+**A rebuild carries what it cannot re-fetch.** A selection names *stored* turns; the messages of any
+turn the store holds no row for are carried through the rebuild verbatim rather than dropped. The
+unbacked turns are always the newest (a turn is stamped with its rowid when it is saved), so the
+carried messages are restored after the selected turns and the chronology holds. The case is a save
+that returned no rowid: the last turn stays unstamped, and a rebuild would otherwise lose it
+silently — the same loss the no-op skip's guard names. The same rule is why the **turn in flight is
+not context**: it is carried through a rebuild, never selected by one, and §6.2 applies it again at
+the send boundary.
 
 ### 2.4 The system prompt
 
@@ -1577,16 +1578,33 @@ is no state for a spawn to keep or re-apply, because **the context is not the wo
 task's**.
 
 **Context is decided when a task is sent, not when a worker is started.** Every send carries a clone
-of the parent's in-context messages — everything it is running on at that moment, minus its system
-message (the worker renders its own) — and the worker seeds that task's history from it. A spawn
-could not do this honestly: the parent has not been given the task yet, so it cannot know what
-context the task needs; and a worker runs many tasks, so a context fixed at spawn is either stale for
-the second one or was never right for it. A snapshot is taken *inside* the tool call that sends the
-task, so it ends on the assistant tool call whose results do not exist yet — the parent's turn in
-flight; the worker's history is repaired on arrival (§2.1's turn-consistency invariant) rather than
-sent as-is, which every provider would reject. That in-flight turn is kept, because it is where the
-task came from: the worker's rebuild carries it through rather than re-fetching it, since the store
-holds no row for it yet (§2.3).
+of the parent's context — its **settled** turns, minus its system message (the worker renders its
+own) — and the worker seeds that task's history from it. A spawn could not do this honestly: the
+parent has not been given the task yet, so it cannot know what context the task needs; and a worker
+runs many tasks, so a context fixed at spawn is either stale for the second one or was never right
+for it.
+
+**The turn in flight is not context, so it is not sent** (§2.3's rule, applied at the boundary).
+The snapshot is taken *inside* the tool call that sends the task, so that turn is the parent's own
+unfinished business: the request it is answering, its reasoning, and the ``assistant(tool_calls=…)``
+doing the delegating. Sent, the worker's repair turned it into "(Tool execution interrupted)" — and
+the worker read it as *its own* interrupted action. A live test showed the whole failure: a worker
+seeded that way decided it was the parent, listed its own subagents, then wrote and ran a probe
+script continuing the parent's work, and the one-line task it had been sent was never answered. What
+a task needs from its parent is what the parent had *settled*, and a settled turn is exactly what
+carries a turn rowid — so the clone is the same "stored turns only" set a rebuild keeps.
+
+**How to read the history is the worker's prompt, not the task's wrapper.** The seed *is*
+first-person material the worker never produced, so the reader of it has to be told: the worker's
+system prompt states the rule — the last message is the task, everything before it is a copy of the
+parent's context as it stood when the task was sent, and the task is the whole job. It is said
+**once per process** rather than wrapped around every task, so the message stays the parent's own
+words; a per-task preamble repeated the same three lines on every send, and its only unique part was
+a delimiter the rule states better. It is stated as the fact it is: a gloss on whose work the copy
+is, or a list of what the worker did not do, primes the very reading it means to rule out — and the
+prompt states facts (§2.4). The task text itself stays the parent's
+own words: the framing is transport, so the parent's task record, its preview and its result keep
+the text the model wrote.
 
 Each task therefore runs on **its own**, freshly seeded context and never accumulates one across
 tasks, and a task queued behind a busy worker keeps the context of its own send. On top of that seed
@@ -1619,7 +1637,10 @@ task. The TUI drops the marker and shows the `Subagent(<name>)>` bubble. There i
 subscribe call — async results are auto-subscribed, and a poll mode suppresses only the *push*, never
 the retrievability. Retrieval is **non-consuming and states what it is**: a task answers pending,
 completed, failed or cancelled from its own record (only an id that was never sent reads unknown), so
-a completed task cannot report "pending" the second time it is polled. A cancelled task's reply is
+a completed task cannot report "pending" the second time it is polled. **A record lives exactly as
+long as the worker that holds it**: stopping a worker takes its task history with it, so a result
+worth keeping is read before the stop, not after (the registry is the lifetime — §6.5). A cancelled
+task's reply is
 marked as partial **and names the reason** (the short terminal-state tokens of §2.1), because for a
 *timed-out* task that text is what the late-result store hands back, and a task that hit its own
 ceiling would otherwise read exactly like one its caller withdrew.
@@ -1638,11 +1659,15 @@ The worker has no error-handling loop of its own; every failure ends in a result
 | **stall** — no reply at all (nobody is waiting) | the async task's lifetime backstop fires → the task is marked failed, preempted, and its failure **pushed** to the caller |
 
 The stall case is the interesting one. The abandoned task is **preempted in the child** — a worker is
-serial, so a genuinely stuck task must never block later tasks. A **late** result is stored (and
-reconciles the record it timed out on) but never auto-pushed, because the caller was already told it
-timed out; a push after a reported timeout would double-announce a task the caller believes failed.
-Parent-side cancel does the same, discards the late reply, and preempts the child too — a cancelled
-turn is the same situation as a timeout.
+serial, so a genuinely stuck task must never block later tasks. **Preemption reaches the tool that is
+running**, not only the turn around it: the cancel cancels the executing batch, and a tool that
+spawned a child kills the whole process tree on the way out (§4.7's `_run_captured`). That is what
+makes the sentence true — the flag alone left a `sleep 300` holding the worker's one task slot for
+its full run, so a task the caller had been told was preempted did block every later one. A **late**
+result is stored (and reconciles the record it timed out on) but never auto-pushed, because the
+caller was already told it timed out; a push after a reported timeout would double-announce a task
+the caller believes failed. Parent-side cancel does the same, discards the late reply, and preempts
+the child too — a cancelled turn is the same situation as a timeout.
 
 An async task is the one case where the parent *is* the one to tell: nobody awaits it, so no caller
 owns its bound, and silence would look exactly like work in progress. Its lifetime is therefore a

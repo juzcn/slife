@@ -610,12 +610,11 @@ class MessageHistory:
 
         *carried* is the messages of the turn(s) the store holds no row for —
         a selection is a statement about *stored* turns, so a rebuild must not
-        drop what it cannot re-fetch.  A worker's seeded context is the standing
-        case: its clone ends on the parent's turn in flight, which has no
-        ``_turn_id`` yet, so a rebuild would otherwise lose the very work the
-        task was delegated from.  They are appended after the restored turns
-        (chronology holds: a turn is unbacked only until it is saved, so the
-        unbacked ones are the newest) and then repaired with everything else.
+        drop what it cannot re-fetch.  They are appended after the restored
+        turns (chronology holds: a turn is unbacked only until it is saved, so
+        the unbacked ones are the newest) and then repaired with everything
+        else.  Reachable when a save returned no rowid — the last turn then
+        stays unstamped, and a rebuild would otherwise lose it silently.
 
         In place, and never by rebinding the object: the loop, the TUI handler
         and ``save_to_memory`` all hold this instance.

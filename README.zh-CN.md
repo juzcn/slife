@@ -309,7 +309,7 @@ net:
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_list_tools`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
-| Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
+| Subagent | `spawn_subagent`, `list_subagents`, `remove_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove` |
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image`（给视觉模型喂图片）, `_turn_prompt`（每轮提示词，由 Slife 驱动） |
 | Harness | `_check_new_input`（轮中消息注入，由 Slife 驱动） |
@@ -410,7 +410,7 @@ job 还能驱动 `tools.yaml` 里配置的**任意外部 MCP server**——包�
 A2A 让彼此独立的智能体——同一台机器上或跨机器——互相发现、委派任务、推送结果。它说的是官方 **A2A-over-MQTT** profile，因此 Slife agent 能与任何其它实现互操作：
 
 - **网格工具**（统一 `a2a_` 前缀）：`a2a_send_message`（异步——立即返回 task_id，结果稍后到达）、`a2a_cancel_task`、`a2a_list_agents`、`a2a_broadcast`（发后即忘的事件）。入站的 peer 流量统一以一个 `[A2A:…]` 信封到达模型（`from` 是发送方 peer——永远不是接收者自己）；TUI 显示 `A2A(<peer>)>`。`a2a` 插件只在 MQTT broker 可达时启动。
-- **Subagent 是本地 worker，不是 A2A peer**：`spawn_subagent` / `subagent_send_task` / `subagent_get_task_result` / ……创建共享你的插件、一次处理一个任务的 worker（对忙碌 worker 的同步发送会自动转为异步入队）。每个任务都会带上发送那一刻你对话的副本，worker 据此重建自己的上下文——所以上下文无需预先设置，对同一个 worker 委派两次，每个任务拿到的都是它被发出时的情形。异步结果自动推送到你的聊天（`mode="auto"`，默认）或只能轮询（`mode="poll"`）。Subagent 绝不清空你的收件箱——所有回复与管理都属于主 agent。
+- **Subagent 是本地 worker，不是 A2A peer**：`spawn_subagent` / `subagent_send_task` / `subagent_get_task_result` / ……创建共享你的插件、一次处理一个任务的 worker（对忙碌 worker 的同步发送会自动转为异步入队）。每个任务都会带上截至发送那一刻的对话副本（已结算的轮次，不含正在进行中的那一轮），worker 清楚这份副本到哪里为止、它自己的任务从哪里开始，因此它会去做任务而不是接着干你的活。这份副本是候选而非保底：运行前 worker 会自行挑选其中所需的部分，所以某个任务完全可能一点都不带。对同一个 worker 委派两次，每个任务拿到的都是它被发出时的情形。异步结果自动推送到你的聊天（`mode="auto"`，默认）或只能轮询（`mode="poll"`）。Subagent 绝不清空你的收件箱——所有回复与管理都属于主 agent。
 
 所有消息——人类输入、微信、MQTT、subagent 结果——都流经单一收件箱队列，逐轮处理。
 
