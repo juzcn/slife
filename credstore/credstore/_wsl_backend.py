@@ -138,8 +138,18 @@ public class CredManager {
 # ── PowerShell bridge helpers ───────────────────────────────────────
 
 
-def _run_powershell(script: str) -> tuple[int, str, str]:
+def _run_powershell(
+    script: str, stdin_data: str | None = None,
+) -> tuple[int, str, str]:
     """Execute a PowerShell snippet, returning (rc, stdout, stderr).
+
+    ``stdin_data`` is delivered on the child's standard input.  Secret
+    material goes THERE, never interpolated into *script*: the script travels
+    as ``-EncodedCommand``, i.e. in the ``powershell.exe`` command line, where
+    anything that can enumerate command lines (Task Manager,
+    ``Get-CimInstance Win32_Process``, an EDR agent) can decode it back to
+    plaintext — base64 is an encoding, not encryption.  The Linux side's
+    ``_shell._setx`` avoids the same leak by design.
 
     Uses ``encoding='utf-8', errors='replace'`` because PowerShell
     outputs in the Windows OEM code page but the WSL Linux locale
@@ -158,6 +168,7 @@ def _run_powershell(script: str) -> tuple[int, str, str]:
             "-EncodedCommand",
             encoded_script,
         ],
+        input=stdin_data,
         capture_output=True,
         encoding="utf-8",
         errors="replace",
@@ -241,13 +252,18 @@ def _set_credential(target: str, username: str, password: str) -> bool:
     escaped_target = target.replace("'", "''")
     escaped_username = username.replace("'", "''")
 
+    # The blob comes in on stdin, NOT in the script: the script rides in the
+    # command line, so interpolating it here published the credential to every
+    # process that can read one. The target and user name stay inline — they
+    # are names, not secrets.
     script = f'''
-$result = [CredManager]::SetCredential('{escaped_target}', '{escaped_username}', '{b64_password}')
+$b64 = [Console]::In.ReadLine()
+$result = [CredManager]::SetCredential('{escaped_target}', '{escaped_username}', $b64)
 if (-not $result) {{
     exit 1
 }}
 '''
-    returncode, _, _ = _run_powershell(script)
+    returncode, _, _ = _run_powershell(script, stdin_data=b64_password)
     return returncode == 0
 
 

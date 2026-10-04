@@ -316,13 +316,31 @@ class TestInitCryptfile:
     def test_init_exception_sets_none(self):
         backend._cryptfile = "old"
         mock_cf_cls = MagicMock()
-        mock_cf_cls.side_effect = ValueError("bad config")
+        mock_cf_cls.side_effect = OSError("bad config")
         with patch.dict(
             "sys.modules",
             {"keyrings.cryptfile.cryptfile": MagicMock(CryptFileKeyring=mock_cf_cls)},
         ):
             backend._init_cryptfile()
             assert backend._cryptfile is None
+
+    def test_a_wrong_password_raises_instead_of_degrading(self):
+        """A failed unlock is a user error, not an unavailable backend.
+
+        Swallowing it left ``_cryptfile`` None, which a caller cannot tell
+        apart from "cryptfile not installed" — so `credstore` (list) printed a
+        wrong-password backup as EMPTY and pointed the user at
+        `reset-backup`, i.e. at overwriting the backup it could not read.
+        """
+        backend._cryptfile = "old"
+        mock_cf_cls = MagicMock()
+        mock_cf_cls.side_effect = ValueError("MAC check failed")
+        with patch.dict(
+            "sys.modules",
+            {"keyrings.cryptfile.cryptfile": MagicMock(CryptFileKeyring=mock_cf_cls)},
+        ), pytest.raises(ValueError):
+            backend._init_cryptfile(password="wrong")
+        assert backend._cryptfile is None
 
     def test_init_success_with_password(self, tmp_path):
         cf_path = tmp_path / "test.crypt"
