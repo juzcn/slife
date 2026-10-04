@@ -590,6 +590,21 @@ class TestParseCLI:
         assert parse_cli_lang(["slife"]) is None
         assert parse_cli_lang(["slife", "--agent", "bob"]) is None
 
+    def test_parse_cli_headless(self):
+        from slife.config import parse_cli_headless
+        assert parse_cli_headless(["slife", "--headless"]) is True
+        assert parse_cli_headless(["slife", "--headless", "--agent", "jack"]) is True
+        assert parse_cli_headless(["slife", "--agent", "jack"]) is False
+        assert parse_cli_headless(["slife"]) is False
+
+    def test_parse_cli_headless_takes_no_value(self):
+        """A switch, not an option: the scanner must not swallow the config
+        path that follows it."""
+        from slife.config import parse_cli_config_path
+        assert parse_cli_config_path(
+            ["slife", "--headless", "--agent", "jack", "myconf.yaml"],
+        ) == "myconf.yaml"
+
     def test_parse_cli_help(self):
         from slife.config import parse_cli_help
         assert parse_cli_help(["slife", "--help"]) is True
@@ -612,16 +627,18 @@ class TestParseCLI:
             CLI_USAGE,
             parse_cli_agent,
             parse_cli_config_path,
+            parse_cli_headless,
             parse_cli_help,
             parse_cli_lang,
         )
 
         assert set(re.findall(r"--[a-z-]+", CLI_USAGE)) == {
-            "--agent", "--lang", "--help",
+            "--agent", "--headless", "--lang", "--help",
         }
         assert parse_cli_help(["slife", "--help"])
         assert parse_cli_agent(["slife", "--agent", "bob"]) == "bob"
         assert parse_cli_lang(["slife", "--lang", "zh"]) == "zh"
+        assert parse_cli_headless(["slife", "--headless"])
         # …and the positional it documents is the one the scanner reads.
         assert parse_cli_config_path(["slife", "myconf.yaml"]) == "myconf.yaml"
         assert "config-path" in CLI_USAGE

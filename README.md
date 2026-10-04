@@ -458,14 +458,41 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 | Flag | Description |
 |------|-------------|
 | `--agent <id>` | Agent identity — separate turns database + A2A mesh name (default: `slife`). The mesh name must be unique on the broker: a second instance with the same name refuses to join instead of fighting for it |
+| `--headless` | Run as a headless agent — the same agent with no terminal attached (see below) |
 | `--lang <en\|zh>` | TUI language — force English / Chinese (default: auto-detect from OS locale) |
 | `-h`, `--help` | Print the usage and exit |
 | `<config-path>` | Positional — use a specific config file (its parent dir becomes the data dir) |
 
+### Headless mode
+
+`slife --headless --agent jack` runs **the same agent** with no terminal attached: the same turns
+database, the same plugins, the same heartbeat and schedules — but no keyboard and no chat view. Its
+input is whatever reaches it from outside: A2A messages from peers, results pushed back by its own
+workers, heartbeat and schedule triggers. `Ctrl+C` stops it.
+
+```bash
+slife --headless --agent jack                 # default config
+slife --headless --agent jack myconf.yaml     # a specific config file
+```
+
+* **It is silent.** Nothing is written to the terminal except startup warnings and errors: every
+  turn is in the turns database and the session log is in `~/.slife/logs/`. What the agent says to
+  the world leaves over the mesh.
+* **Nobody can approve a tool call**, and it is told so in its system prompt — a call marked
+  `_approve` runs without asking. Run a headless agent only with an agent identity whose reach you
+  are comfortable leaving unattended.
+* **A mesh that is not up is a warning, not a failure.** If the broker is unreachable, or the name
+  is already held by another process, it starts anyway and warns on stderr; the plugin watchdog
+  keeps retrying.
+* **A restart resumes.** The exit-time context is restored on start, exactly as the TUI restores it,
+  so a peer's task that spans several turns survives a restart.
+* One name is one agent: a headless `jack` and a TUI `jack` cannot hold the same mesh identity at
+  the same time. Give them different `--agent` names.
+
 ### Health & logs
 
 * **`system_health`** reports live status for every subsystem in one call — problems first with what to do about them, then one line per healthy component. Ask the agent to run it any time something seems off.
-* **Logs** live in `~/.slife/logs/` (one per session, `event_name key=value` lines, DEBUG+; plugins inherit the session id). The terminal is reserved for the TUI — nothing prints to it but the chat.
+* **Logs** live in `~/.slife/logs/` (one per session, `event_name key=value` lines, DEBUG+; plugins inherit the session id). The terminal belongs to the chat in the TUI and to nothing at all in headless mode — logs never print to it.
 * **A session that was killed is reported by the next one.** A hard kill (`taskkill`, End Task, a closed window) runs no Python, so the victim writes nothing itself — instead every session leaves a marker file (`logs/.session.<pid>.state`) that only a clean exit removes. Finding one whose process is gone, slife warns `the last session … was killed from outside` and names its log. The same kill leaves that terminal in raw mode — keystrokes echo as garbage and `Ctrl+C` does nothing; close that window to recover.
 
 ## License

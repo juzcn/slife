@@ -4,14 +4,20 @@ Extracted from ``slife/__init__.py`` to keep the package entry point
 focused on ``main()``.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from slife.logfmt import SessionFormatter, FILE_LOG_FORMAT, log_stamp, resolve_log_dir
+
+if TYPE_CHECKING:
+    from slife.config import Config
 
 logger = logging.getLogger("slife")
 
@@ -240,3 +246,127 @@ def seed_skills(skills_dir: Path) -> None:
     import shutil
     shutil.copytree(pkg_skills, skills_dir)
     logger.info("skills_seeded from=%s to=%s", pkg_skills, skills_dir)
+
+
+# ── Session bootstrap ─────────────────────────────────────────────────
+
+
+def prepare_session(
+    config_path: str | None,
+    agent_name: str,
+) -> tuple[Config, Path]:
+    """Everything a process does before it has an agent — shared by every host.
+
+    Both hosts (the TUI and the headless agent) need exactly this and nothing
+    host-specific: the data dir and the ``SLIFE_*`` process env every child
+    inherits, seeded skills, the session id and log, the killed-session
+    report, the session marker, the loaded config, and the host-facts record.
+    It lives here rather than in either host because two copies of it would
+    drift — and a drifted copy is invisible: the process still starts, it just
+    logs somewhere else, or writes its marker where nobody reads it.
+
+    *config_path* is the already-resolved explicit config path (``None`` for
+    the default), because which file to use is a CLI concern the caller owns.
+
+    Returns ``(config, log_path)``.  Raises ``SystemExit(1)`` on a config
+    error — the message goes to stderr and the full traceback to the log,
+    because the terminal belongs to the user and a traceback is not an answer.
+    """
+    import os as _os
+
+    from slife.config import Config
+    from slife.health import record_host_facts
+    from slife.logfmt import init_session_id
+    from slife.paths import get_config_path, get_data_dir, get_skills_dir
+
+    # Resolve data dir BEFORE logging setup so logs go to the right place.
+    # Only two modes:
+    #   1. Dev (pyproject.toml in CWD): everything in CWD
+    #   2. Production: everything in ~/.slife/
+    # Unless the user passes an explicit config path — then use its parent.
+    if config_path:
+        _cp = Path(config_path).expanduser()
+        if not _cp.is_absolute():
+            _cp = Path.cwd() / _cp
+        data_dir = str(_cp.parent.resolve())
+    else:
+        data_dir = str(get_data_dir())
+        _cp = get_config_path()  # resolve to ~/.slife/slife.yaml or CWD/slife.yaml
+    _os.environ["SLIFE_DATA_DIR"] = data_dir
+    _os.environ["SLIFE_CONFIG_DIR"] = data_dir
+    # Log directory — inherited by plugin children so their per-session logs
+    # land next to the main session log; the local-embed daemon reads it
+    # instead of its standalone default.
+    _os.environ["SLIFE_LOG_DIR"] = str(Path(data_dir) / "logs")
+
+    # Seed skills from the installed package to the data directory on
+    # first run, so users can edit and add their own skills.
+    seed_skills(get_skills_dir())
+
+    # Generate session ID — shared with MCP subprocess via env var
+    sid = init_session_id()
+    _os.environ["SLIFE_SESSION_ID"] = sid
+    _os.environ["SLIFE_AGENT_NAME"] = agent_name
+
+    # Force UTF-8 encoding for Python subprocesses on Windows.
+    # Without this, Python defaults to the system code page (e.g. GBK / cp936)
+    # and crashes when printing characters outside that encoding to stdout.
+    if sys.platform == "win32":
+        _os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+    log_path, _ = setup_logging(agent_name=agent_name)
+
+    # A session that was killed rather than stopped left its marker behind and
+    # its teardown unrun (previous_session_killed) — say so now, to the log and
+    # to the user.  It is the one fact that separates "the TUI was killed from
+    # outside" from every theory one can invent about a log that just stops
+    # mid-sentence.
+    killed = previous_session_killed(log_path.parent)
+    if killed:
+        logger.warning("previous_session_killed %s", killed)
+        print(f"Warning: {killed}", file=sys.stderr)
+    note_session_start(log_path, sid)
+
+    logger.debug("log_path=%s", log_path)
+    logger.debug("data_dir=%s", data_dir)
+    from slife.logfmt import elapsed as _elapsed
+
+    logger.debug("config loading…")
+    with _elapsed("config_load", logger, level=logging.DEBUG, path=str(_cp)):
+        try:
+            config = Config.from_yaml(str(_cp), agent_name=agent_name)
+        except Exception as exc:
+            # Terminal belongs to the user — one actionable line, never a
+            # traceback.  Full exception details stay in the session log.
+            logger.exception("config_load_failed path=%s", _cp)
+            print(f"Config error: {exc}", file=sys.stderr)
+            print(f"Config: {_cp}  Log: {log_path}", file=sys.stderr)
+            raise SystemExit(1)
+    # The host facts every process reports — config provenance + counts, the
+    # active model, and the external toolchain (probed on a daemon thread).
+    # ONE recorder, shared with the worker's startup, so the two reports list
+    # the same components.
+    record_host_facts(config, source=str(_cp))
+
+    # Log env vars from config (already applied to os.environ by Config.from_yaml).
+    # Every value goes through the shared sanitizer first — this catches
+    # connection strings (DATABASE_URL=postgres://user:pass@host/db) whose
+    # password is embedded in the value, and known key shapes.  The key-name
+    # heuristic is a fallback for credential-named keys whose value matched no
+    # known shape (short secret, arbitrary token).
+    if config.env:
+        from slife.logfmt import mask_value, sanitize_secrets
+        for key, value in config.env.items():
+            s = sanitize_secrets(str(value))
+            if s == str(value) and any(
+                hint in key.upper() for hint in ("KEY", "SECRET", "TOKEN", "PASSWORD")
+            ):
+                s = mask_value(str(value))
+            logger.debug("env %s=%s", key, s)
+
+    active = config.active_model
+    logger.debug("model=%s provider=%s", active.ref, active.display_name)
+    logger.debug("thinking=%s", "on" if active.thinking_enabled else "off")
+    logger.debug("tools=%d", len(config.tools))
+
+    return config, log_path

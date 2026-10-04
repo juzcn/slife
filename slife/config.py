@@ -142,6 +142,16 @@ def parse_cli_lang(argv: list[str]) -> str | None:
     return None
 
 
+def parse_cli_headless(argv: list[str]) -> bool:
+    """Whether ``--headless`` was asked for.
+
+    A switch, not an option: it takes no value, so
+    :func:`parse_cli_config_path` stepping over it by one token is exactly
+    right and a positional config path after it still reads as one.
+    """
+    return "--headless" in argv[1:]
+
+
 def parse_cli_help(argv: list[str]) -> bool:
     """Whether ``-h`` / ``--help`` was asked for."""
     return any(a in ("-h", "--help") for a in argv[1:])
@@ -159,6 +169,8 @@ Usage: slife [options] [config-path]
                      a source checkout)
   --agent <id>       agent identity — a separate turns database and A2A mesh
                      name (default: slife)
+  --headless         run as a headless agent: the same agent with no terminal
+                     attached, taking its input from its peers.  Ctrl+C exits.
   --lang <en|zh>     interface language (default: the OS locale)
   -h, --help         show this message and exit
 """

@@ -43,21 +43,22 @@ def __getattr__(name: str):
 
 
 def main(config_path: str | None = None):
-    """Entry point for the Slife TUI application.
+    """Entry point for Slife — the TUI by default, the headless agent on request.
 
     Dev mode (detected via pyproject.toml): data files stay in CWD.
     Otherwise: everything lives in ``~/.slife/``.  An explicit config path
     (positional CLI arg or the *config_path* parameter) is honored — its
     parent directory becomes the data dir.  ``--lang en|zh`` overrides the
     TUI language; without it the OS locale is detected at import.
+    ``--headless`` runs the same agent with no terminal attached (see
+    :mod:`slife.headless`); every host shares the boot
+    (:func:`slife.bootstrap.prepare_session`) and this function's teardown.
 
     Everything is imported INSIDE the function — the package ``__init__``
-    is import-light, so invoking the app is the only act that pays for
-    Textual/agent/bootstrap (F1).
+    is import-light, so invoking an app is the only act that pays for
+    Textual/agent/bootstrap (F1) — and the host branch imports its own
+    module, so ``--headless`` never imports Textual at all.
     """
-    import os as _os
-    from pathlib import Path as _Path
-
     from slife.config import CLI_USAGE, parse_cli_help
 
     # The exit happens BEFORE the heavy imports below, so `--help` answers
@@ -68,16 +69,15 @@ def main(config_path: str | None = None):
 
     from slife.bootstrap import (
         clear_session_marker,
-        note_session_start,
-        previous_session_killed,
+        prepare_session,
         restore_windows_console,
-        seed_skills,
-        setup_logging,
     )
-    from slife.config import parse_cli_agent, parse_cli_config_path, parse_cli_lang
-    from slife.logfmt import init_session_id
-    from slife import Config, SlifeApp  # lazy via __getattr__ — patchable by tests
-    from slife.paths import get_config_path, get_data_dir, get_skills_dir
+    from slife.config import (
+        parse_cli_agent,
+        parse_cli_config_path,
+        parse_cli_headless,
+        parse_cli_lang,
+    )
     from slife.ui.i18n import set_language
 
     agent_name = parse_cli_agent(sys.argv)
@@ -85,111 +85,39 @@ def main(config_path: str | None = None):
     lang = parse_cli_lang(sys.argv)
     if lang is not None:
         set_language(lang)
+    headless = parse_cli_headless(sys.argv)
 
-    # Resolve data dir BEFORE logging setup so logs go to the right place.
-    # Only two modes:
-    #   1. Dev (pyproject.toml in CWD): everything in CWD
-    #   2. Production: everything in ~/.slife/
-    # Unless the user passes an explicit config path — then use its parent.
-    if explicit:
-        _cp = _Path(explicit).expanduser()
-        if not _cp.is_absolute():
-            _cp = _Path.cwd() / _cp
-        data_dir = str(_cp.parent.resolve())
-    else:
-        data_dir = str(get_data_dir())
-        _cp = get_config_path()  # resolve to ~/.slife/slife.yaml or CWD/slife.yaml
-    _os.environ["SLIFE_DATA_DIR"] = data_dir
-    _os.environ["SLIFE_CONFIG_DIR"] = data_dir
-    # Log directory — inherited by plugin children so their per-session logs
-    # land next to the main session log; the local-embed daemon reads it
-    # instead of its standalone default.
-    _os.environ["SLIFE_LOG_DIR"] = str(_Path(data_dir) / "logs")
-
-    # Seed skills from the installed package to the data directory on
-    # first run, so users can edit and add their own skills.
-    seed_skills(get_skills_dir())
-
-    # Generate session ID — shared with MCP subprocess via env var
-    sid = init_session_id()
-    _os.environ["SLIFE_SESSION_ID"] = sid
-    _os.environ["SLIFE_AGENT_NAME"] = agent_name
-
-    # Force UTF-8 encoding for Python subprocesses on Windows.
-    # Without this, Python defaults to the system code page (e.g. GBK / cp936)
-    # and crashes when printing characters outside that encoding to stdout.
-    if sys.platform == "win32":
-        _os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-
-    log_path, _ = setup_logging(agent_name=agent_name)
-
-    # A session that was killed rather than stopped left its marker behind and
-    # its teardown unrun (bootstrap.previous_session_killed) — say so now, to
-    # the log and to the user.  It is the one fact that separates "the TUI was
-    # killed from outside" from every theory one can invent about a log that
-    # just stops mid-sentence.
-    killed = previous_session_killed(log_path.parent)
-    if killed:
-        logger.warning("previous_session_killed %s", killed)
-        print(f"Warning: {killed}", file=sys.stderr)
-    note_session_start(log_path, sid)
-
-    logger.debug("log_path=%s", log_path)
-    logger.debug("data_dir=%s", data_dir)
-    from slife.logfmt import elapsed as _elapsed
-
-    logger.debug("config loading…")
-    with _elapsed("config_load", logger, level=logging.DEBUG, path=str(_cp)):
-        try:
-            config = Config.from_yaml(str(_cp), agent_name=agent_name)
-        except Exception as exc:
-            # Terminal belongs to the user — one actionable line, never a
-            # traceback.  Full exception details stay in the session log.
-            logger.exception("config_load_failed path=%s", _cp)
-            print(f"Config error: {exc}", file=sys.stderr)
-            print(f"Config: {_cp}  Log: {log_path}", file=sys.stderr)
-            raise SystemExit(1)
-    from slife.health import record_host_facts
-    # The host facts every process reports — config provenance + counts, the
-    # active model, and the external toolchain (probed on a daemon thread).
-    # ONE recorder, shared with the subagent worker's startup, so the two
-    # reports list the same components.
-    record_host_facts(config, source=str(_cp))
-
-    # Log env vars from config (already applied to os.environ by Config.from_yaml).
-    # Every value goes through the shared sanitizer first — this catches
-    # connection strings (DATABASE_URL=postgres://user:pass@host/db) whose
-    # password is embedded in the value, and known key shapes.  The key-name
-    # heuristic is a fallback for credential-named keys whose value matched no
-    # known shape (short secret, arbitrary token).
-    if config.env:
-        from slife.logfmt import mask_value, sanitize_secrets
-        for key, value in config.env.items():
-            s = sanitize_secrets(str(value))
-            if s == str(value) and any(
-                hint in key.upper() for hint in ("KEY", "SECRET", "TOKEN", "PASSWORD")
-            ):
-                s = mask_value(str(value))
-            logger.debug("env %s=%s", key, s)
-
-    active = config.active_model
-    logger.debug("model=%s provider=%s", active.ref, active.display_name)
-    logger.debug("thinking=%s", "on" if active.thinking_enabled else "off")
-    logger.debug("tools=%d", len(config.tools))
+    # Everything a process does before it has an agent — shared with the
+    # headless host, so the two can never drift about where the data dir is,
+    # which log they write, or whether the marker was written.
+    config, log_path = prepare_session(explicit, agent_name)
 
     # Logs never reach the terminal: setup_logging() runs the console stderr
     # handler at CRITICAL+1 (a no-op), so all diagnostics go to the per-session
-    # log file at true level, and the terminal belongs entirely to the TUI.
-    # User-visible status is surfaced there by the business layer.
+    # log file at true level, and the terminal belongs entirely to the host's
+    # user surface — the TUI, or nothing at all when headless.  User-visible
+    # status is surfaced there by the business layer.
 
-    logger.debug("tui starting…")
-
-    app = SlifeApp(config)
+    app = None
+    service = None
+    fatal: str | None = None
     try:
-        app.run()
+        if headless:
+            logger.debug("headless starting…")
+            from slife.headless import run_headless  # lazy — keeps this import-light
+
+            service, fatal = run_headless(config)
+        else:
+            from slife import SlifeApp  # lazy via __getattr__ — patchable by tests
+
+            logger.debug("tui starting…")
+            app = SlifeApp(config)
+            service = app.service
+            app.run()
     except KeyboardInterrupt:
-        # Ctrl+C pressed during startup or outside the TUI — exit quietly.
-        # The TUI's own ctrl+c binding handles the normal case via action_quit.
+        # Ctrl+C pressed during startup or outside the host — exit quietly.
+        # The TUI's own ctrl+c binding handles the normal case via action_quit;
+        # the headless host turns it into its own shutdown.
         pass
     finally:
         # Mask SIGINT FIRST — before any teardown work.  A Ctrl+C that
@@ -219,25 +147,31 @@ def main(config_path: str | None = None):
         # longer evidence of anything.  (Killed first?  It stays, and the next
         # start reports it: bootstrap.previous_session_killed.)
         clear_session_marker(log_path.parent)
-        # Ensure child processes are cleaned up even on crash.
-        app.service.kill_child_processes()
+        # Ensure child processes are cleaned up even on crash.  The host's own
+        # graceful stop already ran; this is the second layer, for the paths
+        # that never reached it.
+        if service is not None:
+            service.kill_child_processes()
 
         # A fatal startup failure (broken memory DB, failed required plugin)
-        # must never be silent: the TUI has now torn down its alternate
+        # must never be silent.  The TUI has now torn down its alternate
         # screen, so the message stored by _fatal_exit can finally reach the
-        # terminal, and the shell sees a non-zero exit code.  Only a real
-        # string counts (tests use MagicMock for SlifeApp, whose auto-created
-        # attributes would otherwise look truthy here).
-        fatal = getattr(app, "_fatal_message", None)
+        # terminal, and the shell sees a non-zero exit code; the headless host
+        # has no screen to tear down and returns its message directly.  Only a
+        # real string counts (tests use MagicMock for SlifeApp, whose
+        # auto-created attributes would otherwise look truthy here).
+        if app is not None:
+            fatal = getattr(app, "_fatal_message", None)
         if isinstance(fatal, str) and fatal:
             print(f"\n{fatal}", file=sys.stderr)
             raise SystemExit(1)
 
     # Session ended — log summary
-    usage = app.service.session_usage
-    logger.info(
-        "session_end tok_p=%s tok_c=%s tok_t=%s",
-        usage.prompt_tokens,
-        usage.completion_tokens,
-        usage.total_tokens,
-    )
+    if service is not None:
+        usage = service.session_usage
+        logger.info(
+            "session_end tok_p=%s tok_c=%s tok_t=%s",
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.total_tokens,
+        )

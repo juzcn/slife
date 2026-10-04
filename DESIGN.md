@@ -26,7 +26,7 @@
 - [Prologue](#prologue--the-view-behind-the-design) — the author's view: what a model and an agent
   are, the limits, the three trade-offs
 1. [Orientation](#1-orientation) — what Slife is, the principles, the vocabulary
-2. [The agent](#2-the-agent) — the loop, context, recall, prompts, timing, roles
+2. [The agent](#2-the-agent) — the loop, context, recall, prompts, timing, roles, hosts
 3. [LLM backends](#3-llm-backends) — the router, the unified stream, the failure contract
 4. [The tool system](#4-the-tool-system) — the ABC, the catalog, load/inject/evict, discovery
 5. [Plugins](#5-plugins) — the spec, the lifecycle, the child contract, the gateway, jobs
@@ -817,6 +817,61 @@ is exactly what the table declares.
 The config a worker inherits is lossless by construction for the same reason: its serialization and
 deserialization are derived from one field list rather than hand-written, so a field cannot be
 dropped silently.
+
+### 2.8 The host — a screen, or nothing
+
+Both hosts run the **identical** service: one `AgentService(config, role=Role.MAIN)`, one capability
+table, one inbox, one turn log. A *host* is what surrounds that service and what the operator sees;
+there are two, and the difference is declared by which of the service's optional surfaces the host
+binds.
+
+The **TUI** (§9.1) is the default. It spawns the plugins, restores the session, draws every turn, and
+answers an approval prompt through a widget.
+
+The **headless agent** (`slife --headless`, `slife/headless.py`) is the same agent with no terminal
+attached. The keyboard is gone; traffic arrives through the ordinary inbox channels — an A2A peer, a
+worker's completion, a heartbeat, a schedule — and the process runs until Ctrl+C.
+
+What makes it work is what it does **not** install. No handler factory goes into the inbox, so every
+turn takes the loop's handler-less path (§4.8): silent, and auto-approving, because a call asking to
+be confirmed has nobody to ask. The TUI's callbacks — `on_activity`, `on_autonomous`, `on_schedule`,
+`on_timer`, `on_heartbeat`, `on_tunnel_down` — are *surfaces*, and this host has nothing to surface
+them on, so they are not registered. One callback is not a surface and is: `on_memory_broken`,
+because the inbox is frozen by the time it fires, and a headless process that ignored it would sit
+there alive and deaf while looking healthy to whatever started it. It exits, with the reason on
+stderr.
+
+Three consequences are deliberate rather than incidental:
+
+- **The prompt states the fact.** `slife.j2` renders `_approve` as *no operator is attached to this
+  process* whenever there is none — headless, and also a worker, which auto-approves for exactly the
+  same reason. Stating it is the whole mechanism: whether a tool needs consent is a policy, and this
+  process has none to add to the model's judgment (§4.8). The same fact decides the platform type,
+  because `isatty` cannot answer it — a `--headless` agent launched *from* a terminal still has a
+  tty.
+- **The mesh is not a startup gate.** A broker that is not up, or a name another process holds, is
+  warned about and left to the plugin watchdog; heartbeat and schedules carry on. The name
+  arbitration stays where it is (§8) — the mesh refuses a taken name, and that refusal *is* the
+  arbitration, so no second lock is invented beside it.
+- **Silence is the design, not a missing feature.** The terminal is not a surface here: the session
+  log and the turns DB are the record, and what the agent says to the world leaves over the mesh.
+  Startup failures still reach stderr, because a process that runs deaf in silence is a bug report
+  nobody can read. Silence takes work, though, and it is not the root logger's `CRITICAL+1` console
+  band that delivers it: a library that installs **its own** handler escapes that band entirely, and
+  two do — FastMCP hangs a rich handler on its own loggers at import, and uvicorn's default config
+  gives every one of its loggers a stream handler. The TUI never noticed either, because its
+  alternate screen swallowed them. A headless agent has no screen, so both were its entire terminal
+  output until the level was raised where FastMCP enters the process (`slife/server_utils.py`) and
+  `log_config=None` was passed to the host server, exactly as the plugin children already did
+  (§5.3).
+
+Two operations are neither UI nor agent, and both hosts call the same one rather than keeping a copy:
+`restore_context` (the exit-time context rebuilt — a restart resumes, which matters most when a
+peer's task spans many turns) and `shutdown_session` (the bounded teardown order, so no plugin child
+outlives the session). They live in `slife/agent/session.py`; the headless host is a *host*, not a
+fourth thing the loop knows about, so the role table, the capability grants and the worker parity
+test are untouched. Ctrl+C is the lifecycle — no supervisor, no service wrapper, no
+restart-on-crash.
 
 ---
 
@@ -2366,7 +2421,8 @@ tools do not report the default database for every agent.
 
 ```
 slife/
-  agent/       # the loop, the service, the inbox, history, prompts, roles, backends, timing
+  agent/       # the loop, the service, the inbox, history, prompts, roles, backends, timing,
+               # session (restore + teardown, shared by both hosts — §2.8)
   tools/       # the Tool ABC, the registry, the catalog, discovery, the builtin tools
   plugins/     # the plugin children and the spec table — the one source of truth (§5.1)
   mcp/         # host-process MCP: slife-as-plugin, the MCP→Tool adapter, era negotiation
@@ -2374,7 +2430,8 @@ slife/
                # and inbound-task stores — plus the MQTT SDK driver (mesh, broker)
   subagent/    # the worker process: its spawn and pipe protocol, its identity
   ui/          # the Textual TUI
-  *.py         # platform · config · paths · health · logfmt · timeouts · threads · timeutil · …
+  *.py         # platform · config · paths · health · logfmt · timeouts · threads · timeutil ·
+               # headless (the no-terminal host, §2.8) · …
 
 credstore/     # standalone package — cross-platform credential store
 cc-switch/     # standalone package — generates the Claude Code settings file

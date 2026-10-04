@@ -1,334 +1,57 @@
-"""Session restore — rebuild chat history from persistent memory.
+"""Session restore — put a previous session back on the screen.
 
-Extracted from ``slife.ui.app`` to keep the TUI application focused on
-its primary responsibility: UI event handling and layout.
+The rebuild itself lives in :mod:`slife.agent.session`: the headless host
+restores the same history from the same exit-time context and has no widgets
+to put it in, so the part that is neither UI nor agent moved out of here.
+What remains is the rendering — turning the plan's ops into mounted widgets,
+in one batch, with the scroll handled once at the end.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import TYPE_CHECKING
 
-from slife.a2a.identity import Channel
-from slife.agent.message_history import messages_from_turns
-from slife.agent.schedules import is_autonomous_trigger, is_schedule_trigger
-from slife.agent.timer import is_timer_trigger
-from slife.agent.llm_client import TokenUsage
+from slife.agent.session import restore_context
 from slife.ui.chat import ChatView
 from slife.ui.i18n import t
 from slife.ui.tool_display import ToolCallWidget
 
-if TYPE_CHECKING:
-    from slife.agent.message_history import MessageHistory
-    from slife.ui.app import SlifeApp
-
 logger = logging.getLogger(__name__)
-
-
-# ── Turn header (restore-time annotation) ────────────────────────────
-#
-# Every restored user message gets a compact `[INFO: {"turn_id": N, …}]`
-# footnote, concatenated into the message text — the LLM needs to tell old
-# turns apart: which turn (rowid), when it started, when it finished.  Without
-# it the whole restored history reads as "just happened".  The builder
-# lives in ``history.turn_header`` so the save path annotates
-# completed live turns with the same format.  The current in-flight turn
-# gets nothing (it is the one that IS now), and the human reads the
-# footnote's payload alone in the TUI — the ``[INFO: …]`` envelope is
-# machine-facing and unwrapped by ``UserMessage`` at render time.
-# Heartbeat turns are excluded: their user message is a synthetic
-# `[Heartbeat]` trigger, not a real query.
-
-
-# ── Prefix mapping ────────────────────────────────────────────────────
-
-
-def restore_prefix(channel: "Channel") -> str | None:
-    """Consistent prefix mapping for restored turns.
-
-    Delegates entirely to the channel type's display prefix — the single
-    implementation live and restored bubbles share (the subagent branch is
-    i18n-aware there, so the two can never diverge by language):
-      - human     → "You> "
-      - wechat    → "Wechat> "
-      - subagent  → "Subagent(<name>)> " (local worker completion, routed
-        into the human history — not an A2A peer)
-      - a2a       → "A2A(<peer name>)"
-      - system    → None (filtered from the chat view)
-    """
-    return channel.display_prefix()
-
-
-# ── Safe arg parse ────────────────────────────────────────────────────
-
-
-def _safe_parse_args(raw: str) -> dict:
-    """Parse a tool-call arguments JSON string, falling back gracefully."""
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return {"_raw": raw}
-
-
-def tool_result_is_error(msg: dict) -> bool:
-    """Error state of a restored ``tool`` message.
-
-    The loop persists its ``is_error`` verdict on every tool result —
-    read it directly, never re-derive from content.
-    """
-    return bool(msg.get("is_error", False))
 
 
 # ── Main restore orchestrator ─────────────────────────────────────────
 
 
 async def restore_session(
-    app: "SlifeApp",
+    app,
     turns: list[dict],
-    history: "MessageHistory",
+    history,
     assistant_prefix: str,
 ) -> None:
-    """Restore a previous session from turn-based memory.
+    """Rebuild the chat view from *turns* (the resolved exit-time context).
 
-    *turns* is the **exit-time context**, already resolved: the caller read it
-    with ``get_exit_context_turns``, which returns the turns named by the
-    persisted live-context list, in that list's order, with no ceiling
-    re-slicing — the list already encodes the trimmed state.  Restore replays
-    it verbatim so the agent picks up exactly where it left off; older turns
-    stay in the memory DB and can be retrieved via ``turn_search`` if needed.
-
-    This function is self-contained — it rebuilds the history message list and
-    reconstructs the chat UI from *turns*.
+    *turns* is the **exit-time context**, already resolved by
+    ``get_exit_context_turns`` — the turns named by the persisted
+    live-context list, in that list's order.  :func:`restore_context` replays
+    it into *history* and hands back the rendering plan; this function mounts
+    that plan.
     """
     if not turns:
         return
 
-    # ── Phase 1: Reconstruct message list from selected turns ─────────
     try:
-        sys_msg = (
-            history.messages[0]
-            if history.messages
-            and history.messages[0].get("role") == "system"
-            else None
-        )
-
-        # One turn→messages builder, shared with the per-turn rebuild, so a
-        # restored turn and a rebuilt one render identically.
-        all_messages = messages_from_turns(turns, system_message=sys_msg)
-
-        # Repair orphaned tool_calls (persisted by a pre-ensure session)
-        # BEFORE building the tool-result lookup and UI ops — otherwise the
-        # restored UI shows "done + empty result" while the repaired LLM
-        # context carries "(Tool execution interrupted)".
-        history.messages = all_messages
-        history._ensure_turn_consistent()
-
-        # Build tool-result lookup
-        tool_results: dict[str, str] = {}
-        tool_errors: dict[str, bool] = {}
-        for msg in all_messages:
-            if msg.get("role") == "tool":
-                tcid = msg.get("tool_call_id", "")
-                if tcid:
-                    content = msg.get("content", "") or ""
-                    tool_results[tcid] = content
-                    tool_errors[tcid] = tool_result_is_error(msg)
-
-        # Build UI ops
-        ui_ops: list[dict] = []
-        assistant_indices = [
-            i for i, m in enumerate(all_messages)
-            if m.get("role") == "assistant"
-            and not (
-                m.get("content") in (None, "")
-                and not m.get("thinking")
-                and (m.get("tool_calls") or [])
-                and all(
-                    tc.get("function", {}).get("name", "").startswith("_")
-                    for tc in (m.get("tool_calls") or [])
-                )
-            )
-        ]
-        last_assistant_idx = assistant_indices[-1] if assistant_indices else -1
-
-        _channel_by_row: dict[int, "Channel"] = {}
-        for i, turn in enumerate(turns):
-            _channel_by_row[i] = Channel.from_db(
-                turn.get("channel", ""), turn.get("channel_data", "{}"),
-            )
-
-        turn_idx = -1
-        # Per-turn synthetic-trigger flags, set on the user message and read
-        # on the assistant messages that follow it.  Initialized here so the
-        # assistant branch is provably bound even if an assistant message
-        # somehow appears before any user message (defaults: treat as real).
-        is_synthetic = False
-        is_schedule = False
-        is_timer = False
-        cur_created = ""
-        cur_completed = ""
-        for idx, msg in enumerate(all_messages):
-            role = msg.get("role", "")
-            if role == "system":
-                continue
-            elif role == "user":
-                turn_idx += 1
-                # Per-turn timestamps: created_at = user input time (shown
-                # on the user message), completed_at = assistant completion
-                # (shown on every assistant message of this turn).
-                if turn_idx < len(turns):
-                    cur_created = turns[turn_idx].get("created_at", "")
-                    cur_completed = (
-                        turns[turn_idx].get("completed_at") or cur_created
-                    )
-                else:
-                    cur_created = ""
-                    cur_completed = ""
-                content = msg.get("content", "") or ""
-                raw = (
-                    "".join(
-                        p.get("text", "") for p in content if p.get("type") == "text"
-                    )
-                    if isinstance(content, list)
-                    else content
-                )
-                # Synthetic-trigger turns (heartbeat / schedule): the trigger
-                # is a marked system message, not a real user message — filter
-                # the whole turn (the reply renders as ⚡ autonomous or
-                # 📅 scheduled below, or not at all if quiet).
-                is_synthetic = is_autonomous_trigger(raw)
-                is_schedule = is_schedule_trigger(raw)
-                is_timer = is_timer_trigger(raw)
-                if is_synthetic:
-                    continue
-                ch = _channel_by_row.get(turn_idx)
-                if ch is None:
-                    # No persisted channel row (shouldn't happen — every
-                    # turn carries one) — degrade to a human message.
-                    ch = Channel.human()
-                prefix = restore_prefix(ch)
-                if prefix is None:
-                    # System channel — filtered from the chat view.
-                    continue
-                ui_ops.append({
-                    "type": "user",
-                    "content": raw,
-                    "prefix": prefix,
-                    "created_at": cur_created,
-                })
-            elif role == "assistant":
-                # "." uniformly means silence — never restore a bare-dot
-                # reply, from any turn source (heartbeat, autonomous a2a
-                # notification, or anything else).
-                if (msg.get("content") or "").strip() == ".":
-                    continue
-                # Nothing to show → skip.  Covers harness messages
-                # (_turn_prompt — LLM context only, never in the live
-                # TUI) AND genuinely empty messages.  An empty tool-iteration
-                # message with REAL tool calls stays: its ToolCallWidgets
-                # render the work even without a message body.
-                tcs = msg.get("tool_calls") or []
-                visible_calls = [
-                    tc for tc in tcs
-                    if not tc.get("function", {}).get("name", "").startswith("_")
-                ]
-                if (
-                    not (msg.get("content") or "")
-                    and not (msg.get("thinking") or "")
-                    and not visible_calls
-                ):
-                    continue
-                if is_synthetic:
-                    # Synthetic-trigger beat (heartbeat / schedule): show
-                    # real content as ⚡ autonomous or 📅 scheduled.  A bare "." is
-                    # already skipped by the general silence filter above;
-                    # here we only drop empty messages.
-                    content = msg.get("content") or ""
-                    if not content.strip():
-                        continue
-                    ui_ops.append({
-                        "type": "assistant",
-                        "thinking": "",
-                        "content": content,
-                        "tool_calls": [],
-                        "is_final": False,
-                        "name_prefix": (
-                            t("timer_prefix") if is_timer
-                            else t("schedule_prefix") if is_schedule
-                            else t("autonomous_prefix")
-                        ),
-                        "completed_at": cur_completed,
-                    })
-                    continue
-                is_final = (idx == last_assistant_idx)
-                thinking = msg.get("thinking") or ""
-                content = msg.get("content") or ""
-                tcs = msg.get("tool_calls") or []
-                ui_ops.append({
-                    "type": "assistant",
-                    "thinking": thinking,
-                    "content": content,
-                    "tool_calls": [
-                        {
-                            "id": tc.get("id", ""),
-                            "name": tc.get("function", {}).get("name", "?"),
-                            "arguments": _safe_parse_args(
-                                tc.get("function", {}).get("arguments", "{}")
-                            ),
-                        }
-                        for tc in tcs
-                    ],
-                    "is_final": is_final,
-                    "name_prefix": assistant_prefix,
-                    "completed_at": cur_completed,
-                })
-            elif role == "tool":
-                pass
-
-        # The very last assistant message in the restored history
-        # should mirror live-session behaviour: thinking expanded, reply
-        # visible.  Walk backwards through ui_ops and tag the last one.
-        for op in reversed(ui_ops):
-            if op.get("type") == "assistant":
-                op["is_final"] = True
-                break
-
+        plan = restore_context(app.service, turns, history, assistant_prefix)
     except Exception as e:
-        # LOGGED, not just shown.  The red line reaches the reader; this reaches
-        # whoever has to explain it.  Returning normally also means the caller's
-        # own handler (``app.py``) never sees the exception, so without this the
-        # only trace of a failed rebuild was a sentence in the transcript and a
-        # log that simply stopped — which is what made an earlier report of a
-        # dead transcript un-diagnosable.
-        logger.exception("session_restore_failed turns=%d", len(turns))
+        # The red line reaches the reader; ``restore_context`` already logged
+        # the traceback for whoever has to explain it.  Returning normally
+        # also means the caller's own handler never sees the exception, so
+        # without this the only trace of a failed rebuild was a sentence in
+        # the transcript and a log that simply stopped — which is what made an
+        # earlier report of a dead transcript un-diagnosable.
         app._show_system_message(t("restore_failed", err=e), color="#f85149")
         return
 
-    # ── Phase 2: Replace history messages ────────────────────────
-    # (messages were already assigned + repaired in Phase 1, before the
-    # tool-result lookup was built, so the UI and LLM context agree.)
-    history.messages = all_messages
-
-    # The restored context is a legitimate pre-exit state, not growth —
-    # mark it so the loop does NOT compact it to the floor on the very
-    # first replacement turn (the marker is consumed in AgentLoop.run).
-    if turns:
-        app.service.agent_loop._just_restored_history = id(history)
-
-    # Prime the context time range so _turn_prompt shows the LLM
-    # what time window its current context covers.  The start date is
-    # advanced by the agent loop after each trim.
-    if turns:
-        dates = [
-            t.get("created_at", "")[:19].replace("T", " ")
-            for t in turns if t.get("created_at")
-        ]
-        if dates:
-            app.service.agent_loop._context_time_start = dates[0]
-            app.service.agent_loop._context_turn_dates = dates[1:]  # reserve for trim
-
-    # ── Phase 3: Rebuild UI ───────────────────────────────────────────
+    # ── Rebuild the view from the plan ────────────────────────────────
     chat_view = app.query_one("#chat-view", ChatView)
 
     # Suppress per-widget auto-scroll while rebuilding: the whole history
@@ -338,7 +61,7 @@ async def restore_session(
     chat_view._autoscroll = False
 
     with app.batch_update():
-        for op in ui_ops:
+        for op in plan.ui_ops:
             if op["type"] == "user":
                 chat_view.add_user_message(
                     op["content"],
@@ -371,8 +94,8 @@ async def restore_session(
                     if tc.get("name", "").startswith("_"):
                         continue
                     tcid = tc["id"]
-                    result = tool_results.get(tcid, "")
-                    is_error = tool_errors.get(tcid, False)
+                    result = plan.tool_results.get(tcid, "")
+                    is_error = plan.tool_errors.get(tcid, False)
                     widget = ToolCallWidget(
                         tool_name=tc["name"],
                         tool_args=tc["arguments"],
@@ -394,25 +117,4 @@ async def restore_session(
     chat_view._at_tail = True
     chat_view.scroll_end(animate=False)
 
-    # Reset session token counter — session starts fresh
-    app.service.session_usage.total_tokens = 0
-
-    # Prime the turn prompt with the restored context size.  On the
-    # first round we have no real API usage yet, so `context_tokens_for` /
-    # the status bar fall back to `_last_usage`.  Use the **latest restored
-    # turn's persisted context_tokens** — the last call's prompt+completion,
-    # i.e. the exact context size at exit (what _turn_prompt would have
-    # reported).
-    #
-    # A missing/zero value (e.g. a cancelled turn) primes nothing: the report
-    # is then genuinely unknown, and `context_tokens_for` returns 0 for that.
-    # Substituting an estimate here would present a guess as the real exit-time
-    # occupancy — the one thing that function is written never to do.
-    last_turn = turns[-1] if turns else {}
-    prompt = last_turn.get("context_tokens") or 0
-    if prompt > 0:
-        app.service.agent_loop._last_usage = TokenUsage(
-            prompt_tokens=prompt,
-            total_tokens=prompt,
-        )
     app._update_status()
