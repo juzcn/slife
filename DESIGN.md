@@ -1780,6 +1780,15 @@ not a trade worth making. Renaming `diary` to `turn` therefore ships as a one-of
 It is not a precedent for a migration layer — it exists because a rename preserves data by
 construction, and it is the only shape of change here that does.
 
+A **view** sits outside this rule rather than beside the rename as another exception to it: it holds
+no rows, so there is nothing to carry across and nothing to lose. When a view's stored definition
+differs from the schema file's, it is dropped and recreated at start (`_drop_view_if_redefined`).
+That is not a second migration path — it is the same shape as the vector-table reconcile in §7.3,
+derived and rebuilt from the schema file — and the alternative is not caution but a bug: the view
+*is* the query, so a database created before a correction keeps answering with the old one for ever.
+`CREATE VIEW IF NOT EXISTS` is what makes this necessary rather than automatic; it never touches an
+existing view, so without the comparison a corrected query would reach fresh databases only.
+
 ### 7.2 Search
 
 Three indexes back the search modes: a full-text index, a vector KNN index, and a B-tree on the
