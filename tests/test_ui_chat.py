@@ -620,6 +620,47 @@ class TestScrollFollowing:
                 )
 
     @pytest.mark.asyncio
+    async def test_a_shrinking_viewport_does_not_re_arm_following(self):
+        """A move the reader did not ask for is not the reader asking.
+
+        Textual re-clamps ``scroll_y`` when a size change leaves it past the
+        end.  Here the prompt grows a line while the reader is in history, so
+        the transcript's viewport loses four rows and the clamp lands them on
+        the new end.  That assignment arrives through ``watch_scroll_y``
+        exactly like a keypress does, and reading it as intent re-armed
+        following — the next mounted message then dragged them to the bottom.
+        It read as a race because it needed the correction to land on the end
+        with the reader near it.
+        """
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            view = app.query_one("#chat-view", ChatView)
+            await _filled(pilot, view)
+            view.focus()
+            for _ in range(3):
+                await pilot.press("up")
+            assert await _settled(pilot, lambda: not view._at_tail)
+
+            # A multi-line draft: the prompt takes the rows from the
+            # transcript, whose maximum scroll drops past the reader.
+            prompt = app.query_one("#prompt", HistoryInput)
+            prompt.styles.height = 8
+            for _ in range(6):
+                await pilot.pause()
+            assert view._at_tail is False, (
+                "a viewport correction re-armed following under the reader"
+            )
+
+            # New content arrives.  With following wrongly re-armed this
+            # scrolls them to the end — the "my scroll was undone" they see.
+            view.add_user_message("[new] the reply keeps growing")
+            for _ in range(4):
+                await pilot.pause()
+            assert view.scroll_offset.y < view.max_scroll_y, (
+                "the follow dragged a reader who never asked for the tail"
+            )
+
+    @pytest.mark.asyncio
     async def test_the_wheel_over_the_prompt_scrolls_the_transcript(self):
         """A tick aimed at the bottom of the screen still moves the reading.
 

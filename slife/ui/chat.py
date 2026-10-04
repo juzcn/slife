@@ -126,7 +126,10 @@ class ChatView(VerticalScroll):
 
     New content follows the tail only while the reader is *at* the tail
     (:meth:`follow_tail`), so a streaming turn cannot pull a page of history
-    out from under them.
+    out from under them.  That state is decided where a scroll is *asked for*
+    (:meth:`_scroll_to`) and nowhere else — the offset itself is written by
+    Textual's own layout corrections too, and treating those as intent is what
+    kept re-arming the follow under a reader in history.
     """
 
     can_focus = True
@@ -139,34 +142,56 @@ class ChatView(VerticalScroll):
         # normal live behaviour) is what made the restore jitter.
         self._autoscroll: bool = True
         # Whether the *reader* is at the tail.  Following is sticky: it holds
-        # while the view sits at the end and stops the moment they move off
-        # it, so a streaming turn cannot yank a page of history out from under
-        # them — and it resumes when they come back down to the tail.
+        # while they ask for the end and stops the moment they ask for
+        # anything else, so a streaming turn cannot yank a page of history out
+        # from under them — and it resumes when they come back down.
         self._at_tail: bool = True
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
-        """Track whether the view sits at the tail — the reader's position.
-
-        Watched rather than computed at follow time because the offset is what
-        the reader controls: content growth leaves the offset where it was
-        (only ``follow_tail`` moves it), so this holds the last position they
-        asked for rather than the one the new content implies.
+        """Repaint at the new offset — and deliberately nothing else.
 
         This overrides ``Widget.watch_scroll_y``, which is what repaints the
-        widget at the new offset — dropping the delegation left the reader
+        widget at the new offset: dropping the delegation left the reader
         scrolling an image that never moved.
 
-        The tail is the exact end, not "within a line of it".  One line is
-        what the arrow keys move, so counting a step of one as still-at-the-
-        tail handed the view straight back to the next streamed token: the
-        reader pressed ↑, landed a single line above the end, following
-        re-armed, and the token pulled them down again — during a turn those
-        keys moved nothing at all, however many times they were pressed.
-        Coming back to the end lands exactly on ``max_scroll_y``, which is
-        what re-arms following.
+        Following is **not** decided here.  The offset is not the reader's
+        alone: Textual re-clamps ``scroll_y`` whenever a size change leaves it
+        past the end (``Widget._scroll_update``), and that assignment arrives
+        through this watcher exactly like a keypress does.  Reading it as
+        intent re-armed following under a reader who was in history — the
+        container shrinking by a few rows (the prompt box growing a line, a
+        tool row collapsing) was enough, and the next streamed token then
+        pulled them to the bottom.  It looked like a race because it needed
+        the correction to land on the new end while they were near it.
+
+        The decision is made where the request is made — :meth:`_scroll_to`.
         """
         super().watch_scroll_y(old_value, new_value)
-        self._at_tail = new_value >= self.max_scroll_y
+
+    def _scroll_to(self, x=None, y=None, **kwargs) -> bool:
+        """Following is decided here, from the REQUEST — the one place.
+
+        Every scroll Textual can make funnels through this method: the arrow
+        keys, PageUp/PageDown, Home/End, the wheel, the scrollbar's
+        ``ScrollTo``, ``scroll_relative``, and our own ``scroll_end``.  So one
+        comparison covers every mover — including one added later, which is
+        what the per-method overrides this replaces could never promise (each
+        new way to move the view had to remember to state the intent, and the
+        one that forgot re-armed following under the reader).
+
+        ``scroll_target_y`` is the clamped, rounded request — the value the
+        offset will land on — so aiming at or past the end means "follow from
+        here" and anything else means the reader is reading history.  A move
+        nothing requested never reaches this method, which is the point.
+
+        *x* is the horizontal half of the framework signature: this widget
+        scrolls one axis, and a request without a *y* says nothing about
+        following.
+        """
+        result = super()._scroll_to(x, y, **kwargs)
+        if y is not None:
+            self._at_tail = self.scroll_target_y >= self.max_scroll_y
+        return result
 
     def follow_tail(self) -> None:
         """Follow new content unless following is off or the reader has gone
@@ -179,35 +204,6 @@ class ChatView(VerticalScroll):
         if self._autoscroll and self._at_tail:
             self.scroll_end(animate=False)
 
-    # ── Leaving the tail is recorded when the reader ASKS ────────────────
-    #
-    # ``_at_tail`` is otherwise maintained by ``watch_scroll_y``, which only
-    # fires once a scroll has LANDED — and every scroll here lands a refresh
-    # later.  In that window a streaming token reaches ``follow_tail`` while
-    # ``_at_tail`` still reads True, so it queues its own ``scroll_end``
-    # behind the reader's scroll and runs after them, putting them back where
-    # they started.  Repeated per token, that makes the keys and the wheel
-    # look dead for the whole of a turn — and only sometimes, because it
-    # needs a token to arrive inside that window.
-    #
-    # This is the mirror of ``jump_to_tail``'s own reasoning ("stated here
-    # rather than left to the watcher, because ``scroll_end`` lands a refresh
-    # later"): the intent is known at request time, so it is recorded there.
-    # Only the away-from-the-tail moves are overridden — scrolling back down
-    # arms following the ordinary way, when it arrives.
-
-    def scroll_up(self, *args, **kwargs) -> None:
-        self._at_tail = False
-        super().scroll_up(*args, **kwargs)
-
-    def scroll_page_up(self, *args, **kwargs) -> None:
-        self._at_tail = False
-        super().scroll_page_up(*args, **kwargs)
-
-    def scroll_home(self, *args, **kwargs) -> None:
-        self._at_tail = False
-        super().scroll_home(*args, **kwargs)
-
     def jump_to_tail(self) -> None:
         """Return to the tail and follow from there — the reader's own send.
 
@@ -217,9 +213,11 @@ class ChatView(VerticalScroll):
         it: the view goes to the end — where the message they just sent is —
         and following resumes from there.
 
-        The re-arm is stated here rather than left to the watcher, because
-        ``scroll_end`` lands a refresh later: a token streamed in between
-        would find following still off.
+        The re-arm is stated here *as well as* by the request
+        (:meth:`_scroll_to`), and that is not redundant: ``scroll_end`` makes
+        its request a refresh later, and a token streamed inside that window
+        would find following still off.  The intent is known now, so it is
+        recorded now.
         """
         self._at_tail = True
         self.scroll_end(animate=False)
