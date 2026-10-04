@@ -50,6 +50,12 @@ credstore set-password    # creates ~/.credstore/credentials.crypt (or change th
 
 Path overridable via the `CREDSTORE_FILE` env var.
 
+Changing the master key writes a **new** file and moves the old one to
+`credentials.crypt.bak` (alongside it, same `CREDSTORE_FILE` override). The
+backup is kept deliberately: it is the only copy of your credentials if
+re-encrypting under the new key fails part-way, and it still opens with the
+old password.
+
 ### Commands
 
 | Command | Master key | Description |

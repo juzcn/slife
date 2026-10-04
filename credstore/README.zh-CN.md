@@ -49,6 +49,10 @@ credstore set-password    # 创建 ~/.credstore/credentials.crypt（或修改主
 
 路径可通过 `CREDSTORE_FILE` 环境变量覆盖。
 
+修改主密码会写入一个**新**文件，并把旧文件移为 `credentials.crypt.bak`（同目录，同样受
+`CREDSTORE_FILE` 覆盖）。保留备份是刻意的：若用新密码重新加密中途失败，它是你唯一的凭据副本，
+且仍可用旧密码打开。
+
 ### 命令
 
 | 命令 | 主密码 | 说明 |
