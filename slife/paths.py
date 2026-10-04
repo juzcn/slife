@@ -80,15 +80,21 @@ def get_tools_config_path() -> Path:
 
 
 def get_tools_db_path() -> Path:
-    """Path to the unified tool-catalog database (``tools.db``).
+    """Path to the unified tool-catalog database (``<agent>.tools.db``).
 
     ``SLIFE_TOOLS_DB`` wins when set (a test/dev override — mirrors
-    ``SLIFE_MEMDB_DB``), else ``<data_dir>/tools.db``.
+    ``SLIFE_MEMDB_DB``), else the per-agent catalog under the data dir.
+    Per-agent for the same reason the turns db is: the catalog's ownership
+    model names ONE writer process (``caps.catalog_owner`` and the drainer),
+    and its load/evict budget is one number per database — so two agents on
+    one file are two owners racing on upsert-then-purge, sharing one budget,
+    and evicting each other's loaded tools.
     """
     env_path = os.environ.get("SLIFE_TOOLS_DB")
     if env_path:
         return Path(env_path)
-    return get_data_dir() / "tools.db"
+    agent = os.environ.get("SLIFE_AGENT_NAME", "slife")
+    return get_data_dir() / f"{agent}.tools.db"
 
 
 def get_logs_dir() -> Path:

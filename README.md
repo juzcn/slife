@@ -452,7 +452,7 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 
 | Flag | Description |
 |------|-------------|
-| `--agent <id>` | Agent identity — separate turns database + A2A mesh name (default: `slife`). The mesh name must be unique on the broker: a second instance with the same name refuses to join instead of fighting for it |
+| `--agent <id>` | Agent identity — separate turns database, memory files and tool catalog, plus the A2A mesh name (default: `slife`). The mesh name must be unique on the broker: a second instance with the same name refuses to join instead of fighting for it |
 | `--headless` | Run as a headless agent — the same agent with no terminal attached (see below) |
 | `--lang <en\|zh>` | TUI language — force English / Chinese (default: auto-detect from OS locale) |
 | `-h`, `--help` | Print the usage and exit |
@@ -473,11 +473,39 @@ slife --headless --agent jack myconf.yaml     # a specific config file
 * **A restart resumes.** The exit-time context is restored on start, exactly as the TUI restores it, so a peer's task that spans several turns survives a restart.
 * One name is one agent: a headless `jack` and a TUI `jack` cannot hold the same mesh identity at the same time. Give them different `--agent` names.
 
+### Two agents on one machine
+
+Isolation follows the **data directory**, not `--agent`. Two instances pointed at the same data dir share everything in it; two pointed at different data dirs share nothing.
+
+**Same data dir.** `--agent` splits the per-agent pieces; everything else is common ground.
+
+| Per agent | Shared |
+|---|---|
+| turns database `<agent>.db`, memory files `<agent>.files/`, tool catalog `<agent>.tools.db`, A2A inbound ledger `a2a_inbound_<agent>.yaml`, WeChat session `wechat_<agent>.yaml`, log and session-marker filenames | `slife.yaml`, `tools.yaml`, `sharefile.yaml`, `local_embed.yaml`, `skills/`, `jobs/`, the `logs/` directory |
+
+Sharing the configs means sharing *state*, and that is this layout's price:
+
+* **Both agents use the same models and the same tools.** `active_model`, the `models` list and every tool section live in the shared configs, so there is no way to give one agent a model or a tool set the other does not have.
+* **A runtime change is live in one instance and pending in the other.** Adding a server with `mcp_set`, switching a model, editing a section — it takes effect at once where it was made, and reaches the other instance at its next start (its MCP gateway reads `tools.yaml` once, when it spawns). Until then the two disagree about which tools exist: you may be told about a tool the other agent cannot call yet. Nothing breaks, and a restart settles it.
+* **Config writes can neither be lost nor interleaved.** Every read-modify-write of a config file is serialized across processes by a lock file, so concurrent edits queue instead of clobbering each other.
+
+**Different data dirs.** Full isolation — separate configs, catalogs and indexes, skills, jobs, logs. Pass a config file and its parent directory becomes the data dir (the default `~/.slife` needs no flag, and a directory that has no config yet is an error, not a fresh start):
+
+```bash
+mkdir -p ~/agents/jack
+cp ~/.slife/slife.yaml ~/agents/jack/slife.yaml   # its own config, edited independently
+slife --agent jack ~/agents/jack/slife.yaml       # data dir = ~/agents/jack
+```
+
+The cost is duplication you maintain by hand: two configs to keep in sync, `skills/` and `jobs/` seeded per directory, and a catalog index embedded per agent. In exchange the two can differ in everything — models, tools, schedules.
+
+**Either way**, external MCP servers are started once per instance (two processes for the same server: two browser sessions, two npm caches — free while a server is stateless, not free if it owns a database, a profile directory or an account session), the local-embed service is shared (a second child adopts the instance already holding its port rather than loading the model twice), and the A2A mesh name must still be unique per instance.
+
 ### Health & logs
 
 * **`system_health`** reports live status for every subsystem in one call — a verdict line, then problems with what to do about them, then one line per healthy component. Ask the agent to run it any time something seems off.
 * **Logs** live in `~/.slife/logs/` (one per session, `event_name key=value` lines, DEBUG+; plugins inherit the session id). The terminal belongs to the chat in the TUI and to nothing at all in headless mode — logs never print to it.
-* **A session that was killed is reported by the next one.** A hard kill (`taskkill`, End Task, a closed window) runs no Python, so the victim writes nothing itself — instead every session leaves a marker file (`logs/.session.<pid>.state`) that only a clean exit removes. Finding one whose process is gone, slife warns `the last session … was killed from outside` and names its log. The same kill leaves that terminal in raw mode — keystrokes echo as garbage and `Ctrl+C` does nothing; close that window to recover.
+* **A session that was killed is reported by the next one.** A hard kill (`taskkill`, End Task, a closed window) runs no Python, so the victim writes nothing itself — instead every session leaves a marker file (`logs/.session.<agent>.<pid>.state`) that only a clean exit removes. Finding one of its own whose process is gone, slife warns `the last session … was killed from outside` and names its log. The marker carries the agent name, so each instance reports only its own kills — two agents sharing one data dir never report each other's. The same kill leaves that terminal in raw mode — keystrokes echo as garbage and `Ctrl+C` does nothing; close that window to recover.
 
 ## License
 

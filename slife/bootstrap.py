@@ -137,22 +137,41 @@ def restore_windows_console() -> None:
 # Nothing in-process can record that at the time, because it never runs
 # again.  So leave a marker behind and read it on the NEXT start: it names
 # the pid, the start time and the log, and finding one whose pid is gone
-# means that session was killed from outside.  Keyed by pid so two sessions
-# in one data dir can't clobber each other, and removed by the teardown so a
-# session that ends normally leaves nothing to find.
+# means that session was killed from outside.  Keyed by AGENT and pid: two
+# sessions in one data dir can't clobber each other, and — because that data
+# dir can hold several agents sharing one ``logs/`` — a sibling agent's death
+# is never read, reported, or consumed as this session's own.  Removed by the
+# teardown, so a session that ends normally leaves nothing to find.
 
-_SESSION_MARKER_FMT = ".session.{pid}.state"
+_SESSION_MARKER_FMT = ".session.{agent}.{pid}.state"
 
 
-def _session_marker(log_dir: Path, pid: int) -> Path:
-    """The marker file for *pid*, beside the session logs it describes.
+def _session_marker(log_dir: Path, agent: str, pid: int) -> Path:
+    """The marker file for *agent*'s *pid*, beside the logs it describes.
 
     The directory is always the SESSION LOG's own parent, never a fresh
     ``resolve_log_dir()`` lookup: writer and reader must agree on the file by
     construction, and a marker written where nobody looks is silently a
     marker that does not exist.
+
+    The agent rides in the NAME, not just the payload, because the name is
+    what the reader globs: an agent opens only its own markers, so it can
+    neither report nor consume a sibling's death.
     """
-    return Path(log_dir) / _SESSION_MARKER_FMT.format(pid=pid)
+    return Path(log_dir) / _SESSION_MARKER_FMT.format(agent=agent, pid=pid)
+
+
+def _marker_agent() -> str:
+    """The agent a marker belongs to — this process's own identity.
+
+    One ledger per agent, the same rule the turns db, the memfiles dir and
+    the A2A inbound ledger already follow (``SLIFE_AGENT_NAME``): a data dir
+    is shared, so ``logs/`` is shared with it, and an unattributed marker let
+    the first agent to start report a sibling's death as its own.
+    """
+    from slife.paths import agent_name
+
+    return agent_name()
 
 
 def _pid_alive(pid: int) -> bool:
@@ -174,10 +193,15 @@ def _pid_alive(pid: int) -> bool:
 def note_session_start(log_path: Path, session_id: str) -> None:
     """Record this session, for the next start to read (see above)."""
     try:
-        marker = _session_marker(Path(log_path).parent, os.getpid())
+        agent = _marker_agent()
+        marker = _session_marker(Path(log_path).parent, agent, os.getpid())
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(
             json.dumps({
+                # The agent is in the filename too; repeated here so a marker
+                # read on its own — by a person, in an editor — says whose
+                # session it describes.
+                "agent": agent,
                 "pid": os.getpid(),
                 "session_id": session_id,
                 "started": datetime.now().isoformat(timespec="seconds"),
@@ -192,21 +216,34 @@ def note_session_start(log_path: Path, session_id: str) -> None:
 def clear_session_marker(log_dir: Path) -> None:
     """Drop this session's marker: the teardown reached its end."""
     try:
-        _session_marker(log_dir, os.getpid()).unlink(missing_ok=True)
+        _session_marker(
+            log_dir, _marker_agent(), os.getpid(),
+        ).unlink(missing_ok=True)
     except Exception:
         logger.debug("session_marker_clear_failed", exc_info=True)
 
 
 def previous_session_killed(log_dir: Path) -> str | None:
-    """One line naming the last session that never reached its teardown.
+    """One line naming THIS agent's last session that never reached teardown.
 
     ``None`` when the previous session ended cleanly (it removed its marker)
-    or is still running (its marker is left for its own end).  Reported
-    markers are deleted as they are read — the fact has been surfaced, and
-    keeping them would re-report the same death at every start.
+    or is still running (its marker is left for its own end) — and for every
+    OTHER agent's markers, which this reader does not even glob: one data dir
+    can hold several agents, they share one ``logs/``, and an unattributed
+    ledger had whichever started first report a sibling's death as its own
+    and then delete the marker, so the agent that actually died never learned
+    of it.  A marker left under the pre-agent name (``.session.<pid>.state``)
+    belongs to nobody identifiable and is deliberately ignored.
+
+    Reported markers are deleted as they are read — the fact has been
+    surfaced, and keeping them would re-report the same death at every start.
     """
     try:
-        stale = sorted(Path(log_dir).glob(_SESSION_MARKER_FMT.format(pid="*")))
+        stale = sorted(
+            Path(log_dir).glob(
+                _SESSION_MARKER_FMT.format(agent=_marker_agent(), pid="*"),
+            )
+        )
     except Exception:
         return None
 

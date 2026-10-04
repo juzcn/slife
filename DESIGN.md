@@ -2179,6 +2179,16 @@ per-turn prompt (§2.5) until the model answers the peer with a plain message, w
 is the third failure mode of an inbound task, beside completion and withdrawal: a task the local
 process can no longer finish, which the model may still answer as a conversation.
 
+**Two agents on one machine.** Isolation follows the **data directory**, not the agent name. Every
+per-process ledger is keyed by agent — the turns db, the memfiles directory, the tool catalog and its
+index, this inbound ledger, the killed-session marker — while the configs (`slife.yaml`, `tools.yaml`,
+…) and the seeded `skills/` and `jobs/` directories stay shared by design. Two instances on one data
+dir therefore agree on **one model and one tool population**, and a runtime config change is live in
+the instance that made it while the other takes it up at its next start — the gateway reads
+`tools.yaml` once, at spawn — a bounded divergence that settles on restart rather than a fault.
+Separate data dirs are the only way to let two agents differ in models or tools; the cost is configs
+kept in sync by hand and a catalog index embedded per agent.
+
 **Outbound.** Sending is typed, and only one type creates a task — one id serves as the JSON-RPC id,
 the task id, the reply correlation and the store key. A conversation type creates no store record. A
 task-response send completes an inbound task through the bridge rather than publishing a new request.
@@ -2254,9 +2264,12 @@ terminal is left in raw mode (keystrokes echo as mojibake, `Ctrl+C` is no longer
 the session log stops mid-sentence. Nothing in-process can undo that, and **no supervisor is added to
 do it instead**: a third always-on process that breaks away from the job object and attaches to
 someone else's console buys less than the accident costs. What a killed session *can* still do is
-leave evidence — a **per-pid session marker** written at startup and removed by the teardown, which
-the next start reads to report that the previous session was killed from outside and where its log
-is. A killed process reports nothing itself; the marker is read by the only process that can.
+leave evidence — a **per-agent, per-pid session marker** written at startup and removed by the
+teardown, which the next start reads to report that the previous session was killed from outside and
+where its log is. A killed process reports nothing itself; the marker is read by the only process
+that can — so it is keyed by agent as well as pid, since one data dir can hold several agents sharing
+one `logs/`, and an unattributed marker let the first agent to start report a sibling's death as its
+own and consume the marker the victim's next start needed.
 
 ### 9.2 Config and credentials
 

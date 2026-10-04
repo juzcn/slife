@@ -1,10 +1,13 @@
-"""Unified tool catalog store — the single shared ``tools.db``.
+"""Unified tool catalog store — one agent's shared ``<agent>.tools.db``.
 
 The authoritative catalog for all six tool categories
-(builtin/job/mcp/rest-api/skill/cli).  Lives on disk (data dir, WAL) and is
-opened by every agent process (main agent + subagent workers) at the same
-path; SQLite gives concurrent readers + one writer, ``busy_timeout`` backs off
-the short load/unload writes.  Ops are deliberately store-shaped (upserts,
+(builtin/job/mcp/rest-api/skill/cli).  Lives on disk (the data dir, WAL) and
+is opened by every process of ONE agent — the main agent and its subagent
+workers, at one path; SQLite gives concurrent readers + one writer,
+``busy_timeout`` backs off the short load/unload writes.  Per-AGENT, not per
+machine: the whole ownership model below assumes a single writer, and two
+agents sharing one file would be two writers racing on upsert-then-purge and
+sharing one load/evict budget.  Ops are deliberately store-shaped (upserts,
 search, LRU, embed drainer contract) — policy lives in
 :mod:`slife.tools.catalog_service`.
 
