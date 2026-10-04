@@ -51,10 +51,14 @@ logger = logging.getLogger(__name__)
 
 # Known embedding dimensions and token limits by model family.
 #
-# A DELIBERATE copy of ``slife.plugins.memdb.embeddings``'s table — see the
-# note there.  This package is standalone and slife only ever SPAWNS it, so
-# neither can import the other; ``slife/tests/test_embedding_table.py``
-# compares the two sources and fails on any drift.
+# ``slife.plugins.memdb.embeddings`` keeps the same table; the packages are
+# separate on purpose (slife only ever SPAWNS this one) and only the DATA is
+# shared — the logic either side wraps around it is its own.
+#
+# The dimension here is provisional: loading the weights re-reads the real one
+# (``n_embd`` / ``get_sentence_embedding_dimension``).  The token limit is not
+# — this side ENFORCES it against incoming input, and slife's copy predicts
+# with it, so the two must agree on that half.
 _KNOWN_MODELS: dict[str, tuple[int, int]] = {
     "text-embedding-3-small": (1536, 8191),
     "text-embedding-3-large": (3072, 8191),

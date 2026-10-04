@@ -25,13 +25,25 @@ logger = logging.getLogger(__name__)
 # Known embedding dimensions and token limits by model family
 #: Model family → (dimension, max_tokens).
 #:
-#: A DELIBERATE copy of ``local_embed.engine``'s table, and the only one that
-#: can exist: slife spawns local-embed and never imports it (see pyproject),
-#: and local-embed is a standalone distribution that cannot depend on slife.
-#: The two must agree — the server enforces this token limit while this side
-#: sizes the vec0 table from this dimension, and a wrong width silently drops
-#: every insert — so ``tests/test_embedding_table.py`` compares the two
-#: sources and fails on any drift.
+#: ``local_embed.engine`` keeps the same table, and the two are separate for
+#: the reason the packages are: this side speaks to an OpenAI-compatible URL
+#: and never imports local-embed (pyproject: spawned, never imported), while
+#: local-embed loads GGUF / transformer weights itself.  None of the LOGIC is
+#: shared — only this data, because both describe the same models.
+#:
+#: What couples the copies is the TOKEN LIMIT: local-embed rejects an input
+#: over it, and this side predicts with it to skip a text it believes is too
+#: long.  A divergence makes the client skip text the server would have
+#: accepted, or send text it refuses.
+#:
+#: The dimension is load-bearing only HERE.  local-embed re-reads it from the
+#: loaded model (``n_embd`` / ``get_sentence_embedding_dimension``), so its
+#: copy is a pre-load hint; this side treats a recognised family as known and
+#: skips the probe that would correct it, so a wrong width sizes the vec0
+#: table wrong and silently drops every insert.
+#:
+#: ``tests/test_embedding_table.py`` compares the two sources (through the
+#: AST — importing across the boundary is exactly what is not allowed).
 _KNOWN_MODELS: dict[str, tuple[int, int]] = {
     # (dimension, max_tokens)
     "text-embedding-3-small": (1536, 8191),

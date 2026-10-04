@@ -5,10 +5,15 @@ model-family → (dimension, max_tokens) table, and neither can import the
 other: slife only ever SPAWNS local-embed (see pyproject — "never imported"),
 and local-embed is a standalone distribution that cannot depend on slife.
 
-They must still agree.  The server enforces the token limit while the client
-sizes its vec0 table from the dimension, and a wrong width silently drops every
-insert — so a table edited on one side only is a silent data bug, not a
-cosmetic one.
+They still describe the same six models, and one half of the table is a real
+coupling: local-embed REJECTS input over the token limit while slife PREDICTS
+with its copy to skip a text it believes is too long — a divergence makes the
+client skip text the server would have accepted, or send text it refuses.
+
+The dimension half is asymmetric, and worth stating so nobody "fixes" the wrong
+side: local-embed re-reads it from the loaded weights, so its copy is a hint;
+slife treats a recognised family as known and skips the probe that would
+correct it, so there a wrong width sizes vec0 wrong and silently drops inserts.
 
 Read through the AST rather than importing, which is what keeps this check
 inside the boundary above (the same way ``test_no_magic_timeouts`` reads
