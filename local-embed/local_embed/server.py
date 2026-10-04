@@ -276,6 +276,12 @@ async def v1_embeddings(request: Request) -> Response:
         body = await request.json()
     except Exception:
         return _error("We could not parse the JSON body of your request.")
+    if not isinstance(body, dict):
+        # Valid JSON, wrong shape (an array, a bare string, a number).
+        # ``_parse_embedding_input`` would reach this as ``body.get`` and
+        # raise AttributeError, which nothing catches — the caller got a 500
+        # where the OpenAI contract wants invalid_request_error.
+        return _error("The request body must be a JSON object.")
 
     texts = _parse_embedding_input(body)
     if texts is None:

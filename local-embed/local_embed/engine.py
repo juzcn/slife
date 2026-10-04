@@ -50,6 +50,11 @@ from local_embed.threads import run_daemon
 logger = logging.getLogger(__name__)
 
 # Known embedding dimensions and token limits by model family.
+#
+# A DELIBERATE copy of ``slife.plugins.memdb.embeddings``'s table — see the
+# note there.  This package is standalone and slife only ever SPAWNS it, so
+# neither can import the other; ``slife/tests/test_embedding_table.py``
+# compares the two sources and fails on any drift.
 _KNOWN_MODELS: dict[str, tuple[int, int]] = {
     "text-embedding-3-small": (1536, 8191),
     "text-embedding-3-large": (3072, 8191),
