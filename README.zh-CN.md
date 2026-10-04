@@ -9,7 +9,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：**60 个工具**开箱即用，横跨 13 个类别，始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——外加九个内置服务：记忆、微信、markdown 文件柜、公开文件分享、A2A 网格、图片/视频/语音生成、确定性 jobs、MCP 网关，以及本地 embeddings。
+一个 TUI 窗口包裹一个 LLM 工具循环：**13 个类别共 61 个内置工具**、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格。九个内置插件扩展它：记忆、微信、markdown 文件柜、公开文件分享、A2A 网格、图片/视频/语音生成、确定性 jobs、MCP 网关，以及本地 embeddings。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -59,8 +59,8 @@ credstore copy DEEPSEEK_API_KEY BAILIAN_API_KEY
 | 运行时 | 安装位置 / 方式 | 用途 |
 |---|---|---|
 | uv | 官方安装器 → `~/.local/bin`；Python 3.13 由 uv 管理 | 构建并运行 slife |
-| Node.js (`npx`) | 包管理器（apt / brew / dnf / pacman / winget）→ 集群 `module load nodejs` → 官方 LTS tarball → `~/.local`（无 root 回退） | 基于 npx 的 MCP 服务器：`file-search`、`serper`、`tavily-mcp`、`github`、`amap-maps`、`filesystem` |
-| bun | `~/.bun/bin` | `nvidia-nim` MCP 服务器 |
+| Node.js (`npx`) | 包管理器（apt / brew / dnf / pacman / winget）→ 集群 `module load nodejs` → 官方 LTS tarball → `~/.local`（无 root 回退） | 基于 npx 的 MCP 服务器：`file-search`、`serper`、`tavily-mcp`、`amap-maps`、`filesystem` |
+| bun | `~/.bun/bin` | 以 bun 包发布的 MCP 服务器；随附的这些都不需要它 |
 | Mosquitto | 包管理器（winget / apt / brew / dnf / pacman） | A2A MQTT 网格——尽力自动安装；broker 未运行时 A2A 保持禁用 |
 | `cloudflared` | winget / Homebrew → 官方 release 二进制 → `~/.local/bin`（无 root、Linux） | `sharefile` 的 `cloudflare` 隧道 provider——尽力自动安装；没有它该 provider 不可用（可用 `SLIFE_SKIP_CLOUDFLARED=1` 跳过） |
 | `ssh` | 随系统提供（Windows：可选的 *OpenSSH 客户端* 功能） | `sharefile` 的 `localhost.run` 隧道 provider——**仅检测**；启用 Windows 功能需要管理员权限 |
@@ -136,7 +136,7 @@ uv run pytest --cov --cov-report=term-missing
 
 ### 更新
 
-重跑安装脚本即可升级 slife——它从最新的 `main` 重建，并保留你自定义过的东西：
+重跑安装脚本即可升级 slife——它从最新的 `main` 重建，并保留你自定义过的东西。
 
 有一处 schema 变更需要你手动执行一条命令：turns 数据库的表由 `diary` 改名为 `turn`（原名与文件柜里的
 **日记** 撞名）。它不会自动迁移——改名之前的数据库，历史仍留在旧表里，新代码不会读取。从源码目录执行一次：
@@ -148,8 +148,10 @@ uv run python scripts/migrate_memdb_diary_to_turn.py --all
 单个数据库用 `--agent NAME` 或 `--db PATH`。脚本会先备份原文件，可重复执行；两个表都有 turns 时会拒绝
 执行而不是猜哪个才是权威数据。
 
+其余部分都会自动保留：
+
 - **可选包**（如 `sentence-transformers`、`llama-cpp-python`）会从旧的工具 venv 中捕获，在全新安装后重新加入，并与新的基础版本做 diff，避免任何重复。
-- **已存在的配置、skills、示例 jobs** 一律保持原样，安装器**不再询问、绝不覆盖**。缺失的默认文件直接铺设；内容完全相同的静默跳过；当随包默认值发生变化时，新默认会被铺设到 `~/.slife/` 下作为**带版本号的参考副本**——配置与 jobs 形如 `<文件名>.<版本号>.<后缀>`（如 `slife.0.9.8.yaml`、`total_tokens.0.9.8.py`），skills 形如 `<名称>.<版本号>/`——每次写入都以 `seeded <文件> → <文件夹>` 的形式提示，需要它时一条 `cp` / `Copy-Item` 即可应用。重复安装会刷新同版本副本，旧版本副本保留作参考。判定 skill 是否不同，只看**随包默认自带的那些文件**是否有差异，因此你自己往 skill 里加的文件不会触发参考副本。
+- **已存在的配置、skills、示例 jobs** 一律保持原样，安装器**不再询问、绝不覆盖**。缺失的默认文件直接铺设；内容完全相同的静默跳过；当随包默认值发生变化时，新默认会被铺设到 `~/.slife/` 下作为**带版本号的参考副本**——配置与 jobs 形如 `<文件名>.<版本号>.<后缀>`（如 `slife.0.10.0.yaml`、`total_tokens.0.10.0.py`），skills 形如 `<名称>.<版本号>/`——每次写入都以 `seeded <文件> → <文件夹>` 的形式提示，需要它时一条 `cp` / `Copy-Item` 即可应用。重复安装会刷新同版本副本，旧版本副本保留作参考。判定 skill 是否不同，只看**随包默认自带的那些文件**是否有差异，因此你自己往 skill 里加的文件不会触发参考副本。
 
 ### 卸载
 
@@ -169,16 +171,18 @@ powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/r
 
 ### 相关工具
 
-本仓库还附带三个独立的包——各自独立安装（MCP 网关作为内部插件**内置**在 slife 中；`local-embed` 同样是一个内部插件，但也**可以**作为独立服务运行——你可以自己先启动它，slife 会直接使用那个实例，而不再启动第二个）：
+除 slife 本身外，本仓库还附带三个独立包，各自带一键安装器：
 
 | 包 | 安装 | 用途 |
 |---------|---------|---------|
 | `slife` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh \| bash` | 智能体（本 README） |
 | `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh \| bash` | 跨平台凭据存储 |
 | `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | 生成 `~/.claude/settings.json` |
-| `local-embed` | 随 slife 安装（内部插件；亦可独立运行） | 本地嵌入端点服务 |
+| `local-embed` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/local-embed/install.sh \| bash` | 本地嵌入端点服务 |
 
-安装 slife 依赖 [credstore](credstore/README.md)——它**不会**安装 cc-switch。详见 [cc-switch](cc-switch/README.md)、[credstore](credstore/README.md) 和 [local-embed](local-embed/README.md) 各自的 README。`slife`、`credstore`、`cc-switch` 各自带一键安装器（macOS / Linux / WSL 用 `install.sh`，Windows 用 `install.ps1`）和卸载器，都放在各自的包目录下；`local-embed` 作为 slife 依赖发布，提供 `local-embed` CLI。
+安装 slife 依赖 [credstore](credstore/README.md)——它**不会**安装 cc-switch。详见 [cc-switch](cc-switch/README.md)、[credstore](credstore/README.md) 和 [local-embed](local-embed/README.md) 各自的 README。
+
+其中两个也**内置**在 slife 里：MCP 网关是内部插件，`local-embed` 同样是——Slife 会替你启动它，或者直接使用你自己启动的那个实例，而不再起第二个。
 
 <a id="configuration" name="configuration"></a>
 
@@ -194,16 +198,18 @@ powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/r
 
 ### 密钥与 API Key
 
-密钥绝不会出现在配置文件里。用 `credstore set <KEY>` 存储它们；配置中以 `${VAR}` 引用，Slife 在运行时解析——解析顺序为 **shell 环境变量 → credstore → 字面量默认值**（支持 `${VAR:-default}` 回退；密钥也可以用 `keyring:service/key` URI 引用）。
+密钥绝不会出现在配置文件里。用 `credstore set <KEY>` 存储它们；配置中以 `${VAR}` 引用，Slife 按此顺序解析：**shell 环境变量 → 凭据库 → 字面量默认值**（支持 `${VAR:-default}` 回退）。
 
 ```yaml
 env:
   DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"   # → 运行时从 credstore 解析
 ```
 
-**Slife 从不弹窗，也不读 credstore 的 cryptfile 备份。** 它只读系统 keyring，然后回退到 `os.environ`。如果没有可用的系统 keyring（例如 Linux 上 HPC 登录节点的内核 keyring 被 seccomp/策略屏蔽），可以用三种方法之一：
+`api_key` 字段（模型、embeddings）还额外接受 `keyring:service/key` URI；`env:` 段不接受——它的值只按上面的遮蔽顺序解析。
 
-1. **只用环境变量**——在 shell 中导出密钥（`export DEEPSEEK_API_KEY="sk-…"`）；`os.environ` 在 credstore 之前被检查，所以导出的密钥正常工作。
+**Slife 从不弹窗，也不读 credstore 的 cryptfile 备份。** 它只读系统 keyring，keyring 里没有时才回退到 `os.environ`。如果没有可用的系统 keyring（例如 Linux 上 HPC 登录节点的内核 keyring 被 seccomp/策略屏蔽），可以用三种方法之一：
+
+1. **只用环境变量**——在 shell 中导出密钥（`export DEEPSEEK_API_KEY="sk-…"`）。`os.environ` 先于 credstore 被查询，所以导出的密钥优先。
 2. **继续用 credstore 的 cryptfile 模式管理，但注入到环境变量**——照常存储凭据，然后把它们推入环境让 Slife 能看到：`credstore inject DEEPSEEK_API_KEY BAILIAN_API_KEY`（cryptfile-only 模式下会询问主密码），然后重启 shell 或 `eval "$(credstore inject DEEPSEEK_API_KEY)"`。
 3. **明文写在配置文件里**（容忍，但不推荐）——`slife.yaml` 中的字面量 `api_key` 能工作，但密钥会明文落在磁盘上（`~/.slife/slife.yaml`，chmod 0600）。
 
@@ -286,7 +292,7 @@ net:
 
 地址段写在 `slife/net.py`（`FAKE_IP_NETS`）里：`198.18.0.0/15`、`2001:2::/48`、`fdfe:dcba:9876::/48`、`fc00::/18`——Clash / mihomo / sing-box 出厂或文档中的池，v4 与 v6 都在内。**LAN、link-local 和云 metadata 地址永不豁免**：`169.254.169.254`、`fd00:ec2::254`、`fd20:ce::254` 全部保持拒绝，这也是 IPv6 侧用的是这几个具体段、而绝不是 `fd00::/8` 的原因。
 
-**这个豁免打开了什么。** 代理的池里也装着代理**自己**的地址——在 mihomo 机器上 `198.18.0.1` 是 TUN 接口地址、`198.18.0.2` 是 Clash 的 DNS——所以豁免生效期间，指向其中之一 fetch 会到达本机，以及任何绑在 `0.0.0.0` 上的东西（dev server、Docker 映射端口、被误配成监听所有网卡的控制器）。除此之外没有别的：那个唯一目标就是默认 `off` 的原因，也是这里用范围名单、而不用这类代理通常提供的全开开关的原因。
+**这个豁免打开了什么。** 代理的池里也装着代理**自己**的地址——在 mihomo 机器上 `198.18.0.1` 是 TUN 接口地址、`198.18.0.2` 是 Clash 的 DNS——所以豁免生效期间，指向其中之一 fetch 会到达本机，以及任何绑在 `0.0.0.0` 上的东西（dev server、Docker 映射端口、被误配成监听所有网卡的控制器）。除此之外没有别的：那个唯一目标就是默认 `off` 的原因。
 
 **通过代理读网页。** `mcp-server-fetch` 不做任何地址校验，在这种代理后面照常工作。`duckduckgo-mcp-server` 会在自己的 SSRF 检查里拒绝网页正文，而且没有范围参数可用——只有会把 LAN 一起打开的 `--allow-private-urls`——所以用 DuckDuckGo 搜索、用 `fetch` 服务器读页面。
 
@@ -296,16 +302,15 @@ net:
 
 ### 工具
 
-每个工具接受三个元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（内联批准提示——Y 批准 / N 拒绝，Esc 拒绝）。
+每个工具接受三个元参数：`_timeout`（单次调用超时覆盖；它覆盖工具自身的默认值，而 `0` 或负数表示"用默认值"，绝不是"不超时"）、`_async`（后台执行，用 `check_async` 轮询；不带 `_timeout` 的后台调用不设上限）和 `_approve`（内联批准提示——Y 批准 / N 拒绝，Esc 拒绝）。
 
-**13 个类别共 60 个内置工具**（随附配置中 `install_python_package` 默认禁用）。两个保留的 harness 工具由 Slife 自己驱动、而非模型——`_turn_prompt`（每轮提示词，每轮一次）和 `_check_new_input`（轮中消息注入）——而 `attach_image` 会在 `@` 附件时替你调用，*同时*模型自己也可以调用它；无视觉能力的模型会在调用时被拒绝。
+**13 个类别共 61 个内置工具**（随附配置注册其中 60 个——`install_python_package` 默认禁用）。两个保留的 harness 工具由 Slife 自己驱动、而非模型——`_turn_prompt`（每轮提示词，每轮一次）和 `_check_new_input`（轮中消息注入）——而 `attach_image` 会在 `@` 附件时替你调用，*同时*模型自己也可以调用它；无视觉能力的模型会在调用时被拒绝。
 
 | 类别 | 工具 |
 |----------|-------|
-| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `set_max_iterations`, `set_midturn_input`（轮中抢先开/关）, `notify_user`, `wait_minutes`（暂停本轮，稍后自动继续）, `profile_edit`（替换 `USER.md`，即用户的常驻档案） |
+| System | `system_health`, `system_tools_list`, `check_async`, `cancel_async`, `set_max_iterations`, `set_midturn_input`（轮中抢先开/关）, `notify_user`, `wait_minutes`（结束本轮，稍后作为新一轮继续）, `profile_edit`（替换 `USER.md`，即用户的常驻档案） |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package`（默认禁用） |
 | Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
-| Job | `job-<name>`——你写在 `~/.slife/jobs/` 里的每个 job 一个工具；通过 `job-list` / `job-write` / `job-remove` / `job-run` 增删，这四个属于 `job-coding` 插件 |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_list_tools`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
@@ -319,7 +324,7 @@ net:
 
 **托管类别**（Skills / CLI / REST API / Models / MCP）支持 `X_list` / `X_set` / `X_remove`（+ 有开关时 `X_set_enabled`）。每个 `X_set` 工具都是幂等 upsert，`model_set` 则**合并**进现有条目——局部更新会保留你没有提到的字段。`rest_api_set` 让一个条目指向一份 OpenAPI 文档，文档里的每个端点成为一个带类型的 `{name}__{endpoint}` 工具——REST API 就是 `tools.yaml` 里 `rest-api` section 中的一个普通条目。
 
-**插件工具** — 内置插件以裸名注册；外部 MCP 服务器以 `{server}__{tool}` 出现：
+**插件工具** — 内置插件以裸名注册（job 插件用连字符）；外部 MCP 服务器以 `{server}__{tool}` 出现：
 
 | 服务器 | 工具 |
 |--------|-------|
@@ -332,32 +337,33 @@ net:
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 | `job-coding` | `job-list`, `job-write`, `job-remove`, `job-run` + 每个已注册 job 一个工具（如 `job-translate`） |
 
-**工具按需加载。** 第三方能力以 `tools.yaml` 里的标准 MCP 服务器接入（`mcp` + `rest-api` 两个 section——任何 stdio / SSE / Streamable HTTP 服务器都可以，无需 Slife SDK）。模型用 `tool_search` 找工具，再用 `func_tool_load(full_name)` 把工具注入——按工具而非按服务器，所以一个上千工具的大服务器只会把真正在用的那几个放到模型面前。加载决定模型*看得见*什么，不决定什么能跑：只要有执行实例，工具按名字就能调用，加载与否皆然。少数工具始终可用——harness 工具、系统元工具、固定注入的 `skill_use` / `system_health` / `attach_image`，以及你标了 `autoload: true` 的条目——注入列表由 `tool_load.threshold` 封顶（默认 100），淘汰时先淘汰最久未用的，从不淘汰 `autoload` 的。已启用的服务器在启动时被拉起；连不上的服务器其工具被标记 `error`，因此死连接永远不会被注入。
+**工具按需加载。** 第三方能力以 `tools.yaml` 里的标准 MCP 服务器接入（`mcp` + `rest-api` 两个 section——任何 stdio / SSE / Streamable HTTP 服务器都可以，无需 Slife SDK）。模型用 `tool_search` 找工具，再用 `func_tool_load(full_name)` 把工具注入——按工具而非按服务器，所以一个上千工具的大服务器只会把真正在用的那几个放到模型面前；载入外部工具还会同时物化它的执行代理，做不到时会回滚并说明原因。加载决定模型*看得见*什么，不决定什么能跑：只要有执行实例，工具按名字就能调用，加载与否皆然；只有外部代理在卸载时会一并注销（它握着一个活的客户端）。少数工具始终可用——harness 工具、系统元工具、固定注入的 `skill_use` / `system_health`，以及标了 `autoload: true` 的条目（内置/插件按**工具**，外部服务器按**服务器**）——注入列表由 `tool_load.threshold` 封顶（默认 100），淘汰时先淘汰最久未用的，从不淘汰 `autoload` 的。名字属于它的所有者：一个条目不能占用别的家族已拥有的名字，所以 job 无法遮蔽内置工具。已启用的服务器在启动时被拉起；连不上的服务器其工具被标记 `error`，因此死连接永远不会被注入。
 
 **Windows 下的命令执行。** `execute_shell` 在 Slife 检测到的 shell 中运行——PowerShell 或 cmd——所以为该 shell 写的命令按原样执行，非 ASCII 输出也能正确解码。`run_python_script` 让子进程以 UTF-8 运行，因此非 ASCII 输出不会让它崩溃。
 
 ### 记忆 — 始终开启
 
-每轮对话永久记录在 SQLite（`~/.slife/<agent>.db`），并有四种搜索方式：
-
-**记忆是核心功能——agent 绝不在记忆失效时静默运行。** 若记忆数据库损坏（缺列、损坏或磁盘错误），agent 会响亮地失败而非假装正常：无法恢复的会话在启动时报错中止；无法保存的轮次会冻结收件箱并显示红色横幅——不再处理新轮次，直到数据库修复并重启 agent。
+每轮对话永久记录在 SQLite（`~/.slife/<agent>.db`），并有三种搜索方式——时间则是任何一种都可以用来限定范围的轴：
 
 | 模式 | 适用场景 |
 |------|----------|
 | `grep` | 正则表达式 — 也支持部分拼写：错误信息、文件路径、代码 |
 | `fts5` | 主题/关键词搜索，带排序摘要 |
 | `hybrid` | 语义召回 — 关键词与含义结合 |
-| `time` | 按日期浏览 |
 
-Embeddings 是 `slife.yaml` 中**一级顶层的 `embeddings` 配置段**（由 `memdb` + `memfiles` 共享），由内置 `embeddings_*` 工具管理；运行时索引状态由 `system_health` 上报。每个 provider 都是 **OpenAI 兼容端点**（`base_url` + `api_key`），而 `active_model` 指的是*provider*（例如 `"local_embed"` 或 `"siliconflow"`）而不是某个模型。**`local-embed` 服务**——由 Slife 作为插件为你启动，或你自己启动的那个实例——在 `http://127.0.0.1:17347/v1` 提供本地 GGUF/transformer 模型。**没有嵌入后端时关键词搜索照样工作。** 语义（hybrid）结果只在当前模型的索引完整构建后才返回——重建运行期间 hybrid 退回关键词搜索，索引进度完成时自动恢复。
+按日期浏览用的是 `turn_list`（也就是每种模式都能用来限定的那根轴，被单独读取）。未知的模式和空查询都会被明确拒绝，而不是静默回退——空查询是列表工具的用途。
+
+**记忆是核心功能——agent 绝不在记忆失效时静默运行。** 若记忆数据库损坏（缺列、损坏或磁盘错误），agent 会响亮地失败而非假装正常：无法恢复的会话在启动时报错中止；无法保存的轮次会冻结收件箱并显示红色横幅——不再处理新轮次，直到数据库修复并重启 agent。
+
+Embeddings 是 `slife.yaml` 中**一级顶层的 `embeddings` 配置段**，由 `memdb`、`memfiles` 与工具目录（tool catalog）共享；由内置 `embeddings_*` 工具管理，运行时索引状态由 `system_health` 上报。每个 provider 都是 **OpenAI 兼容端点**（`base_url` + `api_key`），而 `active_model` 指的是*provider*（例如 `"local_embed"` 或 `"siliconflow"`）而不是某个模型。**`local-embed` 服务**——由 Slife 作为插件为你启动，或你自己启动的那个实例——在 `http://127.0.0.1:17347/v1` 提供本地 GGUF/transformer 模型。**没有嵌入后端时关键词搜索照样工作。** 语义（hybrid）结果只在当前模型的索引完整构建后才返回——重建运行期间 hybrid 退回关键词搜索，索引进度完成时自动恢复。
 
 每轮对话还记录两个时间戳——你的输入时间（`created_at`，敲下回车的那一刻）和 assistant 的完成时间（`completed_at`）——以灰色 `[HH:MM]` 标记显示。用户消息还带一条 **`[INFO: {"turn_id": N, …}]`** 脚注（turn id 加发生时间），agent 用它按 turn id 引用轮次（`turn_read` / `turn_summarize`），你在同一行里读到它。
 
-每轮对话还记住**它来自哪个渠道**——`human`、`wechat`、subagent、心跳、A2A peer，或 `system`（Slife 自身）——因此会话恢复时每个气泡都带对应的前缀：`You>`、`Wechat>`、`Subagent(<name>)>`、`Heartbeat>`、`A2A(<agent>)`。进入的微信消息还会以 **`[Wechat:{...}]`** 前缀到达模型。
+每轮对话还记住**它来自哪个渠道**——`human`、`wechat`、subagent、心跳、A2A peer，或 `system`（Slife 自身）——因此会话恢复时每个气泡都带对应的前缀：`You>`、`Wechat>`、`Subagent(<name>)>`、`Heartbeat>`、`A2A(<peer>)>`。`system` 轮次——定时任务与计时器触发——不显示前缀，也不出现在聊天里。进入的微信消息还会以 **`[Wechat:{...}]`** 前缀到达模型。
 
 ### 自主心跳
 
-空闲时，agent 可以取一个周期性的自主窗口——**随附配置里是关闭的**（`agent.heartbeat_interval: 0`），因为它自己会消耗 token。把它设成一个秒数即可开启（不写这个键则为 30 分钟）。它作为一个正常 turn 运行（独立的一轮，存入记忆）；回复契约是：有值得说的话就输出真实内容，否则只输出一个 `.`。单独的 `.` 回复表示**沉默**——来自任何事件的 `.` 都不会渲染到聊天或会话恢复里——而真正的自主回复显示为 `⚡ 自主`。这是涌现自发性行为的前提。
+空闲时，agent 可以取一个周期性的自主窗口——**随附配置里是关闭的**（`agent.heartbeat_interval: 0`），因为它自己会消耗 token。把它设成一个秒数即可开启（不写这个键则为 30 分钟）。收件箱忙或有排队工作时会跳过这一拍，因此它绝不与真实输入争抢。它作为一个正常 turn 运行（独立的一轮，存入记忆）；回复契约是：有值得说的话就输出真实内容，否则只输出一个 `.`。单独的 `.` 回复表示**沉默**——来自任何事件的 `.` 都不会渲染到聊天或会话恢复里——而真正的自主回复显示为 `⚡ 自主`。这是涌现自发性行为的前提。
 
 ### 定时任务
 
@@ -385,7 +391,7 @@ job 还能驱动 `tools.yaml` 里配置的**任意外部 MCP server**——包�
 看看这张截图 @D:\Downloads\error.png
 ```
 
-支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 原样透传；`attach_image` 工具让 agent 能在对话中途附加图片（本地来源上限 20 MB，防止误把超大文件 base64 进上下文）。终端里从不渲染任何内容——文件用系统默认程序打开，`share_file` 通过可插拔隧道 provider（ngrok / localhost.run / Cloudflare Quick Tunnel，由 `sharefile.yaml` 选择）把任意本地文件发布为公开 HTTPS 链接（隧道离线时 `share_file` 返回优雅错误）。
+支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 原样透传；`attach_image` 工具让 agent 能在对话中途附加图片（本地来源上限 20 MB，防止误把超大文件 base64 进上下文）。终端里从不渲染任何内容——文件用系统默认程序打开，`share_file` 通过可插拔隧道 provider（ngrok / localhost.run / Cloudflare Quick Tunnel，由 `sharefile.yaml` 选择）把本地文件发布为公开 HTTPS 链接（隧道离线时 `share_file` 返回优雅错误）。它会拒绝看起来像凭据的路径（`.env`、`id_rsa`、`.npmrc`、`netrc` 等）。
 
 ### 插件
 
@@ -393,10 +399,10 @@ job 还能驱动 `tools.yaml` 里配置的**任意外部 MCP server**——包�
 
 | 插件 | 角色 |
 |--------|------|
-| **mcp-gateway** | MCP 网关——连接外部 MCP 服务器（stdio / SSE / Streamable HTTP）并持有这些连接。管理：`mcp_set`、`mcp_set_enabled`、`mcp_remove`、`mcp_list`、`mcp_list_tools`（有截断——其余用 `tool_search` 找）；工具经 `func_tool_load` 按需载入 |
+| **mcp-gateway** | MCP 网关——连接外部 MCP 服务器（stdio / SSE / Streamable HTTP）并持有这些连接。管理：`mcp_list`、`mcp_list_tools`、`mcp_set`、`mcp_set_enabled`、`mcp_remove`；工具经 `func_tool_load` 按需载入 |
 | **memdb** | 对话记录数据库 + 混合搜索 |
 | **wechat** | 双向微信消息 |
-| **memfiles** | 笔记 / 日记 / 文件 / 报告文件柜（私有）。笔记、日记与报告是 `~/.slife/<agent>.files/` 下的纯 markdown，已建索引供 agent 搜索。所有保存工具都返回本地路径——绝不自动发布 |
+| **memfiles** | 笔记 / 日记 / 文件 / 报告文件柜（私有）。笔记、日记与报告是 `~/.slife/<agent>.files/` 下的纯 markdown，已建索引供 agent 搜索。`file_read` 返回文件的**文本**，否则明确拒绝（`… is not text (<mime>, <n> bytes)`），非 UTF-8 时会告知编码；`file_save` 接受本地路径或 http(s) URL（每次重定向都过 SSRF 检查，上限 50 MB）。所有保存工具都返回本地路径——绝不自动发布 |
 | **sharefile** | 公开文件分享——`share_file` 把本地文件发布为公开 HTTPS URL（隧道从 `sharefile.yaml` 配置，可插拔） |
 | **a2a** | 基于 MQTT 的 A2A 网格通道（仅在 broker 可达时启动） |
 | **media** | 来自你所配置的 provider 的非聊天式 AI 生成（图片、视频、TTS、ASR）。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio` |
@@ -409,8 +415,17 @@ job 还能驱动 `tools.yaml` 里配置的**任意外部 MCP server**——包�
 
 A2A 让彼此独立的智能体——同一台机器上或跨机器——互相发现、委派任务、推送结果。它说的是官方 **A2A-over-MQTT** profile，因此 Slife agent 能与任何其它实现互操作：
 
-- **网格工具**（统一 `a2a_` 前缀）：`a2a_send_message`（异步——立即返回 task_id，结果稍后到达）、`a2a_cancel_task`、`a2a_list_agents`、`a2a_broadcast`（发后即忘的事件）。入站的 peer 流量统一以一个 `[A2A:…]` 信封到达模型（`from` 是发送方 peer——永远不是接收者自己）；TUI 显示 `A2A(<peer>)>`。`a2a` 插件只在 MQTT broker 可达时启动。
+- **网格工具**（统一 `a2a_` 前缀）：`a2a_send_message`（异步——立即返回 task_id，结果稍后到达）、`a2a_cancel_task`、`a2a_list_agents`、`a2a_broadcast`（发后即忘的事件）。入站的 peer 流量统一以一个 `[A2A:…]` 信封到达模型（`from` 是发送方 peer——永远不是接收者自己）；TUI 显示 `A2A(<peer>)>`。`a2a` 插件只在 MQTT broker 可达时启动。对等方的撤回以消息形式到达模型、交由它判断，绝不转成 harness 抢先中断；进程死亡时仍在飞的任务按 agent 记录下来并报告为 **stale**，因为回复通路已随进程消失。
 - **Subagent 是本地 worker，不是 A2A peer**：`spawn_subagent` / `subagent_send_task` / `subagent_get_task_result` / ……创建共享你的插件、一次处理一个任务的 worker（对忙碌 worker 的同步发送会自动转为异步入队）。每个任务都会带上截至发送那一刻的对话副本（已结算的轮次，不含正在进行中的那一轮），worker 清楚这份副本到哪里为止、它自己的任务从哪里开始，因此它会去做任务而不是接着干你的活。这份副本是候选而非保底：运行前 worker 会自行挑选其中所需的部分，所以某个任务完全可能一点都不带。对同一个 worker 委派两次，每个任务拿到的都是它被发出时的情形。异步结果自动推送到你的聊天（`mode="auto"`，默认）或只能轮询（`mode="poll"`）。Subagent 绝不清空你的收件箱——所有回复与管理都属于主 agent。
+- **一个名字就是一个 agent。** agent 名字**就是**网格身份——MQTT client id 与 peer 寻址的 topic 段——所以同一 broker 上重名的第二个实例会顶掉第一个的会话，发给该名字的每个任务都会在两个实例上各跑一遍。网格在加入前先检查名字，因此后来者会拒绝加入并说明这个名字归谁；`system_health` 会把它列为网格不可用的原因。给每个实例自己的 `--agent` 名字，或不同的 `a2a` `org`/`unit` 值。
+
+  离开是自动的：正常关闭会在断开前发布一张 *offline* 卡片，崩溃也会由 broker 的 last will 发布同样的卡片——所以名字会自己释放。只有跨重启保留 retained 消息的 broker（`persistence true`，默认关闭）才可能留下一张背后没有进程的卡片；若没有其它 slife 在跑而网格仍然拒绝，清掉那张卡片，下次连接会重试：
+
+  ```bash
+  mosquitto_pub -h localhost -t '$a2a/v1/discovery/default/default/slife' -r -n
+  ```
+
+  （把 `default/default/slife` 换成你的 `a2a` `org`/`unit` 与 `--agent` 名字）
 
 所有消息——人类输入、微信、MQTT、subagent 结果——都流经单一收件箱队列，逐轮处理。
 
@@ -418,8 +433,8 @@ A2A 让彼此独立的智能体——同一台机器上或跨机器——互相�
 
 ## 语义记忆搜索 — 安装指南
 
-语义（混合）记忆搜索——跨越 `memdb` 轮次与 `memfiles` 笔记按含义召回——需要一个本地 embedding
-**后端**和**模型权重**，而一键安装器刻意不带这两样。关键词搜索（`grep` / `fts5` / `time`）不需要它们，
+语义（混合）记忆搜索——跨越 `memdb` 轮次、`memfiles` 笔记与工具目录按含义召回——需要一个本地 embedding
+**后端**和**模型权重**，而一键安装器刻意不带这两样。关键词搜索（`grep` / `fts5`）不需要它们，
 且每一环都是 fail-open：后端缺失时关键词核心照常可用。
 
 **完整指南——各平台后端安装、权重、`local_embed.yaml`、验证、排障：**
@@ -436,18 +451,20 @@ A2A 让彼此独立的智能体——同一台机器上或跨机器——互相�
 |-----|--------|
 | `Ctrl+C` | 退出 |
 | `Esc` | 取消 Agent Loop |
-| `Ctrl+S` | 切换模型（内联选择器——输数字选，Esc 取消） |
+| `Ctrl+S` | 切换模型（`↑`/`↓` 移动，`Enter` 选定，`Esc` 取消） |
+| `PageUp` / `PageDown` | 滚动对话记录 |
 | `Home` / `End` | 滚动到顶部 / 底部 |
 | `Ctrl+Y` | 复制结果（工具调用上） |
-| `Enter` / `Space` | 展开/收起思考块（助手消息上） |
-| `↑` / `↓` | 输入历史导航 |
+| `Enter` / `Space` | 展开/收起（助手思考块，或工具调用的详情） |
+| `↑` / `↓` | 输入历史导航（在输入框首行/末行时） |
 | `Shift+Enter` | 输入框内换行 |
+| `Y` / `N` / `Esc` | 批准 / 拒绝 / 关闭（批准提示上） |
 
 ### CLI
 
 | 参数 | 说明 |
 |------|-------------|
-| `--agent <id>` | 智能体标识 — 独立对话记录数据库 + A2A 网格名称（默认：`slife`） |
+| `--agent <id>` | 智能体标识 — 独立对话记录数据库 + A2A 网格名称（默认：`slife`）。网格名称在 broker 上必须唯一：重名的第二个实例会拒绝加入，而不是去争抢 |
 | `--headless` | 以 headless 模式运行 — 同一个 agent，不接终端（见下） |
 | `--lang <en\|zh>` | 界面语言 — 强制英文 / 中文（默认：按 OS 区域自动检测） |
 | `-h`、`--help` | 打印用法并退出 |
@@ -462,7 +479,7 @@ slife --headless --agent jack                 # 默认配置
 slife --headless --agent jack myconf.yaml     # 指定配置文件
 ```
 
-* **它是安静的。** 除了启动告警和错误，什么都不往终端打印：每一轮都在对话记录数据库里，会话日志在 `~/.slife/logs/`。它对外说的话走网格。
+* **它是安静的。** 除了启动告警和错误，什么都不往终端打印：每一轮都在对话记录数据库里，会话日志在 `~/.slife/logs/`。它对外说的话走网格。唯一的例外是运行中记忆数据库损坏——此时它**退出**并把原因写到 stderr，而不是活着却听不见。
 * **没人能批准工具调用**，系统提示词里就是这么说的——标了 `_approve` 的调用会直接执行。只在你愿意让它无人值守地活动的身份下运行 headless agent。
 * **网格起不来只是告警，不是失败。** broker 不通、或者该名字已被另一个进程占用时，它照样启动并在 stderr 上告警；插件看门狗会持续重试。
 * **重启即续接。** 启动时恢复退出时的上下文，与 TUI 完全一致——所以一个跨多轮的对等方任务能扛过重启。
@@ -470,7 +487,7 @@ slife --headless --agent jack myconf.yaml     # 指定配置文件
 
 ### 健康与日志
 
-* **`system_health`** 一次调用报告每个子系统的实时状态——先说问题和该怎么处理，然后每个健康组件一行。感觉任何东西不对劲时都让 agent 跑一下。
+* **`system_health`** 一次调用报告每个子系统的实时状态——先一行结论，再说问题和该怎么处理，然后每个健康组件一行。感觉任何东西不对劲时都让 agent 跑一下。
 * **日志**在 `~/.slife/logs/`（每个会话一个文件，`event_name key=value` 行格式，DEBUG+；插件继承会话 id）。终端在 TUI 下属于聊天，在 headless 模式下什么都不属于——日志永远不往终端打印。
 * **被强杀的会话由下一个会话来报告。** 硬杀（`taskkill`、任务管理器"结束任务"、直接关窗口）不会执行任何 Python 代码，所以受害者自己写不下任何东西——于是每个会话在启动时留下一个标记文件（`logs/.session.<pid>.state`），只有正常退出才会删掉它。下次启动若发现标记还在而进程已不在，slife 会警告 `the last session … was killed from outside` 并给出它的日志路径。同一次强杀还会把那个终端留在 raw 模式——按键回显成乱码、`Ctrl+C` 完全失效；关掉那个终端窗口即可恢复。
 

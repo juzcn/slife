@@ -98,26 +98,16 @@ Large models arrived in 2022, and ChatGPT and an obscure little company called O
 to everybody. For the first time we could hold a conversation with a machine — question and answer,
 and a delight.
 
-The internals became clear soon enough. GPT is a **stateless** machine. It looks as though it is
-online and remembers what you said earlier, but that is a trick we play: the previous conversation is
-sent to it again every time. Text is generated one unit at a time by a trained model that predicts the
-next unit, and each prediction comes with a probability distribution over the candidates. You choose a
-strategy — always take the most probable, or sample. That parameter is called **temperature**: low
-temperature is conservative and certain, high temperature is free-wheeling. A large model is nothing
-but probabilities, which is true enough.
+The internals became clear soon enough. GPT is a **stateless** machine: it looks as though it
+remembers what you said earlier, but that is a trick we play — the previous conversation is sent to it
+again every time. Text is generated one **token** at a time by a trained model that predicts the next
+unit, each prediction carrying a probability distribution over the candidates; sampling from that
+distribution is what **temperature** selects. The token thereby became a unit of consumption, like the
+kilowatt-hour.
 
-**Token** entered the public vocabulary here too. Technically a model does not emit a character at a
-time but a token at a time; one token is roughly 0.75 English words or 0.5 Chinese characters. The
-token thereby became a unit of consumption, like the kilowatt-hour.
-
-Because of the limits of the framework underneath, the total number of tokens in and out of one call
-is fixed by the training framework. That number is what everyone now knows as the model's **context
-window**. The first GPT's was 4096 tokens, about 2000 Chinese characters — question, answer and the
-whole chat history together had to fit inside it. Strictly speaking the first generation of large
-models was a marvel to watch and of quite limited practical use. Over the past four years the
-technology and its applications have grown fast; on the context window alone, mainstream models are
-now in the millions, and a two-million-token model can be fed the whole of *Harry Potter* plus *The
-Lord of the Rings* in one go.
+The total number of tokens in and out of one call is fixed by the framework underneath. That number is
+what everyone now knows as the model's **context window** — 4096 for the first GPT, millions for the
+mainstream models of 2026 — and it is the bound every arrangement in this document is built around.
 
 The second important development is the marriage of large models with **tool calling**: given a
 description of a tool, the model can generate the arguments to call it, and the tool's output is fed
@@ -296,9 +286,11 @@ plugins by inherited port (§6.5).
 | **Worker** | A subagent: a child process running the same loop with a declared, zeroed capability set. |
 | **Silence contract** | A bare `.` assistant reply is silence — never rendered, from any turn source. |
 
-The `_` prefix is what the model reads: it marks a tool the harness drives, and so one it should not
-choose. `__` marks a tool the model never sees at all — internal to a plugin and filtered out before
-registration. Both are part of the interface rather than naming style.
+The `_` prefix is what the model reads: it marks a tool the harness drives, and so one the model
+should not choose. `__` marks a tool the model never sees at all — internal to a plugin and filtered
+out before registration. Both are part of the interface rather than naming style. One `_` tool is the
+exception the prefix does not cover: `_func_tool_unload` is a reserved **meta** tool the model does
+call, and it is the only one.
 
 ### Language policy
 
@@ -477,26 +469,22 @@ says is ever shown.
   decision's *first* field is answered from that same context: the ids a keep-list names are the ones
   in the footnotes the model can read there, and seeing them is what tells the model what it already
   has, so it does not ask to recall it again.
-- **What the instruction states**, in two parts. First the **decision**: what to keep of the turns in
-  hand — the turns this input is answered from: all of them, some by turn_id, or none, the rule being
-  the input's because clearing is only ever the explicit clear, so an input none of them carries is
-  cleared only where the instruction asks for it — and, with the turn running on what is kept *plus*
-  what is recalled, recall's three conditions (a period, a query, a query within a period), together
-  with the one thing a model cannot read off the store: the context is bounded, so a recall answers
-  with a selection and never with every turn its condition matched, and which part survives follows
-  from the condition — a period is read from the end `anchor` names, a query is ranked by relevance
-  and so is narrowed by its time bound instead. Then the **cases**: one worked reply per combination
-  of the two fields, which is where a value's wording is shown rather than described. Around the two
-  sit the current input, one rule — *the query holds what turn recall needs — keywords, short phrases,
-  or the full user input, in any combination — matched against the stored turns by a hybrid of
-  full-text and semantic search*, the three forms offered as sources rather than as a template — the
-  discriminator composes the query, so the rule names what the text may draw on (§7.2) and leaves the
-  composition to it — and the reply surface itself, stated once as the reply's fields with their
-  values and defaults and nothing beyond them. It cannot be read off a tool: the selector is an **internal** tool the model never sees, so there is no
-  LLM-facing schema to quote. The loop is the only caller and its parser reads exactly these two
-  fields, which is what keeps the two ends of this contract in step. When the store cannot be reached
-  at all there is no call either — the availability check is the gate, so a turn is never spent asking
-  a model to decide a recall that cannot run.
+- **What the instruction states**, in three parts. The **decision**: what to keep of the turns in
+  hand — all of them, some by turn_id, or none — plus recall's three conditions (a period, a query, a
+  query within a period). One thing a model cannot read off the store is stated with it: the context
+  is bounded, so a recall answers with a *selection*, never with every turn its condition matched, and
+  which part survives follows from the condition — a period is read from the end `anchor` names, a
+  query is ranked by relevance and so is narrowed by its time bound instead. The **cases**: one worked
+  reply per combination of the two fields, which is where a value's wording is shown rather than
+  described. And the **reply surface**, stated once as the reply's fields with their values and
+  defaults. Around them sit the current input and one rule — *the query holds what turn recall needs —
+  keywords, short phrases, or the full user input, in any combination — matched against the stored
+  turns by a hybrid of full-text and semantic search* — which names what the text may draw on (§7.2)
+  and leaves the composition to the discriminator. The rule cannot be read off a tool: the selector is
+  an **internal** tool the model never sees, so there is no LLM-facing schema to quote; the loop is its
+  only caller and its parser reads exactly these two fields, which keeps the two ends in step. When
+  the store cannot be reached at all there is no call either — the availability check is the gate, so
+  a turn is never spent deciding a recall that cannot run.
 - **Cost**: one context-sized call per turn — the pre-turn call is about as expensive as the turn
   itself. That is what judging from the conversation costs, and it is **accepted** rather than
   pending: it is what makes the context chosen instead of accumulated, and the step has proven usable
@@ -531,12 +519,13 @@ with both legs windowed. An empty-query branch must run **before** the hybrid le
 express "no query": an empty query reaches the full-text index as a syntax error and embeds to
 noise.
 
-**The union is what makes "keep this and add that" expressible** — and it is why an empty recall is
-now *harmless*. Under the older overriding selection every reply but the empty one discarded the
-context it replaced, so a query that merely failed to match emptied it: the turn ran on the system
-prompt alone and answered from nothing. A union with nothing is the base. Clearing is therefore only
-ever the explicit clear, and nothing a model gets wrong can empty the context by accident. An
-explicit clear plus a recall is exactly the old behaviour, so the union is a strict superset of it.
+**The union is what makes "keep this and add that" expressible.** It is joined by **id**, never
+reconciled: a turn both kept and recalled is the same turn, so there is no incumbent to defend and no
+need to exclude turns already in context. An empty recall is therefore *harmless* — a union with
+nothing is the base — where the older overriding selection discarded the context it replaced, so a
+query that merely failed to match emptied it and the turn answered from the system prompt alone.
+Clearing is only ever the explicit clear, and an explicit clear plus a recall is exactly the old
+behaviour, so the union is a strict superset of it.
 
 **The recalled set — one fusion, three caps, one order.** The hybrid legs are full-text search (with
 a substring fallback for CJK, which the standard tokenizer cannot segment) and vector KNN, fused by
@@ -603,10 +592,6 @@ rebuild is **skipped when the decision asks for exactly what is in hand**: nothi
 nothing dropped, so re-rendering the same turns from the store would cost a round-trip, the turn's
 live image blocks and the prompt-cache prefix to arrive at the identical list.
 
-**The recalled set is joined, not reconciled** — there is no incumbent to defend and no need to
-exclude turns already in context: a turn the recall names that the decision also kept is *the same
-turn*, and the union is by id.
-
 **The store's answer is ids, or nothing, but never an error.** The recall call returns the turn ids
 and nothing else — a degraded semantic leg does not change the recalled set, so it is logged rather
 than answered with. Everything that is not a fatal environment failure is answered as **no ids**: a
@@ -622,19 +607,18 @@ turn that quietly ran without the history it asked for.
 context. The selector that does feed the context is the harness's, and it is internal for exactly that
 reason: changing the conversation under the model is not something the model asks for.
 
-The division of labour is the point. The selection is a **system-level** arrangement: decided before
-the turn and on every turn, so the context a turn runs on is rebuilt whether or not the model thinks
-to do anything about it. The tools are the other direction — **the model's own** — and that is what
-keeps the selection from being the only door: what it does not select is still reachable, because the
-model can look for it and the answer arrives as tool output in the conversation it is already
-reading. So a query the discriminator never wrote, or a turn the caps cut, is a round-trip and not a
-dead end, and neither path has to be complete on its own.
+**The division of labour is the point.** The selection is system-level: decided before every turn, so
+the context a turn runs on is rebuilt whether or not the model thinks to do anything about it. The
+tools are the other direction — the model's own — and that is what keeps the selection from being the
+only door: what it does not select is still reachable, and the answer arrives as tool output in the
+conversation the model is already reading. So a query the discriminator never wrote, or a turn the
+caps cut, is a round-trip and not a dead end, and neither path has to be complete on its own.
 
-And the two do not search alike. The selection has exactly one search — hybrid — while `turn_search`
-also offers **grep**, a real regex (§7.2): a partial spelling, a path, a symbol, a word glued inside a
-longer CJK run, none of which the tokenizer or the vector sees. It is the mode the model reaches for
-increasingly often, and it is one the selection cannot ask for — so a missed selection costs a
-round-trip and buys a search the discriminator was never given.
+The two do not search alike, either. The selection has exactly one search — hybrid — while
+`turn_search` also offers **grep**, a real regex (§7.2): a partial spelling, a path, a symbol, a word
+glued inside a longer CJK run, none of which the tokenizer or the vector sees. It is a mode the
+selection cannot ask for, so a missed selection costs a round-trip and buys a search the
+discriminator was never given.
 
 **What the decision does to the context.** The rebuilt set is the union above, built from the stored
 rows by the same builder restore uses — so a context is reproducible from its id list, and a restart
@@ -671,7 +655,8 @@ The prompt splits **identity** from **world** so each role reads one coherent do
   the one part that carries persona.
 - **World** — one shared template included by both: the runtime spec — context policy, host
   platform, workspace paths, marker expectations, the credential chain, tool naming, skills, jobs,
-  subagents, and mesh info when configured. **Byte-identical in both roles.**
+  subagents, and mesh info when configured. Rendered from the same template in both roles, differing
+  only where a fact genuinely differs — today, one line: whether an operator is attached (§2.8).
 - **Dynamic** — the per-turn status prompt, rendered by the harness tool once per turn (§2.5).
 - **Profile** — `USER.md` in the agent's file cabinet: whatever the user wants held across sessions
   and in front of the model every turn — identity facts, working conventions, standing directives —
@@ -910,8 +895,10 @@ for — including asking for it not at all.
 
 **Prompt caching (Anthropic).** Each system message becomes a system content block and the **last**
 one is marked as the ephemeral cache breakpoint — the static base prompt becomes the cache breakpoint
-(§2.4). On by default for the first-party endpoint, off for compatible providers that may reject the
-field, overridable per model.
+(§2.4). It is on for the first-party endpoint and off for compatible providers that may reject the
+field, overridable per model. The test reads the **configured** `base_url`, so a first-party model
+that names no `base_url` — the client falls back to the official endpoint, the flag does not — gets
+caching off.
 
 **Anthropic alternation is mandatory.** Tool results are **coalesced** into one user message per
 batch, and a following user text message is merged into that same block — consecutive user messages
@@ -1214,8 +1201,8 @@ Its invariant is that it must be no smaller than the gateway's own establishment
 bounds summed, which is what keeps the line honest: it may not claim "synced" before those have
 expired. The retry is in the sum because a slow cold start spends the whole establishment bound
 installing packages, every connect dies on it together, and the answers arrive on the retry the
-gateway arms from that failure — a budget sized for one attempt expired 25s into it and reported 124
-of the 310 tools the same startup went on to mirror. Only the startup pass pays that budget: once the
+gateway arms from that failure — a budget sized for one attempt reported 124 of the 310 tools the
+same startup went on to mirror. Only the startup pass pays that budget: once the
 line is final, a mirror waits for one listing, because establishing a server mid-session is the
 gateway's own background job. The corollary is why it had to be written down: **no blocking work may
 run on an event loop** — a synchronous subprocess suspends every timer in that process, so one
@@ -1224,14 +1211,13 @@ two minutes of frozen gateway loop, thirteen expired connect bounds firing at on
 goes to a daemon thread.
 
 **A pass that is slow is not a pass that is wedged**, and the reconcile guard is where that
-distinction has to be made, so it is its own value on its own clock. It used to borrow the startup
-sync budget and measure it from the pass's *start* — two mistakes that compound: a legitimate pass is
-several sequential bounded awaits long, each allowed to take the whole budget, so the guard called
-those passes wedged at the instant their slowest mirror was about to answer (measured: passes ending
-at exactly `held=150.0s` against a 150s threshold, every later trigger coalesced behind them). The
-clock is now *idle time*, restarted by every await a pass completes — the §4.7 rule applied to the
-pass itself, live-but-long work bounded by inactivity — and its threshold must clear the longest
-await a pass can be inside, or the clock would fire while that await was still legitimately running.
+distinction has to be made, so it is its own value on its own clock — the rule above applied to the
+pass itself. The clock is *idle time*, restarted by every await a pass completes, and its threshold
+must clear the longest await a pass can be inside, or the clock fires while that await is still
+legitimately running. Borrowing the startup budget and measuring from the pass's *start* got both
+wrong at once: a legitimate pass is several sequential bounded awaits long, each allowed to take the
+whole budget, so the guard called those passes wedged at the instant their slowest mirror was about
+to answer.
 
 **And the budget alone cannot make the line honest.** A probe stops *waiting* on a server whose spawn
 failed — that is what `pending` excludes — but stopping the wait is not the same as having the tools,
@@ -1642,12 +1628,11 @@ for it.
 **The turn in flight is not context, so it is not sent** (§2.3's rule, applied at the boundary).
 The snapshot is taken *inside* the tool call that sends the task, so that turn is the parent's own
 unfinished business: the request it is answering, its reasoning, and the ``assistant(tool_calls=…)``
-doing the delegating. Sent, the worker's repair turned it into "(Tool execution interrupted)" — and
-the worker read it as *its own* interrupted action. A live test showed the whole failure: a worker
-seeded that way decided it was the parent, listed its own subagents, then wrote and ran a probe
-script continuing the parent's work, and the one-line task it had been sent was never answered. What
-a task needs from its parent is what the parent had *settled*, and a settled turn is exactly what
-carries a turn rowid — so the clone is the same "stored turns only" set a rebuild keeps.
+doing the delegating. Sent, the worker's repair turned it into "(Tool execution interrupted)" and the
+worker read it as *its own* interrupted action — a worker seeded that way has decided it was the
+parent and gone on with the parent's work instead of the task it was sent. What a task needs from its
+parent is what the parent had *settled*, and a settled turn is exactly what carries a turn rowid — so
+the clone is the same "stored turns only" set a rebuild keeps.
 
 **How to read the history is the worker's prompt, not the task's wrapper.** The seed *is*
 first-person material the worker never produced, so the reader of it has to be told: the worker's
@@ -1885,8 +1870,8 @@ fails every batch.
 **One manager is the lifecycle actor** — one object owning the binary gate, the embedder instance and
 an event-driven index drainer. It is document-generic, so each of the three stores drives its own
 instance and the three gates are independent. There is **one implementation and one subclass**: the
-turns database's is the base class, and the host's catalog subclasses it, overriding only the four
-five hooks where the catalog genuinely differs.
+turns database's is the base class, and the host's catalog subclasses it, overriding only the five
+hooks where the catalog genuinely differs.
 
 The gate opens exactly when the embedder is ready **and** nothing is left unembedded — there are no
 intermediate states, and **partial semantic results are never served**; while the gate is off, hybrid
@@ -2060,10 +2045,9 @@ So `file_read` returns a file's TEXT or refuses — a PDF, an image or an archiv
 made a read of a file with no text in it indistinguishable from a read of one that is genuinely full
 of gibberish.
 
-"No text" is not the same question as "is it UTF-8", and reading it as one was wrong twice over: it
-refused a `.txt` written by cmd (GBK) or redirected by PowerShell (UTF-16LE), which plainly has text
-in it, and it answered `text/plain` in one clause while calling the file "not text" in the next. A
-file in another encoding is now read, and the encoding is announced on the first line —
+"No text" is not the same question as "is it UTF-8", and reading it as one refuses text that plainly
+exists — a `.txt` written by cmd (GBK) or redirected by PowerShell (UTF-16LE). A
+file in another encoding is read, and the encoding is announced on the first line —
 `[decoded as gb18030; the file is not utf-8]` — because the one outcome still worth refusing is a
 *silent* wrong decode. UTF-8 (the cabinet's own writers, and the web) comes back verbatim with no
 header at all, a BOM settles the encoding before the binary sniff can mistake UTF-16 for a PDF, and a
@@ -2328,10 +2312,9 @@ comments is bad; writing a config that says something else is worse. The write i
 file, fsync, rename, preserving the existing file's mode) and the whole read→mutate→write window is
 held under a **cross-process** file lock, because the main process and a plugin child can both be
 editing the same file. That lock is taken by **non-blocking polling from the event loop**, never a
-blocking acquire: a blocking acquire inside an async timeout froze the loop for the whole timeout,
-and that freeze is a deadlock rather than a stall — tool calls run concurrently on one loop, so while
-the first edit holds the lock across its own await, the second's blocking acquire stops the loop and
-the first can never resume to release it. Acquire and release stay on one thread, because the lock's
+blocking acquire: tool calls run concurrently on one loop, so while the first edit holds the lock
+across its own await, a second's blocking acquire would stop the loop and the first could never
+resume to release it — a deadlock, not a stall. Acquire and release stay on one thread, because the lock's
 reentrancy counter is per-thread: taking it on a helper thread and releasing it on the caller would
 leave the OS lock held. A synchronous twin of the helper serves synchronous callers only, and an
 async caller with an await inside the block must use the polling path — the only one that keeps
