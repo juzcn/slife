@@ -846,10 +846,11 @@ class AgentLoop:
         """Messages of the trailing turns the store holds no row for.
 
         A turn carries its rowid as ``_turn_id`` once it is saved, so a live
-        turn without one is a turn the store cannot be asked for again — in a
-        worker, the parent's turn in flight, which its clone ends on.  A
-        rebuild replaces the message list from stored rows, so these come back
-        verbatim rather than being lost (``rebuild_messages``'s *carried*).
+        turn without one is a turn the store cannot be asked for again — the
+        main agent's own turn in flight when a save failed, and any history
+        seeded from outside the store.  A rebuild replaces the message list
+        from stored rows, so these come back verbatim rather than being lost
+        (``rebuild_messages``'s *carried*).
 
         The trailing run, not every unbacked turn: turns are saved in order, so
         anything unbacked is newer than everything backed — and a rebuild may
@@ -987,8 +988,7 @@ class AgentLoop:
         had_turns = len(history.messages) > 1
         # The turn in flight is not context: a selection names stored turns,
         # and a turn the store holds no row for is carried through untouched
-        # rather than silently dropped (a worker's seeded clone ends on its
-        # parent's in-flight turn, which is where the task came from).
+        # rather than silently dropped.
         history.rebuild_messages(turns, carried=self._carried_tail(live))
         # Deliberately NOT resetting the cached usage: `context_tokens_for`
         # reports the previous round's real API usage and returns 0 when there
@@ -1903,9 +1903,42 @@ class AgentLoop:
 
             history.add_tool_result(tc.id, result, is_error=is_error)
 
+        # The batch is PREEMPTED by the turn's cancellation, not merely skipped
+        # by it.  Cancellation is a flag checked at iteration boundaries, so a
+        # tool already running used to be left to its own timeout: an Esc — or
+        # a worker cancel, which is the same mechanism — released nothing, and
+        # a ``sleep 300`` (or a download, or an install) held the process for
+        # minutes.  On the worker that is its ONE task slot, so every later
+        # task queued behind a task its caller had already been told was
+        # preempted.
+        #
+        # Cancelling the gather is what reaches the tool: each tool that
+        # spawned a child kills the whole process tree on the way out
+        # (``_run_captured``), which is the part that actually frees the slot.
+        # The cancelled calls record no result — the save point's own repair
+        # fills the gap with "(Tool execution interrupted)", the same marker an
+        # interrupted turn has always carried.
+        cancel_wait = asyncio.create_task(self._cancel_event.wait())
+        batch = asyncio.gather(*(_run_one(tc) for tc in tool_calls))
         try:
-            await asyncio.gather(*(_run_one(tc) for tc in tool_calls))
+            await asyncio.wait(
+                {batch, cancel_wait}, return_when=asyncio.FIRST_COMPLETED,
+            )
         finally:
+            cancel_wait.cancel()
+            if not batch.done():
+                logger.info(
+                    "tool_batch_preempted calls=%d names=%s",
+                    len(tool_calls), ",".join(tc.name for tc in tool_calls),
+                )
+                batch.cancel()
+            # Awaited in both cases: a cancelled tool finishes its teardown
+            # (the kill) before this returns, and an unawaited gather leaves
+            # its exception unretrieved.
+            try:
+                await batch
+            except asyncio.CancelledError:
+                pass
             if _ctx is not None:
                 _ctx.message_history = _prev_conv
 
