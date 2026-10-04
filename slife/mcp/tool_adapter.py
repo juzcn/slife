@@ -267,8 +267,10 @@ def _route_for_server(server: str) -> ProxyRoute:
     Derived from the central plugin contract (:data:`PLUGIN_SPECS`) — a
     spec-declared child plugin is DIRECT (own MCP client), the gateway
     (``mcp``) is WRAPPER (extra config persistence hooks), anything else is
-    an EXTERNAL MCP server.  local-embed is NOT routed here — it is a
-    manually-started daemon, no longer a plugin.
+    an EXTERNAL MCP server.  ``local-embed`` is spec-declared like any other
+    child plugin and so routes DIRECT; it is also runnable standalone, in
+    which case it adopts the instance the user started rather than spawning
+    a second.
     """
     spec = PLUGIN_SPECS.get(server)
     if spec is not None:
