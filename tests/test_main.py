@@ -102,13 +102,18 @@ class TestMainFunction:
                 mock_app_cls.assert_called_once_with(mock_config)
 
     def test_main_logs_model_info(self, mock_config):
-        """main() logs model info before starting TUI."""
+        """The session log records model info before any host starts.
+
+        Patched on ``slife.bootstrap`` because that is where the boot lives —
+        both hosts share ``prepare_session``, so these lines belong to it and
+        not to either entry point.
+        """
         with patch("slife.Config.from_yaml", return_value=mock_config):
             with patch("slife.SlifeApp") as mock_app_cls:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("slife.bootstrap.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -123,7 +128,7 @@ class TestMainFunction:
             with patch("slife.SlifeApp") as mock_app_cls:
                 mock_app_cls.return_value.run = MagicMock()
 
-                with patch("slife.logger") as mock_logger:
+                with patch("slife.bootstrap.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -138,7 +143,7 @@ class TestMainFunction:
             with patch("slife.SlifeApp") as mock_app_cls:
                 mock_app_cls.return_value.run = MagicMock()
 
-                with patch("slife.logger") as mock_logger:
+                with patch("slife.bootstrap.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -186,6 +191,104 @@ class TestMainFunction:
                         )
 
 
+class TestHeadlessDispatch:
+    """`--headless` runs the same agent through a host with no terminal.
+
+    main() is the only place that knows which host it is starting, so this is
+    where the branch is pinned: the headless host runs, the TUI is never
+    built, and neither exit path skips the shared teardown.
+    """
+
+    @pytest.fixture
+    def mock_config(self):
+        from slife.config import Config, ModelConfig
+        return Config(
+            models=[ModelConfig(
+                ref="test/test-model",
+                provider="test",
+                api_model="test-model",
+                display_name="Test Model",
+                api_key="sk-test",
+            )],
+            active_model_ref="test/test-model",
+            tools=[],
+        )
+
+    def _main_with(self, argv, mock_config, run_headless):
+        import sys
+
+        with patch.object(sys, "argv", argv), \
+             patch("slife.Config.from_yaml", return_value=mock_config), \
+             patch("slife.bootstrap.previous_session_killed", return_value=None), \
+             patch("slife.bootstrap.note_session_start"), \
+             patch("slife.bootstrap.clear_session_marker"), \
+             patch("slife.SlifeApp", side_effect=AssertionError("TUI must not start")), \
+             patch("slife.headless.run_headless", run_headless):
+            from slife import main
+            main()
+
+    def test_headless_runs_the_headless_host_not_the_tui(self, mock_config):
+        run = MagicMock(return_value=(MagicMock(), ""))
+        self._main_with(["slife", "--headless", "--agent", "jack"], mock_config, run)
+        run.assert_called_once_with(mock_config)
+
+    def test_without_the_flag_the_tui_starts(self, mock_config):
+        """The other side of the branch — without `--headless` the app is
+        built, so the flag is what selects the host and nothing else is."""
+        import sys
+
+        with patch.object(sys, "argv", ["slife"]), \
+             patch("slife.Config.from_yaml", return_value=mock_config), \
+             patch("slife.bootstrap.previous_session_killed", return_value=None), \
+             patch("slife.bootstrap.note_session_start"), \
+             patch("slife.bootstrap.clear_session_marker"), \
+             patch("slife.headless.run_headless") as run, \
+             patch("slife.SlifeApp") as app_cls:
+            from slife import main
+            main()
+
+        run.assert_not_called()
+        app_cls.return_value.run.assert_called_once()
+
+    def test_a_fatal_headless_startup_exits_nonzero(self, mock_config):
+        """A startup that aborts must reach the shell, not vanish — there is
+        no screen to have shown it on."""
+        run = MagicMock(return_value=(None, "✗ Required component failed: memdb"))
+        with pytest.raises(SystemExit) as exc:
+            self._main_with(["slife", "--headless"], mock_config, run)
+        assert exc.value.code == 1
+
+    def test_headless_ctrl_c_exits_quietly(self, mock_config):
+        run = MagicMock(side_effect=KeyboardInterrupt)
+        self._main_with(["slife", "--headless"], mock_config, run)
+
+    def test_headless_host_imports_no_textual(self):
+        """`slife.headless` is a host, not a UI: importing it must not pull
+        the TUI toolkit in, or `--headless` would pay for a terminal library
+        it never draws with.  (``rich`` does come in — ``logfmt``'s console
+        handler uses it, and that is the base dependency stack, not a TUI.)
+
+        Checked in a fresh interpreter, because this one has already imported
+        the TUI for the other tests.
+        """
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "import sys; import slife.headless; "
+            "print(sorted(m for m in sys.modules "
+            "if m.split('.')[0] == 'textual' or m.startswith('slife.ui')))"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, encoding="utf-8", cwd=os.getcwd(),
+        )
+        # `slife.ui.i18n` is the one crossing, and it is stdlib-only — the
+        # same inversion slife/agent/service.py already documents.
+        assert out.stdout.strip() == "['slife.ui', 'slife.ui.i18n']", out.stdout + out.stderr
+
+
 class TestCliHelp:
     """`--help` answers on the command line, before anything heavy starts."""
 
@@ -199,7 +302,7 @@ class TestCliHelp:
             main()  # returns; never reaches the config/TUI imports
         out = capsys.readouterr().out
         assert "Usage: slife [options] [config-path]" in out
-        for flag in ("--agent", "--lang", "--headless", "-h, --help"):
+        for flag in ("--agent", "--headless", "--lang", "-h, --help"):
             assert flag in out
 
     def test_help_short_flag(self, capsys, monkeypatch):
@@ -222,26 +325,14 @@ class TestCliHelp:
                  if m.split(".")[0] in ("textual", "rich") or m.startswith("slife.ui")}
         assert not heavy, heavy
 
-    def test_headless_help_does_not_start_the_worker(self, capsys, monkeypatch):
-        """`--headless --help` would otherwise sit on stdin waiting for a parent."""
-        from slife.subagent import headless
-        with patch.object(headless.asyncio, "run",
+    def test_worker_help_does_not_start_the_worker(self, capsys):
+        """`python -m slife.subagent.worker --help` would otherwise sit on
+        stdin waiting for a parent that is never coming."""
+        from slife.subagent import worker
+        with patch.object(worker.asyncio, "run",
                           side_effect=AssertionError("worker loop must not start")):
-            headless.main(["prog", "--headless", "--help"])
+            worker.main(["prog", "--help"])
         assert "Usage: slife" in capsys.readouterr().out
-
-    def test_headless_flag_routes_to_the_worker(self, monkeypatch):
-        """The console script is `slife:main`, so it is the flag's other door."""
-        import sys
-
-        from slife import main
-        monkeypatch.setattr(sys, "argv", ["slife", "--headless", "conf.yaml"])
-        seen = {}
-        with patch("slife.subagent.headless.main",
-                   side_effect=lambda argv: seen.setdefault("argv", argv)):
-            main()
-        # --headless is stripped; the positional config path survives.
-        assert seen["argv"] == ["slife", "conf.yaml"]
 
 
 class TestMainModule:
@@ -294,7 +385,7 @@ class TestMainEnvLogging:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("slife.bootstrap.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -313,7 +404,7 @@ class TestMainEnvLogging:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("slife.bootstrap.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -331,7 +422,7 @@ class TestMainEnvLogging:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("slife.bootstrap.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -349,7 +440,7 @@ class TestMainEnvLogging:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("slife.bootstrap.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -367,7 +458,7 @@ class TestMainEnvLogging:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("slife.bootstrap.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -385,7 +476,7 @@ class TestMainEnvLogging:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("slife.bootstrap.logger") as mock_logger:
                     from slife import main
                     main()
 

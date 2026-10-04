@@ -230,8 +230,8 @@ class TestMessageHistoryConstruction:
     def test_from_history_repairs_a_snapshot_taken_mid_turn(self):
         """The clone is repaired — a snapshot taken mid-turn is not API-valid.
 
-        A subagent's clone is taken *inside* the tool call that spawned it, so
-        the parent's last message is the ``assistant(tool_calls=…)`` whose
+        A subagent's clone is taken *inside* the tool call that sends the task,
+        so the parent's last message is the ``assistant(tool_calls=…)`` whose
         results do not exist yet.  Sent as-is, every provider rejects it
         ("tool_calls must be followed by tool messages") and a worker — which
         fails fast, with no retry — would reject every cloned task.
@@ -240,7 +240,7 @@ class TestMessageHistoryConstruction:
             {"role": "user", "content": "go"},
             {"role": "assistant", "content": None, "tool_calls": [
                 {"id": "c1", "type": "function",
-                 "function": {"name": "spawn_subagent", "arguments": "{}"}},
+                 "function": {"name": "subagent_send_task", "arguments": "{}"}},
             ]},
         ]
         conv = MessageHistory.from_history("SUB_SYS", source)
@@ -270,6 +270,66 @@ class TestMessageHistoryConstruction:
         conv = MessageHistory.from_history("SUB_SYS", source)
         assert [m["role"] for m in conv.messages] == ["system", "user", "assistant"]
         assert conv.messages[2]["content"] == "b"
+
+
+class TestRebuildCarried:
+    """The per-turn rebuild's carried tail — turns the store has no row for."""
+
+    @staticmethod
+    def _turn(rowid: int, text: str) -> dict:
+        return {
+            "rowid": rowid, "user_message": f"{text} [INFO: {{}}]",
+            "messages": '[]', "created_at": "2026-01-01T00:00:00",
+        }
+
+    def test_carried_messages_follow_the_restored_turns(self):
+        """The unbacked turn is the newest, so it lands after the restored ones."""
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("old")
+        conv.add_assistant_message("old reply")
+        conv.rebuild_messages(
+            [self._turn(1, "stored")],
+            carried=[{"role": "user", "content": "in flight"},
+                     {"role": "assistant", "content": "working"}],
+        )
+        # The stored turn contributes its user message (its ``messages`` slice
+        # is empty in this fixture); the carried pair follows it verbatim.
+        assert [m["role"] for m in conv.messages] == [
+            "system", "user", "user", "assistant",
+        ]
+        assert conv.messages[1]["content"].startswith("stored")
+        assert conv.messages[2]["content"] == "in flight"
+        assert conv.messages[3]["content"] == "working"
+
+    def test_a_carried_tail_is_repaired_like_anything_else(self):
+        """A carried tail ending mid-tool-call is still made API-valid.
+
+        The rule is one invariant for the whole history, so the carried part
+        cannot be the one hole in it — a worker's clone ends exactly this way.
+        """
+        conv = MessageHistory(system_prompt="SYS")
+        conv.rebuild_messages([], carried=[
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "subagent_send_task", "arguments": "{}"}},
+            ]},
+        ])
+        assert [m["role"] for m in conv.messages] == [
+            "system", "user", "assistant", "tool", "assistant",
+        ]
+        assert conv.messages[3]["tool_call_id"] == "c1"
+
+    def test_no_carried_messages_is_the_plain_rebuild(self):
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("old")
+        conv.add_assistant_message("old reply")
+        conv.rebuild_messages([self._turn(1, "stored")])
+        # The rebuilt history ends on a user message, so the invariant's
+        # closing assistant line is added — carried or not.
+        assert [m["role"] for m in conv.messages] == [
+            "system", "user", "assistant",
+        ]
 
     def test_none_system_prompt(self):
         """None system prompt results in empty list."""

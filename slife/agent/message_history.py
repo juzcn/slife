@@ -562,9 +562,34 @@ class MessageHistory:
 
     def __init__(self, system_prompt: str | None = None):
         self.messages: list[dict] = []
+        #: Index of the user message that opened the turn currently running,
+        #: or ``None`` when no turn is in flight.  Set by ``AgentLoop.run``
+        #: when it appends the turn's user message and consumed by
+        #: ``save_to_memory`` — see :meth:`mark_turn_open`.
+        self._open_turn_index: int | None = None
         if system_prompt:
             self.messages.append({"role": "system", "content": system_prompt})
             logger.debug("conv_init sys_prompt_len=%d", len(system_prompt))
+
+    def mark_turn_open(self) -> None:
+        """Record that the message just appended opens the turn now running.
+
+        The save point needs to know WHICH turn to persist, and text cannot
+        answer that: heartbeat / timer / schedule content is constant, so a
+        search for a message whose text matches finds an older turn's.  The
+        loop appends the message, so it is the one that knows — and the index
+        is exact, where the search was a guess.
+        """
+        self._open_turn_index = len(self.messages) - 1
+
+    def take_open_turn(self) -> int | None:
+        """The open turn's index, clearing the mark; ``None`` when none is open.
+
+        Consumed rather than read: a turn is saved once, and a stale index
+        left behind would let the NEXT turn's save address this one.
+        """
+        index, self._open_turn_index = self._open_turn_index, None
+        return index
 
     @classmethod
     def from_history(
@@ -572,18 +597,18 @@ class MessageHistory:
     ) -> "MessageHistory":
         """Build a history seeded from an inherited message history.
 
-        Used by subagents with a cloned context: *messages* are the parent
-        agent's history (any system message is dropped), and the
-        subagent's own system prompt is prepended.  Messages are copied so
-        the source history is never mutated.
+        Used by a worker for each task it is sent: *messages* are the parent
+        agent's context (any system message is dropped), and the worker's own
+        system prompt is prepended.  Messages are copied so the source history
+        is never mutated.
 
         The copy gets the guarantee a rebuild and a restore get
         (:meth:`_ensure_turn_consistent`), because of when a snapshot is
-        taken: the parent is *inside* the tool call that spawned this
-        worker, so its last message is the ``assistant(tool_calls=…)``
-        whose results do not exist yet.  Sent as-is, every provider rejects
-        it ("tool_calls must be followed by tool messages") — and a worker
-        fails fast, so it would reject every cloned task.
+        taken: the parent is *inside* the tool call that sent this task, so
+        its last message is the ``assistant(tool_calls=…)`` whose results do
+        not exist yet.  Sent as-is, every provider rejects it ("tool_calls
+        must be followed by tool messages") — and a worker fails fast, so it
+        would reject every cloned task.
         """
         conv = cls(system_prompt=system_prompt)
         for msg in messages:
@@ -596,6 +621,8 @@ class MessageHistory:
     def rebuild_messages(
         self,
         turns: list[dict],
+        *,
+        carried: list[dict] | None = None,
     ) -> int:
         """Replace the context with a rebuild from *turns* (oldest-first).
 
@@ -605,6 +632,14 @@ class MessageHistory:
         turns by :func:`messages_from_turns`, the same builder session restore
         uses.  Sharing that builder is what makes a rebuilt turn render
         identically to a restored one.
+
+        *carried* is the messages of the turn(s) the store holds no row for —
+        a selection is a statement about *stored* turns, so a rebuild must not
+        drop what it cannot re-fetch.  They are appended after the restored
+        turns (chronology holds: a turn is unbacked only until it is saved, so
+        the unbacked ones are the newest) and then repaired with everything
+        else.  Reachable when a save returned no rowid — the last turn then
+        stays unstamped, and a rebuild would otherwise lose it silently.
 
         In place, and never by rebinding the object: the loop, the TUI handler
         and ``save_to_memory`` all hold this instance.
@@ -628,7 +663,10 @@ class MessageHistory:
             if self.messages and self.messages[0].get("role") == "system"
             else None
         )
-        self.messages = messages_from_turns(ordered, system_message=sys_msg)
+        built = messages_from_turns(ordered, system_message=sys_msg)
+        if carried:
+            built.extend(dict(m) for m in carried)
+        self.messages = built
         # The one invariant enforcer — a rebuild splices an arbitrary turn set,
         # so it gets the same guarantee on load that a restored history does.
         self._ensure_turn_consistent()
@@ -731,6 +769,10 @@ class MessageHistory:
         # history is already well-formed.
         content = sanitize_secrets(content)
         self.messages.append({"role": "user", "content": content})
+        # Appending a user message IS what opens a turn — every caller means
+        # it that way (the loop's main path and its vision-unsupported early
+        # return, which still produces a complete turn to persist).
+        self.mark_turn_open()
         logger.debug("conv_user text=%.80s", content)
 
     def add_assistant_message(

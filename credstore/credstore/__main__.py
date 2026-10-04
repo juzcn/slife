@@ -270,7 +270,10 @@ def _cmd_set_password() -> int:
     del pw2
 
     # ── Write new cryptfile ──
-    backend_mod.reinit_cryptfile(pw1)
+    # ``replace_existing`` on the change path: the current file is encrypted
+    # with the OLD password, and the keyring key setter only unlocks — a new
+    # password needs a new file.
+    backend_mod.reinit_cryptfile(pw1, replace_existing=is_change)
     del pw1
 
     if not backend_mod.has_master_key():

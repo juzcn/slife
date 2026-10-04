@@ -321,9 +321,20 @@ async def _poll_token(
                 data=poll_body,
                 headers={"Accept": "application/json"},
             )
-            resp.raise_for_status()
+            # RFC 8628 §3.5 carries its error codes (``authorization_pending``,
+            # ``slow_down``, ``access_denied``, ``expired_token`` …) in the BODY
+            # of an HTTP 400.  Raising on the status first turned every one of
+            # them into a generic HTTPError, so the branches below were
+            # unreachable: a denied or expired device code polled to the
+            # deadline and reported "timed out", and ``slow_down`` never
+            # widened the interval.  Read the body and let those branches
+            # decide; raise only when it carries nothing we can act on.
             token_data = resp.json()
-        except httpx2.HTTPError as e:
+            if not resp.is_success and not (
+                isinstance(token_data, dict) and token_data.get("error")
+            ):
+                resp.raise_for_status()
+        except (httpx2.HTTPError, ValueError) as e:
             logger.warning("oauth_poll_error server=%s err=%s", server_name, e)
             continue
 

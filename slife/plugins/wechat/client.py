@@ -407,40 +407,42 @@ class WechatClawbotClient:
 
     # ── Internal helpers ───────────────────────────────────────────────
 
-    async def _api_get(self, path: str, base_url: str = "") -> dict:
+    async def _api_request(
+        self, method: str, path: str, body: dict | None = None, base_url: str = "",
+    ) -> dict:
+        """One WeChat HTTP call: build the URL, send, decode, mask the log.
+
+        One implementation for both verbs — they were near-verbatim copies, so
+        every future change (a retry, a timeout, the secret masking) had to be
+        made twice, and the masking is the one that must never be forgotten:
+        ``get_qrcode_status`` carries the live bot_token in its body and the
+        log file is plaintext on disk.
+        """
         url = f"{base_url or self._base_url}/{path}"
         timeout = aiohttp.ClientTimeout(
             total=_timeouts.timeouts.transport.wechat_poll,
         )
+        headers = _make_headers(self._bot_token)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(
-                url, headers=_make_headers(self._bot_token),
-            ) as res:
+            if body is None:
+                request = session.get(url, headers=headers)
+            else:
+                request = session.post(url, headers=headers, json=body)
+            async with request as res:
                 text = await res.text()
-                # Masked: get_qrcode_status carries the live bot_token in this
-                # body, and the log file is plaintext on disk.
-                logger.debug("http_request method=GET url=%s status=%s body=%.200s",
-                             path, res.status, sanitize_secrets(text))
+                logger.debug(
+                    "http_request method=%s url=%s status=%s body=%.200s",
+                    method, path, res.status, sanitize_secrets(text),
+                )
                 try:
                     return json.loads(text)
                 except Exception:
                     return {}
 
+    async def _api_get(self, path: str, base_url: str = "") -> dict:
+        return await self._api_request("GET", path, base_url=base_url)
+
     async def _api_post(
         self, path: str, body: dict, base_url: str = "",
     ) -> dict:
-        url = f"{base_url or self._base_url}/{path}"
-        timeout = aiohttp.ClientTimeout(
-            total=_timeouts.timeouts.transport.wechat_poll,
-        )
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                url, json=body, headers=_make_headers(self._bot_token),
-            ) as res:
-                text = await res.text()
-                logger.debug("http_request method=POST url=%s status=%s body=%.200s",
-                             path, res.status, sanitize_secrets(text))
-                try:
-                    return json.loads(text)
-                except Exception:
-                    return {}
+        return await self._api_request("POST", path, body, base_url=base_url)

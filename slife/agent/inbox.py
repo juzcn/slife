@@ -532,8 +532,12 @@ class Inbox:
             # Reset cancel state for the new message
             self._agent_loop.reset_cancel()
 
-            # Get or create history for this source
-            history = self._histories.get_or_create(msg.source)
+            # Get or create history for this source.  A worker's store seeds
+            # one history per task from the clone that travelled with the
+            # message; the main agent's ignores it.
+            history = self._histories.get_or_create(
+                msg.source, seed=msg.context_seed,
+            )
 
             # Prefer the handler attached to the message (TUI path); a remote
             # A2A message that carries none gets the startup factory's.
@@ -800,7 +804,9 @@ class MessageHistoryStore:
             return self._default_handler_factory()
         return None
 
-    def get_or_create(self, source: AgentName) -> MessageHistory:
+    def get_or_create(
+        self, source: AgentName, *, seed: list[dict] | None = None,
+    ) -> MessageHistory:
         """Get the main agent's shared history.
 
         The main agent has ONE context: every message that enters the
@@ -808,7 +814,9 @@ class MessageHistoryStore:
         trigger, a scheduled run, or a subagent completion — is a user
         message into the same history.  *source* only labels who sent
         it (the turn's ``channel`` column and the TUI prefix); it never
-        selects a different context.
+        selects a different context.  *seed* is the worker store's
+        per-task clone and is ignored here — a continuous context has
+        nothing to seed.
         """
         from slife.a2a.identity import HUMAN
 
@@ -853,11 +861,11 @@ class WorkerHistoryStore(MessageHistoryStore):
     """A worker's histories: one fresh history per task, nothing carried over.
 
     A subagent's turns are ephemeral by design (``DESIGN.md`` §6): each task
-    runs on its own context, seeded — when the parent sent a clone — from the
-    parent's history as it stood at spawn.  The seed is read through
-    *context_provider* at creation time, so a clone that arrives before the
-    first task is the seed, and one that arrives later cannot retroactively
-    rewrite a history already in flight.
+    runs on its own context, seeded from the clone its parent sent *with that
+    task* — the parent's conversation as it stood when the task was sent.  The
+    seed arrives as an argument rather than through a provider, because it is
+    per task: the worker posts every task it is sent, so a value read at
+    creation time would seed whichever task happened to be created last.
 
     It lives beside the main agent's store, and ``AgentService`` picks between
     the two from its role (``slife/agent/roles.py``).  It used to live in the
@@ -866,17 +874,13 @@ class WorkerHistoryStore(MessageHistoryStore):
     were applied *outside* the service that owns them.
     """
 
-    def __init__(
-        self,
-        system_prompt: str,
-        context_provider: "Callable[[], list[dict] | None]",
-    ):
+    def __init__(self, system_prompt: str):
         super().__init__(system_prompt)
-        self._context_provider = context_provider
 
-    def get_or_create(self, source: AgentName) -> MessageHistory:
+    def get_or_create(
+        self, source: AgentName, *, seed: list[dict] | None = None,
+    ) -> MessageHistory:
         """A fresh history for this task — the cloned context, or an empty one."""
-        messages = self._context_provider()
-        if messages:
-            return MessageHistory.from_history(self._system_prompt, messages)
+        if seed:
+            return MessageHistory.from_history(self._system_prompt, seed)
         return MessageHistory(system_prompt=self._system_prompt)

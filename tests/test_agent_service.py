@@ -1619,7 +1619,7 @@ class TestAgentServiceMCPDiscovery:
 class TestAgentServicePluginRescan:
     """Runtime tool-set resync for plugins that mutate their own tools
     (job-coding registers/removes job tools on the fly) — the generic
-    ``_rescan_plugin_tools`` diff, mirroring the external-server diff."""
+    ``_sync_plugin_tools`` diff, mirroring the external-server diff."""
 
     @staticmethod
     def _tool(name):
@@ -1654,7 +1654,7 @@ class TestAgentServicePluginRescan:
         names = {t.name for t in service.tool_registry.list_tools()}
         assert "translate" not in names
 
-        await service._rescan_plugin_tools("job-coding")
+        await service._sync_plugin_tools("job-coding")
 
         names = {t.name for t in service.tool_registry.list_tools()}
         assert "translate" in names
@@ -1671,7 +1671,7 @@ class TestAgentServicePluginRescan:
         service.tool_registry.register(SimpleNamespace(name="translate"))
         service.tool_registry.register(SimpleNamespace(name="gone"))
 
-        await service._rescan_plugin_tools("job-coding")
+        await service._sync_plugin_tools("job-coding")
 
         names = {t.name for t in service.tool_registry.list_tools()}
         assert "translate" in names
@@ -1680,7 +1680,7 @@ class TestAgentServicePluginRescan:
     @pytest.mark.asyncio
     async def test_rescan_filters_internal_tools(self, sample_config):
         service = self._service_with(sample_config, names=["__check", "translate"])
-        await service._rescan_plugin_tools("job-coding")
+        await service._sync_plugin_tools("job-coding")
         names = {t.name for t in service.tool_registry.list_tools()}
         assert "translate" in names
         assert "__check" not in names
@@ -1692,7 +1692,7 @@ class TestAgentServicePluginRescan:
         service = self._service_with(sample_config, names=[])
         service._plugins["job-coding"].client = client
         service.tool_registry.register(SimpleNamespace(name="keep"))
-        await service._rescan_plugin_tools("job-coding")
+        await service._sync_plugin_tools("job-coding")
         names = {t.name for t in service.tool_registry.list_tools()}
         assert "keep" in names
 
@@ -1777,7 +1777,7 @@ class TestAgentServiceConnectPluginHttp:
             await service.connect_plugin_http("job-coding", 12345)
         assert client.on_notification is not None
         # The generic handler is the _handler closure (async func) — wiring
-        # is present when set; the rescan itself is covered by _rescan_plugin_tools.
+        # is present when set; the rescan itself is covered by _sync_plugin_tools.
         assert callable(client.on_notification)
 
     @pytest.mark.asyncio
@@ -1860,6 +1860,39 @@ class TestAgentServiceMemory:
         even with memdb disconnected (the extraction returns None first)."""
         service = AgentService(sample_config)  # memdb not connected
         await service.save_to_memory(user_message="test", token_count=100)
+
+    @pytest.mark.asyncio
+    async def test_a_turn_that_never_started_saves_nothing(self, sample_config):
+        """Constant turn text must not make an unstarted turn save a lookalike.
+
+        Heartbeat / timer / schedule turns carry the same content every time,
+        and the save used to locate its turn by searching backwards for a
+        message with matching text.  A turn that dies before its user message
+        is appended — ``_recall_and_rebuild`` can raise — therefore matched the
+        PREVIOUS such turn and re-saved it as a fresh row.
+
+        The save point now uses the turn the loop marked as open.  The plugin
+        here answers ``{}``, so no ``turn_id`` comes back and the first turn's
+        message is left UNANNOTATED — exactly the state the old text search
+        needed to match.
+        """
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(return_value="{}")
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.message_history
+        conv.add_user_message("HEARTBEAT")
+        conv.add_assistant_message("nothing to do")
+        await service.save_to_memory(user_message="HEARTBEAT", history=conv)
+        assert mock_client.call_tool.await_count == 1
+        assert conv.messages[-1].get("_turn_id") is None  # annotation did not land
+
+        # The next turn dies before it opens: the history is untouched, its
+        # text is identical, and there is no turn to persist.
+        await service.save_to_memory(user_message="HEARTBEAT", history=conv)
+        assert mock_client.call_tool.await_count == 1, "re-saved an earlier turn"
 
     @pytest.mark.asyncio
     async def test_save_to_memory_memdb_down_raises(self, sample_config):

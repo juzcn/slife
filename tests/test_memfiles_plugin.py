@@ -1716,6 +1716,31 @@ class TestMemfilesStore:
             await store.close()
 
     @pytest.mark.asyncio
+    async def test_a_datetime_bound_still_matches_a_diary(self, tmp_path):
+        """Every kind's ``ts`` is one datetime axis, so one bound narrows all.
+
+        The diary arm built its ts as ``'YYYY-MM-DD 00:00:00'`` — a SPACE
+        where every other kind had ISO ``T``. The window compares ``d.ts >= ?``
+        as TEXT, and ' ' (0x20) sorts below 'T' (0x54), so a diary was silently
+        dropped from any search whose bound carried a time. Date-only bounds
+        compare equal on the date prefix, which is why only this shape caught
+        it."""
+        store = await _real_store(tmp_path)
+        try:
+            await store.upsert_diary("2026-10-03", "apples and pears", "fruit")
+
+            assert [h["id"] for h in await store.keyword_hits(
+                query="apples", kind="diary", limit=5,
+                since="2026-10-03T00:00:00",
+            )] == ["diary:1"]
+            # …and the axis still excludes a day outside the window.
+            assert await store.keyword_hits(
+                query="apples", kind="diary", limit=5, since="2026-10-04",
+            ) == []
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
     async def test_search_window_covers_every_mode(self, tmp_path):
         """since/until window each mode on ``created_at`` — the column and the
         datetime granularity memdb's ``turn_search`` uses, so one bound narrows

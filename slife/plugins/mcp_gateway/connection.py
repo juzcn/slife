@@ -32,7 +32,6 @@ policy ``MCPClient`` already applies to plugin links (DESIGN.md).
 """
 
 import asyncio
-import json
 import logging
 import os
 import subprocess as _subprocess
@@ -55,10 +54,7 @@ from slife.plugins.mcp_gateway.client import (
     close_exit_stack_bounded,
     make_local_http_client,
 )
-from mcp.types import (
-    TextContent,
-    ImageContent,
-)
+from slife.mcp.content import format_content_blocks
 
 from slife.plugins.mcp_gateway import __version__
 from slife.plugins.mcp_gateway.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
@@ -461,12 +457,17 @@ class MCPServerConnection:
                 text = chunk.decode("utf-8", errors="replace").rstrip()
                 if not text:
                     continue
+                # Mask BEFORE buffering, not just before logging.  The buffer
+                # feeds ``_record_error`` -> ``last_error``, which reaches the
+                # model through ``mcp_list_tools``' note and ``system_health``'s
+                # diagnosis — so a child that echoes a token on stderr put it
+                # verbatim in a tool result while the log copy was masked.
+                text = sanitize_secrets(text)
                 self._stderr_buffer.append(text + "\n")
                 if len(self._stderr_buffer) > _STDERR_BUFFER_LIMIT:
                     del self._stderr_buffer[: len(self._stderr_buffer) - _STDERR_BUFFER_LIMIT]
                 logger.debug(
-                    "mcp_stderr server=%s line=%s",
-                    self.config.name, sanitize_secrets(text),
+                    "mcp_stderr server=%s line=%s", self.config.name, text,
                 )
         except asyncio.CancelledError:
             pass
@@ -1047,23 +1048,13 @@ class MCPServerConnection:
             await self._notify_tools_changed()
 
         # Format content blocks (SDK typed blocks → strings).  The SDK's
-        # CallToolResult carries ``is_error`` (snake_case, mcp-types ≥2.1).
-        if getattr(result, "is_error", False):
-            parts = [b.text for b in result.content if isinstance(b, TextContent)]
-            return "Error: " + "\n".join(parts)
-
-        parts: list[str] = []
-        for block in result.content:
-            if isinstance(block, TextContent):
-                parts.append(block.text)
-            elif isinstance(block, ImageContent):
-                parts.append(f"[image: {getattr(block, 'mime_type', '')} {len(block.data)} bytes]")
-            else:
-                try:
-                    parts.append(block.model_dump_json())
-                except Exception:
-                    parts.append(str(block))
-        return "\n".join(parts) if parts else json.dumps(result.model_dump())
+        # The one block → string walk both transports share (see
+        # slife.mcp.content).  No ``save_image``: a pooled external server's
+        # binary result is DESCRIBED rather than materialized — this side keeps
+        # no temp-file registry to clean up at disconnect, and the model is
+        # told what came back.  ``dump_on_empty`` keeps a server that answers
+        # with only ``structuredContent`` visible.
+        return format_content_blocks(result, dump_on_empty=True)
 
     async def _call_on_session(self, tool_name: str, arguments: dict) -> Any:
         session = self._session

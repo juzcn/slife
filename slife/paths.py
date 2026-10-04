@@ -80,15 +80,21 @@ def get_tools_config_path() -> Path:
 
 
 def get_tools_db_path() -> Path:
-    """Path to the unified tool-catalog database (``tools.db``).
+    """Path to the unified tool-catalog database (``<agent>.tools.db``).
 
     ``SLIFE_TOOLS_DB`` wins when set (a test/dev override — mirrors
-    ``SLIFE_MEMDB_DB``), else ``<data_dir>/tools.db``.
+    ``SLIFE_MEMDB_DB``), else the per-agent catalog under the data dir.
+    Per-agent for the same reason the turns db is: the catalog's ownership
+    model names ONE writer process (``caps.catalog_owner`` and the drainer),
+    and its load/evict budget is one number per database — so two agents on
+    one file are two owners racing on upsert-then-purge, sharing one budget,
+    and evicting each other's loaded tools.
     """
     env_path = os.environ.get("SLIFE_TOOLS_DB")
     if env_path:
         return Path(env_path)
-    return get_data_dir() / "tools.db"
+    agent = os.environ.get("SLIFE_AGENT_NAME", "slife")
+    return get_data_dir() / f"{agent}.tools.db"
 
 
 def get_logs_dir() -> Path:
@@ -124,6 +130,22 @@ def get_memdb_db_path(agent_name: str = "slife") -> Path:
     if env_path:
         return Path(env_path)
     return get_db_path(agent_name)
+
+
+def get_a2a_inbound_path(agent_name: str = "slife") -> Path:
+    """Path to the A2A inbound-task ledger for *agent_name*.
+
+    ``SLIFE_A2A_INBOUND`` wins when set (a test/dev override), else the
+    per-agent ledger beside the database — the A2A counterpart of
+    :func:`get_db_path`, and per-agent for the same reason: the ledger's
+    premise is one process ("what is on disk is what my predecessor died
+    holding"), which a file shared by two agents on one machine would break.
+    """
+    env_path = os.environ.get("SLIFE_A2A_INBOUND")
+    if env_path:
+        return Path(env_path)
+    agent = os.environ.get("SLIFE_AGENT_NAME", agent_name)
+    return get_data_dir() / f"a2a_inbound_{agent}.yaml"
 
 
 def get_db_path(agent_name: str = "slife") -> Path:

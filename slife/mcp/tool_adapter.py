@@ -157,13 +157,16 @@ class MCPProxyTool(Tool):
         if self._route == ProxyRoute.WRAPPER:
             # MCP wrapper management tools — direct call with config
             # persistence callbacks.
-            source = kwargs.pop("source", None)
-            if not isinstance(source, dict):
-                source = None
-
+            #
+            # ``source`` is provenance the GATEWAY persists into its own
+            # tools.yaml, so it must reach ``mcp_set`` intact — popping it here
+            # made the advertised parameter silently discardable, and no new
+            # server could record where its definition came from.  The
+            # slife-side callback below still receives it, read back out of
+            # the same kwargs.
             result = await self._mcp_client.call_tool(self._tool_name, kwargs)
 
-            await self._handle_set(result, source, **kwargs)
+            await self._handle_set(result, **kwargs)
             await self._handle_remove(result, **kwargs)
         elif self._route == ProxyRoute.DIRECT:
             # Built-in plugin tools (memdb, wechat) — call directly
@@ -184,11 +187,14 @@ class MCPProxyTool(Tool):
 
     # ── Callback helpers ────────────────────────────────────────────
 
-    async def _handle_set(self, result: str, source: dict | None, **kwargs) -> None:
+    async def _handle_set(self, result: str, **kwargs) -> None:
         """Register tools for a server that mcp_set / mcp_set_enabled connected.
 
         Config persistence happens inside the gateway (its own tools.yaml);
         the slife-side callbacks only refresh the tool registry."""
+        source = kwargs.get("source")
+        if not isinstance(source, dict):
+            source = None
         if self._tool_name not in (_MCP_SET, _MCP_SET_ENABLED) or not (self._on_server_added or self._on_server_updated):
             return
         try:
@@ -267,8 +273,10 @@ def _route_for_server(server: str) -> ProxyRoute:
     Derived from the central plugin contract (:data:`PLUGIN_SPECS`) — a
     spec-declared child plugin is DIRECT (own MCP client), the gateway
     (``mcp``) is WRAPPER (extra config persistence hooks), anything else is
-    an EXTERNAL MCP server.  local-embed is NOT routed here — it is a
-    manually-started daemon, no longer a plugin.
+    an EXTERNAL MCP server.  ``local-embed`` is spec-declared like any other
+    child plugin and so routes DIRECT; it is also runnable standalone, in
+    which case it adopts the instance the user started rather than spawning
+    a second.
     """
     spec = PLUGIN_SPECS.get(server)
     if spec is not None:

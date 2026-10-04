@@ -237,10 +237,6 @@ mcp:
         version: latest
         description: Official SQLite MCP reference server
         fetched_at: '2026-08-02T00:05:14.333705+00:00'
-# OpenAPI-described external APIs.  Each entry is an ordinary
-# `uvx mcp-openapi-proxy` invocation — belonging to this section is what makes
-# it a REST API, and every endpoint in its spec becomes a `{name}__{endpoint}`
-# tool.
     arxiv:
       url: https://arxiv.mcp.brunosan.de/mcp
       description: arXiv paper search, download and reading for AI/ML/NLP/CV/robotics — free, no API key, uses the public arXiv API.
@@ -260,6 +256,10 @@ mcp:
       env:
         HASDATA_API_KEY: ${HASDATA_API_KEY}
       description: Google Scholar search results, citation counts and citation export formats, as structured JSON (HasData). Local stdio build; credential via HASDATA_API_KEY.
+# OpenAPI-described external APIs.  Each entry is an ordinary
+# `uvx mcp-openapi-proxy` invocation — belonging to this section is what makes
+# it a REST API, and every endpoint in its spec becomes a `{name}__{endpoint}`
+# tool.
 rest-api:
   github:
     command: uvx

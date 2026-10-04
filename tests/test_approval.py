@@ -175,7 +175,7 @@ class TestAgentLoopApproval:
 
     @pytest.mark.asyncio
     async def test_no_handler_auto_approves(self):
-        """headless/subagent (no handler) → `_approve` auto-approved."""
+        """worker/subagent (no handler) → `_approve` auto-approved."""
         tool = _TrackingTool()
         registry = MagicMock()
         registry.get.return_value = tool

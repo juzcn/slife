@@ -46,8 +46,16 @@ def _masked_input_windows() -> str:
                 chars.pop()
                 sys.stdout.write("\b \b")
                 sys.stdout.flush()
-        elif ch == "\x1b":  # Escape sequence (arrow keys, etc.)
-            # Read the rest of the escape sequence and ignore it
+        elif ch in ("\x00", "\xe0"):
+            # The Windows console's extended-key prefix — arrows, Home/End and
+            # the F-keys all arrive as one of these followed by a scan code in
+            # a SECOND getwch().  ``\xe0`` is 224, so the printable test below
+            # took it AND its scan code (e.g. 'K') straight into the secret;
+            # only ``\x00`` was low enough to be dropped, and its scan code
+            # still leaked.  Consume the pair, keep neither.
+            msvcrt.getwch()
+        elif ch == "\x1b":  # a stray Escape key
+            # Read the rest of the sequence (if any) and ignore it
             while msvcrt.kbhit():
                 msvcrt.getwch()
         elif ord(ch) >= 32:  # Printable characters only

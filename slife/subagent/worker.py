@@ -1,4 +1,4 @@
-"""Headless Slife — worker-scoped JSON-RPC 2.0 over stdin/stdout.
+"""Slife worker — worker-scoped JSON-RPC 2.0 over stdin/stdout.
 
 A subagent is an *agent worker*: a local child process that runs a full
 agent loop.  The control channel is a worker protocol (``worker/*``), not
@@ -25,13 +25,13 @@ import threading
 from pathlib import Path
 
 from slife.server_utils import setup_server_logging, shutdown_server_logging
-from slife.logfmt import PROTOCOL_LINE_LIMIT, discard_overlong_line, elapsed
+from slife.logfmt import PROTOCOL_LINE_LIMIT, elapsed, read_line_bounded
 from slife.agent.roles import Role
 
 logger = logging.getLogger("slife_subagent")
 
 
-#: Set by ``run_headless`` — log path so callers can find it.
+#: Set by ``run_worker`` — log path so callers can find it.
 _log_path: Path | None = None
 
 
@@ -85,7 +85,7 @@ def cancelled_reply_text(reply_text: str, stop_reason: str = "") -> str:
     return f"Error: task cancelled before completion{why}"
 
 
-async def run_headless(argv: list[str] | None = None) -> None:
+async def run_worker(argv: list[str] | None = None) -> None:
     # ``argv`` carries the FULL command line (program name included) — the
     # shared CLI scanner (``parse_cli_config_path``) slices ``argv[1:]``
     # itself.  Callers MUST pass ``sys.argv`` as-is (a stripped argv would
@@ -173,10 +173,10 @@ async def run_headless(argv: list[str] | None = None) -> None:
     # thread calling os.read() instead, which bypasses IOCP and works
     # reliably on pipe handles across all platforms.
     loop = asyncio.get_running_loop()
-    # One stdin protocol line can be the whole cloned parent history (the
-    # "context" message) — far beyond StreamReader's 64 KB default.  Raise
-    # the limit so an honest context is never misread as over-long; an
-    # over-long line beyond even the cap is discarded below, not fatal.
+    # One stdin protocol line can be a whole task plus the clone that travelled
+    # with it — far beyond StreamReader's 64 KB default.  Raise the limit so an
+    # honest context is never misread as over-long; an over-long line beyond
+    # even the cap is discarded below, not fatal.
     reader = asyncio.StreamReader(limit=PROTOCOL_LINE_LIMIT)
 
     def _feed_stdin() -> None:
@@ -194,7 +194,7 @@ async def run_headless(argv: list[str] | None = None) -> None:
     threading.Thread(target=_feed_stdin, daemon=True).start()
 
     # ── Unified inbox (the same machinery as the main agent) ──────────
-    # The subagent is a headless agent worker: identical loop, identical
+    # The subagent is a worker: identical loop, identical
     # Esc-equivalent cancel.  Its per-role differences — no turn persistence,
     # a one-shot history per task, no heartbeat/scheduler/host server, the
     # catalog queried rather than maintained — are the ROLE's and are wired by
@@ -210,15 +210,12 @@ async def run_headless(argv: list[str] | None = None) -> None:
     request_count = 0
     try:
         while True:
-            try:
-                line = await reader.readline()
-            except ValueError:
-                # LimitOverrunError — a single line beyond the reader limit.
-                # Discard its remainder and keep the worker alive; one
-                # pathological line must never tear down the whole worker
-                # (only JSONDecodeError was caught before — this path would
-                # otherwise kill the child on a long context).
-                dropped = await discard_overlong_line(reader)
+            # A line beyond the reader limit is discarded and the worker stays
+            # alive; one pathological line must never tear down the whole
+            # worker (only JSONDecodeError was caught before — this path would
+            # otherwise kill the child on a long context).
+            line, dropped = await read_line_bounded(reader)
+            if dropped or line is None:
                 logger.warning(
                     "subagent_stdin_line_overlong_discarded min_bytes=%d",
                     dropped,
@@ -250,21 +247,6 @@ async def run_headless(argv: list[str] | None = None) -> None:
             if method == "shutdown":
                 logger.info("subagent_shutdown requested task_count=%d", request_count)
                 break
-            elif method == "context":
-                # Cloned parent context, sent over stdin at spawn time.  It is
-                # the service's field, not this module's: the worker's history
-                # store reads it when a task creates its history.
-                messages = params.get("messages")
-                if isinstance(messages, list):
-                    service.inherited_context = messages
-                    logger.info(
-                        "subagent_context_received messages=%d", len(messages),
-                    )
-                else:
-                    logger.warning(
-                        "subagent_context_bad_shape type=%s",
-                        type(messages).__name__,
-                    )
             elif method == "worker/cancel":
                 # True cancellation: drop it if still queued, or preempt the
                 # running loop (same Esc mechanism as the main agent).
@@ -301,6 +283,15 @@ async def run_headless(argv: list[str] | None = None) -> None:
             elif method == "worker/send":
                 request_count += 1
                 task_text = params.get("task", "")
+                # The clone the parent took when it sent THIS task — it travels
+                # with the task, so a worker's several queued sends each keep
+                # the context their own send saw (see ``context_seed``).
+                seed = params.get("seed")
+                if seed is not None and not isinstance(seed, list):
+                    logger.warning(
+                        "subagent_seed_bad_shape type=%s", type(seed).__name__,
+                    )
+                    seed = None
                 if not task_text:
                     _write(
                         error={"code": -32602, "message": "Invalid params: task required"},
@@ -322,14 +313,18 @@ async def run_headless(argv: list[str] | None = None) -> None:
                     _write(result=reply_text, rpc_id=rid)
                     _notify("worker/complete", {"task_id": str(rid)})
 
-                # The task text is posted as-is: routing back to the parent is
-                # by correlation_id and the _reply closure, never by the text,
-                # and each task gets a fresh one-shot context (no cross-task
-                # disambiguation needed).
+                # The task text is posted as-is: it is the parent's own
+                # words, and how to read the history it lands in — the last
+                # message is the task, what precedes it is a copy of the
+                # parent's context — is the worker's system prompt, stated once
+                # per process rather than wrapped around every task.  Routing
+                # back to the parent is by correlation_id and the _reply
+                # closure, never by the text.
                 await service.inbox.post(AgentMessage(
                     source=_source,
                     content=task_text,
                     correlation_id=str(rpc_id) if rpc_id else "",
+                    context_seed=seed,
                     on_reply=_reply,
                     channel=Channel.subagent(str(_source)),
                 ))
@@ -358,17 +353,17 @@ async def run_headless(argv: list[str] | None = None) -> None:
 def main(argv: list[str] | None = None) -> None:
     args = list(argv) if argv is not None else sys.argv
     # `--help` answers BEFORE the worker loop starts: that loop reads stdin
-    # for JSON-RPC, so `--headless --help` would otherwise sit waiting for a
-    # parent that is never coming.
+    # for JSON-RPC, so `--help` would otherwise sit waiting for a parent that
+    # is never coming.
     from slife.config import CLI_USAGE, parse_cli_help
 
     if parse_cli_help(args):
         print(CLI_USAGE, end="")
         return
-    asyncio.run(run_headless(args))
+    asyncio.run(run_worker(args))
 
 
 if __name__ == "__main__":
-    # Full argv (program name included) — ``run_headless`` → the CLI scanner
+    # Full argv (program name included) — ``run_worker`` → the CLI scanner
     # expects it and slices ``argv[1:]`` itself.
     main(sys.argv)

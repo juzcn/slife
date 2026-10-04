@@ -102,10 +102,7 @@ def clear_manager() -> None:
 class SubagentProcess:
     """Single subagent child process with JSON-RPC 2.0 IPC."""
 
-    def __init__(
-        self, name: str, config: "Config",
-        context_source: str = "clean", context_messages: list[dict] | None = None,
-    ):
+    def __init__(self, name: str, config: "Config"):
         import json as _json
 
         self._name = name
@@ -115,8 +112,6 @@ class SubagentProcess:
         # config contains resolved plaintext api_keys, which must not ride the
         # process env (visible via /proc/<pid>/environ).
         self._config_file: str | None = None
-        self._context_source = context_source
-        self._context_messages = context_messages
         self._process: asyncio.subprocess.Process | None = None
         self._running = False
         self._stdout_task: asyncio.Task | None = None
@@ -167,10 +162,6 @@ class SubagentProcess:
         """Number of tasks sent but not yet resolved (in-flight + queued)."""
         return len(self._awaiting)
     @property
-    def context_source(self) -> str:
-        """How this worker's context was built: ``"clean"`` or ``"cloned"``."""
-        return self._context_source
-    @property
     def pending_async_count(self) -> int:
         """Number of async tasks sent but not yet completed."""
         return sum(
@@ -180,7 +171,7 @@ class SubagentProcess:
 
     async def start(self) -> None:
         if self._running: return
-        cmd = [sys.executable, "-m", "slife.subagent.headless"]
+        cmd = [sys.executable, "-m", "slife.subagent.worker"]
         logger.info("spawn name=%s", self._name)
         env = dict(os.environ)
         env["SLIFE_SUBAGENT_NAME"] = self._name
@@ -206,7 +197,6 @@ class SubagentProcess:
                 raise
             self._config_file = path
             env["SLIFE_CONFIG_FILE"] = path
-        env["SLIFE_SUBAGENT_CONTEXT"] = self._context_source
         # The a2a plugin port (SLIFE_A2A_PORT) is inherited from os.environ
         # above — the subagent reuses the main agent's mesh channel.  The
         # a2a plugin owns the main agent's identity.
@@ -217,30 +207,17 @@ class SubagentProcess:
                 *cmd, stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
             self._running = True
-            # Start the stdout/stderr readers BEFORE writing the (potentially
-            # large) cloned context to stdin: the child only reads stdin after
-            # finishing its own boot (plugin connects etc.), meanwhile stderr is
-            # at DEBUG.  With no reader yet, a build-up of >~64 KB of stderr
-            # blocks the child, which then never reads stdin, which blocks our
-            # drain() below — both stuck until the registry's ready.spawn timeout
-            # kills it.  (Same class as the prior stderr relay pipe-wedge.)  Do NOT call
-            # _read_one() concurrently: two readline() calls on the same
-            # StreamReader cause "readuntil() called while another coroutine
-            # is already waiting for incoming data".
+            # Start the stdout/stderr readers BEFORE anything writes to stdin:
+            # the child boots with stderr at DEBUG and only then reads its first
+            # task.  With no reader yet, a build-up of >~64 KB of stderr blocks
+            # the child, which then never signals ready — stuck until the
+            # registry's ready.spawn timeout kills it.  (Same class as the prior
+            # stderr relay pipe-wedge.)  Do NOT call _read_one() concurrently:
+            # two readline() calls on the same StreamReader cause
+            # "readuntil() called while another coroutine is already waiting for
+            # incoming data".
             self._stdout_task = asyncio.create_task(self._read_stdout())
             self._stderr_task = asyncio.create_task(self._read_stderr())
-
-            # Cloned context rides the stdin JSON-RPC channel (env is limited to
-            # ~32 KB on Windows — too small for a conversation).
-            proc = self._process
-            if self._context_messages and proc is not None and proc.stdin is not None:
-                ctx_msg = json.dumps(
-                    {"jsonrpc": "2.0", "method": "context",
-                     "params": {"messages": self._context_messages}, "id": None},
-                    ensure_ascii=False,
-                ) + "\n"
-                proc.stdin.write(ctx_msg.encode())
-                await proc.stdin.drain()
         except BaseException:
             # A spawn failure (deleted venv, AV block) or a drain failure
             # (child died mid-boot) must NOT leak the 0600 config file
@@ -407,7 +384,7 @@ class SubagentProcess:
             )
 
     async def _send_request(
-        self, task: str, mode: str,
+        self, task: str, mode: str, seed: list[dict] | None = None,
     ) -> tuple[str, asyncio.Future[str] | None]:
         """Record one task, write ``worker/send``, and return ``(rpc_id, future)``.
 
@@ -417,6 +394,11 @@ class SubagentProcess:
         also why the write is last: the child can answer during ``drain()``, and
         a reply that arrives before the parent knows what it sent would be
         dropped as unknown.
+
+        *seed* is the parent's cloned context for THIS task, and it rides the
+        request rather than the process: the worker is serial but its reader is
+        not, so several sends can be in flight at once and each must keep the
+        context its own send saw.
 
         *mode* is the record's vocabulary — ``"sync"``, ``"async"`` or
         ``"async-poll"``.  A future comes back only for ``"sync"``.
@@ -432,9 +414,12 @@ class SubagentProcess:
         if mode == "sync":
             future = asyncio.get_running_loop().create_future()
             self._pending[rpc_id] = future
+        params: dict = {"task": task}
+        if seed:
+            params["seed"] = seed
         req = json.dumps(
             {"jsonrpc": "2.0", "method": "worker/send",
-             "params": {"task": task}, "id": rpc_id},
+             "params": params, "id": rpc_id},
             ensure_ascii=False,
         )
         try:
@@ -451,8 +436,14 @@ class SubagentProcess:
             raise
         return rpc_id, future
 
-    async def send_task(self, task: str, timeout: float | None = None) -> str:
+    async def send_task(
+        self, task: str, timeout: float | None = None,
+        seed: list[dict] | None = None,
+    ) -> str:
         """Send a task and wait for its result, up to *timeout*.
+
+        *seed* is the parent's cloned context for this task — see
+        :meth:`_send_request`.
 
         On timeout the task is **preempted** in the child (a serial worker
         cannot afford to be wedged by one task) and the late reply is kept for
@@ -461,7 +452,7 @@ class SubagentProcess:
         """
         if timeout is None:
             timeout = _timeouts.timeouts.work.task_budget  # call-time lookup
-        rpc_id, future = await self._send_request(task, "sync")
+        rpc_id, future = await self._send_request(task, "sync", seed=seed)
         assert future is not None
         try:
             return await asyncio.wait_for(future, timeout=timeout)
@@ -493,7 +484,9 @@ class SubagentProcess:
             await self._send_child_cancel(rpc_id)
             raise
 
-    async def send_task_async(self, task: str, mode: str = "auto") -> str:
+    async def send_task_async(
+        self, task: str, mode: str = "auto", seed: list[dict] | None = None,
+    ) -> str:
         """Send a task without waiting for the result — returns *rpc_id*.
 
         *mode* ``"auto"`` (default) auto-pushes the result to the parent
@@ -501,13 +494,16 @@ class SubagentProcess:
         :meth:`get_task_result`; ``"poll"`` suppresses the push — the
         caller retrieves the result via :meth:`get_task_result`.
 
+        *seed* is the parent's cloned context for this task — see
+        :meth:`_send_request`.
+
         Nobody awaits an async task, so ``send_task``'s timeout cannot apply;
         the expiry watchdog started here is what keeps "no caller" from meaning
         "no bound at all".  It is a wedge backstop, not a caller's budget (see
         ``work.task_lifetime``): honest work is never meant to reach it.
         """
         rpc_id, _ = await self._send_request(
-            task, "async-poll" if mode == "poll" else "async",
+            task, "async-poll" if mode == "poll" else "async", seed=seed,
         )
         self._watchdogs[rpc_id] = asyncio.create_task(self._expire(rpc_id))
         logger.debug("subagent_async_send name=%s rpc_id=%s", self._name, rpc_id)
@@ -671,7 +667,7 @@ class SubagentProcess:
 
     async def _read_stdout(self) -> None:
         if not self._process or not self._process.stdout: return
-        from slife.logfmt import PROTOCOL_LINE_LIMIT, discard_overlong_line
+        from slife.logfmt import PROTOCOL_LINE_LIMIT, read_line_bounded
         reader = self._process.stdout
         # One stdout line can legitimately be a many-MB worker result — raise
         # the StreamReader cap accordingly.  A line beyond even that is
@@ -689,12 +685,10 @@ class SubagentProcess:
             pass
         try:
             while self._running:
-                try:
-                    line = await reader.readline()
-                except ValueError:
-                    # LimitOverrunError — a single over-long line.  Discard
-                    # its remainder and keep reading; never die here.
-                    dropped = await discard_overlong_line(reader)
+                # One over-long line is discarded and reading continues; the
+                # reader never dies here.
+                line, dropped = await read_line_bounded(reader)
+                if dropped or line is None:
                     logger.warning(
                         "subagent_stdout_line_overlong_discarded "
                         "name=%s min_bytes=%d", self._name, dropped,
@@ -951,10 +945,7 @@ class SubagentManager:
             logger.info("subagent_registry_pruned_dead names=%s", ",".join(dead))
         return dead
 
-    async def spawn(
-        self, name: str | None = None,
-        context_source: str = "clean", context_messages: list[dict] | None = None,
-    ) -> str:
+    async def spawn(self, name: str | None = None) -> str:
         # The worker's name is its identity — never auto-generate an id.
         if not name or not name.strip():
             raise ValueError("subagent_name is required")
@@ -979,27 +970,28 @@ class SubagentManager:
             # Reuse a running worker BEFORE the cap check — spawn() is
             # idempotent (the spawned_running() contract), so re-invoking a
             # name that is already running at the cap must hand back the
-            # worker, not raise.  The worker keeps the context it was started
-            # with; callers report that, never what they asked for.
+            # worker, not raise.  There is nothing to re-apply: a spawn starts a
+            # process, and every task carries its own context.
             if name in self._subagents and self._subagents[name].is_running:
                 return name
             if self.count >= self._max:
                 raise RuntimeError(f"Max {self._max} subagents reached")
-            proc = SubagentProcess(
-                name, self._config,
-                context_source=context_source, context_messages=context_messages,
-            )
+            proc = SubagentProcess(name, self._config)
             await proc.start()
             self._subagents[name] = proc
             return name
 
-    async def send_task(self, agent_name: str, task: str, timeout: float | None = None) -> str:
+    async def send_task(
+        self, agent_name: str, task: str, timeout: float | None = None,
+        seed: list[dict] | None = None,
+    ) -> str:
         if (proc := self._subagents.get(agent_name)) is None:
             raise ValueError(f"Subagent '{agent_name}' not found")
-        return await proc.send_task(task, timeout)
+        return await proc.send_task(task, timeout, seed=seed)
 
     async def send_task_async(
         self, agent_name: str, task: str, mode: str = "auto",
+        seed: list[dict] | None = None,
     ) -> str:
         """Send a task without waiting — returns *rpc_id* immediately.
 
@@ -1009,7 +1001,7 @@ class SubagentManager:
         """
         if (proc := self._subagents.get(agent_name)) is None:
             raise ValueError(f"Subagent '{agent_name}' not found")
-        return await proc.send_task_async(task, mode=mode)
+        return await proc.send_task_async(task, mode=mode, seed=seed)
 
     def get_task_result(self, agent_name: str, rpc_id: str) -> tuple[str, str | None]:
         """Return ``(state, result)`` for a task — see

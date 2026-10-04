@@ -55,7 +55,7 @@ from slife.health import get_report as get_startup_records
 from slife.plugins.spec import PLUGIN_SPECS, health_check_name
 from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 from slife.paths import get_data_dir
-from slife.tools.base import Tool, make_params, require_params
+from slife.tools.base import Tool, make_params, require_bool, require_params
 from slife.ui.i18n import t
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
@@ -184,12 +184,17 @@ def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, s
         return ("warning",
                 f"stalled ({sem.get('unembedded', 0)} {pending_noun} pending; "
                 f"keyword search available)", "")
-    if sem.get("reason"):
-        return ("warning", f"unavailable ({sem['reason']})", "")
+    # Same reason as the stall above: every "disabled" transition publishes a
+    # reason too (SemanticManager.disable / _unavailable_reason), so sitting
+    # after the generic ``reason`` branch meant this one never ran and the
+    # report read "unavailable" where the user had switched semantic search
+    # off on purpose.
     if sem.get("state") == "disabled":
         return ("warning", "disabled",
                 "Enable with embeddings_enable true, or edit the top-level "
                 "embeddings section in slife.yaml.")
+    if sem.get("reason"):
+        return ("warning", f"unavailable ({sem['reason']})", "")
     if sem.get("semantic_ready"):
         # A width nobody has measured is NOT 0.  Each semantic index has its
         # own embedder, and only the one that has probed its endpoint knows
@@ -766,7 +771,9 @@ async def check_a2a(client=None) -> list[dict]:
     process, so this check asks the plugin's internal tool ``__check``
     through its MCP client (from ``ToolContext.a2a_mcp_client``).  When the
     mesh is unreachable — mosquitto not running (no active MQTT port), or
-    the connection dropped — a warning is reported.
+    the connection dropped — a warning is reported, and a mesh that reported
+    *why* it is down (another instance holding our agent name) is reported by
+    that reason instead of the broker.
     """
     data, entries = await _probe_plugin(
         client, "a2a",
@@ -780,6 +787,20 @@ async def check_a2a(client=None) -> list[dict]:
 
     broker = data.get("broker", "")
     where = f" (broker {broker})" if broker else ""
+    error = data.get("error") or ""
+    if error:
+        # The mesh is down for a reason that is NOT a missing broker: a name
+        # another instance already holds, or a failed connect.  Reporting the
+        # generic "start mosquitto" line here would send the reader after a
+        # broker that is running fine.
+        return [{"component": "a2a", "level": "warning", "key": "status",
+                 "value": f"unavailable{where} — {error}",
+                 "hint": "Another slife may be holding this agent name, or a "
+                         "previous run's card is still on the broker.  Give "
+                         "this instance its own --agent name (the name is its "
+                         "address in the broker's org/unit namespace, and one "
+                         "name is one agent), or clear the leftover card and "
+                         "retry."}]
     if not data.get("connected"):
         return [{"component": "a2a", "level": "warning", "key": "status",
                  "value": f"unavailable{where}",
@@ -1337,7 +1358,7 @@ def _scope_line(groups: dict[str, list[dict]]) -> str:
     toolchain half is probed **on a daemon thread**.  A report read in the
     seconds before those probes land says which facts are not in yet, instead
     of letting a smaller component count read as a smaller system.  Both entry
-    points (the TUI and a headless worker) call the same recorder, so this is
+    points (the TUI and a worker) call the same recorder, so this is
     a window, not a role difference: the worker/parent asymmetry it was
     written for is gone.
 
@@ -1700,6 +1721,8 @@ class SetMidturnInputTool(Tool):
     )
 
     async def execute(self, enabled: bool = True, **kwargs) -> str:
+        if err := require_bool(enabled=enabled):
+            return err
         setter = getattr(self, "_ctx", None)
         if setter is not None:
             setter = setter.set_midturn_input

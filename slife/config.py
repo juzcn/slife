@@ -102,9 +102,9 @@ def parse_cli_config_path(argv: list[str]) -> str | None:
     """Extract the first positional CLI arg as an explicit config path.
 
     ``python -m slife myconf.yaml`` must use ``myconf.yaml`` (the docstring
-    promises it); flags (``--headless``, ``--agent <id>``, ``--lang <en|zh>``)
-    are skipped along with their values.  Returns ``None`` when no positional
-    path is given.
+    promises it); flags (``--agent <id>``, ``--lang <en|zh>``) are skipped
+    along with their values.  Returns ``None`` when no positional path is
+    given.
     """
     args = argv[1:]
     i = 0
@@ -143,7 +143,12 @@ def parse_cli_lang(argv: list[str]) -> str | None:
 
 
 def parse_cli_headless(argv: list[str]) -> bool:
-    """Whether the worker protocol was asked for instead of the TUI."""
+    """Whether ``--headless`` was asked for.
+
+    A switch, not an option: it takes no value, so
+    :func:`parse_cli_config_path` stepping over it by one token is exactly
+    right and a positional config path after it still reads as one.
+    """
     return "--headless" in argv[1:]
 
 
@@ -164,9 +169,9 @@ Usage: slife [options] [config-path]
                      a source checkout)
   --agent <id>       agent identity — a separate turns database and A2A mesh
                      name (default: slife)
+  --headless         run as a headless agent: the same agent with no terminal
+                     attached, taking its input from its peers.  Ctrl+C exits.
   --lang <en|zh>     interface language (default: the OS locale)
-  --headless         no TUI: speak the worker protocol over stdin/stdout, the
-                     way subagent processes do
   -h, --help         show this message and exit
 """
 
@@ -294,6 +299,11 @@ def _autoload_servers(*sections: dict) -> frozenset[str]:
     return frozenset(out)
 
 
+#: The window assumed when a model entry omits one — and when the value it
+#: gives cannot bound anything (see ``ModelConfig.from_dict``).
+DEFAULT_CONTEXT_WINDOW = 131072
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a single LLM model."""
@@ -313,7 +323,7 @@ class ModelConfig:
     supports_vision: bool = False
     input_modalities: tuple[str, ...] = ("text",)
     max_tokens: int = 4096
-    context_window: int = 131072
+    context_window: int = DEFAULT_CONTEXT_WINDOW
     temperature: float = 0.7
     top_p: float = 1.0
     thinking_enabled: bool = False
@@ -357,7 +367,23 @@ class ModelConfig:
         input_modalities = tuple(model_input) if model_input else ("text",)
 
         api_key_raw = data.get("api_key", "")
-        context_window = data.get("context_window", 131072)
+        # The window must be a positive integer or the default stands in.
+        # Zero is not "no limit" here — it reached ``_trim_context`` as a
+        # ceiling of 0 and compressed the live context down to the current
+        # turn after every save, and it zeroed the live tool-result cap, so a
+        # model registered with ``context_window: 0`` silently destroyed its
+        # own ongoing context and could never be told why.
+        raw_window = data.get("context_window", DEFAULT_CONTEXT_WINDOW)
+        try:
+            context_window = int(raw_window)
+        except (TypeError, ValueError):
+            context_window = 0
+        if context_window <= 0:
+            logger.warning(
+                "context_window_invalid value=%r using=%d",
+                raw_window, DEFAULT_CONTEXT_WINDOW,
+            )
+            context_window = DEFAULT_CONTEXT_WINDOW
         max_tokens = data.get("max_tokens", 4096)
         base_url = data.get("base_url", "")
         compat = data.get("compat") if isinstance(data.get("compat"), dict) else None
@@ -423,9 +449,11 @@ class EmbeddingsConfig:
         if not isinstance(providers, dict):
             providers = {}
         # ``active_model`` names a provider only (no provider/model ref).
-        # A missing/stale ref falls back to the first provider.
-        active = data.get("active_model", "")
-        if "/" in active or active not in providers:
+        # A missing/stale ref falls back to the first provider — and so does a
+        # blank or non-string one: ``active_model:`` parses to None, and
+        # ``"/" in None`` aborted the whole config load with a TypeError.
+        active = data.get("active_model") or ""
+        if not isinstance(active, str) or "/" in active or active not in providers:
             active = next(iter(providers), "")
         return cls(
             providers=providers,
@@ -883,7 +911,17 @@ class Config:
         """
         sub_raw = raw.get("subagent")
         if isinstance(sub_raw, dict):
-            return {"max_subagents": sub_raw.get("max_subagents", 5)}
+            value = sub_raw.get("max_subagents", 5)
+            # A blank or quoted value (``max_subagents:`` / ``"5"``) used to
+            # pass straight through: the ``%d`` debug line below raised a
+            # logging traceback on every start, and the spawner's
+            # ``count >= max`` comparison raised on the first subagent.
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                logger.warning("subagent_max_invalid value=%r using=5", value)
+                value = 5
+            return {"max_subagents": value}
         return {"max_subagents": 5}
 
     @staticmethod
@@ -1370,6 +1408,7 @@ class Config:
             agent_name=agent_name,
             memdb_config=memdb_config,
             embeddings_config=embeddings_config,
+            net_config=net_config,
             wechat_config=wechat_config,
             a2a_config=a2a_config,
             subagent_config=subagent_config,

@@ -56,7 +56,7 @@ def plugin_port_env(name: str) -> str:
     The key is the plugin name uppercased with dashes normalised to
     underscores (``local-embed`` → ``SLIFE_LOCAL_EMBED_PORT``), so it stays a
     valid, conventional env-var name and matches how subagents read plugin
-    ports (``headless.py`` uses the underscore form for every plugin).  Every
+    ports (``worker.py`` uses the underscore form for every plugin).  Every
     writer (spawn, generic spawn) and any future reader must go through this
     helper — one definition of the contract.
     """

@@ -9,12 +9,54 @@ classification directly; ``test_a2a_mesh`` covers what the mesh does with it.
 import pytest; pytestmark = pytest.mark.unit
 
 from slife.a2a.inbound_store import InboundStore, _MAX_ENTRIES
+from slife.paths import get_a2a_inbound_path
 from slife.tools._yaml_doc import new_yaml
 
 
 def _restart(path):
     """A fresh store over the same file — a restarted process."""
     return InboundStore(path)
+
+
+class TestOneLedgerPerAgent:
+    """The ledger's premise is one process: ``pending`` on disk means "the last
+    process died holding these".  Two agents on one machine — the normal way to
+    run two — must not read each other's in-flight tasks as their own orphans,
+    and must not overwrite each other's record (every save writes a whole
+    view)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_shared_override(self, monkeypatch):
+        """Drop the suite-wide file override: this test is about the per-agent
+        default path, which the override exists to bypass."""
+        monkeypatch.delenv("SLIFE_A2A_INBOUND", raising=False)
+
+    def test_the_path_names_the_agent(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path))
+        assert get_a2a_inbound_path("jack").name == "a2a_inbound_jack.yaml"
+        assert get_a2a_inbound_path("jack") != get_a2a_inbound_path("slife")
+
+    def test_the_process_identity_wins_over_the_argument(self, monkeypatch, tmp_path):
+        """``SLIFE_AGENT_NAME`` is what the process *is* — the same rule the
+        per-agent database and file cabinet already follow."""
+        monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("SLIFE_AGENT_NAME", "jack")
+        assert get_a2a_inbound_path().name == "a2a_inbound_jack.yaml"
+        assert get_a2a_inbound_path().name == get_a2a_inbound_path("slife").name
+
+    def test_another_agents_in_flight_task_is_not_an_orphan(
+        self, monkeypatch, tmp_path,
+    ):
+        monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path))
+        InboundStore(get_a2a_inbound_path("slife")).add("t1", "peer-1")
+
+        # The neighbour sees nothing of it — neither as live nor as orphaned.
+        assert InboundStore(get_a2a_inbound_path("jack")).stale() == []
+        # ...and its own write cannot erase it.
+        InboundStore(get_a2a_inbound_path("jack")).add("t2", "peer-2")
+        assert [
+            t.task_id for t in InboundStore(get_a2a_inbound_path("slife")).stale()
+        ] == ["t1"]
 
 
 class TestRestartOrphansPending:

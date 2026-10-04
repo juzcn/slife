@@ -27,6 +27,14 @@ from pathlib import Path
 _NOISY = (
     "httpx",
     "httpcore",
+    # The httpx2/httpcore2 generation the anthropic / openai / mcp SDKs are
+    # built on — they log under their OWN names, so the two above silence
+    # nothing.  slife/logfmt.py carries both for the same reason.
+    "httpx2",
+    "httpcore2.connection",
+    "httpcore2.http11",
+    "httpcore2.proxy",
+    "httpcore2._synchronization",
     "uvicorn.access",
     "mcp.server.lowlevel.server",
     "fastmcp",

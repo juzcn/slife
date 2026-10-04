@@ -148,6 +148,16 @@ from slife.logfmt import (
 from slife.paths import agent_name
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
+# FastMCP rewrites its own logging when it is imported: it installs a rich
+# handler on its own loggers and resets their level.  This module is where it
+# enters the process, so the policy is re-applied here — after the import, or
+# it would simply be overwritten.  Without it, "Starting MCP server 'slife'
+# with transport 'streamable-http'" goes straight to stderr: the TUI hides
+# that behind its alternate screen, but it is the entire terminal output of a
+# headless agent.  (Where FastMCP is imported on its own, the same call in
+# ``setup_server_logging`` covers it.)
+silence_noisy_loggers()
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -335,10 +345,6 @@ def warm_after_ready(
     mcp.add_middleware(_WarmAfterReady(factory, delay, name))
 
 
-# FastMCP-specific loggers that should also be silenced.
-_FASTMCP_NOISE = ("mcp.server.lowlevel.server", "fastmcp")
-
-
 # ── Logging setup / shutdown ────────────────────────────────────────────
 
 
@@ -387,8 +393,10 @@ def setup_server_logging(
         clear_existing=True,
     )
 
-    # Silence FastMCP-internal loggers (in addition to the standard set)
-    silence_noisy_loggers(extra=_FASTMCP_NOISE)
+    # FastMCP-internal loggers are part of the standard silenced set now —
+    # they bring their own handlers, so the level is the only thing that can
+    # stop them printing.
+    silence_noisy_loggers()
 
     # Safety net — close log handlers on normal process exit (atexit does
     # NOT fire on Windows TerminateProcess, but it catches sys.exit and

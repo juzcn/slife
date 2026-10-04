@@ -14,6 +14,7 @@ Covers:
 
 import pytest; pytestmark = pytest.mark.unit
 
+import asyncio
 import json
 
 import pytest
@@ -22,8 +23,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from slife.agent.message_history import MessageHistory
-from slife.agent.loop import AgentLoop
+from slife.agent.loop import AgentLoop, ToolCallInfo
+from slife.tools.base import Tool
 from slife.tools.factory import create_tools_from_config
+from slife.tools.registry import ToolRegistry
 
 
 def _registry():
@@ -301,8 +304,13 @@ class TestRecallRebuild:
     @pytest.mark.asyncio
     async def test_a_clear_empties_the_context(self):
         """``"clear"`` — the explicit wipe.  Nothing else can do this now: it
-        is a decision in its own right, and it needs no store call to make."""
-        conv = self._history()
+        is a decision in its own right, and it needs no store call to make.
+
+        The fixture carries rowids because a clear is a statement about
+        *stored* turns: a turn the store holds no row for is carried through
+        the rebuild instead (its own test, below).
+        """
+        conv = self._history(with_ids=True)
         persisted: list[list[int]] = []
         cleared: list[bool] = []
         asked: list[tuple] = []
@@ -333,6 +341,39 @@ class TestRecallRebuild:
             "partial selection); the clear tool is the write for this case"
         )
         assert asked == [], "a clear asks the store for nothing"
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_carries_the_turn_the_store_has_no_row_for(self):
+        """A selection is about *stored* turns — a rebuild may not drop the rest.
+
+        A turn with no ``_turn_id`` (ids are stamped at save) cannot be
+        re-fetched, so a rebuild that replaced the list from the store would
+        lose it silently — the case a save that returned no rowid leaves
+        behind.  It rides through the rebuild.
+        """
+        conv = self._history()                    # untracked: the in-flight shape
+        tail = [dict(m) for m in conv.messages[1:]]
+        cleared: list[bool] = []
+
+        async def recall(*_a, **_k):
+            return []
+
+        async def save(ids):                      # pragma: no cover - must not run
+            raise AssertionError("no stored turn is kept, so nothing is written")
+
+        async def clear():
+            cleared.append(True)
+            return True
+
+        loop = self._loop(
+            reply='{"context": "clear"}', recall=recall, set=save, clear=clear,
+        )
+        assert await loop._recall_and_rebuild(conv, "new input") is True
+
+        assert conv.messages[1:] == tail, (
+            "the turns the store holds no row for are carried, not dropped"
+        )
+        assert cleared == [True]
 
     @pytest.mark.asyncio
     async def test_an_empty_recall_adds_nothing_and_wipes_nothing(self):
@@ -1431,3 +1472,100 @@ class TestRecallReplyParsing:
         to be in hand.  ``None`` keeps the context instead — the safe failure.
         """
         assert self._reply(text) is None, text
+
+
+# ── Preemption: a cancel stops the tool, it does not wait for it ─────────
+
+
+class _BlockingTool(Tool):
+    """A tool that runs until it is cancelled, and records how it ended."""
+
+    name = "blocker"
+    description = "Blocks until cancelled."
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    def __init__(self, started: asyncio.Event):
+        self._started = started
+        self.cancelled = False
+
+    async def execute(self, **kwargs) -> str:
+        self._started.set()
+        try:
+            await asyncio.sleep(120)
+        except asyncio.CancelledError:
+            # What ``_run_captured`` does with its child process on the way
+            # out: the kill.  The loop's job is to deliver this cancellation.
+            self.cancelled = True
+            raise
+        return "never"
+
+
+class TestToolPreemption:
+    """Cancelling a turn must reach the tool that is running.
+
+    Cancellation is a flag, checked at iteration boundaries — so a tool
+    already executing was left to its own timeout however many times the flag
+    was set.  In a worker that is its ONE task slot: a ``sleep 300`` held it
+    for minutes while the parent had been told the task was preempted and
+    every later task queued behind it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cancelling_the_turn_stops_a_running_tool(self):
+        started = asyncio.Event()
+        tool = _BlockingTool(started)
+        registry = ToolRegistry()
+        registry.register(tool)
+        loop = _loop(registry)
+        loop.tool_timeout = 3600          # the tool's own bound is not reached
+
+        history = MessageHistory(system_prompt="SYS")
+        history.add_user_message("go")
+        call = ToolCallInfo(id="c1", name="blocker", arguments={})
+
+        batch = asyncio.create_task(
+            loop._execute_tools([call], history, None, iteration=1)
+        )
+        await asyncio.wait_for(started.wait(), timeout=5)  # noqa-timeout
+        loop.cancel()
+        # The test's own bound, far below the tool's: if the cancel never
+        # reached it, this fails here rather than hanging the suite.
+        await asyncio.wait_for(batch, timeout=5)  # noqa-timeout
+
+        assert tool.cancelled, "the tool ran on past the cancel"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_call_records_no_result_and_is_repaired(self):
+        """The gap the cancelled call leaves is the one the repair fills.
+
+        A preempted tool never returns, so nothing is recorded for it — and
+        the save point's ``_ensure_turn_consistent`` gives the orphaned call
+        its "(Tool execution interrupted)" result, exactly as it has always
+        done for a turn that ended early.
+        """
+        started = asyncio.Event()
+        registry = ToolRegistry()
+        registry.register(_BlockingTool(started))
+        loop = _loop(registry)
+        loop.tool_timeout = 3600
+
+        history = MessageHistory(system_prompt="SYS")
+        history.add_user_message("go")
+        history.add_assistant_message(content=None, tool_calls=[{
+            "id": "c1", "type": "function",
+            "function": {"name": "blocker", "arguments": "{}"},
+        }])
+        call = ToolCallInfo(id="c1", name="blocker", arguments={})
+
+        batch = asyncio.create_task(
+            loop._execute_tools([call], history, None, iteration=1)
+        )
+        await asyncio.wait_for(started.wait(), timeout=5)  # noqa-timeout
+        loop.cancel()
+        await asyncio.wait_for(batch, timeout=5)  # noqa-timeout
+
+        assert not [m for m in history.messages if m.get("role") == "tool"]
+        history._ensure_turn_consistent()
+        repaired = [m for m in history.messages if m.get("role") == "tool"]
+        assert [m["tool_call_id"] for m in repaired] == ["c1"]
+        assert repaired[0]["content"] == "(Tool execution interrupted)"

@@ -314,10 +314,6 @@ class AgentService:
         #: ``tests/test_subagent_parity.py`` holds it to that.
         self.role = role
         self.caps = caps_for(role)
-        #: The parent's cloned history, when the transport delivered one at
-        #: spawn.  A worker's per-task history is seeded from it; the main
-        #: agent never sets it (its context is its own continuity).
-        self.inherited_context: list[dict] | None = None
 
         # Build the shared ToolContext, which carries the config + registry
         # that tools need at runtime.
@@ -388,20 +384,27 @@ class AgentService:
             schedule_provider=self._schedule_pending_provider,
             a2a_stale_provider=self._a2a_stale_provider,
             # The persisted live-context list has ONE owner — the process whose
-            # turns are the thing it describes.  A worker's trim compacts its
-            # own in-memory history and must not evict turns from its parent's
-            # context, so the hook is the grant, not the role.
+            # turns are the thing it describes.  All three writers follow that
+            # one grant: a worker's trim compacts its own in-memory history, and
+            # its rebuild replaces that same in-memory list, so neither may
+            # evict turns from — or publish itself over — its parent's context.
+            # The hook is the grant, not the role.
             drop_context_turns=(
                 self.drop_context_turns if self.caps.turn_persistence else None
             ),
-            set_context_turns=self.set_context_turns,
-            clear_context_turns=self.clear_context_turns,
+            set_context_turns=(
+                self.set_context_turns if self.caps.turn_persistence else None
+            ),
+            clear_context_turns=(
+                self.clear_context_turns if self.caps.turn_persistence else None
+            ),
+            # Reading is not owning: a worker rebuilds over the same shared
+            # turns DB its parent's context was selected from.
             recall_turns=self.recall_turns,
             recall_available=lambda: self.memdb_enabled,
             turns_by_ids=self.turns_by_ids,
-            # A worker's history is one-shot per task, so recall has nothing to
-            # select from — and it would cost a discriminator call per task.
-            # The role decides, not the config.
+            # The role decides, not the config: a worker's per-task context is
+            # seeded from its parent's clone and rebuilt like any other.
             rebuild_message=(
                 self.config.rebuild_message and self.caps.recall
             ),
@@ -645,18 +648,15 @@ class AgentService:
 
         One grant, seen from the other side: the process that persists its
         turns is the one whose context is continuous for the session.  A
-        process that does not gets a fresh one-shot history per task, seeded
-        from the clone its parent sent at spawn — and a worker's system prompt
+        process that does not gets a fresh history per task, seeded from the
+        clone its parent sent *with that task* — and a worker's system prompt
         is the subagent one, so the store is built from the grant rather than
         replaced afterwards.  (The worker's boot used to swap
         ``inbox._histories`` and clear ``_on_turn_complete`` after the service
         had wired itself; the differences belong where the role is known.)
         """
         if not self.caps.turn_persistence:
-            return WorkerHistoryStore(
-                self._role_system_prompt(),
-                context_provider=lambda: self.inherited_context,
-            )
+            return WorkerHistoryStore(self._role_system_prompt())
         return MessageHistoryStore(system_prompt=self._role_system_prompt())
 
     def _role_system_prompt(self) -> str:
@@ -1081,7 +1081,7 @@ class AgentService:
             if method and not method.endswith("tools/list_changed"):
                 return
             try:
-                await self._rescan_plugin_tools(name)
+                await self._sync_plugin_tools(name)
             except Exception:
                 logger.debug(
                     "plugin_tools_changed_rescan_failed name=%s", name, exc_info=True,
@@ -1124,42 +1124,72 @@ class AgentService:
                 self.tool_registry.register(tool)
         return registered
 
-    async def _rescan_plugin_tools(self, name: str) -> None:
+    async def _sync_plugin_tools(self, name: str, client=None, tools=None) -> None:
         """Re-list plugin *name*'s tools and diff the registry.
 
-        Registers newly-appeared tools and unregisters vanished ones —
-        the same full-diff contract as the mcp wrapper's reconcile, but
-        for a plugin's bare-name tools (e.g. job-coding's per-job tools).
-        Idempotent: tracking ``registered_tools`` makes repeats no-ops.
-        """
-        from slife.mcp.tool_adapter import create_proxy_tools
+        The ONE path for every way a plugin's tool set is (re)discovered: the
+        spawn, an HTTP re-connect (a subagent sharing the main agent's
+        plugins), and the plugin's own ``notifications/tools/list_changed``.
+        Those were three copies of the same sequence and had already drifted —
+        one read ``t["name"]`` (a KeyError on an entry without a name), one
+        skipped the stale-name cleanup the others did, and the catalog mirror
+        was best-effort in only the path that had thought about it.
 
+        Registers newly-appeared tools and unregisters vanished ones — the
+        same full-diff contract as the mcp wrapper's reconcile, but for a
+        plugin's bare-name tools (e.g. job-coding's per-job tools).
+        Idempotent: tracking ``registered_tools`` makes repeats no-ops.
+
+        *client* defaults to the lifecycle's; the spawn path passes the client
+        it has just built, which is not stored on the lifecycle until later.
+        *tools* is that path's already-fetched list, so the retry it just did
+        is not thrown away on a second round trip.
+        """
         lifecycle = self._plugins.get(name)
-        if lifecycle is None or lifecycle.client is None or not lifecycle.client.is_connected:
+        if client is None:
+            client = lifecycle.client if lifecycle is not None else None
+        if lifecycle is None or client is None or not client.is_connected:
             return
-        client = lifecycle.client
-        plugin_tools = await client.list_tools()
+        plugin_tools = tools if tools is not None else await client.list_tools()
         tagged = [
             {**t, "server": name}
             for t in plugin_tools
             if not is_internal_tool(t.get("name", ""))
         ]
+        if len(tagged) < len(plugin_tools):
+            # Canonical marker: a plugin tool named ``__*`` is internal —
+            # called programmatically, never exposed to the LLM.  (A single
+            # ``_`` is harness-but-LLM-visible, e.g. the builtin
+            # ``_turn_prompt``.)
+            logger.debug(
+                "plugin_tools_filtered name=%s kept=%d dropped=%d",
+                name, len(tagged), len(plugin_tools) - len(tagged),
+            )
         proxy_tools = create_proxy_tools(client, tagged)
+        # Names registered on the PREVIOUS connection — a plugin restart can
+        # drop tools, and an unregistered name must not linger in the registry
+        # bound to the old, disconnected client (B4).
         old_names = set(lifecycle.registered_tools)
-        new_names = {t.name for t in proxy_tools}
         registered = self._register_plugin_proxies(proxy_tools)
         for stale in old_names - registered:
             self.tool_registry.unregister(stale)
         lifecycle.registered_tools = registered
         if self.caps.catalog_owner and self._catalog is not None:
-            # One sync for the plugin's whole tool set: rows go in, and a tool
-            # it dropped loses its row (source-scoped, so only this plugin's).
-            await self._catalog.sync_system_tools(proxy_tools, source=name)
-            await self._catalog.mark_plugin_connected(name)
+            # Best-effort by contract, and it MUST NOT escape: the spawn path
+            # calls this from inside its ``except BaseException`` handler,
+            # where a catalog hiccup would stop a plugin that just came up
+            # healthy.  One sync covers the whole tool set — rows in, a dropped
+            # tool's row out (source-scoped, so only this plugin's) — and then
+            # clears the ``error`` mark the plugin's exit left.
+            try:
+                await self._catalog.sync_system_tools(proxy_tools, source=name)
+                await self._catalog.mark_plugin_connected(name)
+            except Exception as e:
+                logger.debug("plugin_catalog_sync_failed name=%s err=%s", name, e)
         logger.debug(
-            "plugin_tools_resync name=%s added=%d removed=%d total=%d",
+            "plugin_tools_synced name=%s added=%d removed=%d total=%d",
             name, len(registered - old_names), len(old_names - registered),
-            len(new_names),
+            len(proxy_tools),
         )
 
     def _watch_sharefile_tunnel(self, lc) -> None:
@@ -1284,48 +1314,14 @@ class AgentService:
                 plugin_tools = await client.list_tools()
             logger.debug("plugin_tools name=%s count=%d names=%s",
                          name, len(plugin_tools),
-                         [t["name"] for t in plugin_tools])
+                         [t.get("name", "") for t in plugin_tools])
 
-            # Register as proxy tools — filter out plugin internal tools.
-            # Canonical marker: a plugin tool named ``__*`` (double underscore)
-            # is internal — called programmatically via call_tool(), never
-            # exposed to the LLM.  (Single ``_`` = harness but LLM-visible,
-            # e.g. the builtin `_turn_prompt`.)
-            tagged = [
-                {**t, "server": name}
-                for t in plugin_tools
-                if not is_internal_tool(t.get("name", ""))
-            ]
-            if len(tagged) < len(plugin_tools):
-                logger.debug(
-                    "plugin_tools_filtered name=%s kept=%d dropped=%d",
-                    name, len(tagged), len(plugin_tools) - len(tagged),
-                )
-            proxy_tools = create_proxy_tools(client, tagged)
-            # Record exact registered names for dead-process cleanup / stop
-            # (bare names — no {name}__ prefix to unregister by).
-            self._plugins[name].registered_tools = self._register_plugin_proxies(
-                proxy_tools,
-            )
-            # …and mirror them into the shared catalog.  Without this the
-            # plugin's tools have no row, and a row is what makes a tool
-            # SEARCHABLE and injectable (the per-turn set is the catalog's
-            # loaded set, not the registry) — the spawn path is the one every
-            # plugin actually takes, so a mirror confined to the rescan and
-            # HTTP-connect twins left them invisible to the model.
-            if self.caps.catalog_owner and self._catalog is not None:
-                # Best-effort by contract, and it MUST NOT escape: this block
-                # sits inside the spawn's ``except BaseException`` handler,
-                # which stops the child — a catalog hiccup would otherwise kill
-                # a plugin that just came up healthy.
-                try:
-                    # One sync for the plugin's whole tool set (rows in, a
-                    # dropped tool's row out), then clear the ``error`` mark its
-                    # exit left — the child is serving again.
-                    await self._catalog.sync_system_tools(proxy_tools, source=name)
-                    await self._catalog.mark_plugin_connected(name)
-                except Exception as e:
-                    logger.debug("plugin_catalog_sync_failed name=%s err=%s", name, e)
+            # Register the proxies, diff the registry, mirror into the shared
+            # catalog — the one path every plugin's tool set goes through (see
+            # _sync_plugin_tools).  *plugin_tools* is handed over rather than
+            # re-listed: the retry above already fetched it, and a second
+            # round trip here would re-earn the timeout it just retried.
+            await self._sync_plugin_tools(name, client, tools=plugin_tools)
 
             logger.info("plugin_ready name=%s tools=%d",
                          name, len(self.tool_registry.list_tools()))
@@ -2218,7 +2214,7 @@ class AgentService:
         own.  When the watchdog respawns a plugin, it lands on a fresh
         auto-assigned port; workers still holding the old session are dead
         until they reconnect.  This broadcasts the new port so they rebuild
-        their client (``worker/plugin_restart`` in headless.py).  Best-effort.
+        their client (``worker/plugin_restart`` in worker.py).  Best-effort.
         """
         if not port:
             return
@@ -2266,7 +2262,7 @@ class AgentService:
         """
         spec = self._registry.spec(name)
         await self._connect_plugin_http(name, port)
-        await self._register_plugin_tools(name)
+        await self._sync_plugin_tools(name)
         if spec.gateway:
             # Reconcile external {server}__{tool} proxies — registers auto_load
             # tools and mirrors on-demand servers' catalog rows (the
@@ -2312,57 +2308,6 @@ class AgentService:
                 await self.connect_plugin_http(name, int(port))
             except Exception as e:
                 logger.warning("%s_http_failed port=%s err=%s", name, port, e)
-
-    async def _register_plugin_tools(self, name: str) -> None:
-        """Discover and register a connected plugin's tools as proxy tools.
-
-        Filters out internal tools (names starting with ``__``), creates
-        proxy tools, and registers them under their bare semantic names
-        (built-in plugin tools are first-class, like builtin tools — no
-        ``server__tool`` prefix; only external MCP server tools keep it).  The
-        ToolContext client re-point is the caller's job (via spec.ctx_field),
-        not this function's.
-
-        Args:
-            name: Plugin short name (``"memdb"``, ``"wechat"``, …).
-        """
-        client = self._plugins[name].client
-        assert client is not None
-        # Names registered on the PREVIOUS connection — a plugin restart can
-        # drop tools, and unregistered ones must not linger in the registry
-        # bound to the old, disconnected client (B4).
-        old_names = set(self._plugins[name].registered_tools)
-        tools = await client.list_tools()
-        logger.debug(
-            "%s_tools names=%s", name,
-            [t["name"] for t in tools],
-        )
-
-        # Internal: ``__`` (double-underscore) plugin tools are not exposed
-        # to the LLM — filtered out for all agents.
-        tagged = [
-            {**t, "server": name}
-            for t in tools
-            if not is_internal_tool(t["name"])
-        ]
-
-        proxy_tools = create_proxy_tools(self._plugins[name].client, tagged)
-        new_names = {t.name for t in proxy_tools}
-        registered = self._register_plugin_proxies(proxy_tools)
-        for stale in old_names - registered:
-            self.tool_registry.unregister(stale)
-        # Record the exact registered names so dead-process cleanup and stop
-        # can unregister this plugin's bare-name tools without a prefix.
-        self._plugins[name].registered_tools = registered
-        if self.caps.catalog_owner and self._catalog is not None:
-            # One sync for the plugin's whole tool set: rows go in, and a tool
-            # it dropped loses its row (source-scoped, so only this plugin's).
-            await self._catalog.sync_system_tools(proxy_tools, source=name)
-            await self._catalog.mark_plugin_connected(name)
-        logger.debug(
-            "%s_tools_registered count=%d removed=%d", name, len(proxy_tools),
-            len(old_names - new_names),
-        )
 
     # ── MCP tool discovery & registration ────────────────────────────
 
@@ -2485,17 +2430,39 @@ class AgentService:
 
     # ── Stop helpers ────────────────────────────────────────────────────
 
-    async def stop_all_plugins(self) -> None:
-        """Stop every registered plugin.
+    async def stop_plugins(self) -> None:
+        """Stop every registered plugin lifecycle, each under the grace bound.
 
-        Used by the app's shutdown path and by subagents tearing down their
-        shared HTTP clients (a worker never owns a child process, so this
-        only disconnects its clients).
+        The ONE plugin-teardown path — the worker's exit and the TUI/headless
+        session shutdown both need it, and it used to be written out in each
+        of them (differing in whether the grace bound applied at all).  The
+        bound is what keeps one wedged child from hanging the exit; a plugin
+        that owns poll/drain tasks declares them on its lifecycle, so a
+        uniform stop covers them and there are no per-plugin stop methods to
+        keep in step.
         """
+        async def _stop_one(lc) -> None:
+            try:
+                await asyncio.wait_for(
+                    lc.stop(), timeout=_timeouts.timeouts.grace.shutdown,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("shutdown_timeout service=%s", lc.name)
+            except Exception:
+                pass
+
         await asyncio.gather(
-            *(lc.stop() for lc in list(self._plugins.values())),
+            *(_stop_one(lc) for lc in list(self._plugins.values())),
             return_exceptions=True,
         )
+
+    async def stop_all_plugins(self) -> None:
+        """Stop every registered plugin, then the shared catalog.
+
+        Used by subagents tearing down their shared HTTP clients (a worker
+        never owns a child process, so this only disconnects its clients).
+        """
+        await self.stop_plugins()
         # Close the shared catalog AFTER the plugin clients (a late reconcile
         # must never write a closed db).  Mandatory: an unclosed aiosqlite
         # connection keeps its non-daemon worker thread alive and BLOCKS
@@ -2735,42 +2702,25 @@ class AgentService:
                 except Exception:
                     pass
 
-        # Extract turn messages: everything after the matching user message.
-        # Must handle both plain text (content is a str) and multimodal
-        # messages (content is a list of {type, text/image_url} parts).
+        # Extract turn messages: everything after the user message that
+        # OPENED this turn, which the loop marked when it appended it.
         #
-        # Compare against the sanitized form of the input: add_user_message
-        # stores sanitize_secrets(content), so a raw match would miss when
-        # the user pasted an API key — and the turn would be saved with
-        # empty messages (silent data loss).  If no user message matches at
-        # all (the turn was rolled back on a content-filter reject), there is
-        # nothing to persist.
+        # This used to search backwards for a user message whose text matched
+        # the incoming one.  Text is not an identity: heartbeat / timer /
+        # schedule turns carry constant content, so a turn that died before
+        # its user message was ever appended (``_recall_and_rebuild`` can
+        # raise) matched the PREVIOUS such turn and re-saved it as a new row.
+        # No turn open ⇒ nothing was produced ⇒ nothing to persist — which is
+        # also the rolled-back case, where pop_last_turn removed the message.
         from slife.logfmt import sanitize_secrets
         target = sanitize_secrets(user_message)
         all_messages = list(conv.messages)
-        turn_messages: list[dict] | None = None
-        user_idx = -1  # index of the matched user message (for the footnote)
-        for i in range(len(all_messages) - 1, -1, -1):
-            msg = all_messages[i]
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content")
-            if isinstance(content, str) and content == target:
-                turn_messages = all_messages[i + 1:]
-                user_idx = i
-                break
-            if isinstance(content, list):
-                text = "".join(
-                    p.get("text", "") for p in content
-                    if p.get("type") == "text"
-                )
-                if text == target:
-                    turn_messages = all_messages[i + 1:]
-                    user_idx = i
-                    break
-
-        if turn_messages is None:
+        user_idx = conv.take_open_turn()
+        if user_idx is None or not (0 <= user_idx < len(all_messages)):
             return
+        if all_messages[user_idx].get("role") != "user":
+            return
+        turn_messages: list[dict] = all_messages[user_idx + 1:]
 
         # Context trimming happens after this save, in
         # AgentLoop._trim_context (invoked below once the row is written)
@@ -3289,6 +3239,22 @@ class AgentService:
             except Exception:
                 pass
 
+    @staticmethod
+    def autonomous_reply_text(text: str) -> str | None:
+        """The text an autonomous turn wants surfaced, or ``None`` for silence.
+
+        The contract every autonomous turn shares — heartbeat, schedule,
+        timer: an empty reply, or exactly the ``.`` silence token, means the
+        agent checked in and had nothing to report.  It was spelled out at
+        each of the three call sites, so a change to the token (or to what
+        counts as empty) could reach one and miss the others, and the same
+        reply would be surfaced by one turn kind and swallowed by another.
+
+        Returns the STRIPPED text, since that is what the callers surface.
+        """
+        stripped = (text or "").strip()
+        return stripped if stripped and stripped != "." else None
+
     async def surface_autonomous_reply(
         self, text: str, cancelled: bool = False, stop_reason: str = "",
     ) -> None:
@@ -3302,8 +3268,8 @@ class AgentService:
         heartbeat turn is surfaced or silent, never labelled with why it
         stopped.
         """
-        t = (text or "").strip()
-        if t and t != ".":
+        t = self.autonomous_reply_text(text)
+        if t is not None:
             logger.info("heartbeat_act text=%.200s", t)
             await self.surface_autonomous(t)
             await self._notify_heartbeat("act")
@@ -3311,22 +3277,16 @@ class AgentService:
             logger.info("heartbeat_quiet")
             await self._notify_heartbeat("quiet")
 
-    async def fire_schedule_now(self, name: str, due_at: str = "",
-                                clone_context: bool = False) -> str:
+    async def fire_schedule_now(self, name: str, due_at: str = "") -> str:
         """Run a scheduled task immediately (backfill / manual trigger).
 
         Delegates to :func:`slife.agent.schedules.fire_task_now`, which
-        records a run and injects the task's trigger into the inbox.  *due_at*
-        targets an exact run (a missed/failed backfill); omit for a fresh
-        cron-fire run at now.  *clone_context* spawns the worker with the main
-        agent's current conversation, so a task with no stored description
-        still has substance to act on.
+        records a run and dispatches the worker.  *due_at* targets an exact run
+        (a missed/failed backfill); omit for a fresh cron-fire run at now.
         """
         from slife.agent.schedules import fire_task_now
 
-        return await fire_task_now(
-            self, name, due_at, clone_context=clone_context,
-        )
+        return await fire_task_now(self, name, due_at)
 
     async def schedule_wakeup(self, delay_seconds: float, note: str) -> None:
         """Schedule a one-shot ``[Timer]`` wake after *delay_seconds*.
@@ -3367,8 +3327,8 @@ class AgentService:
         *cancelled* / *stop_reason* complete the ``on_reply`` contract; a
         cancelled turn's reply is empty and suppressed, so neither is read.
         """
-        t = (text or "").strip()
-        if t and t != ".":
+        t = self.autonomous_reply_text(text)
+        if t is not None:
             await self.surface_timer(t)
 
     def refresh_system_prompt(self) -> None:

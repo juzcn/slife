@@ -23,6 +23,27 @@ import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/pa
 logger = logging.getLogger(__name__)
 
 # Known embedding dimensions and token limits by model family
+#: Model family → (dimension, max_tokens).
+#:
+#: ``local_embed.engine`` keeps the same table, and the two are separate for
+#: the reason the packages are: this side speaks to an OpenAI-compatible URL
+#: and never imports local-embed (pyproject: spawned, never imported), while
+#: local-embed loads GGUF / transformer weights itself.  None of the LOGIC is
+#: shared — only this data, because both describe the same models.
+#:
+#: What couples the copies is the TOKEN LIMIT: local-embed rejects an input
+#: over it, and this side predicts with it to skip a text it believes is too
+#: long.  A divergence makes the client skip text the server would have
+#: accepted, or send text it refuses.
+#:
+#: The dimension is load-bearing only HERE.  local-embed re-reads it from the
+#: loaded model (``n_embd`` / ``get_sentence_embedding_dimension``), so its
+#: copy is a pre-load hint; this side treats a recognised family as known and
+#: skips the probe that would correct it, so a wrong width sizes the vec0
+#: table wrong and silently drops every insert.
+#:
+#: ``tests/test_embedding_table.py`` compares the two sources (through the
+#: AST — importing across the boundary is exactly what is not allowed).
 _KNOWN_MODELS: dict[str, tuple[int, int]] = {
     # (dimension, max_tokens)
     "text-embedding-3-small": (1536, 8191),
@@ -137,7 +158,7 @@ class EmbeddingClient:
         # Resolve backend — an OpenAI-compatible endpoint is the only one
         # slife speaks.  Local models (GGUF / HF) are served by the separate
         # local-embed daemon, which presents this same URL standard.
-        if api_key:
+        if api_key and base_url:
             self._backend = "api"
             self._available = _check_runtime()
             if self._available:
@@ -150,6 +171,17 @@ class EmbeddingClient:
                     "hint='uv pip install openai'",
                     model,
                 )
+        elif api_key:
+            # A key with no endpoint is NOT configured.  ``AsyncOpenAI``
+            # silently falls back to its own default when ``base_url`` is
+            # omitted, so treating this as available would POST the user's
+            # key — and every embedded document — to api.openai.com, while
+            # the health report said "has no base_url configured".
+            # ``_discover_model`` already refuses an empty base_url; this
+            # keeps ``available``/``load()`` from disagreeing with it.
+            _log_warn(
+                "embeddings_unavailable backend=none reason=no_base_url"
+            )
         else:
             _log_warn(
                 "embeddings_unavailable backend=none reason=no_config"
@@ -227,10 +259,8 @@ class EmbeddingClient:
         if api_key and is_env_ref(api_key):
             api_key = ""
 
-        if not base_url:
-            _log_warn(
-                "embeddings_unavailable backend=none reason=no_base_url"
-            )
+        # ``__init__`` reports no_base_url / no_config — the one place every
+        # construction path passes through, so the reason is stated once.
 
         # The width is never configured.  A recognised model family is a
         # good guess; otherwise it is provisional until the OpenAI endpoint

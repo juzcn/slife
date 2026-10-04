@@ -200,7 +200,7 @@ class TestSetCredential:
     def test_success(self, monkeypatch):
         monkeypatch.setattr(
             "credstore._wsl_backend._run_powershell",
-            lambda script: (0, "", ""),
+            lambda script, stdin_data=None: (0, "", ""),
         )
         from credstore._wsl_backend import _set_credential
         assert _set_credential("t@svc", "u", "pwd") is True
@@ -208,10 +208,33 @@ class TestSetCredential:
     def test_failure(self, monkeypatch):
         monkeypatch.setattr(
             "credstore._wsl_backend._run_powershell",
-            lambda script: (1, "", "error"),
+            lambda script, stdin_data=None: (1, "", "error"),
         )
         from credstore._wsl_backend import _set_credential
         assert _set_credential("t@svc", "u", "pwd") is False
+
+    def test_the_secret_goes_over_stdin_not_the_command_line(self, monkeypatch):
+        """The script rides in ``powershell.exe``'s command line.
+
+        Anything that can enumerate command lines can decode ``-EncodedCommand``
+        back to plaintext, so interpolating the credential into the script
+        published it — the base64 value must travel on stdin instead.
+        """
+        seen = {}
+
+        def _fake(script, stdin_data=None):
+            seen["script"] = script
+            seen["stdin"] = stdin_data
+            return 0, "", ""
+
+        monkeypatch.setattr("credstore._wsl_backend._run_powershell", _fake)
+        from credstore._wsl_backend import _set_credential
+        assert _set_credential("t@svc", "u", "hunter2") is True
+
+        expected = base64.b64encode("hunter2".encode("utf-16-le")).decode("ascii")
+        assert seen["stdin"] == expected
+        assert expected not in seen["script"]
+        assert "hunter2" not in seen["script"]
 
 
 class TestDeleteCredential:
@@ -271,7 +294,7 @@ class TestWslBackendOps:
     def test_set_password_success(self, monkeypatch):
         monkeypatch.setattr(
             "credstore._wsl_backend._run_powershell",
-            lambda script: (0, "", ""),
+            lambda script, stdin_data=None: (0, "", ""),
         )
         from credstore._wsl_backend import WslBackend
         WslBackend().set_password("svc", "usr", "secret")
@@ -280,7 +303,7 @@ class TestWslBackendOps:
         from keyring.errors import PasswordSetError
         monkeypatch.setattr(
             "credstore._wsl_backend._run_powershell",
-            lambda script: (1, "", "denied"),
+            lambda script, stdin_data=None: (1, "", "denied"),
         )
         from credstore._wsl_backend import WslBackend
         with pytest.raises(PasswordSetError, match="Failed to store"):

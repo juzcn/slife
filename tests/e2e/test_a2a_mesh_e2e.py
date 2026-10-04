@@ -175,7 +175,7 @@ def _clear_retained_sync(agent: str) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_stale_presence_cards():
-    """Clear the two fixed e2e identities' retained cards around EVERY scenario.
+    """Clear the fixed e2e identities' retained cards around EVERY scenario.
 
     The broker is shared and retained cards outlive the process, so a run that
     was interrupted (Ctrl-C, a hard kill) leaves `e2e-a` / `e2e-b` advertising
@@ -184,11 +184,14 @@ def _no_stale_presence_cards():
     phantom "⚡ e2e-a online" lines in every later slife session, not just in
     this suite.  Clearing BEFORE the run too makes the suite self-healing: it
     always removes whatever the previous crashed run left behind.
+
+    ``e2e-dup`` is the collision scenario's name — shared by both of its
+    meshes on purpose, so it needs the same clearing.
     """
-    for agent in ("e2e-a", "e2e-b"):
+    for agent in ("e2e-a", "e2e-b", "e2e-dup"):
         _clear_retained_sync(agent)
     yield
-    for agent in ("e2e-a", "e2e-b"):
+    for agent in ("e2e-a", "e2e-b", "e2e-dup"):
         _clear_retained_sync(agent)
 
 
@@ -282,9 +285,38 @@ async def _scenario_cancel_round_trip():
         _reset_task_store()
 
 
+async def _scenario_name_collision():
+    """Two meshes claiming ONE name: the second refuses to join.
+
+    The name is the MQTT client id, and a broker's answer to a duplicate is to
+    disconnect the incumbent — so the second joiner would kick the first off
+    the broker, both would subscribe to the same request topic, and every task
+    sent to the name would be executed twice.  The refused join happens BEFORE
+    either connection, so the agent already holding the name is undisturbed."""
+    if not await probe_broker(BROKER_HOST, BROKER_PORT):
+        pytest.skip("mosquitto not reachable at localhost:1883")
+
+    a, b = _mesh("e2e-dup"), _mesh("e2e-dup")
+    try:
+        await a.connect()  # announces the name (retained card published)
+        with pytest.raises(RuntimeError, match="already in use"):
+            await b.connect()
+        assert b.is_connected is False
+        # The incumbent's session is untouched — no takeover was attempted.
+        assert a.is_connected is True
+        assert a.status == "online"
+    finally:
+        await a.disconnect()
+        await _clear_retained("e2e-dup")
+
+
 def test_task_round_trip_and_presence():
     _with_selector_loop(_scenario_task_round_trip)
 
 
 def test_cancel_round_trip():
     _with_selector_loop(_scenario_cancel_round_trip)
+
+
+def test_name_collision_refuses_the_second_join():
+    _with_selector_loop(_scenario_name_collision)

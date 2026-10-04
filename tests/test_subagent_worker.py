@@ -1,4 +1,4 @@
-"""Tests for Slife.subagent.headless — headless JSON-RPC 2.0 mode."""
+"""Tests for slife.subagent.worker — worker JSON-RPC 2.0 over stdin/stdout."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -9,7 +9,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from slife.subagent.headless import _write, _notify, cancelled_reply_text, main
+from slife.subagent.worker import (
+    _write,
+    _notify,
+    cancelled_reply_text,
+    main,
+)
 
 
 class TestWrite:
@@ -20,7 +25,7 @@ class TestWrite:
         mock_stdout = MagicMock()
         mock_stdout.buffer = buf
 
-        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+        with patch("slife.subagent.worker.sys.stdout", mock_stdout):
             _write(result={"ready": True}, rpc_id="req-1")
 
         output = json.loads(buf.getvalue().decode("utf-8"))
@@ -34,7 +39,7 @@ class TestWrite:
         mock_stdout = MagicMock()
         mock_stdout.buffer = buf
 
-        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+        with patch("slife.subagent.worker.sys.stdout", mock_stdout):
             _write(
                 error={"code": -32000, "message": "Something broke"},
                 rpc_id="req-2",
@@ -52,7 +57,7 @@ class TestWrite:
         mock_stdout = MagicMock()
         mock_stdout.buffer = buf
 
-        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+        with patch("slife.subagent.worker.sys.stdout", mock_stdout):
             _write(rpc_id=None)
 
         output = json.loads(buf.getvalue().decode("utf-8"))
@@ -66,7 +71,7 @@ class TestWrite:
         mock_stdout = MagicMock()
         mock_stdout.buffer = buf
 
-        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+        with patch("slife.subagent.worker.sys.stdout", mock_stdout):
             _write(result="", rpc_id="req-empty")
 
         output = json.loads(buf.getvalue().decode("utf-8"))
@@ -78,7 +83,7 @@ class TestWrite:
         mock_stdout = MagicMock()
         mock_stdout.buffer = buf
 
-        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+        with patch("slife.subagent.worker.sys.stdout", mock_stdout):
             _write(error={}, rpc_id="req-3")
 
         output = json.loads(buf.getvalue().decode("utf-8"))
@@ -91,7 +96,7 @@ class TestWrite:
         mock_stdout = MagicMock()
         mock_stdout.buffer = buf
 
-        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+        with patch("slife.subagent.worker.sys.stdout", mock_stdout):
             _write(result={"message": "你好 \U0001f30d"}, rpc_id="emoji-1")
 
         output = json.loads(buf.getvalue().decode("utf-8"))
@@ -103,7 +108,7 @@ class TestWrite:
         mock_stdout = MagicMock()
         mock_stdout.buffer = buf
 
-        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+        with patch("slife.subagent.worker.sys.stdout", mock_stdout):
             _write(result={"data": "x"}, rpc_id="f")
             output = buf.getvalue()
             assert len(output) > 0
@@ -122,7 +127,7 @@ class TestNotify:
         mock_stdout = MagicMock()
         mock_stdout.buffer = buf
 
-        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+        with patch("slife.subagent.worker.sys.stdout", mock_stdout):
             _notify("worker/complete", {"task_id": "task-1"})
 
         output = json.loads(buf.getvalue().decode("utf-8"))
@@ -136,7 +141,7 @@ class TestNotify:
         mock_stdout = MagicMock()
         mock_stdout.buffer = buf
 
-        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+        with patch("slife.subagent.worker.sys.stdout", mock_stdout):
             _notify("shutdown")
 
         output = json.loads(buf.getvalue().decode("utf-8"))
@@ -144,7 +149,7 @@ class TestNotify:
         assert "params" not in output
 
 
-class TestRunHeadlessHostFacts:
+class TestRunWorkerHostFacts:
     """The worker records the same host facts the main agent does.
 
     Pinned here rather than only in health's own tests because the failure
@@ -160,7 +165,7 @@ class TestRunHeadlessHostFacts:
         import asyncio
 
         from slife.config import Config, ModelConfig
-        from slife.subagent import headless
+        from slife.subagent import worker
 
         # The preferred channel: the parent writes its config to a temp file
         # and passes the path (the env-var form is the older fallback).
@@ -169,7 +174,7 @@ class TestRunHeadlessHostFacts:
         monkeypatch.setenv("SLIFE_CONFIG_FILE", str(cfg_file))
         monkeypatch.delenv("SLIFE_CONFIG", raising=False)
         monkeypatch.setattr(
-            headless, "setup_server_logging", lambda *a, **k: tmp_path / "sub.log",
+            worker, "setup_server_logging", lambda *a, **k: tmp_path / "sub.log",
         )
         config = Config(
             models=[ModelConfig(
@@ -185,7 +190,7 @@ class TestRunHeadlessHostFacts:
                  "slife.agent.service.AgentService", side_effect=self._Stop,
              ):
             with pytest.raises(self._Stop):
-                asyncio.run(headless.run_headless([]))
+                asyncio.run(worker.run_worker([]))
 
     def test_the_worker_records_the_host_facts(self, monkeypatch, tmp_path):
         recorded: list[str] = []
@@ -203,22 +208,22 @@ class TestRunHeadlessHostFacts:
 class TestMain:
     """Tests for main() entry point."""
 
-    def test_main_runs_headless(self):
-        with patch("slife.subagent.headless.asyncio.run") as mock_run:
-            with patch("slife.subagent.headless.run_headless") as mock_rh:
+    def test_main_runs_worker(self):
+        with patch("slife.subagent.worker.asyncio.run") as mock_run:
+            with patch("slife.subagent.worker.run_worker") as mock_rw:
                 main([])
                 mock_run.assert_called_once()
-                mock_rh.assert_called_once_with([])
+                mock_rw.assert_called_once_with([])
 
     def test_main_forwards_argv(self):
         """main() forwards the FULL argv (program name included) —
         ``parse_cli_config_path`` slices argv[1:] itself, so a stripped
         argv would double-strip a positional config path."""
-        with patch("slife.subagent.headless.asyncio.run") as mock_run:
-            with patch("slife.subagent.headless.run_headless") as mock_rh:
+        with patch("slife.subagent.worker.asyncio.run") as mock_run:
+            with patch("slife.subagent.worker.run_worker") as mock_rw:
                 main(["prog", "somefile.yaml", "--debug"])
                 mock_run.assert_called_once()
-                mock_rh.assert_called_once_with(["prog", "somefile.yaml", "--debug"])
+                mock_rw.assert_called_once_with(["prog", "somefile.yaml", "--debug"])
 
 
 class TestCancelledReplyText:

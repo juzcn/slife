@@ -12,7 +12,7 @@ import os
 import pytest
 from pathlib import Path
 
-from slife.config import Config, ModelConfig
+from slife.config import DEFAULT_CONTEXT_WINDOW, Config, ModelConfig
 from tests.conftest import dump_config, load_config_text
 
 
@@ -107,6 +107,28 @@ class TestModelConfigFromDict:
             "input": [],
         })
         assert mc.supports_vision is False
+
+    @pytest.mark.parametrize("value", [0, -5, None, "abc"])
+    def test_a_window_that_cannot_bound_falls_back_to_the_default(self, value):
+        """A non-positive context window is not a window.
+
+        Zero used to pass straight through: it reached ``_trim_context`` as a
+        ceiling of 0 and compressed the live context down to the current turn
+        after every save, and it zeroed the live tool-result cap — the model
+        destroyed its own ongoing context with nothing said.
+        """
+        mc = ModelConfig.from_dict({
+            "model": "test-model", "api_key": "test-key",
+            "context_window": value,
+        })
+        assert mc.context_window == DEFAULT_CONTEXT_WINDOW
+
+    def test_a_usable_window_is_kept(self):
+        mc = ModelConfig.from_dict({
+            "model": "test-model", "api_key": "test-key",
+            "context_window": 65536,
+        })
+        assert mc.context_window == 65536
 
     def test_defaults_applied(self):
         """Missing optional fields get sensible defaults."""
@@ -590,6 +612,21 @@ class TestParseCLI:
         assert parse_cli_lang(["slife"]) is None
         assert parse_cli_lang(["slife", "--agent", "bob"]) is None
 
+    def test_parse_cli_headless(self):
+        from slife.config import parse_cli_headless
+        assert parse_cli_headless(["slife", "--headless"]) is True
+        assert parse_cli_headless(["slife", "--headless", "--agent", "jack"]) is True
+        assert parse_cli_headless(["slife", "--agent", "jack"]) is False
+        assert parse_cli_headless(["slife"]) is False
+
+    def test_parse_cli_headless_takes_no_value(self):
+        """A switch, not an option: the scanner must not swallow the config
+        path that follows it."""
+        from slife.config import parse_cli_config_path
+        assert parse_cli_config_path(
+            ["slife", "--headless", "--agent", "jack", "myconf.yaml"],
+        ) == "myconf.yaml"
+
     def test_parse_cli_help(self):
         from slife.config import parse_cli_help
         assert parse_cli_help(["slife", "--help"]) is True
@@ -598,12 +635,6 @@ class TestParseCLI:
         assert parse_cli_help(["slife"]) is False
         # Not a flag-value lookalike: only the bare forms count.
         assert parse_cli_help(["slife", "--agent", "h"]) is False
-
-    def test_parse_cli_headless(self):
-        from slife.config import parse_cli_headless
-        assert parse_cli_headless(["slife", "--headless"]) is True
-        assert parse_cli_headless(["slife", "conf.yaml", "--headless"]) is True
-        assert parse_cli_headless(["slife"]) is False
 
     def test_usage_names_only_flags_the_scanners_honour(self):
         """`--help` must not describe a surface the entry points lack.
@@ -624,12 +655,12 @@ class TestParseCLI:
         )
 
         assert set(re.findall(r"--[a-z-]+", CLI_USAGE)) == {
-            "--agent", "--lang", "--headless", "--help",
+            "--agent", "--headless", "--lang", "--help",
         }
         assert parse_cli_help(["slife", "--help"])
-        assert parse_cli_headless(["slife", "--headless"])
         assert parse_cli_agent(["slife", "--agent", "bob"]) == "bob"
         assert parse_cli_lang(["slife", "--lang", "zh"]) == "zh"
+        assert parse_cli_headless(["slife", "--headless"])
         # …and the positional it documents is the one the scanner reads.
         assert parse_cli_config_path(["slife", "myconf.yaml"]) == "myconf.yaml"
         assert "config-path" in CLI_USAGE

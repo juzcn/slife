@@ -13,7 +13,7 @@ import slife.subagent.process  # noqa: F401
 from slife.tools.subagent import (
     ListSubagentsTool,
     SpawnSubagentTool,
-    StopSubagentTool,
+    RemoveSubagentTool,
     SubagentCancelTaskTool,
     SubagentGetTaskResultTool,
     SubagentListTasksTool,
@@ -32,7 +32,7 @@ MANAGER_PATH = "slife.subagent.process.get_manager"
 TOOLS = [
     ListSubagentsTool,
     SpawnSubagentTool,
-    StopSubagentTool,
+    RemoveSubagentTool,
     SubagentSendTaskTool,
     SubagentSendTaskAsyncTool,
     SubagentGetTaskResultTool,
@@ -76,7 +76,7 @@ class TestListSubagentsTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = ListSubagentsTool()
             result = await tool.execute()
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_no_subagents(self):
@@ -93,7 +93,6 @@ class TestListSubagentsTool:
         mock_proc.pid = 12345
         mock_proc.is_ready = True
         mock_proc.is_running = True
-        mock_proc.context_source = "cloned"
         mock_proc.is_busy = True
         mock_proc.queued = 2
         mock_proc.pending_async_count = 1
@@ -108,7 +107,6 @@ class TestListSubagentsTool:
             assert "sub-1" in result
             assert "sub-2" in result
             assert "pid=12345" in result
-            assert "context: cloned" in result
             assert "busy: 2 in flight" in result
             assert "async: 1" in result
 
@@ -124,7 +122,7 @@ class TestSpawnSubagentTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SpawnSubagentTool()
             result = await tool.execute()
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_spawn_success(self):
@@ -152,44 +150,6 @@ class TestSpawnSubagentTool:
             assert "reused" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_a_reused_worker_reports_the_context_it_really_has(self):
-        """spawn() does not re-context a running worker — say what it has.
-
-        Reporting the requested context would be a fact the caller acts on (a
-        "cloned" worker that is in fact clean answers from an empty history).
-        """
-        from slife.agent.message_history import MessageHistory
-        from slife.config import Config, ModelConfig
-        from slife.tools.context import ToolContext
-
-        conv = MessageHistory(system_prompt="SYS")
-        conv.add_user_message("t1")
-        conv.add_assistant_message("r1")
-        mc = ModelConfig(
-            ref="t/m", provider="t", api_model="m", display_name="M",
-            api_key="k", context_window=1000,
-        )
-        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
-
-        mock_mgr = MagicMock()
-        mock_mgr.spawn = AsyncMock(return_value="worker")
-        mock_mgr.spawned_running = MagicMock(return_value=True)
-        existing = MagicMock()
-        existing.context_source = "clean"
-        mock_mgr.get = MagicMock(return_value=existing)
-
-        with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = SpawnSubagentTool()
-            object.__setattr__(tool, "_ctx", ToolContext(message_history=conv, config=cfg))
-            result = await tool.execute(subagent_name="worker", clone_context=True)
-
-        # It asked for a clone; the live worker is clean, and that is what the
-        # caller is told (the request was not applied to it).
-        assert mock_mgr.spawn.call_args.kwargs["context_source"] == "cloned"
-        assert "Context: clean" in result
-        assert "kept from its original spawn" in result
-
-    @pytest.mark.asyncio
     async def test_spawn_requires_name(self):
         """No auto-generated id — subagent_name is required."""
         mock_mgr = MagicMock()
@@ -213,8 +173,8 @@ class TestSpawnSubagentTool:
             assert "Error" in result
 
     @pytest.mark.asyncio
-    async def test_spawn_clone_context_default_false(self):
-        """Spawn defaults to a clean context (no cloned messages)."""
+    async def test_spawn_takes_no_context(self):
+        """A spawn starts a process — the context is the task's, not the spawn's."""
         mock_mgr = MagicMock()
         mock_mgr.spawn = AsyncMock(return_value="sub-3")
 
@@ -222,96 +182,123 @@ class TestSpawnSubagentTool:
             tool = SpawnSubagentTool()
             await tool.execute(subagent_name="worker")
 
-        kwargs = mock_mgr.spawn.call_args.kwargs
-        assert kwargs["context_source"] == "clean"
-        assert kwargs["context_messages"] is None
+        assert mock_mgr.spawn.call_args.kwargs == {"name": "worker"}
 
-    @pytest.mark.asyncio
-    async def test_spawn_clone_context_true_clones(self):
-        """clone_context=True passes the parent history messages to spawn."""
-        from slife.agent.message_history import MessageHistory
+    def test_serialize_cloned_context_drops_system(self):
+        """The parent's system message is not serialized."""
         from slife.config import Config, ModelConfig
         from slife.tools.context import ToolContext
+        from slife.tools.subagent import _serialize_cloned_context
 
-        conv = MessageHistory(system_prompt="SYS")
-        conv.add_user_message("t1")
-        conv.add_assistant_message("r1")
         mc = ModelConfig(
             ref="t/m", provider="t", api_model="m", display_name="M",
             api_key="k", context_window=1000,
         )
         cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
 
-        mock_mgr = MagicMock()
-        mock_mgr.spawn = AsyncMock(return_value="sub-4")
-        with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = SpawnSubagentTool()
-            object.__setattr__(tool, "_ctx", ToolContext(message_history=conv, config=cfg))
-            await tool.execute(subagent_name="worker", clone_context=True)
+        data = _serialize_cloned_context(
+            ToolContext(message_history=_parent_context(), config=cfg)
+        )
+        assert data is not None
+        assert all(m.get("role") != "system" for m in data)
+        assert [m["role"] for m in data] == ["user", "assistant"]
 
-        kwargs = mock_mgr.spawn.call_args.kwargs
-        assert kwargs["context_source"] == "cloned"
-        assert kwargs["context_messages"] is not None
-        roles = [m["role"] for m in kwargs["context_messages"]]
-        assert roles == ["user", "assistant"]
+    def test_the_clone_excludes_the_turn_in_flight(self):
+        """The parent's unfinished turn is its own business, not context.
 
-    def test_serialize_cloned_context_drops_system(self):
-        """The parent's system message is not serialized."""
+        The snapshot is taken inside the delegating tool call, so that turn is
+        the parent's request, its reasoning and the ``assistant(tool_calls=…)``
+        doing the delegating — repaired on arrival to "(Tool execution
+        interrupted)" and read by the worker as *its own* interrupted action.
+        A live test had the worker conclude it was the parent, then go and
+        continue the parent's work instead of the task.
+        """
+        from slife.config import Config, ModelConfig
+        from slife.tools.context import ToolContext
+        from slife.tools.subagent import _serialize_cloned_context
+
+        mc = ModelConfig(
+            ref="t/m", provider="t", api_model="m", display_name="M",
+            api_key="k", context_window=1000,
+        )
+        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
+
+        data = _serialize_cloned_context(ToolContext(
+            message_history=_parent_context(in_flight=True), config=cfg,
+        ))
+        assert data == [
+            {"role": "user", "content": "t1", "_turn_id": 7},
+            {"role": "assistant", "content": "r1"},
+        ], "the settled turn is carried; the turn being run is not"
+
+    def test_a_parent_with_no_settled_turn_clones_nothing(self):
+        """A task sent from a session's first turn has nothing to carry.
+
+        Every turn so far is in flight, so the clone is empty and the worker
+        runs on the task alone — which is what the task text is for.
+        """
         from slife.agent.message_history import MessageHistory
         from slife.config import Config, ModelConfig
         from slife.tools.context import ToolContext
         from slife.tools.subagent import _serialize_cloned_context
 
         conv = MessageHistory(system_prompt="PARENT_SYS")
-        conv.add_user_message("t1")
-        conv.add_assistant_message("r1")
+        conv.add_user_message("the only turn, still running")
         mc = ModelConfig(
             ref="t/m", provider="t", api_model="m", display_name="M",
             api_key="k", context_window=1000,
         )
         cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
 
-        data = _serialize_cloned_context(ToolContext(message_history=conv, config=cfg))
-        assert data is not None
-        assert all(m.get("role") != "system" for m in data)
+        assert _serialize_cloned_context(
+            ToolContext(message_history=conv, config=cfg)
+        ) == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# StopSubagentTool
+# RemoveSubagentTool
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestStopSubagentTool:
+class TestRemoveSubagentTool:
     @pytest.mark.asyncio
     async def test_missing_agent_name(self):
-        tool = StopSubagentTool()
+        tool = RemoveSubagentTool()
         result = await tool.execute(subagent_name="")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_no_manager(self):
         with patch(MANAGER_PATH, return_value=None):
-            tool = StopSubagentTool()
+            tool = RemoveSubagentTool()
             result = await tool.execute(subagent_name="sub-1")
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
-    async def test_stop_success(self):
+    async def test_remove_success(self):
+        """The reply says what the caller now faces, not just "done".
+
+        The worker is gone from the fleet and its task records with it, and
+        spawning the name again is a fresh worker — three facts a caller acts
+        on, none of them implied by the word "stopped".
+        """
         mock_mgr = MagicMock()
         mock_mgr.stop = AsyncMock(return_value=True)
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = StopSubagentTool()
+            tool = RemoveSubagentTool()
             result = await tool.execute(subagent_name="sub-1")
-            assert "stopped" in result.lower()
+            assert "removed" in result.lower()
+            assert "no longer running" in result
+            assert "starts a fresh worker" in result
 
     @pytest.mark.asyncio
-    async def test_stop_not_found(self):
+    async def test_remove_not_found(self):
         mock_mgr = MagicMock()
         mock_mgr.stop = AsyncMock(return_value=False)
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = StopSubagentTool()
+            tool = RemoveSubagentTool()
             result = await tool.execute(subagent_name="sub-1")
             assert "not found" in result.lower()
 
@@ -319,6 +306,41 @@ class TestStopSubagentTool:
 # ═══════════════════════════════════════════════════════════════════════════
 # Task delegation — sync / async / poll
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def _parent_context(*, in_flight: bool = False):
+    """A parent history as the loop hands it to a tool: one settled turn, and
+    optionally the turn being run right now (which carries no turn rowid)."""
+    from slife.agent.message_history import MessageHistory
+
+    conv = MessageHistory(system_prompt="PARENT_SYS")
+    conv.add_user_message("t1")
+    conv.add_assistant_message("r1")
+    conv.messages[1]["_turn_id"] = 7          # the settled turn, as saved
+    if in_flight:
+        conv.add_user_message("what we are doing now")
+        conv.add_assistant_message("", tool_calls=[{
+            "id": "call_00_x", "type": "function",
+            "function": {"name": "subagent_send_task_async", "arguments": "{}"},
+        }])
+    return conv
+
+
+def _tool_with_parent_context(tool, *, in_flight: bool = False):
+    """Give *tool* a live parent context, as the loop does per tool batch."""
+    from slife.config import Config, ModelConfig
+    from slife.tools.context import ToolContext
+
+    mc = ModelConfig(
+        ref="t/m", provider="t", api_model="m", display_name="M",
+        api_key="k", context_window=1000,
+    )
+    cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
+    object.__setattr__(
+        tool, "_ctx",
+        ToolContext(message_history=_parent_context(in_flight=in_flight), config=cfg),
+    )
+    return tool
 
 
 class TestSubagentSendTaskTool:
@@ -333,7 +355,7 @@ class TestSubagentSendTaskTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentSendTaskTool()
             result = await tool.execute(subagent_name="sub-1", task="do X")
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_send_success(self):
@@ -345,7 +367,9 @@ class TestSubagentSendTaskTool:
             tool = SubagentSendTaskTool()
             result = await tool.execute(subagent_name="sub-1", task="do X")
         assert result == "done result"
-        mock_mgr.send_task.assert_awaited_once_with("sub-1", "do X", timeout=None)
+        mock_mgr.send_task.assert_awaited_once_with(
+            "sub-1", "do X", timeout=None, seed=None,
+        )
 
     @pytest.mark.asyncio
     async def test_send_timeout_reports_preempted(self):
@@ -396,8 +420,43 @@ class TestSubagentSendTaskTool:
         assert "queued" in result
         assert "converted to async" in result
         assert "rpc-9" in result
-        mock_mgr.send_task_async.assert_awaited_once_with("sub-1", "do X")
+        mock_mgr.send_task_async.assert_awaited_once_with(
+            "sub-1", "do X", seed=None,
+        )
         mock_mgr.send_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_task_carries_the_context_as_it_stands_at_send_time(self):
+        """The parent's live messages ride the task, its system prompt dropped.
+
+        This is the whole point of the refactor: the context is decided when
+        the task is sent, because that is the only moment it is in hand.
+        """
+        mock_mgr = MagicMock()
+        mock_mgr.is_busy = MagicMock(return_value=False)
+        mock_mgr.send_task = AsyncMock(return_value="ok")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = _tool_with_parent_context(SubagentSendTaskTool())
+            await tool.execute(subagent_name="sub-1", task="do X")
+
+        seed = mock_mgr.send_task.call_args.kwargs["seed"]
+        assert [m["role"] for m in seed] == ["user", "assistant"]
+
+    @pytest.mark.asyncio
+    async def test_a_queued_task_keeps_the_context_of_its_own_send(self):
+        """A task queued behind a busy worker still carries its own snapshot."""
+        mock_mgr = MagicMock()
+        mock_mgr.is_busy = MagicMock(return_value=True)
+        mock_mgr.queued_count = MagicMock(return_value=1)
+        mock_mgr.send_task_async = AsyncMock(return_value="rpc-9")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = _tool_with_parent_context(SubagentSendTaskTool())
+            await tool.execute(subagent_name="sub-1", task="do X")
+
+        seed = mock_mgr.send_task_async.call_args.kwargs["seed"]
+        assert [m["role"] for m in seed] == ["user", "assistant"]
 
 
 class TestSubagentSendTaskAsyncTool:
@@ -412,7 +471,7 @@ class TestSubagentSendTaskAsyncTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentSendTaskAsyncTool()
             result = await tool.execute(subagent_name="sub-1", task="do X")
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_send_async_success(self):
@@ -426,7 +485,21 @@ class TestSubagentSendTaskAsyncTool:
         assert "delivered automatically" in result
         assert "subagent_get_task_result" in result  # auto is also pollable
         # mode defaults to "auto" (push).
-        mock_mgr.send_task_async.assert_awaited_once_with("sub-1", "do X", mode="auto")
+        mock_mgr.send_task_async.assert_awaited_once_with(
+            "sub-1", "do X", mode="auto", seed=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_task_carries_the_context_as_it_stands_at_send_time(self):
+        mock_mgr = MagicMock()
+        mock_mgr.send_task_async = AsyncMock(return_value="rpc-1")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = _tool_with_parent_context(SubagentSendTaskAsyncTool())
+            await tool.execute(subagent_name="sub-1", task="do X")
+
+        seed = mock_mgr.send_task_async.call_args.kwargs["seed"]
+        assert [m["role"] for m in seed] == ["user", "assistant"]
 
     @pytest.mark.asyncio
     async def test_send_async_poll_mode_disables_push(self):
@@ -441,7 +514,9 @@ class TestSubagentSendTaskAsyncTool:
         assert "rpc-2" in result
         assert "Auto-push disabled" in result
         assert "subagent_get_task_result" in result
-        mock_mgr.send_task_async.assert_awaited_once_with("sub-1", "do X", mode="poll")
+        mock_mgr.send_task_async.assert_awaited_once_with(
+            "sub-1", "do X", mode="poll", seed=None,
+        )
 
     @pytest.mark.asyncio
     async def test_send_async_rejects_invalid_mode(self):
@@ -468,7 +543,7 @@ class TestSubagentGetTaskResultTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentGetTaskResultTool()
             result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_result_pending(self):
@@ -521,7 +596,7 @@ class TestSubagentListTasksTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentListTasksTool()
             result = await tool.execute()
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_no_records(self):
@@ -593,7 +668,7 @@ class TestSubagentCancelTaskTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentCancelTaskTool()
             result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
-            assert result == "Subagent manager is not running."
+            assert result == "Error: subagent manager is not running."
 
     @pytest.mark.asyncio
     async def test_cancel_success(self):

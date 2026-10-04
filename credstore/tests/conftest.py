@@ -82,7 +82,7 @@ def base_backend(monkeypatch, in_mem_store, in_mem_cryptfile):
     #    construction fails and clobbers _cryptfile to None, breaking the
     #    first-time/change password tests.  The CLI then sees the mock
     #    cryptfile via get_cryptfile().
-    monkeypatch.setattr(backend, "reinit_cryptfile", lambda password: None)
+    monkeypatch.setattr(backend, "reinit_cryptfile", lambda password, **kw: None)
 
     # -- Backend names / info --
     monkeypatch.setattr(backend, "get_active_backend_name", lambda: "MockBackend")

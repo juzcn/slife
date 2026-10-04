@@ -437,6 +437,23 @@ class SemanticManager:
                 backoff = _timeouts.timeouts.ready.watchdog_backoff_initial
                 continue
             if unembedded == 0:
+                if not self._store.can_index:
+                    # The count is 0 because nothing CAN be indexed, not
+                    # because the index is built: sqlite-vec did not load, so
+                    # there is no vec0 table to write.  Opening the gate here
+                    # made every hybrid search report ``semantic_available:
+                    # true`` beside a leg that structurally returns nothing.
+                    # Stay shut and name the real cause — the store's own
+                    # report already carries it.
+                    self._semantic_ready = False
+                    await self._set_state(
+                        "unavailable",
+                        getattr(self._store, "_vec_reason", "")
+                        or "no vector storage on this platform",
+                    )
+                    if not await self._park_until_work():
+                        return
+                    continue
                 self._semantic_ready = True
                 await self._set_state("ready")
                 if not await self._park_until_work():

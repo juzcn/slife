@@ -105,10 +105,39 @@ def init_backend(password: str | None = None) -> None:
         logger.warning("cryptfile unavailable — secrets in system keyring only")
 
 
-def reinit_cryptfile(password: str) -> None:
-    """Re-initialize cryptfile with a new password (for set-password / change-password)."""
+def reinit_cryptfile(password: str, *, replace_existing: bool = False) -> None:
+    """Re-initialize cryptfile with a new master password.
+
+    ``replace_existing`` is the CHANGE path (``credstore set-password`` on a
+    store that already has one).  ``keyrings.cryptfile``'s ``keyring_key``
+    setter only UNLOCKS: pointing it at a file encrypted with the OLD password
+    raises "Incorrect Password", and ``_init_cryptfile``'s blanket handler
+    turns that into ``_cryptfile = None`` — so the caller saw only "could not
+    initialize cryptfile backend" and changing the password could never
+    succeed.
+
+    A new master password means a NEW file (the library's own conversion path
+    re-encrypts from one keyring to another).  The existing file is moved to
+    ``<path>.bak`` rather than replaced: it is the only copy of the backup if
+    re-encryption fails part-way, and the caller has already read its contents
+    into memory.
+    """
     global _cryptfile
-    _init_cryptfile(password)
+    if replace_existing:
+        from credstore._config import get_cryptfile_path
+        path = Path(get_cryptfile_path())
+        if path.exists():
+            backup = path.with_name(path.name + ".bak")
+            path.replace(backup)
+            logger.info("cryptfile_moved_aside backup=%s", backup)
+    try:
+        _init_cryptfile(password)
+    except ValueError as exc:
+        # This path creates a NEW file, so an unlock failure means something
+        # else is wrong with the store.  The caller reports it through
+        # ``has_master_key()`` — the same verdict the set-password command
+        # already has a message for.
+        logger.warning("cryptfile_reinit_failed: %s", exc)
     if has_master_key():
         logger.info("cryptfile reinitialized with new password")
 
@@ -327,6 +356,17 @@ def _init_cryptfile(password: str | None = None):
             kr.keyring_key = password
 
         _cryptfile = kr
+    except ValueError as exc:
+        # ``keyrings.cryptfile`` raises ValueError("Incorrect Password") when
+        # the key does not decrypt the file's password reference.  That is a
+        # user error to REPORT, not a backend to degrade from: swallowing it
+        # left ``_cryptfile`` None, which the caller cannot tell apart from
+        # "cryptfile not installed", so `credstore` (list) printed a
+        # wrong-password backup as EMPTY and pointed the user at
+        # `reset-backup` — i.e. at overwriting the backup they could not read.
+        logger.warning("cryptfile_unlock_failed: %s", exc)
+        _cryptfile = None
+        raise
     except Exception as exc:
         logger.debug("cryptfile init failed: %s", exc)
         _cryptfile = None

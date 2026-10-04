@@ -146,7 +146,7 @@ class TestRecordActiveModel:
 
 class TestRecordHostFacts:
     """The facts that are about the HOST, not this process — one recorder for
-    both entry points (the TUI and a headless subagent worker)."""
+    both entry points (the TUI and a subagent worker)."""
 
     @staticmethod
     def _config():

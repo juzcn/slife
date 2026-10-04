@@ -249,9 +249,12 @@ def _persist_entry(
 ) -> None:
     """Persist a server entry to tools.yaml (merge semantics).
 
-    ``enabled=True`` (the default) leaves the flag untouched — only
-    ``mcp_set_enabled`` flips enable/disable; ``enabled=False`` is written
-    so the server stays disconnected on the next wrapper start.
+    ``enabled`` is written in BOTH directions.  ``False`` keeps the server
+    disconnected on the next wrapper start; ``True`` clears a stale
+    ``enabled: false``.  Omitting it when True meant ``add_server_entry``
+    never saw the ``enabled is True`` that removes the flag — so re-adding a
+    disabled server connected it live, reported ``connected``, and silently
+    came back disabled after a restart.
 
     Empty fields are not written: a stdio server has no ``url``, an http one
     may have no ``args``, and a field that says nothing is noise in a file
@@ -274,9 +277,10 @@ def _persist_entry(
         "description": description,
         "source": source,
         "auth": auth,
+        # Explicit in both directions — see the docstring.  ``False`` and
+        # ``True`` both survive the empty-field filter below.
+        "enabled": enabled,
     }
-    if not enabled:
-        entry["enabled"] = False
     entry = {
         key: value for key, value in entry.items()
         if value is not None and value != "" and value != [] and value != {}

@@ -15,6 +15,7 @@ from slife.config import Config
 from slife.a2a.card import _safe_name, format_presence_line
 from slife.agent.message_history import a2a_message_type
 from slife.agent.service import AgentService, MemoryDatabaseError
+from slife.agent.session import shutdown_session
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.agent.plugins import PluginStartStatus
 from slife.ui.chat import ChatView
@@ -627,37 +628,15 @@ class SlifeApp(App):
     async def _stop_plugins(self) -> None:
         """Stop the inbox and every plugin service with a bounded wait.
 
-        Shared by ``action_quit`` (normal exit) and the fatal
-        required-component path (memdb load failure) so child processes
-        are never orphaned when the app goes down.  Iterates the plugin
-        registry — no per-plugin stop methods; a plugin that owns poll/drain
-        tasks declares them on its lifecycle, so a uniform stop is enough.
-        The main() finally still hard-kills everything as the crash-path
-        safety net.
+        Used by ``action_quit`` (normal exit) and the fatal
+        required-component path (memdb load failure) so child processes are
+        never orphaned when the app goes down.  The order and the bound are
+        the session's, not the TUI's — :func:`slife.agent.session.shutdown_session`
+        owns them, because the headless host must stop the same things in the
+        same order.  The main() finally still hard-kills everything as the
+        crash-path safety net.
         """
-
-        async def _stop_one(name: str, coro) -> None:
-            try:
-                await asyncio.wait_for(coro, timeout=_timeouts.timeouts.grace.shutdown)
-            except asyncio.TimeoutError:
-                logger.warning("shutdown_timeout service=%s", name)
-            except Exception:
-                pass
-
-        # Stop inbox first — completes any in-flight message.
-        await _stop_one("inbox", self.service.stop_inbox())
-        # Then stop subagents and every registered plugin in parallel.
-        await asyncio.gather(
-            _stop_one("subagent", self.service.stop_subagent()),
-            *(
-                _stop_one(lc.name, lc.stop())
-                for lc in list(self.service._plugins.values())
-            ),
-            return_exceptions=True,
-        )
-        # Close the shared tool catalog last (a late reconcile must never write
-        # a closed db; the aiosqlite worker thread would otherwise block exit).
-        await _stop_one("catalog", self.service.close_catalog())
+        await shutdown_session(self.service)
 
     def action_cancel(self) -> None:
         """Cancel the currently running agent loop.  No-op if idle."""

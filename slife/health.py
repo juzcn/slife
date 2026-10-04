@@ -115,7 +115,7 @@ def record_host_facts(config, *, source: str) -> None:
     its parent's 20 for no reason a reader of either report could see.
 
     One recorder for both entry points (``slife/__init__.py:main`` and
-    ``slife/subagent/headless.py``): the two reports are meant to be
+    ``slife/subagent/worker.py``): the two reports are meant to be
     comparable, and a second copy of this block is what drifts.
 
     *source* is where THIS process got its config — the yaml path for the main

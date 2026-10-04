@@ -18,6 +18,14 @@ removed when it leaves the responder, so whatever a fresh process finds on disk
 is exactly the set its predecessor died holding.  Those are reported *stale* —
 never completable — so the model answers their peers with a plain message
 instead of walking into a refused ``task_response``.
+
+That premise is **single-process**, so the ledger is **per agent** —
+``a2a_inbound_<agent>.yaml``, beside ``<agent>.db`` and ``wechat_<agent>.yaml``,
+and for the same reason: the tasks in it are the ones addressed to that name.
+Two instances on one machine are the normal way to run two agents, and a shared
+file would have each read the other's in-flight tasks as its own orphans (the
+``pending`` on disk is read as "my predecessor died holding these") while every
+save wrote a whole view over the other's record.
 """
 
 from __future__ import annotations
@@ -45,29 +53,16 @@ def _iso_now() -> str:
 
 
 def default_path() -> Path:
-    """``<slife data dir>/a2a_inbound.yaml``.
+    """This agent's ledger in the slife data dir (``slife.paths`` owns the path).
 
-    ``get_data_dir()`` honours ``$SLIFE_DATA_DIR``, which the host exports so
-    plugin children resolve the same directory as the main process.  YAML, like
-    every other file in that directory (``slife.yaml``, ``tools.yaml``,
-    ``wechat_<agent>.yaml``): this is state a human may well open — an entry
-    here is a peer still owed a reply — so it reads as a document rather than
-    as one long line.
+    YAML, like every other file in that directory (``slife.yaml``,
+    ``tools.yaml``, ``wechat_<agent>.yaml``): this is state a human may well
+    open — an entry here is a peer still owed a reply — so it reads as a
+    document rather than as one long line.
     """
-    from slife.paths import get_data_dir
+    from slife.paths import get_a2a_inbound_path
 
-    return get_data_dir() / "a2a_inbound.yaml"
-
-
-def resolve_path() -> Path:
-    """The inbound-state path for this process.
-
-    ``$A2A_INBOUND_FILE`` (test/dev override) > slife data dir default.
-    """
-    env = os.environ.get("A2A_INBOUND_FILE")
-    if env:
-        return Path(env).expanduser()
-    return default_path()
+    return get_a2a_inbound_path()
 
 
 @dataclass(frozen=True)
@@ -95,7 +90,7 @@ class InboundStore:
     """
 
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path if path is not None else resolve_path()
+        self._path = path if path is not None else default_path()
         self._pending: dict[str, InboundTask] = {}
         self._stale: dict[str, InboundTask] = {}
         self._load()

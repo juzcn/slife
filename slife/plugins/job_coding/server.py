@@ -391,7 +391,25 @@ async def job_write(name: str, code: str, ctx: Context | None = None) -> str:
     previous = path.read_text(encoding="utf-8") if not created else ""
     if not created:
         _unregister_tool(name)
-    _write_job_file(path, code)
+    try:
+        _write_job_file(path, code)
+    except OSError as e:
+        # The write itself failed — a file held open by an editor is routine
+        # on Windows, and ``write_text`` is not atomic, so the source may be
+        # partial.  Restore the previous code and re-register it: the tool
+        # must never be left unregistered while its file is still on disk.
+        if created:
+            path.unlink(missing_ok=True)
+            return f"Error: could not create {path.name} — {e}"
+        try:
+            _write_job_file(path, previous)
+        except OSError:
+            return (
+                f"Error: could not write {path.name} — {e}. The file may be "
+                f"incomplete; job '{name}' stays unregistered until it loads."
+            )
+        _load_file(path)
+        return f"Error: write failed — previous code restored ({e})"
     failure = _load_file(path)
     if failure or name not in _registry:
         if not created:
@@ -434,6 +452,10 @@ async def job_remove(name: str, ctx: Context | None = None) -> str:
         name: Job name, bare or as the exposed tool name from job-list —
             'translate' or 'job-translate'.
     """
+    # Accept the exposed tool name too — the Args line above promises
+    # 'translate' or 'job-translate', and ``job_run`` normalizes the same way.
+    # ``_registry`` is keyed by the bare name, so the prefixed form missed.
+    name = registry.bare_name(name)
     if name not in _registry:
         return f"Error: unknown job '{name}'"
     path = _jobs_dir / f"{name}.py"

@@ -21,9 +21,10 @@ wherever someone had happened to write a gate.  Two consequences, both real:
 
 So the difference is declared here, once, as capabilities.  A capability is a
 *grant*: the process either owns the resource (or holds the policy) or it does
-not.  The main agent holds every one of them; a worker holds none — it is the
-loop and the tools, with every harness singleton and every user-facing policy
-left to its parent.  ``tests/test_subagent_parity.py`` guards both directions:
+not.  The main agent holds every one of them; a worker holds none of them
+except the ones :data:`WORKER_GRANTS` names — it is the loop and the tools,
+with every harness singleton and every user-facing policy left to its parent.
+``tests/test_subagent_parity.py`` guards both directions:
 every ``is_subagent`` gate in the tree must be declared here, and the two roles'
 observable surfaces must differ by exactly what is declared.
 
@@ -93,8 +94,10 @@ class Caps:
 
     #: The per-turn context rebuild — the discriminator call that selects which
     #: history turns and which memory entries the turn runs on.  A worker's
-    #: history is one-shot per task, so there is nothing to select from, and the
-    #: call would cost a model round-trip per task to decide nothing.
+    #: context is seeded per task from its parent's clone and then rebuilt
+    #: exactly as the main agent's is, over the same shared turns DB (read-only
+    #: for it: the persisted live-context list is gated by ``turn_persistence``,
+    #: which a worker is not granted).
     recall: bool = True
 
     #: The inbox's startup gate — no turn runs until every plugin spawn has
@@ -117,11 +120,20 @@ class Role(Enum):
         return self is Role.WORKER
 
 
+#: The grants a worker holds **on purpose** — the explicit exception to
+#: "a capability is withheld from a worker until someone grants it here".
+#: ``recall`` is the one: a worker's per-task history is seeded from its
+#: parent's clone and rebuilt by the same machinery, against the same shared
+#: turns DB.  The DB is read-only for it — ``turn_persistence`` stays withheld,
+#: so the persisted live-context list keeps its single owner (the main agent).
+WORKER_GRANTS: frozenset[str] = frozenset({"recall"})
+
 #: The main agent holds the full harness…
 _MAIN = Caps()
-#: …and a worker holds none of it: derived from the field list, so a capability
-#: added above is withheld from a worker until it is granted here on purpose.
-_WORKER = Caps(**dict.fromkeys(ALL_CAPS, False))
+#: …and a worker holds none of it but the declared grants: derived from the
+#: field list, so a capability added above is withheld from a worker until it
+#: is granted here on purpose.
+_WORKER = Caps(**{name: name in WORKER_GRANTS for name in ALL_CAPS})
 
 _CAPS: dict[Role, Caps] = {Role.MAIN: _MAIN, Role.WORKER: _WORKER}
 
@@ -131,4 +143,4 @@ def caps_for(role: Role) -> Caps:
     return _CAPS[role]
 
 
-__all__ = ["ALL_CAPS", "Caps", "Role", "caps_for"]
+__all__ = ["ALL_CAPS", "WORKER_GRANTS", "Caps", "Role", "caps_for"]

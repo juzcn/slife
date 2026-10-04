@@ -11,10 +11,8 @@ import pytest; pytestmark = pytest.mark.unit
 from unittest.mock import MagicMock
 
 from slife.agent.message_history import MessageHistory
-from slife.ui.restore import (
-    restore_session,
-    tool_result_is_error,
-)
+from slife.agent.session import tool_result_is_error
+from slife.ui.restore import restore_session
 
 
 # ── Tool error state on restore ─────────────────────────────────────

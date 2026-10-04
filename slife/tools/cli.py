@@ -25,7 +25,7 @@ from slife.tools._config_io import (
     write_config,
 )
 from slife.paths import get_tools_config_path
-from slife.tools.base import Tool
+from slife.tools.base import Tool, require_bool
 from slife.tools.catalog import config_status
 
 if TYPE_CHECKING:
@@ -339,7 +339,8 @@ class CliSetEnabledTool(_CliConfigMixin, Tool):
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         enabled: bool = kwargs["enabled"]
-
+        if err := require_bool(enabled=enabled):
+            return err
 
         ctx = getattr(self, "_ctx", None)
         config = _live_cli_config(self)

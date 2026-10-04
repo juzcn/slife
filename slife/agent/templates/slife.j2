@@ -49,7 +49,7 @@
 4. Tool meta-parameters (every tool, per call)
    - `_timeout`: seconds; omitted, the system default (registry ≈120 s). Yours overrides the tool's own. `≤0` falls back to the default.
    - `_async: true`: runs in the background → a `task_id` (poll `check_async`, cancel `cancel_async`); unbounded unless `_timeout` is also given.
-   - `_approve: true`: ask the user to confirm first.
+{% if no_operator %}   - `_approve: true`: no operator is attached to this process — nothing can answer a confirmation, so the call runs without asking.{% else %}   - `_approve: true`: ask the user to confirm first.{% endif %}
 
 **Coordination**
 1. Subagents (local worker delegation)

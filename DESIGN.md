@@ -26,7 +26,7 @@
 - [Prologue](#prologue--the-view-behind-the-design) — the author's view: what a model and an agent
   are, the limits, the three trade-offs
 1. [Orientation](#1-orientation) — what Slife is, the principles, the vocabulary
-2. [The agent](#2-the-agent) — the loop, context, recall, prompts, timing, roles
+2. [The agent](#2-the-agent) — the loop, context, recall, prompts, timing, roles, hosts
 3. [LLM backends](#3-llm-backends) — the router, the unified stream, the failure contract
 4. [The tool system](#4-the-tool-system) — the ABC, the catalog, load/inject/evict, discovery
 5. [Plugins](#5-plugins) — the spec, the lifecycle, the child contract, the gateway, jobs
@@ -98,26 +98,16 @@ Large models arrived in 2022, and ChatGPT and an obscure little company called O
 to everybody. For the first time we could hold a conversation with a machine — question and answer,
 and a delight.
 
-The internals became clear soon enough. GPT is a **stateless** machine. It looks as though it is
-online and remembers what you said earlier, but that is a trick we play: the previous conversation is
-sent to it again every time. Text is generated one unit at a time by a trained model that predicts the
-next unit, and each prediction comes with a probability distribution over the candidates. You choose a
-strategy — always take the most probable, or sample. That parameter is called **temperature**: low
-temperature is conservative and certain, high temperature is free-wheeling. A large model is nothing
-but probabilities, which is true enough.
+The internals became clear soon enough. GPT is a **stateless** machine: it looks as though it
+remembers what you said earlier, but that is a trick we play — the previous conversation is sent to it
+again every time. Text is generated one **token** at a time by a trained model that predicts the next
+unit, each prediction carrying a probability distribution over the candidates; sampling from that
+distribution is what **temperature** selects. The token thereby became a unit of consumption, like the
+kilowatt-hour.
 
-**Token** entered the public vocabulary here too. Technically a model does not emit a character at a
-time but a token at a time; one token is roughly 0.75 English words or 0.5 Chinese characters. The
-token thereby became a unit of consumption, like the kilowatt-hour.
-
-Because of the limits of the framework underneath, the total number of tokens in and out of one call
-is fixed by the training framework. That number is what everyone now knows as the model's **context
-window**. The first GPT's was 4096 tokens, about 2000 Chinese characters — question, answer and the
-whole chat history together had to fit inside it. Strictly speaking the first generation of large
-models was a marvel to watch and of quite limited practical use. Over the past four years the
-technology and its applications have grown fast; on the context window alone, mainstream models are
-now in the millions, and a two-million-token model can be fed the whole of *Harry Potter* plus *The
-Lord of the Rings* in one go.
+The total number of tokens in and out of one call is fixed by the framework underneath. That number is
+what everyone now knows as the model's **context window** — 4096 for the first GPT, millions for the
+mainstream models of 2026 — and it is the bound every arrangement in this document is built around.
 
 The second important development is the marriage of large models with **tool calling**: given a
 description of a tool, the model can generate the arguments to call it, and the tool's output is fed
@@ -296,9 +286,11 @@ plugins by inherited port (§6.5).
 | **Worker** | A subagent: a child process running the same loop with a declared, zeroed capability set. |
 | **Silence contract** | A bare `.` assistant reply is silence — never rendered, from any turn source. |
 
-The `_` prefix is what the model reads: it marks a tool the harness drives, and so one it should not
-choose. `__` marks a tool the model never sees at all — internal to a plugin and filtered out before
-registration. Both are part of the interface rather than naming style.
+The `_` prefix is what the model reads: it marks a tool the harness drives, and so one the model
+should not choose. `__` marks a tool the model never sees at all — internal to a plugin and filtered
+out before registration. Both are part of the interface rather than naming style. One `_` tool is the
+exception the prefix does not cover: `_func_tool_unload` is a reserved **meta** tool the model does
+call, and it is the only one.
 
 ### Language policy
 
@@ -358,8 +350,9 @@ message posted to the inbox
   again on load: **no orphaned tool calls** (an interrupted turn's call gets a synthetic
   interrupted-result message) and **alternating roles** (a history ending on `user`/`tool` gets a
   closing assistant message). The save, the restore and a subagent's clone all pass through the same
-  repair — the clone needs it *guaranteed* rather than accidental, because its snapshot ends on a
-  tool call whose results do not exist yet (§6.2).
+  repair — the clone needs it *guaranteed* rather than accidental, because it is taken while the
+  parent is inside the tool call that sends the task, so it ends on a tool call whose results do not
+  exist yet (§6.2).
 - **Why a turn stopped early** rides that closing assistant line, standardized as an
   interrupted-with-reason marker. Each layer labels what only it knows: the loop puts its own
   terminal state on the result (cancel, max-iterations), the inbox labels the failure it caught
@@ -476,26 +469,22 @@ says is ever shown.
   decision's *first* field is answered from that same context: the ids a keep-list names are the ones
   in the footnotes the model can read there, and seeing them is what tells the model what it already
   has, so it does not ask to recall it again.
-- **What the instruction states**, in two parts. First the **decision**: what to keep of the turns in
-  hand — the turns this input is answered from: all of them, some by turn_id, or none, the rule being
-  the input's because clearing is only ever the explicit clear, so an input none of them carries is
-  cleared only where the instruction asks for it — and, with the turn running on what is kept *plus*
-  what is recalled, recall's three conditions (a period, a query, a query within a period), together
-  with the one thing a model cannot read off the store: the context is bounded, so a recall answers
-  with a selection and never with every turn its condition matched, and which part survives follows
-  from the condition — a period is read from the end `anchor` names, a query is ranked by relevance
-  and so is narrowed by its time bound instead. Then the **cases**: one worked reply per combination
-  of the two fields, which is where a value's wording is shown rather than described. Around the two
-  sit the current input, one rule — *the query holds what turn recall needs — keywords, short phrases,
-  or the full user input, in any combination — matched against the stored turns by a hybrid of
-  full-text and semantic search*, the three forms offered as sources rather than as a template — the
-  discriminator composes the query, so the rule names what the text may draw on (§7.2) and leaves the
-  composition to it — and the reply surface itself, stated once as the reply's fields with their
-  values and defaults and nothing beyond them. It cannot be read off a tool: the selector is an **internal** tool the model never sees, so there is no
-  LLM-facing schema to quote. The loop is the only caller and its parser reads exactly these two
-  fields, which is what keeps the two ends of this contract in step. When the store cannot be reached
-  at all there is no call either — the availability check is the gate, so a turn is never spent asking
-  a model to decide a recall that cannot run.
+- **What the instruction states**, in three parts. The **decision**: what to keep of the turns in
+  hand — all of them, some by turn_id, or none — plus recall's three conditions (a period, a query, a
+  query within a period). One thing a model cannot read off the store is stated with it: the context
+  is bounded, so a recall answers with a *selection*, never with every turn its condition matched, and
+  which part survives follows from the condition — a period is read from the end `anchor` names, a
+  query is ranked by relevance and so is narrowed by its time bound instead. The **cases**: one worked
+  reply per combination of the two fields, which is where a value's wording is shown rather than
+  described. And the **reply surface**, stated once as the reply's fields with their values and
+  defaults. Around them sit the current input and one rule — *the query holds what turn recall needs —
+  keywords, short phrases, or the full user input, in any combination — matched against the stored
+  turns by a hybrid of full-text and semantic search* — which names what the text may draw on (§7.2)
+  and leaves the composition to the discriminator. The rule cannot be read off a tool: the selector is
+  an **internal** tool the model never sees, so there is no LLM-facing schema to quote; the loop is its
+  only caller and its parser reads exactly these two fields, which keeps the two ends in step. When
+  the store cannot be reached at all there is no call either — the availability check is the gate, so
+  a turn is never spent deciding a recall that cannot run.
 - **Cost**: one context-sized call per turn — the pre-turn call is about as expensive as the turn
   itself. That is what judging from the conversation costs, and it is **accepted** rather than
   pending: it is what makes the context chosen instead of accumulated, and the step has proven usable
@@ -530,12 +519,13 @@ with both legs windowed. An empty-query branch must run **before** the hybrid le
 express "no query": an empty query reaches the full-text index as a syntax error and embeds to
 noise.
 
-**The union is what makes "keep this and add that" expressible** — and it is why an empty recall is
-now *harmless*. Under the older overriding selection every reply but the empty one discarded the
-context it replaced, so a query that merely failed to match emptied it: the turn ran on the system
-prompt alone and answered from nothing. A union with nothing is the base. Clearing is therefore only
-ever the explicit clear, and nothing a model gets wrong can empty the context by accident. An
-explicit clear plus a recall is exactly the old behaviour, so the union is a strict superset of it.
+**The union is what makes "keep this and add that" expressible.** It is joined by **id**, never
+reconciled: a turn both kept and recalled is the same turn, so there is no incumbent to defend and no
+need to exclude turns already in context. An empty recall is therefore *harmless* — a union with
+nothing is the base — where the older overriding selection discarded the context it replaced, so a
+query that merely failed to match emptied it and the turn answered from the system prompt alone.
+Clearing is only ever the explicit clear, and an explicit clear plus a recall is exactly the old
+behaviour, so the union is a strict superset of it.
 
 **The recalled set — one fusion, three caps, one order.** The hybrid legs are full-text search (with
 a substring fallback for CJK, which the standard tokenizer cannot segment) and vector KNN, fused by
@@ -602,10 +592,6 @@ rebuild is **skipped when the decision asks for exactly what is in hand**: nothi
 nothing dropped, so re-rendering the same turns from the store would cost a round-trip, the turn's
 live image blocks and the prompt-cache prefix to arrive at the identical list.
 
-**The recalled set is joined, not reconciled** — there is no incumbent to defend and no need to
-exclude turns already in context: a turn the recall names that the decision also kept is *the same
-turn*, and the union is by id.
-
 **The store's answer is ids, or nothing, but never an error.** The recall call returns the turn ids
 and nothing else — a degraded semantic leg does not change the recalled set, so it is logged rather
 than answered with. Everything that is not a fatal environment failure is answered as **no ids**: a
@@ -621,19 +607,18 @@ turn that quietly ran without the history it asked for.
 context. The selector that does feed the context is the harness's, and it is internal for exactly that
 reason: changing the conversation under the model is not something the model asks for.
 
-The division of labour is the point. The selection is a **system-level** arrangement: decided before
-the turn and on every turn, so the context a turn runs on is rebuilt whether or not the model thinks
-to do anything about it. The tools are the other direction — **the model's own** — and that is what
-keeps the selection from being the only door: what it does not select is still reachable, because the
-model can look for it and the answer arrives as tool output in the conversation it is already
-reading. So a query the discriminator never wrote, or a turn the caps cut, is a round-trip and not a
-dead end, and neither path has to be complete on its own.
+**The division of labour is the point.** The selection is system-level: decided before every turn, so
+the context a turn runs on is rebuilt whether or not the model thinks to do anything about it. The
+tools are the other direction — the model's own — and that is what keeps the selection from being the
+only door: what it does not select is still reachable, and the answer arrives as tool output in the
+conversation the model is already reading. So a query the discriminator never wrote, or a turn the
+caps cut, is a round-trip and not a dead end, and neither path has to be complete on its own.
 
-And the two do not search alike. The selection has exactly one search — hybrid — while `turn_search`
-also offers **grep**, a real regex (§7.2): a partial spelling, a path, a symbol, a word glued inside a
-longer CJK run, none of which the tokenizer or the vector sees. It is the mode the model reaches for
-increasingly often, and it is one the selection cannot ask for — so a missed selection costs a
-round-trip and buys a search the discriminator was never given.
+The two do not search alike, either. The selection has exactly one search — hybrid — while
+`turn_search` also offers **grep**, a real regex (§7.2): a partial spelling, a path, a symbol, a word
+glued inside a longer CJK run, none of which the tokenizer or the vector sees. It is a mode the
+selection cannot ask for, so a missed selection costs a round-trip and buys a search the
+discriminator was never given.
 
 **What the decision does to the context.** The rebuilt set is the union above, built from the stored
 rows by the same builder restore uses — so a context is reproducible from its id list, and a restart
@@ -644,8 +629,23 @@ answering `None`, not the store answering nothing — an empty selection is an *
 applies it like any other. Nothing was learned about what the turn needs, so a guess is not an
 improvement on what is already there.
 
-**Workers never rebuild** — a worker's history is one-shot per task, so there is nothing to select
-from. The role decides this, not the config.
+**A worker rebuilds the same way** — the role decides this, not the config, and the grant is
+`recall`. A worker's context is seeded per task from its parent's clone (§6.2), and that clone is a
+selection like any other: the turns of it the store holds a row for can be kept or dropped, and
+memory can be recalled over the same shared turn log its parent's context was selected from. What a
+worker does **not** do is *publish* the result: `set_context_turns` / `clear_context_turns` follow
+the `turn_persistence` grant, which a worker does not hold, so its rebuild is in-memory only and the
+persisted live-context list keeps its single owner. Reading is not owning — the store's recall half
+is wired for both roles.
+
+**A rebuild carries what it cannot re-fetch.** A selection names *stored* turns; the messages of any
+turn the store holds no row for are carried through the rebuild verbatim rather than dropped. The
+unbacked turns are always the newest (a turn is stamped with its rowid when it is saved), so the
+carried messages are restored after the selected turns and the chronology holds. The case is a save
+that returned no rowid: the last turn stays unstamped, and a rebuild would otherwise lose it
+silently — the same loss the no-op skip's guard names. The same rule is why the **turn in flight is
+not context**: it is carried through a rebuild, never selected by one, and §6.2 applies it again at
+the send boundary.
 
 ### 2.4 The system prompt
 
@@ -655,7 +655,8 @@ The prompt splits **identity** from **world** so each role reads one coherent do
   the one part that carries persona.
 - **World** — one shared template included by both: the runtime spec — context policy, host
   platform, workspace paths, marker expectations, the credential chain, tool naming, skills, jobs,
-  subagents, and mesh info when configured. **Byte-identical in both roles.**
+  subagents, and mesh info when configured. Rendered from the same template in both roles, differing
+  only where a fact genuinely differs — today, one line: whether an operator is attached (§2.8).
 - **Dynamic** — the per-turn status prompt, rendered by the harness tool once per turn (§2.5).
 - **Profile** — `USER.md` in the agent's file cabinet: whatever the user wants held across sessions
   and in front of the model every turn — identity facts, working conventions, standing directives —
@@ -786,19 +787,76 @@ is a new turn. It dies with the process — anything that must survive a restart
 Both roles run the **identical** loop. What differs is the harness around it, and that difference is
 **declared once**, as a table of capabilities: one field per resource or policy, read through a
 single accessor for the role. A capability is a *grant* — the process either owns the resource or
-holds the policy — and the main agent holds every one of them while a worker holds none.
+holds the policy — and the main agent holds every one of them while a worker holds none but the ones
+granted on purpose. There is exactly one such grant today (`recall`, [§2.3](#23-recall--the-context-is-selected));
+it is a table entry rather than an exception to the table.
 
 This is written down rather than spread around because it used to be ~two dozen scattered
 role-condition branches, which made a worker's capability set an *emergent* property of wherever a
 gate happened to be written — so a capability added to the main agent's path could silently never
-reach a worker. Because the worker's set is derived by zeroing **every** field, a newly added
-capability is worker-denied by default. Two guards keep it honest: a static-source gate that fails on
+reach a worker. Because the worker's set is derived by zeroing **every** field and then granting back
+only the names in the explicit grant list, a newly added capability is worker-denied by default. Two guards keep it honest: a static-source gate that fails on
 any role branch outside the table, and a parity test asserting the two roles' observable difference
 is exactly what the table declares.
 
 The config a worker inherits is lossless by construction for the same reason: its serialization and
 deserialization are derived from one field list rather than hand-written, so a field cannot be
 dropped silently.
+
+### 2.8 The host — a screen, or nothing
+
+Both hosts run the **identical** service: one `AgentService(config, role=Role.MAIN)`, one capability
+table, one inbox, one turn log. A *host* is what surrounds that service and what the operator sees;
+there are two, and the difference is declared by which of the service's optional surfaces the host
+binds.
+
+The **TUI** (§9.1) is the default. It spawns the plugins, restores the session, draws every turn, and
+answers an approval prompt through a widget.
+
+The **headless agent** (`slife --headless`, `slife/headless.py`) is the same agent with no terminal
+attached. The keyboard is gone; traffic arrives through the ordinary inbox channels — an A2A peer, a
+worker's completion, a heartbeat, a schedule — and the process runs until Ctrl+C.
+
+What makes it work is what it does **not** install. No handler factory goes into the inbox, so every
+turn takes the loop's handler-less path (§4.8): silent, and auto-approving, because a call asking to
+be confirmed has nobody to ask. The TUI's callbacks — `on_activity`, `on_autonomous`, `on_schedule`,
+`on_timer`, `on_heartbeat`, `on_tunnel_down` — are *surfaces*, and this host has nothing to surface
+them on, so they are not registered. One callback is not a surface and is: `on_memory_broken`,
+because the inbox is frozen by the time it fires, and a headless process that ignored it would sit
+there alive and deaf while looking healthy to whatever started it. It exits, with the reason on
+stderr.
+
+Three consequences are deliberate rather than incidental:
+
+- **The prompt states the fact.** `slife.j2` renders `_approve` as *no operator is attached to this
+  process* whenever there is none — headless, and also a worker, which auto-approves for exactly the
+  same reason. Stating it is the whole mechanism: whether a tool needs consent is a policy, and this
+  process has none to add to the model's judgment (§4.8). The same fact decides the platform type,
+  because `isatty` cannot answer it — a `--headless` agent launched *from* a terminal still has a
+  tty.
+- **The mesh is not a startup gate.** A broker that is not up, or a name another process holds, is
+  warned about and left to the plugin watchdog; heartbeat and schedules carry on. The name
+  arbitration stays where it is (§8) — the mesh refuses a taken name, and that refusal *is* the
+  arbitration, so no second lock is invented beside it.
+- **Silence is the design, not a missing feature.** The terminal is not a surface here: the session
+  log and the turns DB are the record, and what the agent says to the world leaves over the mesh.
+  Startup failures still reach stderr, because a process that runs deaf in silence is a bug report
+  nobody can read. Silence takes work, though, and it is not the root logger's `CRITICAL+1` console
+  band that delivers it: a library that installs **its own** handler escapes that band entirely, and
+  two do — FastMCP hangs a rich handler on its own loggers at import, and uvicorn's default config
+  gives every one of its loggers a stream handler. The TUI never noticed either, because its
+  alternate screen swallowed them. A headless agent has no screen, so both were its entire terminal
+  output until the level was raised where FastMCP enters the process (`slife/server_utils.py`) and
+  `log_config=None` was passed to the host server, exactly as the plugin children already did
+  (§5.3).
+
+Two operations are neither UI nor agent, and both hosts call the same one rather than keeping a copy:
+`restore_context` (the exit-time context rebuilt — a restart resumes, which matters most when a
+peer's task spans many turns) and `shutdown_session` (the bounded teardown order, so no plugin child
+outlives the session). They live in `slife/agent/session.py`; the headless host is a *host*, not a
+fourth thing the loop knows about, so the role table, the capability grants and the worker parity
+test are untouched. Ctrl+C is the lifecycle — no supervisor, no service wrapper, no
+restart-on-crash.
 
 ---
 
@@ -837,8 +895,10 @@ for — including asking for it not at all.
 
 **Prompt caching (Anthropic).** Each system message becomes a system content block and the **last**
 one is marked as the ephemeral cache breakpoint — the static base prompt becomes the cache breakpoint
-(§2.4). On by default for the first-party endpoint, off for compatible providers that may reject the
-field, overridable per model.
+(§2.4). It is on for the first-party endpoint and off for compatible providers that may reject the
+field, overridable per model. The test reads the **configured** `base_url`, so a first-party model
+that names no `base_url` — the client falls back to the official endpoint, the flag does not — gets
+caching off.
 
 **Anthropic alternation is mandatory.** Tool results are **coalesced** into one user message per
 batch, and a following user text message is merged into that same block — consecutive user messages
@@ -1141,8 +1201,8 @@ Its invariant is that it must be no smaller than the gateway's own establishment
 bounds summed, which is what keeps the line honest: it may not claim "synced" before those have
 expired. The retry is in the sum because a slow cold start spends the whole establishment bound
 installing packages, every connect dies on it together, and the answers arrive on the retry the
-gateway arms from that failure — a budget sized for one attempt expired 25s into it and reported 124
-of the 310 tools the same startup went on to mirror. Only the startup pass pays that budget: once the
+gateway arms from that failure — a budget sized for one attempt reported 124 of the 310 tools the
+same startup went on to mirror. Only the startup pass pays that budget: once the
 line is final, a mirror waits for one listing, because establishing a server mid-session is the
 gateway's own background job. The corollary is why it had to be written down: **no blocking work may
 run on an event loop** — a synchronous subprocess suspends every timer in that process, so one
@@ -1151,14 +1211,13 @@ two minutes of frozen gateway loop, thirteen expired connect bounds firing at on
 goes to a daemon thread.
 
 **A pass that is slow is not a pass that is wedged**, and the reconcile guard is where that
-distinction has to be made, so it is its own value on its own clock. It used to borrow the startup
-sync budget and measure it from the pass's *start* — two mistakes that compound: a legitimate pass is
-several sequential bounded awaits long, each allowed to take the whole budget, so the guard called
-those passes wedged at the instant their slowest mirror was about to answer (measured: passes ending
-at exactly `held=150.0s` against a 150s threshold, every later trigger coalesced behind them). The
-clock is now *idle time*, restarted by every await a pass completes — the §4.7 rule applied to the
-pass itself, live-but-long work bounded by inactivity — and its threshold must clear the longest
-await a pass can be inside, or the clock would fire while that await was still legitimately running.
+distinction has to be made, so it is its own value on its own clock — the rule above applied to the
+pass itself. The clock is *idle time*, restarted by every await a pass completes, and its threshold
+must clear the longest await a pass can be inside, or the clock fires while that await is still
+legitimately running. Borrowing the startup budget and measuring from the pass's *start* got both
+wrong at once: a legitimate pass is several sequential bounded awaits long, each allowed to take the
+whole budget, so the guard called those passes wedged at the instant their slowest mirror was about
+to answer.
 
 **And the budget alone cannot make the line honest.** A probe stops *waiting* on a server whose spawn
 failed — that is what `pending` excludes — but stopping the wait is not the same as having the tools,
@@ -1198,7 +1257,7 @@ race between the user's answer and the turn's cancel, and a cancel **denies** th
 abandoning it — a prompt that has lost focus, to the model picker or to anything else, must not hold
 the turn open, because every later message would queue behind it. A denied call returns an error
 naming the denial, mounts no tool widget (the prompt row itself carries the rejection state), and the
-rest of the batch proceeds. A process with no handler — a headless worker — **auto-approves**: the
+rest of the batch proceeds. A process with no handler — a worker — **auto-approves**: the
 decision belongs to whoever is watching, and nobody is.
 
 ---
@@ -1503,18 +1562,20 @@ the mesh it sends **as the main agent**.
 ```
  Main agent (the harness)                     Worker child
  ┌──────────────────────────────┐             ┌──────────────────────────────────┐
- │ Inbox ─ one turn per message │             │ a headless service, worker role  │
+ │ Inbox ─ one turn per message │             │ a worker service, worker role    │
  │   ▲  subagent auto-push      │             │  inbox ─ worker/send = ONE turn  │
  │   │                          │  JSON-RPC   │  one-shot history per task       │
- │ done-hook ◄──────────────────┼─────────────┤  no TUI · no persistence         │
- │ SubagentProcess (pipes)      │  stdin/out  │  shared plugin clients           │
- └──────────────────────────────┘             └──────────────────────────────────┘
+ │ done-hook ◄──────────────────┼─────────────┤  (seeded by the task's clone,    │
+ │ SubagentProcess (pipes)      │  stdin/out  │   then rebuilt per turn)         │
+ └──────────────────────────────┘             │  no TUI · no persistence         │
+                                              │  shared plugin clients           │
+                                              └──────────────────────────────────┘
 ```
 
-Two agents, **one loop machine**. Both run the identical loop, including the per-turn harness pair
-and the internal trim, driven by the identical inbox. What differs is the harness around it — the
-declared capability table of §2.7, not scattered branches. "Does not run the main agent's harness" is
-a statement about the *service layer*, not the loop.
+Two agents, **one loop machine**. Both run the identical loop, including the per-turn harness pair,
+the per-turn rebuild and the internal trim, driven by the identical inbox. What differs is the
+harness around it — the declared capability table of §2.7, not scattered branches. "Does not run the
+main agent's harness" is a statement about the *service layer*, not the loop.
 
 **A subagent is not a plugin, and not a mesh peer.** A plugin is spawned and owned by the parent,
 speaks MCP over Streamable HTTP on a signalled port, and is watched. A subagent speaks JSON-RPC over
@@ -1527,10 +1588,9 @@ The wire is JSON-RPC 2.0, deliberately not the mesh protocol: the worker is *loc
 | Direction | Purpose |
 |---|---|
 | child → parent | startup readiness — the spawn await wakes on it, **or on child exit** |
-| parent → child | one task (one turn), correlated by request id, never by text |
+| parent → child | one task (one turn) **with the parent's context at send time**, correlated by request id, never by text |
 | parent → child | cancel — drop if queued, preempt if running |
 | parent → child | a shared plugin moved to a new port — reconnect |
-| parent → child | the cloned parent history, sent on stdin at spawn |
 | parent → child | graceful shutdown |
 | child → parent | the task's one-turn result |
 | child → parent | "the result above is final" |
@@ -1546,26 +1606,52 @@ Four implementation details carry real weight:
 - **Config never rides the process env.** The resolved config carries plaintext API keys, so it is
   passed via a restricted-permission temp file — never the environment, which is readable through the
   process table.
-- **Over-long protocol lines are discarded, never fatal.** One line may legitimately be the whole
-  cloned history or a many-megabyte result; a line past even the raised cap is dropped, tail and all,
-  so a pathological line cannot kill the reader or wedge the worker.
+- **Over-long protocol lines are discarded, never fatal.** One line may legitimately be a whole task
+  plus the context that travelled with it, or a many-megabyte result; a line past even the raised cap
+  is dropped, tail and all, so a pathological line cannot kill the reader or wedge the worker.
 
 ### 6.2 One turn per task
 
-A spawn call starts a named worker. **A worker's name is its identity** — explicit, never
-auto-generated, and validated, because the name lands in the child's system prompt *and* its log
-filename. Reuse is explicit: spawning a running name returns the live worker, **keeping the context
-that worker was started with** — a spawn request is not applied to an existing process, so what a
-caller reports back is the worker's live context source, never the one it asked for.
+A spawn call starts a named worker — nothing more. **A worker's name is its identity** — explicit,
+never auto-generated, and validated, because the name lands in the child's system prompt *and* its
+log filename. Reuse is explicit and trivial: spawning a running name returns the live worker. There
+is no state for a spawn to keep or re-apply, because **the context is not the worker's — it is the
+task's**.
 
-Context is chosen once, at spawn: **clean** (the default) runs each task in a bare history;
-**cloned** copies the parent's message history without the parent's system message (the worker
-renders its own) and ships it on stdin. A clone is a **spawn-time snapshot** — a cloned worker
-re-seeds from that fixed snapshot on *every* task, so it never accumulates context across tasks and
-never sees parent turns that happen after spawn. The snapshot is taken *inside* the tool call that
-spawns the worker, so it ends on an assistant tool call whose results do not exist yet; the worker's
-history is repaired on arrival (§2.1's turn-consistency invariant) rather than sent as-is, which
-every provider would reject.
+**Context is decided when a task is sent, not when a worker is started.** Every send carries a clone
+of the parent's context — its **settled** turns, minus its system message (the worker renders its
+own) — and the worker seeds that task's history from it. A spawn could not do this honestly: the
+parent has not been given the task yet, so it cannot know what context the task needs; and a worker
+runs many tasks, so a context fixed at spawn is either stale for the second one or was never right
+for it.
+
+**The turn in flight is not context, so it is not sent** (§2.3's rule, applied at the boundary).
+The snapshot is taken *inside* the tool call that sends the task, so that turn is the parent's own
+unfinished business: the request it is answering, its reasoning, and the ``assistant(tool_calls=…)``
+doing the delegating. Sent, the worker's repair turned it into "(Tool execution interrupted)" and the
+worker read it as *its own* interrupted action — a worker seeded that way has decided it was the
+parent and gone on with the parent's work instead of the task it was sent. What a task needs from its
+parent is what the parent had *settled*, and a settled turn is exactly what carries a turn rowid — so
+the clone is the same "stored turns only" set a rebuild keeps.
+
+**How to read the history is the worker's prompt, not the task's wrapper.** The seed *is*
+first-person material the worker never produced, so the reader of it has to be told: the worker's
+system prompt states the rule — the last message is the task, everything before it is a copy of the
+parent's context as it stood when the task was sent, and the task is the whole job. It is said
+**once per process** rather than wrapped around every task, so the message stays the parent's own
+words; a per-task preamble repeated the same three lines on every send, and its only unique part was
+a delimiter the rule states better. It is stated as the fact it is: a gloss on whose work the copy
+is, or a list of what the worker did not do, primes the very reading it means to rule out — and the
+prompt states facts (§2.4). The task text itself stays the parent's
+own words: the framing is transport, so the parent's task record, its preview and its result keep
+the text the model wrote.
+
+Each task therefore runs on **its own**, freshly seeded context and never accumulates one across
+tasks, and a task queued behind a busy worker keeps the context of its own send. On top of that seed
+the task runs the *same* per-turn rebuild the main agent runs (§2.3): the discriminator sees the
+seeded context, the turns of it that are stored can be kept or dropped, and memory can be recalled
+over the shared turn log — read-only, since the persisted live-context list has one owner and it is
+not the worker.
 
 A task is one turn by construction: one send becomes one inbox message, which becomes exactly one
 loop run. Inside that run the loop may make many LLM and tool calls, bounded by the iteration limit
@@ -1576,10 +1662,11 @@ worker are queued by the *parent*, never refused and never re-sent.
 ### 6.3 Identity and result delivery
 
 The worker renders its own system prompt from the worker identity template, which frames it as a
-headless process of the parent with the same capabilities, carrying **no identity of its own** — no
+worker process of the parent with the same capabilities, carrying **no identity of its own** — no
 presence, no personality, and in all external communication it acts as the main agent, never
-introducing itself. It is told it is ephemeral, and how it was seeded. Its completion posts back
-under a dedicated inbox source, so it is distinguishable from human turns in memory search yet
+introducing itself. It is told it is ephemeral, and where its context comes from — each task arrives
+with a copy of the parent's conversation as it stood when the task was sent. Its completion posts
+back under a dedicated inbox source, so it is distinguishable from human turns in memory search yet
 routed into the human history.
 
 **The worker has no result-push tool.** Its reply goes out as an ordinary JSON-RPC result on stdout.
@@ -1590,7 +1677,10 @@ task. The TUI drops the marker and shows the `Subagent(<name>)>` bubble. There i
 subscribe call — async results are auto-subscribed, and a poll mode suppresses only the *push*, never
 the retrievability. Retrieval is **non-consuming and states what it is**: a task answers pending,
 completed, failed or cancelled from its own record (only an id that was never sent reads unknown), so
-a completed task cannot report "pending" the second time it is polled. A cancelled task's reply is
+a completed task cannot report "pending" the second time it is polled. **A record lives exactly as
+long as the worker that holds it**: stopping a worker takes its task history with it, so a result
+worth keeping is read before the stop, not after (the registry is the lifetime — §6.5). A cancelled
+task's reply is
 marked as partial **and names the reason** (the short terminal-state tokens of §2.1), because for a
 *timed-out* task that text is what the late-result store hands back, and a task that hit its own
 ceiling would otherwise read exactly like one its caller withdrew.
@@ -1609,11 +1699,15 @@ The worker has no error-handling loop of its own; every failure ends in a result
 | **stall** — no reply at all (nobody is waiting) | the async task's lifetime backstop fires → the task is marked failed, preempted, and its failure **pushed** to the caller |
 
 The stall case is the interesting one. The abandoned task is **preempted in the child** — a worker is
-serial, so a genuinely stuck task must never block later tasks. A **late** result is stored (and
-reconciles the record it timed out on) but never auto-pushed, because the caller was already told it
-timed out; a push after a reported timeout would double-announce a task the caller believes failed.
-Parent-side cancel does the same, discards the late reply, and preempts the child too — a cancelled
-turn is the same situation as a timeout.
+serial, so a genuinely stuck task must never block later tasks. **Preemption reaches the tool that is
+running**, not only the turn around it: the cancel cancels the executing batch, and a tool that
+spawned a child kills the whole process tree on the way out (§4.7's `_run_captured`). That is what
+makes the sentence true — the flag alone left a `sleep 300` holding the worker's one task slot for
+its full run, so a task the caller had been told was preempted did block every later one. A **late**
+result is stored (and reconciles the record it timed out on) but never auto-pushed, because the
+caller was already told it timed out; a push after a reported timeout would double-announce a task
+the caller believes failed. Parent-side cancel does the same, discards the late reply, and preempts
+the child too — a cancelled turn is the same situation as a timeout.
 
 An async task is the one case where the parent *is* the one to tell: nobody awaits it, so no caller
 owns its bound, and silence would look exactly like work in progress. Its lifetime is therefore a
@@ -1685,6 +1779,15 @@ not a trade worth making. Renaming `diary` to `turn` therefore ships as a one-of
 (`scripts/migrate_memdb_diary_to_turn.py`) that moves the turns and their embeddings across.
 It is not a precedent for a migration layer — it exists because a rename preserves data by
 construction, and it is the only shape of change here that does.
+
+A **view** sits outside this rule rather than beside the rename as another exception to it: it holds
+no rows, so there is nothing to carry across and nothing to lose. When a view's stored definition
+differs from the schema file's, it is dropped and recreated at start (`_drop_view_if_redefined`).
+That is not a second migration path — it is the same shape as the vector-table reconcile in §7.3,
+derived and rebuilt from the schema file — and the alternative is not caution but a bug: the view
+*is* the query, so a database created before a correction keeps answering with the old one for ever.
+`CREATE VIEW IF NOT EXISTS` is what makes this necessary rather than automatic; it never touches an
+existing view, so without the comparison a corrected query would reach fresh databases only.
 
 ### 7.2 Search
 
@@ -1776,8 +1879,8 @@ fails every batch.
 **One manager is the lifecycle actor** — one object owning the binary gate, the embedder instance and
 an event-driven index drainer. It is document-generic, so each of the three stores drives its own
 instance and the three gates are independent. There is **one implementation and one subclass**: the
-turns database's is the base class, and the host's catalog subclasses it, overriding only the four
-five hooks where the catalog genuinely differs.
+turns database's is the base class, and the host's catalog subclasses it, overriding only the five
+hooks where the catalog genuinely differs.
 
 The gate opens exactly when the embedder is ready **and** nothing is left unembedded — there are no
 intermediate states, and **partial semantic results are never served**; while the gate is off, hybrid
@@ -1951,10 +2054,9 @@ So `file_read` returns a file's TEXT or refuses — a PDF, an image or an archiv
 made a read of a file with no text in it indistinguishable from a read of one that is genuinely full
 of gibberish.
 
-"No text" is not the same question as "is it UTF-8", and reading it as one was wrong twice over: it
-refused a `.txt` written by cmd (GBK) or redirected by PowerShell (UTF-16LE), which plainly has text
-in it, and it answered `text/plain` in one clause while calling the file "not text" in the next. A
-file in another encoding is now read, and the encoding is announced on the first line —
+"No text" is not the same question as "is it UTF-8", and reading it as one refuses text that plainly
+exists — a `.txt` written by cmd (GBK) or redirected by PowerShell (UTF-16LE). A
+file in another encoding is read, and the encoding is announced on the first line —
 `[decoded as gb18030; the file is not utf-8]` — because the one outcome still worth refusing is a
 *silent* wrong decode. UTF-8 (the cabinet's own writers, and the web) comes back verbatim with no
 header at all, a BOM settles the encoding before the binary sniff can mistake UTF-16 for a PDF, and a
@@ -2015,6 +2117,35 @@ Connecting does not return until **both** are live, because without that gate an
 dropped before the responder subscribed. (The SDK publishes the card only *after* subscribing, so our
 own online card appearing on the discovery wildcard is the deterministic "inbound is live" signal.)
 
+**The agent name is the mesh identity, and it is held, not assumed.** The name is not a label: it is
+the MQTT client id of both connections *and* the last segment of the request topic, and the profile
+has nothing that arbitrates a shared one. A broker's answer to a duplicate client id is to disconnect
+the incumbent, so two instances with one name would trade the connection forever; and because both
+subscribe to the same request topic, every task sent to that name would run **twice** — two turns,
+two sets of side effects, two artifact-and-terminal pairs back to the requester. Presence cannot
+reveal it either: a card on our own topic is filtered as our own echo, which is exactly what a twin
+looks like. So the name is checked **before joining**: a throwaway connection — its own unique client
+id, so it can never displace a session — reads the retained card on our own discovery topic, and a
+card that is neither our own instance's nor a *retirement* (`a2a-status: offline`, which is what a
+clean shutdown and a last will both publish) means the name is taken: the mesh refuses to connect and
+names the holder. Our own card carries a per-process instance id in `capabilities.extensions`, which
+is the only thing that makes "our own echo" decidable at all — the card schema has no field for the
+process behind it. The check costs one short-lived connection and one probe budget per connect:
+silence within that budget *is* the answer "no card", because MQTT has no end-of-retained marker.
+
+Two instances that start inside the same probe window see only each other's absence, announce, and
+then each sees the other's card — and **both leave**. No winner is picked, deliberately: a tie-break
+would have to let the loser disconnect, and a departing agent's last act is to publish an *offline*
+card on the name's own topic, which would overwrite the winner's retained card and leave the survivor
+advertising as offline to every peer. Both leaving leaves the broker's state truthful — the name is
+offline because nobody holds it — and the next connect re-probes, so a twin that is renamed or gone
+costs a retry, not a restart. The card retires itself in the ordinary ways — a clean shutdown
+publishes the offline card before disconnecting, and a process that simply dies gets the same card
+from the broker's last will — so only the one case nobody can answer for is left: a retained *online*
+card whose process died while the **broker** was down, on a broker that persists retained messages
+across restarts. That card is indistinguishable from a live claimant, exactly as it is for a peer's
+roster, and it refuses a start until someone clears it.
+
 **Inbound.** The responder classifies a message by its declared type and blocks on a per-task
 completion bridge **only** for a task request — only a request creates a task. A plain message is a
 conversation, enqueued task-less with no bridge; a task response is not a task at all and is
@@ -2041,10 +2172,22 @@ completed: the bridge is gone, the peer's reply topic is not reconstructible, an
 no post-restart completion path. Nor can the wire tell a restarted process which ids those were. A
 persisted record of inbound tasks — written on arrival, removed on departure — is what draws the line
 between *orphaned* and *never seen*: what a fresh process finds on disk is exactly what its
-predecessor died holding. Those are reported as **stale**, never completable, and they ride the
+predecessor died holding. That line is drawn for **one process**, so the record is per **agent**
+(`a2a_inbound_<agent>.yaml`, §9.5): two instances on one machine are the normal way to run two
+agents, and a shared file would have each read the other's in-flight tasks as its own orphans. Those are reported as **stale**, never completable, and they ride the
 per-turn prompt (§2.5) until the model answers the peer with a plain message, which clears them. That
 is the third failure mode of an inbound task, beside completion and withdrawal: a task the local
 process can no longer finish, which the model may still answer as a conversation.
+
+**Two agents on one machine.** Isolation follows the **data directory**, not the agent name. Every
+per-process ledger is keyed by agent — the turns db, the memfiles directory, the tool catalog and its
+index, this inbound ledger, the killed-session marker — while the configs (`slife.yaml`, `tools.yaml`,
+…) and the seeded `skills/` and `jobs/` directories stay shared by design. Two instances on one data
+dir therefore agree on **one model and one tool population**, and a runtime config change is live in
+the instance that made it while the other takes it up at its next start — the gateway reads
+`tools.yaml` once, at spawn — a bounded divergence that settles on restart rather than a fault.
+Separate data dirs are the only way to let two agents differ in models or tools; the cost is configs
+kept in sync by hand and a catalog index embedded per agent.
 
 **Outbound.** Sending is typed, and only one type creates a task — one id serves as the JSON-RPC id,
 the task id, the reply correlation and the store key. A conversation type creates no store record. A
@@ -2121,9 +2264,12 @@ terminal is left in raw mode (keystrokes echo as mojibake, `Ctrl+C` is no longer
 the session log stops mid-sentence. Nothing in-process can undo that, and **no supervisor is added to
 do it instead**: a third always-on process that breaks away from the job object and attaches to
 someone else's console buys less than the accident costs. What a killed session *can* still do is
-leave evidence — a **per-pid session marker** written at startup and removed by the teardown, which
-the next start reads to report that the previous session was killed from outside and where its log
-is. A killed process reports nothing itself; the marker is read by the only process that can.
+leave evidence — a **per-agent, per-pid session marker** written at startup and removed by the
+teardown, which the next start reads to report that the previous session was killed from outside and
+where its log is. A killed process reports nothing itself; the marker is read by the only process
+that can — so it is keyed by agent as well as pid, since one data dir can hold several agents sharing
+one `logs/`, and an unattributed marker let the first agent to start report a sibling's death as its
+own and consume the marker the victim's next start needed.
 
 ### 9.2 Config and credentials
 
@@ -2188,10 +2334,9 @@ comments is bad; writing a config that says something else is worse. The write i
 file, fsync, rename, preserving the existing file's mode) and the whole read→mutate→write window is
 held under a **cross-process** file lock, because the main process and a plugin child can both be
 editing the same file. That lock is taken by **non-blocking polling from the event loop**, never a
-blocking acquire: a blocking acquire inside an async timeout froze the loop for the whole timeout,
-and that freeze is a deadlock rather than a stall — tool calls run concurrently on one loop, so while
-the first edit holds the lock across its own await, the second's blocking acquire stops the loop and
-the first can never resume to release it. Acquire and release stay on one thread, because the lock's
+blocking acquire: tool calls run concurrently on one loop, so while the first edit holds the lock
+across its own await, a second's blocking acquire would stop the loop and the first could never
+resume to release it — a deadlock, not a stall. Acquire and release stay on one thread, because the lock's
 reentrancy counter is per-thread: taking it on a helper thread and releasing it on the caller would
 leave the OS lock held. A synchronous twin of the helper serves synchronous callers only, and an
 async caller with an await inside the block must use the polling path — the only one that keeps
@@ -2205,7 +2350,7 @@ internal functions, so nothing re-calls them after the aggregate.
 
 There are two kinds of input. **Static records** are pushed during startup — the active model, the
 config's provenance and counts, and a daemon-thread probe of the external toolchain — and the host
-facts come from **one recorder** shared by the TUI and a headless worker, so both views list the same
+facts come from **one recorder** shared by the TUI and a worker, so both views list the same
 components rather than differing by counts no reader could account for. The active-model record is
 also re-pushed on every live model switch, replacing the old one so the report still holds exactly
 one. The toolchain probe runs on a daemon thread, so a report read in that window states its own
@@ -2281,7 +2426,8 @@ tools do not report the default database for every agent.
 
 ```
 slife/
-  agent/       # the loop, the service, the inbox, history, prompts, roles, backends, timing
+  agent/       # the loop, the service, the inbox, history, prompts, roles, backends, timing,
+               # session (restore + teardown, shared by both hosts — §2.8)
   tools/       # the Tool ABC, the registry, the catalog, discovery, the builtin tools
   plugins/     # the plugin children and the spec table — the one source of truth (§5.1)
   mcp/         # host-process MCP: slife-as-plugin, the MCP→Tool adapter, era negotiation
@@ -2289,7 +2435,8 @@ slife/
                # and inbound-task stores — plus the MQTT SDK driver (mesh, broker)
   subagent/    # the worker process: its spawn and pipe protocol, its identity
   ui/          # the Textual TUI
-  *.py         # platform · config · paths · health · logfmt · timeouts · threads · timeutil · …
+  *.py         # platform · config · paths · health · logfmt · timeouts · threads · timeutil ·
+               # headless (the no-terminal host, §2.8) · …
 
 credstore/     # standalone package — cross-platform credential store
 cc-switch/     # standalone package — generates the Claude Code settings file
@@ -2343,7 +2490,7 @@ written down.
 
 **3. The approval gate's two blind spots.** Approval is pure model judgment, with no
 `requires_approval` flag anywhere ([§4.8](#48-the-approval-gate)), so the gate holds exactly where the
-model is diligent and nowhere else. Two consequences are worth stating plainly. A **headless worker
+model is diligent and nowhere else. Two consequences are worth stating plainly. A **worker
 auto-approves everything** — the decision belongs to whoever is watching, and nobody is — so a
 subagent running a task has no gate at all. And the [Prologue](#prologue--the-view-behind-the-design)
 ends on *lock up every critical tool*, which is a different posture from "the model decides, per

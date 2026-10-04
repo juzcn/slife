@@ -162,7 +162,7 @@ class TestCreateToolsOverrideEdgeCases:
         # Local subagent worker/lifecycle tools are native and always present.
         assert "spawn_subagent" in names
         assert "list_subagents" in names
-        assert "stop_subagent" in names
+        assert "remove_subagent" in names
         assert "subagent_send_task" in names
         assert "subagent_send_task_async" in names
         assert "subagent_get_task_result" in names

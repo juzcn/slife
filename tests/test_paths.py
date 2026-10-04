@@ -174,6 +174,45 @@ class TestGetDbPath:
         assert paths.get_db_path() == Path("/data/Jack.db")
 
 
+# ── get_tools_db_path ────────────────────────────────────────────────────
+
+
+class TestGetToolsDbPath:
+    """Tests for get_tools_db_path — the tool catalog is per agent.
+
+    One catalog per agent, never one per machine: the catalog's ownership
+    model names a single writer process (``caps.catalog_owner`` / the
+    drainer) and keeps one load/evict budget, so two agents on one file
+    would race on upsert-then-purge and evict each other's loaded tools.
+
+    The session-wide ``_isolate_tools_db`` fixture (conftest) points
+    ``SLIFE_TOOLS_DB`` at a throwaway db for every test, so a test of the
+    resolution rule BEHIND that override must clear it first — otherwise the
+    override answers and the per-agent branch is never reached.
+    """
+
+    def test_default_agent_name_uses_slife(self, monkeypatch):
+        monkeypatch.delenv("SLIFE_TOOLS_DB", raising=False)
+        monkeypatch.setenv("SLIFE_DATA_DIR", "/data")
+        monkeypatch.delenv("SLIFE_AGENT_NAME", raising=False)
+        assert paths.get_tools_db_path() == Path("/data/slife.tools.db")
+
+    def test_agent_env_var_used(self, monkeypatch):
+        """A second instance's catalog is its own file, beside its own
+        ``jack.db`` / ``jack.files`` — not the first agent's."""
+        monkeypatch.delenv("SLIFE_TOOLS_DB", raising=False)
+        monkeypatch.setenv("SLIFE_DATA_DIR", "/data")
+        monkeypatch.setenv("SLIFE_AGENT_NAME", "jack")
+        assert paths.get_tools_db_path() == Path("/data/jack.tools.db")
+
+    def test_env_override_wins(self, monkeypatch, tmp_path):
+        """SLIFE_TOOLS_DB still wins (the test/dev isolation hook)."""
+        monkeypatch.setenv("SLIFE_DATA_DIR", "/data")
+        monkeypatch.setenv("SLIFE_AGENT_NAME", "jack")
+        monkeypatch.setenv("SLIFE_TOOLS_DB", str(tmp_path / "tools.db"))
+        assert paths.get_tools_db_path() == tmp_path / "tools.db"
+
+
 # ── get_skills_dir ───────────────────────────────────────────────────────
 
 

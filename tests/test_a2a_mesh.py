@@ -14,6 +14,7 @@ import pytest; pytestmark = pytest.mark.unit
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import aiomqtt
 from a2a_over_mqtt import A2ARequest, make_artifact_event, make_status_event
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
@@ -23,6 +24,7 @@ from slife.a2a.mesh import A2AMesh, _OutboundSend, _backoff_delay
 from slife.a2a.identity import AgentName
 from slife.a2a.task_store import get_store
 import slife.a2a.task_store as task_store
+import slife.timeouts as _timeouts
 
 
 def _config(agent: str = "self-1") -> A2AConfig:
@@ -67,6 +69,50 @@ def _msg(topic: str, payload: bytes | str, *, corr: str | None = None,
 
 def _make_mesh():
     return A2AMesh(_config())
+
+
+def _own_card(mesh: A2AMesh) -> str:
+    """The mesh's own card, exactly as its responder publishes it."""
+    return json.dumps(mesh._card)
+
+
+def _foreign_card(instance: str | None = "b" * 32, name: str = "self-1") -> str:
+    """Another instance's card for the same name — the collision shape."""
+    exts = [{"instance": instance}] if instance else []
+    return json.dumps({
+        "name": name,
+        "description": "another agent",
+        "capabilities": {"streaming": True, "extensions": exts},
+    })
+
+
+class _FakeBroker:
+    """An ``aiomqtt.Client`` stand-in for the pre-join name probe: replays
+    *messages* right after SUBACK (a retained card, in the real thing) and
+    then goes quiet forever — the probe's own budget ends the wait."""
+
+    def __init__(self, messages, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.subscribed: str = ""
+        self._messages = list(messages)
+
+    async def __aenter__(self) -> "_FakeBroker":
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+    async def subscribe(self, topic: str, qos: int = 0) -> None:
+        self.subscribed = topic
+
+    @property
+    def messages(self):
+        return self._replay()
+
+    async def _replay(self):
+        for msg in self._messages:
+            yield msg
+        await asyncio.Event().wait()  # silence is the "no card" answer
 
 
 def _spawn_inbound(mesh, task_id, sender="peer-1", text="do it", variables=None):
@@ -262,13 +308,19 @@ class TestPresence:
         assert events[-1][0].status == "offline"
 
     def test_own_echo_filtered(self):
+        """Our own card, echoed back on the discovery wildcard, is never a
+        peer — and it IS the readiness signal connect() gates on (the SDK
+        publishes the card only after subscribing the request topic)."""
         mesh = _make_mesh()
         events = []
         mesh.on_agent_change = lambda card, e: events.append(e)
-        mesh._handle_discovery(
-            _msg("$a2a/v1/discovery/default/default/self-1", b"x", status="online"),
-        )
+        mesh._handle_discovery(_msg(
+            "$a2a/v1/discovery/default/default/self-1",
+            _own_card(mesh), status="online",
+        ))
         assert events == []
+        assert mesh.collision == ""
+        assert mesh._responder_ready.is_set()
 
     def test_cold_retained_offline_cached_not_announced(self):
         """A stale retained offline card (peer gone before we subscribed) is
@@ -326,6 +378,169 @@ class TestPresence:
         assert [str(c.agent_name) for c in cards] == ["self-1", "alpha", "zed"]
         # Own card reflects OUR connection state (no connection in this test).
         assert cards[0].status == "offline"
+
+
+class TestNameCollision:
+    """The agent name is the mesh identity — the MQTT client id and the request
+    topic's last segment — so a second instance holding it is a collision, not
+    a peer: the broker answers a duplicate client id by disconnecting the
+    incumbent, and both would execute every task sent to the name."""
+
+    def _own_topic(self, agent: str = "self-1") -> str:
+        return f"$a2a/v1/discovery/default/default/{agent}"
+
+    def test_a_twin_online_card_is_a_collision(self):
+        mesh = _make_mesh()
+        events = []
+        mesh.on_agent_change = lambda card, e: events.append((card, e))
+        mesh._handle_discovery(
+            _msg(self._own_topic(), _foreign_card("b" * 32), status="online"),
+        )
+        assert "self-1" in mesh.collision
+        assert "bbbbbbbb" in mesh.collision   # the foreign instance is named
+        assert events == []                   # never announced as a peer
+        assert not mesh._responder_ready.is_set()
+
+    def test_a_predecessors_retained_offline_card_is_not_a_claim(self):
+        """A card retired by whoever held the name last — a clean shutdown or a
+        last will — is a card nobody holds, so a restart over it is not a
+        collision."""
+        mesh = _make_mesh()
+        mesh._handle_discovery(
+            _msg(self._own_topic(), _foreign_card("f" * 32), status="offline"),
+        )
+        assert mesh.collision == ""
+        assert not mesh._responder_ready.is_set()
+
+    def test_a_deleted_card_is_not_an_announce(self):
+        """The deletion of a retained card carries no status property, and the
+        absent-property default is "online" — it must not arm the readiness
+        gate on the absence of a card."""
+        mesh = _make_mesh()
+        mesh._handle_discovery(_msg(self._own_topic(), b"", status=None))
+        assert mesh.collision == ""
+        assert not mesh._responder_ready.is_set()
+
+    def test_a_card_with_no_instance_id_is_still_a_claim(self):
+        """Another implementation (or an older Slife) carries no instance id.
+        It is not us, so it holds the name."""
+        mesh = _make_mesh()
+        mesh._handle_discovery(
+            _msg(self._own_topic(), _foreign_card(None), status="online"),
+        )
+        assert "no instance id" in mesh.collision
+
+    def test_a_peers_card_is_not_our_business(self):
+        mesh = _make_mesh()
+        mesh._handle_discovery(
+            _msg(self._own_topic("peer-1"), _foreign_card("b" * 32, "peer-1"),
+                 status="online"),
+        )
+        assert mesh.collision == ""
+
+    def test_the_collision_is_recorded_once(self):
+        mesh = _make_mesh()
+        mesh._handle_discovery(
+            _msg(self._own_topic(), _foreign_card("b" * 32), status="online"),
+        )
+        first = mesh.collision
+        mesh._handle_discovery(
+            _msg(self._own_topic(), _foreign_card("c" * 32), status="online"),
+        )
+        assert mesh.collision == first   # the first claim is the evidence
+
+    @pytest.mark.asyncio
+    async def test_connect_refuses_a_claimed_name(self):
+        """The check runs BEFORE either connection: joining is what would take
+        the other agent's session over."""
+        mesh = _make_mesh()
+        claim = "agent name 'self-1' is already in use on default/default"
+        with patch.object(mesh, "_probe_own_name", AsyncMock(return_value=claim)):
+            with pytest.raises(RuntimeError, match="already in use"):
+                await mesh.connect()
+        assert mesh._tasks == []          # nothing was started
+        assert mesh.is_connected is False
+
+    @pytest.mark.asyncio
+    async def test_disconnect_does_not_cancel_its_caller(self):
+        """The outbound loop tears the mesh down on a collision — with itself
+        among the mesh's tasks.  Cancelling the caller would abandon the
+        teardown half-done."""
+        mesh = _make_mesh()
+        other = asyncio.create_task(asyncio.Event().wait())
+        mesh._tasks.append(other)
+
+        async def teardown() -> str:
+            current = asyncio.current_task()
+            assert current is not None
+            mesh._tasks.append(current)
+            await mesh.disconnect()
+            return "done"
+
+        task = asyncio.create_task(teardown())
+        assert await asyncio.wait_for(task, 1) == "done"  # noqa-timeout
+        assert other.cancelled()          # every OTHER mesh task still goes
+
+
+class TestNameProbe:
+    """The pre-join check: a throwaway connection reads the retained card on
+    our OWN discovery topic (a unique client id, so it can never take a
+    session over), and silence within the budget means the name is free."""
+
+    def _fake_broker(self, monkeypatch, messages):
+        made: list[_FakeBroker] = []
+
+        def factory(**kwargs):
+            client = _FakeBroker(messages, **kwargs)
+            made.append(client)
+            return client
+
+        monkeypatch.setattr(aiomqtt, "Client", factory)
+        return made
+
+    @pytest.mark.asyncio
+    async def test_a_free_name_probes_quiet(self, monkeypatch):
+        monkeypatch.setattr(_timeouts.timeouts.deliver, "name_probe", 0.05)
+        made = self._fake_broker(monkeypatch, [])
+        mesh = _make_mesh()
+        assert await mesh._probe_own_name() is None
+        assert made[0].subscribed == "$a2a/v1/discovery/default/default/self-1"
+        # Its own client id — the probe can never displace a live session.
+        assert made[0].kwargs["identifier"].startswith(
+            "default/default/self-1-probe-",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_retained_twin_card_is_reported(self, monkeypatch):
+        made = self._fake_broker(monkeypatch, [
+            _msg("$a2a/v1/discovery/default/default/self-1",
+                 _foreign_card("b" * 32), status="online"),
+        ])
+        mesh = _make_mesh()
+        claim = await mesh._probe_own_name()
+        assert claim is not None and "already in use" in claim
+        assert made[0].kwargs["identifier"].endswith("-probe-" + made[0].kwargs["identifier"].rsplit("-probe-", 1)[1])
+
+    @pytest.mark.asyncio
+    async def test_a_predecessors_card_does_not_block_the_join(self, monkeypatch):
+        monkeypatch.setattr(_timeouts.timeouts.deliver, "name_probe", 0.05)
+        self._fake_broker(monkeypatch, [
+            _msg("$a2a/v1/discovery/default/default/self-1",
+                 _foreign_card("f" * 32), status="offline"),
+        ])
+        mesh = _make_mesh()
+        assert await mesh._probe_own_name() is None
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_broker_is_not_a_name_problem(self, monkeypatch):
+        """The probe never turns a dead broker into a collision — the connect
+        that follows reports that, with the error that belongs to it."""
+        def factory(**kwargs):
+            raise aiomqtt.MqttError("connection refused")
+
+        monkeypatch.setattr(aiomqtt, "Client", factory)
+        mesh = _make_mesh()
+        assert await mesh._probe_own_name() is None
 
 
 class TestBroadcast:

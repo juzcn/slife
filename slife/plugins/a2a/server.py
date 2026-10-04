@@ -82,6 +82,10 @@ mcp, _log_path, logger = create_plugin_server(
 _client: A2AMesh | None = None
 _connect_lock = asyncio.Lock()
 _MAX_QUEUED = 500
+#: Why the last connect attempt failed.  A failed mesh is discarded, so this
+#: is the only place the reason survives to ``__check`` — otherwise health
+#: reports a bare "not connected" for what is really a name collision.
+_connect_error = ""
 
 
 def _make_queue() -> "deque[dict]":
@@ -103,7 +107,7 @@ def _load_config() -> A2AConfig:
 
 
 async def _ensure_connected() -> A2AMesh:
-    global _client
+    global _client, _connect_error
     if _client is not None and _client.is_connected:
         return _client
     async with _connect_lock:
@@ -118,15 +122,17 @@ async def _ensure_connected() -> A2AMesh:
         _wire_callbacks(client)
         try:
             await client.connect()
-        except Exception:
-            # connect() can fail mid-way (broker refused, timeout) — never
-            # leak a half-started mesh on retry.
+        except Exception as e:
+            # connect() can fail mid-way (broker refused, timeout, our name
+            # already taken) — never leak a half-started mesh on retry.
+            _connect_error = str(e)
             try:
                 await client.disconnect()
             except Exception:
                 pass
             raise
         _client = client
+        _connect_error = ""
         logger.info("a2a_plugin_client_connected id=%s", client.agent_name)
     return _client
 
@@ -338,10 +344,12 @@ async def __a2a_drain_incoming() -> str:
     _cancellations.clear()
     completions = list(_task_completions)
     _task_completions.clear()
-    stale = (
-        _client.stale_inbound() if _client is not None
-        else [t.as_dict() for t in InboundStore().stale()]
-    )
+    if _client is not None:
+        stale = _client.stale_inbound()
+    else:
+        # No live mesh: read this agent's own file straight off disk, so a
+        # restart reports its orphans even if the broker never came back up.
+        stale = [t.as_dict() for t in InboundStore().stale()]
     return json.dumps(
         {
             "tasks": tasks,
@@ -367,6 +375,10 @@ async def __check() -> str:
     and mask a genuinely offline mesh).  Peers come from the mesh's presence
     cache, and queued inbound task/presence/cancel counts report how much
     work the harness drain loop still has buffered.
+
+    ``error`` carries why the mesh is not up when it is not: the last connect
+    failure, or a live mesh's name collision — the two states a bare
+    ``connected: false`` cannot tell apart.
     """
     cfg = _load_config()
     client = _client
@@ -383,6 +395,7 @@ async def __check() -> str:
                     "agent_name": str(card.agent_name),
                     "status": card.status,
                 })
+    collision = client.collision if client is not None else ""
     return json.dumps({
         "enabled": cfg.enabled,
         "connected": connected,
@@ -390,6 +403,7 @@ async def __check() -> str:
         "status": status,
         "broker": f"{cfg.broker_host}:{cfg.broker_port}",
         "peers": peers,
+        "error": collision or _connect_error,
         "queued": {
             "tasks": len(_inbound_tasks),
             "events": len(_inbound_events),

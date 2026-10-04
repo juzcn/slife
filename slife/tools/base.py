@@ -187,6 +187,28 @@ def require_params(
     return f"Error: {' and '.join(missing)} are required."
 
 
+def require_bool(**params: object) -> str | None:
+    """Validate that every named parameter is a real ``bool``.
+
+    The dispatcher checks that a required KEY is present, not that its value
+    has the declared type.  A model sends JSON, and ``null`` is a value it
+    emits for a required boolean — so ``enabled=None`` reached the body and
+    ``bool(None)`` is ``False``: the tool did the opposite of what was asked
+    and reported success.  For a skill toggle it also WROTE ``enabled: null``
+    while answering "disabled", and the reader (``is False``) does not count
+    null as disabled — the report and the file disagreed.
+
+    Exact ``bool``, not merely truthy: ``1`` and ``"false"`` are refused for
+    the same reason, since neither is what the caller meant.
+    """
+    wrong = [k for k, v in params.items() if not isinstance(v, bool)]
+    if not wrong:
+        return None
+    if len(wrong) == 1:
+        return f"Error: {wrong[0]} must be true or false."
+    return f"Error: {' and '.join(wrong)} must be true or false."
+
+
 def validate_args(parameters: dict, tool_name: str, args: dict) -> str | None:
     """Validate a call's arguments against the tool's own schema.
 

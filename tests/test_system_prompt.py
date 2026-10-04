@@ -229,22 +229,26 @@ class TestBuild:
         assert "no personality" in result
         assert "peers see testbot as the sender" in result
 
-    def test_subagent_context_clean_by_default(self, cfg, monkeypatch):
-        """Context defaults to clean when SLIFE_SUBAGENT_CONTEXT unset."""
-        from slife.agent.system_prompt import build
-        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
-        monkeypatch.delenv("SLIFE_SUBAGENT_CONTEXT", raising=False)
-        result = build(cfg, is_subagent=True)
-        assert "Context: clean" in result
-        assert "cloned from" not in result
+    def test_subagent_context_is_the_task_s(self, cfg, monkeypatch):
+        """The worker is told where its context comes from — the task.
 
-    def test_subagent_context_cloned(self, cfg, monkeypatch):
-        """SLIFE_SUBAGENT_CONTEXT=cloned renders the cloned-context identity."""
+        The context is per task now, so the prompt states the standing rule
+        rather than a per-process choice: nothing about it can differ between
+        two tasks (or two renders of the same worker's prompt).
+        """
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
-        monkeypatch.setenv("SLIFE_SUBAGENT_CONTEXT", "cloned")
         result = build(cfg, is_subagent=True)
-        assert "Context: cloned from" in result
+        # The reading rule for the history the task lands in: which message is
+        # the task, whose the rest is, and that the task is the whole job.  It
+        # lives here — once per process — rather than wrapped around every
+        # task, so the message stays the parent's own words.
+        assert (
+            "your task is the last message; everything before it is a copy of "
+            "testbot's context as it stood when the task was sent." in result
+        )
+        assert "Do what the task asks — your answer is the result." in result
+        assert "Context: clean" not in result
 
     def test_a2a_section_when_configured(self, cfg):
         """A2A secondary heading visible when a2a is configured."""
@@ -433,6 +437,11 @@ class TestHelpers:
 
     def test_platform_type_native(self, monkeypatch):
         from slife.agent.system_prompt import _platform_type
+        # Both "no operator" markers cleared: a process is headless either
+        # because it says so or because it is a worker, and this test means to
+        # describe neither.  Stated here rather than assumed, so a leaked
+        # marker from another test cannot quietly change what it asserts.
+        monkeypatch.delenv("SLIFE_HEADLESS", raising=False)
         monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
         monkeypatch.setattr("sys.stdin.isatty", lambda: True)
         if sys.platform == "win32":
@@ -440,6 +449,7 @@ class TestHelpers:
 
     def test_platform_type_wsl(self, monkeypatch):
         from slife.agent.system_prompt import _platform_type
+        monkeypatch.delenv("SLIFE_HEADLESS", raising=False)
         monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
         monkeypatch.setattr("sys.stdin.isatty", lambda: True)
         monkeypatch.setattr(sys, "platform", "linux")
@@ -789,6 +799,54 @@ class TestContextStatusRestart:
         from slife.agent.system_prompt import build_turn_prompt
         assert "System restarted" not in build_turn_prompt()
         assert "System restarted" not in build_turn_prompt(restarted=False)
+
+
+class TestNoOperator:
+    """A process with no human attached is told so where it matters — on
+    `_approve` — so the model does not ask a question nobody can answer.
+
+    The gate itself is unchanged: with no handler the loop auto-approves
+    (``loop.py``), which is the answer a headless or worker process gives
+    anyway.  The prompt states the fact so it never comes to that.
+    """
+
+    def test_interactive_prompt_keeps_the_confirmation_line(self, cfg):
+        from slife.agent.system_prompt import build
+        with patch("slife.agent.system_prompt._no_operator", return_value=False):
+            prompt = build(cfg)
+        assert "- `_approve: true`: ask the user to confirm first." in prompt
+
+    def test_headless_prompt_states_there_is_no_operator(self, cfg):
+        from slife.agent.system_prompt import build
+        with patch("slife.agent.system_prompt._no_operator", return_value=True):
+            prompt = build(cfg)
+        assert "no operator is attached to this process" in prompt
+        assert "ask the user to confirm first" not in prompt
+
+    def test_the_rest_of_the_prompt_is_untouched(self, cfg):
+        """The fact rides one line: the two prompts are otherwise identical,
+        so the shared template (and the TUI's cached prefix) does not move."""
+        from slife.agent.system_prompt import build
+        with patch("slife.agent.system_prompt._no_operator", return_value=False):
+            interactive = build(cfg)
+        with patch("slife.agent.system_prompt._no_operator", return_value=True):
+            headless = build(cfg)
+        assert interactive.splitlines()[0] == headless.splitlines()[0]
+        assert len(interactive.splitlines()) == len(headless.splitlines())
+
+    def test_the_flag_outranks_a_terminal(self, monkeypatch):
+        """`slife --headless` started *from* a terminal still has a tty — the
+        flag is what makes it headless, not the shape of its stdin."""
+        from slife.agent.system_prompt import _no_operator, _platform_type
+
+        monkeypatch.delenv("SLIFE_HEADLESS", raising=False)
+        monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        assert _no_operator() is False
+
+        monkeypatch.setenv("SLIFE_HEADLESS", "1")
+        assert _no_operator() is True
+        assert _platform_type() == "headless"
 
 
 class TestFormatPresenceLine:

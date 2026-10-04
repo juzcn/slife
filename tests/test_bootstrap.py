@@ -147,7 +147,20 @@ class TestSessionMarker:
 
     A hard kill runs no teardown, so the death has to be inferred afterwards
     — that is the whole point of the marker (see bootstrap's section comment).
+
+    It is keyed by agent as well as pid — one data dir can hold several
+    agents sharing one ``logs/`` dir — so these tests pin the identity.
     """
+
+    @pytest.fixture(autouse=True)
+    def _agent(self, monkeypatch):
+        """Pin the identity the marker is keyed by.
+
+        ``paths.agent_name()`` reads the ambient ``SLIFE_AGENT_NAME``; a name
+        leaking in from the shell would silently change every filename these
+        tests hand-write and assert on.
+        """
+        monkeypatch.setenv("SLIFE_AGENT_NAME", "slife")
 
     @patch("slife.bootstrap.resolve_log_dir")
     def test_start_writes_and_clear_removes(self, mock_dir, tmp_path):
@@ -156,7 +169,11 @@ class TestSessionMarker:
         bootstrap.note_session_start(tmp_path / "s.log", "sid-1")
 
         (marker,) = list(tmp_path.glob(".session.*.state"))
+        # The NAME carries the agent: that is what scopes the ledger to the
+        # process family that wrote it.
+        assert marker.name == f".session.slife.{os.getpid()}.state"
         info = json.loads(marker.read_text(encoding="utf-8"))
+        assert info["agent"] == "slife"
         assert info["pid"] == os.getpid()
         assert info["session_id"] == "sid-1"
         assert info["log"].endswith("s.log")
@@ -169,7 +186,7 @@ class TestSessionMarker:
 
     @patch("slife.bootstrap._pid_alive", return_value=False)
     def test_killed_previous_session_is_reported_once(self, mock_alive, tmp_path):
-        marker = tmp_path / ".session.4242.state"
+        marker = tmp_path / ".session.slife.4242.state"
         marker.write_text(
             json.dumps({
                 "pid": 4242,
@@ -190,15 +207,47 @@ class TestSessionMarker:
     @patch("slife.bootstrap._pid_alive", return_value=True)
     def test_live_session_marker_is_left_alone(self, mock_alive, tmp_path):
         """A second session in the same data dir is not a death to report."""
-        marker = tmp_path / ".session.4242.state"
+        marker = tmp_path / ".session.slife.4242.state"
         marker.write_text(json.dumps({"pid": 4242}), encoding="utf-8")
 
         assert bootstrap.previous_session_killed(tmp_path) is None
         assert marker.exists()
 
+    @patch("slife.bootstrap._pid_alive", return_value=False)
+    def test_another_agents_dead_session_is_not_ours(self, mock_alive, tmp_path):
+        """A sibling agent's killed session is neither reported nor consumed.
+
+        Regression: the marker was keyed by pid alone, in a ``logs/`` dir
+        every agent on the machine shares — so the first agent to start
+        reported a sibling's death as its own AND deleted the marker, and the
+        agent that actually died never learned of it.
+        """
+        sibling = tmp_path / ".session.jack.4242.state"
+        sibling.write_text(
+            json.dumps({"agent": "jack", "pid": 4242}), encoding="utf-8",
+        )
+
+        assert bootstrap.previous_session_killed(tmp_path) is None
+        # Left where it is: jack's own next start is the one that reports it.
+        assert sibling.exists()
+
+    @patch("slife.bootstrap._pid_alive", return_value=False)
+    def test_pre_agent_marker_is_ignored(self, mock_alive, tmp_path):
+        """A marker from before the agent key belongs to nobody identifiable.
+
+        Deliberately neither reported nor deleted: it cannot be attributed to
+        an agent, and guessing which one it describes is the bug the keyed
+        name removes.
+        """
+        legacy = tmp_path / ".session.4242.state"
+        legacy.write_text(json.dumps({"pid": 4242}), encoding="utf-8")
+
+        assert bootstrap.previous_session_killed(tmp_path) is None
+        assert legacy.exists()
+
     def test_unreadable_marker_is_dropped(self, tmp_path):
         """Killed mid-write leaves a truncated file — drop it, don't crash."""
-        marker = tmp_path / ".session.4242.state"
+        marker = tmp_path / ".session.slife.4242.state"
         marker.write_text("{ truncated", encoding="utf-8")
 
         assert bootstrap.previous_session_killed(tmp_path) is None
@@ -206,7 +255,7 @@ class TestSessionMarker:
 
     def test_marker_with_junk_pid_is_dropped(self, tmp_path):
         """A startup path may not raise on a junk file someone left behind."""
-        marker = tmp_path / ".session.4242.state"
+        marker = tmp_path / ".session.slife.4242.state"
         marker.write_text(json.dumps({"pid": "not-a-number"}), encoding="utf-8")
 
         assert bootstrap.previous_session_killed(tmp_path) is None

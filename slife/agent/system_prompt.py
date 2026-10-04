@@ -152,6 +152,13 @@ def _render_context(config: Config) -> dict:
         "user_profile": _user_profile(config.agent_name),
         # ── 环境 ──
         "platform_type": _platform_type(),
+        # Whether a human is attached to this process at all.  Same condition
+        # as the platform type's "headless": a worker and a `--headless` agent
+        # both have nobody to answer a confirmation prompt, and both
+        # auto-approve (loop.py's handler-less path).  The template states the
+        # fact where it matters — on `_approve` — so the model does not ask a
+        # question that cannot be heard.
+        "no_operator": _no_operator(),
         "platform_name": _os_name(),
         "os_version": _os_version(),
         "arch": platform.machine(),
@@ -178,7 +185,6 @@ def _render_context(config: Config) -> dict:
         # ── 子 agent 身份（agent.j2 不使用）──
         "subagent_name": os.environ.get("SLIFE_SUBAGENT_NAME", ""),
         "created_at": os.environ.get("SLIFE_SUBAGENT_CREATED_AT", ""),
-        "context_source": os.environ.get("SLIFE_SUBAGENT_CONTEXT", "clean"),
     }
 
 
@@ -340,9 +346,26 @@ def _user_profile(agent_name: str) -> str:
         return ""
 
 
+def _no_operator() -> bool:
+    """Whether this process has a human who could answer a prompt.
+
+    Three ways to have none, and the first is why this is not just
+    ``isatty``: a ``--headless`` agent started *from* a terminal still has a
+    tty, so the flag is what makes it headless rather than what its stdin
+    looks like.  The other two are the worker (whose "user" is its parent, and
+    nobody watches a confirmation) and any process whose stdin is not a
+    terminal at all — no TUI could have started behind it.
+    """
+    if os.environ.get("SLIFE_HEADLESS"):
+        return True
+    if os.environ.get("SLIFE_SUBAGENT_NAME"):
+        return True
+    return not sys.stdin.isatty()
+
+
 def _platform_type() -> str:
     """``"native"`` | ``"wsl"`` | ``"headless"``."""
-    if os.environ.get("SLIFE_SUBAGENT_NAME") or not sys.stdin.isatty():
+    if _no_operator():
         return "headless"
     if sys.platform == "linux":
         # The WSLInterop marker is the fast, modern-path check; the

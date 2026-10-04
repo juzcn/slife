@@ -841,6 +841,28 @@ class AgentLoop:
             messages = messages[1:]
         return MessageHistory.extract_turns(messages)
 
+    @staticmethod
+    def _carried_tail(live: list[dict]) -> list[dict]:
+        """Messages of the trailing turns the store holds no row for.
+
+        A turn carries its rowid as ``_turn_id`` once it is saved, so a live
+        turn without one is a turn the store cannot be asked for again — the
+        main agent's own turn in flight when a save failed, and any history
+        seeded from outside the store.  A rebuild replaces the message list
+        from stored rows, so these come back verbatim rather than being lost
+        (``rebuild_messages``'s *carried*).
+
+        The trailing run, not every unbacked turn: turns are saved in order, so
+        anything unbacked is newer than everything backed — and a rebuild may
+        only re-order what it can re-fetch.
+        """
+        carried: list[dict] = []
+        for turn in reversed(live):
+            if turn.get("turn_id") is not None:
+                break
+            carried = [dict(m) for m in turn["messages"]] + carried
+        return carried
+
     async def _recall_and_rebuild(
         self, history: MessageHistory, user_input: str,
         handler: object | None = None,
@@ -940,9 +962,9 @@ class AgentLoop:
             # nothing added, nothing dropped.  It stands **as it is**:
             # rendering it again from the store would cost a round-trip, the
             # turn's live image blocks and the prompt-cache prefix, to arrive
-            # at the same list.  `len(live) == len(by_id)` is what makes the
-            # skip safe — a turn the store holds no rowid for could not be
-            # re-fetched, so a rebuild would silently lose it.
+            # at the same list.  The rebuild itself is safe with an unbacked
+            # turn (`_carried_tail` carries it), so this is purely the cost of
+            # an identical re-render.
             logger.info("recall_not_needed reason=context_unchanged")
             return False
 
@@ -964,7 +986,10 @@ class AgentLoop:
         # announcing a clear over an already-empty one (a fresh store's first
         # turn) would report a change that did not happen.
         had_turns = len(history.messages) > 1
-        history.rebuild_messages(turns)
+        # The turn in flight is not context: a selection names stored turns,
+        # and a turn the store holds no row for is carried through untouched
+        # rather than silently dropped.
+        history.rebuild_messages(turns, carried=self._carried_tail(live))
         # Deliberately NOT resetting the cached usage: `context_tokens_for`
         # reports the previous round's real API usage and returns 0 when there
         # is none (it never presents an estimate as real usage), so clearing it
@@ -1878,9 +1903,42 @@ class AgentLoop:
 
             history.add_tool_result(tc.id, result, is_error=is_error)
 
+        # The batch is PREEMPTED by the turn's cancellation, not merely skipped
+        # by it.  Cancellation is a flag checked at iteration boundaries, so a
+        # tool already running used to be left to its own timeout: an Esc — or
+        # a worker cancel, which is the same mechanism — released nothing, and
+        # a ``sleep 300`` (or a download, or an install) held the process for
+        # minutes.  On the worker that is its ONE task slot, so every later
+        # task queued behind a task its caller had already been told was
+        # preempted.
+        #
+        # Cancelling the gather is what reaches the tool: each tool that
+        # spawned a child kills the whole process tree on the way out
+        # (``_run_captured``), which is the part that actually frees the slot.
+        # The cancelled calls record no result — the save point's own repair
+        # fills the gap with "(Tool execution interrupted)", the same marker an
+        # interrupted turn has always carried.
+        cancel_wait = asyncio.create_task(self._cancel_event.wait())
+        batch = asyncio.gather(*(_run_one(tc) for tc in tool_calls))
         try:
-            await asyncio.gather(*(_run_one(tc) for tc in tool_calls))
+            await asyncio.wait(
+                {batch, cancel_wait}, return_when=asyncio.FIRST_COMPLETED,
+            )
         finally:
+            cancel_wait.cancel()
+            if not batch.done():
+                logger.info(
+                    "tool_batch_preempted calls=%d names=%s",
+                    len(tool_calls), ",".join(tc.name for tc in tool_calls),
+                )
+                batch.cancel()
+            # Awaited in both cases: a cancelled tool finishes its teardown
+            # (the kill) before this returns, and an unawaited gather leaves
+            # its exception unretrieved.
+            try:
+                await batch
+            except asyncio.CancelledError:
+                pass
             if _ctx is not None:
                 _ctx.message_history = _prev_conv
 
